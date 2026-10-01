@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: memory-graph
+pillar: platform
 ---
 
 # OPEN-namespace teardown

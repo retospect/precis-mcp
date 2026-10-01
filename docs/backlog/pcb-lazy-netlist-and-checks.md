@@ -20,8 +20,8 @@ the comment is wrong, this file owns them.)
 Hard dependency: `finding-stable-identity.md` (delta reporting in §1g).
 Cross-referenced, not duplicated: `ewod-controller-and-hv-supply.md`
 (Defect A, Slice 4 blockers, the RAW/VBUS and CH340N traps),
-`pcb-ewod-multitile.md` (rulings 1–11), `pcb-pre-place-route-blocks.md`
-(fabric as fixed copper, the known −0.025 mm residue).
+`pcb-ewod-multitile.md` (rulings 1–11), the shipped fabric-as-fixed-copper work
+(`pcb_fixed_copper`, migration 0165; the known −0.025 mm residue).
 
 ## Motivation / why
 
@@ -509,8 +509,7 @@ job already does this for planes (`RealizeResult.unstitched` → `problems`);
 extend the same path to signal nets.
 
 **Likely same root cause, fold in:** the `−0.025 mm` stub gap, previously
-pinned as a single known residue (`pcb-pre-place-route-blocks.md` Slice 2
-geometry residue; ruling 1's corridor re-solve was meant to remove it), is
+pinned as a single known residue (fabric slice 2 geometry residue, since deleted; ruling 1's corridor re-solve was meant to remove it), is
 now the dominant error class — dozens of `clearance` errors
 `track[ARR1_RxCy] <-> pad[ARR1_<neighbour>] on F.Cu, -0.025, copper
 clearance 0.065mm < JLC min 0.090mm`, roughly one pair per realized

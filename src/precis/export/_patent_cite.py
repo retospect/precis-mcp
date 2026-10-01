@@ -1,5 +1,5 @@
 """Patent citation strings — in-text (``doc_type=patent`` export, slice 6)
-and bibliography-line (docs/backlog/patent-evidence-parity.md Phase 3).
+and bibliography-line (patent-evidence-parity Phase 3).
 
 A patent **specification** cites prior art *in the running text* by number
 ("U.S. Patent No. 2,943,737") with **no bibliography** — unlike a paper,
@@ -162,7 +162,7 @@ def format_patent_bibliography_entry(ref: Any) -> str:
     :mod:`precis.handlers.patent` ingest actually populates. Every field is
     independently optional — an OPS biblio may lack applicants, and a ref
     ingested before the ``publication_date`` → ``refs.year`` backfill
-    (docs/backlog/patent-evidence-parity.md Phase 1) may lack a year —
+    (patent-evidence-parity Phase 1) may lack a year —
     an absent field is silently dropped, never raised on, and a
     thinly-populated ref still falls back to its slug so the line is never
     empty.

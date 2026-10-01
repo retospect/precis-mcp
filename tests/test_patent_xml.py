@@ -68,7 +68,7 @@ class TestBiblio:
 
     def test_family_id_absent_without_crashing(self) -> None:
         # No <publication-reference> / <patent-family> at all — degrades
-        # to None, never crashes (docs/backlog/patent-evidence-parity.md
+        # to None, never crashes (patent-evidence-parity
         # Phase 2: "absent -> no key, no crash").
         xml = (
             b'<?xml version="1.0" encoding="UTF-8"?>'

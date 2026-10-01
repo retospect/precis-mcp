@@ -27,7 +27,7 @@ Derivation (taproot.md, locked decision):
 4. Each group orders by ``refs.year`` ascending (earliest first; NULL
    sorts last), tie-broken by ``ref_id`` ascending — publication date is
    the commensurable seniority date across papers and patents
-   (docs/backlog/patent-evidence-parity.md). ``refs.year`` falls back to
+   (patent-evidence-parity). ``refs.year`` falls back to
    the year embedded in ``meta->>'publication_date'`` when NULL (see
    :func:`_fetch_paper_facts`), so a patent ref ingested before
    ``_patent_ingest.py`` started populating ``year=`` still interleaves by
@@ -60,7 +60,7 @@ _CITES_RELATION = "cites"
 #: module's docstring for why it's deliberately NOT derived from
 #: ``KindSpec.corpus_role``). Evidence edges have attached from a patent
 #: source since ``attach_evidence`` grew patent support (docs/backlog/
-#: patent-evidence-parity.md); the evidence read queries below must accept
+#: patent-evidence-parity); the evidence read queries below must accept
 #: the same source kinds the write door does, or a patent's establishes/
 #: corroborates edge silently never surfaces here. Tupled for the ``%s
 #: = ANY(%s)`` SQL params below, which want a list-friendly shape rather
@@ -294,7 +294,7 @@ def _fetch_paper_facts(
     ``meta->>'publication_date'`` (``YYYY-...``) when ``refs.year`` IS
     NULL — covers already-ingested patents (patent ingest didn't
     populate ``refs.year`` before the fix in ``_patent_ingest.py``,
-    docs/backlog/patent-evidence-parity.md's "seniority gap" note)
+    patent-evidence-parity's "seniority gap" note)
     without a data backfill. A missing or malformed
     ``publication_date`` (not a 4-digit year prefix) degrades to NULL,
     same as no year at all — never raises.

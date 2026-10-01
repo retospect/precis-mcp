@@ -1,7 +1,7 @@
 ---
 status: draft
 title: ingest Claude Code session history into precis as conv refs
-pillar: personal
+pillar: memory-graph
 prio: normal
 ---
 

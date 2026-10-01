@@ -41,7 +41,9 @@ both STATUS:done)
    `--unverified-stamped` (link 992065, the stale 330-cycle caveat) and once
    without (link 2483302, never verified); reword the claim only if the
    verdict is not corroborating.
-5. **backlog/se-nanobud-graph.md** — `status: in-progress/high`; graph-first
+5. **backlog/se-nanobud-graph.md** — `status: draft/high` (demoted from
+   in-progress 2026-10-01: its generator is overtaken by hexfold's nanobud
+   menus; nomenclature and embed stand); graph-first
    sp2 construction (geo rung, spectral embed, nanobud generator,
    nomenclature) — the library this thread and nanobud-nomenclature-paper
    both need to exist.

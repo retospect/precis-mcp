@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 title: DB consolidation audit — decay/vacuum policy for the ref corpus (gr51184)
 ---
 

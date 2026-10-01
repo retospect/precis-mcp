@@ -227,7 +227,7 @@ class TestPaperMustExist:
         assert "created citation id=" in resp.body
 
 
-# ── patent sources (docs/backlog/patent-evidence-parity.md Phase 3) ──
+# ── patent sources (patent-evidence-parity Phase 3) ──
 
 
 class TestPatentSource:

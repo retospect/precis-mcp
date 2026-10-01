@@ -224,7 +224,7 @@ class TestClaimMarking:
 
 
 # ---------------------------------------------------------------------------
-# refs.year (seniority-ordering fix — patent-evidence-parity.md)
+# refs.year (seniority-ordering fix — patent-evidence-parity)
 # ---------------------------------------------------------------------------
 
 
@@ -611,7 +611,7 @@ class TestIngestAcceptsDocDbId:
 
 
 # ---------------------------------------------------------------------------
-# family_id absence (patent-evidence-parity.md Phase 2, item 1)
+# family_id absence (patent-evidence-parity Phase 2, item 1)
 # ---------------------------------------------------------------------------
 
 
@@ -654,7 +654,7 @@ class TestFamilyIdAbsent:
 
 
 # ---------------------------------------------------------------------------
-# Simple-family stubbing (patent-evidence-parity.md Phase 2, item 3)
+# Simple-family stubbing (patent-evidence-parity Phase 2, item 3)
 # ---------------------------------------------------------------------------
 
 

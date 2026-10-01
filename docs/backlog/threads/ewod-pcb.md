@@ -8,7 +8,10 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-01 (placer-sees-authored-vias, the gerber DRC
+**Last reviewed:** 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
+sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
+orphan, checklist-kind, component-followons, argue-backport; round-7 and
+pre-place-route-blocks items deleted as shipped; placer-sees-authored-vias, the gerber DRC
 banner, the board-feature CPL/BOM rule and the feasibility layer-lock count
 landed; Do-next renumbered)
 **Worktree:** `ewod-pcb`
@@ -47,12 +50,17 @@ landed; Do-next renumbered)
    on the dogfood fixture all 54 reach B.Cu through the authored plaza vias.
    The "true via floor of 55" was wrong, because those vias already exist.
    Do not re-open the estimate to explain the 40 failures.
-5. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
+5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
+   driver-chain are general PCB primitives wearing EWOD names (the engine's
+   only registered generator is `ewod_pad_array`). Sits beside 4: both are
+   the escape corridor, this one is where the primitive lives. Reto
+   2026-09-26/27: board = data, engine = general.
+6. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
-   permits F.Cu after the 09-27 fix. Now owns the live half of 6: the stale
+   permits F.Cu after the 09-27 fix. Now owns the live half of 7: the stale
    stored class IS this staleness, and without a tripwire the same
    staleness re-opens any generator fix.
-6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on was measured in a worktree
    carrying the uncommitted routing_area term; on main that fixture passes.
@@ -60,7 +68,7 @@ landed; Do-next renumbered)
    routing_area reverted the dogfood file is `8 passed`, with it applied the
    F.Cu escape assertion fails — so the F.Cu escape is attributable to the
    term's placement, not to pad geometry. What is left is the stale class on
-   pb345846, which 5 owns, plus the narrower open question: is that escape a
+   pb345846, which 6 owns, plus the narrower open question: is that escape a
    real leak at that placement, or a placement-sensitive assertion? Reads
    realize/maze, which pcb-easyeda-round-trip's router item also touches;
    this thread sequences behind theirs.
@@ -79,7 +87,7 @@ landed; Do-next renumbered)
    divergence (`realize.pad_board_wh`, landed 2026-09-30), not the term:
    with that fixed, `test_pcb_reference_end_to_end.py` is 5 passed at every
    seed WITH the term applied. What remains against the term is the dogfood
-   F.Cu escape assertion (item 6 above), re-measured on top of the fix. So
+   F.Cu escape assertion (item 7 above), re-measured on top of the fix. So
    the open decision is back to "gate now or wait", plus that one
    assertion.
 2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
@@ -134,53 +142,77 @@ landed; Do-next renumbered)
    behind pcb-component-model. That gripe also records the blocker found
    while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
    part can be SEARCHED for, only confirmed by C-number.
-6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 5, a checklist over unenforceable constraints is theatre. Its
+6. **backlog/checklist-kind.md** — `ready/high`; the argued, invalidating
+   ledger the seed items below instantiate (first instance: pcb
+   pre-tapeout). Ranked beside its seed companion, not above 5: a ledger
+   over unenforceable constraints is theatre either way.
+7. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
+   on 5 and 6, a checklist over unenforceable constraints is theatre. Its
    `drc-clean` item is half-served: `view='gerber'` now runs DRC and leads
    its response with a `DRC FAILED` block (Reto, 2026-10-01: banner, not
    refusal — he wants the bundle of a broken board to debug from). The
    banner informs and does not gate; the item records what a refusal
    with an override would add if a red bundle is ever uploaded anyway.
-7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
+8. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
    it but a human looking at the render. Same root gap as Do-next 4's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
-8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+9. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-9. **backlog/ewod-synthesis-protocol.md** +
+10. **backlog/ewod-synthesis-protocol.md** +
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-10. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
+11. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
     (ITO top sheet, spacer adhesive, alignment holes, via-plaza covers),
     generalising the pcb 2D layer system the way solder paste already
     does; the hard part is stencil bridges that keep the adhesive sheet
     one connected component. Reto-architected 2026-09-26; waits on nothing
     but is large. Interacts with gr414481.
-11. **gr414481** — EWOD boards need a second max-extent check for parylene
+12. **gr414481** — EWOD boards need a second max-extent check for parylene
     coating, separate from the fab/manufacturing size cap; feeds gr451662's
     adhesive-layer extent.
-12. **gr338660** — the ewod-oil route-platform-constraint screen has no
+13. **gr338660** — the ewod-oil route-platform-constraint screen has no
     reagent-economy axis (distinct-reagent count vs reservoir budget,
-    reaction-type diversity, longest unpurified run); waits on 9
+    reaction-type diversity, longest unpurified run); waits on 10
     (ewod-oil-constraint-grounding), the file this screen lives beside.
-13. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
+14. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
     multiplies whatever the escape corridor does.
-14. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
+15. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +
+    **backlog/pcb-stackup-edit-orphans-a-class-layer-lock.md** (`low`) —
+    two ways a stored board is silently invalid: a pour island with none of
+    its net's copper, a stackup edit that strands a net-class layer lock
+    until route time. Wait on 2, where "stored board is valid" becomes a
+    gate.
+16. **backlog/component-followons.md** — `idea`; comparator/violator query,
+    price-break costing on the shipped component kind. Waits on nothing; no
+    pcb item depends on it.
+17. **backlog/pcb-argue-backport-se.md** — `blocked-by`
+    pcb-argue-with-design (se-machine-design Do-next 5, not ranked here);
+    low, back-ports the argue box to se.
+18. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
     above serves; re-read when ranking the next round.
 
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
   per-write go-ahead, and not before Do-next 1 lands and the escape-layer
-  question (Do-next 6, with its live half in 5) is settled, or it is done
+  question (Do-next 7, with its live half in 6) is settled, or it is done
   twice. Named by item, not number: that rank has moved twice already.
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
   Do-next 2, where via-vs-pad becomes an enforced rule rather than a
   reported one.
+
+- **round-7 residue (2026-09-03 review, item deleted)** — a large authored
+  rigid group (~12x18 mm, TQFP-32 + crystal circuit) seeds straddling the
+  outline and containment pressure cannot walk it back (fix direction:
+  containment-aware group seeding); not re-verified since. `pcb` slugs skip
+  `mint_slug` (`handlers/pcb.py::PcbHandler.put` takes `str(id).strip()`);
+  the two XSS sinks it enabled are fixed, charset sanitising is
+  defence-in-depth only. Unparks on a reproduction / a pcb-id audit.
 
 ## Boards on prod
 
@@ -207,8 +239,6 @@ landed; Do-next renumbered)
 
 ## No action needed
 
-- **backlog/pcb-pre-place-route-blocks.md** — already landed; verify and
-  delete.
 - **gr346009** — soft-deleted, do not reopen; the count it exposed is
   Do-next 1's. (Tombstone restored 2026-09-30 after the review's relink
   pass pruned it as "closed".)

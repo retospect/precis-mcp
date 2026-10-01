@@ -1,5 +1,5 @@
 """Deterministic patent-family lookups (Phase 2,
-docs/backlog/patent-evidence-parity.md).
+patent-evidence-parity).
 
 DOCDB family identity is EPO-authoritative data — ``refs.meta['family_id']``,
 parsed at ingest by ``_patent_xml.py`` / stored by ``_patent_ingest.py`` — not
@@ -17,7 +17,7 @@ never a node kind. Two entry points:
 Pure lookup — no writes, no LLM calls. ``_patent_ingest.py``'s simple-family
 stubbing decision calls both (does a full member already exist? what's the
 current representative to link the new stub to?); the cites view
-(docs/backlog/patent-evidence-parity.md Phase 3) and hub-refine reuse the
+(patent-evidence-parity Phase 3) and hub-refine reuse the
 same two functions rather than re-deriving family grouping. Stub-vs-full is
 NOT distinguished by :func:`family_representative` — a family's
 earliest-published member can itself be a stub, since ingest order need not

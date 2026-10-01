@@ -1,7 +1,7 @@
 ---
 status: draft
 title: reaction kind + synthesis cost — a sourced reaction-fact store, and cost as a graded vector over routes
-pillar: memory-graph
+pillar: 3d-design
 prio: high
 model: opus
 ---

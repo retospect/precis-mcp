@@ -1,6 +1,6 @@
 ---
 status: draft
-pillar: memory-graph
+pillar: platform
 title: LLM prompt-surface audit — units-cutover residue
 prio: normal
 ---

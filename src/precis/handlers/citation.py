@@ -24,7 +24,7 @@ Record shape (stored in ``refs.meta``):
 
 The ``source_handle`` is a chunk address (``slug~N`` or ``slug~A..B``)
 into either a ``paper`` or a ``patent`` (docs/backlog/
-patent-evidence-parity.md Phase 3) — a bare/unprefixed handle defaults
+patent-evidence-parity Phase 3) — a bare/unprefixed handle defaults
 to ``paper`` for backward compatibility; an explicit ``patent:<slug>``
 prefix (or a ``pk<id>`` universal chunk handle) points at a patent. The
 verifier can revisit the exact span at any time, and
@@ -236,7 +236,7 @@ class CitationHandler(NumericRefHandler):
                 ),
                 next=next_hint,
             )
-        # A simple-family stub (docs/backlog/patent-evidence-parity.md
+        # A simple-family stub (patent-evidence-parity
         # Phase 2) carries biblio meta only — no description/claims blocks
         # to hold a chunk-addressed quote. Point the caller at the family's
         # actual full member instead of failing opaquely on a chunk lookup.
@@ -371,7 +371,7 @@ class CitationHandler(NumericRefHandler):
 
 
 #: The only source kinds a citation may validate against (docs/backlog/
-#: patent-evidence-parity.md Phase 3). Anything else named by an explicit
+#: patent-evidence-parity Phase 3). Anything else named by an explicit
 #: ``kind:`` prefix is rejected outright, rather than silently skipped.
 _ACCEPTED_SOURCE_KINDS = ("paper", "patent")
 

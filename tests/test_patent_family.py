@@ -1,5 +1,5 @@
 """Tests for the patent-family read-side helpers
-(``_patent_family.py``, docs/backlog/patent-evidence-parity.md Phase 2).
+(``_patent_family.py``, patent-evidence-parity Phase 2).
 
 Pure lookups over ``refs.meta['family_id']`` — refs are inserted directly
 via ``store.insert_ref`` (no OPS fetch needed) since the helper doesn't

@@ -718,7 +718,7 @@ class _Candidate:
 
     ``via`` distinguishes the two discover sources: ``"semantic"`` (the
     corpus-wide ANN — now over paper *and* patent body chunks, docs/
-    proposals/patent-evidence-parity.md) and ``"citation"`` (a passage
+    patent-evidence-parity) and ``"citation"`` (a passage
     inside a paper the claim's own inline citation points at — patent
     citation graphs aren't parsed, so this source stays paper-only).
     ``marker`` / ``from_chunk`` are set only for ``"citation"`` — they
@@ -821,7 +821,7 @@ def _citation_candidates(
 
 #: Patent legal-claim blocks (``handlers/_patent_claims.py``'s
 #: ``claim_block_meta`` marker) — grounding policy (docs/backlog/
-#: patent-evidence-parity.md): legal scope is not empirical support, so
+#: patent-evidence-parity): legal scope is not empirical support, so
 #: these never reach Verify. Description/abstract blocks carry no
 #: ``patent_block`` value of ``"claim"`` (description blocks are tagged
 #: ``"description"`` via ``DESCRIPTION_BLOCK_META``; abstract text isn't
@@ -2930,7 +2930,7 @@ def _refine_one_hub(
 
         # Discover source 2 (existing, now two kind-scoped legs): corpus-wide
         # semantic ANN over paper chunks, plus a patent leg (docs/backlog/
-        # patent-evidence-parity.md). ``store.search_chunks``'s mode-
+        # patent-evidence-parity). ``store.search_chunks``'s mode-
         # dispatched wrapper takes one ``kind=`` string, not a list, so this
         # is two calls merged by score (ascending cosine distance) and
         # truncated back to ``topk`` -- the bounded-spend guarantee doesn't

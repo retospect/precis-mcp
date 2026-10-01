@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 ---
 
 # Docs currency audit

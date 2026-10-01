@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 ---
 
 # classify: --ref-ids ignores scope; 400-storm watch

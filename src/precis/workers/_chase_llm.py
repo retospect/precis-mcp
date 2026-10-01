@@ -8,7 +8,7 @@ are the *only* paths in ``chase`` that issue paid LLM calls:
   the verify hook ``workers/hub_refine.py`` calls for every discover
   candidate (paper or patent) — always-on there, not ``with_llm``-gated —
   where ``source_kind="patent"`` swaps in patent-aware reading rules
-  (docs/backlog/patent-evidence-parity.md).
+  (patent-evidence-parity).
 * :func:`_disambiguate_candidates` resolves multi-cite chunks.
 * :func:`_locate_chunk_in_target` confirms the ANN's chunk pick or
   picks a better one from the shown alternates.
@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 
 #: Appended into ``_PROMPT_VERIFY`` only when the candidate source is a
-#: patent (docs/backlog/patent-evidence-parity.md) — a patent chunk reads
+#: patent (patent-evidence-parity) — a patent chunk reads
 #: differently from a paper chunk in three ways the verifier must know
 #: about before it judges support.
 _PATENT_VERIFY_NOTE = """
@@ -139,7 +139,7 @@ def _verify_support_with_caveats(
     spliced into the prompt so the verifier reads background/prior-art
     recitations, prophetic worked examples, and legal-claim scope language
     the way a patent (not a paper) requires (docs/backlog/
-    patent-evidence-parity.md).
+    patent-evidence-parity).
     """
     prompt = _PROMPT_VERIFY.format(
         claim=claim,

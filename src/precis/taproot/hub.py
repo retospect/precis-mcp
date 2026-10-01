@@ -96,7 +96,7 @@ _DEFAULT_ROLE = "corroborates"
 #: scientific-claim evidence, which is a scope call on what "evidence"
 #: means for a Taproot claim hub (taproot.md open #15: "only paper-sourced
 #: claims become hubs"; the patent addition itself came from a deliberate
-#: design doc, docs/backlog/patent-evidence-parity.md; ``edgar`` was
+#: design doc, patent-evidence-parity; ``edgar`` was
 #: approved as an evidence source by a matching human call, as was
 #: ``datasheet`` — a manufacturer datasheet is a primary technical document
 #: the same way a patent is), not a mechanical fact this codebase already
@@ -238,8 +238,7 @@ _PATENT_EXAMPLE_PROPHETIC = "prophetic"
 
 #: Fixed, deterministic caveat text appended to an evidence edge whose
 #: grounding chunk is a patent paragraph the ``patent_example`` axis tagged
-#: ``prophetic`` (patent-evidence-parity phase 4, docs/backlog/patent-
-#: evidence-parity.md). Mechanical injection only — this never touches the
+#: ``prophetic`` (patent-evidence-parity phase 4). Mechanical injection only — this never touches the
 #: taproot verify LLM prompt; an unclassified chunk (axis hasn't run yet)
 #: or a ``worked``/``none`` tag gets no caveat at all.
 PROPHETIC_EXAMPLE_CAVEAT = (

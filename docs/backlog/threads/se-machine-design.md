@@ -5,12 +5,13 @@
 declarative intent can be realized by pick-and-join, so an LLM reasons over
 space, motion, assembly, charge, field and light — a PCB, a cartridge and a
 motor as children of one design. North-star: `backlog/se-kind.md` +
-`backlog/se-region-property-layer.md`. Today the region-property layer is
+`backlog/se-region-property-layer.md`. As the se owner it ranks the design-model items the other se threads
+(se-3d-viewer, se-nucleic-chain, hexfold-toolkit) consume. Today the region-property layer is
 unbuilt and blocks three of the six reasoning axes; everything below reads
 off that gap until it closes.
-**Last reviewed:** 2026-09-30
+**Last reviewed:** 2026-10-01 (Pillar 2 review: now the se OWNER; three unthreaded se items adopted)
 **Worktree:** `se-machine-design`
-**Active:** no — opens at the next session restart if Reto names it.
+**Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
 
 ## Do next
 
@@ -40,15 +41,26 @@ off that gap until it closes.
 6. **backlog/cad-machine-spec.md**
 7. **backlog/cad-dims-and-constraints.md**
 8. **backlog/cad-print-in-place.md**
-9. **backlog/cad-sdf-rounding-and-field-export.md** — in progress.
-10. **backlog/cad-assembly-checklist-seed-items.md**
-11. **backlog/cad-diagnose-apply-loop.md**
-12. **backlog/printable-atomic-models.md**
-13. **backlog/se-fret-round-2.md**
-14. **backlog/photoswitch-states-and-spectral-dof.md**
-15. **backlog/nm-stick-placement.md**
-16. **backlog/nm-face-codes-and-scale.md**
-17. **backlog/se-process-skills-as-rewrites.md**
+9. **backlog/cad-assembly-checklist-seed-items.md**
+10. **backlog/cad-diagnose-apply-loop.md**
+11. **backlog/printable-atomic-models.md**
+12. **backlog/se-fret-round-2.md**
+13. **backlog/photoswitch-states-and-spectral-dof.md**
+14. **backlog/nm-stick-placement.md**
+15. **backlog/nm-face-codes-and-scale.md**
+16. **backlog/se-process-skills-as-rewrites.md**
+17. **backlog/boxel-exercise-tooling-gaps.md** — what the boxel exercise
+    taught about the cad/structure surface; read it before starting
+    the cad items (6–8, 10).
+18. **backlog/situation-rule-tables.md** — `blocked-by` design-state-core
+    (multiscale-design-core Do-next 1, not ranked here). Three-verdict pair
+    checks over swept volumes in se drc; arguably multiscale-design-core's
+    (it is a constraint-catalogue piece), kept here because its only
+    consumer today is se drc — seam, move it if that thread opens first.
+19. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
+    hygiene: the skill is over the 32 KB hard cap and allowlisted; split
+    the FRET/optical and discrete-states domains out. Cheap, any time; do
+    it before the next domain section is added to that skill.
 
 ## Parked
 
@@ -62,6 +74,9 @@ off that gap until it closes.
 - **gr451269** — se atomic tpms/schwarzite generator emits topologically
   correct nets whose bond lengths are not carbon and nothing checks it;
   companion to gr451270, same generator, same dogfood.
+- **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
+  maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an
+  object-manipulation thread opens.
 
 ## No action needed
 

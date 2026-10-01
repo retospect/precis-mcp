@@ -20,26 +20,11 @@ WorkingSet.crunch already exist, nothing drives them); promote-plan-node→todo
 (needs TodoHandler `anchor=`; belongs with the render loop). Owner
 `src/precis/workers/job_types/plan_tick.py` + `src/precis/utils/fisheye.py`.
 
-## Generalize the fisheye discovery affordance beyond draft chunk reads
-
-_Grouped 2026-09-26; was `fisheye-affordance-generalize`._
-
-The `→ view='fisheye'` footer exists only in `DraftHandler._render_chunk`;
-paper/patent/web/datasheet/cfp/memory/finding chunk reads also have fisheye
-eyes (`src/precis/utils/eye_render.py::render_eye`) but never advertise it —
-an agent reading those kinds unprompted can't discover fisheye. Generalize
-the teach-at-render affordance; optional: a session damper if it proves noisy
-in read loops, and a one-line mention in the server-instructions string
-(`src/precis/server.py`). Mechanical.
-
-test: per-kind assertion that a plain single-chunk get carries the affordance
-line (parallel to tests/test_draft_handler.py's).
-
 ## Product-plan review 2026-09-30
 
 Ranked in `threads/graph-memory-consumers.md` (pillar 1, consumers).
 `precis-fisheye-help` documents that `view='fisheye'` on `paper`, `patent`,
 `web`, `datasheet`, `cfp` and `memory` raises `Unsupported`; that is
 now owned by `fisheye-everywhere.md` (every kind, plus the browser focus
-page), which supersedes the "generalize the affordance" section above — the doctrine (`docs/roadmap.md` pillar 1) is one fisheye over the
+page), which replaced the former "generalize the affordance" section — the doctrine (`docs/roadmap.md` pillar 1) is one fisheye over the
 whole graph, and `memory` in particular cannot stay outside it.

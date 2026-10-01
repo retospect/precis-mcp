@@ -27,7 +27,7 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     (applicant, title, publication number + kind code, year) instead of
     a bare title, and same-family patent edges within one role-list
     collapse to one row keyed to the family's deterministic
-    representative (docs/backlog/patent-evidence-parity.md Phase 3;
+    representative (patent-evidence-parity Phase 3;
     :func:`_collapse_patent_families`) — a paper's own family is
     untouched (papers carry no ``family_id``), so this is a no-op for
     every pre-existing paper-only hub.
@@ -285,7 +285,7 @@ def _collapse_patent_families(
     refs_by_id: dict[int, Ref],
 ) -> list[tuple[seniority.EvidenceEdge, str | None]]:
     """Collapse same-family patent evidence edges to one row per family
-    (``view='evidence'``, docs/backlog/patent-evidence-parity.md Phase
+    (``view='evidence'``, patent-evidence-parity Phase
     3) — family identity is EPO-authoritative data, so two edges citing
     sibling family members for the same claim are the same warrant, not
     two separate ones. A non-patent edge, or a patent edge with no

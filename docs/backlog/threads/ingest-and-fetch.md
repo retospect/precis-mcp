@@ -18,10 +18,20 @@ ranking below.
 
 ## Do next
 
-1. **td458898** — the triage pass over all seven. First by dependency, not by
-   cost: nothing below can be ranked honestly until it is known which of these
-   still reproduce, which are duplicates of each other, and how many corpus
-   rows each one touches today. Several are six weeks old.
+1. **td458898** — the triage pass over the seven gripes below **and** the
+   nineteen ingest-cluster items: `backlog/patent-kind-followons.md` ·
+   `papers-edit-reslug-hangs` · `oa-acquisition-roadmap` ·
+   `arxiv-add-lane-text-search-mismatch` · `pdf-sha256-identifier-hygiene` ·
+   `ref-2615-is-a-mis-bound-record` · `paper-refs-panel-editing` ·
+   `crossref-enrichment` · `paper-reader-bbox-backfill` ·
+   `acquisition-marker-lives-in-the-wrong-place` · `ingest-strips-greek-glyphs`
+   · `elsevier-preview-remediation` · `paper-dedup-bucket-b` ·
+   `edgar-kind-spec` · `equation-chunk-retirement` ·
+   `merged-chunk-handle-redirect` (all `backlog/<slug>.md`). Three more of the
+   nineteen left with the deletes below, their live residue in Parked. First by
+   dependency, not by cost: nothing can be ranked honestly until it is known
+   which of these still reproduce, which are duplicates of each other, and how
+   many corpus rows each one touches today. Several are six weeks old.
 2. **gr228652** + **gr228699** — the Greek/micro-character pair, provisionally
    rank 2 and expected to take rank 1 the moment triage confirms them. Blast
    radius: they do not fail, they write a quietly wrong corpus, and
@@ -47,14 +57,23 @@ ranking below.
 
 1. **A fidelity check that runs at extraction, not after it** — the glyph pair
    is only findable today by noticing wrong characters in a rendered draft.
-   `gripe_228652`'s stranded branch (`record glyph_health at extraction`, 6
-   files, +901) sketched this before the fix_gripe lane went inert; the sketch
-   is worth reading even if the branch is deleted. Not filed as an item yet —
-   file it before ranking it above Parked.
+   Already designed: `backlog/ingest-strips-greek-glyphs.md` (per-document
+   `glyph_health` written during extraction; root cause for gr228652,
+   gr228699, gr228594). Rank above Parked once triage confirms the pair.
 
 ## Parked
 
-- (none)
+- **`axis:patent_example` enable + two watches** — dormant on Reto's word
+  2026-10-01. Enable = `precis service prio '*' axis:patent_example 1` (prod
+  write; until then patent chunks stay unclassified and the prophetic caveat
+  never fires). Watches: first live priority-claims extraction
+  (`_patent_xml.py`, built from the ST.36 shape without an OPS sample), and
+  `prophetic` axis precision. Build shipped; was `patent-evidence-parity`.
+- **Backlinks panel text-scan coverage** — materialize inline `[pa]`/`[pc]`
+  cites into `links` at draft-save + backfill (repeat cites count 1 today; no
+  trigram index on `chunks.text`), then a deep `/papers/<id>/backlinks` page;
+  owner `src/precis_web/routes/papers.py::_backlinks`. Needs design; was
+  `paper-backlinks-completeness`.
 
 ## No action needed
 

@@ -30,7 +30,7 @@ the existing ref and skips OPS calls. Force-refresh is a future
 flag; the spec keeps it out of phase 1.
 
 **Patent-family mechanism** (Phase 2,
-docs/backlog/patent-evidence-parity.md). Family identity is EPO-
+patent-evidence-parity). Family identity is EPO-
 authoritative data (the OPS biblio's DOCDB ``family-id`` attribute), not a
 judged identity — so there's no hub-like node, just three light pieces:
 
@@ -175,7 +175,7 @@ def _write_xml(target: Path, xml: bytes) -> None:
 def _year_from_publication_date(publication_date: str | None) -> int | None:
     """Best-effort ``refs.year`` from a parsed ``YYYY-MM-DD`` publication
     date — the first-class column ``taproot/seniority.py`` orders evidence
-    by (docs/backlog/patent-evidence-parity.md's "seniority gap" fix).
+    by (patent-evidence-parity's "seniority gap" fix).
     Patent ingest used to omit ``year=`` on ``insert_ref``, so every patent
     ref sorted last (NULL) regardless of its real publication date.
 
@@ -335,8 +335,8 @@ def ingest_patent(
 
     disk_dir = _disk_dir(raw_root, parsed_id)
 
-    # Simple-family stubbing decision (docs/backlog/patent-evidence-
-    # parity.md Phase 2, module docstring above). Only considered for a
+    # Simple-family stubbing decision (patent-evidence-parity
+    # Phase 2, module docstring above). Only considered for a
     # genuinely fresh ingest — a ``force`` re-ingest of an existing ref
     # always takes the full path (explicit caller intent to (re)populate
     # blocks overrides the heuristic). Deciding from the biblio alone,
@@ -531,8 +531,8 @@ def ingest_patent(
             store.stamp_ref_meta(ref_id, meta, conn=conn)
             # ``stamp_ref_meta`` only touches the ``meta`` JSONB, never the
             # first-class ``refs.year`` column -- so a ref ingested before
-            # the seniority-gap fix (module docstring, docs/backlog/
-            # patent-evidence-parity.md) stayed year=NULL forever, even
+            # the seniority-gap fix (module docstring, patent-evidence-
+            # parity) stayed year=NULL forever, even
             # through an operator force-reingest meant to repair it.
             # ``update_paper_fields`` is the sole write path for that
             # column; a ``None`` year (unparseable/missing publication

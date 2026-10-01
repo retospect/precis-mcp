@@ -27,9 +27,10 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 
 1. **backlog/multiscale-optimisation-method.md**
 2. **backlog/margin-budget-tree.md**
-3. **backlog/structural-solution-space.md** — blocked on cad-sdf field
-   export (se-machine-design's `backlog/cad-sdf-rounding-and-field-export.md`,
-   in progress there).
+3. **backlog/structural-solution-space.md** — the cad-sdf field export it
+   was blocked on has shipped (se-machine-design's cad-sdf item, deleted;
+   field leaf + `realize(strategy='simp')` bridge); sequenced here by
+   choice.
 4. **backlog/drive-characteristic-scale.md** — blocked on a ruling.
 5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; consumed here for pocket specs. Seam, not a duplicate

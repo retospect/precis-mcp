@@ -1,6 +1,7 @@
 """``source-backfill`` — find corpus sources a draft *should* cite but doesn't,
-and assemble the editing workspace to weave them in (unbuilt follow-ups:
-``docs/backlog/source-backfill-followups.md``).
+and assemble the editing workspace to weave them in (unbuilt: a HyDE query lens, a
+Tier-1 relevance cull, an ``integrate`` planner coroutine; owner
+``candidates.py``).
 
 The **recall** mirror of the citation **verifier**: the verifier asks "is what
 I cited true?" (precision); source-backfill asks "did I miss anything?"

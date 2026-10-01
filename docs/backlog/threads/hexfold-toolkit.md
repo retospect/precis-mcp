@@ -134,12 +134,15 @@ waited on happened 09-29 — note at the bottom)
    radius-changing shell with a two-lid rotor, each as separate blocks with
    a revolute joint. The acceptance artefacts for the whole discrete half;
    waits on 1.
+   The box test piece (`spec.md` §28 step 3, `src/hexfold/spec.md`) has no
+   backlog file; it is ranked here, and the file is filed when it starts.
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
    catalogue's third row type exists for. Waits on Do-next 7, since a
    motif measured at one extent has the same defect the radius had.
-7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
+7. **`spec.md` §28.8 valve tool set** (checklist in
+   backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
    clearance stub is gated on Do-next 8.
@@ -153,10 +156,23 @@ waited on happened 09-29 — note at the bottom)
 10. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
     lining rotary-ratchet-valve.md Q2 (item 8) needs to decide scrubber
     cadence; sequenced right after the seam it instruments.
-11. **`spec.md` §28.5–28.6 smooth solve + direction field** — discrete-mesh
-    smooth solve, curvature bound, bent collar; delivers the tapered
-    (collar-driven) shell the discrete washer step stands in for.
-12. **td344088** — the se + hexfold paper. The thread's end state; it
+11. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by
+    **backlog/precis-surface-kernel.md** (its checklist carries §28.5,
+    §28.6 and §28.8); this thread ranks them, that item holds the
+    spec. Discrete-mesh smooth solve, curvature bound, bent collar;
+    delivers the tapered (collar-driven) shell the discrete washer step
+    stands in for.
+12. **backlog/global-structure-search-slices.md** — variable-composition
+    (`add` ranges) and surrogate warm-start from a prior AGOX database;
+    structure-kind search work homed here by Reto's pillar-2 ruling
+    (2026-10-01). Waits on nothing; sequenced after the test pieces by
+    choice.
+13. **backlog/structure-kind-demotion.md** — `ready`; se is the origin of
+    atoms (Reto, 2026-09-14), structure becomes an import filter with no
+    direct agent access. Staged, independent of the §28 pieces; ranked
+    here because hexfold builds are where the structure-kind gripes
+    (Do-next 2) bite.
+14. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Parked

@@ -81,6 +81,12 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 One keystone, then everything that has been waiting on it. If cut short,
 cut from the bottom.
 
+Pillar-2 human-surface acceptance — "click any block → pose, envelope,
+ports, properties, findings, load path in one panel" — spans 1
+(se-pick-hierarchy) → 2 (selection inspector) → 3
+(se-interface-reaction-forces); the properties row depends on
+se-machine-design's `backlog/se-region-property-layer.md`.
+
 1. **backlog/se-pick-hierarchy.md** — click anything, get every level it
    belongs to. Keystone: three parked and two Do-next items have nowhere to
    render until a block can be selected and addressed. Unblocked today

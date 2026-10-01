@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: draft
 title: graph-first sp2 construction — geo rung, spectral embed, nanobud generator, nomenclature
 pillar: 3d-design
 prio: high
@@ -13,6 +13,12 @@ Companion: `se-view-figures.md` (renders these structures into
 dr173020). Absorbs the nanobud-fusion scope-check comment in
 `precis_se/atomic/generators/sp2.py` (its three blockers are dissolved
 by the graph-first approach below, not solved head-on).
+
+**2026-10-01 — demoted in-progress → draft.** The generator half is
+overtaken by hexfold's nanobud menus (`threads/hexfold-toolkit.md`; the
+sp² notation library now builds nanobuds directly). What still stands:
+the nomenclature, the `geo` rung / spectral embed, and the library
+this item's companions need. Re-scope against hexfold before building.
 
 Prior-art survey: `perplexity-research:339983` (2026-09-14). Key facts,
 **verify primary sources before citing in the draft**: no systematic

@@ -317,7 +317,7 @@ Measured read-only against prod 2026-08-20 — every evidence edge into a
 No `edgar`, `datasheet` or `patent` evidence edges exist. The defect is purely
 latent — which is exactly why it should be fixed before someone attaches the
 first one and trusts the result. Note the corpus also has **zero patent
-evidence edges** despite `patent-evidence-parity.md`; `patent` at least
+evidence edges** despite the shipped patent-evidence-parity build; `patent` at least
 survives `_source`, so that is a separate, non-silent gap.
 
 ### The fix, and the question inside it

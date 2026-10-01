@@ -99,7 +99,7 @@ class TestPaperInlineCitation:
 
 
 class TestFormatPatentBibliographyEntry:
-    """docs/backlog/patent-evidence-parity.md Phase 3 — a full prose
+    """patent-evidence-parity Phase 3 — a full prose
     bibliography line for a patent cited in a context that DOES carry a
     reference list (unlike the in-text-only ``render_patent_citation``)."""
 

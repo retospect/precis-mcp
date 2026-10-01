@@ -12,9 +12,11 @@ Four pillars sit above the programme layer, text in `docs/roadmap.md`.
 Each programme below serves one or more:
 
 - **memory-graph** — `knowledge` (knowledge-mesh owns the substrate) +
-  `graph-memory-consumers` (dormant; owns consumers of that substrate).
-- **3d-design** — `pcb` + `se` + `multiscale-design-core` (dormant) +
-  `se-machine-design` (dormant) + `pcb-platform` (dormant).
+  `graph-memory-consumers` (dormant; owns consumers of that substrate) +
+  `claims-and-evidence` (identity and evidence checks of claims) +
+  `draft-authoring` (dormant; drafts, export, tex layer).
+- **3d-design** — `pcb` + `se` + `chemistry` + `multiscale-design-core`
+  (dormant) + `se-machine-design` + `pcb-platform` (dormant).
 - **local-compute** — `serving` (owns the MCP ceiling and the fleet) +
   `local-compute` (dormant; owns what the served capacity does).
 - **personal-integration** — HELD; no programme yet.
@@ -26,11 +28,12 @@ Each programme below serves one or more:
 **Active** (has a session): `ewod-pcb` · `hexfold-toolkit` ·
 `monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
 `plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
-`serving-programme` · `session-mcp-shared-server` · `knowledge-mesh`.
+`serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
+`claims-and-evidence` · `chemistry` · `se-machine-design`.
 
 **Dormant** (file exists, ranked, no session — opens at the next session
-restart if Reto names it): `graph-memory-consumers` ·
-`multiscale-design-core` · `se-machine-design` · `local-compute` ·
+restart if Reto names it): `graph-memory-consumers` · `draft-authoring` ·
+`multiscale-design-core` · `local-compute` ·
 `pcb-platform`.
 
 ## pcb — design, route, fabricate, order
@@ -50,7 +53,7 @@ Seams (same files, different work — sequence, never merge):
   half now, ewod owns the HV vocabulary on its Horizon.
 
 Waits:
-- ewod Horizon 8 (`backlog/ewod-synthesis-protocol.md`) consumes
+- ewod Horizon 10 (`backlog/ewod-synthesis-protocol.md`) consumes
   se-nucleic-chain's make_steps (shipped 2026-09-30; the chain thread's
   Horizon 2 points back at it).
 - pcb-platform (dormant) is behind both active pcb threads on the shared
@@ -60,7 +63,7 @@ Waits:
 ## se — 3D modelling, chains, hexfold, machine design
 
 Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
-`se-machine-design.md` (dormant) · `multiscale-design-core.md` (dormant)
+`se-machine-design.md` · `multiscale-design-core.md` (dormant)
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
@@ -71,7 +74,7 @@ Seams:
   (gr458061; gr457995 refuted, there is no join-side bug) renders in the
   viewer as a wrong picture; hexfold's `composite_part_stolen` validate
   check now reports it, so the viewer's interest is unchanged, only the cause.
-- se-machine-design (dormant) owns the design model, including the
+- se-machine-design (the se owner, active since 2026-10-01) owns the design model, including the
   non-geometric property layer (hydrophobic, charge, field, optical);
   se-3d-viewer owns rendering whatever that model carries. Model vs
   render, not a rank duplication.
@@ -89,6 +92,22 @@ Waits:
   (gr456641 + gr457997, the `EnvKey` extent fix).
 - td344088 (se + hexfold paper) waits on the walker dogfood (chain
   Do-next 1) for its figure.
+
+## chemistry — pathways, catalysis, reaction facts
+
+Threads: `chemistry.md` (pillar 3d-design; catalysis lives here, Reto
+2026-10-01). Code: `src/precis_pathway`; `../catpath` is the reference
+engine.
+
+Seams:
+- `backlog/pathway-presentation-shared-module.md` — plugin-split owns it
+  (its Do-next 6); chemistry's UI items (Horizon 9) consume it and start
+  no second copy.
+- roadmap-quest owns the quest loop that dispatches and consumes
+  pathways; chemistry owns the engine's health and output contract.
+- hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
+  `backlog/structure-kind-demotion.md` (structure kind, se as origin of
+  atoms), not chemistry.
 
 ## serving — the MCP and the fleet's model serving
 
@@ -116,7 +135,8 @@ Waits:
 ## knowledge — taxonomy, quests, papers
 
 Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
-`graph-memory-consumers.md` (dormant)
+`claims-and-evidence.md` · `graph-memory-consumers.md` (dormant) ·
+`draft-authoring.md` (dormant)
 
 Seams:
 - `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
@@ -139,6 +159,18 @@ Seams:
   ranks draft-authoring affordances, the focus verb, capability discovery,
   skill quality and source-code ingest. Do not duplicate ranking across
   the two files.
+
+- claims-and-evidence vs knowledge-mesh — knowledge-mesh keeps the taproot
+  umbrella (hub model, seniority, hub-refine) and references it; the
+  defect/follow-on cluster (identity, adjudication, mint/attach doors,
+  evidence quality, publication) is ranked in `claims-and-evidence.md`. A
+  hub-schema change is knowledge-mesh's call.
+- draft-authoring vs knowledge-mesh — knowledge-mesh ranks draft-linearization
+  (the draft as a graph view); `draft-authoring.md` ranks authoring and export
+  of the draft itself.
+- `graph-memory-consumers.md` Do-next 1 is `backlog/memory-native-authoring.md`
+  (Reto 2026-10-01, top priority, depends on `backlog/file-mirror.md`); its
+  search cluster is retrieval as the consumer side of navigation.
 
 Waits:
 - nanobuds Horizon 2 (approve/sign pass) sits in Reto's nanopub queue

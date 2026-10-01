@@ -169,7 +169,7 @@ def test_derive_evidence_orders_within_group_by_year_then_ref_id(store: Any) -> 
     assert [e.paper_ref_id for e in evidence.originators] == [early, late, no_year]
 
 
-# ── patent-evidence-parity.md: patent refs.year fallback to meta ────────
+# ── patent-evidence-parity: patent refs.year fallback to meta ────────
 #
 # Patent ingest didn't populate ``refs.year`` before the fix in
 # ``_patent_ingest.py`` — every already-ingested patent has ``refs.year
@@ -916,7 +916,7 @@ def test_finding_view_evidence_unjudged_corroborator_still_counts(store: Any) ->
     assert "excluded" not in resp.body
 
 
-# ── view='evidence' patent rendering (patent-evidence-parity.md Phase 3) ──
+# ── view='evidence' patent rendering (patent-evidence-parity Phase 3) ──
 
 
 def test_finding_view_evidence_renders_patent_bibliography_line(store: Any) -> None:

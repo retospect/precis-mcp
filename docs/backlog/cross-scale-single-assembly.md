@@ -82,6 +82,13 @@ sync by a human.
 - The cartridge's alignment features register consistently against the
   PCB's own coordinate frame (the drift `gr451662` warns about is checkable,
   not just hoped-away).
+- Cross-scale flagship (`multiscale-design-system-spec.md` Addendum A1): a
+  bistable azobenzene structure switched between states by two
+  wavelengths, driving a folding-chair-like tensegrity mechanism with
+  springs, is designed and checked as one se assembly. Its parts:
+  `photoswitch-states-and-spectral-dof.md` (switch states + channel
+  budget), `structural-solution-space.md` (the tensegrity), and
+  `complementarity-solver.md` (bistability / unilateral analysis).
 
 ## Target + blast radius
 

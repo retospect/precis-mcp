@@ -26,7 +26,7 @@ exports a loadable gerber zip, renders, and is DRC-clean array-internally.
 forcing every pad onto layer 0 (gr341516, closed); and the plaza-via
 escape — the IR carries ONE position per PIN so the via was invisible to
 the router (fixed by island terminals from fixed copper,
-`pcb-pre-place-route-blocks.md`), and once visible every F.Cu cell was
+pre-place-route blocks, shipped), and once visible every F.Cu cell was
 still walled off by neighbours' enclosing-DISC pad claims at a pitch
 narrower than the disc (gripe 346962, true-shape claims; 2026-09-18).
 The dogfood fixture now routes escapes through the fabric; the
@@ -356,7 +356,7 @@ generator-tagged rows), port/net-binding semantics, whether blocks nest,
 and how a block's internal DRC findings attribute to the block vs the
 board.
 
-**That round is now written: `pcb-pre-place-route-blocks.md`** (opened by
+**That round shipped as pre-place-route blocks (`pcb_fixed_copper`, migration 0165)** (opened by
 Reto's 2026-09-15 ruling — the generator emits vias *and* the traces to
 the pads as real fixed copper, unit cell solved once and tiled, spacing
 derived from `_plaza_capacity`). It answers the storage question

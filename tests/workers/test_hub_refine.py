@@ -1108,7 +1108,7 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     assert {"marker": 126, "cited_ref": cited, "from_chunk": citing_chunk} in misses
 
 
-# ── patent discovery leg (docs/backlog/patent-evidence-parity.md,
+# ── patent discovery leg (patent-evidence-parity,
 # Phase 1) ─────────────────────────────────────────────────────────
 #
 # The semantic-ANN discover source now runs a second, patent-scoped leg

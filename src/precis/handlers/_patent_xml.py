@@ -5,7 +5,7 @@ EPO OPS returns variants of the WIPO ST.36 schema (with OPS-specific
 
 * ``biblio`` — bibliographic metadata: title, abstract, applicants,
   inventors, dates, classifications, DOCDB ``family_id``, and priority
-  claims (docs/backlog/patent-evidence-parity.md Phase 2 — the family
+  claims (patent-evidence-parity Phase 2 — the family
   identity + priority-claim set ``_patent_ingest.py`` reads to decide
   simple-family stubbing; see :mod:`precis.handlers._patent_family` for
   the read-side family-representative helper).
@@ -52,7 +52,7 @@ class ParsedPatent:
     ipc_classes: list[str] = field(default_factory=list)
     #: One entry per ``<priority-claim>``, ``{"country", "doc_number",
     #: "date"?}`` — the simple-family stubbing decision
-    #: (``_patent_ingest.py``, docs/backlog/patent-evidence-parity.md
+    #: (``_patent_ingest.py``, patent-evidence-parity
     #: Phase 2) compares this set across family members before stubbing.
     #: ``[]`` when the biblio carries none (design applications, some
     #: national-only filings) — never guessed.

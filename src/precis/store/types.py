@@ -254,7 +254,7 @@ Relation = Literal[
     # in 0105_awaits_evidence_relation.sql.
     "awaits-evidence",
     # Patent-family stubbing — migration 0115
-    # (docs/backlog/patent-evidence-parity.md Phase 2). `same-family-as`
+    # (patent-evidence-parity Phase 2). `same-family-as`
     # binds a patent stub ref (biblio meta only) to the family's current
     # publication-date representative. SYMMETRIC, no inverse — read via
     # `links_for(direction='both')`. Keep in sync with the `relations`

@@ -1,6 +1,6 @@
 ---
 status: idea
-pillar: memory-graph
+pillar: platform
 ---
 
 # April-era paper corpus never migrated to the NAS canonical corpus

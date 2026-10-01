@@ -1,7 +1,7 @@
 ---
 status: idea
 title: precis-se-help is over the 32KB skill hard cap and is allowlisted — split the FRET/optical and discrete-states domains into their own skills
-pillar: memory-graph
+pillar: 3d-design
 ---
 
 # `precis-se-help` needs the same split its companions already got

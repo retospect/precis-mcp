@@ -4,7 +4,6 @@ title: structural solution space — the axial member, prestress + tensegrity ch
 pillar: 3d-design
 prio: high
 model: opus
-blocked-by: cad-sdf-rounding-and-field-export
 ---
 
 # Structural solution space
@@ -132,8 +131,8 @@ generator/checker split.
   budget. **Advisory tier, never a hard DRC** — a compliance number from
   a voxel model is an estimate, and the honesty header says so. The
   result leaves the solver as a density array and enters the cad kernel
-  as a **sampled-field leaf** (`cad-sdf-rounding-and-field-export.md`
-  slice 2, `from_density`) — from there it is ordinary geometry:
+  as a **sampled-field leaf** (shipped: `cad/fieldops.py`,
+  `from_density`) — from there it is ordinary geometry:
   boolean-able, roundable, exportable. Reinterpretation as a strut/node
   graph (tubes/ribs/prism) stays a named later step in the multiscale map.
 
@@ -209,8 +208,7 @@ a jig / a tensioning sequence" as a **cost**, never an infeasibility.
   2026-09-18). Engine debt, unchanged: damped-move/MMA for the
   AM-filtered OC oscillation; volume enforcement on the *printed* field.
   **The se bridge — specced 2026-09-18 with Reto, see §Slice 4 bridge
-  below.** `blocked-by: cad-sdf-rounding-and-field-export` (slice 2, the
-  field leaf the result binds to).
+  below.** The field leaf the result binds to has shipped (`cad/fieldops.py`).
 
 ### Slice 4 bridge — `realize(strategy='simp')`, print intents, print-in-place
 

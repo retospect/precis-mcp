@@ -73,12 +73,19 @@ all three are ranked in `knowledge-mesh.md`.
 the surfaces) · `graph-memory-consumers.md` (dormant — agent-side
 affordances) · `ingest-and-fetch.md` (dormant, created 2026-10-01 on Reto's
 ruling — acquisition and extraction fidelity, what the graph is fed; triage
-before rank). Seams: substrate vs consumers, and pipeline vs the layer that
-consumes it, recorded in `threads/INDEX.md`.
+before rank) · `claims-and-evidence.md` (active, created 2026-10-01 —
+the taproot/nanopub defect and follow-on cluster; Do-next 1 is the
+computed-pathway evidence edge the claim page drops) · `draft-authoring.md`
+(dormant, created 2026-10-01 — ranked by what the month's preprint hits).
+Seams: substrate vs consumers, pipeline vs the layer that consumes it, and
+the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
+Top priority (Reto, 2026-10-01): `backlog/memory-native-authoring.md`, the
+write half of file-mirror — without it no text-memory class can retire.
 
 **Surfaces.** Agent: an agent never leaves the graph for SQL or a temp
-file to do its work. Human: from any node Reto reaches its evidence, its
-measures and the quest that cites it without SQL.
+file to do its work. Human: a curated view — from a node Reto reaches its
+evidence, its measures and the quest that cites it without SQL; chosen and
+bounded, not an exhaustive walk (Reto, 2026-10-01).
 
 ## Pillar 2 — 3D machine design (A)
 
@@ -116,10 +123,21 @@ classes and pick-and-join as a membership query are
 `backlog/class-lattice-similarity-spaces-and-laws.md` (owned by
 knowledge-mesh, consumed here) and `backlog/se-intent-to-realize-loop.md`.
 
+**Chemistry is part of design** (Reto, 2026-10-01). Molecules and
+reactions are children of the same design as the parts they move: the
+flagship's azobenzene is a reaction as much as a hinge. Catalysis is
+chemistry's main line today — the catpath engine (`src/precis_pathway`,
+reference engine in the catpath repo) and the pathway explorer — consumed
+by the catalysis quests.
+
 **Threads.** Active: `hexfold-toolkit.md` · `se-3d-viewer.md` ·
-`se-nucleic-chain.md` · `ewod-pcb.md` · `pcb-easyeda-round-trip.md` ·
-`nanobuds-paper.md`. Dormant: `multiscale-design-core.md` ·
-`se-machine-design.md` · `pcb-platform.md`.
+`se-nucleic-chain.md` · `ewod-pcb.md` (also owns the general PCB items —
+"pcb stuff is on the ewod worker") · `pcb-easyeda-round-trip.md` ·
+`nanobuds-paper.md` · `se-machine-design.md` (the se owner, activated
+2026-10-01 — it carries the property layer and the intent loop the
+north-star spec needs) · `chemistry.md` (created and activated
+2026-10-01, catalysis first). Dormant: `multiscale-design-core.md` ·
+`pcb-platform.md`.
 
 **Surfaces.** Agent: a design reads out as a replayable op list and an
 intent statement is authorable. Human: click any block and read its pose,
@@ -213,16 +231,19 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (12, Reto 2026-09-30 — "the ones we have are good"):
+Active (15; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+plus three on 2026-10-01):
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
-· `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh`.
+· `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
+`claims-and-evidence` · `se-machine-design` · `chemistry` (added
+2026-10-01, Reto's rulings).
 
 Dormant (6, open at the next restart if named): `graph-memory-consumers`
-· `multiscale-design-core` · `se-machine-design` · `local-compute` ·
-`pcb-platform` (the five created at the review) · `ingest-and-fetch`
-(2026-10-01, Reto's ruling, triage first).
+· `multiscale-design-core` · `local-compute` · `pcb-platform` (created at
+the 09-30 review) · `ingest-and-fetch` (2026-10-01, Reto's ruling, triage
+first) · `draft-authoring` (2026-10-01).
 
 ## Retirement
 

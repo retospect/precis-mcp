@@ -12,7 +12,7 @@ have done, not an approximation.
 Paper-only for now: mirrors ``_refine_one_hub``'s pre-patent-leg semantic
 search (``kind="paper"``), not the patent-evidence-parity Phase 1 patent
 leg — a divergence from the live pass, tracked for a follow-up rather than
-grown here (docs/backlog/patent-evidence-parity.md is Phase 1 scoped to
+grown here (patent-evidence-parity is Phase 1 scoped to
 ``workers/hub_refine.py`` itself).
 
 This is a **validation harness the builder runs deliberately** (like

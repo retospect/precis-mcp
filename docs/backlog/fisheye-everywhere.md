@@ -118,3 +118,11 @@ pillar 1, so it carries three more requirements:
 3. Human acceptance, in addition to AC 1–6: from a finding hub Reto
    reaches its evidence papers, its `measures` rows and the quest that
    cites it in three clicks and no SQL.
+4. **The focus page is a curated human view, not an exhaustive walk**
+   (Reto, 2026-10-01: an any-node-reaches-everything criterion "seems
+   harsh"). From any node the page shows a chosen, ranked and bounded
+   neighbourhood — its evidence, its measures, the quest that cites it —
+   with each ring capped and ordered by the gist registry, and the rest
+   behind `more()`. AC: for a node of each kind that has them, the three
+   groups appear above the fold without SQL; a hub with >200 edges
+   renders the same bounded page, never the full edge list.

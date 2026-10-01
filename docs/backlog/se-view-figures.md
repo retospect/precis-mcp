@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: draft
 title: viz3d engine + view figures — cached stick/envelope renders of design objects in drafts
 pillar: 3d-design
 prio: high
@@ -9,6 +9,9 @@ model: opus
 # viz3d engine + view figures
 
 Design session 2026-09-14 (Reto + agent, jolly-cooking-haven worktree).
+**2026-10-01 — demoted in-progress → draft:** §1 (the `viz3d` engine)
+shipped 2026-09-15; §2–4 are untouched.
+
 Companion: `se-nanobud-graph.md` (supplies the structures the first
 figures render). First consumer: redraw dr173020's structural figures.
 
