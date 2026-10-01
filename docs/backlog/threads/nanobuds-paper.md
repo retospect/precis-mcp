@@ -10,7 +10,9 @@ on 2026-09-30; both
 measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited,
 the 13 converted chunks are read back and repaired, and the Gap Analysis
 section now opens with the thesis and carries both analogues (2026-09-30).
-Restructure once the venue is picked.
+Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
+10,000+ words, so the restructure reorders rather than cuts; scope is covalent
+and non-covalent buds. RSC reviews go through a proposal form first.
 **Last reviewed:** 2026-10-01 (pillar review 2026-09-30 same day absorbed the nanobud
 library items and the hexfold seam-figure want; pruned gr450329/gr450339,
 both STATUS:done)
@@ -18,15 +20,27 @@ both STATUS:done)
 
 ## Do next
 
-1. **td450081** — target venue (Reto). Gates the restructure: Introduction is
-   29% of the paper and the thesis sits near the end.
-2. **td450082** — pa1181/42560 duplicate reference merge (Reto); the
-   bibliography exports one Nature 1999 paper twice until done, and pa1181 is
-   the draft's one cited paper with no DOI (hygiene view, 2026-09-30).
-3. **td450083** — fi191281 verifier re-judge (Reto); the stale caveat argues
-   against wording that no longer exists.
-4. **td450087** — commit the poster README rewrite in its own gitignored
-   repo (Reto); until then the README's owed-list is wrong on disk.
+1. **Nanoscale review proposal** — draft at
+   `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
+   (outside this repo); Reto fills authors, the "importance now" lines and
+   the key references, then sends it to the editorial office.
+2. **restructure** — to the proposal's outline: thesis and scope into the
+   Introduction, topology compressed to its tail, properties each stating
+   their evidence level, gap analysis as its own section before the
+   Outlook; abstract dc2445850 rewritten to the thesis (it already says
+   "covalently or non-covalently", so dc2445883 is the chunk to align);
+   fold in pa4365.
+3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
+   2026-10-01; the auto-mode classifier blocks the session from the prod
+   DSN, so Reto runs it: script staged at
+   `/tmp/nanobuds-merge-1181-claude.py` on melchior (rehearsal rolls back,
+   `--apply` commits; runs `merge_duplicate`, adds a correct cite_key
+   alias beside humphreys99a, sets journal Nature).
+4. **td450083** — fi191281 re-judge, approved 2026-10-01, same blocker:
+   `precis taproot verify-edges --hub fi191281` once with
+   `--unverified-stamped` (link 992065, the stale 330-cycle caveat) and once
+   without (link 2483302, never verified); reword the claim only if the
+   verdict is not corroborating.
 5. **backlog/se-nanobud-graph.md** — `status: in-progress/high`; graph-first
    sp2 construction (geo rung, spectral embed, nanobud generator,
    nomenclature) — the library this thread and nanobud-nomenclature-paper
@@ -37,24 +51,22 @@ both STATUS:done)
 
 ## Horizon
 
-1. **restructure** — waits on td450081 (venue); delivers the
-   Introduction cut from 29%, the thesis moved to the front, the abstract
-   scope line drawn.
-2. **nanopub approve/sign pass over dr173020's hubs** — waits on 1 (rewording
-   after signing re-opens hubs); the 173020 batch in td345830–td345836.
-3. **export + submission** — waits on 2, td450082 and gr454753: the
+1. **nanopub approve/sign pass over dr173020's hubs** — waits on the
+   restructure (rewording after signing re-opens hubs); the 173020 batch in
+   td345830–td345836.
+2. **export + submission** — waits on 1, td450082 and gr454753: the
    draft_export job refuses on the ten image-less reproduced figures ("no
    image yet", jo459047, 2026-10-01) and accepts no placeholder waiver, so
    either every figure gets an image + clearance or the job grows the waiver
    the skill already documents. docx/pdf via the local prod export path
-   against the venue's template. 43020 stays frozen.
-4. **backlog/nanobud-campaign.md**
-5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
+   against the RSC template. 43020 stays frozen.
+3. **backlog/nanobud-campaign.md**
+4. **backlog/nanobud-nomenclature-paper.md** — blocked-by
    se-nanobud-graph (Do-next 5).
-6. **backlog/nanobud-magnetomechanical-memory.md**
-7. **backlog/chern-domain-memory-in-the-sheet-generator.md**
-8. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
-9. **backlog/bond-critical-points-in-structure-model.md**
+5. **backlog/nanobud-magnetomechanical-memory.md**
+6. **backlog/chern-domain-memory-in-the-sheet-generator.md**
+7. **backlog/berry-phase-and-topological-defects-in-precis-models.md**
+8. **backlog/bond-critical-points-in-structure-model.md**
 
 ## Parked
 
@@ -62,18 +74,18 @@ both STATUS:done)
   smooth transition + tilt-boundary contrast is not producible today;
   parked on hexfold's smooth-collar horizon (hexfold-toolkit thread,
   `spec.md` §28.5–28.6). Peer session nanobuds, 2026-09-30.
-- **restructure cite candidates** — the gap-finder (view='backfill' on
-  dc2445953, 2026-10-01) surfaced pa4365 (first-principles nanobud states
-  0.3–0.8 eV above the Fermi level, matching the STS features dc3015724
-  reports) as uncited; fold it into the electronic-structure argument during
-  the restructure, not before. The rest of the candidate list was weak.
-- **abstract scope contradiction (dc2445850 vs dc2445883, covalent vs
-  non-covalent buds)** — authors' scope decision; unparks with td450081,
-  where the scope line gets drawn.
 - **hexfold/se cross-cite of the seam-topology section** — unparks when the
   hexfold catalogue's measured rows are trusted (hexfold-toolkit item 6).
 
 ## No action needed
+
+- **td450087** — done 2026-10-01: the README rewrite was already committed in
+  the poster repo; Reto moved the poster to the posters folder
+  (`~/work/projects/poster/poster-cmd2026-nanobuds`, a clone with history;
+  the copy under `pres/` stays until Reto removes it).
+- **pa4365** — cite candidate from the gap-finder (first-principles nanobud
+  states 0.3–0.8 eV above the Fermi level, matching dc3015724's STS
+  features); folded into the restructure (Do next 2).
 
 - **td458280** — done 2026-09-30 (Reto: heading stays "Gap Analysis", the
   disclination clause stays, go): dc2445954 rewritten to lead with the thesis,
