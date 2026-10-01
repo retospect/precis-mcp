@@ -7,8 +7,9 @@ the T-handle bearing), and the se + hexfold paper (td344088) reports it.
 Today the join op and the environment catalogue are **verified working
 against prod** — the 2026-09-30 dogfood's two alarming findings were
 artefacts of a stale MCP process and are refuted, and the damage that
-process did is now detected (`composite_part_stolen`) — so the order below
-is: make the execution environment trustworthy, then diagnosable, then
+process did is now detected (`composite_part_stolen`). The execution
+environment is now trustworthy too (every session on the shared HTTP
+server since 09-29), so the order below is: make joins diagnosable, then
 make measured rows trustworthy.
 **Last reviewed:** 2026-10-01 (09-30 re-ranks: gr457995/gr457996 refuted;
 integrity check shipped and gr458061 moved to the
@@ -18,35 +19,18 @@ shipped gr458713, confirmed gr454650 harder, closed gr454563. 10-01
 round: gr456213 **closed** — it was fixed on 09-29 and I had ranked it 2
 off a stale auto-diagnosis, see "No action needed"; gr459058 and gr459057
 filed from that round, then both fixed in the 01:18Z round, leaving only
-gr459058's cascade-vs-refuse ruling at 4. 02:16Z round: gr454650
+gr459058’s cascade-vs-refuse ruling at 3. 02:16Z round: gr454650
 **closed and my escalation of it retracted** — already fixed, with
 regression tests I never looked for; the one real defect under it was a
-ring-less net crashing the stick pass, also fixed — note at the bottom)
+ring-less net crashing the stick pass, also fixed. 11:00Z: gr456203 and
+gr456212 verified and closed (the latter needed its element half
+written); gr458061 removed as a met precondition — the transport move it
+waited on happened 09-29 — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
 
-1. **gr458061** — HANDED OFF 2026-09-30 to the `session-mcp-shared-server`
-   thread; the fix is in `src/precis/`, not this surface. **Re-derived
-   2026-09-30 after a drift report, and the gate is now narrower than this
-   item used to claim.** Half one, **gr457361** (truthful status about
-   which sha a session is served), is `STATUS:done` and live on the shared
-   HTTP server. Half two,
-   `backlog/mcp-staleness-title-roundtrip-guards.md` item 2, is no longer
-   a fix at all: per **td458385** it closes *by removal* — sessions move
-   to the shared HTTP endpoint and the per-session stdio containers die
-   with their sessions, so the population it would have hardened stops
-   existing. The shared server already carries `--restart unless-stopped`
-   plus `PRECIS_CHECKOUT_WATCHDOG`.
-   **So the precondition is per-session-transport, not fleet-wide:** a
-   session already on `http://127.0.0.1:8765/mcp` has a trustworthy
-   execution environment today; a session still on stdio does not. This
-   tree is still on stdio, so its dogfood results remain provisional, and
-   the concrete unblock for *this thread* is moving this session's MCP
-   config to the HTTP endpoint — not waiting for td458385's fleet-wide
-   migration, which is `STATUS:open` and `waiting-for:reto` at prio 4.
-   Ranked 1 as a precondition, not as work.
-2. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+1. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -56,11 +40,11 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-3. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
+2. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
    (SPEC §25.3) then the join dry-run, after slice 1 at rank 2. Slice 3
    goes last by the file's own decision: a dry-run needs a reading
    surface to prove it wrote nothing with.
-4. **gr459058, remaining half** — the reporting fix shipped 2026-10-01
+3. **gr459058, remaining half** — the reporting fix shipped 2026-10-01
    (see "No action needed"), so a retire now announces the structures it
    leaves live. What is still open is the product call it exposed:
    should a design retire **cascade** to those structures, or **refuse**
@@ -70,21 +54,21 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
    it is linked to the gripe, and that row is also re-scoped by this from
    a one-time tidy of two orphans to the residue of an ordinary-path
    leak.
-5. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+4. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+5. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-7. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+6. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 6’s re-measurements and
+   stick-rung number can be believed — including 5’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
 
 ## Horizon
@@ -110,12 +94,12 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 6, since a
+   catalogue's third row type exists for. Waits on Do-next 5, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 7.
+   clearance stub is gated on Do-next 6.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -146,11 +130,23 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
 - **gr457995**, **gr457996** — both REFUTED 2026-09-30. The
   `join.part_addressed` guard and the catalogue seed are both correct; a
   16-hour-stale server process produced both symptoms. Kept as the worked
-  example behind Do-next 1.
+  example behind gr458061 (below).
+- **gr458061** — this thread's precondition, **met; removed from Do-next
+  2026-10-01.** It needed both a truthful served-sha surface (gr457361,
+  done) and an end to per-session stdio servers that could serve stale
+  modules. The second was td458385, and it turns out to have been done on
+  **2026-09-29 around 17:00** — every session's config has pointed at the
+  shared `http://127.0.0.1:8765/mcp` since then, and on 10-01 the shared
+  server became the only MCP container. So this file's claim that "this
+  tree is still on stdio, its dogfood provisional" was wrong when written:
+  I inferred the transport from the stale-process episode instead of
+  reading the config. Dogfood results from 09-30 onward ran against the
+  shared server and are not provisional on transport grounds. The
+  question about it I had queued for Reto was moot.
 - **gr456201** — ruled: regeneration is the remedy, no new write path.
   Closed on prod 2026-09-30 with that ruling as its resolution; it had
-  been left open under this heading, which is the drift Do-next 10 exists
-  to stop repeating.
+  been left open under this heading — the drift that verifying each label
+  against the code, not the prose, is meant to stop.
 - **gr456202** — not a bug; `rim_word` takes `abs(turn)` by design.
   Closed on prod 2026-09-30, same as above.
 - **backlog/se-composite-integrity.md** — SHIPPED 2026-09-30 as
@@ -163,9 +159,11 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
   Re-verified against the deployed code after the 2026-09-30 gate: the
   SQL oracle still returns that one row, and `view='validate'` on
   `hexfold-catalogue-dogfood` reports `1 error(s)` — the
-  `composite_part_stolen` finding, naming both composites. **The cause is
-  Do-next 2** (gr456213); shipping the detector without it means new
-  corruption is reported rather than prevented.
+  `composite_part_stolen` finding, naming both composites. The write path
+  that once caused it is already closed — `join.part_addressed` refuses a
+  part addressed directly (gr456213, below) — so ref 457890 is historical
+  damage from the stale-process window and the detector is a backstop,
+  not the only defence.
 - **gr456203** — CLOSED 2026-10-01 after verifying, not on its label:
   `_leak_finding` names the breached measure(s) and prints each value
   against its own threshold, and
@@ -216,7 +214,7 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
   the structures it left live and the `delete(kind='structure', …)` call
   for each. One test pins the leak itself, so a later cascade fix has to
   update the message in the same change rather than quietly making it a
-  lie. The cascade-vs-refuse ruling is Do-next 4.
+  lie. The cascade-vs-refuse ruling is Do-next 3.
 - **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
   this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
   may not belong to two composites: `prepare_join` refuses via
@@ -257,7 +255,7 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
   a sheet plus a blob; its four-line spec fuses tube to cap and never
   joins the sheet to anything, so two loose components in one se block is
   a faithful render of what was asked for. What it *did* surface is
-  gr458713 (Do-next 5).
+  gr458713, since shipped as `net.components`.
 
 <!-- Re-rank note, per the README: the first version of this list ranked a
 join-side corruption bug at 1 and a test fixture at 5. Both rested on
