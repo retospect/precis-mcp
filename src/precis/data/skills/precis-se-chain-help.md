@@ -317,7 +317,10 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
   realized atom belongs to, a citable `<se:…>` token per level; see
   [[precis-se-chain-atoms-help]].
 
-## DRC — the nineteen `chain_*` findings
+## DRC — geometry and register findings
+
+Nineteen `chain_*` findings in all: these seven, the route/pairing/sequence
+table below, and the three `chain_unpaired*` codes under `unpair` above.
 
 | rule | tier | fires when | fix |
 |---|---|---|---|
@@ -328,6 +331,11 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 | `chain_loop_short` | **error** | a loop's `(n+1)·contour_per_nt + tol` can't bridge its two backbone exits — **this is the crossover register check at `n=0`** (`tol` = 0.098 nm between two B-DNA helices, the groove-asymmetry shortfall no routing can remove; 0 within one helix) | more nt, or a register-correct offset — the finding names them |
 | `chain_loop_slack` | info | the opposite — a loop with far more contour than it needs | fewer nt would pin the geometry |
 | `chain_floppy` | info | a single-stranded span (or loop) past ssDNA's persistence length — the coded 2 nm, or the design's own `material` `persistence_length` row when it has one | one row per span either way: the handler-side pass **replaces** the coded rows rather than adding to them, and names the row's conditions |
+
+## DRC — route, pairing and sequence findings
+
+| rule | tier | fires when | fix |
+|---|---|---|---|
 | `chain_dangling_domain` | **error** | a domain names a gone/wrong-role block, an offset past the helix's `n_units`, or a route whose `ord`s have a hole/repeat | `declare_strand`/`declare_helix` it, extend the helix, or `remove_domain` the row |
 | `chain_occupancy` | **error** | two parallel occupants, or 3+, at one offset | reverse a domain's `forward`, or move it |
 | `chain_pairing_mismatch` | **error** | an offset with no declared geometry is co-occupied by two letters that aren't Watson–Crick complements (A·G, G·T, …; `N`/unsequenced never flags) | change one sequence, or declare the geometry (a wobble is a `W-W-cis`) |
@@ -339,7 +347,7 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 | `chain_fold_skipped` | info | a sequenced strand is longer than 200 nt, so no fold ran for it (`RNA.fold` is O(n³)) — its length is named | fold it deliberately with `fold_layout`, which takes scaffold length |
 | `chain_fold_unavailable` | info | ViennaRNA isn't installed, so no fold check ran at all — **one row for the design**, not one per strand | install the `[chain]` extra; `chain_offtarget` needs no library and still runs |
 
-### Twist account
+## Twist account — insertions and deletions
 
 Frames are drawn at the **lattice** twist (square 10.67 bp/turn, the
 caDNAno convention); real B-DNA winds 10.5. Residual per lattice helix =
