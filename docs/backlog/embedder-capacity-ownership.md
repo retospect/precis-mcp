@@ -180,3 +180,37 @@ lets an interactive embed overtake a background batch.
 Urgency has genuinely dropped rather than moved — passes now complete, so
 the window is narrow. Reclassify accordingly rather than treating the
 September evidence as live.
+
+## Admission is answered: shared passes, queries first (gr459844, 2026-10-01)
+
+The service no longer runs one request per encode. Admitted requests
+queue their texts, and each forward pass takes query-sized requests (at
+most 4 texts) first, then batch texts shortest-first, up to a padded-token
+budget: number of texts × the longest one's estimated tokens, 16k per pass,
+4k when the pass carries a query. Query-sized requests also get their own
+`max_inflight` admission slots. Each text still goes through the same
+`embed()` call with the same model and truncation. On the real model the
+vectors match the old code's to 6 decimals (minimum cosine 1.000000, 406
+texts; 30/30 top-5 neighbour lists identical).
+
+Measured on a spare-port service, old and new code alternated, four
+threads keeping 64-text batches of long doc paragraphs queued, plus two
+one-text query loops with a 15 s client timeout. The live embedder shared
+the GPU, so the absolute numbers are noisy:
+
+| | Batch throughput | Query embeds |
+|---|---|---|
+| old code (two runs) | 8.4 and 2.0 texts/s | 27 of 31 timed out |
+| new code (final, two runs) | 13.6 and 12.7 texts/s | 0 of 125 failed, p50 ~2 s, p95 ~5 s |
+
+The throughput gain comes from length sorting. A first cut summed tokens
+instead of padded tokens, so one 4k-token text padded a pass of 30 short
+ones and a one-text query riding that pass took 96 s. Before 09-30 the
+same padding hit every request, and the md warmup's single
+10k-to-18.8k-text requests held the encode lock for up to 1,166 s each
+(embedder log, 2026-08-23 to 09-30).
+
+Every request now logs one line with its text count, total and longest
+characters, seconds and passes, so a slow encode can be traced to what
+was in it. Left in this item: the owner, the fleet capacity number, and
+the shared-cache decision (Reto's call).

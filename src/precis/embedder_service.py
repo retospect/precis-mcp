@@ -88,6 +88,56 @@ log = logging.getLogger(__name__)
 # ``retry_after_s`` JSON body field (gripe #450123 option d).
 BUSY_RETRY_AFTER_S = 2
 
+#: A request with at most this many texts is query-sized: a search's one
+#: query embed, a card or two. Query-sized requests have their own
+#: admission slots and go first in every forward pass (gr459844).
+SMALL_REQUEST_MAX_TEXTS = 4
+
+#: Padded-token ceiling for one forward pass: texts in the pass × the
+#: longest one's estimated tokens, because the model pads every text in a
+#: pass to the longest. Bounds how long a query-sized request can wait
+#: behind the pass already running. Each pass takes texts from as many
+#: requests as fit, query-sized ones first. 16k is ~100 corpus-median
+#: chunks (~150 tokens each) or four texts at the 16,000-char cap. A first
+#: cut that summed tokens instead let one 4k-token text pad 30 short ones,
+#: and a one-text query sharing that pass took 96 s (2026-10-01 rig).
+PASS_TOKEN_BUDGET = 16_384
+
+
+def _est_tokens(text: str) -> int:
+    # ~4 chars per token for bge-m3's tokenizer on English prose; the
+    # embedder truncates every text at 16,000 chars, so count no further.
+    return min(len(text), 16_000) // 4 + 2
+
+
+class _Job:
+    """One ``/embed`` request's texts while they wait for, and ride in,
+    shared forward passes. Guarded by ``EmbedderService._sched``."""
+
+    __slots__ = (
+        "done",
+        "error",
+        "next",
+        "order",
+        "passes",
+        "pending",
+        "texts",
+        "vectors",
+    )
+
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = texts
+        self.vectors: list[list[float] | None] = [None] * len(texts)
+        # Shortest first, so similar lengths share a pass and little of it
+        # is padding. Vectors go back by index, so order is invisible to
+        # the caller.
+        self.order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+        self.next = 0  # position in ``order`` of the first text not in a pass
+        self.pending = len(texts)  # texts without a vector or an error yet
+        self.passes = 0
+        self.error: BaseException | None = None
+        self.done = not texts
+
 
 class _Metrics:
     """Tiny thread-safe counter bag exposed at ``/metrics``."""
@@ -106,6 +156,9 @@ class _Metrics:
         self.queued = 0
         self.queue_wait_s_total = 0.0
         self.queue_wait_s_max = 0.0
+        # Forward passes run (gr459844): with cross-request batching one
+        # pass can carry several requests and one request several passes.
+        self.passes = 0
 
     def render(self) -> str:
         with self._lock:
@@ -119,6 +172,7 @@ class _Metrics:
                 f"precis_embedder_queued_total {self.queued}\n"
                 f"precis_embedder_queue_wait_seconds_total {self.queue_wait_s_total:.3f}\n"
                 f"precis_embedder_queue_wait_seconds_max {self.queue_wait_s_max:.3f}\n"
+                f"precis_embedder_passes_total {self.passes}\n"
             )
 
 
@@ -143,6 +197,7 @@ class EmbedderService:
         probe_fail_threshold: int = 2,
         idle_s: float = 1800.0,
         queue_wait_s: float = 10.0,
+        pass_token_budget: int = PASS_TOKEN_BUDGET,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._embedder = embedder
@@ -206,6 +261,25 @@ class EmbedderService:
         # gripe 51394 review: at most ONE outstanding probe-encode
         # thread at a time — see ``_run_probe_once``).
         self._probe_encode_thread: threading.Thread | None = None
+        # Cross-request batching (gr459844). Every admitted request queues
+        # its texts here; whichever waiting request thread finds no pass
+        # running builds the next one — query-sized requests' texts first,
+        # then large requests' in arrival order, up to
+        # ``pass_token_budget`` — and encodes it under ``_encode_lock``.
+        # Before this, each request held ``_encode_lock`` for its whole
+        # batch, so a one-text search embed queued behind every waiting
+        # batch and missed its 15s client deadline twice (~30s, then a
+        # lexical fallback). Now it waits for at most the pass in flight.
+        # Each text still goes through the same ``self._embedder.embed``
+        # with the same model and truncation; only the grouping changes.
+        self._pass_token_budget = pass_token_budget
+        self._sched = threading.Condition(threading.Lock())
+        self._small_jobs: list[_Job] = []
+        self._large_jobs: list[_Job] = []
+        self._encoding = False
+        # Query-sized requests get their own admission slots, so four
+        # admitted batch requests can't park a search at admission either.
+        self._small_sem = threading.BoundedSemaphore(max_inflight)
         if warm:
             threading.Thread(
                 target=self._warm, name="embedder-warm", daemon=True
@@ -551,18 +625,28 @@ class EmbedderService:
         ``queue_wait_s`` raises. The wait, when it happens, is logged and
         counted (``metrics.queued`` / ``queue_wait_s_total`` /
         ``queue_wait_s_max``) so it's visible on ``/metrics`` rather than
-        only inferable from the 429 count.
+        only inferable from the 429 count. Query-sized requests (at most
+        :data:`SMALL_REQUEST_MAX_TEXTS` texts) are admitted on their own
+        ``max_inflight`` slots.
+
+        Once admitted, the texts ride shared forward passes
+        (:meth:`_run_job`): query-sized requests first, at most
+        ``pass_token_budget`` estimated tokens per pass. One log line per
+        request records its size and time, so slow encodes can be traced
+        to what was in them.
         """
         self._last_activity = self._clock()
         self._ensure_loaded_for_request()
         t0 = self._clock()
+        small = len(texts) <= SMALL_REQUEST_MAX_TEXTS
+        sem = self._small_sem if small else self._sem
         with self._waiters_lock:
             self._waiters += 1
         try:
             acquired = (
-                self._sem.acquire(blocking=False)
+                sem.acquire(blocking=False)
                 if self._queue_wait_s <= 0
-                else self._sem.acquire(timeout=self._queue_wait_s)
+                else sem.acquire(timeout=self._queue_wait_s)
             )
         finally:
             with self._waiters_lock:
@@ -589,16 +673,153 @@ class EmbedderService:
         with self.metrics._lock:
             self.metrics.inflight += 1
         try:
-            with self._encode_lock:
-                vectors = self._embedder.embed(texts)
+            started = self._clock()
+            job = _Job(texts)
+            self._run_job(job, small=small)
+            if job.error is not None:
+                raise job.error
             with self.metrics._lock:
                 self.metrics.embeds += 1
                 self.metrics.texts += len(texts)
+            log.info(
+                "embedder: %d text(s), %d chars (longest %d) in %.2fs over %d pass(es)",
+                len(texts),
+                sum(len(t) for t in texts),
+                max((len(t) for t in texts), default=0),
+                self._clock() - started,
+                job.passes,
+            )
+            vectors = [v for v in job.vectors if v is not None]
+            if len(vectors) != len(texts):  # pragma: no cover - invariant
+                raise RuntimeError("embedder scheduler lost a vector")
             return vectors
         finally:
             with self.metrics._lock:
                 self.metrics.inflight -= 1
-            self._sem.release()
+            sem.release()
+
+    def _run_job(self, job: _Job, *, small: bool) -> None:
+        """Queue ``job`` and block until every text has a vector or the job
+        has an error. The calling thread encodes passes itself whenever no
+        pass is running, so there is no scheduler thread to die or wedge."""
+        with self._sched:
+            if job.done:
+                return
+            (self._small_jobs if small else self._large_jobs).append(job)
+            while not job.done:
+                if self._encoding:
+                    self._sched.wait()
+                    continue
+                batch = self._next_pass()
+                if not batch:
+                    # This job's last texts are in a pass that has already
+                    # finished assigning — cannot happen while it is not
+                    # done, but never spin if it somehow does.
+                    self._sched.wait(timeout=1.0)
+                    continue
+                self._encoding = True
+                self._sched.release()
+                try:
+                    outcome = self._encode_pass(batch)
+                finally:
+                    self._sched.acquire()
+                    self._encoding = False
+                self._settle(batch, outcome)
+                self._sched.notify_all()
+
+    def _next_pass(self) -> list[tuple[_Job, int]]:
+        """Take the next pass's texts; caller holds ``_sched``.
+
+        Query-sized jobs first, then large jobs in arrival order, each
+        job's texts shortest first, until the padded size (texts × longest)
+        would pass the budget. A pass that carries a query-sized job gets a
+        quarter of the budget, so the query also does not wait for a full
+        pass of batch texts riding along with it. Always takes at least one
+        text, so a text larger than the budget still runs (alone).
+        """
+        batch: list[tuple[_Job, int]] = []
+        longest = 0
+        budget = self._pass_token_budget
+        if self._small_jobs:
+            budget = max(budget // 4, 1)
+        for queue in (self._small_jobs, self._large_jobs):
+            while queue:
+                job = queue[0]
+                while job.next < len(job.texts):
+                    i = job.order[job.next]
+                    cost = max(longest, _est_tokens(job.texts[i]))
+                    if batch and (len(batch) + 1) * cost > budget:
+                        return batch
+                    batch.append((job, i))
+                    longest = cost
+                    job.next += 1
+                queue.pop(0)
+        return batch
+
+    def _encode_pass(
+        self, batch: list[tuple[_Job, int]]
+    ) -> list[list[float]] | dict[int, BaseException | list[list[float]]]:
+        """Encode one pass. On failure, re-run each job's share alone so a
+        text that breaks the model fails only its own request — what the
+        one-request-per-encode design gave for free."""
+        texts = [job.texts[i] for job, i in batch]
+        try:
+            with self._encode_lock:
+                return self._embedder.embed(texts)
+        except Exception as exc:
+            jobs = {id(job): job for job, _ in batch}
+            if len(jobs) == 1:
+                return {id(batch[0][0]): exc}
+            log.warning(
+                "embedder: a shared pass of %d texts from %d requests failed "
+                "(%s); re-running each request's share alone",
+                len(texts),
+                len(jobs),
+                exc,
+            )
+            per_job: dict[int, BaseException | list[list[float]]] = {}
+            for key in jobs:
+                share = [job.texts[i] for job, i in batch if id(job) == key]
+                try:
+                    with self._encode_lock:
+                        per_job[key] = self._embedder.embed(share)
+                except Exception as job_exc:
+                    per_job[key] = job_exc
+            return per_job
+
+    def _settle(
+        self,
+        batch: list[tuple[_Job, int]],
+        outcome: list[list[float]] | dict[int, BaseException | list[list[float]]],
+    ) -> None:
+        """Hand a pass's vectors (or errors) back to their jobs; caller
+        holds ``_sched``."""
+        with self.metrics._lock:
+            self.metrics.passes += 1
+        # Position of each text within its own job's share of the pass —
+        # how a per-job re-run's result list is indexed.
+        share_pos: dict[int, int] = {}
+        for pos, (job, i) in enumerate(batch):
+            if isinstance(outcome, dict):
+                result = outcome[id(job)]
+                if isinstance(result, BaseException):
+                    job.error = job.error or result
+                    continue
+                k = share_pos.get(id(job), 0)
+                share_pos[id(job)] = k + 1
+                job.vectors[i] = result[k]
+            else:
+                job.vectors[i] = outcome[pos]
+            job.pending -= 1
+        for job in {id(job): job for job, _ in batch}.values():
+            job.passes += 1
+            if job.error is not None:
+                # Its unscheduled texts are not worth a pass any more.
+                job.next = len(job.texts)
+                for queue in (self._small_jobs, self._large_jobs):
+                    if job in queue:
+                        queue.remove(job)
+            job.done = job.pending == 0 or job.error is not None
 
 
 class Busy(Exception):

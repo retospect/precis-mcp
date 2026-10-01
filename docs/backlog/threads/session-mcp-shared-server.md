@@ -71,10 +71,12 @@ server-side-session-context Horizon pointer)
    embedder does one short string in 0.17 s — **the hardware was never
    the constraint.**
 
-   What is left is server-side admission: a warm batch and a one-string
-   query share four undifferentiated slots, so a pass still crowds out
-   interactive embeds for its window. Narrow now that passes complete.
-   The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
+   Server-side admission is answered (gr459844): the service shares
+   forward passes across requests, query-sized requests first, under a
+   padded-token budget. On a rig with batches queued, query embeds went
+   from 27 of 31 timing out to 0 of 125, p50 ~2 s, with the same vectors.
+   What is left in the item is the owner, the fleet capacity number and
+   Reto's shared-cache call. The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
    `np.vstack` as O(n^2); now a capacity-doubling buffer behind `_rows()`.
 
 3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
