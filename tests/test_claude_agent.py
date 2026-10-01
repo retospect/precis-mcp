@@ -1470,6 +1470,34 @@ def test_env_overlay_still_applies_over_env_base(monkeypatch, stub_bin: Path) ->
     assert env["HOME"] == "/overlaid"
 
 
+def test_first_turn_waits_for_mcp_servers(monkeypatch, stub_bin: Path) -> None:
+    """gr245505: the spawned CLI gets ``CLAUDE_CODE_MCP_STARTUP_WAIT_MS`` so a
+    single-turn pass doesn't finish while ``precis`` is still ``pending``; an
+    explicit value from the caller's env wins."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    captured: dict[str, Any] = {}
+
+    def _fake(argv, **k):
+        captured["env"] = k.get("env")
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    monkeypatch.delenv("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", raising=False)
+    ca.call_claude_agent("do it", model="opus")
+    assert captured["env"]["CLAUDE_CODE_MCP_STARTUP_WAIT_MS"] == ca.MCP_STARTUP_WAIT_MS
+
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"ANTHROPIC_API_KEY": "sk-x", "CLAUDE_CODE_MCP_STARTUP_WAIT_MS": "5"},
+    )
+    assert captured["env"]["CLAUDE_CODE_MCP_STARTUP_WAIT_MS"] == "5"
+
+
 def test_dsn_not_reinjected_when_env_base_given(monkeypatch, _container_selected):
     """The container branch's adopted-DSN fallback is only consulted when the
     caller did NOT ask for env isolation — an ``env_base`` caller (fix_gripe)

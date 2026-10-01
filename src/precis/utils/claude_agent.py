@@ -763,6 +763,12 @@ def _check_deny_list_profile_safety(effective_deny: list[str]) -> None:
     )
 
 
+#: Milliseconds a ``claude -p`` first turn waits for still-connecting MCP
+#: servers (``CLAUDE_CODE_MCP_STARTUP_WAIT_MS``, CLI >= 2.1.274). Matches the
+#: CLI's own 30 s ``MCP_TIMEOUT`` connect deadline.
+MCP_STARTUP_WAIT_MS: str = "30000"
+
+
 def _prepare_agent_env(
     *,
     active_env: Any | None,
@@ -800,6 +806,13 @@ def _prepare_agent_env(
         from precis.workers import envelope as _envelope
 
         proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
+    # First-turn MCP wait (gr245505). With tool search on (the CLI default),
+    # a non-interactive first turn waits only for ``alwaysLoad`` servers;
+    # ``precis`` keeps connecting in the background, so a short single-turn
+    # pass (the structural reviewer) finished before its tools existed —
+    # ``mcp init: precis=pending``, zero tool calls, 10+ times. This makes
+    # the first turn wait for every pending server. Older CLIs ignore it.
+    proc_env.setdefault("CLAUDE_CODE_MCP_STARTUP_WAIT_MS", MCP_STARTUP_WAIT_MS)
     if env_base is None:
         ensure_oauth_token(proc_env)
     if not bare:

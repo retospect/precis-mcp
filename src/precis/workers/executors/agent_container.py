@@ -39,6 +39,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from precis.utils.claude_agent import MCP_STARTUP_WAIT_MS
 from precis.utils.container_limits import container_limit_flags
 from precis.workers import envelope as _envelope
 
@@ -364,6 +365,9 @@ def container_env(
             "PRECIS_MCP_DB_ROLE": _envelope.db_role(env),
             "PRECIS_AGENT_MODE": mode,
             "PRECIS_AGENT_MODEL": model,
+            # gr245505: first turn waits for the precis MCP server, same as
+            # the in-proc path (``claude_agent._prepare_agent_env``).
+            "CLAUDE_CODE_MCP_STARTUP_WAIT_MS": MCP_STARTUP_WAIT_MS,
         },
     )
 
