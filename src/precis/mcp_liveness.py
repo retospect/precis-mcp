@@ -6,7 +6,9 @@ third state — running, bound, useless — is what ``install_watchdog``'s
 docstring says a swapped install turns into ("desyncs at the protocol level
 ... and then hangs until the client's 1800 s idle timeout"). Nothing exits,
 so nothing restarts it, and on a shared server every session hangs at once
-(docs/backlog/mcp-shared-server-liveness.md).
+(docs/backlog/threads/session-mcp-shared-server.md). Demonstrated on a rig
+2026-10-01: a SIGSTOPped child was killed 94 s after the stop and replaced
+5 s later; a 12-session burst (793 calls, p95 7.8 s) caused no failed probe.
 
 This module is the detector, not the restarter. It is meant to run inside
 the process supervisor that owns the listening socket and runs

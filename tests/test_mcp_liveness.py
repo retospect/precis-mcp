@@ -1,4 +1,4 @@
-"""Wedge detection for the shared session MCP (mcp-shared-server-liveness).
+"""Wedge detection for the shared session MCP (precis.mcp_liveness).
 
 Two halves. :class:`WedgeDetector` is pure state and is pinned on the
 properties the backlog item's acceptance criteria name: a wedge is acted on,

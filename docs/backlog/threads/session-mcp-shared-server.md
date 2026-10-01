@@ -71,9 +71,9 @@ server-side-session-context Horizon pointer)
    shortened. Stdlib only, no `precis.*` imports and no lazy imports: it
    outlives every `/app` re-copy, so the container copies it to `/tmp` and
    runs it from there, and changing it takes a container recreate.
-   `backlog/mcp-shared-server-liveness.md`'s wedge detector
-   (`mcp_liveness.py`, landed by the sibling session) plugs into it under
-   the same import rule.
+   The wedge detector (`mcp_liveness.py`) runs inside it under the same
+   import rule; SIGSTOP and 12-session-burst demonstrations passed on a
+   rig 2026-10-01 14:28-14:41Z.
 
    **Supervised rig, 2026-10-01 13:23-13:47Z:** 61 initialize calls across
    a restart, 0 refused, slowest 6.2 s (queued through the respawn). With
@@ -108,20 +108,7 @@ server-side-session-context Horizon pointer)
    Out of scope: running the server stateless (removes the 404 round-trip,
    costs the serve ledger's per-session dedup and server push).
 
-2. **backlog/mcp-shared-server-liveness.md** — promoted out of Horizon by
-   td458385: it was a cost to watch while sessions still had their own
-   containers, and the migration makes it the next thing that matters
-   (followed the wave rather than gating it; the wave ran 2026-10-01). Nothing detects a
-   server that is up, listening and wedged — the exact state
-   `install_watchdog`'s docstring names, where the process "doesn't fail
-   fast" but "desyncs at the protocol level ... and then hangs until the
-   client's 1800 s idle timeout". `--restart unless-stopped` acts on exit
-   and never fires on it, and there is no `HEALTHCHECK`. Under stdio a wedge
-   cost one session and the operator noticing *was* the detection; shared,
-   it costs twelve at once and none of them owns the server.
-   Detector shipped (`precis.mcp_liveness`); the kill-and-respawn half
-   waits on the gr459481 supervisor, which owns the child process.
-3. **backlog/embedder-capacity-ownership.md — reduced to the admission
+2. **backlog/embedder-capacity-ownership.md — reduced to the admission
    question.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
    1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
@@ -148,7 +135,7 @@ server-side-session-context Horizon pointer)
    The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
    `np.vstack` as O(n^2); now a capacity-doubling buffer behind `_rows()`.
 
-4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
+3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
    (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
@@ -156,7 +143,7 @@ server-side-session-context Horizon pointer)
    AC1 in the session client and AC3, which closes opportunistically on the
    next verb-signature change someone else lands. Delete the item when both
    close.
-5. **gr458350** — prod credentials passed to `docker run` as `-e` values,
+4. **gr458350** — prod credentials passed to `docker run` as `-e` values,
    so `docker inspect` prints them in cleartext. The per-session launcher
    is gone with its containers; checked by name only on 2026-10-01, the
    shared server's ensure script does the same — `PRECIS_DATABASE_URL`,
@@ -169,7 +156,7 @@ server-side-session-context Horizon pointer)
    deferred rotation on 2026-09-30 ("later"); the leak path is the half
    fixable without a rotation window. Inspect with the names-only format in
    the gripe.
-6. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
