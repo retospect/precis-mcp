@@ -704,6 +704,73 @@ def test_explode_offsets_fallback_when_nothing_is_connected() -> None:
     assert a_off[0] < 0 and b_off[0] > 0  # away from the shared centroid
 
 
+def _line(a: str, b: str) -> ConnLine:
+    return ConnLine(
+        path=f"/g/{a}-{b}",
+        a_name=a,
+        b_name=b,
+        a_path=f"/x/{a}",
+        b_path=f"/x/{b}",
+        label="tie",
+        colour="#16a34a",
+    )
+
+
+def test_explode_offsets_keep_every_axis_order() -> None:
+    """Reto, prod check 2026-10-01: exploded, left stays left. Under the
+    old away-from-neighbours rule q (x=0, tied to s at x=-1) moved +1 and
+    p (x=0.1, tied to r at x=1) moved -1, so p and q swapped sides."""
+    tree = _tree(
+        q=BlockNode(name="q", pose=[0, 0, 0], envelope="box:w0.1d0.1h0.1"),
+        p=BlockNode(name="p", pose=[0.1, 0.02, 0], envelope="box:w0.1d0.1h0.1"),
+        r=BlockNode(name="r", pose=[1, 0.01, 0.5], envelope="box:w0.1d0.1h0.1"),
+        s=BlockNode(name="s", pose=[-1, -0.03, 0.2], envelope="box:w0.1d0.1h0.1"),
+    )
+    primary = {n: f"/x/{n}" for n in "pqrs"}
+    offsets = explode_offsets(
+        tree, [_line("p", "r"), _line("q", "s")], primary, magnitude=1.0
+    )
+    before = {n: np.array(tree.blocks[n].pose, dtype=np.float64) for n in "pqrs"}
+    after = {n: before[n] + np.array(offsets[f"/x/{n}"]) for n in "pqrs"}
+    for axis in range(3):
+        assert sorted("pqrs", key=lambda n: before[n][axis]) == sorted(
+            "pqrs", key=lambda n: after[n][axis]
+        )
+    # and it IS an explode: the spread grows on every axis
+    for axis in range(3):
+        grown = [v[axis] for v in after.values()]
+        orig = [v[axis] for v in before.values()]
+        assert max(grown) - min(grown) > max(orig) - min(orig)
+
+
+def test_explode_offsets_move_a_hub_between_symmetric_partners() -> None:
+    """The old rule summed opposite unit vectors to zero, so an axle between
+    two bearings never moved. Off-centre, it must."""
+    tree = _tree(
+        left=BlockNode(name="left", pose=[0, 1, 0], envelope="box:w0.1d0.1h0.1"),
+        hub=BlockNode(name="hub", pose=[0, 0.2, 0], envelope="box:w0.1d0.1h0.1"),
+        right=BlockNode(name="right", pose=[0, -1, 0], envelope="box:w0.1d0.1h0.1"),
+    )
+    primary = {n: f"/x/{n}" for n in ("left", "hub", "right")}
+    offsets = explode_offsets(
+        tree, [_line("hub", "left"), _line("hub", "right")], primary, magnitude=1.0
+    )
+    assert offsets["/x/hub"][1] > 0
+
+
+def test_explode_offsets_separate_coincident_poses() -> None:
+    """Two nodes at one pose get the same spread; the drawn connection is
+    the tie-break that still pulls them apart."""
+    tree = _tree(
+        a=BlockNode(name="a", pose=[0, 0, 0], envelope="box:w0.1d0.1h0.1"),
+        b=BlockNode(name="b", pose=[0, 0, 0], envelope="box:w0.1d0.1h0.1"),
+        c=BlockNode(name="c", pose=[0, 0, 1], envelope="box:w0.1d0.1h0.1"),
+    )
+    primary = {n: f"/x/{n}" for n in "abc"}
+    offsets = explode_offsets(tree, [_line("a", "c")], primary, magnitude=1.0)
+    assert offsets["/x/a"] != offsets["/x/b"]
+
+
 def test_pose_spread_empty_tree_is_never_zero() -> None:
     assert pose_spread(_tree()) == 1.0
 

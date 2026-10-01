@@ -1512,11 +1512,11 @@ export async function blocktreeViewer3D({
     });
   }
 
-  // ── explode along drawn attachment directions ───────────────────────
-  // Deliberately NOT the vendored viewer's own `setExplode()` (radial
-  // from the whole model's bbox centre) — `data.explode` is computed
-  // server-side from the SAME drawn connectivity this reader shows
-  // (blocktree_3d.explode_offsets's own docstring).
+  // ── explode: spread from the assembly centre, per axis ──────────────
+  // Deliberately NOT the vendored viewer's own `setExplode()` (one uniform
+  // factor from the bbox centre) — `data.explode` is computed server-side
+  // with a factor per axis, so order is kept on every axis and a thin axis
+  // still separates (blocktree_3d.explode_offsets's own docstring).
   if (explodeButton) {
     explodeButton.addEventListener("click", () => {
       if (!viewer) return;

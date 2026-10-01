@@ -101,15 +101,16 @@ alongside the SVG projector's convex-hull-for-concave-envelopes one):
   unparseable envelope, or a degenerate SDF query) — this is still a
   legibility heuristic, not a verified clearance render: the line can
   still graze a solid on an unlucky orientation.
-* **Exploded view** moves each visible top node along the SUM of its own
-  unit vectors away from every block it's DRAWN-connected to (the same
-  connect data the link overlay draws) — a real "pull apart along
-  attachment directions" per the spec, not the vendored viewer's own
-  built-in ``explode()`` (which pushes radially from the whole model's
-  bounding-box centre — a fine default for an unconnected pile of parts,
-  but not what "along attachment directions" asks for here). A node with
-  no drawn connects at all falls back to the radial-from-centroid
-  direction so it still moves somewhere.
+* **Exploded view** spreads the visible top nodes out from the
+  assembly's centroid with one positive factor PER AXIS, so every node
+  keeps its order on every axis (left stays left, just further apart —
+  :func:`explode_offsets`). Not the vendored viewer's own ``explode()``:
+  that is one uniform factor from the bounding-box centre, which barely
+  separates a thin axis (a unicycle's axle stack) on a tall design. Drawn
+  attachment directions survive only as the tie-break for nodes that
+  share a pose. The spec's "pull apart along attachment directions" was
+  the first rule tried; it ignored where a node sat in the whole, so
+  neighbours could cross and a hub between symmetric partners stayed put.
 """
 
 from __future__ import annotations
@@ -990,7 +991,7 @@ def connectivity_leaf(
     }
 
 
-# ── explode (along drawn attachment directions) ─────────────────────────
+# ── explode (spread from the assembly centre) ───────────────────────────
 
 
 def explode_offsets(
@@ -999,21 +1000,41 @@ def explode_offsets(
     primary_path: dict[str, str],
     magnitude: float,
 ) -> dict[str, Vec3f]:
-    """``path -> [dx, dy, dz]`` per visible top node — module docstring's
-    "along attachment directions" explode: each node moves along the sum
-    of its own unit vectors away from every block it is DRAWN-connected
-    to (falling back to away-from-centroid when a node has no drawn
-    connects at all, so it still moves somewhere).
+    """``path -> [dx, dy, dz]`` per visible top node: the assembly spreads
+    out from its own centroid, PER AXIS, with the node farthest from the
+    centroid on an axis moving ``magnitude`` along it and every other node
+    in proportion. One positive factor per axis keeps every node's order
+    on every axis — left stays left, just further apart (Reto, prod check
+    2026-10-01).
 
-    "Meaningfully zero" (a genuinely coincident pair, or a genuinely
-    self-cancelling sum) is judged against a tolerance RELATIVE to the
-    whole tree's own pose spread (:func:`pose_spread`), not a flat
-    absolute constant (gr337751 — a nanometre-scale design's own pose
-    deltas sit at/under a flat ``1e-9`` floor, so every explode offset
-    silently zeroed; same ``LINEAR_REL_EPS`` relative-tolerance pattern
-    as :mod:`precis.cad.primitives`'s ``_linear_eps``)."""
+    The previous rule moved each node a fixed ``magnitude`` along the sum
+    of unit vectors away from its drawn neighbours, ignoring where it sat
+    in the whole: two neighbours could cross, and a hub between symmetric
+    partners did not move at all. Per-axis rather than one uniform factor
+    so a thin axis (a unicycle's axle stack, ±0.13 m against a 1 m height)
+    separates as visibly as the long one.
+
+    Nodes that share a pose get the same spread, so they would never
+    separate; for those only, the away-from-drawn-neighbours direction is
+    added at a quarter of ``magnitude`` as a tie-break.
+
+    "Meaningfully zero" (an axis with no spread, a coincident pair) is
+    judged against a tolerance RELATIVE to the whole tree's own pose spread
+    (:func:`pose_spread`), not a flat absolute constant (gr337751 — a
+    nanometre-scale design's pose deltas sit at/under a flat ``1e-9``
+    floor, so every explode offset silently zeroed)."""
     eps = LINEAR_REL_EPS * pose_spread(tree)
-    by_path: dict[str, list[NDArray[np.float64]]] = {}
+    names = [name for name in primary_path if name in tree.blocks]
+    if not names:
+        return {}
+    poses = {name: np.array(tree.blocks[name].pose, dtype=np.float64) for name in names}
+    centroid = np.mean(list(poses.values()), axis=0)
+    reach = np.max([np.abs(pose - centroid) for pose in poses.values()], axis=0)
+    factor = np.array(
+        [magnitude / r if r > eps else 0.0 for r in reach], dtype=np.float64
+    )
+
+    away: dict[str, list[NDArray[np.float64]]] = {}
     for line in lines:
         a = np.array(tree.blocks[line.a_name].pose, dtype=np.float64)
         b = np.array(tree.blocks[line.b_name].pose, dtype=np.float64)
@@ -1021,31 +1042,24 @@ def explode_offsets(
         norm = float(np.linalg.norm(d))
         if norm < eps:
             continue
-        unit = d / norm
-        by_path.setdefault(line.a_path, []).append(-unit)
-        by_path.setdefault(line.b_path, []).append(unit)
-
-    all_poses = [
-        np.array(node.pose, dtype=np.float64)
-        for name, node in tree.blocks.items()
-        if name in primary_path
-    ]
-    centroid = np.mean(all_poses, axis=0) if all_poses else np.zeros(3)
+        away.setdefault(line.a_path, []).append(-d / norm)
+        away.setdefault(line.b_path, []).append(d / norm)
 
     offsets: dict[str, Vec3f] = {}
-    for name, path in primary_path.items():
-        vecs = by_path.get(path)
-        if vecs:
-            total = np.sum(vecs, axis=0)
+    for name in names:
+        path = primary_path[name]
+        pose = poses[name]
+        moved = (pose - centroid) * factor
+        shared = any(
+            other != name and float(np.linalg.norm(poses[other] - pose)) < eps
+            for other in names
+        )
+        if shared and away.get(path):
+            total = np.sum(away[path], axis=0)
             norm = float(np.linalg.norm(total))
-            direction = total / norm if norm > eps else np.zeros(3)
-        else:
-            pose = np.array(tree.blocks[name].pose, dtype=np.float64)
-            d = pose - centroid
-            norm = float(np.linalg.norm(d))
-            direction = d / norm if norm > eps else np.zeros(3)
-        scaled = direction * magnitude
-        offsets[path] = (float(scaled[0]), float(scaled[1]), float(scaled[2]))
+            if norm > eps:
+                moved = moved + total / norm * (0.25 * magnitude)
+        offsets[path] = (float(moved[0]), float(moved[1]), float(moved[2]))
     return offsets
 
 
@@ -1203,8 +1217,8 @@ def build_scene(
 ) -> Scene3D:
     """Assemble the whole round-2a bundle for one render pass — the
     ``Shapes`` tree (assembly + a ``connections`` sibling group carrying
-    the drawn links), the connectivity metadata, the explode-along-
-    attachment offsets, and the linked mermaid topology graph.
+    the drawn links), the connectivity metadata, the explode
+    offsets, and the linked mermaid topology graph.
 
     The root's own ``id`` is derived from ``root_name`` via
     :func:`_root_path`, never accepted as a separate argument — module
