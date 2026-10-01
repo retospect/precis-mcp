@@ -22,17 +22,12 @@ both STATUS:done)
 
 1. **Nanoscale review proposal** — draft at
    `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
-   (outside this repo); Reto fills authors, the "importance now" lines and
-   the key references, then sends it to the editorial office.
-2. **restructure, second pass** — the first pass landed 2026-10-01: Scope
-   (dc2445882) moved ahead of the topology section, Gap Analysis (dc2445953)
-   promoted to a top-level section before Future Perspectives, thesis line
-   in dc2445855, roadmap dc2445884, abstract dc2445850 rewritten to the
-   thesis, pa4365 hubbed as fi460165 and cited in dc2445899. Scope needed no
-   edit (dc2445883 already keeps covalent and non-covalent). Left: check that
-   every property subsection states its evidence level as the proposal
-   promises, and reconcile Future Perspectives' "Bridging Theory and
-   Experiment" (dc2445945) with the promoted Gap Analysis.
+   (outside this repo; authors filled from the draft); Reto fills the
+   "importance now" lines and the key references, checks byline order,
+   then sends it to the editorial office.
+2. **Reto's read-through before export** — Reto is sourcing the ten
+   figures, checking the findings and reading the export himself
+   (2026-10-01); the session's part of the restructure is done.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
    2026-10-01; the auto-mode classifier blocks the session from the prod
    DSN, so Reto runs it: script staged at
@@ -56,8 +51,8 @@ both STATUS:done)
 
 ## Horizon
 
-1. **nanopub approve/sign pass over dr173020's hubs** — waits on the
-   restructure (rewording after signing re-opens hubs); the 173020 batch in
+1. **nanopub approve/sign pass over dr173020's hubs** — waits on Reto's
+   findings check (Do next 2; rewording after signing re-opens hubs); the 173020 batch in
    td345830–td345836.
 2. **export + submission** — waits on 1, td450082 and gr454753: the
    draft_export job refuses on the ten image-less reproduced figures ("no
@@ -83,6 +78,17 @@ both STATUS:done)
   hexfold catalogue's measured rows are trusted (hexfold-toolkit item 6).
 
 ## No action needed
+
+- **restructure** — done 2026-10-01 in two passes. Pass 1: Scope
+  (dc2445882) ahead of the topology section, Gap Analysis (dc2445953)
+  top-level before Future Perspectives, thesis line dc2445855, roadmap
+  dc2445884, abstract dc2445850, pa4365 hubbed as fi460165 and cited in
+  dc2445899, Conclusion dc2445958 no longer counts field emission and
+  composites as tested. Pass 2: every property subsection now states its
+  evidence level (dc2445920, dc2445922, dc2445924, dc2445926); Gap Analysis
+  dc2445954 no longer claims an NLO measurement the draft never cites.
+  "Bridging Theory and Experiment" (dc2445945) stays: Gap Analysis states
+  the gap, it names the measurements.
 
 - **td450087** — done 2026-10-01: the README rewrite was already committed in
   the poster repo; Reto moved the poster to the posters folder
