@@ -66,7 +66,18 @@ narrower than claimed: it covers exits, not wedges.
 
 ## Target + blast radius
 
-`~/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh`,
-`docker/Dockerfile` (dev target) if the probe lands as a `HEALTHCHECK`.
-No change to `precis serve` expected — if one turns out to be needed, that
-is a signal the probe is reaching too far in.
+**Changed 2026-10-01: the restart lives in the gr459481 supervisor, not in
+Docker.** That supervisor binds 8765 once and runs `precis serve` as a child
+on the inherited socket, so a wedge verdict means "kill the child", and the
+supervisor starts a fresh one on the same socket — no container restart, no
+`HEALTHCHECK`, no ensure-script change. That also settles the "Docker's
+restart policy does not act on health" trap above by not depending on it.
+
+Shipped: `src/precis/mcp_liveness.py` — `probe` (initialize + tools/list,
+hard deadline), `WedgeDetector` (3 consecutive failures, 60 s grace after a
+child starts to cover the ~13 s respawn gap, kill cooldown doubling from
+300 s), `run_liveness_loop`, and `record_wedge_kill` (the breadcrumb
+`precis-status` shows — this is the "restart loop is visible" criterion).
+Left: wiring it into the supervisor once that exists, then the two
+demonstrations in the acceptance criteria (SIGSTOP the child; 12-session
+burst not restarted). No change to `precis serve`.

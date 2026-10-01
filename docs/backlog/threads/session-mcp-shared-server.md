@@ -50,6 +50,8 @@ server-side-session-context Horizon pointer)
    and never fires on it, and there is no `HEALTHCHECK`. Under stdio a wedge
    cost one session and the operator noticing *was* the detection; shared,
    it costs twelve at once and none of them owns the server.
+   Detector shipped (`precis.mcp_liveness`); the kill-and-respawn half
+   waits on the gr459481 supervisor, which owns the child process.
 2. **backlog/embedder-capacity-ownership.md — reduced to the admission
    question.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
