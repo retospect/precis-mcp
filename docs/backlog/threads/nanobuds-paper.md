@@ -24,12 +24,15 @@ both STATUS:done)
    `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
    (outside this repo); Reto fills authors, the "importance now" lines and
    the key references, then sends it to the editorial office.
-2. **restructure** — to the proposal's outline: thesis and scope into the
-   Introduction, topology compressed to its tail, properties each stating
-   their evidence level, gap analysis as its own section before the
-   Outlook; abstract dc2445850 rewritten to the thesis (it already says
-   "covalently or non-covalently", so dc2445883 is the chunk to align);
-   fold in pa4365.
+2. **restructure, second pass** — the first pass landed 2026-10-01: Scope
+   (dc2445882) moved ahead of the topology section, Gap Analysis (dc2445953)
+   promoted to a top-level section before Future Perspectives, thesis line
+   in dc2445855, roadmap dc2445884, abstract dc2445850 rewritten to the
+   thesis, pa4365 hubbed as fi460165 and cited in dc2445899. Scope needed no
+   edit (dc2445883 already keeps covalent and non-covalent). Left: check that
+   every property subsection states its evidence level as the proposal
+   promises, and reconcile Future Perspectives' "Bridging Theory and
+   Experiment" (dc2445945) with the promoted Gap Analysis.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
    2026-10-01; the auto-mode classifier blocks the session from the prod
    DSN, so Reto runs it: script staged at
