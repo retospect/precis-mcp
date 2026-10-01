@@ -857,6 +857,70 @@ def test_batch_chars_caps_a_batch_by_length_not_count(tmp_path: Any) -> None:
     assert _plan_batches([], by_sha, batch_size=None, batch_chars=None) == []
 
 
+def test_warmup_state_is_visible_while_the_pass_is_still_running(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`md_vector_warmup` must exist during the pass, not only after it.
+
+    gr459088 comment 7: `record_warmup_state` was only called on a batch
+    error or at the terminal state, so a cleanly-warming process
+    rendered no row at all — which is the one hour the field is for, and
+    it made "warming normally" and "never started" look identical.
+    Caught 63s into a healthy pass on ae7bdb6a.
+    """
+    import threading
+
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import MockEmbedder
+    from precis.handlers import skill as skill_mod
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_SIZE", 1)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_CHARS", None)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text(
+        "# One\n\nAlpha.\n\n# Two\n\nBeta.\n\n# Three\n\nGamma.\n\n# Four\n\nDelta.\n",
+        encoding="utf-8",
+    )
+
+    seen_mid_pass: list[str] = []
+    gate = threading.Event()
+
+    class _Watched(MockEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def embed(self, texts: list[str]) -> Any:
+            self.calls += 1
+            if self.calls == 3:
+                # Two batches are cached by now; the row must already
+                # say so rather than waiting for the pass to end.
+                rows = dict(skill_mod._collect_runtime_info())
+                seen_mid_pass.append(rows.get("md_vector_warmup", "<<missing>>"))
+                gate.set()
+            return super().embed(texts)
+
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=_Watched(), md_roots=f"r:{root}")
+    )
+    server._warm_md_index_background(rt)
+    assert gate.wait(timeout=10), "pass never reached the third batch"
+    _join_warmup_threads()
+
+    assert seen_mid_pass, "no sample taken"
+    state = seen_mid_pass[0]
+    assert "warming" in state, state
+    assert "batch 2/" in state, state  # two batches done when batch 3 began
+    # And the terminal state still replaces it.
+    assert "warm (" in (vectors_mod.warmup_state() or "")
+
+
 def test_cold_md_warmup_is_visible_in_precis_status_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

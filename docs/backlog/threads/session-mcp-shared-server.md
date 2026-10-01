@@ -283,6 +283,19 @@ server-side-session-context Horizon pointer)
    is anywhere between trivial and impossible when blocks run 3..22756
    chars — the count-only cap kept failing on whichever batch collected
    the long ones.
+   Accepted on prod: cache 1179916 → 45252876 bytes in 19 min (~11000
+   vectors), and a live md search reports **60% of blocks indexed**
+   against 1% all night. Skip-and-continue was the difference.
+   One more gap closed on the way (gr459088 comment 7): the
+   `md_vector_warmup` row never rendered during a *healthy* pass, since
+   `record_warmup_state` was only called on a batch error or at the
+   terminal state — so the surface built to answer "is the cache
+   warming?" was blank for the whole hour it mattered, and "warming
+   normally" looked identical to "never started". `embed_missing` now
+   takes `on_batch_done(done, count, added)` and the pass publishes
+   `warming: batch i/N (k new)` as it goes, plus a `warming: starting`
+   claim before the first embed (planning reads every block off disk,
+   seconds on a large tree).
 
    **Acceptance of 5146528d (64→16 batches), measured 02:28-02:32Z: it
    works, and it exposes the next defect.** The npz grew 1048844 →

@@ -1081,6 +1081,18 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         attempts: dict[int, int] = {}
         skipped: list[int] = []
 
+        def _on_batch_done(done: int, count: int, added: int) -> None:
+            """Publish live progress for `precis-status`.
+
+            Without this the first `record_warmup_state` call is a batch
+            error or the terminal state, so a cleanly-warming process
+            renders NO `md_vector_warmup` row at all and the surface
+            cannot tell "warming normally" from "never started"
+            (gr459088 comment 7, caught 63s into a healthy pass).
+            """
+            suffix = f", {len(skipped)} skipped" if skipped else ""
+            record_warmup_state(f"warming: batch {done}/{count} ({added} new{suffix})")
+
         def _on_batch_error(exc: Exception, index: int, count: int) -> BatchErrorAction:
             """Retry, skip or abort one batch; policy lives here.
 
@@ -1136,6 +1148,11 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         total_new = 0
         try:
             log.info("warming md index vector cache for %d root(s)", len(handler.roots))
+            # Claim the row before the first embed: planning the batches
+            # reads every block off disk, which is seconds on a large
+            # tree, and a blank row during it is indistinguishable from
+            # a pass that never started.
+            record_warmup_state("warming: starting")
             for alias, root in handler.roots.items():
                 idx = handler.cache.get(root)
                 blocks = [b for _, b in idx.all_blocks()]
@@ -1145,6 +1162,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
                     batch_size=_MD_WARMUP_BATCH_SIZE,
                     batch_chars=_MD_WARMUP_BATCH_CHARS,
                     on_batch_error=_on_batch_error,
+                    on_batch_done=_on_batch_done,
                 )
                 log.debug("md index root %r warmed (%d blocks)", alias, len(blocks))
             vector_cache.flush()

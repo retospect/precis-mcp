@@ -24,10 +24,15 @@ or database they're talking to. One call returns four sections:
 `git_source` + `source_path` provenance, `source_drift`, build
 time/host/user),
 **Runtime** (container hostname, python, pid, cwd, uptime, and
-`md_vector_warmup` when the `md` kind is registered — `COLD` there means
-md search has silently fallen back to lexical for this process's whole
-lifetime, and `warming: batch i/N, retry k/6` means the pass is alive and
-working through the batches, not stuck),
+`md_vector_warmup` when the `md` kind is registered, which reads
+`warming: batch i/N (k new)` while the pass runs, then one of
+`warm (k new)`, `warm with gaps (k new, m batch(es) skipped)`, or
+`COLD`. ⚠ `COLD` means a NON-retryable error — a dim mismatch or a bad
+text. An unreachable or saturated embedder reports *gaps*, because a
+retryable failure skips its batch and the pass carries on; a gapped pass
+also counts as a failure for the re-arm backoff. No row at all means the
+`md` kind is registered without an embedder, not that the cache is
+cold),
 **Database** (connected DSN host/port/name/user, postgres server
 version, last applied migration + count), and the existing
 **Optional dependencies** import probe.

@@ -374,6 +374,7 @@ class MdVectorCache:
         batch_size: int | None = None,
         batch_chars: int | None = None,
         on_batch_error: BatchErrorHandler | None = None,
+        on_batch_done: Callable[[int, int, int], None] | None = None,
     ) -> int:
         """Embed and cache every block in `blocks` not already cached.
 
@@ -472,6 +473,8 @@ class MdVectorCache:
                 for sha, vec in zip(chunk, vectors, strict=True):
                     self.add(sha, vec)  # RLock: safe to re-enter; auto-flushes
             added += len(chunk)
+            if on_batch_done is not None:
+                on_batch_done(index + 1, len(chunks), added)
         return added
 
     def flush(self) -> None:
