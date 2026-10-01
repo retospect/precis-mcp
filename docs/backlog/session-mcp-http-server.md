@@ -363,8 +363,14 @@ the config has pointed at HTTP since 2026-09-29 ~17:00, and no stdio
 container has been created since 16:54 that day — about 42 h with fifteen
 sessions live. This closes td458385 (every session onto the shared server).
 
-**Still outstanding:** AC1 in the session (as opposed to headless) client,
-and AC3 (a new verb kwarg surviving a bounce — closes opportunistically,
+**AC1 FAILS in the interactive client (2026-10-01, gr459481).** Two bounces
+17 s apart disconnected at least three interactive sessions for good —
+ECONNRESET, no reconnect. AC0's pass was real but covered only the 404 path
+(a request reaching the new server); an idle session's SSE stream reconnects
+into the dark window and the client does not retry a reset. The premise
+holds only for a listener that never goes dark.
+
+**Still outstanding:** AC1 (now a known failure, gr459481), and AC3 (a new verb kwarg surviving a bounce — closes opportunistically,
 see above). AC2, AC4, AC5 and AC7 are done.
 
 **Found while verifying:** gr457326 — the md-index vector warmup has no

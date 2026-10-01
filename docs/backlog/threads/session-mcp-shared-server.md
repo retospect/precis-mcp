@@ -39,7 +39,76 @@ server-side-session-context Horizon pointer)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-1. **backlog/mcp-shared-server-liveness.md** — promoted out of Horizon by
+1. **gr459481 — a long enough dark window permanently disconnects idle
+   interactive sessions. Decided by Reto 2026-10-01: hold the port across
+   restarts, watchdog stays on, build it all, then land together. BUILT,
+   not yet landed or verified live.**
+   11:14-11:16Z: two qlands 17 s apart bounced `precis-mcp-http` twice and
+   at least three interactive sessions lost `precis` with ECONNRESET until
+   a human reconnected them. The server was fine both times.
+
+   **Mechanism, measured on the 8766 rig 2026-10-01 12:03-13:23Z** with one
+   throwaway interactive window (same Claude Code build as every live
+   session): an idle session holds a `GET /mcp` event stream; when it dies
+   the client *does* retry, but only within a budget. A ~13 s dark window
+   (one watchdog restart) and a pair with a 2 s up-gap both recovered on
+   their own within ~3 s of the port returning. A continuous 41 s window
+   and a 24 s window both left it ✘ until a manual reconnect. So the budget
+   is between 16 s and 24 s; the incident pair was ~25-30 s dark with no
+   usable gap. A single restart today is under the budget, with a few
+   seconds of margin — which a slow boot under load can eat, so a watchdog
+   debounce alone is not a fix. There is no slow second retry: a clean
+   rerun of the 24 s window (13:02:31-13:02:58Z, window untouched) saw no
+   client request in the following 20 min.
+
+   **Built (unlanded, this worktree):** `src/precis/mcp_supervisor.py`
+   becomes PID 1, binds the port once, runs `--prepare` (the `/src` → `/app`
+   re-copy) before every child, and runs `precis serve --fd {fd}` on the
+   inherited socket. A child exiting 0 (the watchdog) is replaced at once;
+   a crash is replaced after an exponential backoff; SIGTERM is forwarded,
+   so `docker stop` still works. Between children, connections wait in the
+   listen backlog instead of being refused — the dark window is gone, not
+   shortened. Stdlib only, no `precis.*` imports and no lazy imports: it
+   outlives every `/app` re-copy, so the container copies it to `/tmp` and
+   runs it from there, and changing it takes a container recreate.
+   `backlog/mcp-shared-server-liveness.md`'s wedge detector
+   (`mcp_liveness.py`, landed by the sibling session) plugs into it under
+   the same import rule.
+
+   **Supervised rig, 2026-10-01 13:23-13:47Z:** 61 initialize calls across
+   a restart, 0 refused, slowest 6.2 s (queued through the respawn). With
+   the throwaway window attached, two restarts 17 s apart: its event-stream
+   reconnect reached a live server and got **404** (stale session) at
+   13:46:42Z and 13:46:43Z, then the client stopped re-opening the stream —
+   it does not re-initialize on a GET 404 by itself — but its next tool
+   call did, silently: 14:08:55Z POST 404 → initialize 200 → the call
+   200, within 10 ms, no human reconnect. **The fix holds in the
+   interactive client.**
+
+   **Left, in order:** (b) land everything together; (c) install the staged launch — the
+   ensure script's `RUN_CMD` switched to the supervisor, with a fallback to
+   the old launch when the checkout lacks it. ⚠ Every SessionStart runs
+   `precis-mcp-http-ensure.sh` (repo `.claude/settings.json`), and its
+   env hash covers the script's own bytes, so **editing the script
+   recreates the shared server at the next session start anywhere** —
+   install it only as the coordinated cutover, after the land, told to
+   `deploy` first. That recreate is the last restart that strands
+   sessions.
+
+   **Next after that (Reto 2026-10-01): a `production` branch.** Every
+   qland moves the main checkout and restarts the server; the server should
+   instead track a `production` branch that `scripts/deploy` fast-forwards
+   after each deploy (`/go` and `/qgo` alike — it means "what the cluster
+   runs", which is what a server writing to the prod DB should run). The
+   container mounts a dedicated worktree on that branch instead of the main
+   checkout, so restarts drop from every qland to every deploy. Branch
+   protected, fast-forward only. Dogfooding an unlanded verb then means
+   `/qgo` or the 8766 rig. Tell `deploy` before touching `scripts/deploy`.
+
+   Out of scope: running the server stateless (removes the 404 round-trip,
+   costs the serve ledger's per-session dedup and server push).
+
+2. **backlog/mcp-shared-server-liveness.md** — promoted out of Horizon by
    td458385: it was a cost to watch while sessions still had their own
    containers, and the migration makes it the next thing that matters
    (followed the wave rather than gating it; the wave ran 2026-10-01). Nothing detects a
@@ -52,7 +121,7 @@ server-side-session-context Horizon pointer)
    it costs twelve at once and none of them owns the server.
    Detector shipped (`precis.mcp_liveness`); the kill-and-respawn half
    waits on the gr459481 supervisor, which owns the child process.
-2. **backlog/embedder-capacity-ownership.md — reduced to the admission
+3. **backlog/embedder-capacity-ownership.md — reduced to the admission
    question.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
    1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
@@ -79,7 +148,7 @@ server-side-session-context Horizon pointer)
    The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
    `np.vstack` as O(n^2); now a capacity-doubling buffer behind `_rows()`.
 
-3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
+4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
    (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
@@ -87,7 +156,7 @@ server-side-session-context Horizon pointer)
    AC1 in the session client and AC3, which closes opportunistically on the
    next verb-signature change someone else lands. Delete the item when both
    close.
-4. **gr458350** — prod credentials passed to `docker run` as `-e` values,
+5. **gr458350** — prod credentials passed to `docker run` as `-e` values,
    so `docker inspect` prints them in cleartext. The per-session launcher
    is gone with its containers; checked by name only on 2026-10-01, the
    shared server's ensure script does the same — `PRECIS_DATABASE_URL`,
@@ -100,7 +169,7 @@ server-side-session-context Horizon pointer)
    deferred rotation on 2026-09-30 ("later"); the leak path is the half
    fixable without a rotation window. Inspect with the names-only format in
    the gripe.
-5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+6. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
@@ -148,7 +217,7 @@ server-side-session-context Horizon pointer)
   backend counts and should be re-derived, not inherited.
 - **K-parallel exercise-mcp load harness** — specced inside
   backlog/mcp-shared-transport-concurrency.md; unparks when the role and
-  fairness gaps in Do-next 5 are closed, before that it measures an idle server.
+  fairness gaps in Do-next 6 are closed, before that it measures an idle server.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.

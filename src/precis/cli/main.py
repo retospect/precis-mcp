@@ -110,6 +110,7 @@ def main() -> None:
             host=args.host,
             port=args.port,
             token=args.token,
+            fd=args.fd,
         )
         return
 
@@ -362,6 +363,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Bearer token required on a network transport (or set "
         "PRECIS_MCP_TOKEN). Ignored on stdio.",
+    )
+    serve_parser.add_argument(
+        "--fd",
+        type=int,
+        default=None,
+        help="Serve a network transport on this already-listening inherited "
+        "socket instead of binding --host/--port (set by precis.mcp_supervisor).",
     )
     serve_embeddings.add_parser(sub)
     anki_sync.add_parser(sub)

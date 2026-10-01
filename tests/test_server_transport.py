@@ -159,7 +159,58 @@ def test_main_network_transport_dispatches_with_token(
         "host": "0.0.0.0",
         "port": 9999,
         "token": "tok",
+        "fd": None,
     }
+
+
+def test_main_network_transport_passes_an_inherited_fd_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(server, "_log_version_banner", lambda: None)
+    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
+    monkeypatch.setattr(
+        server, "_run_network_transport", lambda **kw: captured.update(kw)
+    )
+
+    server.main(transport="streamable-http", token="tok", fd=7)
+
+    assert captured["fd"] == 7
+
+
+def test_run_network_transport_serves_on_the_inherited_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``fd`` the server must serve on that listening socket, not bind
+    host:port itself — the supervisor keeps the port bound across restarts."""
+    import socket
+
+    import uvicorn
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    seen: list[Any] = []
+
+    async def fake_serve(self: Any, sockets: Any = None) -> None:
+        seen.append(sockets)
+
+    monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+    try:
+        server._run_network_transport(
+            transport="streamable-http",
+            host="127.0.0.1",
+            port=1,
+            token="tok",
+            fd=listener.fileno(),
+        )
+        assert len(seen) == 1
+        (sock,) = seen[0]
+        assert sock.getsockname() == listener.getsockname()
+        sock.detach()  # same fd as the listener; let only the listener close it
+    finally:
+        listener.close()
 
 
 def test_main_network_transport_falls_back_to_env_token(

@@ -1332,7 +1332,9 @@ def _install_token_auth(app: Any, *, token: str) -> None:
     app.add_middleware(_TokenAuthMiddleware)
 
 
-def _run_network_transport(*, transport: str, host: str, port: int, token: str) -> None:
+def _run_network_transport(
+    *, transport: str, host: str, port: int, token: str, fd: int | None = None
+) -> None:
     """Serve ``mcp`` over ``sse``/``streamable-http`` with the token gate.
 
     Mirrors ``FastMCP.run_sse_async`` / ``run_streamable_http_async``
@@ -1342,7 +1344,13 @@ def _run_network_transport(*, transport: str, host: str, port: int, token: str) 
     serving — ``FastMCP.run()`` gives no hook to inject middleware, so
     this is the "simplest header check the framework allows" without
     forking the library.
+
+    ``fd`` serves on an already-listening socket inherited from
+    :mod:`precis.mcp_supervisor` instead of binding ``host:port``, so the
+    port stays bound across server restarts (gr459481).
     """
+    import socket
+
     import anyio
     import uvicorn
 
@@ -1356,7 +1364,10 @@ def _run_network_transport(*, transport: str, host: str, port: int, token: str) 
             app, host=host, port=port, log_level=mcp.settings.log_level.lower()
         )
         server = uvicorn.Server(config)
-        await server.serve()
+        if fd is None:
+            await server.serve()
+        else:
+            await server.serve(sockets=[socket.socket(fileno=fd)])
 
     anyio.run(_serve)
 
@@ -1367,6 +1378,7 @@ def main(
     host: str = "127.0.0.1",
     port: int = 8765,
     token: str | None = None,
+    fd: int | None = None,
 ) -> None:
     """Run the MCP server.
 
@@ -1427,7 +1439,7 @@ def main(
             "would expose the corpus to anything that can reach the port"
         )
     _run_network_transport(
-        transport=transport, host=host, port=port, token=resolved_token
+        transport=transport, host=host, port=port, token=resolved_token, fd=fd
     )
 
 
