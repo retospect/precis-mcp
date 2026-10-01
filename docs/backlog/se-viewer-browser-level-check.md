@@ -30,6 +30,36 @@ it is a nightly lane rather than a per-push one, and what the seeded design
 is. `scripts/guide-capture` already solves the "drive a real browser from
 this repo" half — the missing half is a design fixture plus canvas diffing.
 
+## The case, in one affordance (2026-10-01)
+
+`explode` was dead from the feature commit that introduced it until
+2026-10-01. Clicking it built the position tracks, showed the vendored
+transport bar, flipped the label to "un-explode" — and moved nothing. The
+4th argument of `initAnimation(duration, speed, label, repeat)` is the loop
+mode, not autoplay, and nothing in it ever calls `play()`.
+
+Everything that normally catches a defect said it was fine. The suite was
+green. The console was empty. The server-side offsets were correct (20 of
+them, magnitude ~3.2 against a 1 m machine). The button's own label was
+right at every step, including after a level change. A reviewer reading the
+handler sees a plausible call into a vendored API with a sensible-looking
+boolean.
+
+What found it was a canvas pixel diff, and only because the diff was
+cropped. The whole-canvas number was n=2479 — a healthy-looking delta that
+is entirely the transport bar appearing in a 248x35 strip along the bottom
+edge. Crop that strip and sample every 300 ms for 4.2 s: n=0 at every
+sample. Driving the vendored transport's own play button instead moved the
+model at once (n=22180 rising to 33840), which is what separated "the
+trigger is missing" from "the tracks are wrong".
+
+Three things that lane has to inherit from this, beyond the requirements
+below: **crop the vendored chrome before diffing** (a strip of UI that
+appears on interaction reads as a passing delta), **sample animations as a
+series** (one shot at one moment cannot tell "never played" from "played and
+looped back"), and **labels are not evidence** (every label in this
+affordance was correct while it did nothing).
+
 ## Requirements the hand-built harness has already proven it needs
 
 ### A phase waits on an observable condition, never on a timeout

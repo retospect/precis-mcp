@@ -1492,7 +1492,14 @@ export async function blocktreeViewer3D({
               offset,
             ]);
           }
+          // 4th arg is the LOOP MODE, not autoplay: LoopOnce here, so
+          // the scrub bar this puts on screen runs the clip once rather
+          // than pulsing. `initAnimation` never plays anything by itself.
           viewer.initAnimation(EXPLODE_DURATION, 1, "E", false);
+          // ...so go to the end of the clip and hold there. Without this
+          // the button was inert for its whole life: tracks built, bar
+          // shown, label flipped, model untouched.
+          viewer.setRelativeTime(1);
           explodeButton.textContent = "un-explode";
         } else {
           viewer.clearAnimation();

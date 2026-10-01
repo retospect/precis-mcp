@@ -156,6 +156,26 @@ closes it. The durable lesson — a browser phase must wait on an observable
 condition, never a timeout — is a requirement on Do-next 1 rather than a
 line in a closed gripe.
 
+## explode was inert from its own feature commit (2026-10-01)
+
+Found by probing two affordances nothing had ever driven in a browser —
+`explode` and container mode `solid`. `solid` is fine (n=35756, restores
+pixel-identically). `explode` had never worked: `initAnimation`'s 4th
+argument is the loop mode, not autoplay, and it never plays the clip, so
+the click built tracks, showed the vendored transport bar, flipped the
+label and left every block where it was. Fixed with `viewer.setRelativeTime(1)`
+— the button is a state, not a transport, so it goes to the end of the clip
+and holds rather than playing once and snapping back. Now n=41280 with the
+model separating, and un-explode restores to n=0.
+
+Two traps it leaves behind, both written up in
+`backlog/se-viewer-browser-level-check.md`: the vendored transport bar
+appears along the bottom edge on interaction, so an uncropped canvas diff
+reports a healthy n=2479 for a completely dead control; and an animation
+sampled once can be dead or merely back round the loop, so it needs a
+series. The first cost a wrong fix that measured identical before and
+after.
+
 ## Busy-state follow-ups (2026-10-01)
 
 The `#bt3d-busy` mark that closed gr458329 cost a smaller thing on the way
