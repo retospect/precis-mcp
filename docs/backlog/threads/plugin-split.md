@@ -37,16 +37,17 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    absent; the same gap a plugin-boundary test needs to not have, since
    the whole point of the split is code that runs without an extra
    installed.
-4. **backlog/plugin-split-runtime-shell.md** — steps 1, 3 and 5 (step 2
-   landed 2026-09-29). Step 1, the import-boundary test, goes first and
-   becomes the gate the 10-16 moves are verified against. It no longer
-   lands green: **gr459054**, found dogfooding 2026-10-01, is a fresh
-   core→plugin import at `quest/roadmap_tick.py:406` — the same violation
-   step 2 removed, reintroduced four days later in a different file, which
-   is the argument for the test rather than against it. Write the test
-   against that line as its acceptance fixture; the fix is the quest
-   thread's (their file, under active edit) and is not a prerequisite,
-   since the test can land red-listed and tighten when they land it.
+4. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
+   2026-09-29, step 1 landed 2026-10-01 as
+   `tests/test_plugin_import_boundary.py`). The boundary is now a gate
+   rather than a convention, which is what the 10-16 moves get verified
+   against. It carries one grandfathered breach, **gr459054** —
+   `quest/roadmap_tick.py` importing `precis_se.handler`, found by
+   dogfooding the same day, the same violation step 2 removed reintroduced
+   four days later in a different file. The fix is the quest thread's;
+   a staleness assertion drops the exemption automatically when they land
+   it. Step 3 (declare `precis.skills` from one in-tree plugin) is next and
+   is the cheapest test of the agent-facing seam.
 5. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed

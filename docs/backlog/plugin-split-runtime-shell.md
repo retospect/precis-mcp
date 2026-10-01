@@ -124,11 +124,24 @@ precis-mcp requires it.
 Ordered. Steps 1–4 are behaviour-neutral and move no files between
 packages, so they are fair game before 10-16.
 
-1. **Import-boundary test.** Encode the lattice before anything moves:
-   core must not import a plugin; a plugin's SQL must not reference another
-   plugin's tables; core SQL must not reference a plugin's (already stated
-   as a comment at `0162_design_core.sql:30`). Also measures util's exact
-   size.
+1. ~~**Import-boundary test.**~~ **DONE 2026-10-01** —
+   `tests/test_plugin_import_boundary.py`, four assertions: core must not
+   import a plugin; core SQL must not reference a plugin's table; a
+   plugin's SQL must not reference another plugin's; and the allowlist must
+   not go stale. The plugin set is read from `pyproject.toml`'s entry-point
+   groups, so a newly registered model is covered without editing the test.
+   AST-walked, so a function-local import counts — that is the flavour both
+   real violations had. `_GRANDFATHERED` holds one entry, gr459054
+   (`quest/roadmap_tick.py` → `precis_se.handler`), which keeps the suite
+   green while leaving the breach counted and attributed; the staleness
+   assertion forces the entry out when the gripe lands. SQL matching strips
+   `--` comments and single-quoted literals, because core migrations
+   deliberately *discuss* the plugin tables they must not touch
+   (`0162_design_core.sql` on `se_blocks`, `0158_checklist_kind.sql` on
+   `se_notes`) — a positive control confirms an executable FK reference
+   still trips it. **Not done:** the "measures util's exact size" half; the
+   table in §The measurements this rests on is still the only sizing, and
+   it is per-package, not a util total.
 2. ~~**Move `precis_pathway/analysis.py` into core or geom.**~~ **DONE
    2026-09-29** — now `src/precis/utils/reaction_graph.py`. The two core
    call sites in `quest/figures.py` and `quest/results_table.py` were
