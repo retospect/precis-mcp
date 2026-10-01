@@ -1386,7 +1386,12 @@ hypotheses above, your job is to *close* them — resolve one with evidence \
 hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
-`searches` to go get it instead of hypothesising in a vacuum. A plain keyword \
+`searches` to go get it instead of hypothesising in a vacuum. Each search \
+runs against our own graph first (papers, findings, drafts, concepts, \
+memories); outside sources (Semantic Scholar) are queried and papers acquired \
+only when the graph returns fewer than three relevant hits — so phrase queries \
+for what the graph might already hold, and read the logbook line's \
+`local N, acquired M` to see which leg answered. A plain keyword \
 `query` works, but add a `hypothetical` (see the `searches` field below) when \
 a question-phrased query keeps missing — phrase it as one or two sentences \
 that could appear verbatim in the abstract of the paper you wish existed, NOT \
@@ -1598,7 +1603,12 @@ hypotheses above, your job is to *close* them — resolve one with evidence \
 hypothesis. Do not mint a hypothesis that merely rephrases one already open. \
 When the answer lies in the literature you don't yet hold (a `no-literature` or \
 `thin-support` gap, or a hypothesis that points at "published data"), emit \
-`searches` to go get it instead of hypothesising in a vacuum. A plain keyword \
+`searches` to go get it instead of hypothesising in a vacuum. Each search \
+runs against our own graph first (papers, findings, drafts, concepts, \
+memories); outside sources (Semantic Scholar) are queried and papers acquired \
+only when the graph returns fewer than three relevant hits — so phrase queries \
+for what the graph might already hold, and read the logbook line's \
+`local N, acquired M` to see which leg answered. A plain keyword \
 `query` works, but add a `hypothetical` (see the `searches` field below) when \
 a question-phrased query keeps missing — phrase it as one or two sentences \
 that could appear verbatim in the abstract of the paper you wish existed, NOT \

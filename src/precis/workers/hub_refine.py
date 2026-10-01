@@ -1213,7 +1213,11 @@ def _probe_s2(claim_sentence: str, *, limit: int = 5) -> list[dict[str, Any]]:
     from precis.ingest.semantic_scholar import search_s2_papers
 
     out: list[dict[str, Any]] = []
-    for paper in search_s2_papers(claim_sentence, limit=limit):
+    try:
+        papers = search_s2_papers(claim_sentence, limit=limit)
+    except Exception:  # rate limit / outage: this leg is best-effort, fail fast
+        return []
+    for paper in papers:
         doi = paper.get("doi")
         if not doi:
             continue

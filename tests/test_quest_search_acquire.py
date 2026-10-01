@@ -24,6 +24,12 @@ from precis.ingest import semantic_scholar as s2mod
 from precis.quest import search as qsearch
 from tests._fakes import FakeStore as _FakeStoreBase
 
+
+@pytest.fixture(autouse=True)
+def _clear_s2_cache() -> None:
+    s2mod._cache.clear()
+
+
 # ── search_s2_papers ─────────────────────────────────────────────────
 
 
@@ -51,7 +57,7 @@ class TestSearchS2Papers:
             [_FakePaper("10.1/one"), _FakePaper("10.1/two"), _FakePaper(None)]
         )
         monkeypatch.setattr(
-            s2mod, "_search_with_retry", lambda sch, q, limit: fake_results
+            s2mod, "_search_fast_fail", lambda sch, q, limit: fake_results
         )
         out = s2mod.search_s2_papers("query text", limit=3)
         assert len(out) == 3
@@ -62,7 +68,7 @@ class TestSearchS2Papers:
     def test_respects_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_results = _FakeItems([_FakePaper(f"10.1/{i}") for i in range(5)])
         monkeypatch.setattr(
-            s2mod, "_search_with_retry", lambda sch, q, limit: fake_results
+            s2mod, "_search_fast_fail", lambda sch, q, limit: fake_results
         )
         out = s2mod.search_s2_papers("query text", limit=2)
         assert len(out) == 2
@@ -71,14 +77,14 @@ class TestSearchS2Papers:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            s2mod, "_search_with_retry", lambda sch, q, limit: _FakeItems([])
+            s2mod, "_search_fast_fail", lambda sch, q, limit: _FakeItems([])
         )
         assert s2mod.search_s2_papers("query text") == []
 
     def test_none_results_returns_empty_list(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(s2mod, "_search_with_retry", lambda sch, q, limit: None)
+        monkeypatch.setattr(s2mod, "_search_fast_fail", lambda sch, q, limit: None)
         assert s2mod.search_s2_papers("query text") == []
 
     def test_exception_degrades_to_empty_list(
@@ -87,7 +93,7 @@ class TestSearchS2Papers:
         def _boom(sch: Any, q: str, limit: int) -> Any:
             raise RuntimeError("network down")
 
-        monkeypatch.setattr(s2mod, "_search_with_retry", _boom)
+        monkeypatch.setattr(s2mod, "_search_fast_fail", _boom)
         assert s2mod.search_s2_papers("query text") == []
 
 
@@ -95,21 +101,28 @@ class TestSearchS2Papers:
 
 
 class _Row:
-    def __init__(self, id_: int) -> None:
+    def __init__(self, id_: int, kind: str = "paper") -> None:
         self.id = id_
+        self.kind = kind
 
 
 class FakeStore(_FakeStoreBase):
-    """Minimal store stub: only ``search_refs_lexical`` is exercised."""
+    """Minimal store stub: the local leg's ``search_chunks_across_kinds`` and
+    the quest-draft exclusion's ``links_for`` are what is exercised.
 
-    def __init__(self, held_ids: list[int]) -> None:
+    ``held`` is a list of ref ids (papers) or ``(id, kind)`` pairs."""
+
+    def __init__(self, held_ids: list[Any]) -> None:
         super().__init__()
-        self._held_ids = held_ids
+        self._held = [h if isinstance(h, tuple) else (h, "paper") for h in held_ids]
+        self.local_calls: list[dict[str, Any]] = []
 
-    def search_refs_lexical(
-        self, *, q: str, kind: str, limit: int
-    ) -> list[tuple[_Row, float]]:
-        return [(_Row(i), 1.0) for i in self._held_ids]
+    def search_chunks_across_kinds(self, **kw: Any) -> list[tuple[Any, _Row, float]]:
+        self.local_calls.append(kw)
+        return [(None, _Row(i, k), 1.0) for i, k in self._held]
+
+    def links_for(self, *a: Any, **kw: Any) -> list[Any]:
+        return []
 
 
 class _FakeResponse:
@@ -369,3 +382,207 @@ class TestHydeCorpusHits:
         store: Any = object()
         out = qsearch._hyde_corpus_hits(store, None, 1, "q", "a hypothetical", [])
         assert out == []
+
+
+# ── local-first (quest-tick-local-first-search) ──────────────────────────
+
+
+class _S2Stub:
+    """Records S2 calls; optionally raises."""
+
+    def __init__(self, raises: Exception | None = None) -> None:
+        self.calls: list[str] = []
+        self.raises = raises
+
+    def __call__(self, query: str, limit: int) -> list[dict[str, Any]]:
+        self.calls.append(query)
+        if self.raises is not None:
+            raise self.raises
+        return [{"doi": "10.1/new", "title": "new"}]
+
+
+def _stub_acquire(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def _acq(self: Any, **kw: Any) -> _FakeResponse:
+        calls.append(kw)
+        return _FakeResponse(body="acquire: minted stub paper id=901")
+
+    monkeypatch.setattr("precis.handlers.paper.PaperHandler.acquire", _acq)
+    return calls
+
+
+class TestLocalFirst:
+    def test_answered_by_held_finding_acquires_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        acquires = _stub_acquire(monkeypatch)
+
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(
+            held_ids=[(50, "finding"), (51, "finding"), (52, "paper")]
+        )
+        out = fn(store, "claim provenance", [])
+
+        assert [rid for rid, _ in out] == [50, 51, 52]
+        assert s2.calls == []  # zero S2 calls
+        assert acquires == []
+        rep = fn.report_for("claim provenance")
+        assert rep is not None
+        assert (rep.local, rep.acquired, rep.external_ran) == (3, 0, False)
+        # the hybrid cross-kind primitive over all five kinds
+        assert store.local_calls[0]["kinds"] == list(qsearch.LOCAL_KINDS)
+
+    def test_no_local_hit_still_acquires(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
+
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[])
+        out = fn(store, "novel topic", [])
+
+        assert out == [(901, None)]
+        assert s2.calls == ["novel topic"]
+        rep = fn.report_for("novel topic")
+        assert rep is not None
+        assert (rep.local, rep.acquired, rep.external_ran) == (0, 1, True)
+
+    def test_s2_raising_keeps_local_hits_and_records_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub(raises=RuntimeError("429 rate limited"))
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
+
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[(50, "finding")])
+        out = fn(store, "q", [])
+
+        assert out == [(50, 1.0)]
+        rep = fn.report_for("q")
+        assert rep is not None
+        assert rep.external_error is not None and "429" in rep.external_error
+
+    def test_local_search_failure_degrades_to_external(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(s2mod, "search_s2_papers", _S2Stub())
+        _stub_acquire(monkeypatch)
+
+        class _Boom(FakeStore):
+            def search_chunks_across_kinds(self, **kw: Any) -> Any:
+                raise RuntimeError("db down")
+
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        boom: Any = _Boom(held_ids=[])
+        out = fn(boom, "q", [])
+        assert out == [(901, None)]
+
+    def test_already_linked_hits_count_toward_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [10, 11])
+        assert [rid for rid, _ in out] == [12]
+        assert s2.calls == []  # graph answered even though two are already linked
+
+    def test_floor_applies_to_enough(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        _stub_acquire(monkeypatch)
+        monkeypatch.setenv("PRECIS_QUEST_SEARCH_FLOOR", "5.0")
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])  # all score 1.0 < floor
+        fn(store, "q", [])
+        assert s2.calls == ["q"]
+
+
+class _StepStore(FakeStore):
+    """Adds what ``run_search_step`` touches beyond the search itself."""
+
+    def __init__(self, held_ids: list[Any]) -> None:
+        super().__init__(held_ids)
+        self.links: list[dict[str, Any]] = []
+
+    def add_link(self, **kw: Any) -> None:
+        self.links.append(kw)
+
+    def add_tag(self, *a: Any, **kw: Any) -> None:
+        return None
+
+
+class TestRunSearchStepLocalFirst:
+    @pytest.fixture(autouse=True)
+    def _plumbing(self, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        monkeypatch.setattr(qsearch, "_live_servers", lambda store, qid: [])
+        monkeypatch.setattr(qsearch, "quest_tag_value", lambda qid, store: f"qu{qid}")
+        monkeypatch.setattr(
+            qsearch, "append_entry", lambda store, qid, **kw: entries.append(kw)
+        )
+        self.entries = entries
+        return entries
+
+    def test_logbook_names_local_hits_and_acquisitions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(s2mod, "search_s2_papers", _S2Stub())
+        _stub_acquire(monkeypatch)
+        fn = qsearch.make_acquiring_search(7, _fake_hub())
+        store: Any = _StepStore(held_ids=[(50, "finding")])
+        step = qsearch.run_search_step(store, 7, ["thin query"], search_fn=fn)
+
+        assert step.papers_linked == 2  # the finding + the acquired paper
+        assert "local 1, acquired 1" in self.entries[0]["text"]
+        assert "graph thin, outside searched" in self.entries[0]["text"]
+
+    def test_answered_query_logbook_says_outside_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        fn = qsearch.make_acquiring_search(7, _fake_hub())
+        store: Any = _StepStore(
+            held_ids=[(50, "finding"), (51, "finding"), (52, "paper"), (53, "paper")]
+        )
+        qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
+
+        assert "local 4, acquired 0" in self.entries[0]["text"]
+        assert "outside skipped" in self.entries[0]["text"]
+        assert s2.calls == []
+        # bounded by MAX_LINK_PER_QUERY
+        assert [ln["src_ref_id"] for ln in store.links] == [50, 51, 52]
+        assert all(ln["relation"] == "serves" for ln in store.links)
+
+    def test_draft_and_memory_hits_count_but_are_not_linked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2 = _S2Stub()
+        monkeypatch.setattr(s2mod, "search_s2_papers", s2)
+        fn = qsearch.make_acquiring_search(7, _fake_hub())
+        store: Any = _StepStore(
+            held_ids=[(60, "draft"), (61, "memory"), (62, "concept"), (63, "paper")]
+        )
+        qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
+
+        assert s2.calls == []  # 4 local hits answered it
+        assert [ln["src_ref_id"] for ln in store.links] == [62, 63]
+
+    def test_s2_failure_does_not_raise_and_is_logged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            s2mod, "search_s2_papers", _S2Stub(raises=RuntimeError("429"))
+        )
+        fn = qsearch.make_acquiring_search(7, _fake_hub())
+        store: Any = _StepStore(held_ids=[(50, "finding")])
+        step = qsearch.run_search_step(store, 7, ["q"], search_fn=fn)
+
+        assert step.papers_linked == 1
+        assert "outside search failed" in self.entries[0]["text"]

@@ -10,6 +10,13 @@ servers + context, and — crucially — acquiring a paper is *external progress
 (cascade resets the stall clock), so grounding earns compute where re-reasoning
 does not.
 
+**Local first.** :func:`make_acquiring_search`'s local leg is the hybrid
+cross-kind search over papers, findings, drafts, concepts and memories
+(:func:`_local_graph_search`); the external S2 + acquire leg runs only when
+that returns fewer than :data:`LOCAL_ENOUGH` hits above the floor, and an S2
+failure keeps the local hits. Only :data:`LINKABLE_KINDS` are linked ``serves``.
+Each query's :class:`QueryReport` feeds the logbook's local-vs-acquired line.
+
 The search is an **injectable seam** (``search_fn``) exactly like
 ``dispatch_relax`` in :mod:`precis.quest.compute`: the default
 (``_default_paper_search``) is a safe, embedder-free lexical lookup over held
@@ -77,6 +84,20 @@ log = logging.getLogger(__name__)
 MAX_QUERIES = env_int("PRECIS_QUEST_MAX_QUERIES", 10, lo=1, hi=100)
 #: How many top hits to link per query.
 MAX_LINK_PER_QUERY = 3
+#: Local-first: the external (Semantic Scholar + acquire) leg runs only when
+#: the graph leg returns fewer than this many hits above the relevance floor.
+LOCAL_ENOUGH = 3
+#: Kinds the local leg searches — the same hybrid cross-kind primitive
+#: (``Store.search_chunks_across_kinds``) the ``search()`` verb's cross-kind
+#: fan-out runs on.
+LOCAL_KINDS = ("paper", "finding", "draft", "concept", "memory")
+#: Kinds a local hit may ``serves``-link to the quest. ``draft`` is excluded
+#: on purpose: a draft that ``serves`` a quest is that quest's OWNED draft
+#: (``draft_refresh._owning_quest_id``), so linking an arbitrary held draft
+#: would hijack ownership. ``memory`` is a private note, not a source. Both
+#: still count toward :data:`LOCAL_ENOUGH` (they answer the query) — they just
+#: are not linked.
+LINKABLE_KINDS = frozenset({"paper", "finding", "concept"})
 
 
 def _acquire_per_query() -> int:
@@ -119,6 +140,156 @@ SearchFn = Callable[["Store", str, list[int]], list[tuple[int, float | None]]]
 #: Parses ``id=N`` out of the ``PaperHandler.acquire`` ack (mirrors
 #: ``_good_search._ID_IN_ACK``).
 _ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
+
+
+@dataclass
+class QueryReport:
+    """What one query's search did — the logbook's local-vs-acquired line.
+
+    ``kinds`` maps each returned ref id to its kind so
+    :func:`run_search_step` can apply :data:`LINKABLE_KINDS` without a second
+    store round-trip."""
+
+    local: int = 0
+    acquired: int = 0
+    external_ran: bool = False
+    external_error: str | None = None
+    kinds: dict[int, str] = field(default_factory=dict)
+
+
+class AcquiringSearch:
+    """The ``search_fn`` :func:`make_acquiring_search` builds: callable with the
+    plain 3-argument :data:`SearchFn` shape, plus a per-query
+    :class:`QueryReport` side channel (``report_for``) that
+    :func:`run_search_step` reads for its logbook line."""
+
+    def __init__(self, quest_id: int, hub: Any, embedder: Any | None = None) -> None:
+        self.quest_id = quest_id
+        self.hub = hub
+        self.embedder = (
+            embedder if embedder is not None else getattr(hub, "embedder", None)
+        )
+        self._reports: dict[str, QueryReport] = {}
+
+    def report_for(self, query: str) -> QueryReport | None:
+        return self._reports.get(query)
+
+    def __call__(
+        self, store: Store, query: str, exclude_ref_ids: list[int]
+    ) -> list[tuple[int, float | None]]:
+        report = QueryReport()
+        self._reports[query] = report
+        ex = set(exclude_ref_ids)
+
+        local = _local_graph_search(store, self.quest_id, query, self.embedder)
+        floor = relevance_floor()
+        local_ok = [(rid, kind, sc) for rid, kind, sc in local if sc >= floor]
+        report.local = len(local_ok)
+        for rid, kind, _sc in local_ok:
+            report.kinds[rid] = kind
+
+        acquired: list[int] = []
+        if len(local_ok) < LOCAL_ENOUGH:
+            report.external_ran = True
+            acquired, report.external_error = self._acquire(query)
+            report.acquired = len(acquired)
+            for rid in acquired:
+                report.kinds.setdefault(rid, "paper")
+
+        ordered: list[tuple[int, float | None]] = [
+            *((rid, sc) for rid, _kind, sc in local_ok),
+            *((rid, None) for rid in acquired),
+        ]
+        seen: set[int] = set()
+        out: list[tuple[int, float | None]] = []
+        for rid, score in ordered:
+            if rid in ex or rid in seen:
+                continue
+            seen.add(rid)
+            out.append((rid, score))
+        return out
+
+    def _acquire(self, query: str) -> tuple[list[int], str | None]:
+        """The external leg: S2 free-text search, then queue each DOI-bearing
+        candidate via ``PaperHandler.acquire``. Returns ``(acquired ids,
+        error)`` — an S2 failure is recorded, never raised (the caller keeps
+        its local hits); a per-candidate acquire failure is swallowed."""
+        from precis.handlers.paper import PaperHandler
+        from precis.ingest.semantic_scholar import search_s2_papers
+
+        error: str | None = None
+        try:
+            candidates = search_s2_papers(query, limit=_acquire_per_query())
+        except Exception as exc:
+            log.debug("quest %s: S2 search failed for %r", self.quest_id, query[:80])
+            candidates = []
+            error = f"{type(exc).__name__}: {str(exc)[:120]}"
+
+        acquired: list[int] = []
+        handler = PaperHandler(hub=self.hub)
+        for paper in candidates:
+            doi = paper.get("doi")
+            if not doi:
+                continue
+            try:
+                resp = handler.acquire(
+                    identifier=f"doi:{doi}",
+                    reason=f"quest lit-search: {query[:120]}",
+                    verify=True,
+                )
+            except Exception:
+                log.debug(
+                    "quest %s: acquire failed for doi=%s (query=%r)",
+                    self.quest_id,
+                    doi,
+                    query[:80],
+                )
+                continue
+            m = _ID_IN_ACK.search(resp.body or "")
+            if m is not None:
+                acquired.append(int(m.group(1)))
+        return acquired, error
+
+
+def _local_graph_search(
+    store: Store, quest_id: int, query: str, embedder: Any | None
+) -> list[tuple[int, str, float]]:
+    """The local-first leg: hybrid (RRF-fused lexical + semantic) search over
+    :data:`LOCAL_KINDS` in ONE query via ``Store.search_chunks_across_kinds``
+    — the primitive behind ``search()``'s cross-kind source search, not a new
+    ranker. One best chunk per ref; ``(ref_id, kind, score)`` best first.
+
+    The quest itself and its own dossier / paper drafts are excluded (they
+    would "answer" every query about the quest). Degrades to lexical-only
+    without an embedder; any failure returns ``[]`` (a miss — the external
+    leg then runs, as before this leg existed)."""
+    from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+
+    try:
+        exclude = {quest_id}
+        for rel in ("dossier-of", "paper-of"):
+            exclude.update(
+                ln.src_ref_id
+                for ln in store.links_for(quest_id, direction="in", relation=rel)
+            )
+        query_vec: list[float] | None = None
+        if embedder is not None:
+            try:
+                query_vec = embedder.embed_one(query)
+            except Exception:
+                log.debug("quest %s: local-leg embed failed", quest_id, exc_info=True)
+        rows = store.chunks.search_chunks_across_kinds(
+            kinds=list(LOCAL_KINDS),
+            q=query,
+            query_vec=query_vec,
+            limit=10,
+            max_distance=SEMANTIC_DISTANCE_FLOOR,
+            exclude_ref_ids=sorted(exclude),
+        )
+    except Exception:
+        log.warning("quest %s: local graph search failed", quest_id, exc_info=True)
+        return []
+    return [(ref.id, ref.kind, float(score)) for _blk, ref, score in rows]
 
 
 @dataclass(frozen=True)
@@ -235,85 +406,51 @@ def _hyde_corpus_hits(
     return out
 
 
-def make_acquiring_search(quest_id: int, hub: Any) -> SearchFn:
-    """Build a ``search_fn`` that acquires, not just looks up.
+def make_acquiring_search(
+    quest_id: int, hub: Any, embedder: Any | None = None
+) -> AcquiringSearch:
+    """Build a ``search_fn`` that looks locally first, then acquires.
 
-    Layers Semantic Scholar over :func:`_default_paper_search`: held-corpus
-    lexical hits come first (free, instant), then each of the top S2 results
-    for the query — anything carrying a DOI — is queued through
-    ``PaperHandler.acquire`` (idempotent stub mint + ``fetch_oa`` pickup
-    later, out of band). A bad DOI or a flaky S2 / fetch round-trip is
-    swallowed per-candidate — one dud result must never sink the whole
-    lit-search step.
+    **Local first.** The graph (papers, findings, drafts, concepts, memories —
+    :func:`_local_graph_search`) is searched; only when it returns fewer than
+    :data:`LOCAL_ENOUGH` hits above :func:`relevance_floor` does the external
+    leg run: Semantic Scholar's top results for the query — anything carrying
+    a DOI — are queued through ``PaperHandler.acquire`` (idempotent stub mint
+    + ``fetch_oa`` pickup later, out of band). A query the graph already
+    answers acquires nothing and makes no S2 call.
 
-    Unlike the pre-incident version, this does **not** pass
-    ``context_ref_id=quest_id`` to ``acquire()`` — that call linked
-    ``related-to``→quest for every accepted (has-DOI) S2 candidate
-    (up to :func:`_acquire_per_query`, default 4 per query)
-    *unconditionally*, before :func:`run_search_step` ever slices to
-    :data:`MAX_LINK_PER_QUERY` or applies the relevance floor — the
-    unbounded path qu401863's four surviving ``related-to`` papers
-    (pa410522–25) came from (quest-tick-incident-fix.md item 5). An S2
-    result carries no relevance score of its own (unlike the held-corpus
-    leg's ``ts_rank_cd``), so it is returned with ``score=None`` — the
-    caller's floor never drops it, but it is now bounded exactly like every
-    other candidate: ``serves``→quest is the *only* link this step can
-    create, and only for the top :data:`MAX_LINK_PER_QUERY` survivors.
+    An S2 failure (rate limit, exception) is recorded on the query's
+    :class:`QueryReport` and the local hits are still returned; a bad DOI or
+    a flaky acquire is swallowed per-candidate — one dud result must never
+    sink the whole lit-search step.
+
+    This does **not** pass ``context_ref_id=quest_id`` to ``acquire()`` — that
+    linked ``related-to``→quest for every accepted candidate
+    *unconditionally*, before :func:`run_search_step` sliced to
+    :data:`MAX_LINK_PER_QUERY` or applied the floor (the unbounded path
+    qu401863's stray ``related-to`` papers came from, quest-tick-incident-fix
+    item 5). An S2 result carries no relevance score, so it returns
+    ``score=None`` — never dropped by the floor, but bounded like every other
+    candidate: ``serves``→quest is the only link this step creates.
+
+    Returns an :class:`AcquiringSearch` (a plain 3-argument ``SearchFn`` plus
+    the per-query report).
     """
+    return AcquiringSearch(quest_id, hub, embedder)
 
-    def _search(
-        store: Store, query: str, exclude_ref_ids: list[int]
-    ) -> list[tuple[int, float | None]]:
-        from precis.handlers.paper import PaperHandler
-        from precis.ingest.semantic_scholar import search_s2_papers
 
-        held = _default_paper_search(store, query, exclude_ref_ids)
-
-        acquired: list[int] = []
-        try:
-            candidates = search_s2_papers(query, limit=_acquire_per_query())
-        except Exception:
-            log.debug("quest %s: S2 search failed for %r", quest_id, query[:80])
-            candidates = []
-
-        handler = PaperHandler(hub=hub)
-        for paper in candidates:
-            doi = paper.get("doi")
-            if not doi:
-                continue
-            try:
-                resp = handler.acquire(
-                    identifier=f"doi:{doi}",
-                    reason=f"quest lit-search: {query[:120]}",
-                    verify=True,
-                )
-            except Exception:
-                log.debug(
-                    "quest %s: acquire failed for doi=%s (query=%r)",
-                    quest_id,
-                    doi,
-                    query[:80],
-                )
-                continue
-            m = _ID_IN_ACK.search(resp.body or "")
-            if m is not None:
-                acquired.append(int(m.group(1)))
-
-        ex = set(exclude_ref_ids)
-        ordered: list[tuple[int, float | None]] = [
-            *held,
-            *((rid, None) for rid in acquired),
-        ]
-        seen: set[int] = set()
-        out: list[tuple[int, float | None]] = []
-        for rid, score in ordered:
-            if rid in ex or rid in seen:
-                continue
-            seen.add(rid)
-            out.append((rid, score))
-        return out
-
-    return _search
+def _sources_clause(report: QueryReport | None) -> str:
+    """`` [local N, acquired M …]`` — the logbook's local-vs-outside split for
+    one query (empty for a ``search_fn`` that reports nothing)."""
+    if report is None:
+        return ""
+    if not report.external_ran:
+        tail = "outside skipped, graph answered"
+    elif report.external_error:
+        tail = f"outside search failed: {report.external_error}"
+    else:
+        tail = "graph thin, outside searched"
+    return f" [local {report.local}, acquired {report.acquired}; {tail}]"
 
 
 def run_search_step(
@@ -361,7 +498,9 @@ def run_search_step(
     """
     search = search_fn or _default_paper_search
     quest_tag = Tag.open(quest_tag_value(quest_id, store))
-    existing = {s.id for s in _live_servers(store, quest_id) if s.kind == "paper"}
+    existing = {
+        s.id for s in _live_servers(store, quest_id) if s.kind in LINKABLE_KINDS
+    }
     floor = relevance_floor()
     queries_run = 0
     linked_total = 0
@@ -405,6 +544,15 @@ def run_search_step(
                 )
                 continue
             above_floor.append(rid)
+        report: QueryReport | None = getattr(search, "report_for", lambda _q: None)(
+            query
+        )
+        kinds = report.kinds if report is not None else {}
+        # Only kinds that may carry a `serves` link to a quest (the default
+        # kind is paper: legacy search_fns return paper ids only).
+        above_floor = [
+            r for r in above_floor if kinds.get(r, "paper") in LINKABLE_KINDS
+        ]
         hits = above_floor[:MAX_LINK_PER_QUERY]
         linked: list[int] = []
         for rid in hits:
@@ -420,12 +568,16 @@ def run_search_step(
             existing.add(rid)
             linked.append(rid)
         linked_total += len(linked)
+        sources = _sources_clause(report)
         if linked:
-            handles = ", ".join(_handle("paper", rid) for rid in linked)
+            handles = ", ".join(_handle(kinds.get(rid, "paper"), rid) for rid in linked)
             append_entry(
                 store,
                 quest_id,
-                text=f'lit-search: "{query[:80]}" → linked {len(linked)} paper(s): {handles}',
+                text=(
+                    f'lit-search: "{query[:80]}" → linked {len(linked)} '
+                    f"source(s): {handles}{sources}"
+                ),
                 entry_type="result",
                 by=by,
             )
@@ -435,8 +587,8 @@ def run_search_step(
                 store,
                 quest_id,
                 text=(
-                    f'lit-search: "{query[:80]}" → no held paper matched '
-                    "(acquisition needed)"
+                    f'lit-search: "{query[:80]}" → nothing new linked'
+                    f"{sources or ' (acquisition needed)'}"
                 ),
                 entry_type="observation",
                 by=by,
@@ -447,8 +599,13 @@ def run_search_step(
 
 
 __all__ = [
+    "LINKABLE_KINDS",
+    "LOCAL_ENOUGH",
+    "LOCAL_KINDS",
     "MAX_LINK_PER_QUERY",
     "MAX_QUERIES",
+    "AcquiringSearch",
+    "QueryReport",
     "SearchFn",
     "SearchQuery",
     "SearchStep",

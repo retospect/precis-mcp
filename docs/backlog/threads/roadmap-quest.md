@@ -13,11 +13,6 @@ server; gr345366 moved to chemistry)
 
 ## Do next
 
-0. **gr459597 + backlog/quest-tick-local-first-search.md** — fix the
-   tick's paper search before tick 3: S2 calls run keyless, uncached and
-   double-retried (library 10× inside external_retry 5×), so tick 2 spent
-   ~25 min on 61×429; local-first (Reto, 2026-10-01) removes most of those
-   calls outright. Both touch the same quest/search.py path — one slice.
 1. **qu453863 activation** — no longer needs Reto's word
    (docs/conventions/thresholds.md, 2026-10-01: ticks and activation are
    go). The first live
@@ -31,10 +26,11 @@ server; gr345366 moved to chemistry)
    (2026-10-01 ~12:20 UTC, exit 0) changed role to `supply` @big: 3 S2
    searches, 4 papers linked `serves` the quest, 0 hubs, no quantified
    claim, so `meta.supply` stayed unwritten; dry, gaps [2, 2]. It took
-   ~25 min because quest S2 search runs keyless and double-retried
-   (gr459597, 61×429) — fix that before activation or every supply tick
-   stalls. One more watched tick (expect `bridge` or a supply with a
-   number), then activation (no ask, `docs/conventions/thresholds.md`). Serves
+   ~25 min because quest S2 search ran keyless and double-retried
+   (gr459597, 61×429); fixed 2026-10-01 together with local-first search
+   (S2 only when the graph has fewer than 3 relevant hits). Tick 3 waits
+   for that deploy; its logbook should read `local N, acquired M`. One
+   more watched tick (expect `bridge` or a supply with a number), then activation (no ask, `docs/conventions/thresholds.md`). Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`

@@ -910,13 +910,16 @@ def _phase_roadmap_tick(
         tier=tier_from_str(tier), source="quest_roadmap", tools_needed=True
     )
 
+    search_embedder = _build_search_embedder(ctx.store)
     try:
         result = roadmap_tick(
             ctx.store,
             client,
             quest_id,
-            search_fn=make_acquiring_search(quest_id, Hub(store=ctx.store)),
-            embedder=_build_search_embedder(ctx.store),
+            search_fn=make_acquiring_search(
+                quest_id, Hub(store=ctx.store), search_embedder
+            ),
+            embedder=search_embedder,
         )
     except Exception as exc:  # defensive — mirrors _phase_weave_tick
         log.exception("tick #%s: roadmap_tick raised", slice_count)
@@ -1083,7 +1086,8 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                     wake_when=WakeWhen("at_time", {"ts": int(now + _heartbeat_s())}),
                 )
 
-    search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
+    search_embedder = _build_search_embedder(ctx.store)
+    search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store), search_embedder)
     # quest-bodies-inquiry: the third arm. Unlike weave (a wholly separate
     # ``weave_tick`` function above), ``inquiry`` reuses this SAME
     # ``run_quest_tick`` call — same logbook/dossier/ledger/dialectic/
@@ -1100,7 +1104,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         tier=tier,
         search_fn=search_fn,
         job_ref_id=ctx.ref_id,
-        embedder=_build_search_embedder(ctx.store),
+        embedder=search_embedder,
         tick_state=resume,
         quest_body=body,
         sliced=True,
@@ -1268,7 +1272,11 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
                     quest_id,
                     fallback_queries,
                     by="agent",
-                    search_fn=make_acquiring_search(quest_id, Hub(store=ctx.store)),
+                    search_fn=make_acquiring_search(
+                        quest_id,
+                        Hub(store=ctx.store),
+                        _build_search_embedder(ctx.store),
+                    ),
                 )
                 ctx.append_chunk(
                     "job_event",

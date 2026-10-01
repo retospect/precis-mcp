@@ -1,6 +1,6 @@
 """Tests for the Semantic Scholar batched citation fetch (``citations_batch``).
 
-Mocks ``precis.ingest.citations.SemanticScholar`` so nothing hits the
+Mocks ``precis.ingest.semantic_scholar.SemanticScholar`` so nothing hits the
 network — mirrors the ``@patch("precis.ingest.crossref.Crossref")`` pattern
 in ``test_crossref.py``. ``citations()`` (the existing per-paper path) is
 untouched by these changes and isn't re-tested here.
@@ -58,7 +58,7 @@ def _neighbor(
 
 
 class TestCitationsBatchHappyPath:
-    @patch("precis.ingest.citations.SemanticScholar")
+    @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_multiple_papers_keyed_by_input_id(self, mock_cls: MagicMock) -> None:
         mock_sch = MagicMock()
         mock_cls.return_value = mock_sch
@@ -100,7 +100,7 @@ class TestCitationsBatchHappyPath:
 
 
 class TestCitationsBatchNotFound:
-    @patch("precis.ingest.citations.SemanticScholar")
+    @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_not_found_id_still_gets_empty_entry(self, mock_cls: MagicMock) -> None:
         """``get_papers`` drops not-found ids from its result list — the
         third input id must still surface with empty lists, proving we
@@ -126,7 +126,7 @@ class TestCitationsBatchNotFound:
 
 
 class TestCitationsBatchChunking:
-    @patch("precis.ingest.citations.SemanticScholar")
+    @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_over_500_ids_split_into_multiple_batch_calls(
         self, mock_cls: MagicMock
     ) -> None:
@@ -148,7 +148,7 @@ class TestCitationsBatchChunking:
 
 
 class TestCitationsBatchTruncationFallback:
-    @patch("precis.ingest.citations.SemanticScholar")
+    @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_truncated_references_fall_back_to_paginated_endpoint(
         self, mock_cls: MagicMock
     ) -> None:

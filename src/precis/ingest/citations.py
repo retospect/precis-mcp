@@ -6,6 +6,7 @@ from typing import Any
 
 from semanticscholar import SemanticScholar
 
+from precis.ingest.semantic_scholar import _client
 from precis.utils.http import external_retry
 from precis.utils.rate_limit import acquire as acquire_rate_limit
 
@@ -19,11 +20,7 @@ def citations(paper_id: str, api_key: str = "") -> dict[str, list[dict[str, Any]
     Returns:
         Dict with 'references' and 'cited_by' lists.
     """
-    if not api_key:
-        from precis.secrets import get_secret
-
-        api_key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    sch = _client(api_key)
 
     # Normalize acatome paper_id prefixes
     s2_id = _to_s2_id(paper_id)
@@ -266,11 +263,7 @@ def citations_batch(
         back to the paginated per-paper endpoints so coverage matches
         :func:`citations`.
     """
-    if not api_key:
-        from precis.secrets import get_secret
-
-        api_key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    sch = _client(api_key)
 
     out: dict[str, dict[str, list[dict[str, Any]]]] = {
         pid: {"references": [], "cited_by": []} for pid in paper_ids

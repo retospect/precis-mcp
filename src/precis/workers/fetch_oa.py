@@ -2876,12 +2876,10 @@ def _query_s2_openaccess(paper_id: str) -> str | None:
     keeps the existing metadata-lookup path untouched.
     """
 
-    from semanticscholar import SemanticScholar
-
+    from precis.ingest.semantic_scholar import _client
     from precis.utils.rate_limit import acquire as acquire_rate_limit
 
-    api_key = _secrets.get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    sch = _client()
     acquire_rate_limit("s2")
     paper = sch.get_paper(paper_id, fields=["openAccessPdf"])
     if not paper:

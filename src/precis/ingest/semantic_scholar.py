@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +11,55 @@ from semanticscholar import SemanticScholar
 
 from precis.utils.http import external_retry
 from precis.utils.rate_limit import acquire as acquire_rate_limit
+
+
+def _client(api_key: str = "") -> SemanticScholar:
+    """The one ``SemanticScholar`` constructor for every S2 call site.
+
+    Key = explicit ``api_key`` or the vault's ``SEMANTIC_SCHOLAR_API_KEY``
+    (missing/unreachable vault -> keyless). ``retry=False`` switches off the
+    lib's own tenacity loop (10 attempts on 429) so it cannot nest inside
+    :func:`precis.utils.http.external_retry` (gr459597).
+    """
+    key = api_key
+    if not key:
+        try:
+            from precis.secrets import get_secret
+
+            key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
+        except Exception:
+            key = ""
+    return SemanticScholar(api_key=key or None, retry=False)
+
+
+#: In-process TTL cache for free-text search / single-id lookups (a quest
+#: tick or hub_refine pass re-sends the same query). Bounded, no DB.
+_CACHE_TTL_S = 3600.0
+_CACHE_MAX = 512
+_cache: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key: tuple[Any, ...]) -> tuple[bool, Any]:
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is None:
+            return False, None
+        if time.monotonic() - hit[0] > _CACHE_TTL_S:
+            del _cache[key]
+            return False, None
+        return True, hit[1]
+
+
+def _cache_put(key: tuple[Any, ...], value: Any) -> None:
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX:
+            _cache.pop(next(iter(_cache)))  # oldest insertion
+        _cache[key] = (time.monotonic(), value)
+
+
+def _norm_query(query: str) -> str:
+    return " ".join(query.lower().split())
 
 
 def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] | None:
@@ -22,7 +73,7 @@ def lookup_s2(title: str, api_key: str = "", limit: int = 3) -> dict[str, Any] |
     Returns:
         Normalized metadata dict or None if not found.
     """
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    sch = _client(api_key)
     results = _search_with_retry(sch, title, limit)
     if not results or not results.items:
         return None
@@ -49,14 +100,40 @@ def search_s2_papers(
     Degrades to ``[]`` on any error (bad query, network hiccup, rate limit
     exhaustion) — a lit-search step must never blow up a quest tick.
     """
+    key = ("search", _norm_query(query), limit)
+    hit, cached = _cache_get(key)
+    if hit:
+        return list(cached)
     try:
-        sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
-        results = _search_with_retry(sch, query, limit)
+        sch = _client(api_key)
+        results = _search_fast_fail(sch, query, limit)
     except Exception:
         return []
-    if not results or not results.items:
+    if results is _RATE_LIMITED:
         return []
-    return [_normalize(paper) for paper in results.items[:limit]]
+    out = (
+        [_normalize(paper) for paper in results.items[:limit]]
+        if results and results.items
+        else []
+    )
+    _cache_put(key, out)
+    return list(out)
+
+
+_RATE_LIMITED = object()
+
+
+@external_retry()
+def _search_fast_fail(sch: SemanticScholar, query: str, limit: int) -> Any:
+    """Like :func:`_search_with_retry` but a 429 (the lib raises
+    ``ConnectionRefusedError``) returns :data:`_RATE_LIMITED` at once instead
+    of backoff-looping: free-text lit-search is best-effort and must not stall
+    a quest tick / hub_refine pass (gr459597). Other errors still retry."""
+    acquire_rate_limit("s2")
+    try:
+        return sch.search_paper(query, limit=limit)
+    except ConnectionRefusedError:
+        return _RATE_LIMITED
 
 
 #: S2's batch endpoint (``POST /paper/batch``) caps at 500 ids per call
@@ -99,7 +176,7 @@ def get_papers_batch(ids: list[str], api_key: str = "") -> list[dict[str, Any] |
     """
     if not ids:
         return []
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    sch = _client(api_key)
     out: list[dict[str, Any] | None] = []
     for start in range(0, len(ids), _BATCH_CHUNK_SIZE):
         chunk = ids[start : start + _BATCH_CHUNK_SIZE]
@@ -149,14 +226,18 @@ def _id_keys_for_paper(paper: Any) -> set[str]:
 
 def get_paper_by_id(paper_id: str, api_key: str = "") -> dict[str, Any] | None:
     """Fetch a single paper by S2 paper ID, DOI, or arxiv ID."""
-    sch = SemanticScholar(api_key=api_key) if api_key else SemanticScholar()
+    key = ("id", paper_id.strip().lower())
+    hit, cached = _cache_get(key)
+    if hit:
+        return dict(cached) if cached is not None else None
+    sch = _client(api_key)
     try:
         paper = _get_with_retry(sch, paper_id)
     except Exception:
         return None
-    if not paper:
-        return None
-    return _normalize(paper)
+    out = _normalize(paper) if paper else None
+    _cache_put(key, out)
+    return dict(out) if out is not None else None
 
 
 @external_retry()

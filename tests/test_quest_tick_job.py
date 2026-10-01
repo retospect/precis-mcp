@@ -1372,7 +1372,8 @@ class TestRoadmapArm:
 
         monkeypatch.setattr(router, "DispatchClient", _Client)
         monkeypatch.setattr(
-            "precis.quest.search.make_acquiring_search", lambda qid, hub: None
+            "precis.quest.search.make_acquiring_search",
+            lambda qid, hub, embedder=None: None,
         )
         monkeypatch.setattr(qt, "_build_search_embedder", lambda store: None)
 

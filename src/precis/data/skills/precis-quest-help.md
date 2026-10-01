@@ -301,6 +301,14 @@ precis quest dossier 7         # print the dossier
 precis quest frontier 7        # the Pareto frontier of candidate materials
 ```
 
+**Searches go local first.** A tick's `searches` hit our own graph (papers,
+findings, drafts, concepts, memories) before anything outside. Semantic
+Scholar is queried and papers acquired only when fewer than 3 relevant local
+hits come back; an S2 failure keeps the local hits. Local papers, findings
+and concepts are linked `serves` (max 3 per query); drafts and memories
+count as hits but are not linked. The logbook line per query reads
+`[local N, acquired M; …]`.
+
 **Compute.** With `--compute`, each proposal that carries a
 concrete atomistic `structure` (a periodic cell + atoms) becomes a
 `structure` that `serves` the quest (the graph *is* the memory of
