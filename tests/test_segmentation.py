@@ -266,3 +266,80 @@ class TestSegmentDp:
         assert segs[-1].end == n_chunks - 1
         for i in range(len(segs) - 1):
             assert segs[i].end + 1 == segs[i + 1].start
+
+
+# ── segment_dp: equivalence with the original scalar DP ─────────────
+
+
+def _reference_segment_dp(distances: list[float], *, k: int) -> list[Segment]:
+    """Verbatim copy of the pre-numpy O(k·N²) pure-Python DP."""
+    n_chunks = len(distances) + 1
+    if k < 1:
+        raise ValueError(f"k must be ≥ 1, got {k}")
+    if k > n_chunks:
+        raise ValueError(f"k={k} exceeds chunk count {n_chunks}")
+    if k == 1:
+        return [Segment(0, n_chunks - 1)]
+    if k == n_chunks:
+        return [Segment(i, i) for i in range(n_chunks)]
+    prefix: list[float] = [0.0]
+    for d in distances:
+        prefix.append(prefix[-1] + d)
+
+    def cost(a: int, b: int) -> float:
+        if a >= b:
+            return 0.0
+        return prefix[b] - prefix[a]
+
+    INF = float("inf")
+    D = [[INF] * n_chunks for _ in range(k + 1)]
+    back: list[list[int]] = [[0] * n_chunks for _ in range(k + 1)]
+    for last in range(n_chunks):
+        D[1][last] = cost(0, last)
+    for seg in range(2, k + 1):
+        for last in range(seg - 1, n_chunks):
+            best = INF
+            best_start = seg - 1
+            for start in range(seg - 1, last + 1):
+                prev_cost = D[seg - 1][start - 1]
+                if prev_cost == INF:
+                    continue
+                total = prev_cost + cost(start, last)
+                if total < best:
+                    best = total
+                    best_start = start
+            D[seg][last] = best
+            back[seg][last] = best_start
+    out: list[tuple[int, int]] = []
+    last = n_chunks - 1
+    for seg in range(k, 0, -1):
+        start = back[seg][last]
+        out.append((start, last))
+        last = start - 1
+    out.reverse()
+    return [Segment(s, e) for s, e in out]
+
+
+class TestSegmentDpEquivalence:
+    @pytest.mark.parametrize("seed", range(40))
+    def test_random_matches_reference(self, seed: int) -> None:
+        import random
+
+        rng = random.Random(seed)
+        n_dist = rng.choice([0, 1, 2, 3, 5, 8, 20, 60, 150])
+        kind = seed % 4
+        if kind == 0:
+            distances = [rng.random() for _ in range(n_dist)]
+        elif kind == 1:  # heavy ties
+            distances = [float(rng.randint(0, 3)) / 4 for _ in range(n_dist)]
+        elif kind == 2:  # all equal
+            distances = [0.3] * n_dist
+        else:  # zeros and a few spikes
+            distances = [rng.choice([0.0, 0.0, 0.5, 1.0]) for _ in range(n_dist)]
+        n = n_dist + 1
+        for k in sorted({1, 2, 3, 9, 15, n - 1, n} | {rng.randint(1, n)}):
+            if not 1 <= k <= n:
+                continue
+            assert segment_dp(distances, k=k) == _reference_segment_dp(
+                distances, k=k
+            ), (seed, n, k)

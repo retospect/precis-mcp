@@ -145,14 +145,21 @@ class Scene:
         O(N) over the design's atoms — the small-in-memory regime (§12); a
         cell-list is the optimisation when cells get big.
         """
-        a = self.atoms[label]
+        from . import _pair_kernel
+
+        if label not in self.atoms:
+            raise KeyError(label)
+
+        labels, frac, lat, pbc = _pair_kernel.pack_scene(self)
+        dists, imgs = _pair_kernel.row_mic(frac, labels.index(label), lat, pbc)
         out: list[tuple[str, ImageOffset, float]] = []
-        for other in self.atoms.values():
-            dist, img = self.cell.mic(a.frac, other.frac)
+        for k, other in enumerate(self.atoms.values()):
+            dist = float(dists[k])
             if other.label == label and dist < 1e-9:
                 continue  # skip self (true self-image bonds are declared, not auto)
             if dist <= radius:
-                out.append((other.label, img, dist))
+                g = imgs[k]
+                out.append((other.label, (int(g[0]), int(g[1]), int(g[2])), dist))
         out.sort(key=lambda t: t[2])
         return out
 

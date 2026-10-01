@@ -33,15 +33,53 @@ class NeighborHit:
 
 def coordination(scene: Scene, label: str, tolerance: float = 1.2) -> int:
     """Number of atoms within the covalent bond cutoff of ``label`` (MIC)."""
-    a = scene.atoms[label]
-    n = 0
-    for other in scene.atoms.values():
-        if other.label == label:
-            continue
-        dist, _ = scene.cell.mic(a.frac, other.frac)
-        if dist <= elements.bond_cutoff(a.element, other.element, tolerance):
-            n += 1
-    return n
+    return _row_count(scene, label, tolerance, covalent_only=False)
+
+
+def coordination_all(scene: Scene, tolerance: float = 1.2) -> dict[str, int]:
+    """:func:`coordination` for every atom at once (one O(N²) kernel pass)."""
+    from . import _pair_kernel
+
+    labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    radii = _pair_kernel.radii_of(scene, labels)
+    ok = np.ones(len(labels), dtype=np.bool_)
+    counts = _pair_kernel.coordination_counts(frac, lat, pbc, radii, tolerance, ok)
+    return {la: int(c) for la, c in zip(labels, counts, strict=True)}
+
+
+def covalent_coordination_all(scene: Scene, tolerance: float = 1.2) -> dict[str, int]:
+    """:func:`covalent_coordination` for every atom at once."""
+    from . import _pair_kernel
+
+    labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    radii = _pair_kernel.radii_of(scene, labels)
+    ok = np.array(
+        [elements.max_valence(scene.atoms[la].element) is not None for la in labels],
+        dtype=np.bool_,
+    )
+    counts = _pair_kernel.coordination_counts(frac, lat, pbc, radii, tolerance, ok)
+    return {la: int(c) for la, c in zip(labels, counts, strict=True)}
+
+
+def _row_count(
+    scene: Scene, label: str, tolerance: float, *, covalent_only: bool
+) -> int:
+    """Neighbours of ``label`` within bond cutoff — one O(N) kernel row."""
+    from . import _pair_kernel
+
+    labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    radii = _pair_kernel.radii_of(scene, labels)
+    if label not in scene.atoms:
+        raise KeyError(label)
+    idx = labels.index(label)
+    d, _img = _pair_kernel.row_mic(frac, idx, lat, pbc)
+    hit = d <= (radii[idx] + radii) * tolerance
+    hit[idx] = False
+    if covalent_only:
+        for k, la in enumerate(labels):
+            if hit[k] and elements.max_valence(scene.atoms[la].element) is None:
+                hit[k] = False
+    return int(hit.sum())
 
 
 def covalent_coordination(scene: Scene, label: str, tolerance: float = 1.2) -> int:
@@ -53,17 +91,7 @@ def covalent_coordination(scene: Scene, label: str, tolerance: float = 1.2) -> i
     consume an adsorbate's covalent valence budget; this is what the
     over-valence gate (validate.py rule 2) wants.
     """
-    a = scene.atoms[label]
-    n = 0
-    for other in scene.atoms.values():
-        if other.label == label:
-            continue
-        if elements.max_valence(other.element) is None:
-            continue  # metal neighbour — not covalent bonding
-        dist, _ = scene.cell.mic(a.frac, other.frac)
-        if dist <= elements.bond_cutoff(a.element, other.element, tolerance):
-            n += 1
-    return n
+    return _row_count(scene, label, tolerance, covalent_only=True)
 
 
 def neighborhood(scene: Scene, label: str, radius: float) -> list[NeighborHit]:
@@ -107,16 +135,20 @@ def detect_bonds(scene: Scene, tolerance: float = 1.2) -> list[Bond]:
     auto-detected, never withheld, and tagged ``inferred`` so they're marked, not
     hidden. Each unordered pair is emitted once with its MIC image offset.
     """
-    out: list[Bond] = []
-    labels = list(scene.atoms)
-    for ai in range(len(labels)):
-        a = scene.atoms[labels[ai]]
-        for bj in range(ai + 1, len(labels)):
-            b = scene.atoms[labels[bj]]
-            dist, img = scene.cell.mic(a.frac, b.frac)
-            if dist <= elements.bond_cutoff(a.element, b.element, tolerance):
-                out.append(Bond(i=a.label, j=b.label, provenance="inferred", image=img))
-    return out
+    from . import _pair_kernel
+
+    labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    radii = _pair_kernel.radii_of(scene, labels)
+    ii, jj, _d, img = _pair_kernel.pairs_within(frac, lat, pbc, radii, tolerance, True)
+    return [
+        Bond(
+            i=scene.atoms[labels[i]].label,
+            j=scene.atoms[labels[j]].label,
+            provenance="inferred",
+            image=(int(g[0]), int(g[1]), int(g[2])),
+        )
+        for i, j, g in zip(ii.tolist(), jj.tolist(), img, strict=True)
+    ]
 
 
 def find(

@@ -33,6 +33,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
+import numpy as np
+
 #: Bump when the algorithm changes shape. Used today as a cache key
 #: for the in-process skill-TOC clustering in :mod:`precis.utils.toc`;
 #: F20 retired the persistent ``ref_segments`` rows that used to
@@ -298,50 +300,37 @@ def segment_dp(
     for d in distances:
         prefix.append(prefix[-1] + d)
 
-    def cost(a: int, b: int) -> float:
-        """Intra-segment dispersion for chunks [a..b] (inclusive).
-
-        Equals the sum of adjacent-pair distances inside the
-        segment: ``distances[a..b-1]``. A 1-chunk segment costs 0.
-        """
-        if a >= b:
-            return 0.0
-        return prefix[b] - prefix[a]
-
     # DP table. D[seg][last_chunk_idx] = minimum total cost to
     # cover chunks [0..last_chunk_idx] with exactly ``seg`` segments.
-    INF = float("inf")
-    D = [[INF] * n_chunks for _ in range(k + 1)]
+    # cost(a, b) = prefix[b] - prefix[a] (0 when a == b), so the inner
+    # loop over ``start`` is one numpy row operation. The float ops are
+    # the same as the scalar form, and ``argmin`` returns the first
+    # minimum, matching a strict ``<`` scan over ascending ``start`` —
+    # outputs (ties included) are identical to the scalar DP.
+    pre = np.asarray(prefix, dtype=np.float64)
+    D = np.full((k + 1, n_chunks), np.inf)
     # back[seg][last] = the chunk index where the LAST segment starts.
-    back: list[list[int]] = [[0] * n_chunks for _ in range(k + 1)]
+    back = np.zeros((k + 1, n_chunks), dtype=np.int64)
 
     # Base case: 1 segment covering [0..last] has cost cost(0, last).
-    for last in range(n_chunks):
-        D[1][last] = cost(0, last)
-        back[1][last] = 0
+    D[1] = pre - pre[0]
 
     # Fill k = 2..K.
     for seg in range(2, k + 1):
+        prev = D[seg - 1]
         for last in range(seg - 1, n_chunks):
-            # Try every start position for this segment: [start..last].
-            best = INF
-            best_start = seg - 1
-            for start in range(seg - 1, last + 1):
-                prev_cost = D[seg - 1][start - 1]
-                if prev_cost == INF:
-                    continue
-                total = prev_cost + cost(start, last)
-                if total < best:
-                    best = total
-                    best_start = start
-            D[seg][last] = best
-            back[seg][last] = best_start
+            # Every start position for this segment: [seg-1..last]
+            # (start == last is a single-chunk segment, cost 0).
+            totals = prev[seg - 2 : last] + (pre[last] - pre[seg - 1 : last + 1])
+            j = int(np.argmin(totals))
+            D[seg, last] = totals[j]
+            back[seg, last] = seg - 1 + j
 
     # Reconstruct boundaries by tracing back from D[k][n_chunks-1].
     boundaries: list[tuple[int, int]] = []
     last = n_chunks - 1
     for seg in range(k, 0, -1):
-        start = back[seg][last]
+        start = int(back[seg][last])
         boundaries.append((start, last))
         last = start - 1
     boundaries.reverse()

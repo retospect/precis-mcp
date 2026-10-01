@@ -38,7 +38,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from . import elements, export, georelax
+from . import export, georelax
 from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
@@ -249,22 +249,16 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     curve: list[float] = []
     converged = False
     n = 0
+    from . import _pair_kernel
+
+    lat, pbc = _pair_kernel.cell_arrays(cell)
+    radii = _pair_kernel.radii_of(scene, labels)
     for n in range(1, steps + 1):
-        disp = {label: np.zeros(3) for label in labels}
-        for ai in range(len(labels)):
-            a = scene.atoms[labels[ai]]
-            for bj in range(ai + 1, len(labels)):
-                b = scene.atoms[labels[bj]]
-                d, img = cell.mic(a.frac, b.frac)
-                target = elements.covalent_radius(a.element) + elements.covalent_radius(
-                    b.element
-                )
-                if 1e-6 < d < target * 0.98:
-                    vec = (b.frac + np.array(img) - a.frac) @ cell.lattice
-                    unit = vec / d
-                    push = (target - d) * 0.5
-                    disp[a.label] -= unit * push
-                    disp[b.label] += unit * push
+        frac = np.empty((len(labels), 3), dtype=np.float64)
+        for k, label in enumerate(labels):
+            frac[k] = scene.atoms[label].frac
+        disp_arr = _pair_kernel.clean_displacements(frac, lat, pbc, radii)
+        disp = {label: disp_arr[k] for k, label in enumerate(labels)}
         max_disp = 0.0
         for label in labels:
             atom = scene.atoms[label]

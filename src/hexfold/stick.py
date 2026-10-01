@@ -136,27 +136,31 @@ def stick_relax_pinned(
     bonded[sj, si] = True
     srest = springs[:, 2]
 
-    pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sigma)
-    f = np.zeros_like(pos)
-    for it in range(iters):
-        if it % _REFRESH == 0:
-            pairs = _rep_pairs(pos, bonded, _REP_MARGIN * _REP_CUT * sigma)
-        f = _spring_forces(pos, bonds[:, 0], bonds[:, 1], brest, _K_BOND)
-        f += _spring_forces(pos, si, sj, srest, _K_ANGLE)
-        if len(pairs):
-            pi, pj = pairs[:, 0], pairs[:, 1]
-            d = pos[pj] - pos[pi]
-            r = np.linalg.norm(d, axis=1)
-            near = r < _REP_CUT * sigma
-            pi, pj, d = pi[near], pj[near], d[near]
-            r = r[near]
-            r = np.where(r == 0.0, 1e-9, r)
-            rf = -_K_REP * (_REP_CUT * sigma - r)[:, None] * d / r[:, None]
-            np.add.at(f, pi, rf)
-            np.add.at(f, pj, -rf)
-        f *= mv[:, None]
-        pos += _DT * f
-    max_force = float(np.linalg.norm(f, axis=1).max()) if len(f) else 0.0
+    # lazy: keeps numba out of `import hexfold`
+    from ._stick_kernel import relax_kernel
+
+    pos = np.ascontiguousarray(pos, dtype=np.float64)  # already a copy above
+    max_force = float(
+        relax_kernel(
+            pos,
+            np.ascontiguousarray(bonds, dtype=np.int64),
+            np.ascontiguousarray(brest, dtype=np.float64),
+            si,
+            sj,
+            np.ascontiguousarray(srest, dtype=np.float64),
+            bonded,
+            np.ascontiguousarray(mv, dtype=np.float64),
+            float(sigma),
+            int(iters),
+            _DT,
+            _K_BOND,
+            _K_ANGLE,
+            _K_REP,
+            _REP_CUT,
+            _REFRESH,
+            _REP_MARGIN,
+        )
+    )
     return pos, max_force
 
 

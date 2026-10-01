@@ -158,8 +158,7 @@ def _adsorbate_sites(
 
 def _coordination_hist(scene: Scene) -> tuple[tuple[int, int], ...]:
     hist: dict[int, int] = {}
-    for la in scene.atoms:
-        cn = probe.coordination(scene, la)
+    for cn in probe.coordination_all(scene).values():
         hist[cn] = hist.get(cn, 0) + 1
     return tuple(sorted(hist.items()))
 
@@ -168,14 +167,10 @@ def _min_dist(scene: Scene) -> float:
     atoms = list(scene.atoms)
     if len(atoms) < 2:
         return 99.9
-    best = 99.9
-    for i in range(len(atoms)):
-        for j in range(i + 1, len(atoms)):
-            d, _img = scene.cell.mic(
-                scene.atoms[atoms[i]].frac, scene.atoms[atoms[j]].frac
-            )
-            best = min(best, d)
-    return best
+    from . import _pair_kernel
+
+    _labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    return float(_pair_kernel.min_distance(frac, lat, pbc, 99.9))
 
 
 def fingerprint(scene: Scene) -> Fingerprint:

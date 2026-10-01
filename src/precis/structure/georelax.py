@@ -198,54 +198,48 @@ def relax_graph(
     original ``None`` return there) rather than mutating nothing — `coords`
     itself is still mutated in place, exactly as before.
     """
+    from precis.structure import _pair_kernel  # lazy: numba stays off cli.main
+
     n = len(elements)
-    bonded = {frozenset(b) for b in bonds}
+    radii = np.array([covalent_radius(e) for e in elements], dtype=np.float64)
+    bonded = np.zeros((n, n), dtype=np.bool_)
+    for i, j in bonds:
+        bonded[i, j] = True
+        bonded[j, i] = True
     movable = np.array([0.0 if i in pinned else 1.0 for i in range(n)])
     triples = angle_triples(elements, bonds, hybridizations)
-    curve: list[float] = []
-    converged = False
-    step_count = 0
-    for step_count in range(1, iters + 1):
-        disp = np.zeros_like(coords)
-        for i, j in bonds:
-            target = covalent_radius(elements[i]) + covalent_radius(elements[j])
-            d = coords[j] - coords[i]
-            dist = float(np.linalg.norm(d))
-            if dist < 1e-9:
-                continue
-            f = step * (dist - target) * (d / dist)
-            disp[i] += f * movable[i]
-            disp[j] -= f * movable[j]
-        for i in range(n):
-            for j in range(i + 1, n):
-                if frozenset((i, j)) in bonded:
-                    continue
-                cutoff = (
-                    1.2
-                    * (covalent_radius(elements[i]) + covalent_radius(elements[j]))
-                    * repulsion_margin
-                )
-                d = coords[j] - coords[i]
-                dist = float(np.linalg.norm(d))
-                if dist >= cutoff or dist < 1e-9:
-                    continue
-                f = step * (cutoff - dist) * (d / dist)
-                disp[i] -= f * movable[i]
-                disp[j] += f * movable[j]
-        for i, k, j, theta0 in triples:
-            theta, grad_i, grad_j, grad_k = angle_theta_gradients(
-                coords[i], coords[k], coords[j]
-            )
-            f = angle_step * angle_k * (theta - theta0)
-            disp[i] -= f * grad_i * movable[i]
-            disp[j] -= f * grad_j * movable[j]
-            disp[k] -= f * grad_k * movable[k]
-        coords += disp
-        max_disp = float(np.max(np.linalg.norm(disp, axis=1))) if n else 0.0
-        curve.append(round(max_disp, 4))
-        if tol is not None and max_disp < tol:
-            converged = True
-            break
+    bond_arr = np.array(bonds, dtype=np.int64).reshape(-1, 2)
+    bond_target = np.array([radii[i] + radii[j] for i, j in bonds], dtype=np.float64)
+    tri_arr = np.array([t[:3] for t in triples], dtype=np.int64).reshape(-1, 3)
+    tri_theta0 = np.array([t[3] for t in triples], dtype=np.float64)
+    work = np.ascontiguousarray(coords, dtype=np.float64)
+    if not work.flags.writeable:
+        # numba won't compile in-place writes on a read-only array; the
+        # write-back below then raises numpy's own read-only ValueError,
+        # as the old ``coords += disp`` did.
+        work = work.copy()
+    if iters <= 0:
+        return GeoRelaxTrace(converged=False, n_steps=0, curve=[])
+    converged, step_count, curve_arr = _pair_kernel.relax_graph_loop(
+        work,
+        bond_arr,
+        bond_target,
+        radii,
+        bonded,
+        movable,
+        tri_arr,
+        tri_theta0,
+        iters,
+        step,
+        angle_step,
+        angle_k,
+        repulsion_margin,
+        0.0 if tol is None else tol,
+        tol is not None,
+    )
+    if work is not coords:
+        coords[...] = work
+    curve = [round(float(m), 4) for m in curve_arr]
     return GeoRelaxTrace(converged=converged, n_steps=step_count, curve=curve)
 
 

@@ -71,29 +71,32 @@ def validate(scene: Scene) -> list[ValidationIssue]:
     labels = list(scene.atoms)
 
     # 1. atomic overlap (sub-covalent distance)
-    for ai in range(len(labels)):
+    from . import _pair_kernel
+
+    _labels, frac, lat, pbc = _pair_kernel.pack_scene(scene)
+    radii = _pair_kernel.radii_of(scene, _labels)
+    oi, oj, od, _oimg = _pair_kernel.pairs_within(
+        frac, lat, pbc, radii, OVERLAP_FRACTION, False
+    )
+    for ai, bj, dist in zip(oi.tolist(), oj.tolist(), od.tolist(), strict=True):
         a = scene.atoms[labels[ai]]
-        for bj in range(ai + 1, len(labels)):
-            b = scene.atoms[labels[bj]]
-            dist, _ = scene.cell.mic(a.frac, b.frac)
-            floor = (
-                elements.covalent_radius(a.element)
-                + elements.covalent_radius(b.element)
-            ) * OVERLAP_FRACTION
-            if dist < floor:
-                findings.append(
-                    ValidationIssue(
-                        rule="atom_overlap",
-                        atoms=[a.label, b.label],
-                        measured=round(dist, 3),
-                        expected=round(floor, 3),
-                        suggested_fix=(
-                            f"{a.label}/{b.label} are {dist:.2f} Å apart, below the "
-                            f"{floor:.2f} Å hard-sphere floor — displace one, or check "
-                            f"the fractional coordinates (a 0.05 vs 0.5 typo?)."
-                        ),
-                    )
-                )
+        b = scene.atoms[labels[bj]]
+        floor = (
+            elements.covalent_radius(a.element) + elements.covalent_radius(b.element)
+        ) * OVERLAP_FRACTION
+        findings.append(
+            ValidationIssue(
+                rule="atom_overlap",
+                atoms=[a.label, b.label],
+                measured=round(dist, 3),
+                expected=round(floor, 3),
+                suggested_fix=(
+                    f"{a.label}/{b.label} are {dist:.2f} Å apart, below the "
+                    f"{floor:.2f} Å hard-sphere floor — displace one, or check "
+                    f"the fractional coordinates (a 0.05 vs 0.5 typo?)."
+                ),
+            )
+        )
 
     # 2. over-coordination (covalent valence exceeded). Uses
     # ``covalent_coordination``, not the raw ``coordination`` count: a metal
@@ -103,11 +106,12 @@ def validate(scene: Scene) -> list[ValidationIssue]:
     # fires on genuine over-valence between covalent elements. The budget is
     # charge-aware (gr285775): a declared N+ gets N+'s own budget (4), not
     # neutral N's — no more "passes only by numeric coincidence".
+    cov_cn = probe.covalent_coordination_all(scene)
     for label, atom in scene.atoms.items():
         mv, _known = elements.effective_valence(atom.element, atom.charge)
         if mv is None:
             continue  # metals are not valence-bounded
-        cn = probe.covalent_coordination(scene, label)
+        cn = cov_cn[label]
         if cn > mv:
             charge_note = "" if atom.charge == 0 else f", charge {atom.charge:+d}"
             findings.append(

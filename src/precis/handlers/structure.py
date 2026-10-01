@@ -2164,13 +2164,14 @@ class StructureHandler(Handler):
         # no such run exists (never fabricated).
         force_mags = self._force_magnitudes(scene, ref)
         rows = []
+        coord_all = probe.coordination_all(scene)
         for label, atom in scene.atoms.items():
             rows.append(
                 {
                     "atom": f"{handle}#{label}",
                     "element": atom.element,
                     "frac": ",".join(f"{x:.3f}" for x in atom.frac),
-                    "coord": probe.coordination(scene, label),
+                    "coord": coord_all[label],
                     "fixed": "yes" if atom.fixed else "no",
                     "|F|": force_mags.get(label, "—"),
                 }

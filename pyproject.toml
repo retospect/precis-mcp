@@ -87,7 +87,10 @@ dependencies = [
     # The PCB maze router's A* inner loop (`pcb/maze.py::_astar_kernel`),
     # JIT-compiled: in pure Python it was ~450 s of a 1096 s realize on a
     # real 140-part board. Core for the same reason as shapely above —
-    # route jobs run on every worker. Approved by Reto 2026-10-01.
+    # route jobs run on every worker. Approved by Reto 2026-10-01. Also
+    # backs structure/_pair_kernel.py (pair-MIC + geo relax, inline in
+    # serve) and hexfold/_stick_kernel.py — those import numba lazily so
+    # the cli.main path (slim embedder venv) never pays the llvmlite load.
     "numba>=0.67.0",
     "pydantic-settings>=2.0",
     "platformdirs>=4.0",

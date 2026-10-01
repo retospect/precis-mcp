@@ -16,7 +16,6 @@ converted to SI inside this module.
 
 from __future__ import annotations
 
-import itertools
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -119,19 +118,13 @@ class Cell:
         the lattice translation such that the nearest copy of ``j`` sits at
         ``frac_j + img`` (the ``to_jimage`` of §4.1).
         """
-        d0 = np.asarray(frac_j, dtype=float) - np.asarray(frac_i, dtype=float)
-        img_base = np.zeros(3, dtype=int)
-        for ax in range(3):
-            if self.pbc[ax]:
-                img_base[ax] = -int(np.round(d0[ax]))
-        ranges = [(-1, 0, 1) if self.pbc[ax] else (0,) for ax in range(3)]
-        best_d2 = np.inf
-        best_img: ImageOffset = (0, 0, 0)
-        for na, nb, nc in itertools.product(*ranges):
-            img = img_base + np.array([na, nb, nc], dtype=int)
-            cart = (d0 + img) @ self.lattice
-            d2 = float(cart @ cart)
-            if d2 < best_d2:
-                best_d2 = d2
-                best_img = (int(img[0]), int(img[1]), int(img[2]))
-        return float(np.sqrt(best_d2)), best_img
+        from . import _pair_kernel  # lazy: numba import stays off cli.main
+
+        lat, pbc = _pair_kernel.cell_arrays(self)
+        d, ia, ib, ic = _pair_kernel.mic_scalar(
+            np.ascontiguousarray(frac_i, dtype=np.float64),
+            np.ascontiguousarray(frac_j, dtype=np.float64),
+            lat,
+            pbc,
+        )
+        return float(d), (int(ia), int(ib), int(ic))
