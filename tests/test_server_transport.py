@@ -660,6 +660,96 @@ def test_rearm_is_non_blocking_and_single_flight(
     assert len(handler.vector_cache) > 0
 
 
+def test_rearm_cooldown_backs_off_while_the_embedder_stays_down(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Consecutive failures double the cooldown; a success resets it.
+
+    Found by dogfooding the re-arm on 2026-10-01: a pass against a down
+    embedder costs ~2 min of retries, and on a flat 60s floor every
+    searching session on the machine can start one a minute. The
+    embedder it is hammering sheds rather than queues (gr458940), so a
+    flat floor turns the warm pass into an amplifier of the 429 storm
+    that is already starving it.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import EmbedderUnavailable, MockEmbedder
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(server, "_MD_WARMUP_BACKOFF_S", 0.001)
+    monkeypatch.setattr(server, "_MD_WARMUP_BATCH_ATTEMPTS", 1)
+    monkeypatch.setattr(server, "_MD_WARMUP_REARM_COOLDOWN_S", 10.0)
+    monkeypatch.setattr(vectors_mod, "_WARMUP_STATE", None)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+
+    clock = [1000.0]
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock[0])
+
+    class _Down(MockEmbedder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.down = True
+
+        def embed(self, texts: list[str]) -> Any:
+            if self.down:
+                raise EmbedderUnavailable("at capacity", last_status=429)
+            return super().embed(texts)
+
+    embedder = _Down()
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=embedder, md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None
+
+    server._warm_md_index_background(rt)  # failure 1
+    _join_warmup_threads()
+    rearm = handler.rearm_warmup
+    assert rearm is not None
+
+    # One failure -> 20s. At +15s still cooling, at +25s allowed.
+    clock[0] += 15
+    assert rearm() is False
+    clock[0] += 10
+    assert rearm() is True  # failure 2
+    _join_warmup_threads()
+
+    # Two failures -> 40s. +25s is no longer enough.
+    clock[0] += 25
+    assert rearm() is False
+    clock[0] += 20
+    assert rearm() is True  # failure 3
+    _join_warmup_threads()
+
+    # A success resets the ladder back to the base cooldown. Three
+    # failures would have put it at 80s, so a 15s gap being allowed is
+    # the reset, and is what distinguishes it from a stuck ladder.
+    embedder.down = False
+    clock[0] += 100
+    assert rearm() is True
+    _join_warmup_threads()
+    assert "warm" in (vectors_mod.warmup_state() or "")
+    assert len(handler.vector_cache) > 0
+    clock[0] += 5
+    assert rearm() is False  # inside the 10s base
+    clock[0] += 10
+    assert rearm() is True  # past it — the ladder really did reset
+
+
+def test_rearm_cooldown_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The doubling has a ceiling, so a long outage cannot park the
+    re-arm past the point of usefulness."""
+    assert server._MD_WARMUP_REARM_COOLDOWN_CAP_S >= (
+        server._MD_WARMUP_REARM_COOLDOWN_S * 2
+    )
+    assert server._MD_WARMUP_REARM_COOLDOWN_CAP_S <= 3600.0
+
+
 def test_cold_md_warmup_is_visible_in_precis_status_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

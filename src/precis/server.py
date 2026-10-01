@@ -968,6 +968,12 @@ _MD_WARMUP_BACKOFF_CAP_S = 60.0
 #: transient outage is picked up on the next search a user makes.
 _MD_WARMUP_REARM_COOLDOWN_S = 60.0
 
+#: Ceiling for the doubling re-arm cooldown. ~8 consecutive failures
+#: reach it. Long enough that a dead embedder is left alone, short
+#: enough that a recovered one is picked up within a coffee break
+#: without anyone restarting the server.
+_MD_WARMUP_REARM_COOLDOWN_CAP_S = 900.0
+
 
 def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     """Best-effort: fill the `md` kind's vector cache in a background thread.
@@ -1047,7 +1053,13 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     from precis.embedder import EmbedderUnavailable
     from precis.md_index.vectors import record_warmup_state
 
-    def _warm() -> None:
+    def _warm() -> bool:
+        """Run one pass; True if it completed, False if it gave up.
+
+        The return value drives the re-arm backoff — a caller that
+        cannot tell a completed pass from an abandoned one would
+        re-arm at the same rate against a dead embedder as a live one.
+        """
         attempts: dict[int, int] = {}
 
         def _on_batch_error(exc: Exception, index: int, count: int) -> bool:
@@ -1105,6 +1117,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
             vector_cache.flush()
             log.info("md index vector cache warm: %d new embedding(s)", total_new)
             record_warmup_state(f"warm ({total_new} new embedding(s))")
+            return True
         except Exception as exc:
             # Persist whatever the batches before the failure cached, so a
             # later re-arm resumes rather than restarting (embed_missing
@@ -1118,6 +1131,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
                 f"COLD: {type(exc).__name__} — md search is lexical-only "
                 f"({total_new} cached before the failure)"
             )
+            return False
 
     import threading
 
@@ -1136,18 +1150,33 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     # about to get degraded results, and a timer asleep for an hour is
     # indistinguishable from a wedged thread (which is the shape of the
     # bug this is fixing, so repeating it would be a poor trade).
+    # The cooldown backs off on consecutive failures, which the flat 60s
+    # version did not — found by dogfooding this fix on 2026-10-01: a
+    # pass against a down embedder costs ~2 min of retries, and with the
+    # re-arm on a 60s floor every searching session on the machine can
+    # start one a minute. Against a service that *sheds* rather than
+    # queues (gr458940) that is the warm pass amplifying the 429 storm it
+    # is a victim of. Doubling per consecutive failure, reset on success,
+    # keeps a healthy embedder responsive and a dead one quiet.
     running = threading.Lock()
     last_finished = [0.0]
+    consecutive_failures = [0]
+
+    def _cooldown_s() -> float:
+        return min(
+            _MD_WARMUP_REARM_COOLDOWN_S * (2 ** consecutive_failures[0]),
+            _MD_WARMUP_REARM_COOLDOWN_CAP_S,
+        )
 
     def _run_guarded() -> None:
         try:
-            _warm()
+            consecutive_failures[0] = 0 if _warm() else consecutive_failures[0] + 1
         finally:
             last_finished[0] = time.monotonic()
             running.release()
 
     def _start() -> bool:
-        """Start a warm pass unless one is running or just finished.
+        """Start a warm pass unless one is running or cooling down.
 
         Returns whether a thread was started — the md handler ignores
         it, tests assert on it. Non-blocking by construction: a caller
@@ -1155,9 +1184,7 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         """
         if not running.acquire(blocking=False):
             return False
-        if last_finished[0] and (
-            time.monotonic() - last_finished[0] < _MD_WARMUP_REARM_COOLDOWN_S
-        ):
+        if last_finished[0] and (time.monotonic() - last_finished[0] < _cooldown_s()):
             running.release()
             return False
         threading.Thread(
