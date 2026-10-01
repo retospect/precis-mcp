@@ -244,6 +244,14 @@ def test_the_supervisor_imports_nothing_from_precis_outside_the_test_fallback() 
         if isinstance(t, ast.Try)
         for h in t.handlers
         for n in ast.walk(h)
+    } | {
+        id(n)
+        for t in ast.walk(tree)
+        if isinstance(t, ast.If)
+        and isinstance(t.test, ast.Name)
+        and t.test.id == "TYPE_CHECKING"
+        for b in t.body
+        for n in ast.walk(b)
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import | ast.ImportFrom):

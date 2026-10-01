@@ -48,6 +48,7 @@ recreate, not a watchdog restart.
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import os
 import signal
@@ -57,18 +58,22 @@ import sys
 import threading
 import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-try:
-    # In the container this file and mcp_liveness.py are copied side by side
-    # to a stable directory, so the sibling import always resolves there.
-    import mcp_liveness  # type: ignore[import-not-found,unused-ignore]
-except ModuleNotFoundError:
-    # Only the in-repo tests should get here. As PID 1 in the container a
-    # fallback to the package would re-import from /app — the tree every
-    # child start wipes — so refuse instead of degrading quietly.
-    if os.getpid() == 1:
-        raise
+if TYPE_CHECKING:
     from precis import mcp_liveness
+else:
+    try:
+        # In the container this file and mcp_liveness.py are copied side by
+        # side to a stable directory, so the sibling import resolves there.
+        mcp_liveness = importlib.import_module("mcp_liveness")
+    except ModuleNotFoundError:
+        # Only the in-repo tests should get here. As PID 1 in the container a
+        # fallback to the package would re-import from /app — the tree every
+        # child start wipes — so refuse instead of degrading quietly.
+        if os.getpid() == 1:
+            raise
+        from precis import mcp_liveness
 
 #: Kernel listen backlog. Connections that arrive while no child is
 #: accepting queue here; every Claude Code session reconnecting at once

@@ -26,8 +26,11 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
     existed for every caller that doesn't pass it."""
     called: dict[str, Any] = {"hit": False}
 
-    def fake_main(*, transport: str, host: str, port: int, token: str | None) -> None:
+    def fake_main(
+        *, transport: str, host: str, port: int, token: str | None, fd: int | None
+    ) -> None:
         called["hit"] = True
+        called["fd"] = fd
         called["transport"] = transport
         called["host"] = host
         called["port"] = port
@@ -42,6 +45,7 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called["hit"] is True
     assert called["transport"] == "stdio"
     assert called["token"] is None
+    assert called["fd"] is None
 
 
 def test_serve_passes_through_network_transport_flags(
@@ -49,8 +53,10 @@ def test_serve_passes_through_network_transport_flags(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_main(*, transport: str, host: str, port: int, token: str | None) -> None:
-        captured.update(transport=transport, host=host, port=port, token=token)
+    def fake_main(
+        *, transport: str, host: str, port: int, token: str | None, fd: int | None
+    ) -> None:
+        captured.update(transport=transport, host=host, port=port, token=token, fd=fd)
 
     import precis.server
 
@@ -69,6 +75,8 @@ def test_serve_passes_through_network_transport_flags(
             "9999",
             "--token",
             "s3cr3t",
+            "--fd",
+            "3",
         ],
     )
 
@@ -78,6 +86,7 @@ def test_serve_passes_through_network_transport_flags(
         "host": "0.0.0.0",
         "port": 9999,
         "token": "s3cr3t",
+        "fd": 3,
     }
 
 
