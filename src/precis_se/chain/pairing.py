@@ -215,9 +215,49 @@ def strand_letters(
     remaining offsets get no letter, and the DRC pass reports the shortfall
     (a wrong-length sequence is a finding, never a crash).
     """
+    return {
+        key: chunk
+        for key, chunk, extra in _offset_chunks(sequence, route, indels)
+        if not extra and chunk
+    }
+
+
+def inserted_letters(
+    sequence: str | None,
+    route: list[DomainSpec],
+    indels: Mapping[str, HelixIndel] | None = None,
+) -> dict[tuple[int, int], tuple[str | None, ...]]:
+    """Map ``(ord, offset)`` → the ``1 + k`` letters of every inserted
+    offset on the route, in the strand's 5'→3' order — what the atom model
+    places (the first on the unit, the ``k`` extras bulging toward the next
+    offset). ``None`` per base the sequence does not reach, so an
+    unsequenced strand still gets its ``1 + k`` nucleotides."""
+    out: dict[tuple[int, int], tuple[str | None, ...]] = {}
+    for domain in route:
+        indel = (indels or {}).get(domain.helix)
+        if indel is None:
+            continue
+        for offset in domain.offsets():
+            extra = indel.insertions.get(offset, 0)
+            if extra:
+                out[(domain.ord, offset)] = (None,) * (1 + extra)
+    for key, chunk, extra in _offset_chunks(sequence, route, indels):
+        if extra:
+            out[key] = tuple(chunk) + (None,) * (1 + extra - len(chunk))
+    return out
+
+
+def _offset_chunks(
+    sequence: str | None,
+    route: list[DomainSpec],
+    indels: Mapping[str, HelixIndel] | None,
+) -> list[tuple[tuple[int, int], str, int]]:
+    """``((ord, offset), letters, extra)`` per base-holding offset the
+    sequence reaches — ``letters`` is ``1 + extra`` long, or shorter where
+    the sequence runs out."""
     if not sequence:
-        return {}
-    out: dict[tuple[int, int], str] = {}
+        return []
+    out: list[tuple[tuple[int, int], str, int]] = []
     cursor = 0
     for domain in route:
         cursor += domain.loop_before_nt or 0
@@ -228,8 +268,9 @@ def strand_letters(
             extra = indel.insertions.get(offset, 0) if indel is not None else 0
             if cursor >= len(sequence):
                 return out
-            if not extra:
-                out[(domain.ord, offset)] = sequence[cursor]
+            out.append(
+                ((domain.ord, offset), sequence[cursor : cursor + 1 + extra], extra)
+            )
             cursor += 1 + extra
     return out
 

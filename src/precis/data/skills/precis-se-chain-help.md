@@ -356,9 +356,14 @@ caDNAno convention); real B-DNA winds 10.5. Residual per lattice helix =
 is +34°). Insertions/deletions move only this account, never the frames
 or crossover offsets. A deleted offset holds no base (no sequence letter,
 no pairing, one fewer route nt); an inserted offset takes `1+k` letters,
-unchecked for complementarity. `realize_chain` refuses a region holding
-either; scadnano/caDNAno carry them, oxdna carries deletions and refuses
-insertions.
+unchecked for complementarity. `realize_chain` builds both: a deleted
+offset gets no residue and its neighbours bond across the gap (the
+duplex stays at lattice positions, so that O3'–P step is stretched — the
+echo prints its length); an inserted offset's first letter sits on the
+unit and its `k` extras bulge off the duplex, chained by the loop relax
+(duplex pinned), skipped by `envelope_fit`, picked as `<helix>@12+1`.
+scadnano/caDNAno carry them; oxdna drops deleted bases and places
+inserted ones beside the backbone for its own relax.
 
 ## `relax_chain` — settling the geometry
 

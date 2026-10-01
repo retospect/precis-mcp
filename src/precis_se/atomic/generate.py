@@ -520,9 +520,12 @@ class PendingRealizeChain:
 
 def _loop_atoms(region: Any) -> list[int]:
     """Indices of the atoms of every loop nucleotide (a residue row with no
-    helix offset), in atom order."""
+    helix offset) and every inserted base (a non-zero insertion index) —
+    the residues off the duplex the relax may move — in atom order."""
     loop_keys = {
-        (c, r) for c, r, _s, _o, offset, _l in region.residues if offset is None
+        (c, r)
+        for c, r, _s, _o, offset, _l, ins in region.residues
+        if offset is None or ins
     }
     if not loop_keys:
         return []
@@ -693,7 +696,7 @@ def prepare_realize_chain(
         build_region,
     )
     from precis_se.chain.layout import helix_geometry, segment_capsule
-    from precis_se.chain.pairing import derive_pairing
+    from precis_se.chain.pairing import HelixIndel, derive_pairing, inserted_letters
     from precis_se.chain.vocab import (
         HELIX_ROLE,
         SEGMENT_ROLE,
@@ -730,22 +733,6 @@ def prepare_realize_chain(
         raise BadInput(
             f"realize_chain: region [{start}, {end}) is not inside helix "
             f"{key!r}'s {n_units} units (start < end, end exclusive)"
-        )
-    register = record.get("register") or {}
-    skipped = sorted(
-        {
-            int(o)
-            for key_ in ("insertions", "deletions")
-            for o in register.get(key_) or []
-        }
-        & set(range(start, end))
-    )
-    if skipped:
-        raise Unsupported(
-            f"realize_chain: region [{start}, {end}) of helix {key!r} contains "
-            f"register insertion/deletion offset(s) {skipped} — the atom model "
-            "of a skipped or looped base is not built",
-            next="realize a region that stops short of those offsets",
         )
     fidelity = str(op.get("fidelity") or "allatom").strip().lower()
     if fidelity not in FIDELITIES:
@@ -822,6 +809,19 @@ def prepare_realize_chain(
     m_to_A = 1.0 / A_to_m(1.0)
 
     pairing = derive_pairing(tree)
+    indel = pairing.indels.get(key, HelixIndel())
+    # An inserted offset's 1 + k letters per strand: the first on the unit,
+    # the k extras bulged after it (pairing gives such an offset no letter).
+    inserted: dict[tuple[str, int, int], tuple[str | None, ...]] = {}
+    if any(start <= o < end for o in indel.insertions):
+        tables_ = group_domains(list(tree.domains))
+        for strand, route in tables_.by_strand.items():
+            node = tree.blocks.get(strand)
+            sequence = (node.chain or {}).get("sequence") if node is not None else None
+            for (ord_, offset), letters in inserted_letters(
+                sequence, route, pairing.indels
+            ).items():
+                inserted[(strand, ord_, offset)] = letters
     units: list[PlacedUnit] = []
     strands_here: set[str] = set()
     for offset in range(start, end):
@@ -829,8 +829,15 @@ def prepare_realize_chain(
         if occ is None:
             continue
         occupants = tuple(
-            UnitOccupant(strand=o.strand, ord=o.ord, forward=o.forward, letter=o.letter)
+            UnitOccupant(
+                strand=o.strand,
+                ord=o.ord,
+                forward=o.forward,
+                letter=letters[0] if letters else o.letter,
+                extra=letters[1:] if letters else (),
+            )
             for o in occ.occupants
+            for letters in [inserted.get((o.strand, o.ord, offset))]
         )
         strands_here.update(o.strand for o in occ.occupants)
         units.append(
@@ -911,7 +918,13 @@ def prepare_realize_chain(
                 )
 
     try:
-        region = build_region(units, fidelity=fidelity, sites=sites, loops=tuple(loops))
+        region = build_region(
+            units,
+            fidelity=fidelity,
+            sites=sites,
+            loops=tuple(loops),
+            deletions=frozenset(indel.deletions),
+        )
     except ValueError as exc:
         raise BadInput(f"realize_chain: {exc}") from exc
 
@@ -1032,7 +1045,8 @@ def prepare_realize_chain(
         "twist_rad": float(motif.twist),
         "units": [u.offset for u in units],
         # Per residue in atom order: ``[chain id, resseq, strand, ord,
-        # offset or None for a loop nucleotide, letter]`` — the rows
+        # offset or None for a loop nucleotide, letter, insertion index
+        # (0 on the unit, i for the i-th inserted base)]`` — the rows
         # ``envelope_fit`` reads to skip loop atoms and a pick reads to
         # name "O3' of DA 8 (stem@3)" (gr457928; se-pick-hierarchy's chain
         # instance).

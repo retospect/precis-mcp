@@ -36,23 +36,21 @@ dogfooded on prod. Do-next is blocked.
 2. **backlog/ewod-synthesis-protocol.md** (ewod-pcb thread's) — the zone
    compiler that consumes make_steps' make tree (live on prod since
    5ca0cfff); the first end-to-end design → dispense protocol.
-3. **backlog/se-chain-insertions-deletions.md** — atoms for a skipped or
-   looped base (realize_chain refuses those regions today); the twist
-   account and sequence/export handling shipped 2026-10-01.
-4. **backlog/nanostructure-check-tiers.md** §"Chains: the physics tier is
+3. **backlog/nanostructure-check-tiers.md** §"Chains: the physics tier is
    oxDNA" — oxDNA as a rented relax rung against relax_chain's block-scale
-   settle; waits on 1–3 and the oxDNA binary in the image; the only
-   honesty check relax_chain has.
-5. **caDNAno round trip** (unfiled) — settle the handedness reflection
+   settle; waits on 1–2 and the oxDNA binary in the image; the only
+   honesty check relax_chain has (and the one that would relax the
+   stretched step across a deleted base).
+4. **caDNAno round trip** (unfiled) — settle the handedness reflection
    against a real file; waits on a file to compare.
-6. **backlog/se-chain-staple-sequences.md** — staple assignment beyond the
-   scaffold; waits on 3; orderable strand lists.
-7. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
+5. **backlog/se-chain-staple-sequences.md** — staple assignment beyond the
+   scaffold; orderable strand lists.
+6. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
    waits on a protein-bearing design being wanted.
-8. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
+7. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
    walker dogfood (td458169) is its protocol figure's source.
 
-9. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
+8. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
    se page, popup, ask-box insertion) is se-3d-viewer's Horizon 1; the
    resolver it calls is built here (`precis_se/pick.py`). Waits on that
    thread's ranking; nothing owed from this side until it starts.
@@ -60,10 +58,18 @@ dogfooded on prod. Do-next is blocked.
 ## Parked
 
 - **caDNAno handedness settle** — unparks when a real caDNAno file is
-  available; file it then (Horizon 5).
+  available; file it then (Horizon 4).
 
 ## No action needed
 
+- **insertions/deletions, atoms** — shipped 2026-10-01 in the commit that
+  added this line (backlog item deleted): `realize_chain` builds a region
+  holding either — a deleted offset has no residue and its neighbours
+  bond across it (stretched, the echo prints the step); an inserted
+  offset's extras bulge off the duplex and the loop relax chains them;
+  residue rows carry an insertion index (`stem@12+1` in pick and
+  findings); oxDNA export places inserted bases instead of refusing. Not
+  yet dogfooded on prod (needs the deploy).
 - **insertions/deletions, twist account** — shipped 2026-10-01 in the
   commit that added this line: `register.insertions`/`deletions` accepted;
   `chain_twist_global` (warn) per connected lattice-helix set when a

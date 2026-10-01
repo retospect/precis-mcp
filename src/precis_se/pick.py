@@ -218,10 +218,13 @@ def _residue_levels(
     tree: Any, node: Any, record: Mapping[str, Any], row: Sequence[Any]
 ) -> list[PickLevel]:
     """Residue → base pair → domain → strand for one ``chain_atoms.residues``
-    row (``[chain id, resseq, strand, ord, offset | None, letter]``). A loop
-    nucleotide (offset ``None``) sits on no helix offset and in no domain —
-    its row's ``ord`` is the domain the loop *leaves* — so it has neither a
-    pair row nor a domain row, and its residue label says which loop."""
+    row (``[chain id, resseq, strand, ord, offset | None, letter,
+    insertion index]``). A loop nucleotide (offset ``None``) sits on no
+    helix offset and in no domain — its row's ``ord`` is the domain the
+    loop *leaves* — so it has neither a pair row nor a domain row, and its
+    residue label says which loop. An inserted base (index ``i > 0``) is
+    named ``<helix>@<offset>+<i>``: it is in its domain but not in the
+    offset's pair, so it gets the domain rows and no pair row."""
     chain, resseq, strand, ord_, offset, letter = (
         str(row[0]),
         int(row[1]),
@@ -230,10 +233,17 @@ def _residue_levels(
         row[4],
         row[5],
     )
+    ins = int(row[6] or 0) if len(row) > 6 else 0
     name = _resname(record, chain, resseq) or (str(letter) if letter else "nt")
-    where = (
-        f"loop nucleotide after {strand}.{ord_}" if offset is None else f"chain {chain}"
-    )
+    if offset is None:
+        where = f"loop nucleotide after {strand}.{ord_}"
+    elif ins:
+        where = (
+            f"chain {chain}; inserted base {record.get('helix')}@{offset}+{ins}, "
+            "a bulge off the duplex"
+        )
+    else:
+        where = f"chain {chain}"
     out = [
         PickLevel(
             "residue",
@@ -242,7 +252,7 @@ def _residue_levels(
         )
     ]
     helix = tree.blocks.get(str(record.get("helix") or ""))
-    if offset is not None and helix is not None:
+    if offset is not None and not ins and helix is not None:
         out += _offset_levels(tree, helix, int(offset))
     levels = _domain_levels(tree, strand, ord_)
     return out + (levels[1:] if offset is None else levels)

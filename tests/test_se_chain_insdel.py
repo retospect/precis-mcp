@@ -16,7 +16,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from precis.errors import BadInput, Unsupported
 from precis_chain.register import phase_after
 from precis_se.chain import nucleic
 from precis_se.chain.drc import findings
@@ -341,22 +340,89 @@ def test_an_insertion_consumes_extra_letters_and_is_unverifiable() -> None:
 # ── (f) realize_chain ───────────────────────────────────────────────────
 
 
-def _with_register(register: dict[str, Any]) -> list[dict[str, Any]]:
+_PAIR = {"A": "T", "T": "A", "G": "C", "C": "G"}
+
+
+def _indel_duplex_ops() -> list[dict[str, Any]]:
+    """The 22-unit realize duplex with offset 10 deleted and one base
+    inserted at offset 5 — the forward strand's extra base is ``T``, the
+    reverse strand's ``A``, and every on-unit pair is complementary."""
+    base = "GCGAATTCGCGATCGCGAATTG"
+    fwd = "".join(base[o] + ("T" if o == 5 else "") for o in range(22) if o != 10)
+    rev = "".join(
+        _PAIR[base[o]] + ("A" if o == 5 else "") for o in reversed(range(22)) if o != 10
+    )
     ops = _duplex_ops()
     for op in ops:
         if op.get("op") == "declare_helix":
-            op["register"] = register
+            op["register"] = {"deletions": [10], "insertions": [5]}
+        if op.get("op") == "declare_strand":
+            op["sequence"] = fwd if op["block"] == "fwd" else rev
     return ops
 
 
-def test_realize_chain_refuses_a_region_holding_a_deletion(handler) -> None:  # noqa: F811
-    ops = _with_register({"deletions": [10]})
-    with pytest.raises(Unsupported, match=r"insertion/deletion offset\(s\) \[10\]"):
-        _put(handler, "holds", [*ops, _realize("h", 0, 21)])
-    try:
-        _put(handler, "beside", [*ops, _realize("h", 0, 10)])
-    except BadInput as exc:  # pragma: no cover - any other refusal is a bug
-        pytest.fail(f"a region beside the deletion must not be refused: {exc}")
+def test_realize_chain_builds_a_deleted_and_an_inserted_base(handler, store) -> None:  # noqa: F811
+    echo = _put(handler, "indel", [*_indel_duplex_ops(), _realize("h", 0, 21)])
+    ref = store.get_ref(kind="structure", id="indel-h.s0")
+    assert ref is not None
+    scene, _handles = store.structure_load(ref.id)
+    meta = dict(ref.meta["chain_atoms"])
+    coords = np.array([scene.cell.frac_to_cart(a.frac) for a in scene.atoms.values()])
+    rows = meta["residues"]
+
+    # the deleted offset holds no residue; offset 5 holds two per strand
+    assert all(r[4] != 10 for r in rows)
+    inserted = [r for r in rows if r[6]]
+    assert sorted((r[2], r[4], r[5], r[6]) for r in inserted) == [
+        ("fwd", 5, "T", 1),
+        ("rev", 5, "A", 1),
+    ]
+    assert len(rows) == 2 * (21 - 1 + 1)  # 21 offsets, one deleted, one extra
+
+    # every strand is one chained backbone: an O3'–P bond per step,
+    # across the deletion (stretched, and the echo says so) and through
+    # the bulge (relaxed to a bond length)
+    labels = list(scene.atoms)
+    resseq, names, chain_ids = meta["resseq"], meta["names"], meta["chain_ids"]
+    steps: dict[tuple[str, int], float] = {}
+    for bond in scene.bonds:
+        i, j = labels.index(bond.i), labels.index(bond.j)
+        if {names[i], names[j]} == {"O3'", "P"} and resseq[i] != resseq[j]:
+            lo = min(resseq[i], resseq[j])
+            steps[(chain_ids[i], lo)] = float(np.linalg.norm(coords[i] - coords[j]))
+    for cid in ("A", "B"):
+        n = sum(1 for r in rows if r[0] == cid)
+        assert sorted(k[1] for k in steps if k[0] == cid) == list(range(1, n))
+    assert echo.count("bonded across deleted offset(s) [10]") == 2, echo
+    across = {
+        (r[0], r[1])
+        for r in rows
+        if (r[2] == "fwd" and r[4] == 9) or (r[2] == "rev" and r[4] == 11)
+    }
+    for key in across:
+        assert steps[key] > 2.5  # strained: the lattice positions do not close the gap
+    bulge = {(r[0], r[1]) for r in inserted}
+    touching = [
+        v
+        for (cid, lo), v in steps.items()
+        if (cid, lo) in bulge or (cid, lo + 1) in bulge
+    ]
+    assert len(touching) == 4 and max(touching) < 2.5, (touching, meta["loop_relax"])
+
+    # envelope_fit skips the bulge like a loop nucleotide
+    assert "envelope_fit" not in handler.get(id="indel", view="validate").body
+
+    # a pick on the inserted base names it stem-style: h@5+1
+    ordinal = next(
+        i
+        for i, (cid, r) in enumerate(zip(chain_ids, resseq, strict=True))
+        if (cid, r) in bulge and names[i] == "P"
+    )
+    body = handler.get(
+        id="indel", view="pick", args={"block": "h.s0", "atom": ordinal}
+    ).body
+    assert "inserted base h@5+1" in body, body
+    assert "| pair |" not in body, body
 
 
 # ── (g) the kernel hook ─────────────────────────────────────────────────
@@ -398,10 +464,19 @@ def test_scadnano_and_cadnano_carry_the_register() -> None:
     assert "deletions" not in plain["helices"][0]
 
 
-def test_oxdna_skips_a_deleted_base_and_refuses_an_insertion() -> None:
+def test_oxdna_skips_a_deleted_base_and_places_an_inserted_one() -> None:
     with_del = _duplex("ACGTACG", "CGTACGT", {"deletions": [3]})
     top, _conf = to_oxdna(with_del, design="d")
     assert top.splitlines()[0] == "14 2"  # 7 + 7 nucleotides, not 8 + 8
-    with_ins = _duplex("A" * 9, "T" * 9, {"insertions": [3]})
-    with pytest.raises(Unsupported, match="register insertion"):
-        to_oxdna(with_ins, design="d")
+    with_ins = _duplex("AAAACAAAA", "TTTTGTTTT", {"insertions": [3]})
+    top, conf = to_oxdna(with_ins, design="d")
+    lines = top.splitlines()
+    assert lines[0] == "18 2"  # 9 + 9 nucleotides on 8 offsets
+    # strand f lists 3'→5': its sequence reversed, the inserted C included
+    assert "".join(row.split()[1] for row in lines[1:10]) == "AAAACAAAA"[::-1]
+    coms = np.array(
+        [[float(v) for v in row.split()[:3]] for row in conf.splitlines()[3:]]
+    )
+    gaps = np.linalg.norm(np.diff(coms[:9], axis=0), axis=1)
+    assert gaps.max() < 3.0, gaps  # no nucleotide stacked onto its neighbour's spot
+    assert gaps.min() > 0.3, gaps

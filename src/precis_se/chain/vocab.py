@@ -73,7 +73,7 @@ _DOMAIN_META_KEYS = frozenset(
 
 #: The per-offset override value that says "this offset is NOT paired" —
 #: the one entry of ``overrides`` that is not a Leontis–Westhof family.
-#: Owner ruling 2026-10-01 (``docs/backlog/se-chain-insertions-deletions.md``).
+#: Owner ruling 2026-10-01 (thread se-nucleic-chain, the ``unpair`` op).
 UNPAIRED = "unpaired"
 
 #: Units per ``layout_chain`` segment when the helix declares no lattice

@@ -76,9 +76,11 @@ Bonds are connectivity only, every one order 1 — a fibre model carries no
 bond orders to assign. The echo names atom/bond/nucleotide/chain/port
 counts; `view='validate'` then runs `envelope_fit` against the segment's
 own capsule — over the duplex atoms only: a loop leaves the tube by
-construction, so its nucleotides are skipped (the structure's
-`chain_atoms.residues` rows, one per residue with the helix offset or
-`null` for a loop nucleotide, say which), and a protruding atom is named
+construction, so its nucleotides are skipped, and so are a register
+insertion's bulged bases (the structure's `chain_atoms.residues` rows,
+one per residue with the helix offset or `null` for a loop nucleotide,
+plus an insertion index — 0 on the unit, `i` for `<helix>@<offset>+i` —
+say which), and a protruding atom is named
 as a design object — `aO44 (O3' of DA 8 (stem@3))`.
 
 ```python

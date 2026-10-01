@@ -275,6 +275,10 @@ class UnitOccupant:
     ord: int
     forward: bool
     letter: str | None
+    #: The letters of the bases a register insertion adds after this one,
+    #: 5'→3' (``None`` = unsequenced) — placed as a bulge toward the
+    #: strand's next offset, not on the duplex.
+    extra: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -336,8 +340,10 @@ class RegionAtoms:
     chains: dict[str, str]
     notes: list[str] = field(default_factory=list)
     #: Per residue, in atom order: ``(chain id, resseq, strand, ord, offset
-    #: or None for a loop nucleotide, letter)``.
-    residues: list[tuple[str, int, str, int, int | None, str | None]] = field(
+    #: or None for a loop nucleotide, letter, insertion index)`` — the
+    #: index is 0 for the base on the unit and ``i`` for the ``i``-th base
+    #: a register insertion adds after it (``stem@12+1``).
+    residues: list[tuple[str, int, str, int, int | None, str | None, int]] = field(
         default_factory=list
     )
 
@@ -360,6 +366,7 @@ class _Residue:
     atoms: list[tuple[str, str, np.ndarray]]
     bonds: tuple[tuple[str, str], ...]
     loop_key: tuple[int, int] | None = None  # (exit_ord, entry_ord) when on a loop
+    ins: int = 0  # i-th inserted base after the one on the unit; 0 = on the unit
 
 
 def _place(unit: PlacedUnit, xyz: np.ndarray) -> np.ndarray:
@@ -418,14 +425,74 @@ def _loop_frames(
     return frames
 
 
-def _route_key(res: _Residue) -> tuple[int, int, int]:
+def _route_key(res: _Residue) -> tuple[int, int, int, int]:
     """5'→3' order within one strand: by ord, then along the domain
-    (ascending offsets forward, descending reverse); loop nucleotides sort
-    between their exit and entry ords."""
+    (ascending offsets forward, descending reverse), an offset's inserted
+    bases right after its own; loop nucleotides sort between their exit
+    and entry ords."""
     if res.loop_key is not None:
-        return (res.loop_key[0], 1, res.offset if res.offset is not None else 0)
+        return (res.loop_key[0], 1, res.offset if res.offset is not None else 0, 0)
     pos = res.offset if res.offset is not None else 0
-    return (res.ord, 0, pos if res.forward else -pos)
+    return (res.ord, 0, pos if res.forward else -pos, res.ins)
+
+
+#: How far an inserted base's template is pushed out from the duplex
+#: position it would hold (Å, radially, past its own phosphate) — a start
+#: point the loop relax pulls back onto the backbone, not a conformation.
+INSERT_BULGE_A = 8.0
+
+
+def _bulge_residues(
+    unit: PlacedUnit,
+    occ: UnitOccupant,
+    on_unit: list[tuple[str, str, np.ndarray]],
+    by_offset: dict[int, PlacedUnit],
+    *,
+    fidelity: str,
+) -> list[_Residue]:
+    """The ``occ.extra`` inserted bases after ``occ``'s base on ``unit``:
+    each a template in the unit's own frame, its origin stepped toward the
+    strand's next offset (``i/(k+1)`` of the way) and pushed radially out
+    past the phosphate by :data:`INSERT_BULGE_A`. Geometry only — the
+    realizer's loop relax chains them; nothing here predicts a bulge."""
+    step = 1 if occ.forward else -1
+    nxt = by_offset.get(unit.offset + step)
+    prv = by_offset.get(unit.offset - step)
+    if nxt is not None:
+        toward = nxt.origin_A - unit.origin_A
+    elif prv is not None:
+        toward = unit.origin_A - prv.origin_A
+    else:
+        toward = step * TEMPLATE_RISE_A * unit.frame[:, 0]
+    axis = unit.frame[:, 0]
+    p_atom = next(xyz for name, _e, xyz in on_unit if name in ("P", "C4'"))
+    radial = p_atom - unit.origin_A
+    radial = radial - np.dot(radial, axis) * axis
+    radial = radial / (np.linalg.norm(radial) or 1.0)
+    k = len(occ.extra)
+    out: list[_Residue] = []
+    for i, letter in enumerate(occ.extra, start=1):
+        shift = toward * i / (k + 1) + INSERT_BULGE_A * radial
+        moved = PlacedUnit(
+            offset=unit.offset,
+            origin_A=unit.origin_A + shift,
+            frame=unit.frame,
+            occupants=(),
+        )
+        template = nucleotide_template(letter, fidelity=fidelity, forward=occ.forward)
+        out.append(
+            _Residue(
+                strand=occ.strand,
+                ord=occ.ord,
+                offset=unit.offset,
+                letter=letter,
+                forward=occ.forward,
+                atoms=[(n, e, _place(moved, xyz)) for n, e, xyz in template],
+                bonds=nucleotide_bonds(letter, fidelity=fidelity),
+                ins=i,
+            )
+        )
+    return out
 
 
 def build_region(
@@ -434,9 +501,17 @@ def build_region(
     fidelity: str = "allatom",
     sites: tuple[int, ...] = (),
     loops: tuple[LoopNts, ...] = (),
+    deletions: frozenset[int] = frozenset(),
 ) -> RegionAtoms:
     """Atoms for every nucleotide on ``units`` (plus the placed ``loops``),
     bonded along each strand, with the port→atom map.
+
+    Register insertions and deletions: a ``deletions`` offset holds no
+    unit, and the strand's residues either side of it are bonded across
+    the gap — on frames kept at the lattice twist that step is stretched by
+    a rise per deleted offset, and ``notes`` says how long it came out. An
+    occupant's ``extra`` letters are placed as a bulge after its own base
+    (:func:`_bulge_residues`), bonded in route order.
 
     Chain ids are minted per strand in order of first appearance along
     the region (``A``, ``B``, …); a strand that leaves the region through
@@ -477,6 +552,10 @@ def build_region(
                     bonds=nucleotide_bonds(occ.letter, fidelity=fidelity),
                 )
             )
+            if occ.extra:
+                residues += _bulge_residues(
+                    unit, occ, residues[-1].atoms, by_offset, fidelity=fidelity
+                )
     if not residues:
         raise ValueError(
             "no strand occupies any unit of the region — nothing to realize"
@@ -540,9 +619,10 @@ def build_region(
     resseq: list[int] = []
     chain_ids: list[str] = []
     bonds: list[tuple[int, int]] = []
-    residue_rows: list[tuple[str, int, str, int, int | None, str | None]] = []
-    #: (strand, ord, offset) → {atom name: index}, for sites + ports
-    atom_index: dict[tuple[str, int, int | None, int | None], dict[str, int]] = {}
+    residue_rows: list[tuple[str, int, str, int, int | None, str | None, int]] = []
+    #: (strand, ord, offset, loop entry ord, insertion index) → {atom name:
+    #: index}, for sites + ports
+    atom_index: dict[_AtomKey, dict[str, int]] = {}
     chain_ends: dict[str, tuple[_Residue, _Residue]] = {}
 
     for strand in strands_in_order:
@@ -572,16 +652,29 @@ def build_region(
                     res.ord,
                     None if res.loop_key else res.offset,
                     res.letter,
+                    res.ins,
                 )
             )
-            atom_index[
-                (strand, res.ord, res.offset, res.loop_key[1] if res.loop_key else None)
-            ] = local
+            atom_index[_atom_key(res)] = local
             if prev is not None:
-                if _adjacent(prev, res, loop_index):
+                if _adjacent(prev, res, loop_index, deletions):
                     tail = "O3'" if fidelity == "allatom" else "C4'"
                     if tail in prev_atoms and "P" in local:
                         bonds.append((prev_atoms[tail], local["P"]))
+                        gap = _deleted_between(prev, res, deletions)
+                        if gap:
+                            step = float(
+                                np.linalg.norm(
+                                    coords[local["P"]] - coords[prev_atoms[tail]]
+                                )
+                            )
+                            notes.append(
+                                f"{strand}: {tail}–P bonded across deleted "
+                                f"offset(s) {gap} at {step:.2f} Å — the duplex "
+                                "keeps its lattice positions, so this step is "
+                                "stretched by the missing rise (strained, not "
+                                "relaxed)"
+                            )
                 else:
                     notes.append(
                         f"{strand}: no bond between domain {prev.ord} and "
@@ -653,7 +746,7 @@ def build_region(
                 f"site {offset}: strand {occupant.strand!r} carries no sequence "
                 "there — an attachment site needs a base to attach to"
             )
-        res_atoms = atom_index[(occupant.strand, occupant.ord, offset, None)]
+        res_atoms = atom_index[(occupant.strand, occupant.ord, offset, None, 0)]
         for kind in SITE_KINDS:
             atom, axis = SITE_ATOMS[kind][occupant.letter]
             ports[f"n{offset}_{kind}"] = PortAtoms(
@@ -684,23 +777,52 @@ def build_region(
     )
 
 
-def _atoms_of(
-    index: dict[tuple[str, int, int | None, int | None], dict[str, int]], res: _Residue
-) -> dict[str, int]:
-    return index[
-        (res.strand, res.ord, res.offset, res.loop_key[1] if res.loop_key else None)
-    ]
+_AtomKey = tuple[str, int, int | None, int | None, int]
+
+
+def _atom_key(res: _Residue) -> _AtomKey:
+    return (
+        res.strand,
+        res.ord,
+        res.offset,
+        res.loop_key[1] if res.loop_key else None,
+        res.ins,
+    )
+
+
+def _atoms_of(index: dict[_AtomKey, dict[str, int]], res: _Residue) -> dict[str, int]:
+    return index[_atom_key(res)]
+
+
+def _deleted_between(
+    prev: _Residue, res: _Residue, deletions: frozenset[int]
+) -> list[int]:
+    """The deleted offsets strictly between two domain residues of one
+    domain — the gap a bond across a deletion spans."""
+    if prev.offset is None or res.offset is None:
+        return []
+    lo, hi = sorted((prev.offset, res.offset))
+    return [o for o in range(lo + 1, hi) if o in deletions]
 
 
 def _adjacent(
-    prev: _Residue, res: _Residue, loops: dict[tuple[str, int, int], LoopNts]
+    prev: _Residue,
+    res: _Residue,
+    loops: dict[tuple[str, int, int], LoopNts],
+    deletions: frozenset[int] = frozenset(),
 ) -> bool:
     """Whether ``prev`` → ``res`` is one backbone bond: neighbouring
-    offsets of one domain, consecutive loop nucleotides, a domain end into
-    its placed loop (or out of it), or a placed 0-nt crossover."""
+    offsets of one domain (or two with only deleted offsets between them),
+    an offset's next inserted base, consecutive loop nucleotides, a domain
+    end into its placed loop (or out of it), or a placed 0-nt crossover."""
     if prev.loop_key is None and res.loop_key is None:
         if prev.ord == res.ord and prev.offset is not None and res.offset is not None:
-            return abs(prev.offset - res.offset) == 1
+            if prev.offset == res.offset:
+                return res.ins == prev.ins + 1
+            span = abs(prev.offset - res.offset)
+            return res.ins == 0 and (
+                span == 1 or len(_deleted_between(prev, res, deletions)) == span - 1
+            )
         loop = loops.get((prev.strand, prev.ord, res.ord))
         return loop is not None and not loop.letters
     if prev.loop_key is not None and res.loop_key is not None:

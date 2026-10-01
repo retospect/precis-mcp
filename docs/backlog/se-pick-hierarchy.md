@@ -100,8 +100,8 @@ persisting that list is the one data change; pairing is `derive_pairing`
 over the tree. The se page (`/se/<slug>`) already draws the bound
 structure's atoms inside the block tree (`routes/blocktree_view.py::
 _atomic_block_payload`) with no residue index and no atom pick — gap 1
-above. The action a pick would offer (unpair this offset) is the op
-proposed in `se-chain-insertions-deletions.md`.
+above. The action a pick would offer (unpair this offset) is the
+`unpair` op, shipped 2026-10-01.
 
 **Resolver built (2026-10-01)** — gap 2 for this instance. `precis_se/pick.py`
 (store-free; its docstring is the grammar's home now) and

@@ -20,7 +20,9 @@ Four formats, one way (no import):
   curve when ``relax_chain`` wrote one, else the chord between the two
   exits), in oxDNA length units (:data:`precis_se.chain.nucleic.OXDNA_UNIT_M`).
   A register deletion is a nucleotide that is simply absent; a register
-  insertion is ``Unsupported`` (where the extra base sits is not modelled).
+  insertion's extra bases sit between their offset and the strand's next
+  one, pushed out past the backbone — a start for oxDNA's own relax, not
+  a modelled bulge.
 - **PDB** — every ``realize_chain``-bound segment's atoms, world-posed by
   the segment's own pose, one chain id per segment and a ``TER`` between.
 
@@ -73,6 +75,10 @@ _CADNANO_REPEAT = {"square": 32, "honeycomb": 21}
 #: from the centre of mass along ``-a1`` (oxDNA1's 0.4; the geometry
 #: written here is a starting configuration, not an equilibrium one).
 _OXDNA_BACKBONE_OFFSET_SU = 0.4
+#: How far a register insertion's extra base is pushed out past the
+#: duplex backbone (oxDNA length units, ~0.85 nm) — clear of its
+#: neighbours so oxDNA's relax starts from no overlap.
+_OXDNA_BULGE_OUT_SU = 1.0
 
 _STAPLE_COLOUR = 13369344  # caDNAno's default red
 
@@ -351,14 +357,6 @@ def to_oxdna(tree: SeTree, *, design: str) -> tuple[str, str]:
             f"export: design {design!r} has no helix — declare_helix first",
             next="declare_helix + add_domain, then export",
         )
-    for name in sorted(geoms):
-        if geoms[name].insertions:
-            raise Unsupported(
-                f"export: helix {name!r} has {geoms[name].insertions} register "
-                "insertion(s) — oxDNA export does not place an inserted base",
-                next="export format='scadnano' or 'cadnano' (both carry the "
-                "insertions), or clear the helix's register.insertions",
-            )
     indels = helix_indels(tree)
     strands = _strands(tree)
     unit = nucleic.OXDNA_UNIT_M
@@ -398,9 +396,9 @@ def to_oxdna(tree: SeTree, *, design: str) -> tuple[str, str]:
                     com = bb + a1 * _OXDNA_BACKBONE_OFFSET_SU * unit
                     nts.append((letter, com, a1, -t))
             pos += n_loop
-            deleted = indels[d.helix].deletions if d.helix in indels else ()
+            indel = indels.get(d.helix, HelixIndel())
             for offset in d.offsets():
-                if offset in deleted:
+                if offset in indel.deletions:
                     continue  # a deleted base is absent from the molecule
                 letter = seq[pos] if seq is not None and pos < len(seq) else "N"
                 pos += 1
@@ -411,6 +409,22 @@ def to_oxdna(tree: SeTree, *, design: str) -> tuple[str, str]:
                 t = _tangent(geom, offset)
                 a3 = -t if d.forward else t
                 nts.append((letter, com, a1, a3))
+                k = indel.insertions.get(offset, 0)
+                if k:
+                    # the extra bases: stepped toward the strand's next
+                    # offset, pushed out past the backbone, base inward
+                    step = (1 if d.forward else -1) * geom.motif.rise * t
+                    for i in range(1, k + 1):
+                        letter = seq[pos] if seq is not None and pos < len(seq) else "N"
+                        pos += 1
+                        bb = (
+                            backbone
+                            + step * i / (k + 1)
+                            + radial * _OXDNA_BULGE_OUT_SU * unit
+                        )
+                        nts.append(
+                            (letter, bb + a1 * _OXDNA_BACKBONE_OFFSET_SU * unit, a1, a3)
+                        )
             prev = d
         # oxDNA lists 3'→5'
         for letter, com, a1, a3 in reversed(nts):

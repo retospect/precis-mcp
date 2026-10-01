@@ -120,8 +120,15 @@ class FrameMismatch:
     envelope_diag_A: float
 
 
+def _ins(row: Any) -> int:
+    """A residue row's insertion index — 0 for a row stored before rows
+    carried one (six columns)."""
+    return int(row[6] or 0) if len(row) > 6 else 0
+
+
 def chain_loop_labels(record: Mapping[str, Any], scene: StructScene) -> frozenset[str]:
-    """The labels of ``scene``'s loop-nucleotide atoms, read off a
+    """The labels of ``scene``'s loop-nucleotide and inserted-base atoms
+    (a register insertion's bulge sits off the duplex tube too), read off a
     ``realize_chain`` structure's ``chain_atoms`` record: the atoms are
     stored in the region's order, so the i-th scene atom is the i-th
     ``chain_ids``/``resseq`` entry, and a residue whose ``residues`` row
@@ -130,7 +137,7 @@ def chain_loop_labels(record: Mapping[str, Any], scene: StructScene) -> frozense
     not asked to hold it). Empty for a structure realized before residue
     rows were persisted, which then keeps the old whole-scene check."""
     rows = record.get("residues") or []
-    loop_keys = {(str(r[0]), int(r[1])) for r in rows if r[4] is None}
+    loop_keys = {(str(r[0]), int(r[1])) for r in rows if r[4] is None or _ins(r)}
     if not loop_keys:
         return frozenset()
     chain_ids = record.get("chain_ids") or []
@@ -167,6 +174,7 @@ def chain_atom_name(
         if str(row[0]) == str(chain_ids[i]) and int(row[1]) == int(resseq[i]):
             where = (
                 f"{record.get('helix')}@{row[4]}"
+                + (f"+{_ins(row)} inserted" if _ins(row) else "")
                 if row[4] is not None
                 else f"loop of strand {row[2]}"
             )
