@@ -282,7 +282,8 @@ class TestLifecycle:
 
 class TestS2Wiring:
     @patch("precis.ingest.citations.acquire_rate_limit")
-    @patch("precis.ingest.citations.SemanticScholar")
+    # citations builds its client via ingest.semantic_scholar._client
+    @patch("precis.ingest.semantic_scholar.SemanticScholar")
     def test_citations_acquires_s2_before_fetch(
         self, mock_cls: MagicMock, mock_acquire: MagicMock
     ) -> None:
