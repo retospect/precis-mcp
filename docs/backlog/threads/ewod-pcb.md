@@ -63,6 +63,15 @@ soft-deleted)
 5. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
    rewrite-against-a-new-fixture job that needs 1's real pad geometry.
+   Pair it with
+   **backlog/pcb-pre-routing-estimates-are-green-on-a-board-that-fails.md**
+   (dogfooded 2026-10-01): `view='feasibility'` reports `≈ vias needed: 0`
+   and `crossings` reports "planar so far ✓" on dogfood-6, which then
+   routed 15 of 55 nets. `place.route_feasibility` takes only airwires, so
+   a net class that forbids its own pads' layer — every EWOD escape, F.Cu
+   pads restricted to B.Cu — is invisible to it, and the true via floor of
+   55 reads as 0. Same corridor question, but this one is about the
+   estimate that decides whether routing is worth attempting at all.
 6. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
    permits F.Cu after the 09-27 fix. Now owns the live half of 7: the stale
