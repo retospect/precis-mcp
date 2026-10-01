@@ -77,23 +77,18 @@ Milestones 2–4 and 6 are specced inside plugin-split-runtime-shell.md's
 post-10-16 ordering and share its pointer (6 pairs it with the fold-in's
 own item); they become items as each comes into reach.
 
-1. **backlog/plugin-split-runtime-shell.md + backlog/package-split.md** —
-   the 2026-10-16 gate: the four open calls answered (se placement,
-   "private until paper" meaning, package-split's fate, orphan-table
-   ownership) and package-split ruled superseded or merged. Waits on Reto;
-   nothing below starts until it closes. Two are queued in his todo list
-   with the cost of each answer spelled out — td458390 (package-split
-   superseded or merged) and td458391 ("private until paper": invisible,
-   which is the catpath precedent and free, vs quarantined, which needs a
-   separate database and gives up cross-model search). The other two stay
-   in the backlog item: se placement is low-stakes (it moves with geom
-   either way) and orphan-table ownership needs an owner rather than a
-   decision. If package-split is superseded, lift its four prep decisions
-   first — the member-wheel deploy channel, the store-free/store-backed
-   test split, and the fact that PyPI publishing lapsed at v8.4.4 against a
-   pyproject now at 8.35.x — none of which the top-down item covers.
+1. **backlog/plugin-split-runtime-shell.md** — the 2026-10-16 gate, now
+   mostly closed. Reto ruled 2026-10-01: package-split is **superseded**
+   (deleted; its prep lifted as the item's steps 6–8) and "private until
+   paper" means **invisible** — the catpath precedent, no separate
+   database. Two calls stay in the item, neither blocking: se placement is
+   low-stakes (it moves with geom either way) and orphan-table ownership
+   needs an owner rather than a decision. Reto restated the goal the same
+   day: a minimal package releasable publicly *and* fully useful inside
+   precis, plus a hope that modularity shrinks the deploy jam — which the
+   item records as only partly supported (59% of commits touch core).
 2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
-   1 only; the import-boundary gate it also wanted landed 2026-10-01, and
+   the 10-16 snooze only; the import-boundary gate it also wanted landed 2026-10-01, and
    the restart precondition it used to carry (gr457894) turned out not to
    exist. Proves the entry-point mechanics at zero API risk.
 3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on
@@ -121,7 +116,11 @@ own item); they become items as each comes into reach.
 
 ## Parked
 
-- **gr458944** — pathway titles. Dogfooding this thread's surface on prod
+- **gr458944** — pathway titles. **Backfilled 2026-10-01 on Reto's
+  word:** 529 `ready` rows retitled from their stored results, 170
+  failed/superseded rows had `(computing)` swapped for their status; one
+  genuinely computing row remains. Only the failed-path retitle in
+  `quest/loop.py` is left, and it is the quest thread's. Dogfooding this thread's surface on prod
   2026-09-30 found 697 of 701 pathway refs titled "(computing)", including
   all 528 that were `status: ready`: the dispatched-job path seeds that
   placeholder and completion never replaced it, so every finished run

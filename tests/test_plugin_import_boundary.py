@@ -49,9 +49,9 @@ _PLUGIN_GROUPS = (
 
 #: Known core→plugin imports, each with the gripe that owns the fix. An entry
 #: here keeps this test green while leaving the violation *counted and
-#: attributed* rather than invisible — the grandfathering `package-split.md`
-#: asks for. Delete the entry when the gripe lands; do not add one without a
-#: gripe id, and never to make a new import pass.
+#: attributed* rather than invisible — the grandfathering the (deleted) 09-16
+#: package-split item asked for. Delete the entry when the gripe lands; do
+#: not add one without a gripe id, and never to make a new import pass.
 _GRANDFATHERED: dict[str, str] = {
     "precis/quest/roadmap_tick.py": (
         "gr459054 — _se_measures_text imports SeHandler to render a part's "

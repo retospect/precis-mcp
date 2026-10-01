@@ -130,7 +130,7 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `root-cause` first.
 - Skills are runtime docs: `src/precis/data/skills/`, served via
   `get(kind='skill')`.
-- Sibling branches' trivial drift (needs `ruff`): just fix it.
+- Sibling branches' trivial drift (needs `ruff`): just fix it, in its own commit.
 
 ## Response style (Reto — busy; BLUF always)
 

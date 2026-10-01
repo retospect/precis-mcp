@@ -10,12 +10,13 @@ pillar: platform
 # Plugin split, top-down: `precis-util` + `precis-geom` + `precis-xxx` models
 
 Design sessions 2026-09-27 (Reto + agents, `curried-pondering-starlight-39`
-handing off to `iridescent-watching-reef`). Inverts
-[`package-split.md`](./package-split.md), which is the same lineage (Reto
-2026-09-16) approached bottom-up as kernel extraction. **One of the two
-should be deleted at 10-16, not merged** — see the open calls. That item's
-30-day no-changes rule governs both: `snooze-until` above is the earliest
-day a file moves, and until then only behaviour-neutral prep is fair game.
+handing off to `iridescent-watching-reef`). It **supersedes**
+`package-split.md` (Reto 2026-09-16, the same lineage approached bottom-up
+as kernel extraction): Reto ruled 2026-10-01 to delete that item, and its
+prep decisions not covered here were lifted into §In scope, steps 6–8.
+Its 30-day no-changes rule still governs: `snooze-until` above is the
+earliest day a file moves, and until then only behaviour-neutral prep is
+fair game.
 
 ## Motivation / why
 
@@ -25,6 +26,13 @@ surface an agent already understands. Secondary and falling out of it: a
 model can live in a private repo until its paper, then publish as a
 citable standalone — *"a standalone thing with the paper, and also
 integrated."*
+
+Reto, 2026-10-01, restating the target: release a **minimal package**
+publicly, *and* have the same code fully useful inside precis — hold it
+back until later. He also hopes the modularization shrinks the deploy jam
+("deploy should not take hours for simple changes"), while keeping
+everything in one repo. That second hope is only partly supported; see
+§Explicitly NOT in scope, *Gate and deploy speed*.
 
 Two properties already in the tree make this cheap, and they are the reason
 this is worth doing rather than merely tidy:
@@ -178,6 +186,23 @@ packages, so they are fair game before 10-16.
    (2026-09-27). se, at 180 edges, is the case that decides whether
    whatever we adopt is adequate.
 
+Steps 6–8 were lifted from the deleted `package-split.md` (2026-10-01);
+nothing else in this item covers them.
+
+6. **Store-free vs store-backed test split**, so a member wheel can run its
+   own suite without a database. As measured 2026-09-16, the store-free
+   share is cad 9/25, pcb 13/47, structure 4/16.
+7. **Deploy channel for member wheels.** Choose between a
+   `#subdirectory=` source in the `deploy/redeploy-precis.yml` install line
+   and the existing `/opt/precis/wheels` find-links (the catpath
+   precedent). `scripts/deploy` pins one sha across three venvs, and a
+   same-repo uv workspace keeps that invariant.
+8. **Decide whether members publish to PyPI before minting names.**
+   Publishing lapsed: `publish.yml` fires on `v*` tags, the last tag is
+   v8.4.4, and pyproject is at 8.35.x. Nobody noticed because the cluster
+   installs from the repo. Reto's "release a minimal package" goal makes
+   this live, no longer optional.
+
 Then, after 10-16, in this order: `hexfold` out (imports nothing — proves
 the mechanics at zero API risk) → `precis_surface` out (one import; fold
 the marching-cubes tables into geom) → `precis-geom` wheel → formalize
@@ -195,9 +220,15 @@ catpath as the reference model.
 * **Extracting `precis_se` as a peer plugin.** See conclusion 1.
 * **`precis_web`.** It imports 20+ core subsystems; it rides with
   precis-mcp, never util.
-* **CI speed.** `package-split.md` already measured this: 59% of commits
-  touch core, so a split would not shorten the gate. The 6-way shard
-  already did.
+* **Gate and deploy speed as a justification.** Reto hopes (2026-10-01)
+  modularization cuts the hours-long deploy jam. The deleted
+  `package-split.md` measured that 59% of commits touch core and only ~10%
+  are se/kernel/web-only. So a split helps only that ~10%: a model-only
+  change could gate on its own suite and redeploy one wheel. It does not
+  help the majority. A plugin also loads in-process, so its change still
+  bounces `serve`. If the jam is the goal, measure where its hours go
+  (gate-slot queueing, re-gates when main moves, deploy itself) before
+  crediting the split with fixing it.
 
 ## Acceptance criteria
 
@@ -226,15 +257,18 @@ groups · `deploy/` extras lists once wheels split.
 * **`se`: inside `precis-geom`, or a plugin that hard-depends on it?**
   Registration shape says plugin (handler + 3 job_types + migrations);
   coupling says same wheel. They move together either way.
-* **"Private until the paper" — invisible, or quarantined?** The repo split
-  + `/opt/precis/wheels` gives invisibility (catpath precedent). It does
-  not give isolation: content sits in core tables gated only by
-  `PRECIS_KINDS_DISABLED`. Quarantine needs a separate database. Reto to
-  say which is meant.
-* **`package-split.md`: superseded or merged at 10-16?** Recommended:
-  superseded and deleted — bottom-up kernel extraction and top-down runtime
-  shell disagree about what the first artifact is, and keeping both invites
-  half of each.
+* ~~"Private until the paper" — invisible, or quarantined?~~ **Ruled
+  2026-10-01: invisible** (Reto: "I don't want to deal with mad db
+  migrates"). The catpath precedent stands: separate repo +
+  `/opt/precis/wheels`, content in core tables, gated by
+  `PRECIS_KINDS_DISABLED`. No separate database; the end-state diagram is
+  unchanged.
+* ~~`package-split.md`: superseded or merged?~~ **Ruled 2026-10-01:
+  superseded**, deleted, prep lifted into steps 6–8. Reto's question on
+  the ruling — "don't we need shared resources for all the packages?" — is
+  answered by `precis-util` in §End state: it *is* the shared base every
+  model depends on (verbs, Hub, Store, JobHandler, migrations runner,
+  entry-point discovery).
 * **Orphan tables on uninstall.** No down-migrations, so removing a model
   leaves its tables. Mechanically detectable via the `<plugin>_` prefix
   (cf. `artifact-kinds-orphan-tables.md`). Needs an owner, not necessarily
