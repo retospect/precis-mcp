@@ -90,6 +90,25 @@ MAX_BACKOFF_S = 30.0
 FD_PLACEHOLDER = "{fd}"
 
 
+def _mcp_token() -> str | None:
+    """The bearer token from env, else from the mounted secrets directory.
+
+    Mirrors :func:`precis.secrets.mounted_secret`, which this file cannot
+    import: as PID 1 it runs from a standalone copy (gr458350)."""
+    token = os.environ.get("PRECIS_MCP_TOKEN")
+    if token:
+        return token
+    secrets_dir = os.environ.get("PRECIS_SECRETS_FILE_DIR")
+    if not secrets_dir:
+        return None
+    try:
+        path = os.path.join(secrets_dir, "PRECIS_MCP_TOKEN")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
 def _log(msg: str) -> None:
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
     print(f"{stamp} precis-supervisor: {msg}", file=sys.stderr, flush=True)
@@ -253,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sock = bind_listener(args.host, args.port)
     _log(f"listening on {args.host}:{args.port} (fd {sock.fileno()})")
-    token = os.environ.get("PRECIS_MCP_TOKEN")
+    token = _mcp_token()
     detector = mcp_liveness.WedgeDetector() if token else None
     supervisor = Supervisor(sock, command, args.prepare, detector)
     stop = threading.Event()

@@ -85,6 +85,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from precis import inflight
 from precis.runtime import PrecisRuntime, build_runtime
+from precis.secrets import mounted_secret
 from precis.tools import TOOL_REGISTRY
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
 
@@ -1063,9 +1064,8 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     handler = handler_for("md") if handler_for is not None else None
     if handler is None:
         return
-    vector_cache = getattr(handler, "vector_cache", None)
     embedder = getattr(handler, "embedder", None)
-    if vector_cache is None or embedder is None:
+    if embedder is None or not hasattr(handler, "vector_cache"):
         return
 
     from precis.embedder import EmbedderUnavailable
@@ -1078,6 +1078,16 @@ def _warm_md_index_background(runtime: PrecisRuntime) -> None:
         cannot tell a completed pass from an abandoned one would
         re-arm at the same rate against a dead embedder as a live one.
         """
+        # Resolved here, on the warm thread, not at boot: resolving asks a
+        # remote embedder for its model, and a dead embedder raised out of
+        # boot and crash-looped the shared server (gr460206). A failed
+        # probe is a cold pass; the next cold-cache search re-arms it.
+        vector_cache = handler.vector_cache
+        if vector_cache is None:
+            record_warmup_state(
+                "COLD: embedder unreachable — md search is lexical-only"
+            )
+            return False
         attempts: dict[int, int] = {}
         skipped: list[int] = []
 
@@ -1431,7 +1441,11 @@ def main(
             f"precis serve: unknown --transport {transport!r} "
             f"(stdio|{'|'.join(_NETWORK_TRANSPORTS)})"
         )
-    resolved_token = token or os.environ.get("PRECIS_MCP_TOKEN")
+    resolved_token = (
+        token
+        or os.environ.get("PRECIS_MCP_TOKEN")
+        or mounted_secret("PRECIS_MCP_TOKEN")
+    )
     if not resolved_token:
         raise ValueError(
             f"precis serve: --transport {transport} requires --token or "

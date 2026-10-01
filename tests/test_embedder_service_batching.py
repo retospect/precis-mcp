@@ -253,3 +253,67 @@ def test_trivial_requests(texts: list[str]) -> None:
     embedder = _RecordingEmbedder()
     service = _service(embedder, max_inflight=1)
     assert service.embed(texts) == [embedder.vector(t) for t in texts]
+
+
+class _OverlapEmbedder(_RecordingEmbedder):
+    """Counts threads inside the model at once; warmup encodes slowly."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inside = 0
+        self.max_inside = 0
+        self.warm_started = threading.Event()
+        self._count = threading.Lock()
+
+    def _enter(self) -> None:
+        with self._count:
+            self.inside += 1
+            self.max_inside = max(self.max_inside, self.inside)
+
+    def _leave(self) -> None:
+        with self._count:
+            self.inside -= 1
+
+    def warmup(self) -> None:
+        self._enter()
+        self.warm_started.set()
+        time.sleep(0.3)
+        self._leave()
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self._enter()
+        try:
+            time.sleep(0.05)
+            return [self.vector(t) for t in texts]
+        finally:
+            self._leave()
+
+
+def test_warmup_encode_never_overlaps_a_pass() -> None:
+    """gr460207: a pass running beside warmup's encode segfaulted MPS."""
+    from precis.errors import Upstream
+
+    embedder = _OverlapEmbedder()
+    service = EmbedderService(embedder, revision="t", max_inflight=4, warm=True)
+    assert embedder.warm_started.wait(timeout=2.0)
+    with pytest.raises(Upstream):  # still warming: fail fast, don't queue
+        service.embed(["early"])
+    assert service._ready.wait(timeout=5.0)
+    assert service.embed(["after"]) == [embedder.vector("after")]
+    service.stop_probe()
+    assert embedder.max_inside == 1
+
+
+def test_idle_reload_encode_never_overlaps_a_pass() -> None:
+    embedder = _OverlapEmbedder()
+    service = _service(embedder)
+    service._loaded = False  # as after an idle unload
+    threads = [
+        threading.Thread(target=service.embed, args=([f"t{i}"],)) for i in range(4)
+    ]
+    probe = threading.Thread(target=service._run_probe_once)
+    for t in [*threads, probe]:
+        t.start()
+    for t in [*threads, probe]:
+        t.join(timeout=5.0)
+    assert embedder.max_inside == 1

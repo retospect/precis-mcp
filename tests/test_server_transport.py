@@ -1022,3 +1022,76 @@ def test_shutdown_runtime_flushes_md_vector_cache(
     assert handler.vector_cache.npz_path.is_file()
     assert handler.vector_cache.manifest_path.is_file()
     assert server._runtime is None
+
+
+def test_boot_survives_an_unreachable_embedder_and_warms_once_it_is_back(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr460206: a dead embedder at boot crash-looped the shared server.
+
+    Resolving the md vector cache asks a remote embedder for its model, and
+    its ``EmbedderUnavailable`` raised out of ``main`` on every generation.
+    Boot must come up lexical-only, and a cold-cache search after the
+    embedder returns must warm the cache.
+    """
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.embedder import EmbedderUnavailable, MockEmbedder
+    from precis.handlers import md as md_mod
+    from precis.md_index import vectors as vectors_mod
+    from precis.runtime import PrecisRuntime
+
+    class _FlakyEmbedder(MockEmbedder):
+        down = True
+
+        @property
+        def model(self) -> str:
+            if self.down:
+                raise EmbedderUnavailable("embedder unreachable")
+            return "mock"
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(md_mod, "_VECTOR_CACHE_PROBE_RETRY_S", 0.0)
+    monkeypatch.setattr(server, "_MD_WARMUP_REARM_COOLDOWN_S", 0.0)
+    root = tmp_path / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("# Hello\n\nSome body text.\n", encoding="utf-8")
+    embedder = _FlakyEmbedder()
+    rt = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(embedder=embedder, md_roots=f"r:{root}")
+    )
+    handler = rt.hub.handler_for("md")
+    assert handler is not None
+
+    server._warm_md_index_background(rt)  # must not raise
+    _join_warmup_threads()
+    assert "COLD" in (vectors_mod.warmup_state() or "")
+    assert handler.vector_cache is None
+
+    embedder.down = False
+    handler.search(q="hello")  # cold cache: the search re-arms the warm pass
+    _join_warmup_threads()
+    assert handler.vector_cache is not None
+    assert len(handler.vector_cache) > 0
+
+
+def test_md_vector_cache_probe_waits_before_retrying(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.dispatch import boot
+    from precis.embedder import EmbedderUnavailable, MockEmbedder
+
+    calls = [0]
+
+    class _DeadEmbedder(MockEmbedder):
+        @property
+        def model(self) -> str:
+            calls[0] += 1
+            raise EmbedderUnavailable("embedder unreachable")
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    handler = boot(embedder=_DeadEmbedder(), md_roots=f"r:{tmp_path}").handler_for("md")
+    assert handler is not None
+    assert handler.vector_cache is None
+    assert handler.vector_cache is None
+    assert calls[0] == 1  # the second read is inside the pause

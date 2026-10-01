@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -66,6 +67,10 @@ from precis.response import Response
 from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
+
+#: Pause before re-probing an embedder that was unreachable when the vector
+#: cache was first needed (gr460206).
+_VECTOR_CACHE_PROBE_RETRY_S = 60.0
 
 log = logging.getLogger(__name__)
 
@@ -218,6 +223,7 @@ class MdHandler(Handler):
         # lexical-only on first use, not at startup.
         self._vector_cache: MdVectorCache | None
         self._vector_cache_resolved: bool
+        self._vector_cache_retry_at = 0.0
         if vector_cache is not None:
             self._vector_cache = vector_cache
             self._vector_cache_resolved = True
@@ -235,28 +241,39 @@ class MdHandler(Handler):
         Resolving ``self.embedder.model``/``.dim`` may touch the network
         (a remote embedder's ``.model`` is an HTTP call); deferring that
         out of ``__init__`` to here means construction never blocks or
-        fails on a dead embedder. The probe runs at most once per
-        handler instance — success or failure is cached in
-        ``_vector_cache_resolved`` — so a persistently-down embedder
-        doesn't retry the network on every ``search()`` call; it just
-        keeps degrading to lexical-only.
+        fails on a dead embedder. Success is cached in
+        ``_vector_cache_resolved``; a failure is retried at most once per
+        :data:`_VECTOR_CACHE_PROBE_RETRY_S`, so a down embedder neither
+        costs a network call on every ``search()`` nor leaves md search
+        lexical-only after it comes back.
         """
         if not self._vector_cache_resolved:
-            self._vector_cache_resolved = True
+            if time.monotonic() < self._vector_cache_retry_at:
+                return None
+            from precis.embedder import EmbedderUnavailable
+
             try:
                 model = self.embedder.model
                 dim = self.embedder.dim
-            except OSError as exc:
-                # Same failure mode the boot-time OSError safety net in
-                # dispatch.py._try exists for (e.g. urllib.error.URLError
-                # from a bounced remote embedder) — degrade to no vector
-                # cache rather than raising out of a search/get call.
+            except (OSError, EmbedderUnavailable) as exc:
+                # A bounced or busy remote embedder (URLError, or the
+                # remote embedder's own EmbedderUnavailable — gr460206,
+                # which crash-looped the shared server at boot) degrades
+                # to lexical-only and is probed again after a pause,
+                # rather than raising out of boot or a search, or
+                # staying lexical for the life of the process.
+                self._vector_cache_retry_at = (
+                    time.monotonic() + _VECTOR_CACHE_PROBE_RETRY_S
+                )
                 log.warning(
-                    "md vector cache probe failed, degrading to lexical-only search: %s",
+                    "md vector cache probe failed, degrading to lexical-only "
+                    "search for %.0fs: %s",
+                    _VECTOR_CACHE_PROBE_RETRY_S,
                     exc,
                 )
-            else:
-                self._vector_cache = MdVectorCache(model=model, dim=dim)
+                return None
+            self._vector_cache = MdVectorCache(model=model, dim=dim)
+            self._vector_cache_resolved = True
         return self._vector_cache
 
     # ── get ────────────────────────────────────────────────────────

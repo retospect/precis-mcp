@@ -236,6 +236,22 @@ def _from_file(name: str) -> str | None:
     return text or None
 
 
+def mounted_secret(name: str) -> str | None:
+    """``name`` from the secrets directory, only when one is mounted explicitly.
+
+    For the values a process needs before it can reach the vault — the DSN
+    itself, the MCP bearer token. A container that receives them as ``-e``
+    values shows them in ``docker inspect``, ``ps`` and
+    ``/proc/<pid>/environ`` (gr458350); one that is given
+    ``PRECIS_SECRETS_FILE_DIR`` and a read-only mount reads them here
+    instead. Unlike :func:`get_secret`'s file layer there is no default
+    directory: a host process must not pick up the prod DSN from
+    ``~/.secrets/pw`` just because the file exists."""
+    if not os.environ.get("PRECIS_SECRETS_FILE_DIR"):
+        return None
+    return _from_file(name)
+
+
 def _client_identity() -> tuple[str, str, int, int, str]:
     """Who we are, for the ``vault.events`` audit row (migration 0111).
 
@@ -432,6 +448,7 @@ __all__ = [
     "invalidate",
     "is_available",
     "list_secrets",
+    "mounted_secret",
     "require_secret",
     "set_secret",
 ]

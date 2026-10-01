@@ -115,6 +115,43 @@ def test_redacting_and_metadata_reads_are_allowed(command: str) -> None:
     assert guard.evaluate("Bash", {"command": command}) is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # the gr458350 incident: an inspect meant to read one flag
+        "docker inspect precis-mcp-dev-49785",
+        "docker inspect precis-mcp-http --format '{{json .Config.Env}}'",
+        "docker container inspect -f '{{.Config}}' precis-mcp-http",
+        "docker inspect --format='{{json .}}' precis-mcp-http",
+        "docker exec precis-mcp-http env",
+        "docker exec -it precis-mcp-http printenv",
+        "ssh melchior true; docker inspect x | jq .",
+        "cat /proc/1/environ",
+    ],
+)
+def test_container_env_dump_is_denied(command: str) -> None:
+    assert guard.evaluate("Bash", {"command": command}) is not None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # names only — the form the denial steers to
+        "docker inspect x --format "
+        "'{{range .Config.Env}}{{println (index (split . \"=\") 0)}}{{end}}'",
+        "docker inspect --format '{{json .Mounts}}' precis-mcp-http",
+        "docker inspect -f '{{.Config.Image}}' precis-mcp-http",
+        "docker inspect -f '{{.State.Status}}' precis-mcp-http",
+        "docker exec precis-mcp-http ls /secrets",
+        "docker ps --format '{{.Names}}'",
+        # prose in a heredoc or commit message naming the command
+        "cat > notes.md <<'EOF'\nthose print in `docker inspect`, `ps` and env\nEOF",
+    ],
+)
+def test_narrow_container_reads_are_allowed(command: str) -> None:
+    assert guard.evaluate("Bash", {"command": command}) is None
+
+
 def test_other_tools_are_ignored() -> None:
     """Editing/writing a secret file is out of scope — this guards reads."""
     assert guard.evaluate("Edit", {"file_path": "/Users/deploy/.pgpass"}) is None

@@ -434,7 +434,9 @@ class EmbedderService:
         with self._idle_lock:
             if self._loaded:
                 return
-            self._embedder.warmup()
+            # warmup() runs an encode: it must not overlap a pass (gr460207).
+            with self._encode_lock:
+                self._embedder.warmup()
             self._loaded = True
             log.info("embedder lazy-reload: model reloaded after idle")
 
@@ -595,7 +597,13 @@ class EmbedderService:
             # request`` never contends for the lock at the same time in
             # practice, but the lock makes that invariant robust rather
             # than implicit.
-            with self._idle_lock:
+            # warmup() loads the model and then encodes once. A request
+            # that found the model loaded used to run its pass alongside
+            # that encode: two threads in Metal at once segfaulted the
+            # service on MPS (gr460207). Requests now fail fast until
+            # ``_ready`` is set (:meth:`embed`), and the encode lock keeps
+            # the probe off the device meanwhile.
+            with self._idle_lock, self._encode_lock:
                 self._embedder.warmup()
                 self._loaded = True
             self._ready.set()
@@ -636,6 +644,12 @@ class EmbedderService:
         to what was in them.
         """
         self._last_activity = self._clock()
+        if not self._ready.is_set():
+            from precis.errors import Upstream
+
+            raise Upstream(
+                "embedder warming — the model is still loading; retry in ~30 seconds"
+            )
         self._ensure_loaded_for_request()
         t0 = self._clock()
         small = len(texts) <= SMALL_REQUEST_MAX_TEXTS

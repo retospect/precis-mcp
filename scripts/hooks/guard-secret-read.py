@@ -24,6 +24,12 @@ that is the sanctioned way to inspect one of these files:
     sed -E 's#(//[^:]*:)[^@]*@#\\1***@#g' <file>     # DSN passwords
     jq 'del(.. | .env?)' <file>                      # drop env blocks
 
+It also denies the commands that print a container's environment
+(``docker inspect`` without a narrowing ``--format``, ``docker exec <c> env``,
+``/proc/<pid>/environ``): a container launched with ``-e`` secrets holds them
+there in cleartext, and on 2026-09-30 an inspect meant to read one flag put
+the prod DSN into a transcript (gr458350).
+
 Editing / templating a secret file is untouched — this guards *reading* only,
 and a Jinja template (``*.j2``) holds ``{{ vault_* }}`` placeholders, not
 secrets, so templates are explicitly NOT matched.
@@ -54,6 +60,7 @@ SECRET_PATHS = (
     r"/(id_rsa|id_ed25519|id_ecdsa)$",  # private keys (the .pub sibling is fine)
     r"credentials(\.json)?$",
     r"\.claude_oauth_token$",  # asa's long-lived token (see memory runbook)
+    r"^/proc/[^/]+/environ$",  # a process's env — where -e secrets end up
 )
 
 # Bash commands that dump a file wholesale. A redacting/filtering reader
@@ -87,13 +94,63 @@ def _bash_targets(command: str) -> list[str]:
     return out
 
 
+#: A ``--format`` that prints env values: ``.Config.Env`` itself (unless it is
+#: split down to names), the whole ``.Config``, or the whole object.
+_ENV_FORMAT = re.compile(
+    r"\.Config\.Env|\.Config\s*\}\}|\{\{\s*(json\s+)?\.\s*\}\}"
+)
+
+
+def _docker_env_dumps(command: str) -> list[str]:
+    """``docker`` invocations in ``command`` that print a container's env values.
+
+    ``docker inspect`` with no ``--format`` prints ``.Config.Env`` along with
+    everything else, so it counts; a ``--format`` naming another field does
+    not. ``docker exec <c> env``/``printenv`` prints the same values from
+    inside. Nothing about these commands looks like a credential read, which
+    is how one put the prod DSN into a transcript on 2026-09-30 (gr458350).
+    """
+    out: list[str] = []
+    for seg in re.split(r"[|;&\n]+|\$\(|`", command):
+        text = seg.strip()
+        words = text.split()
+        if len(words) < 2 or words[0].rsplit("/", 1)[-1] != "docker":
+            continue
+        sub = words[2:] if words[1] == "container" else words[1:]
+        if not sub:
+            continue
+        if sub[0] == "inspect":
+            if len(sub) < 2:  # no target: prose naming the command, not a call
+                continue
+            has_format = re.search(r"(^|\s)(--format|-f)(=|\s)", text)
+            if not has_format or (_ENV_FORMAT.search(text) and "split" not in text):
+                out.append(text)
+        elif sub[0] == "exec" and {"env", "printenv"} & set(sub[1:]):
+            out.append(text)
+    return out
+
+
 def evaluate(tool_name: str, tool_input: dict) -> str | None:
     """Return a denial reason, or ``None`` to allow. Pure & testable."""
     ti = tool_input or {}
     if tool_name == "Read":
         hits = [ti.get("file_path", "")] if _is_secret(ti.get("file_path", "")) else []
     elif tool_name == "Bash":
-        hits = [p for p in _bash_targets(ti.get("command", "")) if _is_secret(p)]
+        command = ti.get("command", "")
+        hits = [p for p in _bash_targets(command) if _is_secret(p)]
+        env_dumps = _docker_env_dumps(command)
+        if env_dumps and not hits:
+            return (
+                f"🔒 Refusing `{env_dumps[0]}` — it prints a container's environment, "
+                "and a container launched with `-e` secrets carries the prod DSN and "
+                "API keys there in cleartext (gr458350). A secret read into an agent "
+                "context cannot be un-read.\n"
+                "Read the variable NAMES instead:\n"
+                "    docker inspect <c> --format "
+                "'{{range .Config.Env}}{{println (index (split . \"=\") 0)}}{{end}}'\n"
+                "or ask for the specific field you want (--format '{{json .Mounts}}'). "
+                "If you genuinely need the values, set ALLOW_SECRET_READ=1."
+            )
     else:
         return None
     if not hits:

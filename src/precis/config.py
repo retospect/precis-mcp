@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 LogLevel = Literal["DEBUG", "INFO", "WARN", "WARNING", "ERROR"]
 EmbedderName = Literal["mock", "bge-m3", "remote"]
@@ -413,6 +417,41 @@ class PrecisConfig(BaseSettings):
     (:func:`precis.utils.paper_links.libkey_url`), found at
     ``libkey.io/choose-library``. Defaults to the University of Limerick's
     id. Set via ``PRECIS_LIBKEY_LIBRARY_ID``."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # A mounted secrets file ranks just below the env var it replaces.
+        return (
+            init_settings,
+            env_settings,
+            _mounted_secret_settings,  # type: ignore[return-value]
+            dotenv_settings,
+            file_secret_settings,
+        )
+
+
+#: Fields a container may receive as a file in ``PRECIS_SECRETS_FILE_DIR``
+#: instead of an env var (gr458350) — the bootstrap values that cannot come
+#: from the vault because reaching the vault needs them.
+_MOUNTED_SECRET_FIELDS = ("database_url",)
+
+
+def _mounted_secret_settings() -> dict[str, str]:
+    from precis.secrets import mounted_secret
+
+    found: dict[str, str] = {}
+    for field in _MOUNTED_SECRET_FIELDS:
+        value = mounted_secret(f"PRECIS_{field.upper()}")
+        if value is not None:
+            found[field] = value
+    return found
 
 
 def load_config() -> PrecisConfig:

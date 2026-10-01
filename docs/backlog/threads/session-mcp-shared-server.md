@@ -96,18 +96,28 @@ server-side-session-context Horizon pointer)
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
 3. **gr458350** — prod credentials passed to `docker run` as `-e` values,
-   so `docker inspect` prints them in cleartext. The per-session launcher
-   is gone with its containers; checked by name only on 2026-10-01, the
-   shared server's ensure script does the same — `PRECIS_DATABASE_URL`,
-   four API keys and `PRECIS_MCP_TOKEN` all sit in `precis-mcp-http`'s
-   `.Config.Env`. One launcher to fix now, outside the repo
+   so `docker inspect` prints them in cleartext. The precis half is in:
+   with `PRECIS_SECRETS_FILE_DIR` set, the DSN and the MCP token are read
+   from files there (`precis.secrets.mounted_secret`), and the API keys
+   already were, through `get_secret`'s file layer. The secret-read
+   guard now refuses `docker inspect` without a narrowing `--format`,
+   `docker exec <c> env` and `/proc/<pid>/environ`. Left: the
+   ensure script outside the repo
    (`~/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh`).
-   The fix needs a read-only mount of the password directory added first —
-   `precis-mcp-http` mounts only `/data/corpus`, `/data/notes` and `/src`,
-   unlike the retired stdio launcher, which did mount it. Reto
-   deferred rotation on 2026-09-30 ("later"); the leak path is the half
-   fixable without a rotation window. Inspect with the names-only format in
-   the gripe.
+   The staged replacement (`precis-mcp-http-ensure.sh.gr458350-staged`,
+   same directory) writes the container's secrets to
+   `~/.cache/precis-mcp-http/secrets` (mode 700), mounts it read-only at
+   `/run/precis-secrets` and drops every secret `-e`. It is not mounted at
+   `/secrets`, because `docker/docker-entrypoint.sh` exports every file
+   there as an env var. Rig-verified 2026-10-01 on 8768: no secret names in
+   `.Config.Env` or the server's `/proc` env; DB, Wolfram and token auth
+   all work. **Install only after a deploy carries the precis half** — the
+   shared server serves the deployed clone, and the old code can't find
+   the DSN in a file. Installing it recreates the container at the next
+   SessionStart (the env hash covers the script's bytes), and auto mode
+   denies that to agents, so Reto or `deploy` copies it in. Diff it against
+   the live script first: it was cut from the 17:47Z version. Rotation is
+   still deferred ("later", Reto 2026-09-30).
 4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
