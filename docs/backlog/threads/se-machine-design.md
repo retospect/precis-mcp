@@ -37,27 +37,32 @@ off that gap until it closes.
 2. **backlog/se-atomic-round2.md**
 3. **backlog/design-workbench-realize.md** — blocked-by 2 (se-atomic-round2).
 4. **backlog/se-off-the-shelf-fabrication.md**
-5. **backlog/diamondoid-pattern-language.md**
-6. **backlog/cad-machine-spec.md**
-7. **backlog/cad-dims-and-constraints.md**
-8. **backlog/cad-print-in-place.md**
-9. **backlog/cad-assembly-checklist-seed-items.md**
-10. **backlog/cad-diagnose-apply-loop.md**
-11. **backlog/printable-atomic-models.md**
-12. **backlog/se-fret-round-2.md**
-13. **backlog/photoswitch-states-and-spectral-dof.md**
-14. **backlog/nm-stick-placement.md**
-15. **backlog/nm-face-codes-and-scale.md**
-16. **backlog/se-process-skills-as-rewrites.md**
-17. **backlog/boxel-exercise-tooling-gaps.md** — what the boxel exercise
+5. **backlog/tslot-profile-library.md** — T-slot profiles as real parts
+   (Reto 2026-10-01); makes the off-the-shelf captive-T-slot joint
+   buildable.
+6. **backlog/rack-19in-helper.md** — 19-inch rack helper (Reto
+   2026-10-01); first consumer of the T-slot library.
+7. **backlog/diamondoid-pattern-language.md**
+8. **backlog/cad-machine-spec.md**
+9. **backlog/cad-dims-and-constraints.md**
+10. **backlog/cad-print-in-place.md**
+11. **backlog/cad-assembly-checklist-seed-items.md**
+12. **backlog/cad-diagnose-apply-loop.md**
+13. **backlog/printable-atomic-models.md**
+14. **backlog/se-fret-round-2.md**
+15. **backlog/photoswitch-states-and-spectral-dof.md**
+16. **backlog/nm-stick-placement.md**
+17. **backlog/nm-face-codes-and-scale.md**
+18. **backlog/se-process-skills-as-rewrites.md**
+19. **backlog/boxel-exercise-tooling-gaps.md** — what the boxel exercise
     taught about the cad/structure surface; read it before starting
     the cad items (6–8, 10).
-18. **backlog/situation-rule-tables.md** — `blocked-by` design-state-core
+20. **backlog/situation-rule-tables.md** — `blocked-by` design-state-core
     (multiscale-design-core Do-next 1, not ranked here). Three-verdict pair
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
     consumer today is se drc — seam, move it if that thread opens first.
-19. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
+21. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
     hygiene: the skill is over the 32 KB hard cap and allowlisted; split
     the FRET/optical and discrete-states domains out. Cheap, any time; do
     it before the next domain section is added to that skill.
