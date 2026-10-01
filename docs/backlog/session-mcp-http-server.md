@@ -370,7 +370,19 @@ ECONNRESET, no reconnect. AC0's pass was real but covered only the 404 path
 into the dark window and the client does not retry a reset. The premise
 holds only for a listener that never goes dark.
 
-**Still outstanding:** AC1 (now a known failure, gr459481), and AC3 (a new verb kwarg surviving a bounce — closes opportunistically,
+**AC1 PASSES (2026-10-01, gr459481 closed).** Measured: the client retries
+a dark port only within a 16-24 s budget, then stays stranded. Fix:
+`precis.mcp_supervisor` is the container's PID 1, holds the port, and
+respawns `precis serve --fd` on the inherited socket, so the port never goes
+dark. Rig: 0 refused across restarts; an idle interactive window's next call
+re-initialized silently (POST 404 → initialize → 200). Live on
+`precis-mcp-http` since 14:20:39Z. Trap for whoever touches the launch: every
+SessionStart runs `precis-mcp-http-ensure.sh` and its env hash covers the
+script's bytes, so editing it recreates the server at the next session start
+anywhere; and the supervisor runs from its own copy, so changing it takes a
+recreate.
+
+**Still outstanding:** AC3 (a new verb kwarg surviving a bounce — closes opportunistically,
 see above). AC2, AC4, AC5 and AC7 are done.
 
 **Found while verifying:** gr457326 — the md-index vector warmup has no
