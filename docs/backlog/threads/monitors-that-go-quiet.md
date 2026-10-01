@@ -11,33 +11,31 @@ exited 0 while printing a refusal now exits 3 on stderr, and the fix_gripe lane
 stopped reporting deliveries it had not made — a fix branch counts as delivered
 only once `git ls-remote` finds it on the repo's real upstream, which the lane
 had never once reached. What remains is one signal that lies by omission (a
-worker host no detector can see) and one disposal question (43 fix branches
-stranded on a node). The last held decision closed 2026-09-30: `ship --quick`
+worker host no detector can see) and the tail of the stranded fix branches
+(18 landed 2026-10-01; one migration, eight salvage items and a delete call
+left). The last held decision closed 2026-09-30: `ship --quick`
 warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 "a day or two", and never refuses on an age it could not look up. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-01 (stranded-branch landing); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **Decide what happens to the 43 stranded fix_gripe branches** — merge the
-   good ones, or delete them. Reto 2026-09-30, on the lane itself: **leave it
-   not doing anything.** That is settled, and the code already behaves that
-   way — a `push --dry-run` before the agent is spawned turns an undeliverable
-   worker into a skip costing one round trip, so the lane is inert without
-   being disabled. What is left is the branches, and they are the perishable
-   part: all 43 are from 2026-09-25 to 09-30 and sit 36 to 254 commits behind
-   main, so they decay every day nobody looks. Triage, and the two things that
-   triage did *not* establish, are in
+1. **Finish the stranded fix_gripe branches.** Reto 2026-10-01: "land
+   them". 18 of the 19 keepers landed on main 2026-10-01 as one squash; six
+   of their gripes closed against it, six stay open with the unlanded part
+   named; the 14 drops are deleted on the node
+   and its 67 scratch clones (18G) are gone. Left: `gripe_182230`, rewritten
+   because its ledger drained chunks it never judged — it carries migration
+   0175, so it goes through deploy's gate, never a qland; the 8 salvage
+   items, each named to its owning thread; and the node's remaining 29
+   branches, whose deletion waits on Reto. All in
    **backlog/stranded-fix-gripe-branches.md**.
-   The 39 gripes the lane had parked at `in_review` behind branches that do
-   not exist — every `in_review` gripe in the database — are reset to `open`
-   as of 2026-09-30, each carrying a comment saying why.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
@@ -54,10 +52,14 @@ gr346534, soft-deleted)
    todos, 161 unique keys, `seen_count=1` on every one, because the dedup
    key hashes the model's re-authored prose instead of the referenced
    gripe/alert handle. Rebuilds at ~20 rows/day without a fix.
+   The stranded `gripe_452203` tried this and is salvage only: its dedup
+   still misses the gripe's own example.
 5. **gr452084** — the nursery kind-shrinkage detector fired 12 critical
    alerts on its first pass and 0 were real (stale-boot comparisons, a
    deliberately retired kind, env-gated kinds). Net-negative for this
    thread's own "unremarkable doctor report" goal until fixed.
+   Only its defect 4 (the unbounded `kind_provider` table) landed
+   2026-10-01, from the stranded branch; the false criticals are still open.
 
 ## Horizon
 
@@ -97,7 +99,9 @@ gr346534, soft-deleted)
   agent's branch into the host checkout and squash-lands it on current main
   with a non-force (fast-forward CAS) push, the `scripts/ship` protocol. Still
   inert until melchior's fix checkout holds a push credential — operator
-  steps are on gr458326; until then every job skips at the dry run as before. Side effect to watch: the reset of the 39 parked gripes to
+  steps are on gr458326; until then every job skips at the dry run as before. gr456240's infra-failure classification landed 2026-10-01 from its stranded
+  branch; gr454480's branch is salvage only — an already-fixed run reopens the
+  gripe, so it can loop. Side effect to watch: the reset of the 39 parked gripes to
   `open` re-surfaced at least one already-fixed gripe as current
   (gr458087 — the STRtree fix it proposed is in `check_via_pad_keepout`
   and cites it; ewod-pcb re-measured 2026-09-30 and queued the close for
@@ -115,8 +119,8 @@ gr346534, soft-deleted)
   2026-10-01 13:29Z; the code on melchior is confirmed to carry it, the
   behaviour is not yet observed — no fix_gripe job has run since. The last
   three before the deploy (12:37–12:43Z) each still left a clone, taking the
-  node to 67 clones / 18G. Close the gripe on the first post-deploy skip that
-  leaves the count unchanged.
+  node to 67 clones / 18G; all 67 were removed 2026-10-01, so the baseline is
+  0. Close the gripe on the first post-deploy skip that leaves it at 0.
 - **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
   inertness is no longer a code-reading claim. Four real runs
   (job:458512, 458575, 458576, 458577) each ended in 0.9s on melchior running
