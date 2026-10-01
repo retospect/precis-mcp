@@ -252,7 +252,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from shapely.geometry import LineString  # type: ignore[import-untyped]
+from shapely.geometry import LineString
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.capabilities import (

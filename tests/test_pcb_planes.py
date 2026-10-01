@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from shapely.geometry import Point, Polygon  # type: ignore[import-untyped]
+from shapely.geometry import Point, Polygon
 
 from precis.pcb.planes import cut_antipads, plane_pours
 

@@ -75,8 +75,8 @@ def _courtyard_box(courtyard: Any, x: float, y: float, rot: float) -> Any:
     bbox = courtyard.get("bbox")
     if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
         return None
-    from shapely.affinity import rotate, translate  # type: ignore[import-untyped]
-    from shapely.geometry import box  # type: ignore[import-untyped]
+    from shapely.affinity import rotate, translate
+    from shapely.geometry import box
 
     xmin, ymin, xmax, ymax = (float(v) for v in bbox)
     poly = box(xmin, ymin, xmax, ymax)

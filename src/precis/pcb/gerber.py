@@ -96,7 +96,7 @@ import io
 import zipfile
 from typing import Any
 
-from shapely.geometry import Polygon as _ShapelyPolygon  # type: ignore[import-untyped]
+from shapely.geometry import Polygon as _ShapelyPolygon
 
 # RS-274X format spec: 4 integer digits, 6 decimal digits, leading zeros
 # omitted, absolute coordinates — %FSLAX46Y46*%. Every coordinate is an

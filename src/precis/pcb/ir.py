@@ -52,7 +52,7 @@ from enum import IntEnum
 from typing import Any
 
 import numpy as np
-from shapely.geometry import (  # type: ignore[import-untyped]
+from shapely.geometry import (
     MultiPoint as _ShapelyMultiPoint,
 )
 

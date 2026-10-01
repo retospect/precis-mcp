@@ -56,13 +56,13 @@ from math import acos, degrees, hypot
 # separate `types-shapely` stub package, a pyproject/dev-dep decision
 # outside this module's remit) -- silence the import-untyped noise here
 # rather than let it mask real errors elsewhere in the file.
-from shapely.geometry import (  # type: ignore[import-untyped]
+from shapely.geometry import (
     MultiPolygon,
     Point,
     Polygon,
 )
-from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
-from shapely.ops import unary_union  # type: ignore[import-untyped]
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
 
 from precis.pcb.objectives import ObjectiveVector
 

@@ -76,7 +76,7 @@ import math
 from typing import Any
 
 import pytest
-from shapely.geometry import Point as SPoint  # type: ignore[import-untyped]
+from shapely.geometry import Point as SPoint
 from shapely.geometry import Polygon
 
 from precis.pcb import DEFAULT_STACKUP, drc

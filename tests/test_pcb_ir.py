@@ -177,7 +177,7 @@ def test_instance_courtyard_polygon_prefers_pin_poly_over_the_bbox():
     ir.pin_h[pid] = 100.0
     ir.pin_poly[pid] = [(-1.0, -1.0), (1.0, -1.0), (0.0, 1.0)]
     poly = instance_courtyard_polygon(ir, u1, clearance_mm=0.0, pins=[pid])
-    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+    from shapely.geometry import Polygon
 
     hull = Polygon(poly)
     assert hull.area == pytest.approx(2.0)  # the triangle's own area, not 100x100

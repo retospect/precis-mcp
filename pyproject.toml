@@ -837,6 +837,8 @@ module = [
     # lazily (precis_se/chain/fold.py::rna_module).
     "RNA",
     "semanticscholar",
+    "shapely",
+    "shapely.*",
     "sklearn.*",
     "soundfile",
     "surya.*",

@@ -43,9 +43,10 @@ _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 # the heavier offender and is where a cleanup pass would pay best.
 # 2026-10-01 src 156 -> 157: TaxonHandler.link adds meta= over the
 # keyword-only NumericRefHandler.link, the same Handler.link(**kw) override
-# every handler link carries. 157 -> 158: pcb/drc nearest_points shapely
-# import (fd910235, qlanded without the bump; shapely ships no stubs).
-CEILINGS = {"src": 158, "tests": 244}
+# every handler link carries. Then 157 -> 142 and tests 244 -> 240: shapely
+# joined pyproject's mypy ignore_missing_imports overrides, retiring every
+# per-import `import-untyped` ignore on it.
+CEILINGS = {"src": 142, "tests": 240}
 
 
 def _count(tree: str) -> Counter[str]:

@@ -73,9 +73,9 @@ from typing import Any
 # same reason. Boolean geometry on real polygons is what this module is,
 # and hand-rolling it would be a second, worse implementation of a
 # dependency the project already takes.
-from shapely.geometry import MultiPolygon, Polygon  # type: ignore[import-untyped]
-from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
-from shapely.ops import unary_union  # type: ignore[import-untyped]
+from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
 
 from precis.pcb.drc import _copper_item_polygon, _via_layer_names
 

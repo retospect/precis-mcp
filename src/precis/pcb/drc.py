@@ -104,10 +104,10 @@ from typing import Any
 # outside this module's remit) -- silence the import-untyped noise here
 # rather than let it mask real errors elsewhere in the file (tiling.py
 # sets the same precedent).
-from shapely.geometry import LineString, Point, Polygon  # type: ignore[import-untyped]
-from shapely.geometry.base import BaseGeometry  # type: ignore[import-untyped]
-from shapely.ops import nearest_points  # type: ignore[import-untyped]
-from shapely.strtree import STRtree  # type: ignore[import-untyped]
+from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import nearest_points
+from shapely.strtree import STRtree
 
 from precis.pcb.capabilities import CapabilityRow, conductor_spacing_mm
 from precis.pcb.geom import _orient, dist_point_to_segment

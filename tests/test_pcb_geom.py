@@ -594,7 +594,7 @@ def test_max_radius_for_deviation_is_unbounded_when_no_corner_is_filleted():
 
 def _shapely_overlap(a: list[Point], b: list[Point]) -> bool:
     """The oracle: shapely, which shares no code with the SAT above."""
-    from shapely.geometry import Polygon  # type: ignore[import-untyped]
+    from shapely.geometry import Polygon
 
     return Polygon(a).intersects(Polygon(b))
 

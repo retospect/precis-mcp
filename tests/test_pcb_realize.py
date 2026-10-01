@@ -982,7 +982,7 @@ def test_stitch_one_net_bridges_two_same_layer_pieces_with_a_jumper():
     # primitive's own point, so "near the fragment" would not connect.
     # shapely ships no py.typed marker -- same suppression realize.py and
     # planes.py already carry at their own import sites.
-    from shapely.geometry import (  # type: ignore[import-untyped]
+    from shapely.geometry import (
         Point as ShapelyPoint,
     )
 

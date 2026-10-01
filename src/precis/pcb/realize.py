@@ -129,7 +129,7 @@ import numpy as np
 # carry, same reason: only the polygon booleans this module's stitching
 # pass (below) needs, never a track/via/pad's own shape (that stays this
 # module's existing closed-form Point/dist arithmetic).
-from shapely.geometry import (  # type: ignore[import-untyped]
+from shapely.geometry import (
     LineString as _ShapelyLineString,
 )
 from shapely.geometry import Point as _ShapelyPoint

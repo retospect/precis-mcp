@@ -6,7 +6,7 @@ No DB, no network: pure shapely geometry over synthetic skeletons.
 from __future__ import annotations
 
 import pytest
-from shapely.geometry import (  # type: ignore[import-untyped]
+from shapely.geometry import (
     LineString,
     MultiPolygon,
     Point,
