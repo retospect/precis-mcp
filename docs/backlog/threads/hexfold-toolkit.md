@@ -8,18 +8,16 @@ Today the join op and the environment catalogue are **verified working
 against prod** — the 2026-09-30 dogfood's two alarming findings were
 artefacts of a stale MCP process and are refuted, and the damage that
 process did is now detected (`composite_part_stolen`) — so the order below
-is: stop the write path that causes that damage, make the execution
-environment trustworthy, then diagnosable, then make measured rows
-trustworthy.
-**Last reviewed:** 2026-09-30 (re-ranked after gr457995 and gr457996 were
-refuted, then again when the integrity check shipped and gr458061 moved to
-the `session-mcp-shared-server` thread; pillar review same day added the
-T-handle bearing test piece, four dogfood-correctness gripes and the
-instrumentation-leg horizon item; then re-ranked again when gr456213 turned
-out to be the write-side cause of the corruption the shipped check only
-detects, and gr458713 arrived from Reto reading the viewer — note at the
-bottom; 22:30Z dogfood round then shipped gr458713, confirmed gr454650
-harder, and closed gr454563)
+is: make the execution environment trustworthy, then diagnosable, then
+make measured rows trustworthy.
+**Last reviewed:** 2026-10-01 (09-30 re-ranks: gr457995/gr457996 refuted;
+integrity check shipped and gr458061 moved to the
+`session-mcp-shared-server` thread; pillar review added the T-handle
+bearing, four gripes and the instrumentation leg; 22:30Z dogfood round
+shipped gr458713, confirmed gr454650 harder, closed gr454563. 10-01
+round: gr456213 **closed** — it was fixed on 09-29 and I had ranked it 2
+off a stale auto-diagnosis, see "No action needed"; gr459058 and gr459057
+filed from the same round at 4 and 5 — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
@@ -44,26 +42,7 @@ harder, and closed gr454563)
    config to the HTTP endpoint — not waiting for td458385's fleet-wide
    migration, which is `STATUS:open` and `waiting-for:reto` at prio 4.
    Ranked 1 as a precondition, not as work.
-2. **gr456213** — **the write-side cause of the corruption
-   `composite_part_stolen` detects**, which is why it moves up from 5.
-   `_hexfold_join` reassigns `node_a.parent`/`node_b.parent` to the new
-   composite unconditionally when the endpoint is already a child of
-   another composite, and never touches the old composite's stored
-   `generated.parts` or its exposed ports — so the old composite keeps
-   claiming a rim it no longer owns, which is exactly the shape the check
-   shipped today reports as an error. A prior attempt added a
-   `join.reparented` WARN and deliberately chose not to block or
-   reconcile, so a caller who does not read the WARN still corrupts the
-   design. Remedy per the diagnosis, pick one: refuse when the old parent
-   still resolves to a live composite and require an explicit
-   acknowledgement, or reconcile the old record on the way through.
-   Ranked 2 on dependency and blast radius: it corrupts real prod designs
-   on a normal call path, and I now own both ends of the pair — detector
-   shipped, cause open. **Caveat when picking this up:** its comment 2
-   claims a fix branch was pushed; comment 3 retracts that (the push never
-   left the worker host, 43 such branches accumulated — gr458326). Treat
-   it as unfixed, but a commit may still exist on that host.
-3. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+2. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -73,34 +52,52 @@ harder, and closed gr454563)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-4. **gr454650** — **confirmed by prod dogfood 2026-09-30, and the symptom
+3. **gr454650** — **confirmed by prod dogfood 2026-09-30, and the symptom
    is worse than the gripe says.** A `len=1` armchair tube fused to
    `cap(5,5)` does not fail: it succeeds and mints five **four-membered
    rings** along the seam (`seam.rings {4: 5, 6: 5}`), with
    `euler.residual 10` and `t.in` misreported as a mixed rim when SPEC 7
    says `tube(n,n)` ends are armchair `("a", 2n)`. Positive control in the
    same session: `len=3` through the same cap gives `{6: 10}` and no
-   residual, so it is specifically a `len=1` defect. Ranked 4 because a
+   residual, so it is specifically a `len=1` defect. Ranked 3 because a
    correct spec silently producing cyclobutanes is a wrong answer a caller
    cannot see without reading the ring census — strictly worse than
    gr458713's class, which only let a wrong spec pass.
-5. **gr454488** — five residuals from the 2026-09-28 dogfood: every
+4. **gr459058** — `delete(kind='se')` retires a design and reports its
+   block count but leaves every structure those blocks were bound to
+   live, so each retire leaks one structure per block while reporting
+   success. Verified on prod 2026-10-01: four structures survived a
+   retire that named four blocks, and I deleted them by hand. **This
+   re-scopes td458221**, which is written as a one-time tidy of two
+   orphans and is actually the visible residue of a leak on the ordinary
+   path — linked there. Cheapest honest remedy is to say what was left
+   live; cascading is what callers expect, and deletes here are soft, so
+   that is less sharp a call than it sounds.
+5. **gr459057** — `generate` then `join` in one ops list always fails,
+   because the structure mint is deferred to after the list validates,
+   and the error (`block 'tube_a' is not bound to a structure design`)
+   names neither the cause nor the remedy. Build-and-join in one call is
+   the first thing anyone tries, so this is a guaranteed first-contact
+   failure that sends the reader to inspect the `generate`. The condition
+   is cheap to detect: the block is present with a pending generate in
+   the same batch.
+6. **gr454488** — five residuals from the 2026-09-28 dogfood: every
    `generate` block trips `mode_binding_mismatch` because generate never
    sets mode; sheet rim port direction is centroid noise; the persisted
    build record drops geometry findings the check-mode echo has; "dry-run"
    wording survives past its rename; generator-declared measures claim
    `origin=user`. Five independent one-line fixes, bundled because one
    dogfood found all five.
-6. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
-7. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
-   stick-rung number can be believed — including 6’s re-measurements and
+   stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
-8. **Housekeeping: gr456203 and gr456212** — moved here from "No action
+9. **Housekeeping: gr456203 and gr456212** — moved here from "No action
    needed" 2026-09-30, because a drift report showed both are still
    `STATUS:open` on prod while this file claimed otherwise. They were
    auto-diagnosed as already fixed; the work is to verify that against
@@ -130,12 +127,12 @@ harder, and closed gr454563)
 5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 6, since a
+   catalogue's third row type exists for. Waits on Do-next 7, since a
    motif measured at one extent has the same defect the radius had.
 7. **`spec.md` §28.8 valve tool set** — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 7.
+   clearance stub is gated on Do-next 8.
 8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
 9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
@@ -186,6 +183,28 @@ harder, and closed gr454563)
   `composite_part_stolen` finding, naming both composites. **The cause is
   Do-next 2** (gr456213); shipping the detector without it means new
   corruption is reported rather than prevented.
+- **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
+  this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
+  may not belong to two composites: `prepare_join` refuses via
+  `_addressed_part_redirect` as `join.part_addressed`, before either side
+  is rebuilt, and names the owning composite's already-exposed port to
+  use instead. Verified live on prod — a join addressing a recorded part
+  was refused with exactly that message. The unconditional
+  `node.parent` assignment the auto-diagnosis pointed at still exists,
+  but every endpoint reaching it has cleared the gate, so its old parent
+  is either `None` or an ordinary non-composite layout parent, reported
+  as a `join.reparented` INFO.
+  **Why this file had it at Do-next 2:** I took comment 1's auto-diagnosis
+  at face value. That comment describes pre-fix code and was never re-run;
+  comment 3 had reset the row to open for an unrelated reason (a false
+  "branch pushed" claim, gr458326). So the ranking rested on a stale
+  report — the same failure this thread's re-rank note is about, committed
+  by the person who wrote the note. The method that caught it was running
+  the scenario against prod instead of reading the diagnosis. **Follow-on:**
+  ref 457890's corruption is therefore historical damage from the
+  stale-process window, not evidence of a live write path, and current
+  code cannot reproduce it. Also: the refuse-vs-reconcile question I was
+  about to put to Reto was already answered by him on 09-29 — refuse.
 - **gr458713** — SHIPPED 2026-09-30 in the 22:30Z dogfood round as
   `net.components` (INFO at one piece, WARN above) on the hexfold check
   report, documented in `spec.md` §13. The obvious implementation is
