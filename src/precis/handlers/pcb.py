@@ -140,6 +140,9 @@ _PROBE_VIEWS = (
 #: (the netlist IR), it assembles :mod:`precis.pcb.gerber`'s copper+pad
 #: model straight off the store, see :meth:`PcbHandler._render_gerber`.
 _EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical", "gerber")
+#: How many errors ``view='gerber'``'s DRC banner quotes before pointing at
+#: ``view='drc'`` for the rest — enough to see what kind of failure it is.
+_GERBER_BANNER_FINDINGS = 8
 #: The rented autorouter round-trip (Slice 6, gated on Freerouting).
 _ROUTE_VIEWS = ("route",)
 #: pcb-guided-place-route Slice 1 — per-net route status (all-unrouted v1).
@@ -1148,10 +1151,16 @@ class PcbHandler(Handler):
 
     # ── exporters ──────────────────────────────────────
     def _export_model(self, ref_id: int) -> dict[str, Any]:
-        """The normalised export IR (placement detail + net membership)."""
-        return pcb_export.export_model(
+        """The normalised export IR (placement detail + net membership),
+        plus ``board_features`` — the instances that are etched copper, not
+        parts, which the BOM/CPL writers leave out."""
+        model = pcb_export.export_model(
             self.store.pcb_load(ref_id), self.store.pcb_graph(ref_id)
         )
+        model["board_features"] = pcb_export.board_feature_refdes(
+            model["instances"], self.store.pcb_local_footprints_for(ref_id)
+        )
+        return model
 
     def _export_dir(self, slug: str) -> Path:
         """Where artifacts land: ``<PRECIS_CORPUS_DIR>/pcb/<slug>/`` when the
@@ -2089,8 +2098,10 @@ class PcbHandler(Handler):
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{slug}-fab.zip"
         path.write_bytes(blob)
+        banner, _n_drc_errors = self._gerber_drc_banner(ref_id, slug)
 
         head = (
+            f"{banner}\n\n"
             f"# exported {slug} → GERBER (fab bundle)\n{path}  "
             f"({len(blob):,} bytes zipped, {len(files)} file(s))\n"
             f"pads: {len(pads)}  drills: {len(drills)}  copper item(s): {len(copper)}"
@@ -2385,12 +2396,67 @@ class PcbHandler(Handler):
         and "no problems" the same value, the exact trap a silk census
         computed here (not on write) avoids."""
         design = self.store.pcb_load(ref_id)
-        board = design["board"]
-        if board is None:
+        if design["board"] is None:
             return Response(
                 body="no board yet\n\nNext: put(kind='pcb', id='slug', "
                 "args={'components':[...],'nets':[...]}) to create the design."
             )
+        ran = self._drc_run(ref_id, design)
+        if ran is None:
+            return Response(
+                body="no realized copper yet\n\nNext: put(kind='pcb', "
+                "id='slug', args={'op':'route'}) to realize copper, then "
+                "re-check this view."
+            )
+        run_id, findings, pads_only = ran
+        n_error = sum(1 for f in findings if f.severity == "error")
+        n_warn = len(findings) - n_error
+        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
+        n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
+        if n_synth:
+            head += (
+                f"\n{n_synth} part(s) have no cached footprint — checked at a "
+                "synthesized bound (see the synthesized_footprint finding(s) "
+                "below); their DRC results are not a verdict"
+            )
+        if pads_only:
+            # State the scope EXPLICITLY (round-4 contract) so a clean
+            # pads-only pass — pad geometry only, no router output yet
+            # (e.g. every net is unrouted by construction) — is never
+            # mistaken for a full pass over realized copper.
+            head += "\n(pads-only DRC — no routed copper yet)"
+        if not findings:
+            return Response(body=head + "\n— no findings ✓")
+        rows = [
+            {
+                "severity": f.severity,
+                "rule": f.rule,
+                "where": f.where,
+                "margin_mm": "" if f.margin_mm is None else f"{f.margin_mm:+.3f}",
+                "detail": f.detail,
+            }
+            for f in findings
+        ]
+        return Response(
+            body=head
+            + "\n"
+            + render_agent_table(
+                rows, schema=["severity", "rule", "where", "margin_mm", "detail"]
+            )
+        )
+
+    def _drc_run(
+        self, ref_id: int, design: dict[str, Any]
+    ) -> tuple[str, list[pcb_drc.DrcFinding], bool] | None:
+        """One geometric DRC run over ``design`` (which must have a board):
+        ``(run_id, findings, pads_only)``, findings persisted under
+        ``run_id``. ``None`` when there is nothing real to check — no
+        realized copper and every placed pad a synthesized bound.
+
+        Split out of :meth:`_render_drc` so ``view='gerber'`` asks the SAME
+        question the DRC view answers before it hands over a fab bundle,
+        rather than a second, narrower one."""
+        board = design["board"]
         stackup = board["stackup"]
         try:
             capability = capability_for(pcb_drc.process_for_stackup(stackup))
@@ -2428,11 +2494,7 @@ class PcbHandler(Handler):
         # findings here too, instead of "not yet".
         has_real_pads = any(not p.get("synthesized") for p in pads)
         if not copper and not has_real_pads:
-            return Response(
-                body="no realized copper yet\n\nNext: put(kind='pcb', "
-                "id='slug', args={'op':'route'}) to realize copper, then "
-                "re-check this view."
-            )
+            return None
         pads_only = not copper
 
         ref = self.store.get_ref(kind="pcb", id=ref_id)
@@ -2569,41 +2631,64 @@ class PcbHandler(Handler):
         self.store.pcb_write_drc_findings(
             int(board["board_id"]), run_id, [f.to_row() for f in findings]
         )
-        n_error = sum(1 for f in findings if f.severity == "error")
-        n_warn = len(findings) - n_error
-        head = f"# DRC — run {run_id[:8]} — {n_error} error(s), {n_warn} warn(s)"
-        n_synth = sum(1 for f in findings if f.rule == "synthesized_footprint")
-        if n_synth:
-            head += (
-                f"\n{n_synth} part(s) have no cached footprint — checked at a "
-                "synthesized bound (see the synthesized_footprint finding(s) "
-                "below); their DRC results are not a verdict"
+        return run_id, list(findings), pads_only
+
+    def _gerber_drc_banner(self, ref_id: int, slug: str) -> tuple[str, int]:
+        """What ``view='gerber'`` says about DRC, and the error count.
+
+        Reto's ruling 2026-10-01: a DRC-red board still EXPORTS — refusing
+        would take away the bundle a person needs to look at a broken
+        board — but it must be impossible to miss. So the fab view runs
+        the same DRC ``view='drc'`` does and leads its response with this:
+        a block banner with the count, the per-rule breakdown and the
+        first findings when there are errors, one line when it is clean.
+        A DRC that could not run is said out loud too; before this the
+        export mentioned DRC nowhere, on a board with 116 errors."""
+        design = self.store.pcb_load(ref_id)
+        try:
+            ran = self._drc_run(ref_id, design)
+        except BadInput as exc:
+            return f"⚠️  DRC NOT RUN — {exc}", 0
+        if ran is None:
+            return (
+                "⚠️  DRC NOT RUN — no realized copper and no real pad geometry "
+                "to check; this bundle is unverified",
+                0,
             )
-        if pads_only:
-            # State the scope EXPLICITLY (round-4 contract) so a clean
-            # pads-only pass — pad geometry only, no router output yet
-            # (e.g. every net is unrouted by construction) — is never
-            # mistaken for a full pass over realized copper.
-            head += "\n(pads-only DRC — no routed copper yet)"
-        if not findings:
-            return Response(body=head + "\n— no findings ✓")
-        rows = [
-            {
-                "severity": f.severity,
-                "rule": f.rule,
-                "where": f.where,
-                "margin_mm": "" if f.margin_mm is None else f"{f.margin_mm:+.3f}",
-                "detail": f.detail,
-            }
-            for f in findings
+        run_id, findings, pads_only = ran
+        errors = [f for f in findings if f.severity == "error"]
+        scope = " (pads-only — no routed copper yet)" if pads_only else ""
+        if not errors:
+            n_warn = len(findings)
+            return (
+                f"DRC: 0 errors, {n_warn} warn(s) — run {run_id[:8]}{scope} ✓",
+                0,
+            )
+        by_rule: dict[str, int] = {}
+        for f in errors:
+            by_rule[f.rule] = by_rule.get(f.rule, 0) + 1
+        bar = "█" * 72
+        lines = [
+            bar,
+            f"██  DRC FAILED — {len(errors)} ERROR(S){scope}",
+            "██  THIS BOARD IS NOT MANUFACTURABLE AS EXPORTED. DO NOT SEND IT TO A FAB.",
+            f"██  run {run_id[:8]} · "
+            + " · ".join(
+                f"{rule} {n}"
+                for rule, n in sorted(by_rule.items(), key=lambda kv: -kv[1])
+            ),
+            bar,
+            "first errors:",
         ]
-        return Response(
-            body=head
-            + "\n"
-            + render_agent_table(
-                rows, schema=["severity", "rule", "where", "margin_mm", "detail"]
-            )
-        )
+        lines += [
+            f"  {f.rule}: {f.where}"
+            + ("" if f.margin_mm is None else f"  ({f.margin_mm:+.3f}mm)")
+            for f in errors[:_GERBER_BANNER_FINDINGS]
+        ]
+        if len(errors) > _GERBER_BANNER_FINDINGS:
+            lines.append(f"  … {len(errors) - _GERBER_BANNER_FINDINGS} more")
+        lines.append(f"Full list: get(kind='pcb', id='{slug}', view='drc')")
+        return "\n".join(lines), len(errors)
 
     # ── SVG render (pcb-svg-render) ─────────────────────────────────────
     def _render_svg(self, ref_id: int, args: dict[str, Any]) -> Response:

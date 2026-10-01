@@ -116,6 +116,27 @@ class MountingHole:
     plated: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class FixedVia:
+    """One AUTHORED via (a ``pcb_fixed_copper`` row with ``ctype='via'``),
+    carried on :attr:`PcbIR.fixed_vias` so the PLACER can see it. The
+    router already claims these on its grid
+    (:func:`precis.pcb.realize._claim_fixed_copper`); before this existed
+    the placer could not, so it parked a driver's solder lands on a
+    generator's plaza vias and the board was unroutable before routing
+    started (``ewod-dogfood-6``, 116 DRC errors).
+
+    Treated as a through hole whatever its authored span: a drilled
+    barrel under a solder land wicks the joint from either side, and a
+    span the placer has to reason about is a second place to get the
+    layer join wrong."""
+
+    x: float
+    y: float
+    #: Plated annulus (outer) diameter, mm.
+    dia_mm: float
+
+
 @dataclass(slots=True)
 class PcbIR:
     """The progressively-enriched IR. Construct via :func:`from_graph`
@@ -402,6 +423,24 @@ class PcbIR:
     net_function_hint: np.ndarray = field(
         default_factory=lambda: np.empty(0, dtype=object)
     )
+
+    #: The board's authored vias (:class:`FixedVia`) — board-config data
+    #: with the same status as ``mounting_holes``: populated once at
+    #: hydration (:func:`precis.pcb.session.build_ir`'s ``fixed_copper``),
+    #: never mutated by a move. ``()`` degrades to the placer-blind
+    #: behaviour every caller had before.
+    fixed_vias: tuple[FixedVia, ...] = ()
+
+    #: Per-instance solder LANDS as ``float64[k, 4]`` rows of
+    #: ``(cx, cy, half_w, half_h)`` in the footprint-local frame (the frame
+    #: ``pin_dx``/``pin_dy`` use), or ``()`` when no caller supplied real
+    #: footprints — :func:`instance_land_rects` then derives them from the
+    #: pins. Kept apart from ``pin_w``/``pin_h`` because those are the
+    #: synthesized package-family sizes for every pin, real footprint or
+    #: not, and a land the placer must keep off a drilled hole has to be
+    #: the land the fab flashes: every pad of the footprint, including one
+    #: no netlist pin names.
+    inst_land_rects: tuple[np.ndarray, ...] = ()
 
     # -- sizes --------------------------------------------------------
     @property
@@ -1876,6 +1915,39 @@ def instance_courtyard_polygons(
         )
         for i in range(ir.n_instances)
     ]
+
+
+def instance_land_rects(ir: PcbIR) -> list[np.ndarray]:
+    """Every instance's solder lands DERIVED FROM ITS PINS, as ``(cx, cy,
+    half_w, half_h)`` rows in its own footprint-local frame, indexed by
+    instance id — one rect per pin from ``pin_dx``/``pin_dy`` and
+    ``pin_w``/``pin_h``, the same pads :func:`instance_courtyard_polygon`
+    hulls. The fallback for :attr:`PcbIR.inst_land_rects` when no caller
+    hydrated real footprints. A polygon pin contributes its ring's
+    bounding box: over-covering a land is the safe direction for a
+    keep-out."""
+    rows: list[list[tuple[float, float, float, float]]] = [
+        [] for _ in range(ir.n_instances)
+    ]
+    for pid in range(ir.n_pins):
+        dx, dy = float(ir.pin_dx[pid]), float(ir.pin_dy[pid])
+        poly = ir.pin_poly[pid]
+        if poly:
+            xs = [float(vx) for vx, _ in poly]
+            ys = [float(vy) for _, vy in poly]
+            rows[int(ir.pin_instance[pid])].append(
+                (
+                    dx + (min(xs) + max(xs)) / 2.0,
+                    dy + (min(ys) + max(ys)) / 2.0,
+                    (max(xs) - min(xs)) / 2.0,
+                    (max(ys) - min(ys)) / 2.0,
+                )
+            )
+            continue
+        rows[int(ir.pin_instance[pid])].append(
+            (dx, dy, float(ir.pin_w[pid]) / 2.0, float(ir.pin_h[pid]) / 2.0)
+        )
+    return [np.array(r, dtype=np.float64).reshape(-1, 4) for r in rows]
 
 
 def courtyard_bound_radius_mm(

@@ -264,6 +264,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # vias).
         footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
         local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+        # This job RE-PLACES the board, so its anneal needs the authored
+        # vias as obstacles exactly as ``pcb_place``'s does — one rule,
+        # two call sites again; the realizer further down reads the same
+        # rows for the router's grid.
+        fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
     )
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
     pcb_session.apply_route_overrides(ir, routes_by_net)

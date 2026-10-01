@@ -84,6 +84,42 @@ def export_model(
     return {"instances": instances, "nets": nets}
 
 
+def board_feature_refdes(
+    instances: list[dict[str, Any]], local_footprints: dict[str, dict[str, Any]]
+) -> set[str]:
+    """Refdes of every instance that is etched board copper rather than a
+    part someone fits — an EWOD electrode array, a bare probe-pad field.
+
+    Decided from the pads, not from sourcing or naming: an instance is a
+    board feature when its authored footprint HAS pads and none of them is
+    ``role: 'solderable'`` (:data:`precis.store._pcb_ops._LOCAL_PAD_ROLES`).
+    There is no joint to make, so there is nothing to pick, place or buy.
+
+    Deliberately NOT "has no LCSC number": a hand-soldered connector or a
+    part sourced elsewhere is a real component with no catalog number, and
+    dropping it from the BOM/CPL would silently lose a part that must be
+    fitted. An instance with no authored footprint at all is likewise kept
+    — nothing is known about its pads, and unknown is not "not a part"."""
+    out: set[str] = set()
+    for i in instances:
+        if i.get("part_lcsc"):
+            continue
+        pads = (local_footprints.get(str(i.get("footprint") or "")) or {}).get("pads")
+        if pads and not any(
+            str(p.get("role") or "solderable") == "solderable" for p in pads
+        ):
+            out.add(str(i["refdes"]))
+    return out
+
+
+def _assembled(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """The instances an assembly file lists — everything except
+    ``model["board_features"]`` (:func:`board_feature_refdes`; absent means
+    every instance is a part, the pre-existing behaviour)."""
+    features = model.get("board_features") or ()
+    return [i for i in model["instances"] if i["refdes"] not in features]
+
+
 def _natural_key(s: str) -> tuple[str, int, str]:
     """Sort ``R2`` before ``R10`` before ``U1`` — letter prefix, then number."""
     m = re.match(r"^([A-Za-z]*)(\d*)(.*)$", str(s))
@@ -100,9 +136,10 @@ def bom_csv(model: dict[str, Any]) -> str:
     """JLCPCB BOM CSV: one row per distinct (comment, footprint, LCSC),
     designators comma-joined. Parts with no LCSC number are still listed
     (LCSC blank) — they cannot be JLCPCB-assembled and the caller should flag
-    them."""
+    them. Board features (:func:`board_feature_refdes`) are not parts and
+    are not listed."""
     groups: dict[tuple[str, str, str], list[str]] = {}
-    for i in model["instances"]:
+    for i in _assembled(model):
         key = (
             str(i.get("label") or ""),
             str(i.get("footprint") or ""),
@@ -144,11 +181,13 @@ def cpl_csv(model: dict[str, Any]) -> str:
     """JLCPCB CPL CSV (``Designator,Mid X,Mid Y,Layer,Rotation``). Positions
     are mm relative to the board-outline origin (our native frame); rotation is
     converted to JLCPCB's CCW convention. Unplaced instances (no x/y) are
-    skipped — the caller flags them."""
+    skipped — the caller flags them. Board features
+    (:func:`board_feature_refdes`) get no line: a pick-and-place machine
+    has nothing to put on etched copper."""
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Designator", "Mid X", "Mid Y", "Layer", "Rotation"])
-    for i in sorted(model["instances"], key=lambda r: _natural_key(r["refdes"])):
+    for i in sorted(_assembled(model), key=lambda r: _natural_key(r["refdes"])):
         if i.get("x") is None or i.get("y") is None:
             continue
         bottom = str(i.get("layer") or "top").lower() in ("bottom", "bot", "b")
@@ -174,8 +213,9 @@ def unplaced(model: dict[str, Any]) -> list[str]:
 
 
 def missing_lcsc(model: dict[str, Any]) -> list[str]:
-    """Refdes of instances with no LCSC number (cannot be JLCPCB-assembled)."""
-    return [i["refdes"] for i in model["instances"] if not i.get("part_lcsc")]
+    """Refdes of PARTS with no LCSC number (cannot be JLCPCB-assembled) —
+    a board feature is not a part, so it is never named here."""
+    return [i["refdes"] for i in _assembled(model) if not i.get("part_lcsc")]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -471,6 +511,7 @@ def mechanical_profile(
 
 __all__ = [
     "board_bbox",
+    "board_feature_refdes",
     "bom_csv",
     "cpl_csv",
     "export_model",

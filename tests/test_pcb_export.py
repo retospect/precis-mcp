@@ -141,6 +141,35 @@ def test_unplaced_and_missing_lcsc():
     assert export.missing_lcsc(m) == ["J1"]
 
 
+def test_a_board_feature_is_left_out_of_bom_and_cpl_but_an_unsourced_part_is_not():
+    """An instance whose authored pads are all non-solderable (an EWOD
+    electrode array) is etched copper: no pick-and-place line, no BOM row,
+    no "missing LCSC" warning. The negative controls are the point — J1 is
+    a hand-fitted connector with no LCSC number and X1 has no authored
+    footprint at all, and BOTH must stay, or the fix has become "drop
+    whatever has no catalog number"."""
+    instances = [
+        {"refdes": "ARR1", "x": 0.0, "y": 0.0, "footprint": "__gen_ARR1"},
+        {"refdes": "J1", "x": 5.0, "y": 0.0, "footprint": "hdr"},
+        {"refdes": "X1", "x": 9.0, "y": 0.0, "footprint": "unknown"},
+        {"refdes": "U1", "x": 1.0, "y": 1.0, "part_lcsc": "C1", "footprint": "hdr"},
+    ]
+    local = {
+        "__gen_ARR1": {"pads": [{"role": "electrode"}, {"role": "probe"}]},
+        "hdr": {"pads": [{"role": "solderable"}, {}]},
+    }
+    features = export.board_feature_refdes(instances, local)
+    assert features == {"ARR1"}
+
+    model = {"instances": instances, "nets": [], "board_features": features}
+    cpl = export.cpl_csv(model)
+    assert "ARR1" not in cpl
+    assert all(f"\n{r}," in cpl for r in ("J1", "X1", "U1"))
+    bom = export.bom_csv(model)
+    assert "ARR1" not in bom and "J1" in bom and "X1" in bom
+    assert export.missing_lcsc(model) == ["J1", "X1"]
+
+
 # ── KiCad netlist ────────────────────────────────────────────────────
 def test_kicad_netlist_has_components_and_nets():
     net = export.kicad_netlist(_MODEL, name="sensor")

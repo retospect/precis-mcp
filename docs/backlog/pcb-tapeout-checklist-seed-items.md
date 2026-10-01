@@ -18,47 +18,21 @@ DRC (clearance, trace width, annular ring, courtyard, silk, board edge,
 connectivity, unrouted) — so per-rule DRC restatements are never emitted
 as standalone items; they collapse into the coarse tool items below.
 
-## Measured 2026-10-01 — the fab export is NOT gated on DRC at all
+## The fab export states its DRC verdict — it does not refuse (Reto, 2026-10-01)
 
-Dogfooded on prod against `ewod-dogfood-6`, a board carrying **116 DRC
-errors** (driver solder lands sitting on authored plaza vias). Asking for
-the fab bundle succeeded:
+`view='gerber'` used to mention DRC nowhere: on `ewod-dogfood-6`, a board
+with 116 DRC errors, it returned a complete 12-file JLCPCB bundle and exit
+0. Reto's ruling on refuse-versus-banner was **banner**: he wants the
+bundle of a broken board in hand to look at and debug. So the view now
+runs the same DRC `view='drc'` does (`PcbHandler._drc_run`) and LEADS its
+response with the verdict — a `DRC FAILED` block with the error count, the
+per-rule breakdown and the first findings, or one `DRC: 0 errors` line.
+A DRC that could not run is stated too.
 
-```
-# exported ewod-dogfood-6 → GERBER (fab bundle)
-...-fab.zip  (217,264 bytes zipped, 12 file(s))
-pads: 139  drills: 0  copper item(s): 125
-```
-
-Exit 0, a complete 12-file JLCPCB-shaped bundle (four copper layers, mask,
-paste, silk, `Edge_Cuts`, and a `PTH.drl` with all 55 via holes at
-0.15 mm — verified, the drill file is correct; the summary's `drills: 0`
-counts THT pad holes, not vias). **Zero mention of DRC anywhere in the
-output.** The only warnings are manufacturing-prep cosmetics — no `outline`
-feature, title block dropped, S/N patch dropped, fiducials dropped.
-
-So today a human or an agent can ask for fab output on a board the system
-*already knows* is unmanufacturable and get a zip they can upload. The
-`drc-clean` tool item in the table below is exactly the gate that is
-missing, and this is its first measured evidence rather than an
-anticipated risk.
-
-**Why this is the same class as the always-valid invariant, not a
-duplicate of it.** `pcb-always-valid-board-invariant.md` (now
-`status: canonical`) gates *mutations* — it stops illegal copper being
-stored. This gap is at the *export* boundary: the copper is already stored
-and already known illegal, and the system hands it to a fab anyway. Reto's
-ruling that legality is a hard gate and incompleteness the only permitted
-failure mode applies here too; an export is the last place a board can be
-stopped, and it currently stops nothing.
-
-**Open design question, deliberately not decided here:** refuse the export,
-or emit it with a loud DRC banner? Refusing breaks the legitimate workflow
-of exporting a mid-progress board to look at it, which the `view='svg'`/
-`view='gerber'` split may already serve. A banner that an agent can ignore
-is how the 64-DRC-error board shipped `succeeded` in the first place. This
-is a product call for Reto, which is why nothing was changed on the
-strength of this measurement.
+What that leaves for the `drc-clean` item below: the banner informs, it
+does not gate. An agent can still read past it, and the zip on disk
+carries no mark of the verdict. If a red bundle is ever uploaded anyway,
+the next step is a refusal with an explicit override, not a louder banner.
 
 ## Tool items (bridges to the rules layer — never decomposed)
 

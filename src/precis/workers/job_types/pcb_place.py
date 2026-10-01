@@ -77,6 +77,18 @@ _PLACE_ONLY_SCHEDULE = (
 )
 
 
+def _on_fixed_vias_note(refdes: tuple[str, ...]) -> str:
+    """The job summary's warning when the anneal ended with a part still
+    on authored vias — empty when none is, which is the normal case."""
+    if not refdes:
+        return ""
+    return (
+        f"⚠️  {len(refdes)} part(s) still have a solder land on an authored "
+        f"via: {', '.join(refdes)} — this placement is NOT routable as it "
+        "stands; re-run op='place' with more iters or another seed.\n\n"
+    )
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
@@ -92,6 +104,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         return
 
     features = ctx.store.pcb_features_list(pcb_ref_id)
+    board_id = (graph.get("board") or {}).get("board_id")
     ir = pcb_session.build_ir(
         graph,
         outline=pcb_session.outline_from_features(features),
@@ -106,6 +119,14 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         # a land pattern the board does not have.
         footprints_by_lcsc=ctx.store.pcb_footprints_for(pcb_ref_id),
         local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
+        # Authored copper (a generator's plaza vias) the placer must keep
+        # every solder land off — without it a part is free to land on a
+        # via that existed before placement ran.
+        fixed_copper=(
+            ctx.store.pcb_fixed_copper_list(int(board_id))
+            if board_id is not None
+            else None
+        ),
     )
 
     # Re-apply persisted plane assignments (authored `op='plane_net'` AND a
@@ -175,6 +196,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "job_summary",
         f"placed {moved} instance(s), {result.iters} iters — "
         f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}\n\n"
+        + _on_fixed_vias_note(result.on_fixed_vias)
         + digest_toon(result),
     )
 

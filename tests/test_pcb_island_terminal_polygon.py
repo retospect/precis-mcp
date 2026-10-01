@@ -416,8 +416,15 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
     # monotonic in any one input: more nets realize overall (asserted
     # below), but the exact SET need not be a superset -- one net can
     # lose a race it used to win even as the aggregate strictly improves.
-    assert len(after_realized) > len(before_realized), (
-        f"the polygon-aware touch test realized no MORE escape nets than "
+    # NO FEWER, not strictly more (Reto, 2026-10-01). The strict form held
+    # only while ``op='route'``'s re-place parked the sink's lands on the
+    # array's authored plaza vias: once the placer treated those vias as
+    # obstacles, both arms realize 13 at a legal placement, so the old
+    # "more" was measured on a board DRC rejects. What proves this fix is
+    # ``after_offered > before_offered`` above; this guards the router
+    # against the polygon test making routing WORSE.
+    assert len(after_realized) >= len(before_realized), (
+        f"the polygon-aware touch test realized FEWER escape nets than "
         f"the old circle-only test — {diag}"
     )
     print(

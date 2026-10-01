@@ -296,13 +296,22 @@ get(
 get(
     kind="pcb", id="s", view="route", args={"max_passes": 3}
 )  # Freerouting place↔route round-trip
+get(kind="pcb", id="s", view="gerber")  # the fab bundle: gerbers + drill, zipped
 ```
+
+`view='gerber'` runs DRC first and **leads its response with the verdict**.
+A board with DRC errors still exports, so you can look at it, but the
+response opens with a `DRC FAILED` block naming the error count, the rules
+and the first findings. Do not send that bundle to a fab: fix the board and
+re-export until the first line reads `DRC: 0 errors`.
 
 `view='route'` runs the §9 hand-off: place → `.dsn` → Freerouting → on an
 incomplete route, re-place (more iters) and re-route, bounded. With no router
 installed it **degrades to a `.dsn`-only pass** (open it in EasyEDA/KiCad as a
 manual escape hatch). `bom`/`cpl` warn about unplaced or non-assemblable
-(no-LCSC) parts.
+(no-LCSC) parts. An instance that is etched copper rather than a part (a
+footprint whose pads are all `role: 'electrode'` or `'probe'`, such as an
+EWOD electrode array) is left out of both: there is nothing to place or buy.
 
 ### Mechanical features — the CAD bridge
 

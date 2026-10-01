@@ -184,6 +184,7 @@ from precis.pcb.ir import (
     PcbIR,
     courtyard_bound_radius_mm,
     instance_courtyard_polygons,
+    instance_land_rects,
     nearest_other_instance,
     plane_layers_of,
     pourable_layers,
@@ -635,6 +636,12 @@ class OptimizeResult:
     digest: Digest
     moves: tuple[MoveRecord, ...]
     positions: dict[str, tuple[float, float, float]]  # refdes -> (x, y, rot)
+    #: Refdes of every movable instance the anneal FINISHED with a solder
+    #: land on an authored via. Legality refuses a move onto one, but a
+    #: part seeded there stays until some proposal walks it off, and a
+    #: short run may not find one — the caller must say so, not report a
+    #: clean placement.
+    on_fixed_vias: tuple[str, ...] = ()
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -1300,6 +1307,10 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
         return (0.0, 0.0)
     if any(bool(ir.inst_fixed_xy[i]) for i in placed):
         return (0.0, 0.0)
+    # Authored vias are fixed to the BOARD, like a locked part: sliding
+    # the pack past them can park a land on one after the anneal cleared it.
+    if ir.fixed_vias:
+        return (0.0, 0.0)
     radii = courtyard_bound_radius_mm(
         instance_courtyard_polygons(
             ir,
@@ -1382,6 +1393,22 @@ def _pair_key(a: int, b: int) -> tuple[int, int]:
 #: stay unambiguous — :meth:`OptimizeEngine._region_for_key` is the one
 #: place that decodes it back into "a real instance" vs. "a hole".
 _HOLE_KEY_BASE = 10_000_000
+
+#: An instance's authored-via margin entry is keyed ``(inst,
+#: _VIA_KEY_BASE)`` — ONE entry per instance (its worst via), under the
+#: same ``courtyard_overlap`` name for the reason :data:`_HOLE_KEY_BASE`
+#: gives. Above every hole key, so :meth:`OptimizeEngine._region_for_key`
+#: tests it first.
+_VIA_KEY_BASE = 20_000_000
+
+#: The copper gap a solder land must keep from an authored via's annulus.
+#: The ROUTER's own clearance (:attr:`precis.pcb.realize.RealizeConfig.
+#: clearance_mm`'s default), not the looser fab floor ``via_pad_keepout``
+#: checks at: a land that merely passes DRC against a via can still sit
+#: inside the cells the router has claimed for that via, and the placer's
+#: job is a board the router can start on. Pinned equal to that default
+#: by ``tests/test_pcb_optimize.py``.
+_FIXED_VIA_CLEARANCE_MM = 0.15
 
 #: How many sides approximate a mounting hole's circular keep-out for the
 #: SAT overlap test :func:`~precis.pcb.geom.convex_polygons_overlap` (and
@@ -1501,6 +1528,7 @@ class OptimizeEngine:
 
         self._movable_xy = _movable(ir.inst_fixed_xy)
         self._movable_rot = _movable(ir.inst_fixed_rot)
+        self._movable_set = frozenset(self._movable_xy) | frozenset(self._movable_rot)
         self.board_side = max(20.0, 6.0 * math.sqrt(max(n, 1)))
         #: TRANSLATE's clamp bounds (module docstring's board_edge_
         #: clearance section) — the real outline's bounding box when the
@@ -1586,6 +1614,46 @@ class OptimizeEngine:
         self._hole_radius: list[float] = [
             _hole_keepout_radius_mm(h) for h in ir.mounting_holes
         ]
+        #: Every AUTHORED via (:attr:`~precis.pcb.ir.PcbIR.fixed_vias`) as
+        #: a static obstacle to a part's solder LANDS — not to its
+        #: courtyard. A via under a part's body is harmless and, for a
+        #: driver nested under the array it serves, unavoidable: its hull
+        #: covers the whole plaza field, so testing the hull would reject
+        #: the entire region the part belongs in (the circumscribed-circle
+        #: failure :meth:`_placement_is_legal` documents, one level up).
+        #: What a drilled barrel destroys is a joint, so the exact test is
+        #: land-versus-via (:meth:`_fixed_via_gap`).
+        self._via_xy = np.array(
+            [(v.x, v.y) for v in ir.fixed_vias], dtype=np.float64
+        ).reshape(-1, 2)
+        self._via_r = np.array(
+            [v.dia_mm / 2.0 for v in ir.fixed_vias], dtype=np.float64
+        )
+        #: The real footprint's lands when the caller hydrated them
+        #: (:func:`precis.pcb.session.land_rects_by_instance`), else the
+        #: pin-derived ones — every pad the fab flashes, not only the
+        #: pins the netlist names.
+        self._land_rects = (
+            list(ir.inst_land_rects)
+            if len(ir.inst_land_rects) == ir.n_instances
+            else instance_land_rects(ir)
+        )
+        #: Rotation-invariant reach of each instance's lands about its own
+        #: origin — :meth:`_fixed_via_gap`'s broad phase. Derived from the
+        #: lands themselves rather than reusing :attr:`_keepout_r`, whose
+        #: courtyard is hulled from synthesized pad sizes and so need not
+        #: contain a real footprint's lands.
+        self._land_reach = np.array(
+            [
+                float(
+                    np.hypot(np.abs(r[:, 0]) + r[:, 2], np.abs(r[:, 1]) + r[:, 3]).max()
+                )
+                if len(r)
+                else 0.0
+                for r in self._land_rects
+            ],
+            dtype=np.float64,
+        )
         #: The courtyard grid's cell size — the maximum distance at which
         #: any pair can have a nonzero graded ``courtyard_overlap`` value.
         #: The graded term reads polygon separation against a routing-
@@ -2031,6 +2099,86 @@ class OptimizeEngine:
                 is_bound=False,
             )
 
+        # Authored vias: one entry per instance, graded ONLY inside the
+        # band legality already forbids (zero once every land clears every
+        # via by :data:`_FIXED_VIA_CLEARANCE_MM`). It exists to give a
+        # part that was SEEDED on a via a slope off it — legality gates
+        # proposals, never the incumbent — and deliberately expresses no
+        # preference among legal positions. An immovable instance is
+        # skipped: a generator's own array sits beside its own vias by
+        # design, and a constant in a MAX would mask every other margin.
+        if len(self._via_r) and self._is_movable(inst):
+            via_key = ("courtyard_overlap", _pair_key(inst, _VIA_KEY_BASE))
+            gap_mm = self._fixed_via_gap(inst)
+            fraction = max(
+                0.0, (_FIXED_VIA_CLEARANCE_MM - gap_mm) / _FIXED_VIA_CLEARANCE_MM
+            )
+            if fraction <= 0.0:
+                self._margin.pop(via_key, None)
+            else:
+                self._margin[via_key] = TermValue(
+                    "courtyard_overlap",
+                    Family.MARGIN,
+                    f"{ir.instance_refdes[inst]}~fixed_via",
+                    fraction,
+                    _BY_NAME["courtyard_overlap"].justification,
+                    is_bound=False,
+                )
+
+    def _is_movable(self, inst: int) -> bool:
+        return inst in self._movable_set
+
+    def _fixed_via_gap(
+        self,
+        inst: int,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
+    ) -> float:
+        """The smallest copper gap, mm, between any of ``inst``'s solder
+        lands and any authored via's annulus, at its current pose or a
+        proposed one — ``inf`` when the board has no authored vias, the
+        instance has no lands, or it is unplaced. Negative means the
+        annulus overlaps a land.
+
+        Exact, not a bound: each via centre is carried into the
+        instance's own footprint frame (the inverse of
+        :func:`~precis.pcb.landpattern.rotate_offset`, mirror included —
+        a bottom-side part's lands are reflected, and unlike
+        :meth:`_world_courtyard` this cannot ignore that), where every
+        land is an axis-aligned rect and point-to-rect distance is closed
+        form."""
+        rects = self._land_rects[inst]
+        if not len(self._via_r) or not len(rects):
+            return math.inf
+        ir = self.ir
+        px = float(ir.inst_x[inst]) if x is None else x
+        py = float(ir.inst_y[inst]) if y is None else y
+        prot = float(ir.inst_rot[inst]) if rot is None else rot
+        if math.isnan(px) or math.isnan(py):
+            return math.inf
+        prot = 0.0 if math.isnan(prot) else prot
+        qx = self._via_xy[:, 0] - px
+        qy = self._via_xy[:, 1] - py
+        reach = self._land_reach[inst] + self._via_r + _FIXED_VIA_CLEARANCE_MM
+        near = qx * qx + qy * qy < reach * reach
+        if not near.any():
+            return math.inf
+        qx, qy, via_r = qx[near], qy[near], self._via_r[near]
+        theta = math.radians(prot)
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        lx = qx * cos_t - qy * sin_t
+        ly = qx * sin_t + qy * cos_t
+        if bool(ir.inst_bottom[inst]):
+            lx = -lx
+        ex = np.maximum(
+            np.abs(lx[:, None] - rects[None, :, 0]) - rects[None, :, 2], 0.0
+        )
+        ey = np.maximum(
+            np.abs(ly[:, None] - rects[None, :, 1]) - rects[None, :, 3], 0.0
+        )
+        return float((np.hypot(ex, ey) - via_r[:, None]).min())
+
     # -- alignment delta (piggybacks the courtyard grid above) -----------
     def _init_alignment_state(self) -> None:
         """One-time seed, mirroring :meth:`_init_courtyard_state`'s own
@@ -2438,6 +2586,11 @@ class OptimizeEngine:
                     continue
                 if convex_polygons_overlap(proposed_poly[inst], hole_poly):
                     return False
+            if (
+                self._fixed_via_gap(inst, x, y, rotations.get(inst))
+                < _FIXED_VIA_CLEARANCE_MM
+            ):
+                return False  # a solder land on an authored via
             for other, ox, oy in proposals[i + 1 :]:
                 if bottom[inst] != bottom[other]:
                     continue  # opposite sides -- the board is between them
@@ -2783,7 +2936,11 @@ class OptimizeEngine:
             assert isinstance(key, tuple)  # a sorted INSTANCE-id pair, not segments
             ia, ib = key
             xa, ya = float(self.ir.inst_x[ia]), float(self.ir.inst_y[ia])
-            if ib >= _HOLE_KEY_BASE:
+            if ib >= _VIA_KEY_BASE:
+                # An authored-via entry names no one via (it is the
+                # instance's worst), so the instance is its own region.
+                xb, yb = xa, ya
+            elif ib >= _HOLE_KEY_BASE:
                 # A mounting-hole entry (:data:`_HOLE_KEY_BASE`'s own
                 # docstring) -- ``ib`` is not a real instance id, decode it
                 # back into the hole it names instead of indexing `inst_x`
@@ -3374,6 +3531,12 @@ def optimize(
         digest=engine.digest(),
         moves=tuple(engine.moves),
         positions=positions,
+        on_fixed_vias=tuple(
+            str(ir.instance_refdes[i])
+            for i in range(ir.n_instances)
+            if engine._is_movable(i)
+            and engine._fixed_via_gap(i) < _FIXED_VIA_CLEARANCE_MM
+        ),
     )
 
 

@@ -35,8 +35,11 @@ import json
 import logging
 from typing import Any
 
+import numpy as np
+
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
+from precis.pcb import padplace as pcb_padplace
 
 log = logging.getLogger(__name__)
 
@@ -131,6 +134,79 @@ def mounting_holes_from_features(
     return tuple(out)
 
 
+def fixed_vias_from_copper(
+    fixed_copper: list[dict[str, Any]] | None,
+) -> tuple[pcb_ir.FixedVia, ...]:
+    """Every authored via in :meth:`Store.pcb_fixed_copper_list`'s rows as
+    a :class:`~precis.pcb.ir.FixedVia` — the placer-side companion to
+    :func:`precis.pcb.realize._claim_fixed_copper`, which reads the same
+    rows for the router. A row with no usable position or diameter is
+    skipped rather than guessed at."""
+    out: list[pcb_ir.FixedVia] = []
+    for row in fixed_copper or []:
+        if str(row.get("ctype") or "") != "via":
+            continue
+        try:
+            x, y = float(row["x"]), float(row["y"])
+            dia = float(row.get("dia_mm") or 0.0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if dia <= 0.0:
+            continue
+        out.append(pcb_ir.FixedVia(x=x, y=y, dia_mm=dia))
+    return tuple(out)
+
+
+def land_rects_by_instance(
+    ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
+) -> tuple[np.ndarray, ...]:
+    """:attr:`~precis.pcb.ir.PcbIR.inst_land_rects` for ``ir`` — every pad
+    of each instance's REAL footprint as a footprint-local ``(cx, cy,
+    half_w, half_h)`` row, falling back per instance to the pin-derived
+    rects (:func:`~precis.pcb.ir.instance_land_rects`) where ``footprints``
+    has no row for it.
+
+    Read off the RAW footprint pads rather than through
+    :func:`precis.pcb.realize.pad_geometry`: that resolves a pad at the
+    instance's CURRENT rotation, and the placer needs a shape it can carry
+    through rotations it has not tried yet. A pad's own ``rot`` is folded
+    in here (the same 90/270 swap :func:`precis.pcb.padplace.
+    place_footprint_pads` applies); an oblique one is covered by a square
+    of its longer side, which over-covers and so can only reject."""
+    derived = pcb_ir.instance_land_rects(ir)
+    out: list[np.ndarray] = []
+    for inst_id in range(ir.n_instances):
+        fp = footprints.get(str(ir.instance_refdes[inst_id]))
+        pads = (fp or {}).get("pads") or []
+        rows: list[tuple[float, float, float, float]] = []
+        for pad in pads:
+            try:
+                cx, cy = float(pad["x"]), float(pad["y"])
+                w = float(pad["w"])
+                h = float(pad.get("h", pad["w"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            poly = pad.get("poly")
+            if poly:
+                xs = [float(v[0]) for v in poly]
+                ys = [float(v[1]) for v in poly]
+                cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+                w, h = max(xs) - min(xs), max(ys) - min(ys)
+            else:
+                rot = float(pad.get("rot") or 0.0)
+                if pcb_padplace.rect_swaps_wh(rot):
+                    w, h = h, w
+                elif not pcb_padplace.pad_axis_aligned(rot):
+                    w = h = max(w, h)
+            rows.append((cx, cy, w / 2.0, h / 2.0))
+        out.append(
+            np.array(rows, dtype=np.float64).reshape(-1, 4)
+            if rows
+            else derived[inst_id]
+        )
+    return tuple(out)
+
+
 def build_ir(
     graph: dict[str, Any],
     *,
@@ -138,6 +214,7 @@ def build_ir(
     mounting_holes: tuple[pcb_ir.MountingHole, ...] = (),
     footprints_by_lcsc: dict[str, dict[str, Any]] | None = None,
     local_footprints_by_name: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
 ) -> pcb_ir.PcbIR:
     """Build a fresh L0(+L3) IR from a :meth:`Store.pcb_graph` payload.
     ``outline`` (see :func:`outline_from_features`) is optional — a caller
@@ -169,7 +246,13 @@ def build_ir(
     Omitting them is still valid (a unit test with no store, the same
     behaviour as before this existed): every pin then stays synthesized,
     which :attr:`~precis.pcb.ir.PcbIR.pin_offsets_synthesized` says out
-    loud."""
+    loud.
+
+    ``fixed_copper`` (:meth:`Store.pcb_fixed_copper_list`, optional) puts
+    the board's authored vias on the IR (:func:`fixed_vias_from_copper`)
+    so the placer treats them as obstacles; the same footprints then also
+    supply each instance's real lands (:func:`land_rects_by_instance`),
+    the shapes that must stay off those vias."""
     board = graph.get("board") or {}
     stackup = board.get("stackup")
     ir = pcb_ir.from_graph(
@@ -178,16 +261,16 @@ def build_ir(
         outline=outline,
         mounting_holes=mounting_holes,
     )
+    ir.fixed_vias = fixed_vias_from_copper(fixed_copper)
     if footprints_by_lcsc or local_footprints_by_name:
-        apply_real_pin_offsets(
+        by_refdes = footprints_by_refdes(
             ir,
-            footprints_by_refdes(
-                ir,
-                footprints_by_lcsc or {},
-                local_footprints_by_name=local_footprints_by_name,
-                local_names_by_refdes=local_footprint_names_by_refdes(graph),
-            ),
+            footprints_by_lcsc or {},
+            local_footprints_by_name=local_footprints_by_name,
+            local_names_by_refdes=local_footprint_names_by_refdes(graph),
         )
+        apply_real_pin_offsets(ir, by_refdes)
+        ir.inst_land_rects = land_rects_by_instance(ir, by_refdes)
     return ir
 
 
@@ -688,7 +771,9 @@ __all__ = [
     "build_ir",
     "content_hash",
     "extract_sketch",
+    "fixed_vias_from_copper",
     "footprints_by_refdes",
+    "land_rects_by_instance",
     "local_footprint_names_by_refdes",
     "mounting_holes_from_features",
     "outline_from_features",

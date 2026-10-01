@@ -485,6 +485,13 @@ def test_dogfood_drc_view_findings_are_all_the_documented_side_gap(pcb, store):
     already pins that the sink really is ``layer='bottom'`` in the
     design; this is the DRC-side consequence of that fact.
 
+    **This is a pad-versus-pad statement about the SEEDED board and
+    nothing more.** Its models carry ``"copper": []`` and it never runs
+    ``op='place'``, so it cannot see a driver land on an authored plaza
+    via — it stayed green while ``ewod-dogfood-6`` had 116 DRC errors of
+    exactly that kind. That is
+    ``test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias``.
+
     The array-internal clause is the older, still load-bearing one: the
     array's own zigzag geometry, plaza rings and stub tapers were proved
     clean by ``tests/test_pcb_ewod_generator_drc.py`` against the
@@ -1338,3 +1345,108 @@ def test_dogfood_fab_svg_render_is_well_formed(pcb, tmp_path):
     assert "<svg" in resp.body
     assert resp.body.count("<svg") == 1
     assert len(resp.body) > 1000
+
+
+def test_dogfood_electrode_array_gets_no_pick_and_place_or_bom_line(pcb, tmp_path):
+    """``ARR1`` is etched copper (every pad ``role: 'electrode'``), so a
+    pick-and-place machine has nothing to put there and nobody has
+    anything to buy. The driver IC under it is a real part and stays."""
+    slug = _seed(pcb)
+    cpl = pcb.get(id=slug, view="cpl", args={"dir": str(tmp_path)}).body
+    assert "\nARR1," not in cpl
+    assert "\nARR1_SINK_0," in cpl
+    bom = pcb.get(id=slug, view="bom", args={"dir": str(tmp_path)}).body
+    assert ",ARR1," not in bom and "ARR1_SINK_0" in bom
+    # The "no LCSC number" warning names real unsourced parts only.
+    warn = next((ln for ln in bom.splitlines() if "without an LCSC number" in ln), "")
+    assert "J_HV" in warn and "ARR1" not in warn.replace("ARR1_SINK_0", "")
+
+
+def test_dogfood_gerber_export_leads_with_a_drc_banner_on_a_red_board(
+    pcb, store, tmp_path
+):
+    """A DRC-red board still exports (Reto, 2026-10-01: he wants the
+    bundle to look at) but the response LEADS with the verdict. Before
+    this, ``view='gerber'`` on ``ewod-dogfood-6`` returned a complete
+    bundle and mentioned DRC nowhere, with 116 errors on the board.
+
+    The sink is moved onto the plaza vias by hand — the state the placer
+    used to produce — so the board is red for a known reason."""
+    slug = _seed(pcb)
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    before = pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)}).body
+    store.pcb_set_pose(ref.id, {"ARR1_SINK_0": (7.75, 5.5, 0.0)})
+    assert _foreign_lands_on_authored_vias(pcb, store, slug)
+
+    red = pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)}).body
+    first = red.splitlines()
+    assert first[0].startswith("█") and "DRC FAILED" in first[1]
+    assert "NOT MANUFACTURABLE" in first[2]
+    assert "via_pad_keepout" in red
+    assert "view='drc'" in red
+    assert (tmp_path / f"{slug}-fab.zip").exists()  # it still exports
+    # The seeded board is not DRC-clean on its own, so its export is not a
+    # clean control; what matters is that SOME verdict leads either way.
+    # Silence about DRC is the defect.
+    assert "DRC" in "\n".join(before.splitlines()[:2])
+
+
+def _foreign_lands_on_authored_vias(pcb, store, slug: str) -> list[Any]:
+    """Every ``via_pad_keepout`` error between an AUTHORED plaza via and a
+    land that is not the array's own, measured NET-BLIND (the via's net is
+    blanked so the rule's same-net carve-out for an electrode's own drop
+    point cannot excuse a driver land that happens to share that net)."""
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.capabilities import capability_for
+
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    design = store.pcb_load(ref.id)
+    layer_names = [str(layer["name"]) for layer in design["board"]["stackup"]]
+    capability = capability_for(pcb_drc.process_for_stackup(design["board"]["stackup"]))
+    vias = [
+        {**c, "net": ""}
+        for c in store.pcb_copper_list(int(design["board"]["board_id"]))
+        if c.get("ctype") == "via" and c.get("fixed")
+    ]
+    assert vias, "the fixture must carry authored plaza vias or this proves nothing"
+    pads = [
+        p for p in pcb._drc_pads(ref.id, layer_names) if str(p.get("refdes")) != "ARR1"
+    ]
+    assert any(str(p.get("refdes")) == "ARR1_SINK_0" for p in pads)
+    model = {"layers": layer_names, "copper": vias, "pads": pads, "drills": []}
+    return [
+        f
+        for f in pcb_drc.check_via_pad_keepout(model, capability)
+        if f.severity == "error"
+    ]
+
+
+@pytest.mark.slow
+def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
+    """``op='place'`` must not park a part's solder lands on authored
+    copper (docs/backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md).
+
+    The model here carries the three things
+    ``test_dogfood_drc_view_findings_are_all_the_documented_side_gap``
+    omits, which is why that test stayed green while ``ewod-dogfood-6``
+    reported 116 DRC errors on prod: the authored vias are IN the copper
+    list, a real placement pass RUNS, and the measurement is net-blind, so
+    a pin swap that hands a driver land some electrode's net cannot hide
+    the collision behind the same-net exemption."""
+    slug = _seed(pcb)
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    resp = pcb.put(id=slug, args={"op": "place", "seed": 1})
+    assert "enqueued" in resp.body
+    _drain_one_job(store, ref.id)
+
+    by_refdes = {i["refdes"]: i for i in store.pcb_graph(ref.id)["instances"]}
+    sink = by_refdes["ARR1_SINK_0"]
+    errors = _foreign_lands_on_authored_vias(pcb, store, slug)
+    detail = "\n".join(f"  {f.where} :: {str(f.detail)[:140]}" for f in errors[:12])
+    assert not errors, (
+        f"{len(errors)} land(s) sit on authored plaza vias after op='place' "
+        f"(sink at {sink['x']}, {sink['y']} rot {sink.get('rot')}):\n{detail}"
+    )

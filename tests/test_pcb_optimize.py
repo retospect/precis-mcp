@@ -2028,3 +2028,149 @@ def test_courtyard_overlap_cost_agrees_with_legality_about_board_side():
     )
     assert opposite.raw == 0.0
     assert opposite.is_bound is False
+
+
+# ── authored vias: a land may not sit on one, a body may cover one ───────
+def _via_ir(*, lands, via_xy, second_layer: str = "bottom"):
+    """``_two_part_ir`` with U1 parked far away, ``lands`` (footprint-local
+    ``(cx, cy, half_w, half_h)`` rows) given to BOTH parts, and one
+    authored 0.6mm via at ``via_xy``."""
+    import numpy as np
+
+    from precis.pcb.ir import FixedVia
+
+    ir = _two_part_ir(second_layer=second_layer)
+    ir.inst_x[1], ir.inst_y[1] = 40.0, 40.0
+    rects = np.array(lands, dtype=np.float64).reshape(-1, 4)
+    ir.inst_land_rects = (rects, rects)
+    ir.fixed_vias = (FixedVia(x=via_xy[0], y=via_xy[1], dia_mm=0.6),)
+    return ir
+
+
+_TWO_LANDS = [(-3.0, 0.0, 0.5, 0.5), (3.0, 0.0, 0.5, 0.5)]
+
+
+def test_a_land_may_not_sit_on_an_authored_via_but_the_body_may_cover_one():
+    """The obstacle is the LAND, not the courtyard. A via between a
+    part's two lands is under its body and harmless — a driver nested
+    under the array it serves has the whole plaza field under its hull,
+    and a hull test would reject the entire region it belongs in.
+
+    The boundary arm pins the arithmetic: a land's edge must clear the
+    via's 0.3mm annulus by the router's 0.15mm, so with the land centred
+    3mm from the part origin and 0.5mm half-wide the part is legal from
+    x = 3.95 and illegal just short of it."""
+    from precis.pcb.optimize import _FIXED_VIA_CLEARANCE_MM
+    from precis.pcb.realize import RealizeConfig
+
+    assert RealizeConfig().clearance_mm == _FIXED_VIA_CLEARANCE_MM
+
+    engine = OptimizeEngine(
+        _via_ir(lands=_TWO_LANDS, via_xy=(0.0, 0.0)), OptimizeConfig(seed=3)
+    )
+    assert engine._placement_is_legal([(0, 0.0, 0.0)]) is True  # via under the body
+    assert engine._placement_is_legal([(0, 3.0, 0.0)]) is False  # land ON the via
+    assert engine._placement_is_legal([(0, 3.94, 0.0)]) is False
+    assert engine._placement_is_legal([(0, 3.96, 0.0)]) is True
+
+
+def test_authored_via_legality_follows_the_part_through_rotation_and_mirror():
+    """The lands travel the same affine path the pads do
+    (``rotate_offset``: mirror, then clockwise rotation). A via at
+    (0, 3) is clear of lands at (+-3, 0) and under one at rot 90; a
+    bottom-side part's single land at local (+3, 0) is at board (-3, 0)."""
+    engine = OptimizeEngine(
+        _via_ir(lands=_TWO_LANDS, via_xy=(0.0, 3.0)), OptimizeConfig(seed=3)
+    )
+    assert engine._placement_is_legal([(0, 0.0, 0.0)]) is True
+    assert engine._placement_is_legal([(0, 0.0, 0.0)], rotations={0: 90.0}) is False
+
+    one_land = [(3.0, 0.0, 0.5, 0.5)]
+    mirrored = OptimizeEngine(
+        _via_ir(lands=one_land, via_xy=(-3.0, 0.0)), OptimizeConfig(seed=3)
+    )
+    assert mirrored._placement_is_legal([(0, 0.0, 0.0)]) is True  # U0 is top
+    assert mirrored._placement_is_legal([(1, 0.0, 0.0)]) is False  # U1 is bottom
+    unmirrored = OptimizeEngine(
+        _via_ir(lands=one_land, via_xy=(3.0, 0.0)), OptimizeConfig(seed=3)
+    )
+    assert unmirrored._placement_is_legal([(0, 0.0, 0.0)]) is False
+    assert unmirrored._placement_is_legal([(1, 0.0, 0.0)]) is True
+
+
+def test_a_part_seeded_on_an_authored_via_is_walked_off_it_and_a_locked_one_is_not_priced():
+    """Legality gates proposals, never the incumbent, so a part SEEDED on
+    a via needs a slope off it: the graded entry is non-zero there and
+    the anneal leaves. A locked part gets no entry at all — a generator's
+    own array sits beside its own vias by design, and a constant in the
+    margin MAX would mask every other term."""
+    ir = _via_ir(lands=_TWO_LANDS, via_xy=(3.0, 0.0))
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert any(tv.region == "U0~fixed_via" for tv in engine._margin.values())
+
+    result = optimize(ir, OptimizeConfig(seed=3, iters=400))
+    assert result.on_fixed_vias == ()
+    assert OptimizeEngine(ir, OptimizeConfig(seed=3))._fixed_via_gap(0) >= 0.15
+
+    locked = _via_ir(lands=_TWO_LANDS, via_xy=(3.0, 0.0))
+    locked.inst_fixed_xy[0] = True
+    locked.inst_fixed_rot[0] = True
+    engine = OptimizeEngine(locked, OptimizeConfig(seed=3))
+    assert not any(tv.region == "U0~fixed_via" for tv in engine._margin.values())
+
+
+def test_recentre_never_slides_a_placement_across_authored_vias():
+    """Authored vias are fixed to the board, so a rigid recentre of
+    everything else can park a land on one after the anneal cleared it."""
+    ir = _via_ir(lands=_TWO_LANDS, via_xy=(20.0, 20.0))
+    ir.outline = [(-10.0, -10.0), (60.0, -10.0), (60.0, 60.0), (-10.0, 60.0)]
+    assert recentre_in_outline(ir) == (0.0, 0.0)
+    ir.fixed_vias = ()
+    assert recentre_in_outline(ir) != (0.0, 0.0)
+
+
+def test_build_ir_hydrates_authored_vias_and_real_lands_from_the_footprint():
+    """``fixed_copper`` rows become ``FixedVia``s (tracks and malformed
+    rows skipped), and a real footprint supplies EVERY pad as a land —
+    including one no netlist pin names — with a pad's own 90-degree
+    ``rot`` folded into its footprint-local extent."""
+    graph = {
+        "instances": [{"refdes": "U0", "part_lcsc": "C1"}],
+        "nets": [
+            {
+                "name": "N0",
+                "net_class": "signal",
+                "domain": "electrical",
+                "members": [{"refdes": "U0", "pin": "a"}],
+            }
+        ],
+    }
+    footprint = {
+        "pads": [
+            {"number": "1", "shape": "RECT", "x": -2.0, "y": 0.0, "w": 0.4, "h": 1.6},
+            {
+                "number": "2",
+                "shape": "RECT",
+                "x": 2.0,
+                "y": 0.0,
+                "w": 0.4,
+                "h": 1.6,
+                "rot": 90,
+            },
+        ],
+        "pin_map": {"1": {"name": "a", "tags": []}},
+    }
+    ir = pcb_session.build_ir(
+        graph,
+        footprints_by_lcsc={"C1": footprint},
+        fixed_copper=[
+            {"ctype": "via", "x": 1.0, "y": 2.0, "dia_mm": 0.45},
+            {"ctype": "track", "points": [[0, 0], [1, 1]], "width_mm": 0.2},
+            {"ctype": "via", "x": 1.0, "y": 2.0},
+        ],
+    )
+    assert [(v.x, v.y, v.dia_mm) for v in ir.fixed_vias] == [(1.0, 2.0, 0.45)]
+    assert ir.inst_land_rects[0].tolist() == [
+        [-2.0, 0.0, 0.2, 0.8],
+        [2.0, 0.0, 0.8, 0.2],
+    ]

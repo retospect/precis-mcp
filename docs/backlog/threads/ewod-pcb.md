@@ -8,9 +8,8 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-09-30 (pillar review same day added five orphan
-gripes and a cross-scale-single-assembly seam pointer; pruned gr346009,
-soft-deleted)
+**Last reviewed:** 2026-10-01 (placer-sees-authored-vias, the gerber DRC
+banner and the board-feature CPL/BOM rule landed; Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
 ## Do next
@@ -21,28 +20,7 @@ soft-deleted)
    thread was measured against those bounds (ewod-dogfood-4: names only,
    21→38 realized on identical code). Nothing below can be trusted until it
    lands, so it outranks the corruption item.
-2. **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** —
-   **promoted 2026-09-30 on Reto's word.** Authored `pcb_fixed_copper`
-   (plaza vias) is invisible to the placer, so nothing stops an instance
-   landing on top of authored copper. `ewod-dogfood-6` is the fixture this
-   item always lacked: its sink is correctly UNPINNED and the placer left it
-   at the array centroid anyway, because it cannot see the plaza vias it is
-   sitting on. It now outranks the invariant below it — 3 makes the bad
-   state unstorable, this stops producing it, and producing it is what we
-   just watched happen on a board built entirely from current code.
-   **Root cause CONFIRMED 2026-09-30** (root-cause pass, verified against
-   prod): `optimize.py` and `cost.py` carry ZERO references to
-   `pcb_fixed_copper` at HEAD, so the annealer moved the unpinned sink to
-   (10, 10) rot 270 and put the driver IC's real solder lands on the
-   array's plaza vias. Unpinning the sink — the correct fix for the
-   PREVIOUS failure — removed the accidental protection a pinned position
-   gave. The item's file now carries the dogfood-6 evidence and, more
-   importantly, the false-green test that hid it:
-   `test_dogfood_drc_view_findings_are_all_the_documented_side_gap` asserts
-   zero array-vs-sink clearance errors while building its model with
-   `"copper": []`, never running `op='place'`, and never applying
-   `pcb_pin_swaps`. Do not cite it as coverage.
-3. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
+2. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
    canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid
    (but may be incomplete), we should never get a failure."* So legality is
@@ -52,15 +30,15 @@ soft-deleted)
    progressive and an unplaced design has no geometry to violate. Folds in
    backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
    narrower): implement one, not both.
-4. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
-   **de-escalated by 3's ruling.** risk() is a MAX over margin terms, so any
+3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
+   **de-escalated by 2's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a
    $0.046 term overruled courtyard_overlap). With legality moved out of the
    objective entirely this no longer gates anything manufacturability-facing;
    what survives is tuning clarity for the next person adding a term — and
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
-5. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
+4. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
    rewrite-against-a-new-fixture job that needs 1's real pad geometry.
    Pair it with
@@ -72,12 +50,12 @@ soft-deleted)
    pads restricted to B.Cu — is invisible to it, and the true via floor of
    55 reads as 0. Same corridor question, but this one is about the
    estimate that decides whether routing is worth attempting at all.
-6. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
+5. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
-   permits F.Cu after the 09-27 fix. Now owns the live half of 7: the stale
+   permits F.Cu after the 09-27 fix. Now owns the live half of 6: the stale
    stored class IS this staleness, and without a tripwire the same
    staleness re-opens any generator fix.
-7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on was measured in a worktree
    carrying the uncommitted routing_area term; on main that fixture passes.
@@ -85,7 +63,7 @@ soft-deleted)
    routing_area reverted the dogfood file is `8 passed`, with it applied the
    F.Cu escape assertion fails — so the F.Cu escape is attributable to the
    term's placement, not to pad geometry. What is left is the stale class on
-   pb345846, which 6 owns, plus the narrower open question: is that escape a
+   pb345846, which 5 owns, plus the narrower open question: is that escape a
    real leak at that placement, or a placement-sensitive assertion? Reads
    realize/maze, which pcb-easyeda-round-trip's router item also touches;
    this thread sequences behind theirs.
@@ -104,11 +82,12 @@ soft-deleted)
    divergence (`realize.pad_board_wh`, landed 2026-09-30), not the term:
    with that fixed, `test_pcb_reference_end_to_end.py` is 5 passed at every
    seed WITH the term applied. What remains against the term is the dogfood
-   F.Cu escape assertion (item 7 above), re-measured on top of the fix. So
+   F.Cu escape assertion (item 6 above), re-measured on top of the fix. So
    the open decision is back to "gate now or wait", plus that one
    assertion.
 2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
-   waits on Do-next 2; the precondition for trusting any number below this
+   no longer waits on anything: the placer fix it queued behind landed
+   2026-10-01. Still the precondition for trusting any number below this
    line. Its cost prerequisite is gone: check_via_pad_keepout is indexed,
    so a full geometric DRC pass is 0.29 s on an 8x8 tile and 1.2 s at 16x16
    (was 1.4 s and 23 s), and check_clearance is now the pass's bottleneck —
@@ -118,10 +97,10 @@ soft-deleted)
    labels a pad by NET only, so `pad[ARR1_R7C0]` on dogfood-6 read as "the
    R7C0 electrode" when it was `ARR1_SINK_0.HVOUT24`, the driver's own land
    carrying that electrode's escape net through `pcb_pin_swaps`. That
-   mislabel produced TWO wrong diagnoses of item 2's defect before the
-   pad was identified. `check_via_pad_keepout` got exactly this fix from
+   mislabel produced TWO wrong diagnoses of the placer-on-vias defect
+   before the pad was identified. `check_via_pad_keepout` got exactly this fix from
    gr451052; its sibling never did.
-   **gr458087 is stale, not a regression — reconciled 2026-09-30 by
+   **gr458087 was stale, not a regression — reconciled 2026-09-30 by
    re-running the measurement.** Its 1.9 s/8x8 and 30 s/4-tile figures are
    the PRE-fix state; the STRtree fix it proposed is already in
    `check_via_pad_keepout`, whose own comment cites gr458087 and quotes
@@ -131,9 +110,17 @@ soft-deleted)
    97 ms of 1279 ms at 16x16 (231 pads / 200 vias). So the rule is no
    longer the bottleneck at any size measured, `check_clearance` is, and
    the affordability prerequisite this item named is genuinely discharged.
-   gr458087 wants closing: it was bounced back to `STATUS:open` by the
+   It had been bounced back to `STATUS:open` by the
    false-push incident (gr458326), so nobody noticed the real fix had
-   landed by another route. Closing it is a prod write and waits on Reto.
+   landed by another route. **Closed: it reads `STATUS:done` on prod
+   (checked 2026-10-01).** Reading nearby:
+   **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — what
+   is left of the placer's obstacle set after authored VIAS became
+   obstacles on 2026-10-01: authored tracks and pours are still
+   invisible, and the seed is still blind (the anneal walks a part off a
+   via and reports it when it could not, but `pcb_route` surfaces that
+   nowhere). Belongs with the invariant because refusing to route an
+   illegal placement is what closes it.
 3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
    waits on 2 because each slice's acceptance is an "is the board still
    valid" claim.
@@ -157,27 +144,17 @@ soft-deleted)
    while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
    part can be SEARCHED for, only confirmed by C-number.
 6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 5, a checklist over unenforceable constraints is theatre. **But its
-   `drc-clean` item now has measured evidence and may deserve to jump the
-   queue:** dogfooded 2026-10-01, `view='gerber'` on `ewod-dogfood-6` (116
-   DRC errors) returns exit 0 and a complete 12-file 217 KB JLCPCB bundle
-   with **no mention of DRC at all**. The export boundary gates nothing, so
-   a board the system knows is unmanufacturable can be sent to a fab. The
-   item carries the measurement and the one open design call (refuse vs
-   loud banner) — Reto's, since refusing breaks exporting a mid-progress
-   board to look at it. Reading nearby from the same round:
-   **backlog/pcb-board-feature-instances-reach-the-assembly-files.md** —
-   `view='cpl'` gives the electrode array `ARR1` a pick-and-place line,
-   because `export.cpl_csv` filters only on "has coordinates" and nothing
-   marks an instance as not-an-assembled-component. Fab-facing but not
-   fabrication-fatal; its own file records why the two obvious fixes
-   (filter on missing LCSC, filter on the `ewod_array` role) are both
-   wrong.
+   on 5, a checklist over unenforceable constraints is theatre. Its
+   `drc-clean` item is half-served: `view='gerber'` now runs DRC and leads
+   its response with a `DRC FAILED` block (Reto, 2026-10-01: banner, not
+   refusal — he wants the bundle of a broken board to debug from). The
+   banner informs and does not gate; the item records what a refusal
+   with an override would add if a red bundle is ever uploaded anyway.
 7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
-   it but a human looking at the render. Same root gap as Do-next 5's
+   it but a human looking at the render. Same root gap as Do-next 4's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
 8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
@@ -208,7 +185,7 @@ soft-deleted)
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
   per-write go-ahead, and not before Do-next 1 lands and the escape-layer
-  question (Do-next 7, with its live half in 6) is settled, or it is done
+  question (Do-next 6, with its live half in 5) is settled, or it is done
   twice. Named by item, not number: that rank has moved twice already.
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
   Do-next 2, where via-vs-pad becomes an enforced rule rather than a
@@ -222,9 +199,14 @@ soft-deleted)
   emitted `fixed='both'` on sinks — a board authored through it reproduced
   the pinned-sink-under-the-array configuration all by itself. Routed by
   job 458869 on melchior build `73e22674`, which contains the pad-orientation
-  fix. **Its DRC is 116 errors** and the overlap Reto confirmed visually is
-  authored-geometry vias against pads, with `0 via(s) placed` by the router —
-  under root-cause investigation, ranked as item 2 above.
+  fix. **Its DRC is 116 errors**: the driver's solder lands sit on the array's
+  authored plaza vias, with `0 via(s) placed` by the router. The placer
+  that produced that is fixed in code (2026-10-01, authored vias are
+  placement obstacles) but **the stored board still carries the bad
+  placement** — it stays red until the fix is deployed and the board is
+  re-placed and re-routed, which is a prod write on Reto's word. Its
+  `view='cpl'` no longer lists `ARR1` once deployed, and its
+  `view='gerber'` opens with the DRC banner.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
   the junk dogfood"). Every one of them is measured against something now
   known wrong: 1/2 had pinned sinks, 1/2/3 predate the real sink pin names,

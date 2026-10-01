@@ -1,267 +1,91 @@
 ---
 status: draft
-title: The placer's only geometric obstacle is a mounting hole — authored copper is invisible to it (the side-blind courtyard half landed 2026-09-29)
-prio: high
+title: The placer sees mounting holes and authored vias — authored tracks, pours and the seed are still blind
+prio: normal
 pillar: 3d-design
 ---
 
-# The placer cannot see most of what it must avoid
+# What the placer still cannot see
 
-## CONFIRMED on `ewod-dogfood-6`, 2026-09-30 — the predicted outcome landed
+The two defects this item was filed for are fixed. `courtyard_overlap` and
+`_placement_is_legal` are side-aware (2026-09-29), and authored vias are
+placement obstacles (2026-10-01): `PcbIR.fixed_vias` carries every
+`pcb_fixed_copper` via, `OptimizeEngine._fixed_via_gap` measures each of a
+part's real solder lands against them, and a move that puts a land within
+the router's clearance of a via is illegal. The regression test is
+`tests/test_pcb_ewod_dogfood.py::test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias`
+— authored copper in the model, a real `op='place'`, measured net-blind.
+It was red at 4 lands on vias before the fix.
 
-This item predicted that once positions under the array became legal, the
-placer would need to see the authored plaza vias "or it will pick one of
-them". It picked one of them.
-
-`ewod-dogfood-6` was authored AND routed entirely on current code (created
-through `scripts/prod-precis`; routed by job 458869 on melchior build
-`73e22674`, which contains the `realize.pad_board_wh` fix). Its sink is
-correctly UNPINNED — `fixed` is NULL, per the 2026-09-29 ruling — and the
-annealer moved it to (10, 10) rot 270 on the bottom side. Result: **116 DRC
-errors**, the driver IC's real solder lands sitting on the array's authored
-plaza vias, with `0 via(s) placed` by the router. Every via involved is
-authored copper, which is why Reto's framing is exactly right: *"This should
-not be possible when routing starts."*
-
-Root-cause pass, 2026-09-30, verified against prod: `optimize.py` and
-`cost.py` contain **zero references to `pcb_fixed_copper`** at HEAD. So
-nothing in legality or cost knows the plaza vias exist. Unpinning the sink
-(the right fix for the PREVIOUS failure) removed the accidental protection
-that a pinned-but-lucky position gave, and exposed this.
-
-Do NOT "fix" it by hand-moving the sink on this one board: the next anneal
-of this or any sink-bearing EWOD board re-places it onto the vias, because
-the legality term still does not exist.
-
-### A currently-green test cannot catch this, by construction
-
-`tests/test_pcb_ewod_dogfood.py::test_dogfood_drc_view_findings_are_all_the_documented_side_gap`
-asserts ZERO array-vs-sink clearance errors and its module docstring claims
-the pair "produces ZERO cross-layer findings". It is green because it omits
-all three mechanisms that produce the defect, not because the defect is
-absent:
-
-1. It builds its model with **`"copper": []`** (two places), so a
-   via-vs-pad collision is structurally invisible to `check_clearance`.
-2. Its `_seed()` fixture never runs `op='place'`, so the sink sits at the
-   generator's seed centroid and the fixed-copper-blind annealer never gets
-   to move it somewhere worse.
-3. It never applies `pcb_pin_swaps`, so no sink pad ever carries a foreign
-   electrode's net — the exact configuration that collides on prod.
-
-Treat that test as a false green: it must not be cited as "we already test
-this", and whatever fixes this item needs an assertion that includes
-authored copper in the model AND runs a placement pass. A pure-function
-fixture over `ARR1` alone cannot express this defect at all.
+What is left is narrower, and none of it is known to bite a live board.
 
 ## Motivation / why
 
-Found 2026-09-29 while acting on Reto's ruling that placement belongs to
-the placer (`pcb-placement-must-be-valid-before-routing` is the same
-campaign's refuse-side of this). Two defects in one pass, read out of the
-code, each independently checkable.
+The obstacle set is still partial. Each gap below is the same shape as the
+one just closed: geometry that exists before placement runs and exerts no
+force on where a part lands.
 
-### A. Authored copper is invisible to the placer
+### 1. Authored tracks and pours are not obstacles
 
-`optimize.py`'s only non-instance geometric keepout is the mounting hole:
-`_hole_keepout_radius_mm` / `_hole_polygon`, folded into
-`courtyard_overlap` via `_refresh_courtyard`. The string `fixed_copper`
-does not appear in `optimize.py` or `cost.py` at all, and the only `via`
-in either is the `via_count` **money** term (`cost.py::_via_count`,
-`$0.02`/hole) — a fab-cost scalar, not a position.
+`session.fixed_vias_from_copper` keeps `ctype='via'` rows only. An authored
+TRACK on an outer layer is real copper a land of a foreign net must not sit
+on; nothing stops it. It has not bitten because the one generator that
+authors copper (`ewod_pad_array`) puts its tracks on F.Cu under its own
+locked array's courtyard, where no same-side part can land anyway, and its
+B.Cu rows are via flashes only. The next generator that authors a B.Cu
+track, or an `.epro2` import with fixed copper, reopens it.
 
-So a generator's authored plaza vias, which exist in `pcb_fixed_copper`
-before any placement runs, exert zero force on where an instance lands.
-That is the generative cause of the `pb345846` case: `ARR1_SINK_0`'s
-solder lands sat on the ARR1 array's own plaza vias, 14 `via_pad_keepout`
-errors, every one knowable before the router started.
+A track obstacle is layer-specific where a via is not, so it needs the
+land's SIDE, and a through-hole land collides on every layer.
 
-**Freeing the sink does not fix this.** Generator version 3 stopped
-emitting `fixed='both'` on sinks so the placer owns the position — but a
-placer that cannot see a via can still put a pad on one. It will simply
-do so somewhere else.
+### 2. The seed is still blind
 
-### B. `courtyard_overlap` is side-blind — **FIXED 2026-09-29, A is what remains**
+`seed_placement` avoids neither holes nor vias (its docstring says why for
+holes). Legality gates PROPOSALS, never the incumbent, so a part seeded on
+a via stays until a proposal walks it off; the graded `~fixed_via` margin
+entry gives it a slope. On the dogfood board the anneal leaves at the
+default 2000 iterations. A short run may not, and then
+`OptimizeResult.on_fixed_vias` names the parts and the `pcb_place` job
+summary says the placement is not routable — reported, not prevented.
 
-`inst_bottom` — the IR's per-instance board side, `ir.py::from_graph` —
-is read by `ratsnest.py`, `silk.py`, `realize.py`, `rules.py`, `ir.py`,
-`generators.py` and `padplace.py`. It is **not** read by `optimize.py` or
-`cost.py`. So `courtyard_overlap_pair_term` and
-`_placement_is_legal` treat a bottom-side instance and a top-side
-instance as bodily overlapping when their courtyards intersect in XY,
-regardless of the board being between them.
+`pcb_route` re-places through the same engine and does NOT surface
+`on_fixed_vias` anywhere; `pcb-always-valid-board-invariant.md` owns
+refusing to route an illegal placement, which is the right home for it.
 
-Same defect class as `pcb-keepout-does-not-bind.md` (pcb-easyeda thread):
-authored geometry the engine silently ignores — here via an incomplete
-obstacle set, there via an unimplemented `ftype='keepout'`. Whoever
-implements either should read both.
+### 3. Lands are axis-aligned rects in the footprint frame
 
-Two consequences, opposite in sign:
+`session.land_rects_by_instance` covers an obliquely rotated pad with a
+square of its longer side and a polygon pad with its bounding box. Both
+over-cover, so they can only reject a legal position, never admit an
+illegal one. Same question as
+`pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md`.
 
-- A legitimate bottom-side part underneath a top-side part is currently
-  **unplaceable** — the normal double-sided-assembly case.
-- On `pb345846` this accidentally produces the desired outcome: with the
-  sink unlocked, side-blind overlap pressure pushes it off the array.
-  **Do not read the resulting placement as evidence that the placer
-  understands the constraint.** It is the right move for the wrong
-  reason, and it will reverse the day B is fixed.
+### 4. A rigid recentre is vetoed outright
 
-**Fix, and what it measured afterwards.** `_placement_is_legal` and
-`courtyard_overlap_pair_term` now both skip a pair whose `ir.inst_bottom`
-differ — the same rule `drc.check_courtyard_overlap` already applied
-through its `bottom_by_refdes` map. Mounting holes are exempt from the
-exemption: a hole goes through the board. Re-running the probe on the
-same fixture, with no other change:
-
-| quantity | before | after |
-| --- | --- | --- |
-| `ARR1_SINK_0` moved, sink-alone-unlocked arm | 0.0 mm | **10.05 mm** |
-| instances that moved, that arm | 0 of 8 | 1 of 8 |
-| `ARR1_SINK_0` moved, all-but-`ARR1` arm | 0.0 mm | 9.79 mm |
-
-The trap is gone: the sink has legal positions and the annealer reaches
-them. **Two things this does NOT establish.** `check_via_pad_keepout`
-still returns 0 findings on this fixture (it returned 0 before too — the
-fixture does not reproduce the prod symptom, see below), so defect A is
-untested by it. And the mechanism probe's `born_illegal: true` is now
-measuring a quantity legality no longer consults; it is kept as the
-record of the pre-fix state, not as a live check.
-
-**New, and worth a decision rather than a silent accept:** nothing in the
-cost function rewards a sink for staying under the electrodes it drives.
-Freed, it wandered 10 mm. That may be right (shorter nets elsewhere) or
-may be a missing term; the generator's centroid is a seed, and a seed the
-placer is free to abandon entirely is a different thing from one it
-refines. Measure the routed result before adding a term.
-
-The generator module docstring's claim that "a sink placed directly under
-the array is correctly read as a different physical side by
-courtyard-overlap/clearance checks" is true of **DRC's**
-`check_courtyard_overlap`, and false of the placer's cost term of the
-same name. Two passes, same name, different side-awareness. **As of
-2026-09-29 the claim is true of both** — that divergence is what the fix
-below closed, and it is the reason the docstring read as accurate for a
-month while the placer was doing the opposite.
-
-## Measured 2026-09-29 — the sink is STUCK, not merely unlocked
-
-Generator v3 unlocks sinks. A throwaway probe on the `ewod-dogfood-1`
-fixture (seed fresh, `op='place'` drained in-proc) measured what the
-placer then does:
-
-| arm | result |
-| --- | --- |
-| sink alone unlocked, everything else `fixed='both'` | `fixed_after: null`, **moved 0.0 mm**, 0 of 8 instances moved |
-| everything but `ARR1` unlocked | 6 of 6 others moved (`J_SERIAL` 23.24 mm, `J_HV` 7.51, `U_TEMP` 6.38, `POGO1` 2.86, `J_INSTR` 2.38, `R_BLEED` 0.26); **`ARR1_SINK_0` moved 0.0 mm** |
-
-The second arm is the discriminator: the placer is demonstrably working,
-and the sink specifically cannot move. **So unlocking a sink is necessary
-but NOT sufficient — this item blocks the EWOD placement fix rather than
-following it.**
-
-### Mechanism — measured, not inferred
-
-`_placement_is_legal` requires `dist(i, j) >= r_i + r_j`, where `r` is
-each part's circumscribed land-pattern radius (`_keepout_r`). Measured on
-the fixture with the same `instance_courtyard_polygons(..., clearance_mm=
-COURTYARD_CLEARANCE_MM, fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM
-/ 2)` call `optimize.py` uses for its own radii:
-
-| quantity | mm |
-| --- | --- |
-| `r` ARR1 | 11.898 |
-| `r` ARR1_SINK_0 | 13.650 |
-| **required separation** | **25.548** |
-| **actual separation** | **0.093** |
-| shortfall | 25.455 |
-
-**The sink is born 25.46 mm inside the separation legality demands.** It
-starts illegal, and no generated move is accepted unless it lands ≥25.55 mm
-away, so the annealer cannot walk it out — which is exactly the measured
-0.0 mm against six freely-moving neighbours.
-
-Note what this says about defect B: the legality test is not merely
-side-blind, it is a CIRCUMSCRIBED-CIRCLE test. An 8x8 electrode array and
-a bottom-side sink are being separated as if both were discs. That is the
-same sound-vs-unsound approximation class this campaign already hit when
-three checks measured pads with circles — a bounding volume licenses
-conservative REJECTION only, and here the conservative rejection is
-rejecting the entire legal region.
-
-So the fix ordering in this item needs one correction: making
-`courtyard_overlap` side-aware is not cosmetic here, it is what makes any
-position under the array legal at all. Until then, a sink under an array
-is unplaceable BY CONSTRUCTION, and generator v3's unlock cannot help.
-
-Also measured, and worth a separate look: `check_via_pad_keepout` returned
-**0 findings** on this placed fixture while the prod board's routed twin
-reported 14. The probe placed but did not route, and the fixture is
-`ewod-dogfood-1` against prod's `ewod-dogfood-2`, so this is not
-necessarily a contradiction — but it means the fixture does not currently
-reproduce the prod symptom, and
-`pcb-placement-must-be-valid-before-routing`'s "the `pb345846`
-sink-under-array case is the regression fixture" needs a fixture that
-actually shows it.
+`recentre_in_outline` now returns `(0, 0)` on any board with authored
+vias, the same blanket rule a locked instance already triggers. Correct,
+and coarser than it needs to be.
 
 ## In scope
 
-1. Put authored `pcb_fixed_copper` (vias especially — a drilled hole
-   destroys a joint, it does not merely crowd it) into the placer's
-   obstacle set, reusing the polygon machinery
-   `_hole_polygon`/`_refresh_courtyard` already has rather than a second
-   representation.
-2. ~~Make `courtyard_overlap` side-aware by reading `ir.inst_bottom`, in
-   both the graded cost term and `_placement_is_legal`, so the two agree
-   with DRC's rule of the same name.~~ **DONE 2026-09-29** — three tests
-   in `tests/test_pcb_optimize.py`, each with a same-side discriminator
-   arm placing two parts at the identical coordinate so only
-   `inst_bottom` can separate them.
-3. A regression fixture for defect A: a board with an authored via where
-   an instance would otherwise land. (The bottom-under-top fixture is
-   the `_two_part_ir` helper added with item 2.)
+Authored tracks (and pours, if a generator ever emits one) as
+side-specific land obstacles, in `_fixed_via_gap`'s sibling. Seed-time
+avoidance only if a board is measured that the anneal cannot rescue.
 
 ## Explicitly NOT in scope
 
 - The refuse-before-route gate
-  (`pcb-placement-must-be-valid-before-routing`). That item makes an
-  invalid placement unroutable; this one makes it unlikely. Both are
-  wanted — a gate with no cost term refuses boards it could have placed.
+  (`pcb-placement-must-be-valid-before-routing`, folded into
+  `pcb-always-valid-board-invariant.md`).
 - The corridor-width term (`pcb-placer-starves-the-escape-corridor`).
-  Same pass, same missing-representation shape, different producer.
-- Via SPAN correctness (`pcb-via-geometry-ignores-pad-side-and-pads`),
-  which is about how vias are synthesized, not about what the placer sees.
-
-## Ordering — corrected 2026-09-29 by measurement
-
-An earlier version of this section said fixing B before A would make
-`pb345846` worse, because B's side-blindness was "accidentally" pushing
-the sink off the array. **That was a prediction, and the probe refuted
-it.** Side-blind overlap does not push the sink anywhere; it freezes the
-sink in place, 25.46 mm inside the required separation, with no legal
-move available. Nothing was pushing it off.
-
-The corrected ordering is the opposite of what that paragraph said:
-
-1. **B first.** Until `courtyard_overlap` and `_placement_is_legal` know
-   which side an instance mounts on, a bottom-side part under a top-side
-   part has no legal position at all, so no amount of obstacle awareness
-   can place it anywhere.
-2. **Then A.** Once positions under the array are legal, the placer needs
-   to see the authored plaza vias or it will pick one of them.
-
-A alone would leave the sink frozen. B alone would free it to move
-without knowing what it must avoid. Both are needed; B unblocks.
-
-**B landed 2026-09-29 and behaved as the ordering predicted** — the sink
-went from 0.0 mm to 10.05 mm of movement. A is now the whole of this
-item, and it is no longer blocked by anything.
+- Via SPAN correctness (`pcb-via-geometry-ignores-pad-side-and-pads`). The
+  placer treats every authored via as a through hole on purpose.
+- `ftype='keepout'` features (`pcb-keepout-does-not-bind.md`) — same
+  defect class, different geometry source; whoever does either reads both.
 
 ## Target + blast radius
 
-`src/precis/pcb/optimize.py` (`_refresh_courtyard`,
-`_courtyard_candidates_near`, `_placement_is_legal`, `seed_placement`),
-`src/precis/pcb/cost.py` (`courtyard_overlap_pair_term`). Moves placement
-on every board with authored copper or a bottom-side part, so re-measure
-rather than assuming direction — and per
-`pcb-fixture-footprint-manufactures-the-wall`, a yield measured on the
-synthetic fixture does not transfer.
+`src/precis/pcb/session.py` (`fixed_vias_from_copper`,
+`land_rects_by_instance`), `src/precis/pcb/optimize.py`
+(`OptimizeEngine._fixed_via_gap`, `_placement_is_legal`,
+`_refresh_courtyard`). Moves placement on every board with authored copper.
