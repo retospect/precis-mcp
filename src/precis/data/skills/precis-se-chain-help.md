@@ -303,6 +303,19 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 - `view='export'` (`args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'}`) —
   the design written out to one of the four interop formats; see
   "Export" below.
+- `view='pick'` — every level one atom of a realized region belongs to,
+  innermost first, each row with a token you can cite:
+  `args={'block': 'stem.s0', 'atom': 44}` (0-based ordinal in the bound
+  structure) or `'atom': 'aO44'` (the label a finding prints). Rows: atom
+  ("O3' of DG 4") → residue → base pair (`stem@3`, both letters, both
+  strand domains) → strand domain → strand → segment → helix → ancestors.
+  A loop nucleotide has no pair row and no domain row. Tokens key on block
+  **uid**, never a label: `<se:UID#ORD>` atom, `<se:UID/A.4>` residue
+  (chain.resseq, on the segment), `<se:UID@3>` offset 3 of a **helix**
+  block, `<se:UID/d0>` domain 0 of a **strand** block, `<se:UID>` a block.
+  `args={'token': '<se:…>'}` reads any token back to its row and the
+  levels above it. Works on any block with a bound structure; without a
+  `realize_chain` record the rows are atom → blocks.
 
 ## DRC — the fifteen `chain_*` findings
 

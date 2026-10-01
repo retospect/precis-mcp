@@ -122,6 +122,7 @@ from precis_se import manufacture as se_manufacture
 from precis_se import modes as se_modes
 from precis_se import notes as se_notes
 from precis_se import order as se_order
+from precis_se import pick as se_pick
 from precis_se import precedent as se_precedent
 from precis_se import printgroup as se_printgroup
 from precis_se import printing as se_printing
@@ -152,7 +153,7 @@ from precis_se.chain.vocab import (
     chain_role,
     group_domains,
 )
-from precis_se.identity import AmbiguousLabel, resolve_block
+from precis_se.identity import AmbiguousLabel, block_by_uid, resolve_block
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
     PortSpec,
@@ -218,7 +219,7 @@ class SeHandler(Handler):
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
             "'ports'|'topology'|'chain'|'measures'|'datums'|'validate'|"
-            "'clearance'|'sweep'|'stations'|"
+            "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
             "args={'name':...}, clearance takes args={'a':...,'b':...} "
@@ -419,6 +420,7 @@ class SeHandler(Handler):
             "clearance",
             "sweep",
             "stations",
+            "pick",
             "drc",
             "bom",
             "fasten",
@@ -837,6 +839,8 @@ class SeHandler(Handler):
             return Response(body=_render_sweep(self.store, ref.id, tree))
         if v == "stations":
             return Response(body=_render_stations(self.store, ref.id, tree, args))
+        if v == "pick":
+            return Response(body=_render_pick(self.store, tree, args))
         if v == "drc":
             body = _render_drc(
                 tree, self.store, ref.id, _scenario_line(self.store, ref.id)
@@ -891,7 +895,11 @@ class SeHandler(Handler):
             "declared state? — the cross product of every state-carrying "
             "block's declared states, budget-bounded) | view='stations' "
             "(args={'walker':...,'cursor'?:...,'target'?:'<block>.<port>'}: "
-            "the walker's cursor per settled station) | view='drc' "
+            "the walker's cursor per settled station) | view='pick' "
+            "(args={'block':...,'atom':<ordinal or label>} or "
+            "args={'token':'<se:UID#ORD>'}: every level an atom belongs to "
+            "— residue, base pair, domain, strand, blocks — each with a "
+            "citable token) | view='drc' "
             "(graph tier + DOF "
             "probe) | view='kinematics' (derived axis/angle/arm/tip for "
             "every declared transition's ports — port_pose_overrides, "
@@ -4765,6 +4773,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),
     "stations": frozenset({"walker", "cursor", "target"}),
+    "pick": frozenset({"block", "atom", "token"}),
     "drc": frozenset({"state"}),
     "kinematics": frozenset(),
     "bom": frozenset(),
@@ -5236,6 +5245,83 @@ def _render_clearance_digest(tree: SeTree) -> str:
     if notes:
         body += "\n\n" + "\n".join(notes)
     return body
+
+
+# ── view='pick' — every level an atom belongs to ────────────────────────
+# (se-pick-hierarchy, the chain-design instance)
+
+
+def _render_pick(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
+    """``view='pick'`` — ``args={'block': <label or #uid>, 'atom': <ordinal
+    or scene label>}`` or ``args={'token': '<se:…>'}``: the level list
+    :mod:`precis_se.pick` derives, innermost first, one citable token per
+    row. The atom form is what turns a finding's ``aO44`` into "O3' of DA
+    8" on ``stem@3``; the token form reads any row's token back."""
+    args = args or {}
+    token = str(args.get("token") or "").strip()
+    block = str(args.get("block") or "").strip()
+    atom = args.get("atom")
+    if (
+        bool(token) == bool(block)
+        or (block and atom is None)
+        or (token and atom is not None)
+    ):
+        raise BadInput(
+            "get(kind='se', view='pick') takes args={'block': <label or #uid>, "
+            "'atom': <0-based ordinal or scene label>} OR args={'token': "
+            "'<se:UID>' | '<se:UID#ATOM>' | '<se:UID/REGION>' | '<se:UID@OFFSET>'}"
+        )
+    try:
+        if token:
+            ref = se_pick.parse_token(token)
+            node = block_by_uid(tree, ref.uid)
+        else:
+            ref = None
+            node = resolve_block(tree, block)
+            if node is None:
+                raise NotFound(_block_not_found(tree, block))
+        labels, record = (
+            se_atomic_render.bound_pick_inputs(store, node)
+            if node is not None
+            else (None, None)
+        )
+        if ref is not None:
+            subject = token
+            levels = se_pick.resolve_token(tree, ref, labels=labels, record=record)
+        else:
+            assert node is not None
+            if labels is None:
+                raise BadInput(
+                    f"view='pick': block {node.name!r} has no bound structure, so "
+                    "it has no atoms to pick — realize it first, or pass "
+                    "args={'token': '<se:UID>'} for its block levels"
+                )
+            ordinal = _pick_ordinal(atom, labels, node.name)
+            levels = se_pick.atom_levels(
+                tree, node, ordinal, labels=labels, record=record
+            )
+            subject = f"atom {ordinal} ({labels[ordinal]}) of {node.name!r}"
+    except (se_pick.PickError, AmbiguousLabel) as exc:
+        raise BadInput(f"view='pick': {exc}") from exc
+    lines = [f"# pick — {subject}", "", "| level | what | token |", "|---|---|---|"]
+    lines += [f"| {row.level} | {row.label} | `{row.token}` |" for row in levels]
+    return "\n".join(lines) + "\n"
+
+
+def _pick_ordinal(atom: Any, labels: list[str], block: str) -> int:
+    """``atom`` as a 0-based ordinal: an int (or digit string) is one, any
+    other string is a scene label — the form a finding prints."""
+    if isinstance(atom, int) and not isinstance(atom, bool):
+        return atom
+    text = str(atom).strip()
+    if text.isdigit():
+        return int(text)
+    if text in labels:
+        return labels.index(text)
+    raise se_pick.PickError(
+        f"the structure bound to {block!r} has no atom labelled {text!r} — "
+        "pass a 0-based ordinal or a label from the structure's own listing"
+    )
 
 
 # ── view='stations' — the walker's cursor per station ───────────────────

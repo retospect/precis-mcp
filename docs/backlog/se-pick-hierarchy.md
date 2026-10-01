@@ -97,6 +97,26 @@ persisting that list is the one data change; pairing is `derive_pairing`
 over the tree. The se page (`/se/<slug>`) already draws the bound
 structure's atoms inside the block tree (`routes/blocktree_view.py::
 _atomic_block_payload`) with no residue index and no atom pick — gap 1
-above. Token grammar addition for a base pair: `<se:UID@h0:3>`. The action
-a pick would offer (unpair this offset) is the op proposed in
-`se-chain-insertions-deletions.md`.
+above. The action a pick would offer (unpair this offset) is the op
+proposed in `se-chain-insertions-deletions.md`.
+
+**Resolver built (2026-10-01)** — gap 2 for this instance. `precis_se/pick.py`
+(store-free; its docstring is the grammar's home now) and
+`get(kind='se', view='pick')`: `args={'block', 'atom'}` (ordinal or the
+scene label a finding prints) returns atom → residue → base pair → strand
+domain → strand → segment → helix → ancestors, one token per row;
+`args={'token'}` reads a token back. Grammar as decided there: residue
+`<se:SEGUID/A.8>` (chain.resseq, the region slot), domain
+`<se:STRANDUID/d1>`, and the base pair is `<se:HELIXUID@3>` — not the
+`<se:UID@h0:3>` first written here, which keyed on a helix label against
+this item's own "uid is the identity" rule. A structure with no
+`realize_chain` record resolves atom → blocks, so a hexfold structure
+already gets the block levels; its region level is the open part.
+
+Still open for this instance, all on the se-3d-viewer side (seam agreed
+with that thread 2026-10-01: resolver here, render there): gap 1 atom pick
+on the `/se/<slug>` atoms, gap 3 popup + ask-box insertion. Agreed shape:
+a click-time `GET /se/<slug>/pick?block=…&atom=…` route returning the rows
+as JSON, never folded into the scene payloads (they are refetched on every
+level change). The route is three calls: `identity.resolve_block`,
+`atomic.render.bound_pick_inputs`, `pick.atom_levels`.

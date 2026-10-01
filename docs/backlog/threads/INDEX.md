@@ -64,8 +64,9 @@ Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
-  chain Do-next 2 are the same surface; the viewer owns the selection
-  mechanism, the chain thread owns the residue/base-pair instance.
+  chain Horizon 9 are the same surface; the viewer owns the selection
+  mechanism and the click-time pick route, the chain thread owns the
+  resolver (`precis_se/pick.py`, built) the route calls.
 - precis_se atomic output — a composite corrupted by a stale process
   (gr458061; gr457995 refuted, there is no join-side bug) renders in the
   viewer as a wrong picture; hexfold's `composite_part_stolen` validate

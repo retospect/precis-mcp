@@ -12,17 +12,18 @@ td458169); fold_layout lays out every pseudoknot-free fold (bulges and
 coaxial stacks end to end, tails as single-occupancy stubs); loop atoms
 chain by default (`relax_loops`, Reto's ruling), envelope_fit skips them,
 residue rows persist, and an undeclared pair's letters are checked
-(strict Watson–Crick, Reto's ruling). Next: the pick hierarchy.
-**Last reviewed:** 2026-09-30 (pillar review same day added
-se-chain-wrap-around-part to Do next)
+(strict Watson–Crick, Reto's ruling); `view='pick'` resolves an atom to
+residue, base pair, domain, strand and blocks with a citable token per
+level (the resolver half of the pick hierarchy). Next: dogfood it on prod.
+**Last reviewed:** 2026-10-01 (replacement session; pick resolver built)
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
 
-1. **backlog/se-pick-hierarchy.md** — shared with se-3d-viewer (its Horizon
-   1); the chain-design instance (its 2026-09-30 section: residue +
-   base-pair rows under a segment block, atom pick) turns "aO44" into
-   "O3' of DA 8, hp.h0@3".
+1. **dogfood `view='pick'` on prod** once it deploys — `dogfood-hairpin-4`
+   and `dogfood-nucleic-3`: an atom by ordinal and by finding label, each
+   row's token read back. Then the other structure-level findings
+   (Horizon 1) can print the token instead of `aO44`.
 2. **backlog/se-chain-wrap-around-part.md** — blocked-by
    hexfold-integration; DNA-SE session evidence for the want.
 
@@ -51,6 +52,11 @@ se-chain-wrap-around-part to Do next)
    waits on a protein-bearing design being wanted.
 8. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
    walker dogfood (td458169) is its protocol figure's source.
+
+9. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
+   se page, popup, ask-box insertion) is se-3d-viewer's Horizon 1; the
+   resolver it calls is built here (`precis_se/pick.py`). Waits on that
+   thread's ranking; nothing owed from this side until it starts.
 
 ## Parked
 

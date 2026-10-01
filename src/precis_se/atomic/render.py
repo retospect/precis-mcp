@@ -146,6 +146,25 @@ def bound_chain_records(store: Store, tree: SeTree) -> dict[str, dict[str, Any]]
     return out
 
 
+def bound_pick_inputs(
+    store: Store, node: Any
+) -> tuple[list[str] | None, dict[str, Any] | None]:
+    """``(atom labels in scene order, chain_atoms record)`` of the structure
+    bound to ``node`` — the two store reads :func:`precis_se.pick.atom_levels`
+    and :func:`precis_se.pick.resolve_token` are handed, so ``view='pick'``
+    and a web pick route load them the same way. ``(None, None)`` for a
+    block with no resolvable bound structure; the record is ``None`` for a
+    structure ``realize_chain`` did not mint."""
+    if node.bound_kind != "structure" or not node.bound:
+        return None, None
+    ref = store.get_ref(kind="structure", id=node.bound)
+    if ref is None:
+        return None, None
+    scene, _handles = store.structure_load(ref.id)
+    record = (ref.meta or {}).get("chain_atoms")
+    return list(scene.atoms), record if isinstance(record, dict) else None
+
+
 def render_mechanics(store: Store, tree: SeTree) -> str:
     """``view='mechanics'`` — advisory (never-gating) L4 ceilings
     (:mod:`precis_se.atomic.mechanics`'s module docstring): per-block Euler
