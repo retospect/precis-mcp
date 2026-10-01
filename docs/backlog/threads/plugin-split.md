@@ -18,26 +18,19 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **gr457894** — scripts/deploy restarts on sha change, not on
-   installed-file-list change, so a pure rename leaves long-lived processes
-   holding deleted modules. Every remaining step in this thread is a module
-   move and no gate catches this class (a fresh test process always imports
-   the new tree). Observed once, on a session MCP (gr458061's half); the
-   prod worker suspected the same day was never implicated, and pathway does
-   not even route through that host.
-2. **gr458360** — the pytest template DB carries core migrations only, so
+1. **gr458360** — the pytest template DB carries core migrations only, so
    every plugin-table test (se, and every future extracted plugin) is
    order-dependent: `Migrator.discover_sources` is never called, only the
    bare-Path legacy form. Already caused one red gate 2026-09-30 by
    ordering luck. Every module this thread extracts adds another plugin
    whose tests inherit this gap — fix before, not after, milestone 2
    below.
-3. **gr454796** — `test_ml_calculator_cache_is_keyed_on_model_and_dispersion`
+2. **gr454796** — `test_ml_calculator_cache_is_keyed_on_model_and_dispersion`
    hard-fails instead of skipping when the optional `dft-ml` extra is
    absent; the same gap a plugin-boundary test needs to not have, since
    the whole point of the split is code that runs without an extra
    installed.
-4. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
+3. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
    2026-09-29, step 1 landed 2026-10-01 as
    `tests/test_plugin_import_boundary.py`). The boundary is now a gate
    rather than a convention, which is what the 10-16 moves get verified
@@ -52,14 +45,31 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    both long-lived containers still report an empty group and landing it
    would red the pathway skill assertion in every in-flight worktree's gate
    until each image rebuilds. Prod is not at risk (deploy does a real
-   `uv pip install --upgrade`). It needs gr457894 first and then an
-   announced rebuild round — it is the same class as gr457894 one level
-   out: an installed dist serving metadata its pyproject no longer matches.
-5. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
+   `uv pip install --upgrade`). It needs only an announced dev-image
+   rebuild round — not gr457894, per the correction below. It is the
+   dev-side form of the same class: an installed dist serving metadata its
+   pyproject no longer matches.
+4. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
-   every node's embedder. Below 4 only because 4 is behaviour-neutral and
-   this touches 58 modules.
+   every node's embedder. Last only because 3 is behaviour-neutral and this
+   touches 58 modules.
+
+**gr457894 left Do next on 2026-10-01, and this is the correction that
+matters most in this file.** It sat at Do-next 1 for five rounds on the claim
+that `scripts/deploy` restarts on a sha change but not on an installed-file-list
+change, so a module move would leave long-lived processes holding deleted
+modules — making the restart story a precondition for every extraction here.
+Reading `deploy/redeploy-precis.yml` before building it shows the premise is
+false: step 0b sets `precis_deploy_changed` from the installed-vs-pinned sha
+(so a rename fires it), step 0b2 classifies bounce scope fail-safe toward
+`full` for `src/precis/`, `src/precis_pathway/`, unknown paths and any diff
+failure, and `full` drains and bounces the **worker** units, not only web.
+This round supplied a matching data point: a `src/precis_pathway/`-only
+commit deployed at 00:30Z, and the 04:12Z dispatched run executed the new
+code. Fix option 1 is withdrawn in the gripe; what survives is dev-side
+staleness, owned by gr458061 (session MCP containers) and gr459123 (gate
+container metadata). Nothing in this thread waits on it.
 
 ## Horizon
 
@@ -83,8 +93,9 @@ own item); they become items as each comes into reach.
    test split, and the fact that PyPI publishing lapsed at v8.4.4 against a
    pyproject now at 8.35.x — none of which the top-down item covers.
 2. **backlog/plugin-split-runtime-shell.md**, hexfold out first — waits on
-   1, Do-next 4 (the import-boundary gate) and Do-next 1 (gr457894); proves
-   the entry-point mechanics at zero API risk.
+   1 only; the import-boundary gate it also wanted landed 2026-10-01, and
+   the restart precondition it used to carry (gr457894) turned out not to
+   exist. Proves the entry-point mechanics at zero API risk.
 3. **backlog/plugin-split-runtime-shell.md**, precis_surface out — waits on
    2; folds the marching-cubes tables into geom so the boundary is
    exercised, not declared.
@@ -119,10 +130,13 @@ own item); they become items as each comes into reach.
   the 697-row backfill is a prod title write that wants Reto's word, and
   the failed-path retitle lives in `quest/loop.py`, which sibling sessions
   are editing today. Core cannot reuse `pathway_title` (plugin-owned), but
-  it does not need to: the failed case is a suffix swap. ⚠ The write-path
-  fix is deployed (a9138fef) but **not yet exercised on prod** — no pathway
-  has completed since, so the newest `ready` row still predates it. Check
-  the next completion before calling it verified.
+  it does not need to: the failed case is a suffix swap. The write-path fix
+  is **verified on prod** as of 2026-10-01: ref 459170 completed at 04:12Z
+  through the dispatched-job path and is titled `NO → NH3 on Pd` — the only
+  one of 530 `ready` rows with a correct title, since the rest predate the
+  fix. It took three dogfood rounds to get there: deployed 00:30Z, first
+  exercised 04:12Z, with nothing but an arriving input able to close the
+  gap. Deployed is not verified.
 
 ## No action needed
 
