@@ -31,8 +31,10 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 ## Do next
 
-1. **backlog/se-viewer-browser-level-check.md** — no browser-level check
-   exists, so every correctness claim rests on a hand-built harness in a
+1. **backlog/se-viewer-browser-level-check.md** — BUILT 2026-10-01
+   (viewer-check.yml, nightly); delete once a scheduled GitHub run is
+   green. Before it, no browser-level check
+   existed, so every correctness claim rests on a hand-built harness in a
    worktree that will be reaped, including the scripts that resolved
    gr458329. Leverage: makes 2–4 verifiable instead of assertable, and is
    the only guard against the defect that started the thread (a dead viewer

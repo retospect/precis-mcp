@@ -30,6 +30,12 @@ Modes:
   scripts/main-ci-status --for-hook   SessionStart: print only when RED (silent
                                       on green / offline / no gh)
 
+Also reports the nightly browser check of the se viewer (viewer-check.yml,
+scripts/viewer_check.py) on its own line: RED and gone-quiet print even
+under `--for-hook`, green only without it. A red there is not a red main —
+it is a viewer control that stopped changing the picture; the run's
+screenshots are the evidence (`gh run download <id>`).
+
 Advisory: always exits 0. Offline or without `gh` auth it prints nothing under
 `--for-hook` and a one-line "unavailable" otherwise.
 """
@@ -238,6 +244,64 @@ def main() -> int:
     return 0
 
 
+VIEWER_QUIET_AFTER_MIN = 36 * 60
+
+
+def latest_viewer_run() -> dict | None:
+    """Newest completed, non-cancelled viewer-check run on main."""
+    out = _gh(
+        "run",
+        "list",
+        "--branch",
+        "main",
+        "--workflow",
+        "viewer-check",
+        "--limit",
+        "5",
+        "--json",
+        "databaseId,headSha,conclusion,status,createdAt",
+    )
+    if not out:
+        return None
+    runs = sorted(json.loads(out), key=lambda r: r.get("createdAt", ""), reverse=True)
+    return next(
+        (
+            r
+            for r in runs
+            if r["status"] == "completed" and r["conclusion"] != "cancelled"
+        ),
+        None,
+    )
+
+
+def viewer_check_report() -> None:
+    """One line on the nightly browser check, or none."""
+    for_hook = "--for-hook" in sys.argv[1:]
+    run = latest_viewer_run()
+    if run is None:
+        if not for_hook:
+            print("viewer-check: no completed run yet (or gh unavailable)")
+        return
+    rid, sha, when = run["databaseId"], run["headSha"][:8], age(run["createdAt"])
+    if run["conclusion"] != "success":
+        print(
+            f"🔴 viewer-check RED: run {rid} on {sha} ({when}) — a se viewer control "
+            f"stopped changing the picture. Screenshots + report.json: gh run download {rid}. "
+            "Diagnose first (a browser check can flake), then file one gripe with the cause."
+        )
+        return
+    if age_minutes(run["createdAt"]) > VIEWER_QUIET_AFTER_MIN:
+        print(
+            f"viewer-check: last run {when} (run {rid}, green) — the nightly has gone quiet; "
+            "check the workflow is still scheduled"
+        )
+        return
+    if not for_hook:
+        print(f"viewer-check: ✓ green ({sha}, run {rid}, {when})")
+
+
 if __name__ == "__main__":
     os.chdir(ROOT)
-    sys.exit(main())
+    rc = main()
+    viewer_check_report()
+    sys.exit(rc)

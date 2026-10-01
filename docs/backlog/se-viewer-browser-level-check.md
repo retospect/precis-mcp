@@ -8,6 +8,15 @@ pillar: 3d-design
 IDEA (2026-09-29), filed from the live verification of the id/name path
 unification.
 
+BUILT 2026-10-01, awaiting its first scheduled run on GitHub:
+`.github/workflows/viewer-check.yml` runs `scripts/viewer_check.py` over
+the committed `tests/fixtures/viewer_check/unicycle-c1.ops.json`, and
+`scripts/main-ci-status` reports it. Local run on the same fixture: all 7
+checks green (noise n=0, select n=6725, reselect n=1, explode held at
+n=32909 across three samples, unexplode n=1, level n=643, console clean);
+control run with the explode fix removed failed `explode_moves_and_holds`
+at n=1. Delete this item once a scheduled run on GitHub has gone green.
+
 Every test over the 3D viewer asserts the SHAPE of the emitted scene JSON.
 That is exactly the assertion class that let every visibility toggle in the
 viewer sit dead behind a fully green suite and a clean console: the JSON was

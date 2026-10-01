@@ -1,0 +1,1034 @@
+{
+ "ops": [
+  {
+   "op": "add_block",
+   "name": "unicycle",
+   "envelope": "box:w0.55d0.45h1.05",
+   "desc": "20-inch desktop-FDM unicycle, 80 kg rider capacity.",
+   "use": "personal transport / recreational unicycling, light indoor+outdoor use"
+  },
+  {
+   "op": "add_block",
+   "name": "wheel",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    0.0225,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.254h0.045",
+   "desc": "20 in (508 mm OD) wheel: rim + spokes + tire, bought pre-built.",
+   "use": "rolling contact with the ground; keyed to the axle"
+  },
+  {
+   "op": "add_block",
+   "name": "axle",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    0.085,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.010h0.170",
+   "desc": "20 mm dia steel axle, turned from stock round bar with flats at both ends for the crank clamps; keyed to the wheel hub; runs through the two fork bearings.",
+   "use": "carries wheel + crank torque; located by two ball bearings in the fork legs"
+  },
+  {
+   "op": "add_block",
+   "name": "bearing_left",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    0.065,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.0235h0.014",
+   "desc": "6204-2RS deep-groove ball bearing, left side.",
+   "use": "locates axle in fork_left, carries radial load"
+  },
+  {
+   "op": "add_block",
+   "name": "bearing_right",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    -0.065,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.0235h0.014",
+   "desc": "6204-2RS deep-groove ball bearing, right side.",
+   "use": "locates axle in fork_right, carries radial load"
+  },
+  {
+   "op": "add_block",
+   "name": "fork_left",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    0.05,
+    0.254
+   ],
+   "envelope": "box:w0.030d0.045h0.42",
+   "desc": "Left fork leg, fdm/asa: bearing housing at the bottom (press-fits bearing_left's 47 mm OD), rises to a bolted flange at the crown.",
+   "use": "carries wheel-side bearing load up to the crown"
+  },
+  {
+   "op": "add_block",
+   "name": "fork_right",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    -0.05,
+    0.254
+   ],
+   "envelope": "box:w0.030d0.045h0.42",
+   "desc": "Right fork leg, fdm/asa, mirror of fork_left.",
+   "use": "carries wheel-side bearing load up to the crown"
+  },
+  {
+   "op": "add_block",
+   "name": "crown",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    0.0,
+    0.674
+   ],
+   "envelope": "box:w0.045d0.13h0.06",
+   "desc": "Crown, fdm/asa: bolts both fork legs together and carries the seat-tube socket with an integral pinch collar for seat-height clamping.",
+   "use": "joins fork_left + fork_right; hosts the seatpost socket"
+  },
+  {
+   "op": "add_block",
+   "name": "flange_bolt_left",
+   "parent": "crown",
+   "pose": [
+    0.0,
+    0.05,
+    0.016
+   ],
+   "rot": [
+    3.14159265,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.0025h0.016",
+   "desc": "Crown-to-fork_left flange bolt (x4 in the real pattern; one instance modelled, BOM carries the count)."
+  },
+  {
+   "op": "add_block",
+   "name": "flange_bolt_right",
+   "parent": "crown",
+   "pose": [
+    0.0,
+    -0.05,
+    0.016
+   ],
+   "rot": [
+    3.14159265,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.0025h0.016",
+   "desc": "Crown-to-fork_right flange bolt (x4 in the real pattern; one instance modelled)."
+  },
+  {
+   "op": "add_block",
+   "name": "seatpost",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    0.0,
+    0.704
+   ],
+   "envelope": "cyl:r0.0135h0.30",
+   "desc": "27.2 mm OD aluminium 6061 tube, cut to length from stock round tube; slides in the crown's seat-tube socket, height locked by seatpost_clamp_bolt.",
+   "use": "adjustable-height rider support"
+  },
+  {
+   "op": "add_block",
+   "name": "seatpost_clamp_bolt",
+   "parent": "crown",
+   "pose": [
+    0.0,
+    0.07,
+    0.03
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.003h0.03",
+   "desc": "Pinch bolt closing the crown's integral collar around the seatpost tube to lock ride height."
+  },
+  {
+   "op": "add_block",
+   "name": "seatpost_head",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    0.0,
+    1.004
+   ],
+   "envelope": "box:w0.10d0.24h0.03",
+   "desc": "fdm/asa saddle cradle, press-fit + pinned onto the seatpost top, clamps the saddle's steel rails.",
+   "use": "adapts round seatpost to bicycle saddle rails"
+  },
+  {
+   "op": "add_block",
+   "name": "saddle",
+   "parent": "unicycle",
+   "pose": [
+    -0.015,
+    0.0,
+    1.034
+   ],
+   "envelope": "box:w0.10d0.26h0.05",
+   "desc": "Standard bicycle saddle, bought, 7 mm steel rails.",
+   "use": "rider contact surface"
+  },
+  {
+   "op": "add_block",
+   "name": "crank_left",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    0.1,
+    0.254
+   ],
+   "envelope": "box:w0.17d0.02h0.03",
+   "desc": "fdm/asa crank arm, split-boss pinch-clamped onto the axle's keyed flat.",
+   "use": "converts pedal force to axle torque"
+  },
+  {
+   "op": "add_block",
+   "name": "crank_bolt_left",
+   "parent": "crank_left",
+   "pose": [
+    0.0,
+    0.0,
+    0.016
+   ],
+   "rot": [
+    3.14159265,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.002h0.02",
+   "desc": "Pinch bolt closing crank_left's split boss onto the axle."
+  },
+  {
+   "op": "add_block",
+   "name": "pedal_left",
+   "parent": "unicycle",
+   "pose": [
+    0.17,
+    0.13,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.007h0.09",
+   "desc": "Bicycle pedal, bought, 9/16 in threaded spindle with sealed bearing.",
+   "use": "rider foot contact; spins on its own spindle bearing"
+  },
+  {
+   "op": "add_block",
+   "name": "crank_right",
+   "parent": "unicycle",
+   "pose": [
+    0.0,
+    -0.1,
+    0.254
+   ],
+   "envelope": "box:w0.17d0.02h0.03",
+   "desc": "fdm/asa crank arm, mirror of crank_left.",
+   "use": "converts pedal force to axle torque"
+  },
+  {
+   "op": "add_block",
+   "name": "crank_bolt_right",
+   "parent": "crank_right",
+   "pose": [
+    0.0,
+    0.0,
+    0.016
+   ],
+   "rot": [
+    3.14159265,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.002h0.02",
+   "desc": "Pinch bolt closing crank_right's split boss onto the axle."
+  },
+  {
+   "op": "add_block",
+   "name": "pedal_right",
+   "parent": "unicycle",
+   "pose": [
+    0.17,
+    -0.13,
+    0.254
+   ],
+   "rot": [
+    1.5707963267948966,
+    0.0,
+    0.0
+   ],
+   "envelope": "cyl:r0.007h0.09",
+   "desc": "Bicycle pedal, bought, mirror of pedal_left.",
+   "use": "rider foot contact; spins on its own spindle bearing"
+  },
+  {
+   "op": "add_port",
+   "block": "wheel",
+   "name": "hub",
+   "roles": [
+    "keyed"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "axle",
+   "name": "hub",
+   "roles": [
+    "keyed"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "axle",
+   "name": "brg_l",
+   "roles": [
+    "bearing_seat"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "axle",
+   "name": "brg_r",
+   "roles": [
+    "bearing_seat"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "axle",
+   "name": "end_l",
+   "roles": [
+    "crank_mount"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "axle",
+   "name": "end_r",
+   "roles": [
+    "crank_mount"
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "bearing_left",
+   "name": "bore"
+  },
+  {
+   "op": "add_port",
+   "block": "bearing_left",
+   "name": "seat"
+  },
+  {
+   "op": "add_port",
+   "block": "bearing_right",
+   "name": "bore"
+  },
+  {
+   "op": "add_port",
+   "block": "bearing_right",
+   "name": "seat"
+  },
+  {
+   "op": "add_port",
+   "block": "fork_left",
+   "name": "bearing_seat"
+  },
+  {
+   "op": "add_port",
+   "block": "fork_left",
+   "name": "crown_flange",
+   "pose": [
+    0.0,
+    0.0,
+    0.42
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "fork_right",
+   "name": "bearing_seat"
+  },
+  {
+   "op": "add_port",
+   "block": "fork_right",
+   "name": "crown_flange",
+   "pose": [
+    0.0,
+    0.0,
+    0.42
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "crown",
+   "name": "left_socket"
+  },
+  {
+   "op": "add_port",
+   "block": "crown",
+   "name": "right_socket"
+  },
+  {
+   "op": "add_port",
+   "block": "crown",
+   "name": "seat_tube"
+  },
+  {
+   "op": "add_port",
+   "block": "flange_bolt_left",
+   "name": "thread"
+  },
+  {
+   "op": "add_port",
+   "block": "flange_bolt_right",
+   "name": "thread"
+  },
+  {
+   "op": "add_port",
+   "block": "seatpost",
+   "name": "tube"
+  },
+  {
+   "op": "add_port",
+   "block": "seatpost",
+   "name": "top",
+   "pose": [
+    0.0,
+    0.0,
+    0.3
+   ]
+  },
+  {
+   "op": "add_port",
+   "block": "seatpost_clamp_bolt",
+   "name": "thread"
+  },
+  {
+   "op": "add_port",
+   "block": "seatpost_head",
+   "name": "base"
+  },
+  {
+   "op": "add_port",
+   "block": "seatpost_head",
+   "name": "rail_clamp"
+  },
+  {
+   "op": "add_port",
+   "block": "saddle",
+   "name": "rails"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_left",
+   "name": "axle_bore"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_left",
+   "name": "clamp"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_left",
+   "name": "pedal_mount"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_bolt_left",
+   "name": "thread"
+  },
+  {
+   "op": "add_port",
+   "block": "pedal_left",
+   "name": "spindle"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_right",
+   "name": "axle_bore"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_right",
+   "name": "clamp"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_right",
+   "name": "pedal_mount"
+  },
+  {
+   "op": "add_port",
+   "block": "crank_bolt_right",
+   "name": "thread"
+  },
+  {
+   "op": "add_port",
+   "block": "pedal_right",
+   "name": "spindle"
+  },
+  {
+   "op": "connect",
+   "a": "axle.hub",
+   "b": "wheel.hub",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "key"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "axle.brg_l",
+   "b": "bearing_left.bore",
+   "joint": {
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "class": "revolute",
+    "mechanism": "bearing"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "axle.brg_r",
+   "b": "bearing_right.bore",
+   "joint": {
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "class": "revolute",
+    "mechanism": "bearing"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "bearing_left.seat",
+   "b": "fork_left.bearing_seat",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "bearing_right.seat",
+   "b": "fork_right.bearing_seat",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "flange_bolt_left.thread",
+   "b": "fork_left.crown_flange",
+   "joint": {
+    "class": "rigid",
+    "params": {
+     "counterbore": true,
+     "thread_strategy": "nut-trap"
+    },
+    "mechanism": "screw"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "flange_bolt_right.thread",
+   "b": "fork_right.crown_flange",
+   "joint": {
+    "class": "rigid",
+    "params": {
+     "counterbore": true,
+     "thread_strategy": "nut-trap"
+    },
+    "mechanism": "screw"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "crown.seat_tube",
+   "b": "seatpost.tube",
+   "joint": {
+    "axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "class": "prismatic",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "seatpost.tube",
+   "b": "seatpost_clamp_bolt.thread",
+   "joint": {
+    "class": "rigid",
+    "params": {
+     "thread_strategy": "nut-trap"
+    },
+    "mechanism": "screw"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "seatpost.top",
+   "b": "seatpost_head.base",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "saddle.rails",
+   "b": "seatpost_head.rail_clamp",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "axle.end_l",
+   "b": "crank_left.axle_bore",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "crank_bolt_left.thread",
+   "b": "crank_left.clamp",
+   "joint": {
+    "class": "rigid",
+    "params": {
+     "thread_strategy": "insert"
+    },
+    "mechanism": "screw"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "crank_left.pedal_mount",
+   "b": "pedal_left.spindle",
+   "joint": {
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "class": "revolute",
+    "mechanism": "bearing"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "axle.end_r",
+   "b": "crank_right.axle_bore",
+   "joint": {
+    "class": "rigid",
+    "mechanism": "press"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "crank_bolt_right.thread",
+   "b": "crank_right.clamp",
+   "joint": {
+    "class": "rigid",
+    "params": {
+     "thread_strategy": "insert"
+    },
+    "mechanism": "screw"
+   }
+  },
+  {
+   "op": "connect",
+   "a": "crank_right.pedal_mount",
+   "b": "pedal_right.spindle",
+   "joint": {
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "class": "revolute",
+    "mechanism": "bearing"
+   }
+  },
+  {
+   "op": "set_mode",
+   "block": "wheel",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "wheel",
+   "kind": "component",
+   "design": "wheel-20in-assembly"
+  },
+  {
+   "op": "set_load",
+   "block": "wheel",
+   "fixed": [
+    "x",
+    "y",
+    "z"
+   ]
+  },
+  {
+   "op": "set_mode",
+   "block": "axle",
+   "mode": "stock-cut/steel-1045"
+  },
+  {
+   "op": "set_mode",
+   "block": "bearing_left",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "bearing_left",
+   "kind": "component",
+   "design": "bearing-6204-2rs"
+  },
+  {
+   "op": "set_mode",
+   "block": "bearing_right",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "bearing_right",
+   "kind": "component",
+   "design": "bearing-6204-2rs"
+  },
+  {
+   "op": "set_mode",
+   "block": "fork_left",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "fork_right",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "crown",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "flange_bolt_left",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "flange_bolt_left",
+   "kind": "component",
+   "design": "iso-4762-m5x16"
+  },
+  {
+   "op": "set_mode",
+   "block": "flange_bolt_right",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "flange_bolt_right",
+   "kind": "component",
+   "design": "iso-4762-m5x16"
+  },
+  {
+   "op": "set_mode",
+   "block": "seatpost",
+   "mode": "stock-cut/aluminium-6061"
+  },
+  {
+   "op": "set_mode",
+   "block": "seatpost_clamp_bolt",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "seatpost_clamp_bolt",
+   "kind": "component",
+   "design": "iso-4762-m6x30"
+  },
+  {
+   "op": "set_mode",
+   "block": "seatpost_head",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "saddle",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "saddle",
+   "kind": "component",
+   "design": "saddle-bicycle"
+  },
+  {
+   "op": "set_load",
+   "block": "saddle",
+   "force": [
+    0.0,
+    0.0,
+    -1800.0
+   ]
+  },
+  {
+   "op": "set_mode",
+   "block": "crank_left",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "crank_bolt_left",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "crank_bolt_left",
+   "kind": "component",
+   "design": "iso-4762-m4x20"
+  },
+  {
+   "op": "set_mode",
+   "block": "pedal_left",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "pedal_left",
+   "kind": "component",
+   "design": "pedal-9-16"
+  },
+  {
+   "op": "set_load",
+   "block": "pedal_left",
+   "force": [
+    0.0,
+    0.0,
+    -900.0
+   ]
+  },
+  {
+   "op": "set_mode",
+   "block": "crank_right",
+   "mode": "fdm/asa"
+  },
+  {
+   "op": "set_mode",
+   "block": "crank_bolt_right",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "crank_bolt_right",
+   "kind": "component",
+   "design": "iso-4762-m4x20"
+  },
+  {
+   "op": "set_mode",
+   "block": "pedal_right",
+   "mode": "purchase"
+  },
+  {
+   "op": "set_binding",
+   "block": "pedal_right",
+   "kind": "component",
+   "design": "pedal-9-16"
+  },
+  {
+   "op": "add_measure",
+   "block": "wheel",
+   "name": "diameter",
+   "value": 0.508,
+   "strength": "hard",
+   "reason": "20-inch wheel per requirement",
+   "origin": "user",
+   "unit": "m"
+  },
+  {
+   "op": "add_measure",
+   "block": "bearing_left",
+   "name": "bore",
+   "value": 0.02,
+   "strength": "hard",
+   "reason": "6204 bearing bore must match the 20 mm axle",
+   "origin": "user",
+   "unit": "m"
+  },
+  {
+   "op": "add_measure",
+   "block": "bearing_right",
+   "name": "bore",
+   "value": 0.02,
+   "strength": "hard",
+   "reason": "6204 bearing bore must match the 20 mm axle",
+   "origin": "user",
+   "unit": "m"
+  },
+  {
+   "op": "add_measure",
+   "block": "unicycle",
+   "name": "seat_height",
+   "strength": "soft",
+   "reason": "adjustable seatpost range for riders of different heights",
+   "min": 0.75,
+   "max": 0.95,
+   "origin": "user",
+   "unit": "m"
+  },
+  {
+   "op": "add_bom",
+   "item_kind": "component",
+   "item": "iso-7040-m5",
+   "qty": 1.0,
+   "block": "flange_bolt_left",
+   "reason": "captured nyloc nut for the nut-trap"
+  },
+  {
+   "op": "add_bom",
+   "item_kind": "component",
+   "item": "iso-7040-m5",
+   "qty": 1.0,
+   "block": "flange_bolt_right",
+   "reason": "captured nyloc nut for the nut-trap"
+  },
+  {
+   "op": "add_bom",
+   "item_kind": "component",
+   "item": "iso-7040-m6",
+   "qty": 1.0,
+   "block": "seatpost_clamp_bolt",
+   "reason": "captured nyloc nut for the collar nut-trap"
+  },
+  {
+   "op": "add_bom",
+   "item_kind": "component",
+   "item": "insert-brass-heatset-m4",
+   "qty": 1.0,
+   "block": "crank_bolt_left",
+   "reason": "heat-set insert in the printed clamp boss"
+  },
+  {
+   "op": "add_bom",
+   "item_kind": "component",
+   "item": "insert-brass-heatset-m4",
+   "qty": 1.0,
+   "block": "crank_bolt_right",
+   "reason": "heat-set insert in the printed clamp boss"
+  },
+  {
+   "op": "add_note",
+   "name": "flange_bolt_left_qty",
+   "kind": "decision",
+   "text": "Modelled as one bolt per leg for the fasten/DRC checks; the real flange uses a 4-bolt pattern per leg (BOM should be scaled x4 at detailing time).",
+   "about": [
+    "flange_bolt_left"
+   ],
+   "origin": "user"
+  },
+  {
+   "op": "add_note",
+   "name": "seatpost_head_saddle_fastening_scope",
+   "kind": "decision",
+   "text": "seatpost-to-seatpost_head and seatpost_head-to-saddle are declared as plain rigid press joints, not run through the screw/fasten pass (each is a lower-stakes secondary joint vs. the flange and crank clamps, which do carry full fastener modelling). Real build: a transverse M4 roll pin or bolt through seatpost_head+tube, and the seatpost_head's own rail-clamp bolts (bicycle seatpost-head hardware) for the saddle.",
+   "about": [
+    "seatpost_head",
+    "saddle"
+   ],
+   "origin": "user"
+  },
+  {
+   "op": "add_note",
+   "name": "rider_load_basis",
+   "kind": "decision",
+   "text": "Saddle load 1800 N = 80 kg x 9.81 m/s^2 x ~2.3 dynamic factor for hopping/curb impacts (house engineering margin, not from a cited standard). Pedal load 900 N at one pedal models a single-leg-stand worst case. Ground reaction is taken as a full fixed support at the wheel block rather than a rolling contact-patch model.",
+   "about": [
+    "saddle",
+    "pedal_left",
+    "wheel"
+   ],
+   "origin": "user"
+  },
+  {
+   "op": "add_note",
+   "name": "fork_leg_print_split",
+   "kind": "decision",
+   "text": "fork_left/fork_right are modelled as single 0.42 m blocks, but that exceeds the Z travel of most desktop FDM printers (typically 0.25-0.30 m). A real build must split each leg into two segments joined by a bolted flange (same nut-trap treatment as the crown flange), or print it diagonally if the bed diagonal allows \u2014 not modelled here; scope-trimmed to keep the block count focused on the wheel/bearing/crank load path.",
+   "about": [
+    "fork_left",
+    "fork_right"
+   ],
+   "origin": "user"
+  },
+  {
+   "op": "add_note",
+   "name": "wheel_opaque_purchase",
+   "kind": "decision",
+   "text": "wheel is modelled as one opaque purchased assembly (rim+spokes+tire), unlike the prod unicycle-mk2 worked example which lays out a 12-spoke tension truss as individual axial members and checks it with view=stability. That means view=stability here has no axial subgraph to analyse inside the wheel; spoke tensioning is the wheel vendor's problem, not this design's. A from-scratch-spoked variant would follow mk2's pattern instead.",
+   "about": [
+    "wheel"
+   ],
+   "origin": "user"
+  }
+ ]
+}

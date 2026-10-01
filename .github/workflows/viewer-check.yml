@@ -1,0 +1,99 @@
+name: viewer-check
+
+# Browser-level check of the se 3D viewer (scripts/viewer_check.py): a real
+# Chromium drives a local precis-web over a seeded copy of the unicycle
+# design and asserts, by canvas pixel-diff, that each control changes the
+# picture. Explode, selection highlighting and the level control were each
+# dead from their own feature commit behind a green suite — this is the
+# check that would have caught them.
+#
+# Nightly rather than per push: the browser install and a software-GL
+# render are minutes nobody wants on every gate. Scheduled away from
+# check.yml's 05:23 UTC nightly, which already takes 18 of the account's
+# 20 job slots, and off the top of the hour (GitHub drops scheduled events
+# under load there).
+#
+# Everything runs on the runner: a throwaway Postgres service, the server
+# on localhost with its Basic gate OFF (PRECIS_WEB_AUTH=off — nothing here
+# is reachable from outside the runner), no prod access and no secrets.
+# A red run uploads every shot plus report.json as the evidence.
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  viewer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Same service as check.yml's test shards (pg17 + pgvector).
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: precis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PRECIS_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+      PRECIS_WEB_AUTH: 'off'
+      UV_RUN: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: '3.13'
+      # Same reason as check.yml: the baseline snapshot is a pg17 dump.
+      - name: Install PostgreSQL 17 client to match the pg17 server
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+      - name: Schema
+        run: $UV_RUN precis migrate --from-scratch
+      - name: Seed the unicycle fixture
+        run: $UV_RUN python scripts/viewer_check.py seed tests/fixtures/viewer_check/unicycle-c1.ops.json unicycle-c1
+      # Playwright is not a project dependency: `--with` adds it to this
+      # run only, and the installer fetches just Chromium (~150 MB) plus
+      # its system libraries instead of the ~2 GB Playwright image.
+      - name: Install Chromium
+        run: $UV_RUN --with playwright python -m playwright install --with-deps chromium
+      - name: Start precis-web
+        run: |
+          nohup $UV_RUN precis web --host 127.0.0.1 --port 9123 > web.log 2>&1 &
+          for _ in $(seq 1 90); do
+            curl -fsS http://127.0.0.1:9123/healthz > /dev/null && exit 0
+            sleep 2
+          done
+          cat web.log
+          exit 1
+      - name: Probe
+        run: $UV_RUN --with playwright python scripts/viewer_check.py probe http://127.0.0.1:9123 unicycle-c1 viewer-check-out
+      - name: Keep the evidence
+        if: failure()
+        run: cp web.log viewer-check-out/ 2>/dev/null || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: viewer-check-${{ github.run_id }}
+          path: viewer-check-out/
+          retention-days: 14

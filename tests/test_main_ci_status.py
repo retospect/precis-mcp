@@ -269,3 +269,53 @@ def test_offline_is_silent_under_for_hook_and_exits_zero(tmp_path: Path) -> None
     )
     assert plain.returncode == 0
     assert "unavailable" in plain.stdout
+
+
+def test_viewer_check_red_prints_even_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A red nightly browser check must reach the next session's SessionStart
+    hook — that hook is how a red reaches anyone at all."""
+    mod = _load()
+    red = {**RED_RUN, "databaseId": 41, "createdAt": _iso_minutes_ago(60)}
+    monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([red]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.viewer_check_report()
+    out = capsys.readouterr().out
+    assert "viewer-check RED: run 41 on 8b881979" in out
+    assert "gh run download 41" in out
+
+
+def test_viewer_check_green_is_silent_under_for_hook(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    green = {**GREEN_RUN, "createdAt": _iso_minutes_ago(60)}
+    monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([green]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.viewer_check_report()
+    assert capsys.readouterr().out == ""
+    monkeypatch.setattr(sys, "argv", ["main-ci-status"])
+    mod.viewer_check_report()
+    assert "viewer-check: ✓ green (8b881979, run 2" in capsys.readouterr().out
+
+
+def test_viewer_check_gone_quiet_is_not_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A nightly that stopped running looks exactly like a green one unless
+    its age is read; silence is the failure mode this line exists for."""
+    mod = _load()
+    old = {**GREEN_RUN, "createdAt": _iso_minutes_ago(3 * 24 * 60)}
+    monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([old]))
+    monkeypatch.setattr(sys, "argv", ["main-ci-status", "--for-hook"])
+    mod.viewer_check_report()
+    assert "gone quiet" in capsys.readouterr().out
+
+
+def test_viewer_check_skips_cancelled_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load()
+    cancelled = {**RED_RUN, "databaseId": 9, "conclusion": "cancelled"}
+    monkeypatch.setattr(mod, "_gh", lambda *a: json.dumps([cancelled, GREEN_RUN]))
+    run = mod.latest_viewer_run()
+    assert run is not None and run["databaseId"] == 2
