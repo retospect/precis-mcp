@@ -84,7 +84,9 @@ case "$DB" in
         export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181
         echo "guide-web: prod tunnel DSN as agent_ro (grants-enforced read-only), :${PORT}" >&2
         echo "guide-web: reachable from a docker container via host.docker.internal:${PORT}" >&2
-        exec uv run precis web --host 0.0.0.0 --port "$PORT"
+        # --extra web: a host venv synced without it has no fastapi, and
+        # `precis web` then exits before it binds.
+        exec uv run --extra web precis web --host 0.0.0.0 --port "$PORT"
         ;;
     test)
         export PGOPTIONS="-c default_transaction_read_only=on"
