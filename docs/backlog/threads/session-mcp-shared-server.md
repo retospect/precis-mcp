@@ -10,8 +10,12 @@ separation this server cannot give them. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
 (gr457887: the drain latches a high-water ticket instead of waiting for an
-always-busy server to go idle, and the bound is 120 s and env-tunable), and
-re-verified live on the isolated rig. The second defect — a status surface
+always-busy server to go idle, and the bound is 120 s and env-tunable),
+re-verified on the isolated rig and now **confirmed in production**: the
+2026-09-30T23:14:30Z bounce logged `drained 1 in-flight call(s)` on a real
+session's call, which under the old design is the call that would have been
+killed. The three bounces around it drained 0, so the fix is exercised by
+ordinary traffic rather than only by a rig. The second defect — a status surface
 that could not say which sha a session was talking to — is fixed and
 verified (gr457361: the watched checkout's HEAD outranks the baked env,
 git-identity fields come from one lane instead of being mixed, and a live
@@ -76,7 +80,11 @@ server-side-session-context Horizon pointer)
    eleven on stale code while three thread owners wait. A wedge is
    recoverable by hand (`precis-mcp-http-ensure.sh --recreate`) and
    `scripts/prod-precis tools ...` is the fallback for a dead MCP; what is
-   missing is detection, not recovery. Revisit only if a wedge lands
+   missing is detection, not recovery. Measured floor for any probe:
+   a bounce takes ~8 s end to end (exit 23:14:30.5Z → armed 23:14:38.8Z,
+   and three more bounces within 9 s of each other), so a liveness check
+   must tolerate an 8 s gap or it will restart a server that is merely
+   restarting. Revisit only if a wedge lands
    first — that would make it a measurement rather than a projection.
 
 2. **backlog/mcp-shared-server-liveness.md** — promoted out of Horizon by
