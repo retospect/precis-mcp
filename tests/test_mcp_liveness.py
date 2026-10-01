@@ -11,16 +11,20 @@ fast.
 
 from __future__ import annotations
 
+import ast
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
+from precis import mcp_liveness
 from precis.mcp_liveness import (
     LivenessPolicy,
     WedgeDetector,
+    breadcrumb_path,
     probe,
     record_wedge_kill,
     run_liveness_loop,
@@ -90,23 +94,55 @@ def test_cooldown_is_capped() -> None:
     assert detector._cooldown_s() == 1200.0
 
 
-def test_wedge_kill_leaves_a_breadcrumb(
-    monkeypatch: pytest.MonkeyPatch,
+def test_breadcrumb_path_is_install_watchdogs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    written: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        "precis.install_watchdog._write_exit_breadcrumb",
-        lambda reason, *, detail=None, **_: written.append((reason, detail)),
-    )
+    # Duplicated rather than imported (the supervisor may not import
+    # precis.*), so pin the two paths together.
+    from precis.install_watchdog import _breadcrumb_path
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert breadcrumb_path() == _breadcrumb_path()
+    monkeypatch.delenv("XDG_CACHE_HOME")
+    assert breadcrumb_path() == _breadcrumb_path()
+
+
+def test_wedge_kill_shows_on_the_next_precis_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from precis.handlers.skill import _render_last_exit_note
+    from precis.install_watchdog import _reset_breadcrumb_state_for_tests
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    _reset_breadcrumb_state_for_tests()
     detector = _detector()
     for t in (100.0, 120.0, 140.0):
         detector.observe("no answer", t)
     record_wedge_kill(detector, pid=4242, now=140.0)
-    assert written[0][0] == "wedged"
-    detail = written[0][1] or ""
-    assert "pid 4242" in detail
-    assert "3 failed" in detail
-    assert "1 wedge kill(s) in the last hour" in detail
+
+    note = _render_last_exit_note() or ""
+    _reset_breadcrumb_state_for_tests()
+    assert "killed as wedged" in note
+    assert "pid 4242" in note
+    assert "3 failed" in note
+    assert "1 wedge kill(s) in the last hour" in note
+
+
+def test_imports_are_supervisor_safe() -> None:
+    # The supervisor outlives every re-copy of the precis tree, so this
+    # module may import stdlib and venv packages only, all at module top.
+    tree = ast.parse(Path(mcp_liveness.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        assert not any(n == "precis" or n.startswith("precis.") for n in names), (
+            f"line {node.lineno}: precis import {names}"
+        )
+        assert node in tree.body, f"line {node.lineno}: import inside a function"
 
 
 def test_loop_calls_on_wedge_and_stops() -> None:

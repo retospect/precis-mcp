@@ -2191,6 +2191,9 @@ def _render_last_exit_note() -> str | None:
         what = f"source checkout moved ({crumb.get('detail') or 'no detail'})"
     elif reason == "crash":
         what = f"crashed ({crumb.get('detail') or 'no detail'})"
+    elif reason == "wedged":
+        # Written by the supervisor via precis.mcp_liveness.
+        what = f"killed as wedged ({crumb.get('detail') or 'no detail'})"
     elif reason == "exit":
         what = "exited normally"
     else:  # pragma: no cover — forward-compat with an unrecognised reason

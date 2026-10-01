@@ -42,16 +42,33 @@ Tolerances, and where the numbers come from:
 Every wedge verdict is visible: :func:`record_wedge_kill` writes the same
 exit breadcrumb ``precis-status`` already shows after a watchdog exit, with
 the probe failures and how many kills happened in the last hour.
+
+Imports: standard library and the venv's third-party packages only, all at
+module top, and **no** ``precis.*`` — not even lazily. The supervisor that
+runs this is PID 1 for the container's life while every child start wipes
+and re-copies the source tree ``precis`` resolves to, so a ``precis``
+import from the supervisor can load the wrong generation or a half-copied
+one. The supervisor runs this file as a sibling copied to a stable path.
+That is why the breadcrumb writer below duplicates
+``install_watchdog._write_exit_breadcrumb``'s path and shape rather than
+calling it; a test pins the two together.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 log = logging.getLogger(__name__)
 
@@ -122,9 +139,6 @@ class WedgeDetector:
 
 
 async def _probe_async(url: str, token: str) -> None:
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-
     headers = {"Authorization": f"Bearer {token}"}
     async with streamablehttp_client(url, headers=headers) as (read, write, _):
         async with ClientSession(read, write) as session:
@@ -169,17 +183,42 @@ def probe(url: str, token: str, timeout_s: float) -> str | None:
     return outcome[0]
 
 
-def record_wedge_kill(detector: WedgeDetector, *, pid: int | None, now: float) -> None:
-    """Leave the breadcrumb the next server's ``precis-status`` shows."""
-    from precis.install_watchdog import _write_exit_breadcrumb
+def breadcrumb_path() -> Path:
+    """Where ``install_watchdog`` keeps its last-exit note — same file.
 
+    Mirrors ``config.cache_root("server-state") / "last-exit.json"``; see
+    the module docstring for why it is not imported.
+    """
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base).expanduser() / "precis" / "server-state" / "last-exit.json"
+
+
+def record_wedge_kill(detector: WedgeDetector, *, pid: int | None, now: float) -> None:
+    """Leave the breadcrumb the next server's ``precis-status`` shows.
+
+    Call before ``child_started`` — that clears the failures this reports.
+    """
     detail = (
         f"supervisor killed pid {pid} after {len(detector.failures)} failed "
         f"liveness probes ({'; '.join(detector.failures)}); "
         f"{len(detector.recent_kills(now))} wedge kill(s) in the last hour"
     )
     log.error("mcp liveness: %s", detail)
-    _write_exit_breadcrumb("wedged", detail=detail)
+    payload = {
+        "written_at": datetime.now(UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
+        "reason": "wedged",
+        "detail": detail,
+        "pid": pid,
+    }
+    try:
+        path = breadcrumb_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        # The kill matters more than the note about it.
+        log.warning("mcp liveness: breadcrumb write failed", exc_info=True)
 
 
 def run_liveness_loop(
