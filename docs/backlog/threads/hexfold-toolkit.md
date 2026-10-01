@@ -77,6 +77,11 @@ waited on happened 09-29 — note at the bottom)
    check echo is two-thirds per-bond INFO (gr459571). gr459602/gr459568
    live in the `structure` kind, outside this thread's files; they rank
    here because hexfold builds are where they bite.
+   - Reto asked again on 2026-10-01: "can we see bond and angle strain
+     yet?" The ask has two parts. First, numbers: bond-length and
+     bond-angle deviation, plus POAV θp, with mean, p95 and max. Second,
+     the se 3D viewer colours each atom by its strain, as a toggle next
+     to the tier badge.
 4. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
@@ -111,6 +116,15 @@ waited on happened 09-29 — note at the bottom)
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
    `trust_measured`, which is the entire point of the catalogue.
+   - Reto ruled 2026-10-01 (td458117) that gr456641 belongs to this
+     thread, not the auto-fix lane. Job 457204 timed out, and the branch
+     it reported pushing never existed (gr458326).
+   - Contained until then: `DbCatalogueStore` withholds measured rows
+     unless `trust_measured=True`, and nothing sets it. Leave it off.
+   - First slice, with tests: assert the relaxer converged, and flag a
+     non-monotone `max_disp` as "unstable".
+   - Second, larger slice: the `EnvKey` extent field, shared with
+     gr457997.
 9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
