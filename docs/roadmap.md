@@ -24,6 +24,14 @@ letter so the split stays visible:
   local compute: the machinery that makes A cheaper, faster and more
   trustworthy.
 
+**A's output measure is one posted preprint a month** (Reto, 2026-10-01).
+A preprint is the unit because review time is outside our control. The
+cadence lives in precis, not here: quest `qu459585` holds one todo per
+month, each blocked by the decision it waits on, and a missed month is a
+`dead-end` logbook entry with its reason. Papers are not a pillar and have
+no thread; the repo-side blockers a paper exposes are gripes for the thread
+that owns them. `/pillar-review` reads the quest's tree each pass.
+
 The plugin split (`docs/backlog/threads/plugin-split.md`) cuts the package
 boundary by dependency direction, not by A/B, and the two mostly coincide:
 the util package is B, the geometry package and the models are A. Two known
@@ -243,6 +251,11 @@ than leaving it.
 ## Review log
 
 Newest first; one line per pass (`/pillar-review` writes it).
+
+- 2026-10-01 — not a full pass: the paper cadence added (quest qu459585,
+  October to January scheduled), and ingest-and-fetch listed as dormant.
+  Open on Reto: venue td450081, vocabulary tiers td459590, boxel td345837,
+  serving-programme active or dormant.
 
 - 2026-09-30 — all four pillars; 10 owners polled; 20 items filed, 2
   folded into a sibling's same-day items; 67 orphan gripes relinked, 9

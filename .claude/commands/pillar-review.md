@@ -22,6 +22,8 @@ Peers are down in the weeds — one short question each, never a task.
 - `docs/backlog/threads/INDEX.md` §Pillars and §Active / dormant.
 - `scripts/inflight` — which threads actually have a session today; a
   mismatch with the roadmap's active list is a finding, not a fix.
+- `get(kind='quest', id=459585, view='tree')` — the paper cadence: is this
+  month's todo on track, and which decision blocks it.
 - `search(kind='gripe', status='open', page_size=100)` paged to the end —
   **no `q=`** (a query turns the enumeration into a ranked filter).
 
