@@ -24,7 +24,15 @@ What each rule is, and why it is at the tier it is:
   of lattice repeats rolled back into register
   (:func:`precis_chain.register.commensurate`). Warn, not error: an
   off-register run is strained, not impossible, and insertions/deletions
-  are the designer's answer.
+  are the designer's answer. Only a helix in a connected set of two or more
+  is checked: a lone helix has no neighbour to keep register with.
+- ``chain_twist_global`` (warn) — per connected set of lattice helices
+  (linked by strands with domains on both), a helix whose real-twist
+  residual (:func:`precis_se.chain.layout.twist_residual`: the molecule's
+  winding at the base motif's twist against the lattice twist it is drawn
+  at) exceeds half one base's twist — past that, one more insertion or
+  deletion would bring it closer. The detail names each helix's residual and
+  the insertions/deletions that would cancel it.
 - ``chain_clash`` (warn) — two segments' swept tubes are closer than the
   design's ``min_gap`` (:func:`precis_chain.clash.clashes`, the kernel's
   exact broad phase). Consecutive segments of one helix and the two
@@ -93,6 +101,7 @@ from precis_se.chain.layout import (
     helix_geometry,
     segment_capsule,
     segment_ranges,
+    twist_residual,
     units_per_segment,
 )
 from precis_se.chain.pairing import (
@@ -199,12 +208,44 @@ def _bend_findings(
         )
 
 
+def connected_helix_sets(
+    geoms: dict[str, HelixGeometry], tables: Any
+) -> list[list[str]]:
+    """Connected sets of **lattice** helices of two or more: helices on the
+    same lattice that one strand has domains on both of. Sorted, each set
+    sorted — a lone helix (the 4-bp hairpin) belongs to no set."""
+    parent: dict[str, str] = {}
+
+    def find(name: str) -> str:
+        while parent[name] != name:
+            parent[name] = parent[parent[name]]
+            name = parent[name]
+        return name
+
+    for route in tables.by_strand.values():
+        on_lattice: dict[str, str] = {}
+        for domain in route:
+            geom = geoms.get(domain.helix)
+            if geom is None or geom.lattice is None:
+                continue
+            parent.setdefault(domain.helix, domain.helix)
+            first = on_lattice.setdefault(geom.lattice, domain.helix)
+            parent[find(domain.helix)] = find(first)
+    groups: dict[str, list[str]] = {}
+    for name in parent:
+        groups.setdefault(find(name), []).append(name)
+    return sorted(sorted(g) for g in groups.values() if len(g) >= 2)
+
+
 def _register_findings(
-    geoms: dict[str, HelixGeometry], findings: list[ValidationIssue]
+    geoms: dict[str, HelixGeometry],
+    tables: Any,
+    findings: list[ValidationIssue],
 ) -> None:
+    in_set = {name for group in connected_helix_sets(geoms, tables) for name in group}
     for name in sorted(geoms):
         geom = geoms[name]
-        if geom.lattice is None:
+        if geom.lattice is None or name not in in_set:
             continue
         spec = nucleic.LATTICES[geom.lattice]
         if commensurate(geom.motif, geom.n_units, spec.pitch_units):
@@ -228,6 +269,61 @@ def _register_findings(
                     "insertion/deletion retunes it "
                     f"(repeat: {spec.pitch_units} units = "
                     f"{spec.turns_per_pitch} turns)"
+                ),
+                severity="warn",
+            )
+        )
+
+
+def _indel_phrase(residual: float, base_twist: float) -> str:
+    """The insertions/deletions that would cancel ``residual`` — an
+    over-wound helix (positive) sheds bases, an under-wound one gains them."""
+    count = round(residual / base_twist)
+    if count > 0:
+        return f"{count} deletion(s)"
+    if count < 0:
+        return f"{-count} insertion(s)"
+    return "none"
+
+
+def _global_twist_findings(
+    geoms: dict[str, HelixGeometry],
+    tables: Any,
+    findings: list[ValidationIssue],
+) -> None:
+    """``chain_twist_global`` — see the module docstring. The tolerance is
+    half of one base-motif unit's twist: beyond it one more insertion or
+    deletion would leave the helix closer to flat."""
+    for group in connected_helix_sets(geoms, tables):
+        offenders: list[str] = []
+        for name in group:
+            geom = geoms[name]
+            residual = twist_residual(geom)
+            tolerance = 0.5 * abs(geom.base_motif.twist)
+            if abs(residual) <= tolerance:
+                continue
+            offenders.append(
+                f"{name} {math.degrees(residual):+.1f} deg "
+                f"(currently {geom.insertions} insertion(s), "
+                f"{geom.deletions} deletion(s); "
+                f"{_indel_phrase(residual, geom.base_motif.twist)} more "
+                "would cancel it)"
+            )
+        if not offenders:
+            continue
+        shown = ", ".join(group[:4]) + (
+            f" +{len(group) - 4} more" if len(group) > 4 else ""
+        )
+        findings.append(
+            ValidationIssue(
+                rule="chain_twist_global",
+                subject=shown,
+                detail=(
+                    f"{len(offenders)} of {len(group)} connected lattice helices "
+                    "wind off the lattice they are drawn on — at the real "
+                    "twist each accumulates a residual over its run; the sheet "
+                    "would curl in the tube unless insertions/deletions retune "
+                    "it: " + "; ".join(offenders)
                 ),
                 severity="warn",
             )
@@ -908,7 +1004,8 @@ def findings(tree: Any) -> list[ValidationIssue]:
     geoms = _helix_geometries(tree, out)
     tables = group_domains(domains)
     _bend_findings(geoms, out)
-    _register_findings(geoms, out)
+    _register_findings(geoms, tables, out)
+    _global_twist_findings(geoms, tables, out)
     _route_findings(tree, tables, geoms, out)
     loops = _loops(tables, geoms)
     _loop_findings(tables, geoms, loops, out)

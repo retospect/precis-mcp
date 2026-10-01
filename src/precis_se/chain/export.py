@@ -2,7 +2,8 @@
 
 Four formats, one way (no import):
 
-- **scadnano** JSON — helix→helix, domain→domain, a loop with ``n > 0``
+- **scadnano** JSON — helix→helix, domain→domain, register ``deletions`` /
+  ``insertions`` carried on the helix row, a loop with ``n > 0``
   nucleotides as a scadnano *loopout*, the longest strand flagged
   ``is_scaffold``. Lattice designs carry scadnano's ``grid`` +
   ``grid_position``; anything else is ``grid: none`` with a position in
@@ -12,11 +13,14 @@ Four formats, one way (no import):
   arrays are ``[5' helix, 5' base, 3' helix, 3' base]`` per base, scaffold
   in ``scaf``, every other strand in ``stap``; a loop's nucleotides
   become a caDNAno insertion (``loop[offset] = n``) at the exit base,
-  since caDNAno has no off-lattice nucleotide.
+  since caDNAno has no off-lattice nucleotide. A register deletion is
+  ``skip[offset] = -1`` and a register insertion adds to ``loop[offset]``.
 - **oxDNA** ``.top`` + ``.conf`` — one nucleotide per unit occupancy plus
   the loop nucleotides, positions from the helix frames (a placed loop's
   curve when ``relax_chain`` wrote one, else the chord between the two
   exits), in oxDNA length units (:data:`precis_se.chain.nucleic.OXDNA_UNIT_M`).
+  A register deletion is a nucleotide that is simply absent; a register
+  insertion is ``Unsupported`` (where the extra base sits is not modelled).
 - **PDB** — every ``realize_chain``-bound segment's atoms, world-posed by
   the segment's own pose, one chain id per segment and a ``TER`` between.
 
@@ -42,6 +46,7 @@ import numpy as np
 from precis.errors import Unsupported
 from precis_se.chain import nucleic
 from precis_se.chain.layout import HelixGeometry, helix_geometry
+from precis_se.chain.pairing import HelixIndel, helix_indels, strand_length_nt
 from precis_se.chain.vocab import (
     HELIX_ROLE,
     SEGMENT_ROLE,
@@ -97,16 +102,15 @@ def _sequence(tree: SeTree, strand: str) -> str | None:
     return str(seq) if seq else None
 
 
-def _strand_nt(route: list[DomainSpec]) -> int:
-    return sum(d.n_units + int(d.loop_before_nt or 0) for d in route)
-
-
-def _scaffold(strands: dict[str, list[DomainSpec]]) -> str | None:
+def _scaffold(
+    strands: dict[str, list[DomainSpec]], indels: dict[str, HelixIndel]
+) -> str | None:
     """The longest strand by nucleotide count — scadnano's ``is_scaffold``
-    and caDNAno's ``scaf`` array. Stated, not inferred from a name."""
+    and caDNAno's ``scaf`` array. Stated, not inferred from a name. Counts
+    bases as they are, register insertions/deletions included."""
     if not strands:
         return None
-    return max(strands, key=lambda s: (_strand_nt(strands[s]), s))
+    return max(strands, key=lambda s: (strand_length_nt(strands[s], indels), s))
 
 
 def _lattice_site(node: Any) -> dict[str, Any] | None:
@@ -146,9 +150,17 @@ def to_scadnano(tree: SeTree, *, design: str) -> dict[str, Any]:
                 "y": float(origin[1]) * 1e9,
                 "z": float(origin[2]) * 1e9,
             }
+        register = record.get("register") or {}
+        if register.get("deletions"):
+            row["deletions"] = [int(o) for o in register["deletions"]]
+        if register.get("insertions"):
+            counts: dict[int, int] = {}
+            for o in register["insertions"]:
+                counts[int(o)] = counts.get(int(o), 0) + 1
+            row["insertions"] = [[o, k] for o, k in sorted(counts.items())]
         helix_rows.append(row)
     strands = _strands(tree)
-    scaffold = _scaffold(strands)
+    scaffold = _scaffold(strands, helix_indels(tree))
     strand_rows: list[dict[str, Any]] = []
     for strand in sorted(strands, key=lambda s: (s != scaffold, s)):
         route = strands[strand]
@@ -217,6 +229,13 @@ def to_cadnano(tree: SeTree, *, design: str) -> dict[str, Any]:
     idx = {name: i for i, (name, _node) in enumerate(helices)}
     vstrands: list[dict[str, Any]] = []
     for i, (_name, _node) in enumerate(helices):
+        register = (_node.chain or {}).get("register") or {}
+        skip = [0] * length
+        loop = [0] * length
+        for o in register.get("deletions") or []:
+            skip[int(o)] = -1
+        for o in register.get("insertions") or []:
+            loop[int(o)] += 1
         vstrands.append(
             {
                 "num": i,
@@ -224,15 +243,15 @@ def to_cadnano(tree: SeTree, *, design: str) -> dict[str, Any]:
                 "col": int(sites[i]["col"]),
                 "scaf": [[-1, -1, -1, -1] for _ in range(length)],
                 "stap": [[-1, -1, -1, -1] for _ in range(length)],
-                "loop": [0] * length,
-                "skip": [0] * length,
+                "loop": loop,
+                "skip": skip,
                 "scafLoop": [],
                 "stapLoop": [],
                 "stap_colors": [],
             }
         )
     strands = _strands(tree)
-    scaffold = _scaffold(strands)
+    scaffold = _scaffold(strands, helix_indels(tree))
     for strand, route in strands.items():
         array = "scaf" if strand == scaffold else "stap"
         positions: list[tuple[int, int]] = []
@@ -332,6 +351,15 @@ def to_oxdna(tree: SeTree, *, design: str) -> tuple[str, str]:
             f"export: design {design!r} has no helix — declare_helix first",
             next="declare_helix + add_domain, then export",
         )
+    for name in sorted(geoms):
+        if geoms[name].insertions:
+            raise Unsupported(
+                f"export: helix {name!r} has {geoms[name].insertions} register "
+                "insertion(s) — oxDNA export does not place an inserted base",
+                next="export format='scadnano' or 'cadnano' (both carry the "
+                "insertions), or clear the helix's register.insertions",
+            )
+    indels = helix_indels(tree)
     strands = _strands(tree)
     unit = nucleic.OXDNA_UNIT_M
     p_radius = nucleic.P_RADIUS_M["B-DNA"]
@@ -370,7 +398,10 @@ def to_oxdna(tree: SeTree, *, design: str) -> tuple[str, str]:
                     com = bb + a1 * _OXDNA_BACKBONE_OFFSET_SU * unit
                     nts.append((letter, com, a1, -t))
             pos += n_loop
+            deleted = indels[d.helix].deletions if d.helix in indels else ()
             for offset in d.offsets():
+                if offset in deleted:
+                    continue  # a deleted base is absent from the molecule
                 letter = seq[pos] if seq is not None and pos < len(seq) else "N"
                 pos += 1
                 radial = _radial(geom, offset, d.forward)

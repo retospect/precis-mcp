@@ -728,6 +728,22 @@ def prepare_realize_chain(
             f"realize_chain: region [{start}, {end}) is not inside helix "
             f"{key!r}'s {n_units} units (start < end, end exclusive)"
         )
+    register = record.get("register") or {}
+    skipped = sorted(
+        {
+            int(o)
+            for key_ in ("insertions", "deletions")
+            for o in register.get(key_) or []
+        }
+        & set(range(start, end))
+    )
+    if skipped:
+        raise Unsupported(
+            f"realize_chain: region [{start}, {end}) of helix {key!r} contains "
+            f"register insertion/deletion offset(s) {skipped} — the atom model "
+            "of a skipped or looped base is not built",
+            next="realize a region that stops short of those offsets",
+        )
     fidelity = str(op.get("fidelity") or "allatom").strip().lower()
     if fidelity not in FIDELITIES:
         raise BadInput(

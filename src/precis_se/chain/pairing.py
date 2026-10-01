@@ -132,8 +132,46 @@ class Pairing:
         return runs
 
 
+@dataclass(frozen=True)
+class HelixIndel:
+    """One helix's register insertions/deletions, as the sequence accounting
+    reads them. ``deletions`` are offsets holding no base; ``insertions``
+    maps an offset to how many extra bases it carries (caDNAno's loop
+    count)."""
+
+    deletions: frozenset[int] = frozenset()
+    insertions: Mapping[int, int] = field(default_factory=dict)
+
+
+def helix_indels(tree: Any) -> dict[str, HelixIndel]:
+    """``{helix: HelixIndel}`` for every helix block whose ``register``
+    lists a deletion or insertion. Reads the stored lists defensively — a
+    malformed record is the DRC's ``chain_malformed`` to report, not a crash
+    here."""
+    out: dict[str, HelixIndel] = {}
+    for name, node in tree.blocks.items():
+        record = getattr(node, "chain", None)
+        if not isinstance(record, dict):
+            continue
+        register = record.get("register")
+        if not isinstance(register, dict):
+            continue
+        deletions = frozenset(
+            v for v in register.get("deletions") or [] if isinstance(v, int)
+        )
+        insertions: dict[int, int] = {}
+        for v in register.get("insertions") or []:
+            if isinstance(v, int):
+                insertions[v] = insertions.get(v, 0) + 1
+        if deletions or insertions:
+            out[name] = HelixIndel(deletions, insertions)
+    return out
+
+
 def strand_letters(
-    sequence: str | None, route: list[DomainSpec]
+    sequence: str | None,
+    route: list[DomainSpec],
+    indels: Mapping[str, HelixIndel] | None = None,
 ) -> dict[tuple[int, int], str]:
     """Map ``(ord, offset)`` → sequence letter for one strand's route.
 
@@ -143,6 +181,14 @@ def strand_letters(
     letters in between. Getting that accounting wrong would shift every
     letter after the first loop, which is why the loops are counted here
     rather than by each caller.
+
+    ``indels`` carries each helix's register insertions/deletions: a deleted
+    offset holds no base — it consumes no letter and gets none — and an
+    inserted offset with ``k`` extra bases consumes ``1 + k`` letters. Which
+    of those letters pairs is not knowable from the offset alone, so an
+    inserted offset gets **no** entry: its letters read as unverifiable
+    (:func:`watson_crick` returns ``None``) rather than risking a false
+    mismatch.
 
     A sequence shorter than the route it describes simply runs out — the
     remaining offsets get no letter, and the DRC pass reports the shortfall
@@ -154,19 +200,33 @@ def strand_letters(
     cursor = 0
     for domain in route:
         cursor += domain.loop_before_nt or 0
+        indel = (indels or {}).get(domain.helix)
         for offset in domain.offsets():
+            if indel is not None and offset in indel.deletions:
+                continue
+            extra = indel.insertions.get(offset, 0) if indel is not None else 0
             if cursor >= len(sequence):
                 return out
-            out[(domain.ord, offset)] = sequence[cursor]
-            cursor += 1
+            if not extra:
+                out[(domain.ord, offset)] = sequence[cursor]
+            cursor += 1 + extra
     return out
 
 
-def strand_length_nt(route: list[DomainSpec]) -> int:
+def strand_length_nt(
+    route: list[DomainSpec], indels: Mapping[str, HelixIndel] | None = None
+) -> int:
     """How many nucleotides a route accounts for — every domain's units
-    plus every loop's, the number a declared sequence's length is checked
-    against."""
-    return sum(d.n_units + (d.loop_before_nt or 0) for d in route)
+    (less its deleted offsets, plus its inserted bases) plus every loop's,
+    the number a declared sequence's length is checked against."""
+    total = 0
+    for d in route:
+        total += d.n_units + (d.loop_before_nt or 0)
+        indel = (indels or {}).get(d.helix)
+        if indel is not None:
+            total -= sum(1 for o in d.offsets() if o in indel.deletions)
+            total += sum(indel.insertions.get(o, 0) for o in d.offsets())
+    return total
 
 
 def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> Pairing:
@@ -186,13 +246,14 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
     if state:
         domains = apply_occupancy(domains, dict(state))
     tables = group_domains(domains)
+    indels = helix_indels(tree)
     letters: dict[str, dict[tuple[int, int], str]] = {}
     for strand, route in tables.by_strand.items():
         node = tree.blocks.get(strand)
         sequence = None
         if node is not None and chain_role(node) == STRAND_ROLE:
             sequence = (node.chain or {}).get("sequence")
-        letters[strand] = strand_letters(sequence, route)
+        letters[strand] = strand_letters(sequence, route, indels)
 
     raw: dict[tuple[str, int], list[Occupant]] = {}
     geometry: dict[tuple[str, int], str] = {}
@@ -204,7 +265,10 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
     )
     for domain in all_domains:
         overrides = domain.overrides or {}
+        deleted = indels[domain.helix].deletions if domain.helix in indels else ()
         for offset in domain.offsets():
+            if offset in deleted:
+                continue  # a deleted offset holds no base to occupy it
             key = (domain.helix, offset)
             occupant = Occupant(
                 strand=domain.strand,

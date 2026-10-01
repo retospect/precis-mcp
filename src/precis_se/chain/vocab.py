@@ -402,18 +402,21 @@ def vet_lattice_site(raw: Any, what: str) -> dict[str, Any]:
     }
 
 
-def vet_register(raw: Any, what: str, *, lattice: str | None) -> dict[str, Any]:
+def vet_register(
+    raw: Any, what: str, *, lattice: str | None, n_units: int | None = None
+) -> dict[str, Any]:
     """The register record — ``{'lattice', 'insertions', 'deletions'}``.
 
     ``lattice`` names which repeat holds this helix's twist (defaulting to
-    the path's own lattice site, when it has one); the insertion/deletion
-    lists are the **reserved hook** for retuning register by adding or
-    dropping a base. Non-empty is refused rather than stored and ignored:
-    the kernel's own hook
-    (:func:`precis_chain.register.phase_after`'s ``per_unit_twist``)
-    raises for exactly the same reason, and a design whose global twist
-    depends on insertions nobody applies would read as checked when it is
-    not.
+    the path's own lattice site, when it has one). ``insertions`` /
+    ``deletions`` are lists of helix offsets in ``[0, n_units)`` that retune
+    the *real-twist account* (:func:`precis_se.chain.layout.twist_residual`)
+    by adding or dropping a base: a deletion offset appears at most once, an
+    insertion offset may repeat (each repeat is one more inserted base,
+    caDNAno's loop count), and one offset is never both. Stored sorted and
+    only when non-empty. ``n_units`` is the helix length the offsets are
+    ranged against; ``None`` skips the range check (a re-vet with no length
+    in hand).
     """
     if raw is None:
         return {"lattice": lattice} if lattice else {}
@@ -430,16 +433,42 @@ def vet_register(raw: Any, what: str, *, lattice: str | None) -> dict[str, Any]:
                 f"{', '.join(sorted(nucleic.LATTICES))}"
             )
         out["lattice"] = name
+    lists: dict[str, list[int]] = {}
     for key in ("insertions", "deletions"):
         value = raw.get(key)
-        if value in (None, [], ()):
+        if value is None:
             continue
+        if not isinstance(value, (list, tuple)):
+            raise ChainError(
+                f"{what}: register {key!r} must be a list of helix offsets, "
+                f"got {value!r}"
+            )
+        offsets = [
+            _int(v, f"{key}[{i}]", f"{what} register", minimum=0)
+            for i, v in enumerate(value)
+        ]
+        if n_units is not None:
+            for offset in offsets:
+                if offset >= n_units:
+                    raise ChainError(
+                        f"{what}: register {key!r} offset {offset} is outside "
+                        f"the helix's [0, {n_units}) units"
+                    )
+        if key == "deletions" and len(set(offsets)) != len(offsets):
+            dup = sorted({o for o in offsets if offsets.count(o) > 1})
+            raise ChainError(
+                f"{what}: register 'deletions' lists offset(s) {dup} more than "
+                "once — a base can only be deleted once"
+            )
+        if offsets:
+            lists[key] = sorted(offsets)
+    both = sorted(set(lists.get("insertions", ())) & set(lists.get("deletions", ())))
+    if both:
         raise ChainError(
-            f"{what}: register {key!r} is a reserved hook with no consumer "
-            "yet — the global insertion/deletion twist check is deferred "
-            "(``docs/backlog/se-chain-insertions-deletions.md`` owns it); "
-            "leave it empty rather than storing a correction nothing applies"
+            f"{what}: offset(s) {both} are in both 'insertions' and "
+            "'deletions' — an offset is one or the other"
         )
+    out.update(lists)
     return out
 
 
@@ -487,7 +516,10 @@ def build_helix(op: dict[str, Any], *, what: str = "declare_helix") -> dict[str,
         ),
     }
     register = vet_register(
-        op.get("register"), what, lattice=site["kind"] if site else None
+        op.get("register"),
+        what,
+        lattice=site["kind"] if site else None,
+        n_units=n_units,
     )
     if register:
         record["register"] = register
@@ -653,6 +685,10 @@ def validate_chain(raw: Any, *, what: str = "chain") -> dict[str, Any]:
         resolve_motif_name(raw.get("motif"), nucleic_name, what)
         _int(raw.get("n_units"), "n_units", what, minimum=1)
         vet_path(raw.get("path"), what)
+        if raw.get("register") is not None:
+            vet_register(
+                raw["register"], what, lattice=None, n_units=int(raw["n_units"])
+            )
         return raw
     if role == STRAND_ROLE:
         _strays(raw, _STRAND_KEYS, f"{what} (strand)")

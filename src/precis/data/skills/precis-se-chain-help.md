@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + eighteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
+summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + nineteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -49,9 +49,11 @@ helix on a lattice site) **or** `path={'waypoints': [[x,y,z], …]}` (a free
 centre line, every coordinate a length with a unit; ≥2 points). Optional:
 `nucleic='DNA'|'RNA'` (default `DNA`) or an explicit `motif=`; `phase0=`
 (an angle, unit required — the register offset of unit 0); `register=
-{'lattice': …}` (defaults to the path's own lattice site; `insertions`/
-`deletions` are a reserved hook with no consumer yet — refused when
-non-empty, never silently stored and ignored); `min_bend_radius=` /
+{'lattice': …}` (defaults to the path's own lattice site; `insertions`/`deletions`
+= lists of helix offsets in `[0, n_units)` — a base added or dropped
+there; an insertion offset may repeat, a deletion not, never both. They
+retune the real-twist account, not the frames: see *Twist account*);
+`min_bend_radius=` /
 `min_gap=` (lengths, unit required). Authoring `min_bend_radius` promotes
 `chain_bend` from warn to error — an explicit limit is the design's own
 claim, not a coded guess.
@@ -315,12 +317,13 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
   realized atom belongs to, a citable `<se:…>` token per level; see
   [[precis-se-chain-atoms-help]].
 
-## DRC — the eighteen `chain_*` findings
+## DRC — the nineteen `chain_*` findings
 
 | rule | tier | fires when | fix |
 |---|---|---|---|
 | `chain_bend` | warn / **error** | centre line bends tighter than `min_bend_radius` (coded default Lp/5 ≈ 10 nm for B-DNA; error when authored) | lengthen the run, relax the waypoints, or accept the authored limit |
-| `chain_twist_register` | warn | `n_units` isn't a whole number of the lattice's repeat, rolled back into register | an insertion/deletion, or change `n_units` |
+| `chain_twist_register` | warn | `n_units` isn't a whole number of the lattice's repeat, rolled back into register — only for a helix in a connected set of ≥2 (a lone helix has no neighbour) | an insertion/deletion, or change `n_units` |
+| `chain_twist_global` | warn | a connected set of lattice helices (strands with domains on both) where a helix's real-twist residual exceeds half a base's twist (≈17°) — the detail names each residual and the deletions/insertions that cancel it | add the named insertions/deletions to `register` |
 | `chain_clash` | warn | two segments' swept tubes closer than `min_gap` (coded default: low-end 2.4 nm spacing minus 2× the motif radius — 0.4 nm B-DNA) — consecutive same-helix segments and a crossover's own two segments are exempt | move a helix, or widen `min_gap` |
 | `chain_loop_short` | **error** | a loop's `(n+1)·contour_per_nt + tol` can't bridge its two backbone exits — **this is the crossover register check at `n=0`** (`tol` = 0.098 nm between two B-DNA helices, the groove-asymmetry shortfall no routing can remove; 0 within one helix) | more nt, or a register-correct offset — the finding names them |
 | `chain_loop_slack` | info | the opposite — a loop with far more contour than it needs | fewer nt would pin the geometry |
@@ -335,6 +338,19 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 | `chain_offtarget` | warn | ≥ 8 nt of complementarity between two stretches nothing routes as a pair (a 6-mer hash index over every strand, so intended duplexes are subtracted) | redesign one stretch, or accept it; long designs have chance 8-mers and the row count is the figure |
 | `chain_fold_skipped` | info | a sequenced strand is longer than 200 nt, so no fold ran for it (`RNA.fold` is O(n³)) — its length is named | fold it deliberately with `fold_layout`, which takes scaffold length |
 | `chain_fold_unavailable` | info | ViennaRNA isn't installed, so no fold check ran at all — **one row for the design**, not one per strand | install the `[chain]` extra; `chain_offtarget` needs no library and still runs |
+
+### Twist account
+
+Frames are drawn at the **lattice** twist (square 10.67 bp/turn, the
+caDNAno convention); real B-DNA winds 10.5. Residual per lattice helix =
+`(n − deletions + insertions)` × real twist − `n` × lattice twist
+(view='chain' `twist` column, degrees, unwrapped; a 64-unit square helix
+is +34°). Insertions/deletions move only this account, never the frames
+or crossover offsets. A deleted offset holds no base (no sequence letter,
+no pairing, one fewer route nt); an inserted offset takes `1+k` letters,
+unchecked for complementarity. `realize_chain` refuses a region holding
+either; scadnano/caDNAno carry them, oxdna carries deletions and refuses
+insertions.
 
 ## `relax_chain` — settling the geometry
 

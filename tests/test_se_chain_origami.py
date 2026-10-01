@@ -321,9 +321,13 @@ def test_drc_view_is_fast_and_never_clears_two_segments(
     # header counts errors and warnings, and both are zero (the design's
     # single-stranded spans and slack scaffold turns are info-tier, and
     # ``chain_clash`` in particular must NOT fire at nominal spacing).
-    assert drc_body.splitlines()[0] == "# 0 error(s), 0 warning(s)", (
+    # The one warning left is the uncorrected twist account: 256 units per
+    # helix at the lattice twist but the real one winds ~137 deg off, and the
+    # fixture carries no insertions/deletions (``chain_twist_global``).
+    assert drc_body.splitlines()[0] == "# 0 error(s), 1 warning(s)", (
         drc_body.splitlines()[0]
     )
+    assert drc_body.count("chain_twist_global") == 1
     assert "chain_clash" not in drc_body
 
     # The exclusion lives on validate's undeclared-interpenetration scan, so

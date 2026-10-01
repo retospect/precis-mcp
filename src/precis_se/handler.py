@@ -143,6 +143,7 @@ from precis_se.chain.pairing import (
     SINGLE,
     UNPAIRED,
     derive_pairing,
+    helix_indels,
     strand_length_nt,
     watson_crick,
 )
@@ -3073,6 +3074,20 @@ def _segment_cell(ranges: list[tuple[int, int]], *, laid_out: bool) -> str:
     return body if laid_out else f"not laid out (would be {body})"
 
 
+def _twist_cell(geom: Any) -> str:
+    """A lattice helix's real-twist residual and its register edits
+    (:func:`precis_se.chain.layout.twist_residual`); ``—`` for a free path."""
+    if geom.lattice is None:
+        return "—"
+    edits = (
+        f"+{geom.insertions}/-{geom.deletions} · "
+        if (geom.insertions or geom.deletions)
+        else ""
+    )
+    residual = math.degrees(se_chain_layout.twist_residual(geom))
+    return f"{edits}{residual:+.1f}°"
+
+
 def _render_chain(tree: SeTree) -> str:
     """``view='chain'`` — the nucleic-acid domain's one readout
     (:mod:`precis_se.chain`): every helix with its motif, run
@@ -3087,6 +3102,7 @@ def _render_chain(tree: SeTree) -> str:
     """
     lines = ["# se chain (nucleic acids: helices, strands, derived pairing)", ""]
     pairing = derive_pairing(tree)
+    indels = helix_indels(tree)
     tables = group_domains(list(tree.domains))
     helix_rows: list[dict[str, Any]] = []
     geoms: dict[str, Any] = {}
@@ -3106,6 +3122,7 @@ def _render_chain(tree: SeTree) -> str:
                     "site": "—",
                     "segments": "—",
                     "occupancy": "—",
+                    "twist": "—",
                 }
             )
             continue
@@ -3155,13 +3172,23 @@ def _render_chain(tree: SeTree) -> str:
                 "site": site,
                 "segments": segments,
                 "occupancy": occupancy,
+                "twist": _twist_cell(geom),
             }
         )
     lines.append("## helices")
     lines.append(
         render_agent_table(
             helix_rows,
-            schema=["helix", "motif", "n", "turns", "site", "segments", "occupancy"],
+            schema=[
+                "helix",
+                "motif",
+                "n",
+                "turns",
+                "site",
+                "segments",
+                "occupancy",
+                "twist",
+            ],
         )
         if helix_rows
         else "(none)"
@@ -3179,7 +3206,7 @@ def _render_chain(tree: SeTree) -> str:
             {
                 "strand": name,
                 "nucleic": str(record.get("nucleic") or "DNA"),
-                "route_nt": str(strand_length_nt(route)),
+                "route_nt": str(strand_length_nt(route, indels)),
                 "sequence": f"{len(sequence)} nt" if sequence else "(none)",
                 "domains": ", ".join(
                     f"#{d.ord} {d.helix}[{d.start}:{d.end}]{'→' if d.forward else '←'}"

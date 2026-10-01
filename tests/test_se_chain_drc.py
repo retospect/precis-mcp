@@ -495,8 +495,44 @@ def test_honeycomb_21_bp_is_in_register_and_22_is_not() -> None:
     good = _honeycomb_helix(21)
     assert "chain_twist_register" not in _rules(good)
     bad = _honeycomb_helix(22)
+    # a lone helix has no neighbour to keep register with — only a helix in
+    # a connected set of two or more is reported (tests/test_se_chain_insdel.py)
+    assert _by_rule(bad, "chain_twist_register") == []
+    apply_ops(
+        bad,
+        [
+            {"op": "add_block", "name": "h2"},
+            {
+                "op": "declare_helix",
+                "block": "h2",
+                "n_units": 22,
+                "lattice": "honeycomb",
+                "row": 0,
+                "col": 1,
+            },
+            {"op": "add_block", "name": "s"},
+            {"op": "declare_strand", "block": "s"},
+            {
+                "op": "add_domain",
+                "strand": "s",
+                "helix": "h",
+                "start": 0,
+                "end": 4,
+                "forward": True,
+            },
+            {
+                "op": "add_domain",
+                "strand": "s",
+                "helix": "h2",
+                "start": 0,
+                "end": 4,
+                "forward": False,
+                "loop_before_nt": 3,
+            },
+        ],
+    )
     fired = _by_rule(bad, "chain_twist_register")
-    assert len(fired) == 1
+    assert len(fired) == 2
     assert fired[0].severity == "warn"
 
     # The property, recomputed: 21 units on the honeycomb lattice closes on
@@ -918,7 +954,7 @@ def test_a_malformed_stored_record_is_a_finding_not_a_crash() -> None:
 
 
 def _malformed_then_real_finding_tree() -> SeTree:
-    """Two helices, named so ``sorted(tree.blocks)`` visits the malformed
+    """Three helices (h1 and h2 joined by a strand), named so ``sorted(tree.blocks)`` visits the malformed
     one FIRST: ``h0`` carries a stored record that fails ``validate_chain``
     (the same "Z-DNA" corruption as the test above), ``h1`` is well-formed
     but 22 honeycomb units — out of register, so it fires its own
@@ -950,6 +986,36 @@ def _malformed_then_real_finding_tree() -> SeTree:
                 "row": 0,
                 "col": 1,
             },
+            {"op": "add_block", "name": "h2"},
+            {
+                "op": "declare_helix",
+                "block": "h2",
+                "n_units": 22,
+                "lattice": "honeycomb",
+                "row": 0,
+                "col": 2,
+            },
+            # a strand joining h1 and h2: register is only checked for a
+            # helix in a connected set of two or more
+            {"op": "add_block", "name": "s"},
+            {"op": "declare_strand", "block": "s"},
+            {
+                "op": "add_domain",
+                "strand": "s",
+                "helix": "h1",
+                "start": 0,
+                "end": 4,
+                "forward": True,
+            },
+            {
+                "op": "add_domain",
+                "strand": "s",
+                "helix": "h2",
+                "start": 0,
+                "end": 4,
+                "forward": False,
+                "loop_before_nt": 3,
+            },
         ],
     )
     tree.blocks["h0"].chain = {"role": "helix", "motif": "Z-DNA", "n_units": 8}
@@ -964,7 +1030,7 @@ def test_a_malformed_block_does_not_stop_the_scan_at_later_blocks() -> None:
     # geometry realised and its own finding — which a ``break`` would have
     # silently dropped along with every other later helix's.
     register = _by_rule(tree, "chain_twist_register")
-    assert len(register) == 1 and register[0].subject == "h1"
+    assert [f.subject for f in register] == ["h1", "h2"]
 
 
 def test_no_chain_declaration_means_no_findings_and_no_work() -> None:

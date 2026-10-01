@@ -86,21 +86,21 @@ def phase_after(
     error** — how far the run misses closing on a whole number of turns. Zero
     means unit ``n`` is rolled exactly back onto unit 0.
 
-    ``per_unit_twist`` is the **reserved insertion/deletion hook**: a ``(n,)``
-    array of per-unit twist perturbations, for designs that add or drop a base
-    to retune register. No consumer builds one yet
-    (``docs/backlog/se-chain-insertions-deletions.md`` owns the global twist check), so
-    supplying one raises rather than quietly implying the whole
-    insertion/deletion story is wired up.
+    ``per_unit_twist`` is the insertion/deletion hook: a ``(n,)`` array of
+    additive per-unit twist perturbations, radians, for designs that add or
+    drop a base to retune register (``+motif.twist`` for an inserted base,
+    ``-motif.twist`` for a deleted one). They add to the nominal
+    ``n * motif.twist`` before wrapping.
     """
     if n < 0:
         raise ValueError(f"unit count must be >= 0, got {n}")
     if per_unit_twist is not None:
-        raise NotImplementedError(
-            "per-unit twist perturbation (insertions/deletions) is a reserved "
-            "hook with no consumer yet — see "
-            "docs/backlog/se-chain-insertions-deletions.md"
-        )
+        extra = np.asarray(per_unit_twist, dtype=float)
+        if extra.shape != (n,):
+            raise ValueError(
+                f"per_unit_twist must have shape ({n},), got {extra.shape}"
+            )
+        return _wrap_pi(float(n) * motif.twist + float(extra.sum()))
     return _wrap_pi(float(n) * motif.twist)
 
 

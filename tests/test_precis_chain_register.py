@@ -144,9 +144,17 @@ def test_crossover_window_excludes_units_between_two_neighbours() -> None:
     assert 3 in [u for u, _ in wide]
 
 
-def test_reserved_insertion_deletion_hook_refuses_rather_than_pretending() -> None:
-    with pytest.raises(NotImplementedError, match="reserved"):
-        phase_after(_HONEYCOMB_MOTIF, 21, per_unit_twist=np.zeros(21))
+def test_per_unit_twist_hook_adds_to_the_nominal_roll() -> None:
+    assert phase_after(
+        _HONEYCOMB_MOTIF, 21, per_unit_twist=np.zeros(21)
+    ) == pytest.approx(phase_after(_HONEYCOMB_MOTIF, 21))
+    extra = np.zeros(21)
+    extra[4] = -_HONEYCOMB_MOTIF.twist  # one deleted base
+    assert phase_after(_HONEYCOMB_MOTIF, 21, per_unit_twist=extra) == pytest.approx(
+        phase_after(_HONEYCOMB_MOTIF, 20)
+    )
+    with pytest.raises(ValueError, match="shape"):
+        phase_after(_HONEYCOMB_MOTIF, 21, per_unit_twist=np.zeros(20))
 
 
 def test_motif_and_lattice_validation() -> None:

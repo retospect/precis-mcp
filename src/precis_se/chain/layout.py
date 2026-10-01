@@ -80,6 +80,12 @@ class HelixGeometry:
     bend_authored: bool
     min_gap_m: float
     gap_authored: bool
+    #: How many bases the helix's ``register`` inserts / deletes
+    #: (``insertions`` counts repeats — one per extra base). They do not move
+    #: ``units``: frames are the design as drawn at the lattice twist. They
+    #: feed :func:`twist_residual` only.
+    insertions: int = 0
+    deletions: int = 0
 
     def origin(self, offset: int) -> np.ndarray:
         """Unit ``offset``'s position on the axis, metres."""
@@ -180,7 +186,28 @@ def helix_geometry(node: Any) -> HelixGeometry:
             else nucleic.default_min_gap_m(base_motif)
         ),
         gap_authored=gap_authored,
+        insertions=len((record.get("register") or {}).get("insertions") or []),
+        deletions=len((record.get("register") or {}).get("deletions") or []),
     )
+
+
+def twist_residual(geom: HelixGeometry) -> float:
+    """How far the real molecule would wind against the lattice it is drawn
+    on, radians — signed and **not wrapped** (the accumulated roll is the
+    point; a whole turn is a whole turn of strain).
+
+    The frames lay a lattice helix out at the lattice's twist
+    (``geom.motif``, the caDNAno convention) while the molecule winds at
+    ``geom.base_motif``'s: ``(n - deletions + insertions)`` bases at the real
+    twist, minus ``n`` units at the lattice twist. Positive: the molecule is
+    over-wound (a deletion would relieve it). Insertions/deletions are the
+    designer's lever on exactly this number — they do not change the frames.
+    Zero for a free-path helix, which has no lattice to drift against.
+    """
+    if geom.lattice is None:
+        return 0.0
+    real_bases = geom.n_units - geom.deletions + geom.insertions
+    return real_bases * geom.base_motif.twist - geom.n_units * geom.motif.twist
 
 
 def register_offsets(

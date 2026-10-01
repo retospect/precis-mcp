@@ -306,7 +306,7 @@ def test_rejections_name_what_was_wrong() -> None:
             tree,
             [{"op": "declare_helix", "block": "h", "n_units": 21, "lattice": "hex"}],
         )
-    with pytest.raises(OpError, match="reserved hook"):
+    with pytest.raises(OpError, match="outside"):
         apply_ops(
             tree,
             [
@@ -315,7 +315,7 @@ def test_rejections_name_what_was_wrong() -> None:
                     "block": "h",
                     "n_units": 21,
                     "lattice": "honeycomb",
-                    "register": {"lattice": "honeycomb", "insertions": [3]},
+                    "register": {"lattice": "honeycomb", "insertions": [21]},
                 }
             ],
         )
