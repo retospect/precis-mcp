@@ -14,6 +14,13 @@ desorption) above everything that presents or packages its results.
 
 ## Do next
 
+**Deadline above the ranking:** the catpath pathway-engine and trust-demo
+paper is November 2026's paper of the month (td459589, quest qu459585;
+Reto 2026-10-01). It has not been started. Mint the draft first. The trust
+demo needs the MPI image rebuilt on the node before
+`PRECIS_DFT_MPI_RANKS` is set. Rank the items below by what that paper
+needs.
+
 1. **Triage the 21 items below** — read each against `src/precis_pathway`
    and `git log`, mark which still reproduce and which shipped, delete the
    shipped, and re-rank this file off the result. Leverage: every rank

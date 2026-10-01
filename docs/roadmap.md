@@ -285,8 +285,8 @@ Newest first; one line per pass (`/pillar-review` writes it).
 
 - 2026-10-01 — Reto's rulings, not a full pass: vocabulary tiers 2 and 3
   throughout code (td459590 done); December paper becomes a
-  molecular-machines paper, boxel dr42995 unscheduled; catpath January
-  unpaused; ingest-and-fetch, draft-authoring and graph-memory-consumers
+  molecular-machines paper, boxel dr42995 unscheduled; catpath moves
+  to November (not started), reality-grounding to January; ingest-and-fetch, draft-authoring and graph-memory-consumers
   active. Still open: serving-programme has no session.
 
 - 2026-10-01 — not a full pass: the paper cadence added (quest qu459585,

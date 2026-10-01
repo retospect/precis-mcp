@@ -20,7 +20,7 @@ read the new skills and the new MCP surface when they restart, so there
 are no long-lived callers to protect. A rename that touches prod rows ships
 as a migration through `/go`. The quest-layer house words (`quest`,
 `gripe`, `tote`, `deed`, `striving`) have no literature word and stay.
-This gates the November paper (td459587, dr449707).
+This gates the January 2027 paper (td459587, dr449707).
 
 **Not a blanket rename.** Roughly two thirds of the coined set names something
 the literature has no word for, and those stay. The work is picking the third

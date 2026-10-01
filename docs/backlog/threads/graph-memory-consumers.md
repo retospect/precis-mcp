@@ -20,7 +20,7 @@ what a live consumer is already going without.
    (knowledge-mesh Do-next 7).
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
-   November paper (td459587), so it lands before November even though
+   January paper (td459587), so it lands before January even though
    item 1 outranks it on value.
 3. **backlog/draft-authoring-graph-affordances.md** — nanobuds-paper
    evidence: work leaves the graph today (a proposal in /tmp, write checks
