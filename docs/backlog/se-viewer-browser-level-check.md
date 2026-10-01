@@ -51,6 +51,20 @@ phase polls for the effect it is testing — a changed tree row set, a URL
 that carries the new parameter, a settled busy mark — with a generous
 timeout, and fails on the timeout rather than on a single late sample.
 
+### A phase whose round trip is a net no-op needs a control shot
+
+Phase b asserts that container mode `hidden` SURVIVES a tree toggle, by
+diffing the shot before the toggle against the shot after an off-then-on
+round trip and expecting zero. Off-then-on is a net no-op, so a canvas that
+rendered NEITHER click returns the same zero — the pass and the blind spot
+were indistinguishable for as long as the phase existed. Shooting between
+the two clicks fixes it: that intermediate pair must be non-zero
+(measured 2026-10-01: n=6872, against n=0 for the round trip) before the
+zero afterwards can be read as "survived".
+
+Generalises past this phase: any assertion of the form "X is still true
+after Y" needs separate evidence that Y happened at all.
+
 ### The noise floor is measured in the same run, before anything else
 
 Already observed, kept here because it is the other half of trusting a

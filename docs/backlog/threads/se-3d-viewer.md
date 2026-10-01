@@ -156,6 +156,22 @@ closes it. The durable lesson — a browser phase must wait on an observable
 condition, never a timeout — is a requirement on Do-next 1 rather than a
 line in a closed gripe.
 
+## Busy-state follow-ups (2026-10-01)
+
+The `#bt3d-busy` mark that closed gr458329 cost a smaller thing on the way
+in, found by probing its own new code the round after: `setBusy` disables
+`#bt3d-overrides`, disabling a focused element blurs it, and browsers do not
+hand focus back on re-enable. Since Enter in that box is what starts the
+refetch, the normal path left `document.activeElement` at `(none)` for the
+whole ~3.5 s rebuild and after it. Fixed by carrying the element and its
+selection range across `setBusy` and restoring both. Measured either side:
+`caret` 14 and the value intact throughout, `active` back to
+`bt3d-overrides` afterwards.
+
+Worth keeping as a pattern rather than a changelog line: a control that is
+disabled to communicate busy-ness has to give back whatever disabling took,
+and for a text field that is focus and caret, not just the value.
+
 ## Seam
 
 `src/precis/_pagination.py` is adopted here, not owned here. gr458393 was

@@ -1634,10 +1634,46 @@ export async function blocktreeViewer3D({
   //: guard that silently drops the second change.
   let reloading = false;
 
+  //: What to re-focus once the refetch ends, or null. Disabling a focused
+  //: element blurs it and re-enabling does NOT give focus back, so for the
+  //: overrides box — a text field whose Enter key is what starts the
+  //: refetch in the first place — the caret has to be carried across by
+  //: hand. Measured: without this, `document.activeElement` is `(none)` for
+  //: the whole rebuild and after it.
+  let busyFocus = null;
+
   function setBusy(busy) {
     if (busyEl) busyEl.hidden = !busy;
+    if (busy) {
+      const active = document.activeElement;
+      if (active === overridesInput) {
+        busyFocus = {
+          el: active,
+          start: active.selectionStart,
+          end: active.selectionEnd,
+        };
+      } else if (active === levelSelect) {
+        busyFocus = { el: active, start: null, end: null };
+      } else {
+        busyFocus = null;
+      }
+    }
     for (const el of [levelSelect, overridesInput]) {
       if (el) el.disabled = busy;
+    }
+    if (!busy && busyFocus) {
+      const { el, start, end } = busyFocus;
+      busyFocus = null;
+      try {
+        el.focus();
+        if (start !== null && el.setSelectionRange) {
+          el.setSelectionRange(start, end);
+        }
+      } catch (err) {
+        // Focus is a courtesy; never let it cost the render that just
+        // finished.
+        console.error("blocktree-3d: refocus after refetch failed", err);
+      }
     }
   }
 
