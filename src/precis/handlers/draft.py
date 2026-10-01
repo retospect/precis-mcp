@@ -2988,9 +2988,19 @@ class DraftHandler(Handler):
 
         out.extend(self._hygiene_drift_lines(ref_id, limit=limit))
 
-        cited_ref_ids = self._cited_paper_ref_ids(chunks)
+        # A figure caption's ``Reproduced from [pc…]`` credits an image's
+        # source; it is not a claim, so no hub can stand in for it. Those
+        # pointers still need a DOI in the bibliography, so they feed the
+        # DOI line below but not the hub scoreboard.
+        claim_ref_ids = self._cited_paper_ref_ids(
+            [c for c in chunks if c.chunk_kind != "figure"]
+        )
+        caption_ref_ids = self._cited_paper_ref_ids(
+            [c for c in chunks if c.chunk_kind == "figure"]
+        )
+        cited_ref_ids = claim_ref_ids + caption_ref_ids
 
-        grounded, total = self._taproot_hub_scoreboard(cited_ref_ids)
+        grounded, total = self._taproot_hub_scoreboard(claim_ref_ids)
         if grounded:
             out.append(
                 f"ℹ taproot: {grounded} of {total} cited passages have a "

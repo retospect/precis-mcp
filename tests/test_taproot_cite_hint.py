@@ -314,6 +314,34 @@ def test_outline_scoreboard_present_when_hub_grounded(
     assert "taproot: 1 of 1 cited passages have a claim hub available" in out
 
 
+def test_outline_scoreboard_skips_figure_caption_credit(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A caption's ``Reproduced from [pc…]`` credits an image, not a claim:
+    the scoreboard must not advise swapping it for a hub."""
+    paper = seed_ref(hub.live_store, title="Top-gated AGNR FETs", kind="paper")
+    chunk_id = _seed_pc(hub.live_store, paper_ref_id=paper)
+    seed_claim_hub(
+        hub.live_store,
+        sentence="Top-gated 9-atom AGNR FETs reach Ion/Ioff ~1e5.",
+        scope={},
+        supporters=[{"paper": paper}],
+    )
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="figure",
+        text=f"Transfer curves of a top-gated device. Reproduced from [pc{chunk_id}].",
+        at={"after": "¶" + th},
+    )
+
+    out = draft.get(id="nt").body
+    assert "taproot:" not in out
+
+
 def test_outline_scoreboard_absent_when_no_hub(draft: DraftHandler, hub: Hub) -> None:
     paper = seed_ref(hub.live_store, title="Ungrounded Paper", kind="paper")
     chunk_id = _seed_pc(hub.live_store, paper_ref_id=paper)
