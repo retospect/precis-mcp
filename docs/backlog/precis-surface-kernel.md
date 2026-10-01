@@ -957,10 +957,29 @@ hand-authoring path and as the oracle the fit is compared against.
    a spring relax needs it. This is a force-field proxy, not Tersoff: ASE's
    pure-Python Tersoff made no FIRE step on 6.5k atoms in 30 min.
 
+   **Carbon wrapper built (2026-10-01):** se generator `smooth_drum`
+   (`precis_se/atomic/generators/smooth_drum.py`) with the relax in
+   `precis_surface.relax` (numpy FIRE). The relax adds a weak surface
+   tether (`k_surface` 0.01, normal distance only): without it atoms drift
+   up to 7 Å off the target and the sheet rim sags 4 Å. Default drum
+   (24,0)/(90,0): 6123 atoms, {5:12, 7:12}, bonds 1.31-1.68 Å, θp max
+   8.2°, 4 s on the host. The meridian is persisted on the structure ref
+   (`meta.generated.surface_meridian`) for the overlay. Only necks ≥ 10
+   fit clean on a (60,0) wall; necks 6-12 can leave an 8-ring, which the
+   generator refuses (tpms ring-purity ruling).
+
    Next:
-   - Tersoff energy per atom against drum33, via the prod geo relax once
-     a carbon wrapper can mint the fit (the 3+3 drum mint itself waits on
-     Reto);
+   - **Row spacing is ~7-10% too sparse.** `rowfit` places rows by
+     circumference match (2πr = n·edge), so a c=6 row step costs
+     Δr ≈ 0.955·edge against the hexagonal lattice's √3/2·edge; the
+     annulus then holds ~10% more area per vertex than graphene, which is
+     why the tether trades surface fidelity against bond stretch (k 0.2
+     pins the surface to 0.17 Å but stretches bonds to 1.93 Å). Place rows
+     by area match (n·(√3/2)·edge² = 2πr·Δs) and re-measure; then raise
+     `k_surface`.
+   - The 8-ring at necks 6-12 (closure moves on thin necks).
+   - Tersoff energy per atom against drum33, via the prod geo relax of a
+     minted `smooth_drum` (the 3+3 drum mint itself waits on Reto);
    - the overlay. Navigator mapped it: `/se/{slug}/atomic3d.json` →
      `_atomic_block_payload` (src/precis_web/routes/blocktree_view.py);
      `GeneratedBlock` has no mesh field (precis_se/atomic/generators/_types.py);

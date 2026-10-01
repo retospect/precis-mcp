@@ -197,3 +197,61 @@ def test_detail3d_page_has_atoms_toggle_only_for_the_atomic_design(
     plain_page = atomic3d_client.get("/se/plain_se3")
     assert plain_page.status_code == 200
     assert 'id="bt3d-atoms"' not in plain_page.text
+
+
+_CYL_MERIDIAN = [[0.0, -5.0], [10.0, -5.0], [10.0, 5.0], [0.0, 5.0]]
+
+
+def _stamp_surface_meridian(runtime_with_store, slug: str, meridian: Any) -> None:
+    store = runtime_with_store.hub.store
+    ref = store.get_ref(kind="structure", id=slug)
+    assert ref is not None
+    store.stamp_ref_meta(ref.id, {"generated": {"surface_meridian": meridian}})
+
+
+def test_atomic3d_json_target_surface_is_the_revolved_meridian_placed_like_smooth(
+    atomic3d_client, runtime_with_store
+) -> None:
+    from precis_surface.revolution import revolve
+
+    _seed_c60_structure(runtime_with_store, "c60frag5")
+    _stamp_surface_meridian(runtime_with_store, "c60frag5", _CYL_MERIDIAN)
+    _seed_atomic_se(runtime_with_store, slug="c60design5", structure_slug="c60frag5")
+
+    body = atomic3d_client.get("/se/c60design5/atomic3d.json").json()
+    block = body["blocks"][0]
+    target = block["target"]
+
+    verts_A, tris = revolve(np.array(_CYL_MERIDIAN), 96)
+    xf = cad_pose(cad_as_vec3([0.0, 0.0, 0.0]), cad_as_vec3([0.0, 0.0, 0.0]))
+    expect = apply_rigid(xf, verts_A * 1e-10) * body["scale"]
+    got = np.array(target["verts"])
+    assert got.shape == expect.shape
+    assert np.allclose(got, expect, rtol=0, atol=1e-12 * max(1.0, body["scale"]))
+    assert np.array_equal(np.array(target["tris"]), tris)
+    # Placement: radius 10 Å and half-height 5 Å in display units.
+    radial = np.hypot(got[:, 0], got[:, 1]).max()
+    assert radial == pytest.approx(10e-10 * body["scale"], rel=1e-9)
+    assert got[:, 2].max() == pytest.approx(5e-10 * body["scale"], rel=1e-9)
+    # Same frame as the atoms: C60 sits inside the cylinder.
+    coords = np.array(block["coords"])
+    assert np.hypot(coords[:, 0], coords[:, 1]).max() < radial
+
+
+def test_atomic3d_json_target_surface_absent_without_meridian(
+    atomic3d_client, runtime_with_store
+) -> None:
+    _seed_c60_structure(runtime_with_store, "c60frag6")
+    _seed_atomic_se(runtime_with_store, slug="c60design6", structure_slug="c60frag6")
+    block = atomic3d_client.get("/se/c60design6/atomic3d.json").json()["blocks"][0]
+    assert "target" not in block
+
+
+def test_detail3d_page_has_target_surface_toggle_for_the_atomic_design(
+    atomic3d_client, runtime_with_store
+) -> None:
+    _seed_c60_structure(runtime_with_store, "c60frag7")
+    _seed_atomic_se(runtime_with_store, slug="c60design7", structure_slug="c60frag7")
+    _seed_plain_se(runtime_with_store, "plain_se7")
+    assert 'id="bt3d-target"' in atomic3d_client.get("/se/c60design7").text
+    assert 'id="bt3d-target"' not in atomic3d_client.get("/se/plain_se7").text

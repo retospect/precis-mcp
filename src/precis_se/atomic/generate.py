@@ -406,6 +406,9 @@ _GENERATED_RECORD_KEYS = (
     "measures",
     "chiral_index",
     "radius_A",
+    "surface_meridian",
+    "fillet_radius_A",
+    "theta_p_max_deg",
 )
 
 

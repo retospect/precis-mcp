@@ -46,6 +46,8 @@ Modules:
 - :mod:`precis_surface.revolution` -- smooth targets as surfaces of
   revolution: catenoid bends, table-picked fillets, defect-row radii,
   ``revolve`` to a mesh (the smooth-drum slice).
+- :mod:`precis_surface.relax` -- spring + umbrella FIRE relaxation of a
+  fitted carbon net, and POAV1 pyramidalisation (the smooth-drum slice).
 """
 
 from __future__ import annotations

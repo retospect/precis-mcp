@@ -77,6 +77,11 @@
     <input type="checkbox" id="bt3d-atoms" checked />
     atoms
   </label>
+  <label id="bt3d-target-label" class="hidden items-center gap-1 text-xs text-slate-600"
+         title="the smooth surface the generator fitted the atoms to (translucent)">
+    <input type="checkbox" id="bt3d-target" />
+    target surface
+  </label>
   <div class="flex items-center gap-2">
     <label for="bt3d-smooth" class="text-xs text-slate-600" title="0 = full atomic detail, 100 = smoothed surface coloured by scaffold deviation">
       atomic ↔ smooth
@@ -261,6 +266,8 @@
       legend: document.getElementById("bt3d-smooth-legend"),
       legendMin: document.getElementById("bt3d-smooth-legend-min"),
       legendMax: document.getElementById("bt3d-smooth-legend-max"),
+      targetToggle: document.getElementById("bt3d-target"),
+      targetLabel: document.getElementById("bt3d-target-label"),
     },
     {% endif %}
     onSelectBlock: (name) => { if (window.designChatAddHandle) window.designChatAddHandle(name); },

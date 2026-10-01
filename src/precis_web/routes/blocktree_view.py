@@ -116,6 +116,7 @@ from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.ops import effective_envelope as se_effective_envelope
+from precis_surface.revolution import revolve
 from precis_web import design_chat, design_turn
 from precis_web.blocktree_3d import (
     CHANGED_COLOUR,
@@ -1196,6 +1197,31 @@ _ATOMIC_A_TO_M = 1e-10
 #: scene (accidental long cycle) doesn't blow up the per-edge BFS.
 _ATOMIC_MAX_RING = 8
 
+#: Azimuthal steps when revolving a generator's ``surface_meridian`` into
+#: the "target surface" overlay mesh.
+_TARGET_N_THETA = 96
+
+
+def _target_surface(
+    struct_ref: Any, xf: Any, scale: float
+) -> dict[str, list[Any]] | None:
+    """The smooth surface a generator fitted the atoms to, or ``None``.
+
+    ``meta["generated"]["surface_meridian"]`` is an ``[r_A, z_A]`` profile in
+    the block's local Å frame (axis = local z); revolved, then placed exactly
+    like the ``smooth`` coordinates (Å → m, rigid pose, display scale)."""
+    meta = getattr(struct_ref, "meta", None) or {}
+    generated = meta.get("generated") if isinstance(meta, dict) else None
+    raw = generated.get("surface_meridian") if isinstance(generated, dict) else None
+    if not raw:
+        return None
+    pts = np.asarray(raw, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] != 2:
+        return None
+    verts_A, tris = revolve(pts, _TARGET_N_THETA)
+    world = apply_rigid(xf, verts_A * _ATOMIC_A_TO_M) * scale
+    return {"verts": world.tolist(), "tris": np.asarray(tris).tolist()}
+
 
 def _atomic_block_payload(
     store: Store, node: Any, *, block_uid: int, name: str, scale: float
@@ -1241,7 +1267,7 @@ def _atomic_block_payload(
     world_coords = apply_rigid(xf, cart_A * _ATOMIC_A_TO_M) * scale
     world_smooth = apply_rigid(xf, smooth_A * _ATOMIC_A_TO_M) * scale
 
-    return {
+    payload: dict[str, Any] = {
         "uid": block_uid,
         "name": name,
         "elements": elements,
@@ -1255,6 +1281,10 @@ def _atomic_block_payload(
         "faces": [list(ring) for ring in faces],
         "units": "scene",
     }
+    target = _target_surface(struct_ref, xf, scale)
+    if target is not None:
+        payload["target"] = target
+    return payload
 
 
 def _build_atomic3d(

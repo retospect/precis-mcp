@@ -52,6 +52,10 @@ dependency. Round 5: ``tpms``/``schwarzite``
 carbon scaffolds via :mod:`precis_surface`'s level-set/marching-cubes/dual
 pipeline (docs/backlog/precis-surface-kernel.md "Slice 1 — the dual
 route"), a preview scaffold ahead of the degree-controlled remesh loop.
+Round 6: ``smooth_drum`` (:mod:`precis_se.atomic.generators.smooth_drum`) —
+a sheet-stalk-drum carbon wrapper on a smooth surface of revolution with
+exactly 12 pentagons and 12 heptagons, spring-relaxed and gated on
+pyramidalisation.
 """
 
 from __future__ import annotations
@@ -65,6 +69,7 @@ from precis_se.atomic.generators._types import (
     GeneratorError,
 )
 from precis_se.atomic.generators.hexfold_spec import build_hexfold
+from precis_se.atomic.generators.smooth_drum import build_smooth_drum
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
 from precis_se.atomic.generators.sugars import build_cyclodextrin
 from precis_se.atomic.generators.tpms import build_tpms
@@ -82,6 +87,7 @@ GENERATORS: dict[str, Generator] = {
     "cyclodextrin": build_cyclodextrin,
     "hexfold": build_hexfold,
     "tpms": build_tpms,
+    "smooth_drum": build_smooth_drum,
     #: alias -- schwarzite-class carbon nets are the tpms family's whole
     #: point (module docstring), so the more chemistry-recognizable name
     #: reaches the same builder.

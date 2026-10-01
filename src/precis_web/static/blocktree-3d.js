@@ -862,7 +862,52 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
     return hit ? hit.object.userData.pick : null;
   }
 
-  return { applyT, setVisible, pickAtom };
+  // ── target surface (smooth_drum's surface_meridian, revolved server-side)
+  // One translucent double-sided mesh per block that carries a target, in
+  // its own group so it is independent of the atoms toggle. Off by default;
+  // the checkbox is revealed only when some block has a target.
+  const targetGroup = new THREE.Group();
+  targetGroup.name = "bt3d-target-overlay";
+  targetGroup.visible = false;
+  let hasTarget = false;
+  for (const b of data.blocks) {
+    if (!b.target || !b.target.verts || !b.target.verts.length) continue;
+    const pos = new Float32Array(b.target.verts.length * 3);
+    b.target.verts.forEach((v, i) => {
+      pos[i * 3] = v[0];
+      pos[i * 3 + 1] = v[1];
+      pos[i * 3 + 2] = v[2];
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(b.target.tris.flat());
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geo,
+      new THREE.MeshBasicMaterial({
+        color: 0x14b8a6,
+        opacity: 0.3,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    targetGroup.add(mesh);
+    hasTarget = true;
+  }
+  if (hasTarget) scene.add(targetGroup);
+
+  function setTargetVisible(on) {
+    if (!hasTarget) return;
+    targetGroup.visible = on;
+    try {
+      viewer.update(true);
+    } catch (err) {
+      console.error("blocktree-3d: target surface redraw failed", err);
+    }
+  }
+
+  return { applyT, setVisible, pickAtom, hasTarget, setTargetVisible };
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -1543,6 +1588,19 @@ export async function blocktreeViewer3D({
     if (on) atomicOverlay.applyT(Number(smoothEls.slider.value) / 100);
     if (smoothEls.slider) smoothEls.slider.disabled = !on;
     if (smoothEls.legend) smoothEls.legend.style.display = on ? "flex" : "none";
+    applyTargetState();
+  }
+  //: The target-surface checkbox only exists when some block carries a
+  //: target; it is independent of the atoms toggle.
+  function applyTargetState() {
+    const toggle = smoothEls && smoothEls.targetToggle;
+    const label = smoothEls && smoothEls.targetLabel;
+    const has = !!(atomicOverlay && atomicOverlay.hasTarget);
+    if (label) {
+      label.classList.toggle("hidden", !has);
+      label.style.display = has ? "flex" : "none";
+    }
+    if (atomicOverlay && has) atomicOverlay.setTargetVisible(!!(toggle && toggle.checked));
   }
   // Declared here rather than beside the explode button's own listener:
   // `applyUiState` resets it on every render, and the first render runs
@@ -1796,6 +1854,9 @@ export async function blocktreeViewer3D({
     });
   }
   if (atomsToggle) atomsToggle.addEventListener("change", applyAtomState);
+  if (smoothEls && smoothEls.targetToggle) {
+    smoothEls.targetToggle.addEventListener("change", applyTargetState);
+  }
 
   // ── live level / overrides / isolate (no page reload) ────────────────
   //

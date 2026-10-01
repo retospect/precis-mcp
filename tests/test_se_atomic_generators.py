@@ -632,6 +632,7 @@ def test_registry_has_round_1_and_round_2_generators() -> None:
         "hexfold",
         "tpms",
         "schwarzite",
+        "smooth_drum",
     }
     for builder in GENERATORS.values():
         assert callable(builder)

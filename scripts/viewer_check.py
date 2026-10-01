@@ -49,6 +49,10 @@ CHANGED_MIN = 1000
 #: The level control's change is smaller: on the unicycle fixture,
 #: ``interfaces`` adds only the interface features (measured n=643).
 LEVEL_CHANGED_MIN = 300
+#: The target-surface overlay is small against the design's envelope-framed
+#: camera: a 12 A cylinder around C60 inside a 5 nm sphere measured n=448
+#: (local run, headless Chrome), so it gets its own, lower floor.
+TARGET_CHANGED_MIN = 300
 #: "Back to the base picture" — measured n=1 on the hand harness.
 RESTORED_MAX = 200
 #: Ceiling for any one wait on an observable condition.
@@ -259,6 +263,24 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         checks.append(
             Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level)
         )
+
+        # Target surface (smooth_drum's revolved surface_meridian): the
+        # checkbox only appears when some atomic block carries a target, so
+        # a design without one (the unicycle) has nothing to probe. Where it
+        # is present, on must change the picture and off must restore it.
+        if page.locator("#bt3d-target").is_visible():
+            before = settle("09_target_off")
+            page.check("#bt3d-target")
+            on_shot = settle("10_target_on")
+            on = _diff(before, on_shot)
+            checks.append(
+                Check("target_surface_on_redraws", on["n"] >= TARGET_CHANGED_MIN, on)
+            )
+            page.uncheck("#bt3d-target")
+            off = _diff(before, settle("11_target_off_again"))
+            checks.append(
+                Check("target_surface_off_restores", off["n"] <= RESTORED_MAX, off)
+            )
 
         # The page scrolls to what sits below the shell: a wheel off the
         # canvas (on it, the wheel zooms) must bring the design chat into
