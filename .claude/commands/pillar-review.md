@@ -89,7 +89,16 @@ ranking.
   pointer — keep it.
 - **The fix_gripe reset re-surfaces landed fixes.** A gripe flipped back
   to open by an incident may already be fixed in main; ask "is the fix in
-  main?" before ranking it (gr458087 was).
+  main?" before ranking it (gr458087 was). A gripe's auto-diagnosis
+  describes the code at filing time and is never re-run, so an open status
+  plus a confident diagnosis is not a live defect: probe the scenario on
+  prod before ranking it as the cause of anything (gr456213 was fixed on
+  09-29, re-opened by an unrelated reset, and ranked as the live cause of a
+  corruption for a day).
+- **Rulings recorded only in a code comment are invisible to the review.**
+  When an owner reports a question "queued for Reto" that he already
+  answered, the answer is usually in a commit or a comment; the item must
+  carry it as `[decided YYYY-MM-DD, Reto]` or the next pass re-asks.
 - **Agents mis-cluster.** A pagination bug filed under "embed drain" is a
   read-surface bug; read the title, not the cluster label, before placing.
 - **Do not rank inside another owner's thread beyond inserts.** Re-ranking
