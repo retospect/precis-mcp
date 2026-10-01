@@ -59,10 +59,24 @@ enum (consequence of violation, not a per-term knob) plus the term's own
 physical budget. Sweep the dial for a Pareto front rather than guessing
 one "right" value.
 
-**No wirelength term** — deliberately absent; length enters through
-resistance/inductance/delay where those matter
-(:mod:`precis.pcb.objectives`) and is correctly ignored elsewhere. Don't
-add one back.
+**Wirelength enters as AREA, not as length** (``routing_area``, added
+2026-09-30 on Reto's ruling; this paragraph used to say "no wirelength
+term ... don't add one back"). The old ban was right that raw length is
+not a cost: length matters electrically only through
+resistance/inductance/delay, which :mod:`precis.pcb.objectives` already
+owns. What the ban missed is that a strand still CONSUMES BOARD AREA,
+and area is money this module already prices. So ``routing_area`` is
+not a re-declared length penalty with a free weight — it is
+``length x pitch`` metres-squared of panel, priced at the very same
+:attr:`CostConfig.board_area_usd_per_mm2` the bounding box pays, and it
+introduces no new calibration constant (which matters, given the
+"calibration is unvalidated" caution below).
+
+What forced it: with nothing pricing the area a connection sweeps, the
+annealer moved ``ARR1_SINK_0`` ~10 mm off the electrode field it drives
+the moment side-aware legality (2026-09-29) made that move legal, and
+realized electrode escapes fell from >=24 to 17 on ``ewod-dogfood-1``.
+Nothing in the cost function objected, because nothing could see it.
 
 **Calibration is unvalidated** — every dollar figure and physical
 constant here is order-of-magnitude, not fit to real fab/bench data. The
@@ -117,6 +131,7 @@ from precis.pcb.ir import (
     pin_point,
     plane_layers_of,
     same_layer_crossing_count,
+    segment_points,
 )
 from precis.pcb.landpattern import place_points
 from precis.pcb.rules import (
@@ -568,6 +583,68 @@ def _extended_part_fees(ir: PcbIR, level: Level, config: CostConfig) -> list[Ter
             "JLC charges a flat per-line surcharge for Extended-library parts (manual pick-and-place setup)",
         )
     ]
+
+
+_ROUTING_AREA_JUSTIFICATION = (
+    "a strand that realizes a connection occupies board area along its whole "
+    "run (its own width plus the clearance a neighbour owes it), and panel "
+    "area is priced by the same $/mm2 the bounding box pays"
+)
+
+
+def routing_area_term(
+    ir: PcbIR, seg_id: int, level: Level, config: CostConfig
+) -> TermValue:
+    """One segment's ``routing_area`` :class:`TermValue` — the panel area
+    the strand realizing this connection consumes, ``length x pitch``,
+    priced at :attr:`CostConfig.board_area_usd_per_mm2`.
+
+    **This is the wirelength term the module docstring used to ban**, and
+    the ban's own reasoning dictates the shape: raw length is not a cost,
+    so this does not price length. It prices AREA, which this module
+    already prices everywhere else, and it therefore carries no weight of
+    its own to tune — both constants are inherited
+    (:func:`_pitch_for` for the corridor width, ``board_area_usd_per_mm2``
+    for the price). See the module docstring for what forced the reversal.
+
+    Per-segment, like :func:`gap_capacity_term`, so
+    :mod:`precis.pcb.optimize` can recompute exactly this for the segments
+    one move touched instead of re-scanning the board.
+
+    **Zero below L3 is a bound, not a measurement.** No instance has a
+    position yet, so no area is determined; 0 is the admissible LOWER
+    bound for a MONEY term (a sum, so a not-yet-known 0 cannot mask risk
+    the way a 0 in a MARGIN max would — the same argument
+    :func:`_via_count` makes for its L0 zero). ``is_bound`` says so.
+    An unplaced endpoint at >= L3 gets the same treatment rather than
+    being read as the origin, which would price a phantom run from (0, 0)
+    — the "undefined != zero" rule this module follows throughout.
+    """
+    region = f"seg{seg_id}"
+    pts = segment_points(ir, seg_id) if level >= Level.L3 else None
+    if pts is None:
+        return TermValue(
+            "routing_area",
+            Family.MONEY,
+            region,
+            0.0,
+            _ROUTING_AREA_JUSTIFICATION,
+            is_bound=True,
+        )
+    (ax, ay), (bx, by) = pts
+    length_mm = math.hypot(bx - ax, by - ay)
+    width_mm = _pitch_for(ir, int(ir.seg_net[seg_id]), config)
+    return TermValue(
+        "routing_area",
+        Family.MONEY,
+        region,
+        length_mm * width_mm * config.board_area_usd_per_mm2,
+        _ROUTING_AREA_JUSTIFICATION,
+    )
+
+
+def _routing_area(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    return [routing_area_term(ir, s, level, config) for s in range(ir.n_segments)]
 
 
 # ── margin terms ─────────────────────────────────────────────────────
@@ -1586,6 +1663,14 @@ TERMS: list[TermSpec] = [
         Criticality.COSMETIC,
         _ALIGNMENT_JUSTIFICATION,
         _alignment,
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "routing_area",
+        Family.MONEY,
+        Criticality.COSMETIC,
+        "a strand occupies panel area along its whole run, and panel area is fab price",
+        _routing_area,
         direction=BoundDirection.LOWER,
     ),
     TermSpec(

@@ -63,6 +63,12 @@ Two independent observations, both current:
    term: `tests/test_pcb_reference_end_to_end.py` is now 5 passed at every
    seed WITH `routing_area` applied.
 
+   **2026-10-01: `routing_area` landed on `main`** (Reto's call). On that
+   main the dogfood file passes with the term in place, so the `F.Cu`
+   escape no longer reproduces and the first Acceptance bullet holds. The
+   placement-sensitivity question has no reproducer now; the negative
+   control below is what is left.
+
 This correction downgrades the item. Observation 1 (the stale stored class
 on `pb345846`) is real but is the already-tracked "`op='route'` never
 re-runs the generator" staleness, owned by

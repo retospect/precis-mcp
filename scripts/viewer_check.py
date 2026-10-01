@@ -114,9 +114,9 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         page = browser.new_page(viewport={"width": 1600, "height": 1000})
         page.on(
             "console",
-            lambda m: console.append(f"{m.type}: {m.text}")
-            if m.type == "error"
-            else None,
+            lambda m: (
+                console.append(f"{m.type}: {m.text}") if m.type == "error" else None
+            ),
         )
         page.on("pageerror", lambda e: console.append(f"pageerror: {e}"))
         canvas = page.locator("#bt3d-viewer canvas").first
@@ -255,11 +255,11 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         # scene and re-tints the selection, so the only difference left is
         # the level's own geometry.
         level = _diff(unexploded_shot, settle("08_level_interfaces"))
-        checks.append(Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level))
-
         checks.append(
-            Check("console_clean", not console, {"errors": console[:20]})
+            Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level)
         )
+
+        checks.append(Check("console_clean", not console, {"errors": console[:20]}))
         browser.close()
 
     report = {

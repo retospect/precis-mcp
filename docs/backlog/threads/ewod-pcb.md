@@ -59,35 +59,17 @@ Do-next renumbered)
    staleness re-opens any generator fix.
 6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
-   fresh-fixture failure it was ranked on was measured in a worktree
-   carrying the uncommitted routing_area term; on main that fixture passes.
-   Re-verified 2026-09-30 on top of the pad-orientation fix: with
-   routing_area reverted the dogfood file is `8 passed`, with it applied the
-   F.Cu escape assertion fails — so the F.Cu escape is attributable to the
-   term's placement, not to pad geometry. What is left is the stale class on
-   pb345846, which 5 owns, plus the narrower open question: is that escape a
-   real leak at that placement, or a placement-sensitive assertion? Reads
+   fresh-fixture failure it was ranked on came from the then-unlanded
+   routing_area term. That term landed 2026-10-01 (Reto's call) and on that
+   main the dogfood file passes with it, so the F.Cu escape no longer
+   reproduces. What is left is the stale class on pb345846, which 5 owns,
+   plus the item's negative-control acceptance. Reads
    realize/maze, which pcb-easyeda-round-trip's router item also touches;
    this thread sequences behind theirs.
 
 ## Horizon
 
-1. **routing_area cost term** (held on the local branch
-   `wip/routing-area`, not on `main` — it was set aside and restored four
-   times across 2026-09-30's ships, and a `/tmp` patch as its only copy is
-   how that work gets lost; restore it with `git checkout wip/routing-area
-   -- src/precis/pcb/cost.py src/precis/pcb/optimize.py
-   tests/test_pcb_optimize.py`) —
-   prices the board area a strand sweeps; the only thing holding the sink
-   under the array. Waits on its own gate; a placer that needs no pinned
-   sink. **The esp32c3 regression is GONE** — it was the pad-orientation
-   divergence (`realize.pad_board_wh`, landed 2026-09-30), not the term:
-   with that fixed, `test_pcb_reference_end_to_end.py` is 5 passed at every
-   seed WITH the term applied. What remains against the term is the dogfood
-   F.Cu escape assertion (Do-next 6), re-measured on top of the fix. So
-   the open decision is back to "gate now or wait", plus that one
-   assertion.
-2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
+1. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
    no longer waits on anything: the placer fix it queued behind landed
    2026-10-01. Still the precondition for trusting any number below this
    line. Its cost prerequisite is gone: check_via_pad_keepout is indexed,
@@ -117,17 +99,17 @@ Do-next renumbered)
    via and reports it when it could not, but `pcb_route` surfaces that
    nowhere). Belongs with the invariant because refusing to route an
    illegal placement is what closes it.
-3. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
-   waits on 2 because each slice's acceptance is an "is the board still
+2. **backlog/pcb-guided-place-route.md** — the remaining engine slices;
+   waits on 1 because each slice's acceptance is an "is the board still
    valid" claim.
-4. **backlog/pcb-layer-preferred-direction.md** +
+3. **backlog/pcb-layer-preferred-direction.md** +
    **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
    levers that are not defects. The sink's pads have been real since
    2026-10-01; re-measure escape yield before tuning either, because every
    number they were ranked on was taken against synthesized bounds.
-5. **backlog/pcb-missing-constraint-classes.md** +
+4. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
-   vocabulary (creepage at 250 V) and pad-layer validation; wait on 2, where
+   vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
    a class becomes enforceable rather than advisory. Reading nearby:
    backlog/pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md
    is the same "what shape is this pad" question at an oblique angle, and
@@ -140,58 +122,58 @@ Do-next renumbered)
    behind pcb-component-model. That gripe also records the blocker found
    while checking it: the prod `parts` catalog is EMPTY (0 rows), so no
    part can be SEARCHED for, only confirmed by C-number.
-6. **backlog/checklist-kind.md** — `ready/high`; the argued, invalidating
+5. **backlog/checklist-kind.md** — `ready/high`; the argued, invalidating
    ledger the seed items below instantiate (first instance: pcb
    pre-tapeout). Ranked beside its seed companion, not above 5: a ledger
    over unenforceable constraints is theatre either way.
-7. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
-   on 5 and 6, a checklist over unenforceable constraints is theatre. Its
+6. **backlog/pcb-tapeout-checklist-seed-items.md** — the pre-fab gate; waits
+   on 4 and 5, a checklist over unenforceable constraints is theatre. Its
    `drc-clean` item is half-served: `view='gerber'` now runs DRC and leads
    its response with a `DRC FAILED` block (Reto, 2026-10-01: banner, not
    refusal — he wants the bundle of a broken board to debug from). The
    banner informs and does not gate; the item records what a refusal
    with an override would add if a red bundle is ever uploaded anyway.
-8. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
+7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
    it but a human looking at the render. Same root gap as Do-next 3's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
-9. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
+8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
    lane, parallel; a testable system rather than a bare PCB.
-10. **backlog/ewod-synthesis-protocol.md** +
+9. **backlog/ewod-synthesis-protocol.md** +
    **backlog/ewod-oil-constraint-grounding.md** — the wet side; wait on
    physical boards existing (the protocol also consumes se-nucleic-chain's
    make_steps).
-11. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
+10. **gr451662** — EWOD stack assembly needs non-fab mechanical 2D layers
     (ITO top sheet, spacer adhesive, alignment holes, via-plaza covers),
     generalising the pcb 2D layer system the way solder paste already
     does; the hard part is stencil bridges that keep the adhesive sheet
     one connected component. Reto-architected 2026-09-26; waits on nothing
     but is large. Interacts with gr414481.
-12. **gr414481** — EWOD boards need a second max-extent check for parylene
+11. **gr414481** — EWOD boards need a second max-extent check for parylene
     coating, separate from the fab/manufacturing size cap; feeds gr451662's
     adhesive-layer extent.
-13. **gr338660** — the ewod-oil route-platform-constraint screen has no
+12. **gr338660** — the ewod-oil route-platform-constraint screen has no
     reagent-economy axis (distinct-reagent count vs reservoir budget,
-    reaction-type diversity, longest unpurified run); waits on 10
+    reaction-type diversity, longest unpurified run); waits on 9
     (ewod-oil-constraint-grounding), the file this screen lives beside.
-14. **backlog/pcb-ewod-multitile.md** — waits on 3 and 4; multitile
+13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
-15. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +
+14. **backlog/pcb-floating-pour-island.md** (`prio: medium`) +
     **backlog/pcb-stackup-edit-orphans-a-class-layer-lock.md** (`low`) —
     two ways a stored board is silently invalid: a pour island with none of
     its net's copper, a stackup edit that strands a net-class layer lock
-    until route time. Wait on 2, where "stored board is valid" becomes a
+    until route time. Wait on 1, where "stored board is valid" becomes a
     gate.
-16. **backlog/component-followons.md** — `idea`; comparator/violator query,
+15. **backlog/component-followons.md** — `idea`; comparator/violator query,
     price-break costing on the shipped component kind. Waits on nothing; no
     pcb item depends on it.
-17. **backlog/pcb-argue-backport-se.md** — `blocked-by`
+16. **backlog/pcb-argue-backport-se.md** — `blocked-by`
     pcb-argue-with-design (se-machine-design Do-next 5, not ranked here);
     low, back-ports the argue box to se.
-18. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
+17. **backlog/pcb-global-codesign-north-star.md** — the arc all of the
     above serves; re-read when ranking the next round.
 
 ## Parked

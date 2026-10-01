@@ -96,9 +96,7 @@ def _bash_targets(command: str) -> list[str]:
 
 #: A ``--format`` that prints env values: ``.Config.Env`` itself (unless it is
 #: split down to names), the whole ``.Config``, or the whole object.
-_ENV_FORMAT = re.compile(
-    r"\.Config\.Env|\.Config\s*\}\}|\{\{\s*(json\s+)?\.\s*\}\}"
-)
+_ENV_FORMAT = re.compile(r"\.Config\.Env|\.Config\s*\}\}|\{\{\s*(json\s+)?\.\s*\}\}")
 
 
 def _docker_env_dumps(command: str) -> list[str]:

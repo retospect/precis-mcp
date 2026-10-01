@@ -1243,8 +1243,10 @@ def test_no_measures_default_path_is_bit_identical_to_before_this_feature():
     leaves 0.0 (the per-move `_refresh_measures` early-returns for every
     instance — `_measures_by_inst` is empty) and `money()`/`total()`
     collapse to EXACTLY the pre-existing formula (the same
-    `_money_static_by_name` sum + `_money_board_area`, with no extra
-    addend) — an unrelated design's anneal takes no new code path at all,
+    `_money_static_by_name` sum + `_money_board_area` +
+    `_money_routing_area`, with no extra addend — `routing_area` joined
+    that base formula on 2026-09-30 and is NOT what this test guards;
+    the guard is that `measures` contributes nothing) — an unrelated design's anneal takes no new code path at all,
     not merely "a code path that happens to compute zero". Also pins
     positional determinism (same shape as `test_determinism_same_seed_
     same_result`) so a future change to the measures machinery that
@@ -1258,12 +1260,16 @@ def test_no_measures_default_path_is_bit_identical_to_before_this_feature():
     engine = OptimizeEngine(ir0, config)
     assert engine._money_measures == 0.0
     assert engine.money() == pytest.approx(
-        sum(engine._money_static_by_name.values()) + engine._money_board_area
+        sum(engine._money_static_by_name.values())
+        + engine._money_board_area
+        + engine._money_routing_area
     )
     engine.anneal(random.Random(config.seed))
     assert engine._money_measures == 0.0
     assert engine.money() == pytest.approx(
-        sum(engine._money_static_by_name.values()) + engine._money_board_area
+        sum(engine._money_static_by_name.values())
+        + engine._money_board_area
+        + engine._money_routing_area
     )
 
     ir1 = from_graph(graph, stackup=DEFAULT_STACKUP)

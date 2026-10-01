@@ -170,6 +170,7 @@ from precis.pcb.cost import (
     layer_count_term,
     loop_inductance_term,
     outline_bbox,
+    routing_area_term,
 )
 from precis.pcb.eyes import measure_bound
 from precis.pcb.geom import (
@@ -761,6 +762,40 @@ def _merge_pattern_clusters(ir: PcbIR, clusters: list[list[int]]) -> list[list[i
     return list(merged.values())
 
 
+#: How many times :func:`seed_placement` will slide a shelf slot sideways
+#: to get off a mounting hole before giving up and seeding on it anyway.
+#: Bounded on purpose: a board whose holes tile a whole shelf row has no
+#: clear slot, and a seed that is merely bad is recoverable (the graded
+#: ``courtyard_overlap`` pressure still applies) while a hang is not.
+_SEED_HOLE_SLIDE_TRIES = 8
+
+
+def _hole_blocking_slot(ir: PcbIR, x: float, y: float, r: float) -> float | None:
+    """The right-hand edge (``hole.x + keepout``) of the first mounting
+    hole whose keep-out a part of radius ``r`` centred at ``(x, y)`` would
+    intrude on, or ``None`` if the slot is clear.
+
+    Circle-vs-circle ON PURPOSE, and that is sound here in the one
+    direction that matters: this is a SEED heuristic, and the
+    circumscribed radii over-approximate, so it can only ever slide a
+    part that did not strictly need sliding — never leave one on a hole
+    it should have cleared. It must not be reused as a legality test,
+    where the same over-approximation would reject legal placements (the
+    mistake ``_placement_is_legal`` made about board sides until
+    2026-09-29 — see its docstring).
+    """
+    worst: float | None = None
+    for hole_idx in range(len(ir.mounting_holes)):
+        hole = ir.mounting_holes[hole_idx]
+        sep = r + _hole_keepout_radius_mm(hole)
+        if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep * sep:
+            continue
+        edge = float(hole.x) + _hole_keepout_radius_mm(hole) + r
+        if worst is None or edge > worst:
+            worst = edge
+    return worst
+
+
 def seed_placement(
     ir: PcbIR,
     rng: random.Random,
@@ -813,19 +848,27 @@ def seed_placement(
     honouring the "only sanctioned way to change state" contract
     ``ir.py`` documents.
 
-    **Mounting holes are NOT avoided here.** This function is "legal by
-    construction" only against OTHER instances (the docstring above); it
-    does not steer the shelf pack around a hole the way it steers around
-    a neighbour. Chosen deliberately over the alternative (folding holes
-    into the packer as more obstacles to route the shelf around) because
-    legality is already a hard backstop — :meth:`OptimizeEngine.
-    _placement_is_legal` rejects any TRANSLATE/ROTATE/SWAP that would put
-    a courtyard ON a hole — and the graded ``courtyard_overlap`` pressure
-    :meth:`OptimizeEngine._refresh_courtyard` now folds in for a hole
-    gives the anneal a real slope to walk a badly-seeded part off one,
-    the same way it already resolves an ordinary seed-time instance
-    overlap. A part that happens to seed on a hole is a transient, cost-
-    priced state for a few early iterations, not a stuck one.
+    **Mounting holes ARE avoided here** (since 2026-09-30) — the shelf
+    slides a slot sideways past a hole's keep-out (up to
+    :data:`_SEED_HOLE_SLIDE_TRIES` times) before committing it.
+
+    This reverses an earlier deliberate choice, and the reason it had to
+    is worth keeping. The old reasoning was that legality is a hard
+    backstop (:meth:`OptimizeEngine._placement_is_legal` does reject any
+    TRANSLATE/ROTATE/SWAP that would put a courtyard ON a hole) and that
+    the graded ``courtyard_overlap`` pressure gives the anneal a slope to
+    walk a badly-seeded part off one, so "a part that happens to seed on
+    a hole is a transient, cost-priced state for a few early iterations,
+    not a stuck one". That last claim was true only while nothing else
+    pulled the part the other way. Adding ``routing_area`` (cost.py,
+    2026-09-30) gave every part a reason to sit close to its nets, and on
+    the nano fixture that outweighed the hole's graded penalty — ``U1``
+    seeded on the hole at (6.0, 6.0) and STAYED there, which
+    ``test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_
+    congruent`` caught. Note the asymmetry that makes this stick: a part
+    already overlapping a hole is legal by incumbency (legality gates
+    MOVES, not the incumbent state), so the hard backstop never fires for
+    it — only the graded term can move it, and a graded term can lose.
 
     **Rigid groups seed as ONE unit.** An AUTHORED group (``"group"``/
     ``"group_offset"`` — see :attr:`~precis.pcb.ir.PcbIR.inst_group`'s own
@@ -982,6 +1025,19 @@ def seed_placement(
         diameter = 2.0 * r
         if shelf_x > origin_x and shelf_x + diameter > origin_x + row_width:
             shelf_x, shelf_y, shelf_h = origin_x, shelf_y + shelf_h, 0.0
+        # Slide past any mounting hole this slot would land on. See the
+        # "Mounting holes ARE avoided here" note in this function's
+        # docstring for why the old "the anneal will walk it off" answer
+        # stopped being true on 2026-09-30.
+        for _ in range(_SEED_HOLE_SLIDE_TRIES):
+            hit = _hole_blocking_slot(
+                ir, shelf_x + r + _SEED_EPSILON_MM, shelf_y + r + _SEED_EPSILON_MM, r
+            )
+            if hit is None:
+                break
+            shelf_x = hit + _SEED_EPSILON_MM
+            if shelf_x > origin_x and shelf_x + diameter > origin_x + row_width:
+                shelf_x, shelf_y, shelf_h = origin_x, shelf_y + shelf_h, 0.0
         unit_positions[unit] = (
             shelf_x + r + _SEED_EPSILON_MM,
             shelf_y + r + _SEED_EPSILON_MM,
@@ -1862,6 +1918,15 @@ class OptimizeEngine:
 
         self._money_static_by_name: dict[str, float] = {}
         self._money_board_area = 0.0
+        self._money_routing_area = 0.0
+        #: seg_id -> that segment's OWN ``routing_area`` dollars, the
+        #: per-segment breakdown behind ``_money_routing_area``. Unlike
+        #: ``_seg_via_count`` this one IS placement-dependent (it is the
+        #: area a strand sweeps between two instance centroids), so every
+        #: move that translates an endpoint's instance must diff it —
+        #: :meth:`_refresh_routing_area_for_segment`, driven from
+        #: :meth:`_rescan_after_move`'s ``direct`` set.
+        self._seg_routing_area: dict[int, float] = {}
         #: seg_id -> that segment's OWN implied via count (:func:`precis.
         #: pcb.rules.implied_via_count`), the per-segment breakdown behind
         #: the ``via_count`` entry in ``_money_static_by_name`` — kept so
@@ -1949,6 +2014,9 @@ class OptimizeEngine:
 
         for i in range(ir.n_instances):
             self._refresh_board_edge(i)
+
+        for s_id in range(ir.n_segments):
+            self._refresh_routing_area_for_segment(s_id)
 
         self._refresh_board_area()
 
@@ -2425,6 +2493,25 @@ class OptimizeEngine:
             self.ir, self.level, self.config.cost
         ).raw
 
+    def _refresh_routing_area_for_segment(self, seg_id: int) -> None:
+        """Recompute segment ``seg_id``'s own ``routing_area`` dollars and
+        fold the delta into the cached total — O(1), never a board rescan.
+
+        Sound because :func:`precis.pcb.cost.routing_area_term` reads only
+        this segment's two endpoint positions and its own net's pitch, so
+        no OTHER segment's cached value can go stale as a side effect.
+        That is the mirror image of
+        :meth:`_refresh_via_count_for_segment`, which is
+        placement-INVARIANT: this one must be called by exactly the moves
+        that one must not be — every move that translates an instance.
+        :meth:`_rescan_after_move` drives it over ``_segs_of_instance``,
+        which is the complete set of segments with an endpoint on the
+        moved instance."""
+        old = self._seg_routing_area.get(seg_id, 0.0)
+        new = routing_area_term(self.ir, seg_id, self.level, self.config.cost).raw
+        self._money_routing_area += new - old
+        self._seg_routing_area[seg_id] = new
+
     def _refresh_via_count_for_segment(self, seg_id: int) -> None:
         """Recompute segment ``seg_id``'s OWN implied via count
         (:func:`precis.pcb.rules.implied_via_count`) and fold the delta
@@ -2806,6 +2893,9 @@ class OptimizeEngine:
         self._newly_closer_segments(moved_inst, to_search)
 
         for s in direct:
+            # Placement-dependent money: the area this strand sweeps
+            # changed because one of its endpoints moved.
+            self._refresh_routing_area_for_segment(s)
             if s in self._loop_applicable:
                 lt = loop_inductance_term(ir, s, self.level, self.config.cost)
                 # Applicability (does this connection carry a loop objective
@@ -2882,6 +2972,7 @@ class OptimizeEngine:
         return (
             sum(self._money_static_by_name.values())
             + self._money_board_area
+            + self._money_routing_area
             + self._money_measures
         )
 
