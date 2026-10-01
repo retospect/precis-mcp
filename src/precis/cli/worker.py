@@ -979,7 +979,10 @@ def run(args: argparse.Namespace) -> None:
                 r = run_chase_trigger_pass(
                     store,
                     embedder=_chase_trigger_get_embedder(),
-                    batch_size=batch_size,
+                    # None -> chase_trigger's own PRECIS_TAPROOT_CHASE_TRIGGER_
+                    # BATCH_SIZE default (200), not the loop's generic
+                    # --batch-size (32) -- gr454865.
+                    batch_size=None,
                 )
                 # chase_trigger's own return shape ({claim_embeds,
                 # chunks_swept, due_marked, failed}) doesn't carry a

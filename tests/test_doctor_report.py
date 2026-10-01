@@ -277,11 +277,43 @@ def test_convert_needs_a_human_dedups_and_bumps_seen_count(store: Store) -> None
 def test_convert_needs_a_human_dedups_across_a_changed_id_or_number(
     store: Store,
 ) -> None:
-    body_a = _body_with_asks("Still waiting 6 hours on gr111 to be confirmed")
-    body_b = _body_with_asks("Still waiting 9 hours on gr222 to be confirmed")
+    body_a = _body_with_asks("Still waiting 6 hours to be confirmed")
+    body_b = _body_with_asks("Still waiting 9 hours to be confirmed")
 
     doctor_report.convert_needs_a_human(store, body_a)
     doctor_report.convert_needs_a_human(store, body_b)
+
+    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
+    assert len(todos) == 1
+    assert todos[0].meta.get("seen_count") == 2
+
+
+def test_doctor_ask_key_dedups_reworded_asks_by_referent() -> None:
+    """gr452203: four re-authored bullets naming one commit are one ask."""
+    key = doctor_report._doctor_ask_key
+    keys = {
+        key("Deploy melchior to pick up b58a18a0 (gr346813) and 3fdae04c"),
+        key("Deploy b58a18a0 to melchior"),
+        key("Deploy main@b58a18a0 to melchior to land the fix."),
+        key("Deploy commit b58a18a0 to melchior (observability fix)"),
+    }
+    assert len(keys) == 1
+    assert key("Look at gr111 again") == key("Please review gr111 today")
+    assert key("Look at gr111") != key("Look at gr222")
+    assert key("Decide the groom refresh hours") == key(
+        "decide the groom refresh hours"
+    )
+
+
+def test_convert_needs_a_human_dedups_reworded_ask_naming_a_handle(
+    store: Store,
+) -> None:
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Confirm the nursery fix landed (gr111)")
+    )
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Please double-check gr111 is really fixed")
+    )
 
     todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
     assert len(todos) == 1

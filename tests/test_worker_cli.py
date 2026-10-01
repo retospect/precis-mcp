@@ -957,3 +957,26 @@ class TestHeartbeatThreadWiring:
         )
         kwarg_names = {kw.arg for kw in call.keywords}
         assert "should_stop" in kwarg_names
+
+
+def test_chase_trigger_pass_does_not_forward_the_loop_batch_size() -> None:
+    """gr454865: the closure must hand ``batch_size=None`` to
+    ``run_chase_trigger_pass`` so its own PRECIS_TAPROOT_CHASE_TRIGGER_
+    BATCH_SIZE default governs, not the loop's generic ``--batch-size``."""
+    import ast
+    import inspect
+
+    from precis.cli import worker as worker_mod
+
+    tree = ast.parse(inspect.getsource(worker_mod))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "run_chase_trigger_pass"
+    ]
+    assert calls
+    for call in calls:
+        kw = {k.arg: k.value for k in call.keywords}
+        assert isinstance(kw["batch_size"], ast.Constant)
+        assert kw["batch_size"].value is None

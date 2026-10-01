@@ -166,10 +166,30 @@ def _normalize_ask_text(text: str) -> str:
     return _ASK_WS_RE.sub(" ", out).strip()
 
 
+#: A commit sha (8-40 hex chars). Must mix a digit and a letter so a plain
+#: number or an English word like "defaced" is not mistaken for one.
+_ASK_SHA_RE = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b")
+_ASK_HANDLE_RE = re.compile(r"\b(?:gr|al|td|dr|jo)\d+\b")
+
+
 def _doctor_ask_key(text: str) -> str:
     """``meta.doctor_ask_key`` for a bullet's full text (title +
-    continuation lines) — the dedup key a same-day re-tick or a
-    restated-with-a-fresher-number ask still resolves to."""
+    continuation lines).
+
+    The author is an LLM that re-words its bullets every tick, so a hash
+    of the prose never matches across days (gr452203). Key on the stable
+    referent instead: the first commit sha the bullet names, else the
+    first gripe/alert/todo/draft/job handle; only a bullet naming neither
+    falls back to the normalised-prose hash (which still dedups a verbatim
+    re-tick).
+    """
+    lowered = text.lower()
+    sha = _ASK_SHA_RE.search(lowered)
+    if sha is not None:
+        return "sha:" + sha.group(0)[:8]
+    handle = _ASK_HANDLE_RE.search(lowered)
+    if handle is not None:
+        return "ref:" + handle.group(0)
     return hashlib.sha1(
         _normalize_ask_text(text).encode("utf-8"), usedforsecurity=False
     ).hexdigest()
