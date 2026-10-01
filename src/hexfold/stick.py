@@ -187,7 +187,17 @@ def stick_info(net: Net) -> tuple[np.ndarray, float]:
         ],
         dtype=np.float64,
     )
-    springs = np.array(_angle_springs(net), dtype=np.float64)
+    # `.reshape(-1, 3)` keeps :func:`stick_relax_pinned`'s documented
+    # (K,3) contract when there are no angle springs at all: a net with no
+    # rings gives `_angle_springs` an empty list, and `np.array([])` is
+    # shape (0,), so the `springs[:, 0]` unpack raised IndexError. A
+    # one-period armchair tube is exactly that net — every atom sits on a
+    # rim and no ring closes — so `tube(5,5,len=1)` with geometry on
+    # reached the caller as "hexfold internal error while compiling the
+    # spec", on a spec whose topology is fine (tests/hexfold/
+    # test_len1_rims.py). Empty index arrays make the assignments below a
+    # no-op, which is the right answer.
+    springs = np.array(_angle_springs(net), dtype=np.float64).reshape(-1, 3)
     return stick_relax_pinned(pos, bonds, brest, springs, sig)
 
 

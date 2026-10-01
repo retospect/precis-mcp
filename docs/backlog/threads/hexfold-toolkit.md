@@ -18,7 +18,10 @@ shipped gr458713, confirmed gr454650 harder, closed gr454563. 10-01
 round: gr456213 **closed** — it was fixed on 09-29 and I had ranked it 2
 off a stale auto-diagnosis, see "No action needed"; gr459058 and gr459057
 filed from that round, then both fixed in the 01:18Z round, leaving only
-gr459058's cascade-vs-refuse ruling at 4 — note at the bottom)
+gr459058's cascade-vs-refuse ruling at 4. 02:16Z round: gr454650
+**closed and my escalation of it retracted** — already fixed, with
+regression tests I never looked for; the one real defect under it was a
+ring-less net crashing the stick pass, also fixed — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Do next
@@ -53,17 +56,10 @@ gr459058's cascade-vs-refuse ruling at 4 — note at the bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-3. **gr454650** — **confirmed by prod dogfood 2026-09-30, and the symptom
-   is worse than the gripe says.** A `len=1` armchair tube fused to
-   `cap(5,5)` does not fail: it succeeds and mints five **four-membered
-   rings** along the seam (`seam.rings {4: 5, 6: 5}`), with
-   `euler.residual 10` and `t.in` misreported as a mixed rim when SPEC 7
-   says `tube(n,n)` ends are armchair `("a", 2n)`. Positive control in the
-   same session: `len=3` through the same cap gives `{6: 10}` and no
-   residual, so it is specifically a `len=1` defect. Ranked 3 because a
-   correct spec silently producing cyclobutanes is a wrong answer a caller
-   cannot see without reading the ring census — strictly worse than
-   gr458713's class, which only let a wrong spec pass.
+3. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
+   (SPEC §25.3) then the join dry-run, after slice 1 at rank 2. Slice 3
+   goes last by the file's own decision: a dry-run needs a reading
+   surface to prove it wrote nothing with.
 4. **gr459058, remaining half** — the reporting fix shipped 2026-10-01
    (see "No action needed"), so a retire now announces the structures it
    leaves live. What is still open is the product call it exposed:
@@ -176,6 +172,31 @@ gr459058's cascade-vs-refuse ruling at 4 — note at the bottom)
   `composite_part_stolen` finding, naming both composites. **The cause is
   Do-next 2** (gr456213); shipping the detector without it means new
   corruption is reported rather than prevented.
+- **gr454650** — CLOSED 2026-10-01, **and my 09-30 "confirmed, worse than
+  filed" comment on it is retracted.** It was already fixed by
+  `build._split_degenerate_tube_rims`, with four regression tests in
+  `tests/hexfold/test_len1_rims.py` that all pass on main — I escalated
+  it to Do-next 3 without ever checking for existing coverage. The
+  "five cyclobutanes" reading was wrong too: SPEC puts
+  `ring.size.unusual` *outside* `[4, 8]`, so a four-ring in a seam is
+  inside the library's accepted band by design, and that test file pins
+  `seam.rings {4:5, 6:5}` as the intended result (every face in `[4, 8]`,
+  `sum == 10`, one per fused bond pair). `rings={}` for the bare `len=1`
+  armchair tube is likewise consistent — every atom on a rim, no face
+  closed, `chi=0 rims=2 residual 0` is what an open band reports.
+  Whether hexfold's `[4, 8]` band *should* admit cyclobutanes in an sp²
+  seam is a spec question needing a citation, not a defect; not filed as
+  one. **The real residue** was a different bug and is fixed: see
+  `gr454650`'s own comment and the stick-geometry entry below.
+- **ring-less nets and the stick pass** — FIXED 2026-10-01 in the same
+  round. `tube(5,5,len=1)` with geometry on raised `IndexError` from
+  `stick.py`'s `springs[:, 0]`, because `_angle_springs` returns `[]` for
+  a net with no rings and `np.array([])` is shape `(0,)` against a
+  documented `(K,3)` contract. One-line `.reshape(-1, 3)`; tests in
+  `tests/hexfold/test_len1_geometry_crash.py` assert the report comes
+  back *and* that `geom.summary` is present, so a future "fix" that skips
+  the geometry pass instead of running it fails the test. It surfaced as
+  "hexfold internal error while compiling the spec" on a legal spec.
 - **gr459057** — FIXED 2026-10-01. `generate` then `join` in one ops list
   can never work (the mint is deferred until the list validates) and the
   error now says so and names the remedy. Note for a later pass: the
@@ -242,4 +263,19 @@ part, the two-component net, and (on a sibling thread, same day) a
 basepair check with zero callers — were all cases where the code was
 willing to report success without having asked the question. Prefer the
 item that makes a wrong answer impossible over the one that makes a wrong
-answer visible, and prefer both over re-measuring. -->
+answer visible, and prefer both over re-measuring.
+
+The 10-01 rounds added the symmetric lesson, learned the expensive way at
+ranks 2 and 3 of this very list. gr456213 sat at 2 because I trusted an
+auto-diagnosis of code that had since been fixed; gr454650 sat at 3
+because I "confirmed" a defect against prod without checking whether a
+test file already asserted the behaviour was intended — it did, and the
+chemistry objection I built on top of it contradicted the spec's own
+stated tolerance. Both were caught, but only after they had steered the
+ranking and, in the first case, been relayed to another session as fact.
+So: a gripe's status and its diagnosis are two different claims, and
+neither is evidence about current code. Run the scenario, and read the
+tests around it, before ranking anything — and when a dogfood "finds"
+something in a mature area, the first hypothesis should be that it is
+already known. Of nine items probed across the 10-01 rounds, three were
+already fixed and one was intended behaviour. -->
