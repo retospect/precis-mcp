@@ -1450,3 +1450,21 @@ def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
         f"{len(errors)} land(s) sit on authored plaza vias after op='place' "
         f"(sink at {sink['x']}, {sink['y']} rot {sink.get('rot')}):\n{detail}"
     )
+
+
+def test_dogfood_feasibility_counts_the_escape_layer_lock(pcb):
+    """``view='feasibility'`` on ``ewod-dogfood-6`` printed "≈ vias needed:
+    0" while every escape net's class locks it to B.Cu and its electrode pad
+    sits on F.Cu (docs/backlog/pcb-pre-routing-estimates-are-green-on-a-
+    board-that-fails.md). The section must count those pins, and say which
+    ones the authored plaza vias carry to B.Cu.
+
+    Measured 2026-10-01: all 54 are bridged. The lock forces a layer
+    change on every escape, but the plaza vias already make it, so it is
+    NOT what failed 40 nets on dogfood-6 — the view now says so instead of
+    being silent about the constraint."""
+    slug = _seed(pcb)
+    body = pcb.get(id=slug, view="feasibility").body
+    assert "54 pin(s) sit on a layer their net class forbids" in body
+    assert "54 reach an allowed layer through authored copper" in body
+    assert "0 have no authored copper" in body

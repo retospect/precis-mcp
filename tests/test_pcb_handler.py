@@ -1130,6 +1130,8 @@ def test_feasibility_view(pcb):
     f = pcb.get(id="x", view="feasibility")
     assert "route feasibility" in f.body
     assert "vias needed" in f.body
+    # Negative control: no class names "layers", so no layer-lock section.
+    assert "layer lock" not in f.body
 
 
 # ── boards / net_classes / domain / route-status (pcb-guided-place-route
@@ -1482,6 +1484,30 @@ def test_congestion_view_reads_last_route_meta(pcb, store):
     assert "1 realized" in resp.body
     assert "1 failed" in resp.body
     assert "needs 0.30 mm" in resp.body
+
+
+def _set_last_route(store, slug: str, last_route: dict) -> None:
+    from psycopg.types.json import Jsonb
+
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+            (Jsonb({"last_route": last_route}), ref.id),
+        )
+        conn.commit()
+
+
+def test_congestion_view_gives_no_tick_when_nets_failed(pcb, store):
+    """ewod-dogfood-6 printed "(no over-capacity gaps ✓)" under 40 failed."""
+    pcb.put(id="cong-failed", args=_CROSSED)
+    _set_last_route(store, "cong-failed", {"realized": 15, "failed": 40})
+    resp = pcb.get(id="cong-failed", view="congestion")
+    assert "✓" not in resp.body
+    assert "another cause" in resp.body
+    _set_last_route(store, "cong-failed", {"realized": 55, "failed": 0})
+    assert "✓" in pcb.get(id="cong-failed", view="congestion").body
 
 
 def test_planes_view_empty_then_assigned(pcb, store):

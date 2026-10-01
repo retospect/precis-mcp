@@ -190,7 +190,7 @@ get(
 get(kind="pcb", id="s", view="ratsnest")  # the MST airwires + total length (mm)
 get(
     kind="pcb", id="s", view="feasibility"
-)  # coarse H/V Manhattan via-count estimate (NOT real routing)
+)  # coarse H/V via estimate (NOT real routing) + pins a class "layers" lock strands
 get(
     kind="pcb", id="s", view="drc"
 )  # DRC-lite findings (unplaced, off-board, overlaps…)

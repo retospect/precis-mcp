@@ -78,6 +78,7 @@ from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import export as pcb_export
@@ -85,6 +86,7 @@ from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
 from precis.pcb import ir as pcb_ir
+from precis.pcb import layer_lock as pcb_layer_lock
 from precis.pcb import planes as pcb_planes
 from precis.pcb import realize as pcb_realize
 from precis.pcb import route as pcb_route
@@ -1049,8 +1051,9 @@ class PcbHandler(Handler):
                         f"airwires: {f['airwires']}  (H {f['h_layer']} / "
                         f"V {f['v_layer']})\n"
                         f"residual same-layer crossings: {f['residual_crossings']}\n"
-                        f"≈ vias needed: {f['vias_estimate']}\n"
-                        "Note: a coarse H/V Manhattan estimate; the rented "
+                        f"≈ vias needed: {f['vias_estimate']} (crossings only)\n"
+                        + self._layer_lock_lines(ref_id, graph)
+                        + "Note: a coarse H/V Manhattan estimate; the rented "
                         "router (Slice 6) is authoritative."
                     )
                 )
@@ -1232,6 +1235,64 @@ class PcbHandler(Handler):
         )
         pcb_session.apply_pin_swap_overrides(ir, self.store.pcb_pin_swaps_list(ref_id))
         return ir
+
+    def _layer_lock_lines(self, ref_id: int, graph: dict[str, Any]) -> str:
+        """``view='feasibility'``'s net-class layer-lock section
+        (:mod:`precis.pcb.layer_lock`): empty when no class names
+        ``"layers"``, so an unlocked board's output is unchanged. The
+        crossings estimate above cannot see this constraint at all — on
+        ``ewod-dogfood-6`` it printed 0 vias for 55 escapes each forced
+        off F.Cu by its own class."""
+        class_rules = graph.get("net_classes") or {}
+        if not any((r or {}).get("layers") for r in class_rules.values()):
+            return ""
+        board = graph.get("board") or {}
+        ir = self._build_ir(ref_id, graph)
+        layers = [str(layer.get("name")) for layer in ir.stackup]
+        footprints = pcb_session.footprints_by_refdes(
+            ir,
+            self.store.pcb_footprints_for(ref_id),
+            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+        )
+        pads = pcb_realize.pads_for_ir(ir, layers, footprints)
+        board_id = board.get("board_id")
+        fixed_copper = (
+            self.store.pcb_fixed_copper_list(int(board_id))
+            if board_id is not None
+            else []
+        )
+        terminals = pcb_connectivity.fixed_copper_pin_terminals(
+            {
+                "layers": layers,
+                "pads": pads,
+                "copper": [
+                    {**row, "net": row.get("net") or ""} for row in fixed_copper
+                ],
+            }
+        )
+        report = pcb_layer_lock.layer_locked_pins(
+            pads,
+            {str(n["name"]): n.get("net_class") for n in graph.get("nets") or []},
+            class_rules,
+            terminals,
+        )
+        if not report.forced:
+            return "net-class layer locks: every locked pin already sits on an allowed layer\n"
+        out = (
+            f"net-class layer locks: {report.forced} pin(s) sit on a layer "
+            "their net class forbids\n"
+            f"  {len(report.bridged)} reach an allowed layer through authored "
+            "copper (no new via)\n"
+            f"  {len(report.stranded)} have no authored copper on an allowed "
+            "layer — the router will not place a via at a pad, so these fail "
+            "as layer_lock\n"
+        )
+        if report.stranded:
+            shown = ", ".join(f"{r}.{p} ({n})" for n, r, p in report.stranded[:8])
+            more = len(report.stranded) - 8
+            out += f"  stranded: {shown}" + (f" … +{more}" if more > 0 else "") + "\n"
+        return out
 
     def _furniture_clearance_mm(self, stackup: list[dict[str, Any]]) -> float | None:
         """The clearance :meth:`_board_furniture` hands to
@@ -2244,6 +2305,13 @@ class PcbHandler(Handler):
             f"{last_route.get('failed', 0)} failed, {len(warnings)} gap warning(s)"
         )
         if not warnings:
+            # No tick under failed nets: "no over-capacity gaps" only rules
+            # out ONE cause, and read beside "40 failed" it reads as a pass.
+            if int(last_route.get("failed") or 0):
+                return Response(
+                    body=head + "\n(no over-capacity gaps — the failures have "
+                    "another cause; per-net status: view='route-status')"
+                )
             return Response(body=head + "\n(no over-capacity gaps ✓)")
         return Response(body=head + "\n" + "\n".join(f"- {w}" for w in warnings))
 

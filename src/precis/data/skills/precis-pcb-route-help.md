@@ -74,6 +74,13 @@ discipline as everywhere else in this kind): a same-layer crossing names
 the other net it crosses; a congestion failure names the gap size, its
 capacity, and how many strands wanted through it.
 
+`view='congestion'` reports gaps only. With failed nets and no gap warning
+it says the failures have another cause; read `view='route-status'` for
+each net's reason. Before routing, `view='feasibility'` lists pins whose
+net class `"layers"` lock forbids their pad's layer. A pin with no authored
+copper on an allowed layer is **stranded**. The router never places a via
+at a pad, so a stranded pin's net fails as `layer_lock`.
+
 ## The rip-up loop
 
 When a net fails, the lever is **rip → steer → re-route**, not hand-editing

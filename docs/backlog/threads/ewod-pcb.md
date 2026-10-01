@@ -9,7 +9,8 @@ make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 **Last reviewed:** 2026-10-01 (placer-sees-authored-vias, the gerber DRC
-banner and the board-feature CPL/BOM rule landed; Do-next renumbered)
+banner, the board-feature CPL/BOM rule and the feasibility layer-lock count
+landed; Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
 ## Do next
@@ -41,15 +42,11 @@ banner and the board-feature CPL/BOM rule landed; Do-next renumbered)
 4. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
    rewrite-against-a-new-fixture job that needs 1's real pad geometry.
-   Pair it with
-   **backlog/pcb-pre-routing-estimates-are-green-on-a-board-that-fails.md**
-   (dogfooded 2026-10-01): `view='feasibility'` reports `≈ vias needed: 0`
-   and `crossings` reports "planar so far ✓" on dogfood-6, which then
-   routed 15 of 55 nets. `place.route_feasibility` takes only airwires, so
-   a net class that forbids its own pads' layer — every EWOD escape, F.Cu
-   pads restricted to B.Cu — is invisible to it, and the true via floor of
-   55 reads as 0. Same corridor question, but this one is about the
-   estimate that decides whether routing is worth attempting at all.
+   Ruled out as its cause (2026-10-01): the escape layer lock.
+   `view='feasibility'` now counts pins on a layer their class forbids, and
+   on the dogfood fixture all 54 reach B.Cu through the authored plaza vias.
+   The "true via floor of 55" was wrong, because those vias already exist.
+   Do not re-open the estimate to explain the 40 failures.
 5. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
    permits F.Cu after the 09-27 fix. Now owns the live half of 6: the stale
