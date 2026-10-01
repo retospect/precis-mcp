@@ -51,10 +51,21 @@ the inflight cap — the exact pre-(b) behaviour (b) removed. A direct
 probe served 64 texts in 9-11 s three times running with no 429, so the
 observed 429 storm is not capacity.
 
-Restart the agent (`com.precis.embedder`), re-measure, and only then
-decide whether (a) is warranted. The shared-cache question below is
-unaffected — twelve containers computing identical vectors is wasteful
-regardless of how the service sheds.
+**Restarted 2026-10-01 ~11:23Z.** `/metrics` now emits the three
+`queued*` counters, so (b) + (d) are running for the first time. Re-measure
+under real load before deciding whether (a) is warranted. The shared-cache
+question below is no longer pressing: the reconnect wave left one MCP
+container (`precis-mcp-http`), not twelve, and its md cache is fully warm.
+
+⚠ **A restart can fail closed, and `KeepAlive` does not catch it.**
+`launchctl kickstart -k` killed the old process, and macOS then killed the
+relaunch: `launchctl print gui/<uid>/com.precis.embedder` showed
+`last exit reason = OS_REASON_CODESIGNING`, and nothing was listening on
+8181 even though the plist sets `KeepAlive`. A second, plain `launchctl
+kickstart gui/<uid>/com.precis.embedder` (no `-k`) came up clean. So
+anything that automates this restart must check afterwards that 8181 is
+listening, not trust the exit code. Also, `kickstart -k gui/$UID/...` failed
+from a shell where `$UID` did not expand; write the uid out (`id -u`).
 
 ## Motivation / why
 
