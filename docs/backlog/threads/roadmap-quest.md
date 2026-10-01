@@ -29,7 +29,7 @@ gripes to Horizon, all adjacent infra the tick path depends on)
    ~25 min because quest S2 search runs keyless and double-retried
    (gr459597, 61×429) — fix that before activation or every supply tick
    stalls. One more watched tick (expect `bridge` or a supply with a
-   number), then activation on Reto's word. Serves
+   number), then activation (no ask, `docs/conventions/thresholds.md`). Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
 2. **gr458880 — `view='tree'` on the session MCP raises Internal
