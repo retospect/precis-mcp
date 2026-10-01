@@ -74,6 +74,8 @@ server-side-session-context Horizon pointer)
    What is left is server-side admission: a warm batch and a one-string
    query share four undifferentiated slots, so a pass still crowds out
    interactive embeds for its window. Narrow now that passes complete.
+   The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
+   `np.vstack` as O(n^2); now a capacity-doubling buffer behind `_rows()`.
 
 3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,

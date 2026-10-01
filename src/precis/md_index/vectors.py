@@ -222,7 +222,14 @@ class MdVectorCache:
         self._lock = threading.RLock()
         self._shas: list[str] = []
         self._index: dict[str, int] = {}
+        # Capacity-doubling buffer: `_vectors` may have more rows than
+        # `_shas` has entries, so every read goes through `_rows()`.
+        # `add()` used to `np.vstack` the whole array per vector, which
+        # is O(n^2) — at this repo's ~19400 blocks (4 KB a row) a full
+        # warm pass copied on the order of 700 GB through memory for
+        # 79 MB of result (found dogfooding gr457326's completed warm).
         self._vectors: np.ndarray = np.zeros((0, dim), dtype=np.float32)
+        self._count = 0
         self._dirty_since_flush = 0
 
         self._load()
@@ -308,6 +315,7 @@ class MdVectorCache:
 
             self._shas = list(shas)
             self._vectors = vectors
+            self._count = vectors.shape[0]
             self._index = {sha: i for i, sha in enumerate(self._shas)}
 
     # -- lookup ---------------------------------------------------------------
@@ -326,7 +334,7 @@ class MdVectorCache:
             i = self._index.get(sha256)
             if i is None:
                 return None
-            return self._vectors[i]
+            return self._rows()[i]
 
     def missing(self, shas: Iterable[str]) -> list[str]:
         """`shas` not yet cached, de-duplicated, first-seen order."""
@@ -341,6 +349,26 @@ class MdVectorCache:
             return out
 
     # -- write ---------------------------------------------------------------
+
+    def _rows(self) -> np.ndarray:
+        """The populated rows — `_vectors` is over-allocated by design.
+
+        Never hand `_vectors` itself to a caller or to `savez`: the
+        slack rows are zeros and would be read back as real entries
+        whose sha256 the manifest does not list, which `_load`'s
+        row-count check would reject as a corrupt pair.
+        """
+        return self._vectors[: self._count]
+
+    def _grow_for(self, extra: int) -> None:
+        """Ensure capacity for `extra` more rows, doubling when short."""
+        need = self._count + extra
+        capacity = self._vectors.shape[0]
+        if need <= capacity:
+            return
+        grown = np.zeros((max(need, max(64, capacity * 2)), self.dim), dtype=np.float32)
+        grown[: self._count] = self._rows()
+        self._vectors = grown
 
     def add(self, sha256: str, vector: Sequence[float]) -> None:
         """Add one vector under `sha256`. Idempotent: entries are
@@ -361,7 +389,9 @@ class MdVectorCache:
 
             self._index[sha256] = len(self._shas)
             self._shas.append(sha256)
-            self._vectors = np.vstack([self._vectors, arr[np.newaxis, :]])
+            self._grow_for(1)
+            self._vectors[self._count] = arr
+            self._count += 1
             self._dirty_since_flush += 1
             if self._dirty_since_flush >= self.flush_every:
                 self.flush()
@@ -494,7 +524,7 @@ class MdVectorCache:
 
                 npz_tmp = self.npz_path.with_name(self.npz_path.name + ".tmp")
                 with npz_tmp.open("wb") as f:
-                    np.savez(f, vectors=self._vectors)
+                    np.savez(f, vectors=self._rows())
                 npz_tmp.replace(self.npz_path)
 
                 manifest = {

@@ -535,3 +535,56 @@ def test_fuse_blocks_respects_limit() -> None:
     fused = fuse_blocks(lexical, [], limit=1)
     assert len(fused) == 1
     assert fused[0][1] == "a.md"
+
+
+def test_add_does_not_copy_the_whole_array_per_vector(tmp_path: Path) -> None:
+    """Growth is amortised, not quadratic.
+
+    `add()` used to `np.vstack` the entire array for every vector. At
+    this repo's ~19400 md blocks and 4 KB a row that is on the order of
+    700 GB of memcpy to produce 79 MB of cache — found dogfooding
+    gr457326 once the warm pass actually completed and the cache got
+    big enough for it to matter.
+
+    Pinned by counting reallocations rather than timing, so it cannot
+    flake on a loaded machine: n adds must reallocate O(log n) times,
+    not n times.
+    """
+    from precis.md_index.vectors import MdVectorCache
+
+    cache = MdVectorCache(model="m", dim=4, cache_dir=tmp_path, flush_every=10**9)
+    seen_buffers: set[int] = set()
+    for i in range(500):
+        cache.add(f"{i:064x}", [float(i), 0.0, 0.0, 1.0])
+        seen_buffers.add(id(cache._vectors))
+
+    assert len(cache) == 500
+    # Doubling from 64: 64,128,256,512 -> a handful, nowhere near 500.
+    assert len(seen_buffers) <= 16, len(seen_buffers)
+
+
+def test_over_allocated_rows_never_reach_disk(tmp_path: Path) -> None:
+    """The slack rows are zeros and must not be persisted.
+
+    If `flush` wrote `_vectors` instead of `_rows()`, the npz would have
+    more rows than the manifest has shas, and `_load`'s row-count check
+    would reject the pair as corrupt on the next boot — turning a
+    working cache into a silent cold start.
+    """
+    import numpy as np
+
+    from precis.md_index.vectors import MdVectorCache
+
+    cache = MdVectorCache(model="m", dim=4, cache_dir=tmp_path, flush_every=10**9)
+    for i in range(5):
+        cache.add(f"{i:064x}", [1.0, 0.0, 0.0, 0.0])
+    assert cache._vectors.shape[0] > 5  # genuinely over-allocated
+    cache.flush()
+
+    with np.load(cache.npz_path) as npz:
+        assert npz["vectors"].shape == (5, 4)
+
+    # And it round-trips: a fresh cache over the same dir loads all 5.
+    reloaded = MdVectorCache(model="m", dim=4, cache_dir=tmp_path)
+    assert len(reloaded) == 5
+    assert reloaded.get(f"{3:064x}") is not None
