@@ -46,8 +46,15 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    dogfooding the same day, the same violation step 2 removed reintroduced
    four days later in a different file. The fix is the quest thread's;
    a staleness assertion drops the exemption automatically when they land
-   it. Step 3 (declare `precis.skills` from one in-tree plugin) is next and
-   is the cheapest test of the agent-facing seam.
+   it. Step 3 (declare `precis.skills` from one in-tree plugin) was built
+   and proved working on 2026-10-01, then reverted unlanded — **gr459123**:
+   an entry point is read from installed dist metadata, not the checkout, so
+   both long-lived containers still report an empty group and landing it
+   would red the pathway skill assertion in every in-flight worktree's gate
+   until each image rebuilds. Prod is not at risk (deploy does a real
+   `uv pip install --upgrade`). It needs gr457894 first and then an
+   announced rebuild round — it is the same class as gr457894 one level
+   out: an installed dist serving metadata its pyproject no longer matches.
 5. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
