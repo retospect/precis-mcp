@@ -1134,14 +1134,31 @@ class OccupancyGrid:
                 owner, layer, iy, ix, r_cells, half_track, net_id
             )
 
+        def endpoint_passable(idx: int) -> bool:
+            """An endpoint on this net's own pad: CONTESTED is not copper.
+
+            At fine pitch two neighbouring pads' clearance keep-outs overlap
+            in a sliver between them (``realize._stamp_pads``), and that
+            sliver is stamped CONTESTED. It sits a cell or two from the pad
+            centre, inside this search's keep-out disk, so the pad itself
+            read as walled in: 11 nets on a 140-part board reported
+            ``no_path`` (2026-10-01). The trace starts on its own pad's
+            copper, so the sliver is no obstacle THERE; it stays one for
+            every other cell, and another net's copper still blocks."""
+            layer, rem = divmod(idx, plane)
+            iy, ix = divmod(rem, spec.nx)
+            if not (wy0 <= iy < wy1 and wx0 <= ix < wx1):
+                return False
+            return not _disk_hits_net(owner, layer, iy, ix, r_cells, half_track, net_id)
+
         start_idx = start_layer * plane + sy * spec.nx + sx
         goal_idx = goal_layer * plane + gy * spec.nx + gx
         if start_idx == goal_idx:
             x, y = spec.to_point(sx, sy)
             return RoutePath(net_id, ((x, y, start_layer),), 0.0)
         no_extra_terminals = not extra_start_terminals and not extra_goal_terminals
-        start_ok = passable(start_idx)
-        goal_ok = passable(goal_idx)
+        start_ok = endpoint_passable(start_idx)
+        goal_ok = endpoint_passable(goal_idx)
         if no_extra_terminals and (not start_ok or not goal_ok):
             return None
 
@@ -1442,6 +1459,34 @@ def _disk_hits_foreign(
     return False
 
 
+@numba.njit(cache=False, nogil=True)
+def _disk_hits_net(
+    owner: np.ndarray,
+    layer: int,
+    iy: int,
+    ix: int,
+    r: int,
+    half: np.ndarray,
+    net_id: int,
+) -> bool:
+    """:func:`_disk_hits_foreign` with CONTESTED cells ignored: is another
+    NET's claim within ``r``? For a route's endpoint on its own pad only
+    (``_route_in``'s ``endpoint_passable``)."""
+    n_l, ny, nx = owner.shape
+    for dy in range(-r, r + 1):
+        y = iy + dy
+        if y < 0 or y >= ny:
+            continue
+        w = half[dy + r]
+        x0 = max(0, ix - w)
+        x1 = min(nx - 1, ix + w)
+        for x in range(x0, x1 + 1):
+            o = owner[layer, y, x]
+            if o != FREE and o != CONTESTED and o != net_id:
+                return True
+    return False
+
+
 #: :func:`_astar_kernel` outcomes.
 _FOUND, _EMPTY, _EXHAUSTED = 0, 1, 2
 
@@ -1519,7 +1564,10 @@ def _astar_kernel(
         rem = t - layer * plane
         iy = rem // nx
         ix = rem - iy * nx
-        state[layer * wplane + (iy - wy0) * ww + (ix - wx0)] |= 4
+        # Bit 3 too: the caller already decided each target is passable
+        # (`_route_in`'s `endpoint_passable` for the primary goal), and
+        # re-checking it here with the plain keep-out would undo that.
+        state[layer * wplane + (iy - wy0) * ww + (ix - wx0)] |= 4 | 8
 
     heap = [(seed_f[0], seed_idx[0])]
     for k in range(1, seed_idx.shape[0]):

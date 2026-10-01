@@ -1298,11 +1298,21 @@ def _realize_maze(
     corridor it needed, not because no route exists. So the whole pass is
     re-run on a fresh grid with the failures moved to the front, up to
     ``config.route_passes`` times, and the best result wins. This is
-    PathFinder's idea (Ebeling & McMurchie 1995) in its crudest form —
+    PathFinder's idea (McMurchie & Ebeling 1995) in its crudest form —
     history-based *ordering* rather than history-based *cost* — chosen
-    because the occupancy grid has no incremental un-claim: a path's cells
-    are stamped, not owned, so ripping one net out of a settled grid is
-    not a cheap operation, while re-running a 0.5s pass is.
+    because the occupancy grid has no incremental un-claim: a track
+    overwrites the clearance halo of copper it passes, so clearing one
+    net's cells would strip protection from its neighbours, while
+    re-running a pass is cheap.
+
+    **A history COST on top was tried and lost** (2026-10-01, 140-part
+    board): surcharging, after each pass, the corridor each lost-race
+    connection takes on a board with nothing routed realized 49/89 at one
+    grid step per cell and 62/89 at a quarter step, against 65/89 without.
+    Those corridors run through the same pad-escape regions every net
+    needs, so the surcharge pushes everyone into longer detours that use up
+    more board. Real negotiated congestion lets nets share cells while
+    they negotiate, which this hard-ownership grid cannot express.
 
     Every pass is individually clean by construction, so this trades
     runtime for routability and never for correctness — a later pass
@@ -1475,6 +1485,7 @@ def _realize_maze(
     )
     Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
     best: Outcome | None = None
+    best_score = (0, 0)
     for _attempt in range(max(1, config.route_passes)):
         attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
         attempt_grid.set_body_mask(body_mask)
@@ -1495,8 +1506,11 @@ def _realize_maze(
             island_terminals=island_terminals,
             net_layers=net_layers,
         )
-        if best is None or len(outcome[2]) < len(best[2]):
-            best = outcome
+        # Fewest failed NETS first — a net with any unrouted segment fails
+        # the route job (Reto, 2026-10-01) — then fewest failed segments.
+        score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
+        if best is None or score < best_score:
+            best, best_score = outcome, score
         if not outcome[2]:
             break
         # Failures go to the front for the next attempt, keeping their

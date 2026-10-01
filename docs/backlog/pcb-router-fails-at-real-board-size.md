@@ -240,6 +240,27 @@ rebuilt its pads-only probe grid per segment (36 of 85 s of realize).
    refuses the job (`input`) before the anneal, and again after it
    (`non-convergence`) — Reto, ewod-dogfood-6. The ring-sink island test
    is strict-xfail until ewod-pcb's placer legalization lands.
+11. DONE — the 11 `no_path` nets were a modelling defect, not geometry.
+   Two 0.5 mm-pitch neighbours' clearance keep-outs overlap in a sliver
+   that `_stamp_pads` stamps CONTESTED; it sat two cells from the pad
+   centre, inside the endpoint's keep-out disk, so the net's own pad read
+   as walled in (U1, U17–U28: D4_RESET, VCC, the SCL_O_*/LED I2C nets).
+   An endpoint now ignores CONTESTED (`maze._disk_hits_net`); every other
+   cell does not, and another net's copper still blocks. Real board:
+   **65/89 in ~100 s** (17 congestion, 2 congestion + crossing, 3
+   `search_budget`, no `no_path`). The pass kept is now the one with the
+   fewest failed NETS (Reto's ruling counts nets), then segments — same
+   65 here.
+12. TRIED, LOST — a PathFinder history cost on top of re-ordering:
+   after each pass, surcharge the corridor each lost-race connection
+   takes on a board with nothing routed. 49/89 at one grid step per cell,
+   62/89 at a quarter step, against 65/89 without, and slower (129–228
+   s). Those corridors cross the pad-escape regions every net needs, so
+   everyone detours and the board fills faster. Not shipped. Real
+   negotiated congestion lets nets SHARE cells while they negotiate
+   (present + history cost on overuse, legality only at the end), which
+   the hard-ownership grid cannot express — that is a new occupancy model
+   (per-cell usage counts + rip-up by net), not a cost term.
 
 Literature, for the fix owner: grid-maze routers are known to degrade on
 fine-pitch parts on large boards because cell size couples to board size;

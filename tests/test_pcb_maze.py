@@ -603,3 +603,55 @@ def test_the_keep_out_is_a_euclidean_disk_including_at_the_grid_edge(
                     )
                     got = _disk_hits_foreign(owner, layer, y, x, r, half, 3)
                     assert got == want, (r, layer, y, x)
+
+
+def _fine_pitch_pair() -> OccupancyGrid:
+    """Two 0.51 x 0.28 mm pads 0.5 mm apart on different nets, stamped the
+    way a real route pass stamps them (``realize._stamp_pads``). Their
+    clearance keep-outs overlap in a sliver between them, which lands on a
+    CONTESTED cell two cells from net 1's pad centre."""
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb.realize import _stamp_pads
+
+    g = OccupancyGrid(_spec(60, 60, 1), clearance_mm=0.15)
+    pad1 = pcb_maze.PadShape("rect", 2.0, 2.08, 0.51, 0.28)
+    pad2 = pcb_maze.PadShape("rect", 2.0, 2.58, 0.51, 0.28)
+    far = pcb_maze.PadShape("rect", 2.0, 0.5, 0.51, 0.28)
+    _stamp_pads(
+        g,
+        [
+            ((2.0, 2.08), 1, pad1, (0,)),
+            ((2.0, 2.58), 2, pad2, (0,)),
+            ((2.0, 0.5), 1, far, (0,)),
+        ],
+    )
+    return g
+
+
+def test_a_contested_sliver_beside_a_pad_does_not_wall_in_its_own_net():
+    """2026-10-01, a 140-part board: 11 nets on 0.5 mm-pitch parts reported
+    ``no_path`` because the sliver where two neighbouring pads' keep-outs
+    overlap sat inside the endpoint's keep-out disk. The pad is the trace's
+    own copper, so the route must start there and leave away from the
+    neighbour — without coming any closer to it than clearance allows."""
+    g = _fine_pitch_pair()
+    cx, cy = g.spec.to_cell(2.0, 2.08)
+    near = g.owner[0, cy - 2 : cy + 3, cx - 2 : cx + 3]
+    assert (near == CONTESTED).any(), "the scenario lost its sliver"
+
+    path = g.route(1, (2.0, 2.08), (2.0, 0.5), layers=[0], width_mm=0.15)
+    assert path is not None
+    for a, b in zip(path.points, path.points[1:], strict=False):
+        for k in range(21):
+            x = a[0] + (b[0] - a[0]) * k / 20
+            y = a[1] + (b[1] - a[1]) * k / 20
+            dx = max(abs(x - 2.0) - 0.255, 0.0)
+            dy = max(abs(y - 2.58) - 0.14, 0.0)
+            assert math.hypot(dx, dy) >= 0.075 + 0.15 - 1e-9
+
+
+def test_another_nets_copper_beside_the_endpoint_still_blocks_it():
+    """The endpoint exemption covers CONTESTED slivers only."""
+    g = _fine_pitch_pair()
+    g.stamp_disk((0,), 2.0, 1.9, 0.05, 3)
+    assert g.route(1, (2.0, 2.08), (2.0, 0.5), layers=[0], width_mm=0.15) is None

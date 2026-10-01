@@ -8,8 +8,8 @@ order) with every loss warned rather than silent. **Reto's real
 semantic pin names, the netlist, the outline and the mounting holes, and
 derives the stackup from the board's own LAYER records.
 **Re-routing is partly fixed.** The router realized 8 of 89 nets with no
-reported failure (2026-09-30); the unlanded fix in this worktree reaches
-60/89 (2026-10-01 — `pcb-router-fails-at-real-board-size.md`). Re-routing
+reported failure (2026-09-30); main now reaches 65/89 in ~100 s
+(2026-10-01 — `pcb-router-fails-at-real-board-size.md`). Re-routing
 to a corrected spec is the reason for importing, so the remaining 29 nets
 are the thread's central gap.
 Slice 1c is complete as of 2026-10-01: the copper measurement report and
@@ -33,16 +33,20 @@ pcb-keepout-does-not-bind and gr451356)
    his real board and the job reports zero failures. Re-routing to a
    corrected spec is the whole reason for importing, so this blocks the
    thread's goal rather than a slice of it. Reto's order (2026-10-01) was
-   diagnosis → 1c → fix; all three are in this worktree, unlanded.
+   diagnosis → 1c → fix; all three are on main.
    **Fix state 2026-10-01:** grid pitch capped at clearance×⅔, windowed
    A* with a tightened inner loop, and `search_budget` as its own unrouted
    reason: the frozen board realizes **60/89 in 1096 s** (was 8/89). The
    rest is 13+3 congestion and 10 no_path. Reto ruled (td460164): any
    unrouted net fails the job, numba is fine, and fixed copper through a
-   foreign pad refuses the route — all three built, unlanded. With numba
-   the same 60/89 now takes 123 s, and the keep-out is a true disk (it
-   was an L1 diamond, short on diagonals). NEXT = negotiated congestion
-   (rip-up/reroute).
+   foreign pad refuses the route — all three on main. With numba it takes
+   ~100 s, the keep-out is a true disk (it was an L1 diamond, short on
+   diagonals), and a pad no longer reads as walled in by the CONTESTED
+   sliver between it and a fine-pitch neighbour (the 11 `no_path` nets):
+   **65/89**. A history-cost PathFinder term was tried and LOST (62/89 at
+   best). Left: 19 congestion + 3 `search_budget`. NEXT = shared-occupancy
+   negotiated congestion (usage counts per cell, rip-up by net) — a new
+   grid model, item step 12 says why a cost term is not enough.
 2. **backlog/pcb-keepout-does-not-bind.md** — this thread's own finding,
    filed 2026-09-30; a keepout imported from a real board has no
    enforcement path, so re-routing can silently violate an
