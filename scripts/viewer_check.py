@@ -96,6 +96,7 @@ def _diff(a: Any, b: Any) -> dict[str, Any]:
 def probe(base_url: str, slug: str, out_dir: str) -> int:
     import numpy as np
     from PIL import Image
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
 
     out = pathlib.Path(out_dir)
@@ -257,6 +258,35 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         level = _diff(unexploded_shot, settle("08_level_interfaces"))
         checks.append(
             Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level)
+        )
+
+        # The page scrolls to what sits below the shell: a wheel off the
+        # canvas (on it, the wheel zooms) must bring the design chat into
+        # view. The vendored CSS's global body{overflow:hidden} once froze
+        # this with no scrollbar.
+        vh = page.viewport_size["height"] if page.viewport_size else 1000
+        page.mouse.move(4, vh - 4)
+        for _ in range(10):
+            page.mouse.wheel(0, 400)
+        try:
+            page.wait_for_function("() => window.scrollY > 0", timeout=5000)
+        except PlaywrightTimeout:
+            pass  # reported as FAIL below, with scrollY 0 in the detail
+        scroll = page.evaluate(
+            """() => {
+              const chat = document.getElementById('design-chat');
+              return {scrollY: Math.round(scrollY), innerHeight,
+                      chatTop: chat ? Math.round(chat.getBoundingClientRect().top) : null};
+            }"""
+        )
+        checks.append(
+            Check(
+                "page_scrolls_to_chat",
+                scroll["chatTop"] is not None
+                and scroll["scrollY"] > 0
+                and scroll["chatTop"] < scroll["innerHeight"],
+                scroll,
+            )
         )
 
         checks.append(Check("console_clean", not console, {"errors": console[:20]}))

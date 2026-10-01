@@ -31,6 +31,24 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 ## Do next
 
+0. **Reto's prod pass, 2026-10-01 evening** (on a fleet that did NOT yet
+   carry the pick render half — it is deployed now; re-check pick steps
+   1–3 on prod). (a), the page not scrolling, is fixed: the vendored
+   three-cad-viewer.css carries a global `body{overflow:hidden;
+   user-select:none}`, undone in blocktree-3d-overrides.css; viewer_check
+   gained `page_scrolls_to_chat` (FAILs with the override removed).
+   Remaining, in this order:
+   b. **Export the view** as SVG or PNG, with the scale bar exactly as on
+      screen. Reto: "maybe as a gripe or just build it" — build it.
+   c. **Atom hover readout**, the way a bond line already shows its length
+      on mouseover: element, label, residue.
+   d. **Atoms on/off**: the `#bt3d-atoms` checkbox exists (rendered only
+      with `has_atomic`), in the control row above the shell — locally it
+      is on screen at load. Reto did not find it on prod: check
+      `/se/dogfood-fold-3` serves it (has_atomic true?) before building.
+   e. Open decision: a tinted container (0.25 opacity) reads pale tan —
+      proposed: opaque while tinted, back on deselect.
+
 1. **backlog/se-viewer-browser-level-check.md** — BUILT 2026-10-01
    (viewer-check.yml, nightly); delete once a scheduled GitHub run is
    green. Before it, no browser-level check

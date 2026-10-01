@@ -30,6 +30,21 @@
   overflow: hidden;
 }
 
+/* three-cad-viewer.css ships a GLOBAL `body { user-select: none;
+ * overflow: hidden; }` — written for a viewer that owns the whole page.
+ * Embedded here it froze page scroll (the pick panel, notes and design
+ * chat below the shell were unreachable, with no scrollbar) and blocked
+ * text selection everywhere. Undo both for the page, and keep
+ * user-select:none on the shell alone so an orbit drag cannot start a
+ * text selection. */
+body {
+  overflow: visible;
+  user-select: auto;
+}
+#bt3d-viewer {
+  user-select: none;
+}
+
 /* gr337747: the tree panel's own .tcv_box_content{overflow:auto;
  * height:100%} chain needs a REAL (non-auto) height on every flex
  * ancestor between our shell and that box to resolve against — give
