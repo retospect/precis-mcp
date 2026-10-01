@@ -44,6 +44,7 @@ FOLD_NODE_ENV = "PRECIS_FOLD_NODE"
 class ProteinHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="protein",
+        plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
         title="Protein",
         description=(
             "A predicted protein structure (precis-bio plugin). "

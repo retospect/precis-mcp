@@ -177,6 +177,7 @@ class EstimateHandler(CacheBackedHandler):
 
     spec: ClassVar[KindSpec] = KindSpec(
         kind="estimate",
+        plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
         title="Estimate (ms chemistry workup)",
         description=(
             "Millisecond semi-empirical chemistry workup — a "

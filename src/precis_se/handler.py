@@ -176,6 +176,7 @@ log = logging.getLogger(__name__)
 class SeHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="se",
+        plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
         title="Structural envelope",
         description=(
             "A scale-agnostic structural/space-planner design (precis-se "

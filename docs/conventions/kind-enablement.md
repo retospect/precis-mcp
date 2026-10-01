@@ -14,6 +14,17 @@ calling the handler's `__init__`, so:
 - both classes of skip surface on the cold-start
   `Kinds unavailable:` banner with a short reason.
 
+Entry-point plugins (`precis.handlers`) pass the same gate, and every
+outcome lands on the banner (plugin-split step 5, 2026-10-01; before
+that they bypassed `PRECIS_KINDS_DISABLED` and left no verdict). A
+plugin additionally declares `KindSpec.plugin_api` — the
+`precis.protocol.PLUGIN_API` it was built against. When the value falls
+outside `PLUGIN_API_MIN..PLUGIN_API`, the kind darks with a reason that
+names which side to upgrade. A plugin whose import fails on a missing
+`precis.*` symbol reads as `built against a different precis`, not as
+a missing optional dependency. Bump `PLUGIN_API` when the plugin surface
+grows; raise `PLUGIN_API_MIN` when a change breaks older plugins.
+
 ## Declarative posture
 
 The shape every new handler should follow:

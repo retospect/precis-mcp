@@ -175,7 +175,17 @@ packages, so they are fair game before 10-16.
    `precis.cli.taproot`. Filed as its own item with its own
    justification — `cli-lazy-subcommand-loading.md`; it fixes that outage
    class whether or not the split happens.
-5. **Compatibility contract, with a test.** A model asserts the util
+5. ~~**Compatibility contract, with a test.**~~ **DONE 2026-10-01** —
+   `precis.protocol.PLUGIN_API` / `PLUGIN_API_MIN` plus
+   `KindSpec.plugin_api`, checked by `kind_gate.gate`. Every in-tree
+   plugin declares it, and a test enforces that. Doing it exposed the
+   larger gap: `_load_plugins` bypassed the gate entirely — no
+   `PRECIS_KINDS_DISABLED`, no `requires_*`, no banner verdict — so
+   plugins now take the same gate as built-ins. One import-time case is
+   named: a missing `precis.*` symbol reads as "built against a
+   different precis". Tests are in `tests/test_dispatch.py`. Original
+   text follows.
+   **Compatibility contract, with a test.** A model asserts the util
    contract it needs at registration, and one that cannot satisfy it darks
    **legibly to the agent** via `kind_gate` — an agent handles "this kind
    is not installed, here is why" fine and handles a silently missing kind

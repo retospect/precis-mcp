@@ -45,6 +45,7 @@ ROUTE_NODE_ENV = "PRECIS_CHEM_ROUTE_NODE"
 class RouteHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="route",
+        plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
         title="Route",
         description=(
             "A retrosynthesis route-graph (precis-chem plugin). "

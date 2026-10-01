@@ -1034,3 +1034,167 @@ def test_try_does_not_record_init_error_in_failed_imports() -> None:
     result = _try(_BadConfig, hub=r, failed_imports=failed)
     assert result is None
     assert failed == {}
+
+
+# ---------------------------------------------------------------------------
+# Plugin kind gate + plugin contract (plugin-split-runtime-shell.md step 5)
+# ---------------------------------------------------------------------------
+
+
+def _plugin_spec_class(name: str, **spec_kw: Any) -> type[Handler]:
+    """A minimal working plugin handler class for kind ``name``."""
+
+    class _P(Handler):
+        spec = KindSpec(
+            kind=name,
+            title=name,
+            description="gate test plugin",
+            supports_get=True,
+            **spec_kw,
+        )
+
+        def __init__(self, *, hub: Hub) -> None:
+            _ = hub
+
+        def get(self, **kw: object) -> Response:
+            return Response(body="ok")
+
+    return _P
+
+
+def test_plugin_honours_kinds_disabled_with_a_banner_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PRECIS_KINDS_DISABLED`` used to stop at built-ins: a prohibited
+    plugin kind still loaded, and the Slack agent policy (which computes
+    its disable list from discovered plugins) silently did not apply."""
+    from precis.kind_gate import format_unavailable
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEP("plugin-demo", _plugin_spec_class("plugin-demo"))]
+    )
+    hub = boot(
+        store=None,
+        kinds_disabled=frozenset({"plugin-demo"}),
+        kinds_disabled_reasons={"plugin-demo": "not for slack"},
+    )
+    assert "plugin-demo" not in hub.kinds
+    assert hub.loadabilities["plugin-demo"].reason == "not for slack"
+    assert "plugin-demo (not for slack)" in format_unavailable(hub.loadabilities)
+
+
+def test_plugin_requires_env_is_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_TEST_PLUGIN_ENV", raising=False)
+    cls = _plugin_spec_class("plugin-env", requires_env=("PRECIS_TEST_PLUGIN_ENV",))
+    _patch_entry_points(monkeypatch, [_FakeEP("plugin-env", cls)])
+
+    hub = boot(store=None)
+    assert "plugin-env" not in hub.kinds
+    assert hub.loadabilities["plugin-env"].reason == "missing PRECIS_TEST_PLUGIN_ENV"
+
+
+def test_loaded_plugin_records_a_loaded_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_entry_points(
+        monkeypatch,
+        [_FakeEP("plugin-demo", _plugin_spec_class("plugin-demo", plugin_api=1))],
+    )
+    hub = boot(store=None)
+    assert "plugin-demo" in hub.kinds
+    assert hub.loadabilities["plugin-demo"].loaded
+
+
+def test_plugin_init_error_records_its_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_entry_points(monkeypatch, [_FakeEP("plugin-needsdep", _PluginNeedsDep)])
+    hub = boot(store=None)
+    verdict = hub.loadabilities["plugin-needsdep"]
+    assert not verdict.loaded
+    assert "fictional_lib" in (verdict.reason or "")
+
+
+def test_plugin_built_for_a_newer_core_darks_naming_the_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.protocol import PLUGIN_API
+
+    cls = _plugin_spec_class("plugin-new", plugin_api=PLUGIN_API + 1)
+    _patch_entry_points(monkeypatch, [_FakeEP("plugin-new", cls)])
+
+    hub = boot(store=None)
+    assert "plugin-new" not in hub.kinds
+    reason = hub.loadabilities["plugin-new"].reason or ""
+    assert f"built for plugin API {PLUGIN_API + 1}" in reason
+    assert "upgrade precis-mcp" in reason
+
+
+def test_plugin_built_for_a_retired_contract_darks_naming_the_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import precis.protocol as protocol
+
+    monkeypatch.setattr(protocol, "PLUGIN_API", 3)
+    monkeypatch.setattr(protocol, "PLUGIN_API_MIN", 2)
+    cls = _plugin_spec_class("plugin-old", plugin_api=1)
+    _patch_entry_points(monkeypatch, [_FakeEP("plugin-old", cls)])
+
+    hub = boot(store=None)
+    assert "plugin-old" not in hub.kinds
+    reason = hub.loadabilities["plugin-old"].reason or ""
+    assert "upgrade the plugin-old plugin" in reason
+
+
+def test_plugin_missing_a_core_symbol_reads_as_version_skew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``cannot import name 'X' from 'precis.y'`` is a model built against
+    another core — say so, rather than "optional dep not installed"."""
+
+    def _skewed() -> object:
+        raise ImportError(
+            "cannot import name 'Gone' from 'precis.store'", name="precis.store"
+        )
+
+    def _missing_dep() -> object:
+        raise ModuleNotFoundError("No module named 'rdkit'", name="rdkit")
+
+    _patch_entry_points(
+        monkeypatch, [_FakeEP("skewed", _skewed), _FakeEP("needsrdkit", _missing_dep)]
+    )
+    hub = boot(store=None)
+    assert (hub.loadabilities["skewed"].reason or "").startswith(
+        "built against a different precis:"
+    )
+    assert (hub.loadabilities["needsrdkit"].reason or "").startswith(
+        "plugin failed to import:"
+    )
+
+
+def test_every_in_tree_plugin_declares_a_supported_plugin_api() -> None:
+    """An in-tree plugin is the template a new model copies. If it leaves
+    ``plugin_api`` unset the contract check never fires for anything
+    copied from it."""
+    import importlib
+    import tomllib
+    from pathlib import Path
+
+    from precis.protocol import PLUGIN_API, PLUGIN_API_MIN
+
+    root = Path(__file__).resolve().parent.parent
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    handlers = data["project"]["entry-points"][PLUGIN_GROUP]
+    assert handlers, "no precis.handlers entry points — the parse is wrong"
+
+    bad: list[str] = []
+    for kind, target in sorted(handlers.items()):
+        module, _, attr = target.partition(":")
+        spec = getattr(importlib.import_module(module), attr).spec
+        if spec.kind != kind:
+            bad.append(f"{kind}: entry-point name != spec.kind {spec.kind!r}")
+        if spec.plugin_api is None or not (
+            PLUGIN_API_MIN <= spec.plugin_api <= PLUGIN_API
+        ):
+            bad.append(f"{kind}: plugin_api={spec.plugin_api!r}")
+    assert not bad, bad

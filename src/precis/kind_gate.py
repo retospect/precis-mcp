@@ -142,6 +142,12 @@ def gate(
        var → compiled default) → proceed. Missing/false → ``reason=
        'missing setting: <key1>, <key2>'``.
 
+    Between 1 and 2, a plugin's ``spec.plugin_api`` is checked against
+    :data:`precis.protocol.PLUGIN_API_MIN` ..
+    :data:`precis.protocol.PLUGIN_API`; outside it →
+    ``reason='built for plugin API N; ...'`` naming which side to upgrade.
+    See :func:`plugin_api_mismatch`.
+
     Returns ``Loadability(loaded=True)`` when the handler should be
     constructed. Further checks (store presence, file-root validity,
     optional-dep imports) happen inside the handler's ``__init__``
@@ -152,6 +158,9 @@ def gate(
     if spec.kind in disabled:
         reason = (reasons or {}).get(spec.kind) or "prohibited"
         return Loadability(kind=spec.kind, loaded=False, reason=reason)
+    mismatch = plugin_api_mismatch(spec)
+    if mismatch:
+        return Loadability(kind=spec.kind, loaded=False, reason=mismatch)
     missing = [env for env in spec.requires_env if not os.environ.get(env)]
     if missing:
         return Loadability(
@@ -193,6 +202,30 @@ def gate(
                 reason="missing setting: " + ", ".join(missing_settings),
             )
     return Loadability(kind=spec.kind, loaded=True)
+
+
+def plugin_api_mismatch(spec: KindSpec) -> str | None:
+    """The banner reason when ``spec`` was built for a plugin contract this
+    core does not provide, else ``None``.
+
+    The reason names the side to upgrade, because that is the only action
+    the reader — an agent reading the banner, or the operator — can take.
+    A built-in (``plugin_api is None``) always matches.
+    """
+    from precis.protocol import PLUGIN_API, PLUGIN_API_MIN
+
+    wanted = spec.plugin_api
+    if wanted is None or PLUGIN_API_MIN <= wanted <= PLUGIN_API:
+        return None
+    if wanted > PLUGIN_API:
+        return (
+            f"built for plugin API {wanted}; this precis provides "
+            f"{PLUGIN_API} - upgrade precis-mcp"
+        )
+    return (
+        f"built for plugin API {wanted}; this precis needs >= "
+        f"{PLUGIN_API_MIN} - upgrade the {spec.kind} plugin"
+    )
 
 
 def loadability_from_exception(spec: KindSpec, exc: BaseException) -> Loadability:

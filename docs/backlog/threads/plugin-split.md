@@ -18,9 +18,11 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **backlog/plugin-split-runtime-shell.md** — steps 3 and 5 (step 2 landed
-   2026-09-29, step 1 landed 2026-10-01 as
-   `tests/test_plugin_import_boundary.py`). The boundary is now a gate
+1. **backlog/plugin-split-runtime-shell.md** — step 3 (step 2 landed
+   2026-09-29; step 1 landed 2026-10-01 as
+   `tests/test_plugin_import_boundary.py`; step 5 landed 2026-10-01 as
+   `PLUGIN_API` plus plugins going through the kind gate, which they had
+   bypassed entirely). The boundary is now a gate
    rather than a convention, which is what the 10-16 moves get verified
    against. It carries one grandfathered breach, **gr459054** —
    `quest/roadmap_tick.py` importing `precis_se.handler`, found by

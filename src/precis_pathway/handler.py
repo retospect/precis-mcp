@@ -83,6 +83,7 @@ def _nf(x: Any) -> float:
 class PathwayHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pathway",
+        plugin_api=1,  # precis.protocol.PLUGIN_API this model is built for
         title="Reaction pathway (autocatpath)",
         description=(
             "A catalyst reaction-network exploration (autocatpath): give it a "

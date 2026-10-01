@@ -60,6 +60,26 @@ def tolerates_extra_kwargs(func: Any) -> Any:
     return func
 
 
+#: The plugin contract this core provides: the surface a model package
+#: (an entry-point plugin in ``precis.handlers``) is entitled to rely on —
+#: ``Handler``/``KindSpec``, ``Hub``, the public ``Store`` ops, ``JobHandler``
+#: and the entry-point groups. Bump it when that surface gains something a
+#: plugin may come to need; raise :data:`PLUGIN_API_MIN` to the same value
+#: when a change *breaks* plugins built against the older contract.
+#:
+#: A pip floor is not enough on its own: a model can be installed against a
+#: core it was never built for (an old wheel in ``/opt/precis/wheels``, a
+#: private repo pinned behind main), and the failure it then produces is an
+#: ``AttributeError`` deep in a call, or a kind that silently is not there.
+#: An agent copes with "this kind is not installed, here is why" and copes
+#: badly with silence — it retries or invents. So a mismatch darks the kind
+#: at boot with a reason the cold-start banner shows
+#: (``docs/backlog/plugin-split-runtime-shell.md`` step 5).
+PLUGIN_API: int = 1
+#: The oldest plugin contract this core still honours.
+PLUGIN_API_MIN: int = 1
+
+
 @dataclass(frozen=True, slots=True)
 class KindSpec:
     """Declarative metadata for a kind."""
@@ -216,6 +236,12 @@ class KindSpec:
     #: resolving ``False`` (or unset with no compiled default) counts as
     #: unavailable, same as an unset ``requires_env`` var.
     requires_setting: tuple[str, ...] = ()
+    #: The :data:`PLUGIN_API` a plugin was built against. ``None`` for a
+    #: built-in handler, which ships with its core and cannot drift from it.
+    #: Every entry-point plugin declares it; :func:`precis.kind_gate.gate`
+    #: darks the kind when it falls outside
+    #: ``PLUGIN_API_MIN..PLUGIN_API``.
+    plugin_api: int | None = None
 
     def is_available(self) -> bool:
         """True iff every required env var is set, every required secret

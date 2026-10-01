@@ -61,11 +61,10 @@ Owner anchors: `src/precis/runtime/core.py::PrecisRuntime`,
 
 _Grouped 2026-09-26; was `plugin-kind-gate-parity`, status idea, prio high._
 
-`PRECIS_KINDS_DISABLED` is not authoritative today. `precis.dispatch._load_plugins`
-constructs and registers entry-point handlers without `kind_gate.gate`, without a
-`Loadability`, and without the parsed prohibition set; reproduced with a fake
-entry point, where `boot(kinds_disabled={'probe'})` still loaded `probe` and the
-cold-start banner had no verdict. `Hub.sibling` has the same boundary problem:
+The plugin half shipped 2026-10-01 (plugin-split step 5): `_load_plugins`
+now runs `kind_gate.gate`, honours the prohibition set and records a
+`Loadability` for every outcome. Pinned in `tests/test_dispatch.py`. What
+remains is `Hub.sibling`, which has the same boundary problem:
 on a booted hub, an absent/prohibited `job` or `todo` handler is lazily rebuilt
 for direct internal use.
 

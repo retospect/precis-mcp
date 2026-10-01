@@ -590,7 +590,13 @@ def _try(
 PLUGIN_GROUP = "precis.handlers"
 
 
-def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> None:
+def _load_plugins(
+    hub: Hub,
+    failed_imports: dict[str, str] | None = None,
+    *,
+    disabled: frozenset[str] = frozenset(),
+    reasons: dict[str, str] | None = None,
+) -> None:
     """Discover and register third-party handlers via entry-points.
 
     A plugin package advertises a handler class in its own
@@ -630,7 +636,23 @@ def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> Non
     other-exception failures are excluded — those are routine outcomes
     (a plugin that can't run here, a name collision) and would make that
     line cry wolf on every boot that has one.
+
+    **Plugins pass the same kind gate as built-ins** (plugin-split step 5).
+    Until 2026-10-01 they did not: ``PRECIS_KINDS_DISABLED`` never reached
+    a plugin (so the Slack agent policy, which computes its disable list
+    from *discovered* kinds precisely to cover plugins, did not apply to
+    them), ``requires_env``/``requires_secret``/``requires_setting`` were
+    ignored, and a plugin that failed left no ``Loadability`` — so the
+    cold-start banner never told an agent the kind was missing or why.
+    Now every outcome records a verdict on ``hub.loadabilities``, keyed by
+    the entry-point name, which is the kind name by convention
+    (``pyproject.toml``). The gate also checks ``spec.plugin_api`` against
+    :data:`precis.protocol.PLUGIN_API`, so a model built for another core
+    darks with a reason instead of failing mid-call.
     """
+    from precis.kind_gate import Loadability, gate, loadability_from_exception
+    from precis.protocol import KindSpec
+
     try:
         eps = _entry_points(group=PLUGIN_GROUP)
     except Exception as exc:  # defensive — importlib surface is stable
@@ -650,9 +672,29 @@ def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> Non
             )
             if failed_imports is not None:
                 failed_imports[name] = f"{type(exc).__name__}: {exc}"
+            hub.loadabilities.setdefault(
+                name,
+                Loadability(kind=name, loaded=False, reason=_plugin_import_reason(exc)),
+            )
             continue
 
         cls_name = getattr(cls, "__name__", repr(cls))
+        spec = getattr(cls, "spec", None)
+        if not isinstance(spec, KindSpec):
+            spec = None
+        if spec is not None:
+            verdict = gate(spec, disabled=disabled, reasons=reasons)
+            if not verdict.loaded:
+                # setdefault: a built-in that already owns this kind keeps
+                # its own verdict — the plugin was never going to win it.
+                hub.loadabilities.setdefault(spec.kind, verdict)
+                log.info(
+                    "precis plugin %r: skipped kind=%s (%s)",
+                    name,
+                    spec.kind,
+                    verdict.reason,
+                )
+                continue
 
         try:
             inst = cls(hub=hub)
@@ -665,6 +707,10 @@ def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> Non
             )
             if failed_imports is not None and isinstance(exc, ImportError):
                 failed_imports[name] = str(exc)
+            if spec is not None:
+                hub.loadabilities.setdefault(
+                    spec.kind, loadability_from_exception(spec, exc)
+                )
             continue
         except Exception as exc:
             log.warning(
@@ -674,6 +720,15 @@ def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> Non
                 type(exc).__name__,
                 exc,
             )
+            if spec is not None:
+                hub.loadabilities.setdefault(
+                    spec.kind,
+                    Loadability(
+                        kind=spec.kind,
+                        loaded=False,
+                        reason=f"plugin raised {type(exc).__name__} at init",
+                    ),
+                )
             continue
 
         try:
@@ -693,6 +748,27 @@ def _load_plugins(hub: Hub, failed_imports: dict[str, str] | None = None) -> Non
                 type(exc).__name__,
                 exc,
             )
+        else:
+            if spec is not None:
+                hub.loadabilities[spec.kind] = Loadability(kind=spec.kind, loaded=True)
+
+
+def _plugin_import_reason(exc: BaseException) -> str:
+    """Banner reason for a plugin whose module failed to import.
+
+    The case worth naming is a plugin reaching for a core symbol that is
+    not there — ``cannot import name 'X' from 'precis.y'`` — because that
+    is a model built against a different precis, and the fix is an upgrade
+    on one side, not a missing optional dependency.
+    """
+    missing = getattr(exc, "name", None)
+    if isinstance(exc, ImportError) and (
+        missing == "precis" or (missing or "").startswith("precis.")
+    ):
+        reason = f"built against a different precis: {exc}"
+    else:
+        reason = f"plugin failed to import: {type(exc).__name__}: {exc}"
+    return reason if len(reason) <= 120 else reason[:117] + "..."
 
 
 # ---------------------------------------------------------------------------
@@ -1164,7 +1240,12 @@ def boot(
     # Built-ins win on kind-name collisions because they register
     # first; a plugin attempting to claim an already-registered kind
     # is logged and skipped.
-    _load_plugins(hub, failed_imports)
+    _load_plugins(
+        hub,
+        failed_imports,
+        disabled=kinds_disabled,
+        reasons=kinds_disabled_reasons,
+    )
 
     # Boot-time auto-upsert: every enabled hub kind lands in the
     # ``kinds`` table so the FK target stays in sync with the code
