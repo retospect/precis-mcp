@@ -351,14 +351,21 @@ change, read `tools/list` before and after the watchdog bounce that picks
 it up, and confirm the new kwarg appears without a client restart. Cheap
 when the change is someone else's and already landing; not worth forcing.
 
-**Still outstanding — these need a ship and a day of use, not a test:** AC1
-in the session (as opposed to headless) client, AC3 (a new verb kwarg surviving a
-bounce) and AC5 (one container after a day). AC2 and AC4 are done.
+**AC5 PASSES, verified 2026-10-01T11:00Z.** `docker ps -a` shows exactly
+one `precis-mcp:dev`-family container, `precis-mcp-http`. The eleven
+pre-flip `precis-mcp-dev-*` stdio containers went when their sessions
+restarted at ~10:20Z — the reconnect wave happened by itself, as every
+session reconnected on resume and read the HTTP config — and `--rm`
+disposed of each one. The twelfth, `precis-mcp-dev-85860`, had been
+`Created` since 2026-09-11 and never started (`StartedAt` zero, `Pid` 0),
+so no session could hold it; removed by hand. "After a day of normal use":
+the config has pointed at HTTP since 2026-09-29 ~17:00, and no stdio
+container has been created since 16:54 that day — about 42 h with fifteen
+sessions live. This closes td458385 (every session onto the shared server).
 
-**Do NOT sweep the old `precis-mcp-dev-*` containers yet.** Twelve are still
-up, and the sessions that started before the config flip are still talking
-to them over their stdio pipes — killing one kills that session's MCP. They
-age out as those sessions end; only then is AC5 measurable.
+**Still outstanding:** AC1 in the session (as opposed to headless) client,
+and AC3 (a new verb kwarg surviving a bounce — closes opportunistically,
+see above). AC2, AC4, AC5 and AC7 are done.
 
 **Found while verifying:** gr457326 — the md-index vector warmup has no
 retry, so one slow embedder batch at boot leaves the cache cold for the
