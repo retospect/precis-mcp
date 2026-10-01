@@ -18,11 +18,9 @@ ports table appear only when something fills them (mode-scoped help).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se import drc as se_drc
@@ -46,8 +44,6 @@ from precis_se.ops import (
     effective_dof,
     known_ops,
 )
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: A rotaxane: a macrocycle threaded on an axle, the canonical atomic-mode
 #: design (the same shape the nm kind's own tests used).
@@ -81,11 +77,6 @@ def _tree(*extra: dict[str, object]) -> SeTree:
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

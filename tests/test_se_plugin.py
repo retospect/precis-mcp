@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import json
 from itertools import pairwise
-from pathlib import Path
 
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.store import Store
@@ -24,8 +22,6 @@ from precis_se import fret, persist
 from precis_se.handler import SeHandler, _render_tree
 from precis_se.measures import MeasureSpec, stackup
 from precis_se.ops import OpError, SeTree, apply_ops, effective_envelope
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: A caster: fork holds a hub; the wheel comes later (suggestive by
 #: contract — half-specified is a legal, honest state).
@@ -54,11 +50,6 @@ _CASTER = json.dumps(
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

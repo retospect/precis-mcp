@@ -15,13 +15,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import pytest
 from mcp.types import CallToolResult
 
-import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.component import ComponentHandler
@@ -32,20 +30,9 @@ from precis.tools import core as tools_core
 from precis_se import library as se_library
 from precis_se.handler import SeHandler
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
-
-def _apply_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _apply_se_migrations(store)
     return SeHandler(hub=hub)
 
 
@@ -577,7 +564,6 @@ def test_instances_are_excluded_from_the_library(handler: SeHandler) -> None:
 def mounted_runtime(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> Iterator[PrecisRuntime]:
-    _apply_se_migrations(store)
     # `se` is a Route-B plugin, registered via the `precis.handlers`
     # entry-point group (pyproject.toml) — discovered by
     # `dispatch._load_plugins` at `boot()` time from the INSTALLED

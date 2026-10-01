@@ -8,28 +8,19 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

@@ -15,19 +15,15 @@ acceptance **S2 record** and the store half of **S2 scrubber**.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-import precis_se
 from precis.design import history
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis_se import persist
 from precis_se.handler import SeHandler
-
-_SE_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 _PD = json.dumps(
     {
@@ -77,11 +73,6 @@ def structure(store: Store) -> StructureHandler:
 
 @pytest.fixture
 def se(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

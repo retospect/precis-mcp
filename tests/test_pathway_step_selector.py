@@ -12,21 +12,17 @@ cleanly on a host without it, same as the big file.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 pytest.importorskip("autocatpath")
 
-import precis_pathway
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
 from precis.utils import handle_registry as hr
 from precis_pathway.handler import PathwayHandler
-
-_MIGRATIONS_DIR = Path(precis_pathway.__file__).parent / "migrations"
 
 # networkx node_link_data shape (edges='links') a persisted pathway carries —
 # see precis.utils.reaction_graph's module docstring and persist.pathway_meta.
@@ -62,11 +58,6 @@ def pathway_store(store: Store) -> Store:
     (mirrors ``test_pathway_plugin.py``'s fixture of the same name —
     duplicated rather than imported to keep this file independent and
     cheap to collect on its own)."""
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return store
 
 

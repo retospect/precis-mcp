@@ -10,13 +10,11 @@ materials default is untouched) is ``test_quest_tick.py``'s own pair.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.handlers.quest import QuestHandler
 from precis.handlers.todo import TodoHandler
@@ -28,8 +26,6 @@ from precis.quest.weave_tick import mark_roadmap_quest
 from precis.store.types import ChunkInsert
 from precis_se.handler import SeHandler
 from tests.test_quest_roadmap_ledger import KEY, _qid, make_root, make_rung
-
-_SE_MIGRATIONS = Path(precis_se.__file__).parent / "migrations"
 
 #: AC1 — the four materials-only prompt tokens (mirrors
 #: ``test_quest_tick.py::TestQuestBodyInquiry._MATERIALS_ONLY_TOKENS``).
@@ -287,10 +283,6 @@ class TestRoadmapRole:
 
 @pytest.fixture
 def se_handler(hub: Hub, store: Any) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     return SeHandler(hub=hub)
 
 

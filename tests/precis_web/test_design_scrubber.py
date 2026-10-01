@@ -21,7 +21,6 @@ from __future__ import annotations
 import html
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -30,7 +29,6 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-import precis_se
 from precis.design import history
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler
@@ -40,8 +38,6 @@ from precis_web.blocktree_3d import CHANGED_COLOUR
 from precis_web.config import WebConfig
 
 from .conftest import FakeRuntime
-
-_SE_MIGRATIONS = Path(precis_se.__file__).parent / "migrations"
 
 _PD_OPS: list[dict[str, Any]] = [
     {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
@@ -239,10 +235,6 @@ _CAP_OPS: list[dict[str, Any]] = [
 
 @pytest.fixture
 def se_client(store, runtime_with_store, tmp_path) -> TestClient:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     return TestClient(
         create_app(
             runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)

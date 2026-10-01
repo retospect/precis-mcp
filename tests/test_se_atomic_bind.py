@@ -32,12 +32,10 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.cad.vec import rotation as cad_rotation
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
@@ -54,20 +52,9 @@ from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
 from precis_se.handler import SeHandler
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree, known_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
-
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 
@@ -77,7 +64,6 @@ def lit_handler(store: Store) -> SeHandler:
     ``test_structure_literature_provenance.py`` precedent: search degrades
     to lexical only, so a literature-view assertion never depends on
     mock-embedding cosine noise."""
-    _seed_se_migrations(store)
     return SeHandler(hub=Hub(store=store))
 
 

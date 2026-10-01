@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.cad import dsl as cad_dsl
 from precis.cad.primitives import Torus
 from precis.dispatch import Hub
@@ -46,8 +44,6 @@ from precis_se.handler import SeHandler
 # marker in tests/conftest.py.
 pytestmark = pytest.mark.slow
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 def _spec_A(envelope: str) -> cad_dsl.ShapeSpec:
     """A generator's own Å figures out of its **Å-suffixed** envelope text
@@ -65,11 +61,6 @@ _VARIANTS = {"alpha": 6, "beta": 7, "gamma": 8}
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

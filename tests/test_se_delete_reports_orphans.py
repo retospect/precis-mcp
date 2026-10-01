@@ -14,7 +14,6 @@ accumulated residue of the first one.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -24,20 +23,9 @@ from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis_se.handler import SeHandler
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "src/precis_se/migrations"
-
-
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

@@ -14,13 +14,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub, _try
 from precis.errors import BadInput
 from precis.store import Store
@@ -30,18 +28,12 @@ from precis_se import printing as se_printing
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 _PITCH = 0.002
 _ENVELOPE = "box:w0.024d0.012h0.012"
 
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     # `_try` constructs + registers abilities, so the job handler sees `se`
     # as a can_own_jobs kind (the route/pathway plugin tests' pattern; a
     # bare SeHandler(hub=hub) is invisible to `hub.kinds`)

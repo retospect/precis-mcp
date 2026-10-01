@@ -23,7 +23,6 @@ page reads.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -33,7 +32,6 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-import precis_se
 from precis.design import history
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler
@@ -41,8 +39,6 @@ from precis_se.handler import SeHandler
 from precis_web import design_turn
 from precis_web.app import create_app
 from precis_web.config import WebConfig
-
-_SE_MIGRATIONS = Path(precis_se.__file__).parent / "migrations"
 
 _PD = json.dumps(
     {
@@ -109,10 +105,6 @@ def stub(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 @pytest.fixture
 def client(store, runtime_with_store, tmp_path) -> TestClient:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     return TestClient(
         create_app(
             runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)

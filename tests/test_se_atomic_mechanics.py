@@ -17,12 +17,10 @@ covered on se by ``tests/test_se_atomic_bind.py``
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
@@ -33,16 +31,9 @@ from precis_se.atomic.generate import ingest_envelope
 from precis_se.atomic.generators.sp2 import build_cnt
 from precis_se.handler import SeHandler
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

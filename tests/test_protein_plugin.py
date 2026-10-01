@@ -20,7 +20,6 @@ from typing import Any, cast
 
 import pytest
 
-import precis_bio
 from precis.dispatch import Hub, _try
 from precis.store import Store
 from precis.store.types import Relation
@@ -51,8 +50,6 @@ from precis_bio.ir import (
 from precis_bio.jobs import FOLD_SPEC, run_fold
 from precis_bio.protein import ProteinHandler
 
-_BIO_MIGRATIONS_DIR = Path(precis_bio.__file__).parent / "migrations"
-
 #: A short real sequence (insulin A chain) for the round-trip tests.
 _INSULIN_A = "GIVEQCCTSICSLYQLENYCN"
 
@@ -62,11 +59,6 @@ def protein_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
     """The shared test store with every precis_bio migration seeded + the dark
     flag on (the `protein` kind + the has-fold-structure relation)."""
     monkeypatch.setenv("PRECIS_BIO_ENABLED", "1")
-    with store.pool.connection() as c:
-        for sql in sorted(_BIO_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return store
 
 

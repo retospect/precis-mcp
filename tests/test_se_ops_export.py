@@ -20,12 +20,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
@@ -415,16 +413,8 @@ def test_a_cross_design_template_is_not_treated_as_a_local_dependency() -> None:
 # ── end to end, through the store ───────────────────────────────────────
 
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
-
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

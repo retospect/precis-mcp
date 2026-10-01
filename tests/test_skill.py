@@ -1922,3 +1922,29 @@ def test_toc_other_bucket_is_small(skill: SkillHandler) -> None:
     assert "## Design & engineering" in body
     m = re.search(r"## Other \((\d+)\)", body)
     assert m is None or int(m.group(1)) <= 15, m.group(0) if m else None
+
+
+def test_status_names_kinds_that_failed_their_gate(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plugin that would not import is absent from the registered list,
+    and the CLI path never shows the MCP banner — so status must name it
+    with its reason, or an operator cannot tell a kind went dark
+    (2026-10-02: pathway vanished from a local status without a word)."""
+    from precis import install_watchdog
+    from precis.kind_gate import Loadability
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    hub = Hub()
+    # Plant the hub manually since we bypassed Handler._register_with.
+    skill.hub = hub
+    assert "Kinds unavailable" not in skill.get(id="precis-status").body
+    hub.loadabilities["pathway"] = Loadability(
+        kind="pathway", loaded=False, reason="plugin failed to import: autocatpath"
+    )
+    hub.loadabilities["route"] = Loadability(kind="route", loaded=True)
+    body = skill.get(id="precis-status").body
+    assert (
+        "**Kinds unavailable: pathway (plugin failed to import: autocatpath).**" in body
+    )
+    assert "route (" not in body

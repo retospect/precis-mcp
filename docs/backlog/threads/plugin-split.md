@@ -42,25 +42,7 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 2. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
-   every node's embedder. Last only because 3 is behaviour-neutral and this
-   touches 58 modules.
-3. **Delete the now-redundant per-module plugin-schema seeders.** gr458360
-   (fixed 2026-10-01) made the pytest template apply every
-   `precis.migrations` plugin via `Migrator.discover_sources`, and removed
-   the seeders in `test_se_join.py` and `test_se_atomic_catalogue.py`.
-   About a dozen more re-execute plugin SQL by hand and are probably dead
-   weight: `_seed_se_migrations` in the `test_se_chain_*` files,
-   `test_se_walker`, `test_se_atomic_bind`, `test_se_delete_reports_orphans`
-   and `test_se_pick`, plus `.sql` globs in `test_se_units_migration`,
-   `test_estimate_plugin`, `test_pathway_plugin` and `test_protein_plugin`.
-   Each needs a read first, since a fixture that deliberately drops and
-   re-applies schema is not a workaround. Harmless meanwhile, because
-   every plugin migration is `IF NOT EXISTS`.
-   A 2026-10-01 count found 52 files, not a dozen: grep `tests/` for
-   `MIGRATIONS_DIR.glob("*.sql")`. Most are `test_se_*` files that the
-   se-nucleic-chain and se-3d-viewer threads are editing. Do it at the start
-   of a dogfood cycle, right after a deploy has drained every tree, so it
-   collides with no sibling's in-flight edits.
+   every node's embedder. It touches 58 modules.
 
 **gr457894 left Do next on 2026-10-01, and this is the correction that
 matters most in this file.** It sat at Do-next 1 for five rounds on the claim

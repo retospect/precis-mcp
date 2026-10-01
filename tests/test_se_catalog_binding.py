@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 
 import precis
-import precis_se
 from precis.dispatch import Hub
 from precis.handlers.component import ComponentHandler
 from precis.store import Store
@@ -28,7 +27,6 @@ from precis_se import persist
 from precis_se.handler import SeHandler
 from precis_se.ops import PortSpec, SeBlock, SeTree, effective_envelope, effective_ports
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 _CORE_MIGRATIONS = Path(precis.__file__).parent / "migrations"
 
 
@@ -68,11 +66,6 @@ def _ensure_fastener_specs(store: Store) -> None:
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     _ensure_fastener_specs(store)
     return SeHandler(hub=hub)
 

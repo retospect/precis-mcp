@@ -21,12 +21,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.cad import bulk as cad_bulk
 from precis.cad.graph import Design as CadDesign
 from precis.cad.scene import NodeSpec, SceneSpec, build_design
@@ -41,8 +39,6 @@ from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
 from precis_se.validate import ValidationIssue
 from tests.test_se_fasten_seatclamp import _ensure_fastener_specs, _seat_clamp
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: The one line every ``put(kind='component', series=..., size=...)``
 #: response ends with, whatever the rest of the body says — see
@@ -81,10 +77,6 @@ def handler(hub: Hub, store: Store) -> SeHandler:
     graph doesn't depend on cross-module pytest fixture discovery; the
     substantial reuse (the mint helper, the seat-clamp ops builder) is
     the plain-function import above."""
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     _ensure_fastener_specs(store)
     return SeHandler(hub=hub)
 

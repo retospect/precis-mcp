@@ -29,7 +29,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-import precis_se
 from precis.cad.export import _component_meshes, _scaled_for_export
 from precis.cad.scene import part_spec
 from precis.dispatch import Hub, _try
@@ -49,15 +48,9 @@ from tests.test_se_simp_bridge import _job_params, _simp_op
 # See the `slow` marker in tests/conftest.py.
 pytestmark = pytest.mark.slow
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     _ensure_fastener_specs(store)
     h = _try(SeHandler, hub=hub)
     assert h is not None

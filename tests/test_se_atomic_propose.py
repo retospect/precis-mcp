@@ -23,14 +23,12 @@ so the whole path runs offline, same as ``tests/test_structure_propose.py``.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
 import precis.workers.job_types as jt
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis.structure.cell import Cell
@@ -44,16 +42,9 @@ from precis_se.atomic import propose as sej
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def se_handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

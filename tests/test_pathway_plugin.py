@@ -36,7 +36,6 @@ pytest.importorskip("autocatpath")
 # runs everything. See docs/conventions/testing.md § "Judging effectiveness".
 pytestmark = pytest.mark.slow
 
-import precis_pathway
 from precis.dispatch import Hub, _try
 from precis.store import Store
 from precis.workers import job_types as jt
@@ -81,8 +80,6 @@ mlip: {backend: emt}
 search: {seeds: [0], neb_images: 3, neb_max_steps: 12, neb_retries: 0, max_steps: 30, pose_count: 2}
 """
 
-_MIGRATIONS_DIR = Path(precis_pathway.__file__).parent / "migrations"
-
 
 def _yaml_dict(text: str) -> dict:
     from autocatpath.config import _load_yaml
@@ -97,11 +94,6 @@ def _yaml_dict(text: str) -> dict:
 def pathway_store(store: Store) -> Store:
     """The shared test store with the precis_pathway migration seeded (the
     `pathway` kind + `pathway_body` chunk kind)."""
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return store
 
 
@@ -2783,6 +2775,7 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
     assert "1 ready" in body and "1 failed" in body
     assert "list-ready-a | NO → NH3 on Pd | ready |" in body
     assert "list-failed-b |" in body
-    # The next-hint names a slug that exists, never an invented example.
+    # The next-hint names a real slug, and a ready one: view='analysis' on a
+    # failed or computing pathway is a dead end.
     hint = body.rsplit("next: ", 1)[1]
-    assert "id='list-ready-a'" in hint or "id='list-failed-b'" in hint
+    assert "id='list-ready-a'" in hint

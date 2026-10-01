@@ -18,12 +18,10 @@ here.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.blocktree.types import OpError
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -33,8 +31,6 @@ from precis_se.handler import SeHandler
 from precis_se.identity import AmbiguousLabel, parse_uid, resolve_block
 from precis_se.measures import MeasureSpec
 from precis_se.ops import SeBlock, SeTree, apply_ops
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: A caster with two blocks, a connect over their ports, a measure, a BOM
 #: line, an instance (local template) and a threading invariant — one of
@@ -63,11 +59,6 @@ _ALL_REFS = json.dumps(
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

@@ -23,14 +23,12 @@ from tests.test_se_chain_realize import (
     _loaded,
     _put,
     _realize,
-    _seed_se_migrations,
 )
 from tests.test_se_pick import _ordinal, _rows
 
 
 @pytest.fixture
 def pick_client(store: Store, runtime_with_store: Any, tmp_path: Any) -> TestClient:
-    _seed_se_migrations(store)
     handler = SeHandler(hub=runtime_with_store.hub)
     _put(
         handler,

@@ -29,7 +29,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.handlers.cad import CadHandler
 from precis.handlers.component import ComponentHandler
@@ -41,8 +40,6 @@ from precis_se.handler import SeHandler
 from precis_se.ops import SeTree
 from tests.test_cad_printability import _T_SHAPE
 from tests.test_se_fasten_seatclamp import _ensure_fastener_specs, _seat_clamp
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: The one line every ``put(kind='component', series=..., size=...)``
 #: response ends with, whatever the rest of the body says (test_se_print_
@@ -61,10 +58,6 @@ def _mint_slug(hub: Hub, series: str, size: str) -> str:
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
     _ensure_fastener_specs(store)
     return SeHandler(hub=hub)
 

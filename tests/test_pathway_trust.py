@@ -11,19 +11,15 @@ on its own.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 pytest.importorskip("autocatpath")
 
-import precis_pathway
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_pathway.handler import PathwayHandler
-
-_MIGRATIONS_DIR = Path(precis_pathway.__file__).parent / "migrations"
 
 # Shaped like the catpath acceptance fixture (test_trust_records.py::
 # test_offroute_competitor_blocks_selectivity_not_barrier): a clean on-route
@@ -113,11 +109,6 @@ _RESULTS_LEGACY = {"pathway": ["R", "M", "P"], "target": "P"}
 def pathway_store(store: Store) -> Store:
     """Mirrors ``test_pathway_kinetics.py``'s fixture of the same name
     (duplicated on purpose, keeps this file independently collectable)."""
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return store
 
 

@@ -22,21 +22,16 @@ from typing import Any
 import pytest
 
 import precis
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se.handler import SeHandler
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 _CORE_MIGRATIONS = Path(precis.__file__).parent / "migrations"
 
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
     with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
         # 0156 seeds the relation itself; the shared test template may
         # predate it, and an unknown relation slug refuses at add_link.
         realizes = _CORE_MIGRATIONS / "0156_realizes_relation.sql"

@@ -1921,6 +1921,18 @@ class SkillHandler(Handler):
                 lines.append(
                     f"**Registered kinds ({len(kinds)}):** " + ", ".join(kinds)
                 )
+            # The same verdicts the MCP instructions banner carries. A kind
+            # that failed its gate (a plugin that would not import, a missing
+            # env var) is otherwise invisible here: it is simply absent from
+            # the list above, and the CLI path never shows the banner.
+            from precis.kind_gate import format_unavailable
+
+            unavailable = format_unavailable(
+                getattr(self.hub, "loadabilities", None) or {}
+            )
+            if unavailable:
+                lines.append("")
+                lines.append(f"**{unavailable}**")
         return "\n".join(lines)
 
 

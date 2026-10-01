@@ -22,11 +22,9 @@ template carries only core migrations, so the plugin's own are seeded here.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-import precis_se
 from precis.design import states as design_states
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
@@ -36,16 +34,9 @@ from precis_se import persist
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

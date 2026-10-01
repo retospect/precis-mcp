@@ -20,13 +20,11 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.design import states as design_states
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -40,8 +38,6 @@ from precis_se.chain import spectral as chain_spectral
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 #: Stub footholds along +x. The far one is reachable by default; the
 #: short-tether test pushes it out of a 12-nt tether's reach.
 FOOTHOLD_X_M = (0.0, 6.0e-9, 12.0e-9)
@@ -51,17 +47,8 @@ FOOT_START = 4  # the foot domain pairs with the stub's top four units
 TETHER_NT = 12
 
 
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
-
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

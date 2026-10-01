@@ -16,12 +16,10 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.cad.primitives import PolyFrustum
 from precis.cad.vec import vec3
 from precis.dispatch import Hub
@@ -31,8 +29,6 @@ from precis.utils.units import parse_quantity
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
 from precis_se.validate import envelope_overlaps, kernel_scale
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: The boxel-3nm trigger, minimized: a group parent without an envelope, a
 #: nanometre panel, an overlapping vertex hub, a rotated instance, and an
@@ -80,11 +76,6 @@ _BOXEL_OPS: list[dict[str, Any]] = [
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     h = SeHandler(hub=hub)
     h.put(id="boxel1", text=json.dumps({"ops": _BOXEL_OPS}))
     return h

@@ -543,7 +543,12 @@ class PathwayHandler(Handler):
             lines.append(
                 f"{slug or '?'} | {title} | {status or '?'} | {updated:%Y-%m-%d %H:%MZ}"
             )
-        first = next((slug for slug, *_ in rows if slug), None)
+        # Point the hint at a ready pathway: view='analysis' on one still
+        # computing only says "check back shortly".
+        first = next(
+            (slug for slug, _, status, _ in rows if slug and status == "ready"),
+            next((slug for slug, *_ in rows if slug), None),
+        )
         if first:
             lines += [
                 "",

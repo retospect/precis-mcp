@@ -22,21 +22,11 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
-import precis_se
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis_se.handler import SeHandler
 from precis_web.app import create_app
 from precis_web.config import WebConfig
-
-_SE_MIGRATIONS = Path(precis_se.__file__).parent / "migrations"
-
-
-def _apply_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            c.execute(body.replace("BEGIN;", "").replace("COMMIT;", ""))
 
 
 def _cell() -> dict[str, Any]:
@@ -63,7 +53,6 @@ def _make_structure(structure: StructureHandler, slug: str) -> str:
 
 @pytest.fixture
 def design_client(store: Store, runtime_with_store: Any, tmp_path: Path) -> TestClient:
-    _apply_se_migrations(store)
     return TestClient(
         create_app(
             runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
@@ -204,7 +193,6 @@ def test_design_route_queries_issue_at_most_three_selects(
     own ``COUNT`` queries, injected into every page by the shared
     ``Jinja2Templates`` context processor), which are cross-cutting
     infrastructure this slice neither owns nor budgets for."""
-    _apply_se_migrations(store)  # the ``se`` kind row — no app fixture here
     _seed(runtime_with_store, store)
     from precis_web.routes import design as design_route
 

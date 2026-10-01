@@ -24,12 +24,10 @@ from __future__ import annotations
 import json
 import random
 import sys
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.store import Store
@@ -40,8 +38,6 @@ from precis_se.chain import nucleic
 from precis_se.chain.pairing import derive_pairing
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: The item's hairpin.
 HAIRPIN = "GGGGAAAACCCC"
@@ -55,17 +51,8 @@ def _rc(seq: str) -> str:
     return "".join(_COMPLEMENT[c] for c in reversed(seq))
 
 
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
-
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

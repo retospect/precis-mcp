@@ -21,12 +21,10 @@ the router is never reached.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-import precis_se
 from precis.design import history
 from precis.dispatch import Hub
 from precis.handlers.structure import StructureHandler
@@ -35,8 +33,6 @@ from precis_se.atomic.apply import all_op_names
 from precis_se.handler import SeHandler
 from precis_web import design_turn
 from precis_web.design_turn import TurnResult, apply_proposal, run_turn
-
-_SE_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 _PD = json.dumps(
     {
@@ -70,11 +66,6 @@ def structure(store: Store) -> StructureHandler:
 
 @pytest.fixture
 def se(hub: Hub, store: Store) -> SeHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_SE_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

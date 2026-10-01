@@ -23,12 +23,10 @@ from __future__ import annotations
 import importlib
 import re
 import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-import precis_estimate
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported, Upstream
 from precis.store import Store
@@ -46,7 +44,6 @@ from precis_estimate.handler import EstimateHandler, _parse_composition
 #: pyproject entry point added mid-worktree — so plugin-kind tests seed
 #: their own migration directly. Mirrors `test_pathway_plugin.py`'s
 #: `pathway_store` fixture.
-_MIGRATIONS_DIR = Path(precis_estimate.__file__).parent / "migrations"
 
 # ── composition parsing (no mendeleev needed) ───────────────────────────
 
@@ -86,11 +83,6 @@ def test_parse_composition_empty_query_is_bad_input() -> None:
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> EstimateHandler:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return EstimateHandler(hub=hub)
 
 

@@ -24,13 +24,11 @@ import itertools
 import json
 import math
 import time
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.cad import relate as cad_relate
 from precis.cad.vec import as_vec3
 from precis.cad.vec import pose as cad_pose
@@ -43,8 +41,6 @@ from precis_se.chain.relax import op_relax_chain
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
-
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
 
 #: The rectangle's shape. 24 helices of 256 bp is the acceptance criterion's
 #: design; 256 is 8 square-lattice repeats, so every helix is in register.
@@ -76,17 +72,8 @@ STAPLE_OFFSETS = tuple(range(15, N_UNITS - 16, 32))
 SCAFFOLD_LOOP_NT = 7
 
 
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
-
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

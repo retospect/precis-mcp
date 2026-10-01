@@ -6,11 +6,8 @@ se-kind.md "Ship order" step 4; migration 0005_se_notes_freedom.sql.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis_se.freedom import freedom
@@ -19,18 +16,11 @@ from precis_se.measures import MeasureSpec, stackup, validate_relation
 from precis_se.notes import NoteSpec, open_questions
 from precis_se.ops import OpError, SeTree, apply_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
     # the shared test DB template carries only core migrations —
     # test_se_plugin.py's fixture shape, transferred.
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
     return SeHandler(hub=hub)
 
 

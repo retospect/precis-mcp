@@ -20,13 +20,11 @@ from tests.test_se_chain_realize import (
     _loaded,
     _put,
     _realize,
-    _seed_se_migrations,
 )
 
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

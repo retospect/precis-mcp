@@ -19,13 +19,11 @@ from __future__ import annotations
 import itertools
 import json
 import math
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.structure import StructureHandler
@@ -48,8 +46,6 @@ from precis_se.ops import SeTree, apply_ops
 from precis_web.design_turn import _SE_STORE_AWARE_SIGNATURES, dry_run_se
 from tests.test_se_chain_origami import _rectangle_tree
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
 SEQ22 = "GCGAATTCGCGATCGCGAATTG"
 _COMPLEMENT = {"A": "T", "T": "A", "G": "C", "C": "G"}
 
@@ -58,17 +54,8 @@ def _rc(seq: str) -> str:
     return "".join(_COMPLEMENT[c] for c in reversed(seq))
 
 
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
-
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 

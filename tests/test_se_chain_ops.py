@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
-import precis_se
 from precis.dispatch import Hub
 from precis.store import Store
 from precis.utils.units import UnitRequiredError
@@ -30,20 +28,9 @@ from precis_se.chain.vocab import ChainError, DomainSpec, validate_chain
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
 
-_MIGRATIONS_DIR = Path(precis_se.__file__).parent / "migrations"
-
-
-def _seed_se_migrations(store: Store) -> None:
-    with store.pool.connection() as c:
-        for sql in sorted(_MIGRATIONS_DIR.glob("*.sql")):
-            body = sql.read_text(encoding="utf-8")
-            body = body.replace("BEGIN;", "").replace("COMMIT;", "")
-            c.execute(body)
-
 
 @pytest.fixture
 def handler(hub: Hub, store: Store) -> SeHandler:
-    _seed_se_migrations(store)
     return SeHandler(hub=hub)
 
 
