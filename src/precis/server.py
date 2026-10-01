@@ -937,11 +937,22 @@ def _warm_embedder_background(runtime: PrecisRuntime) -> None:
 
 
 #: Blocks per `embed()` call in the boot warm pass. Sized to fit the
-#: request-path embedder's 15s deadline with a cold bge-m3 reload (~7s)
-#: inside it, so a batch that times out is a batch and not the whole
-#: cache. Small enough that a failure loses little, large enough that
-#: ~740 blocks is single-digit round-trips.
-_MD_WARMUP_BATCH_SIZE = 64
+#: request-path embedder's 15s deadline, so a batch that times out is a
+#: batch and not the whole cache.
+#:
+#: 16, not 64, as of 2026-10-01 — measured on the shared server, where
+#: the pass had never completed a single batch. 64 was sized against
+#: `blocks[:64]` (27 KB, 3.6s idle), but `embed_missing` sends the first
+#: 64 *missing* blocks, and those are 89 KB (max single block 22756
+#: chars) because the small early blocks are already cached. ~12s idle,
+#: over the 15s budget under any concurrent load — and a timeout is not
+#: free: the client abandons at 15s x 2 while the service keeps
+#: computing, so every timed-out attempt leaves a slot occupied by work
+#: nobody is waiting for, and the retry then gets an instant 429. That
+#: ordering (one 31s timeout, then only 429s) is in the logs for every
+#: pass. A batch that fits the budget is therefore not just more likely
+#: to succeed, it stops the pass manufacturing its own congestion.
+_MD_WARMUP_BATCH_SIZE = 16
 
 #: Per-batch retry budget. The retry lives at the BATCH level, not the
 #: pass level: at bulk sizes a pass is hundreds of round-trips, so an

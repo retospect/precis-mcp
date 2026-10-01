@@ -245,6 +245,27 @@ server-side-session-context Horizon pointer)
    contention from the concurrent batches — nobody has timed the embedder
    alone on an idle machine.
 
+   That last question is ANSWERED — it is contention, not the model.
+   Timed from inside the container between passes: 8/16/32/64 blocks →
+   0.3/1.3/1.9/3.6 s, and one short string 0.17 s. bge-m3 on this box is
+   about an order of magnitude faster than the >10 s seen under load, so
+   "more slots or smaller work" resolves to smaller work; the hardware is
+   not the constraint.
+   Two more findings that make "shrink the batch" the specific move.
+   First, the mechanism: the pass is single-threaded, one `embed()` in
+   flight, yet `inflight` reaches 4 — abandoned requests keep their
+   slots. The client gives up at 15 s x 2 while the service keeps
+   computing, so each timeout orphans a server-side computation and six
+   retries orphan six. Hence the invariant log shape: one ~31 s timeout,
+   then only instant 429s. The pass fills four slots with its own
+   abandoned work, which is why frequency alone cannot fix it.
+   Second, why it is always batch 1: `embed_missing` sends the first 64
+   *missing* blocks, and the small early blocks are already cached, so
+   batch 1 is 89355 chars (max single block 22756) — 3.3x the 27038 that
+   64 was sized against. ~12 s idle, over budget under any load. 64 was
+   never viable for this corpus; it was measured against the wrong
+   blocks. Landed `_MD_WARMUP_BATCH_SIZE` 64 → 16 (~22 KB, ~3 s idle).
+
 4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
