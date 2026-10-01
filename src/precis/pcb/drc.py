@@ -1602,14 +1602,45 @@ def check_synthesized_footprint(model: dict[str, Any]) -> list[DrcFinding]:
     Severity is always ``error`` — a synthesized bound is not a
     manufacturability margin to grade, it is an instruction to go cache
     the part's real footprint before trusting anything else this run said
-    about it."""
+    about it.
+
+    **A pad marked ``pin_unmatched`` is a different defect** and gets its
+    own ``pin_name_mismatch`` finding: the part's footprint IS cached, but
+    the declared pin name matches none of its pads, so caching cannot fix
+    it — renaming the pin can. Reporting it as "no real footprint" sent
+    the EWOD sink's 56 misnamed pins (``OUT0`` vs the part's ``HVOUT1``)
+    looking for a cache row that already existed. ``view='footprints'``
+    names the footprint's own pins beside the declared ones."""
     by_refdes: dict[str, int] = {}
+    unmatched: dict[str, list[str]] = {}
     for pad in model.get("pads") or []:
-        if pad.get("synthesized") and pad.get("part_lcsc"):
-            refdes = str(pad.get("refdes") or "")
-            if refdes:
-                by_refdes[refdes] = by_refdes.get(refdes, 0) + 1
+        refdes = str(pad.get("refdes") or "")
+        if not refdes or not pad.get("synthesized"):
+            continue
+        if pad.get("pin_unmatched"):
+            names = unmatched.setdefault(refdes, [])
+            if str(pad.get("pin")) not in names:
+                names.append(str(pad.get("pin")))
+        elif pad.get("part_lcsc"):
+            by_refdes[refdes] = by_refdes.get(refdes, 0) + 1
     findings: list[DrcFinding] = []
+    for refdes in sorted(unmatched):
+        names = unmatched[refdes]
+        shown = ", ".join(names[:8]) + (" …" if len(names) > 8 else "")
+        findings.append(
+            DrcFinding(
+                rule="pin_name_mismatch",
+                severity="error",
+                where=f"part {refdes}",
+                detail=(
+                    f"{len(names)} declared pin name(s) of {refdes} match no pad "
+                    f"on its cached footprint ({shown}) — checked at a "
+                    "synthesized bound; view='footprints' lists the "
+                    "footprint's own names"
+                ),
+                objects=({"refdes": refdes, "pins": tuple(names)},),
+            )
+        )
     for refdes in sorted(by_refdes):
         n = by_refdes[refdes]
         findings.append(

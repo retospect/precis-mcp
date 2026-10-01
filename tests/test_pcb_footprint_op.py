@@ -1,8 +1,9 @@
 """gr341532 fix 3 — ``put(op='footprint')`` / ``get(view='footprints')``.
 
 Prod's ``part_footprints`` cache had no rows for the EWOD dogfood board's
-two catalog parts (HV507PG-G = C639448, a placeholder I2C temp sensor =
-C32254) and there was no MCP-facing way to fill it —
+two catalog parts (HV507PG-G = C639448, and the I2C temp sensor — then a
+placeholder C32254, now TMP112 = C28927) and there was no MCP-facing way
+to fill it —
 :func:`precis.pcb.footprint.ensure_footprint` existed but nothing in
 :class:`precis.handlers.pcb.PcbHandler` ever called it (confirmed: no
 production caller anywhere in the tree before this fix, only tests). This
@@ -19,7 +20,10 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import drc as pcb_drc
 from precis.pcb import footprint as pcb_footprint_mod
+from precis.pcb import realize as pcb_realize
+from precis.pcb import session as pcb_session
 from tests.test_pcb_ewod_dogfood import (
     _HV507_LCSC,
     _HV507_PINS,
@@ -228,7 +232,7 @@ def test_op_footprint_needs_part_or_footprint(pcb):
 
 
 def test_view_footprints_lists_cached_catalog_parts_on_dogfood(pcb):
-    slug = _seed(pcb)  # caches both C639448 and C32254 via part_footprint_put
+    slug = _seed(pcb)  # caches both C639448 and C28927 via part_footprint_put
     resp = pcb.get(id=slug, view="footprints")
 
     assert _HV507_LCSC in resp.body
@@ -262,7 +266,7 @@ def test_op_footprint_fill_clears_synthesized_footprint_drc_finding(pcb, monkeyp
         if lcsc == _HV507_LCSC:
             return _grid_footprint(_HV507_PINS, cols=9)
         if lcsc == _TEMP_SENSOR_LCSC:
-            return _grid_footprint(_TEMP_SENSOR_PINS, cols=4)
+            return _grid_footprint(_TEMP_SENSOR_PINS, cols=3)
         return None
 
     monkeypatch.setattr(pcb_footprint_mod, "_easyeda_fetch", fake)
@@ -274,3 +278,70 @@ def test_op_footprint_fill_clears_synthesized_footprint_drc_finding(pcb, monkeyp
 
     after = pcb.get(id="ewod-no-footprints-2", view="drc")
     assert "synthesized_footprint" not in after.body
+
+
+# ── (f) a declared pin name with no pad on a CACHED footprint ────────────
+
+
+def _misnamed_design() -> dict:
+    """The dogfood design with U_TEMP's supply declared ``VDD`` — the name
+    the old SOIC-8 placeholder used — while the TMP112's footprint calls it
+    ``V+``."""
+    design = _design()
+    for comp in design["components"]:
+        if comp["refdes"] == "U_TEMP":
+            comp["pins"] = [
+                {"name": "VDD" if p["name"] == "V+" else p["name"]}
+                for p in comp["pins"]
+            ]
+    for conn in design["connections"]:
+        if conn.get("refdes") == "U_TEMP" and conn["pin"] == "V+":
+            conn["pin"] = "VDD"
+    return design
+
+
+def test_put_names_a_pin_that_matches_no_pad_on_the_cached_footprint(pcb):
+    pcb.store.part_footprint_put(
+        _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=3)
+    )
+
+    resp = pcb.put(id="ewod-misnamed", args=_misnamed_design())
+
+    assert "U_TEMP: declared VDD;" in resp.body
+    assert "V+" in resp.body  # the footprint's own name, beside the wrong one
+    view = pcb.get(id="ewod-misnamed", view="footprints")
+    assert "U_TEMP: declared VDD;" in view.body
+
+
+def test_put_is_silent_when_every_pin_name_matches_the_cached_footprint(pcb):
+    pcb.store.part_footprint_put(
+        _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=3)
+    )
+
+    resp = pcb.put(id="ewod-named", args=_design())
+
+    assert "match no pad" not in resp.body
+
+
+def test_drc_reports_a_misnamed_pin_apart_from_a_missing_footprint(pcb):
+    # U_TEMP's footprint is cached (one pin misnamed); the sink's is not.
+    pcb.store.part_footprint_put(
+        _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=3)
+    )
+    pcb.put(id="ewod-misnamed-drc", args=_misnamed_design())
+    ref_id = pcb.store.get_ref(kind="pcb", id="ewod-misnamed-drc").id
+    ir = pcb._build_ir(ref_id, pcb.store.pcb_graph(ref_id))
+    footprints = pcb_session.footprints_by_refdes(
+        ir, pcb.store.pcb_footprints_for(ref_id)
+    )
+    pads = pcb_realize.pads_for_ir(ir, ["F.Cu", "B.Cu"], footprints)
+
+    flagged = {(p["refdes"], p["pin"]) for p in pads if p.get("pin_unmatched")}
+    assert flagged == {("U_TEMP", "VDD")}
+
+    by_rule: dict[str, set[str]] = {}
+    for f in pcb_drc.check_synthesized_footprint({"pads": pads}):
+        by_rule.setdefault(f.rule, set()).add(f.where)
+    assert by_rule["pin_name_mismatch"] == {"part U_TEMP"}
+    assert "part U_TEMP" not in by_rule.get("synthesized_footprint", set())
+    assert by_rule["synthesized_footprint"]  # the uncached sink still reads as one

@@ -393,7 +393,29 @@ class PcbHandler(Handler):
             f"+{counts['nets']} net(s), +{counts['conns']} conn(s){extra}  "
             f"(now {len(design['instances'])} part(s), {len(design['nets'])} net(s))"
         )
-        return Response(body=head + "\n" + self._toc(design))
+        note = self._pin_name_note(ref.id)
+        return Response(
+            body=head + "\n" + (note + "\n" if note else "") + self._toc(design)
+        )
+
+    def _pin_name_note(self, ref_id: int) -> str:
+        """The put response's warning when a declared pin name matches no
+        pad on its part's cached footprint (:func:`precis.pcb.session.
+        pin_name_mismatches`) — said at authoring time, with both name
+        sets in hand, rather than only as a DRC finding after a route."""
+        graph = self.store.pcb_graph(ref_id)
+        if not graph.get("instances"):
+            return ""
+        ir = self._build_ir(ref_id, graph)
+        footprints = pcb_session.footprints_by_refdes(
+            ir,
+            self.store.pcb_footprints_for(ref_id),
+            local_footprints_by_name=self.store.pcb_local_footprints_for(ref_id),
+            local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+        )
+        return pcb_session.pin_name_mismatch_note(
+            pcb_session.pin_name_mismatches(ir, footprints)
+        )
 
     def _reject_non_electrical(self, nets: list[dict[str, Any]]) -> None:
         """v1 routes electrical nets only — ``domain`` is schema-reserved
@@ -2371,9 +2393,12 @@ class PcbHandler(Handler):
         # pins). Same merge point DRC and the gerber view use.
         graph = self.store.pcb_graph(ref_id)
         ir = self._build_ir(ref_id, graph)
-        geoms = pcb_realize.pad_geometry(
-            ir,
-            pcb_session.footprints_by_refdes(ir, self.store.pcb_footprints_for(ref_id)),
+        footprints = pcb_session.footprints_by_refdes(
+            ir, self.store.pcb_footprints_for(ref_id)
+        )
+        geoms = pcb_realize.pad_geometry(ir, footprints)
+        mismatch_note = pcb_session.pin_name_mismatch_note(
+            pcb_session.pin_name_mismatches(ir, footprints)
         )
         synth_by_refdes: dict[str, list[int]] = {}
         for pid, geom in enumerate(geoms):
@@ -2415,6 +2440,8 @@ class PcbHandler(Handler):
                 "\n\nNext: put(kind='pcb', id='slug', args={'op':'footprint',"
                 "'part':'<C-number>'}) for each uncached part"
             )
+        if mismatch_note:
+            head += "\n\n" + mismatch_note
         return Response(
             body=head
             + "\n"

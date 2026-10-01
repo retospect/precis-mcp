@@ -74,12 +74,11 @@ _HV507_LCSC = "C639448"
 _HV507_CHANNELS = [f"OUT{i}" for i in range(64)]
 _HV507_PINS = [*_HV507_CHANNELS, "DIN", "DOUT", "VDD", "GND", "VPP"]
 
-# Placeholder LCSC C-number for a basic-parts I2C temp sensor (an
-# LM75-class SOIC-8 part, per the spec's own "any in-stock LCSC
-# basic-parts I2C temp sensor" latitude) -- NOT live-verified against
-# current LCSC stock; this is a layout exercise, not a BOM commitment.
-_TEMP_SENSOR_LCSC = "C32254"
-_TEMP_SENSOR_PINS = ["VDD", "GND", "SCL", "SDA"]
+# TI TMP112AIDRLR, SOT-563 I2C temperature sensor. The pin names are the
+# real footprint's own pin_map names, pads 1-6 in order -- the supply is
+# `V+`, not `VDD`. The old placeholder, C32254, was a dual MOSFET.
+_TEMP_SENSOR_LCSC = "C28927"
+_TEMP_SENSOR_PINS = ["SCL", "GND", "ALERT", "ADD0", "V+", "SDA"]
 
 
 def _grid_footprint(
@@ -338,9 +337,9 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
         "components": [
             {
                 "refdes": "U_TEMP",
-                "label": "I2C temp sensor (LM75-class, placeholder C-number)",
+                "label": "I2C temp sensor (TMP112AIDRLR)",
                 "part": _TEMP_SENSOR_LCSC,
-                "footprint": "SOIC-8",
+                "footprint": "SOT-563",
                 "layer": "bottom",
                 "x": 20.0,
                 "y": 0.0,
@@ -408,7 +407,7 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
             {"net": "GND", "refdes": "R_BLEED", "pin": "2"},
             {"net": "GND", "refdes": "U_TEMP", "pin": "GND"},
             {"net": "GND", "refdes": "J_INSTR", "pin": "2"},
-            {"net": "VDD_LOGIC", "refdes": "U_TEMP", "pin": "VDD"},
+            {"net": "VDD_LOGIC", "refdes": "U_TEMP", "pin": "V+"},
             {"net": "I2C_SCL", "refdes": "U_TEMP", "pin": "SCL"},
             {"net": "I2C_SCL", "refdes": "J_INSTR", "pin": "3"},
             {"net": "I2C_SDA", "refdes": "U_TEMP", "pin": "SDA"},
@@ -440,7 +439,7 @@ def _seed(pcb, escape_layers: list[str] | None = None) -> str:
     # invalidated every escape-yield number measured before 2026-09-26.
     pcb.store.part_footprint_put(_HV507_LCSC, _qfp_ring_footprint(_HV507_PINS))
     pcb.store.part_footprint_put(
-        _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=4)
+        _TEMP_SENSOR_LCSC, _grid_footprint(_TEMP_SENSOR_PINS, cols=3)
     )
     return "ewod-dogfood-1"
 

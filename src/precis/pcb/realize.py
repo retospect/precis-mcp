@@ -6059,6 +6059,13 @@ def pads_for_ir(
         part_lcsc = ir.instance_part_lcsc[inst_id]
         if part_lcsc:
             pad["part_lcsc"] = str(part_lcsc)
+        # A synthesized pad on an instance whose footprint IS cached is a
+        # pin NAME that matches no pad, not a missing footprint — DRC
+        # reports the two differently (`check_synthesized_footprint`).
+        if geom.synthesized and footprints:
+            fp = footprints.get(str(ir.instance_refdes[inst_id])) or {}
+            if fp.get("pads"):
+                pad["pin_unmatched"] = True
         if geom.shape != "circle":
             pad["h"] = pad_h
         if geom.shape == "polygon" and geom.poly:

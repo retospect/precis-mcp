@@ -13,18 +13,13 @@ sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and
 pre-place-route-blocks items deleted as shipped; placer-sees-authored-vias, the gerber DRC
 banner, the board-feature CPL/BOM rule and the feasibility layer-lock count
-landed; Do-next renumbered)
+landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
+Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
 ## Do next
 
-1. **backlog/pcb-ewod-sink-pin-names-do-not-match-the-real-part.md** — 56 of
-   59 sink pins silently fell back to synthesized bounds while the footprint
-   row read `cached: yes`; every escape-yield and congestion number in this
-   thread was measured against those bounds (ewod-dogfood-4: names only,
-   21→38 realized on identical code). Nothing below can be trusted until it
-   lands, so it outranks the corruption item.
-2. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
+1. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
    canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid
    (but may be incomplete), we should never get a failure."* So legality is
@@ -34,33 +29,35 @@ landed; Do-next renumbered)
    progressive and an unplaced design has no geometry to violate. Folds in
    backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
    narrower): implement one, not both.
-3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
-   **de-escalated by 2's ruling.** risk() is a MAX over margin terms, so any
+2. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
+   **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a
    $0.046 term overruled courtyard_overlap). With legality moved out of the
    objective entirely this no longer gates anything manufacturability-facing;
    what survives is tuning clarity for the next person adding a term — and
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
-4. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
+3. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
    criteria came off an invalid placement and are void; now a
-   rewrite-against-a-new-fixture job that needs 1's real pad geometry.
+   rewrite-against-a-new-fixture job over the sink's real pad geometry
+   (its pin names join the cached footprint since 2026-10-01, and a put
+   now names any pin that does not).
    Ruled out as its cause (2026-10-01): the escape layer lock.
    `view='feasibility'` now counts pins on a layer their class forbids, and
    on the dogfood fixture all 54 reach B.Cu through the authored plaza vias.
    The "true via floor of 55" was wrong, because those vias already exist.
    Do not re-open the estimate to explain the 40 failures.
-5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
+4. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
-   only registered generator is `ewod_pad_array`). Sits beside 4: both are
+   only registered generator is `ewod_pad_array`). Sits beside 3: both are
    the escape corridor, this one is where the primitive lives. Reto
    2026-09-26/27: board = data, engine = general.
-6. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
+5. **backlog/pcb-generator-version-is-a-manual-bump-with-no-tripwire.md** —
    op='route' never re-runs the generator, which is why pb345846 still
-   permits F.Cu after the 09-27 fix. Now owns the live half of 7: the stale
+   permits F.Cu after the 09-27 fix. Now owns the live half of 6: the stale
    stored class IS this staleness, and without a tripwire the same
    staleness re-opens any generator fix.
-7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on was measured in a worktree
    carrying the uncommitted routing_area term; on main that fixture passes.
@@ -68,7 +65,7 @@ landed; Do-next renumbered)
    routing_area reverted the dogfood file is `8 passed`, with it applied the
    F.Cu escape assertion fails — so the F.Cu escape is attributable to the
    term's placement, not to pad geometry. What is left is the stale class on
-   pb345846, which 6 owns, plus the narrower open question: is that escape a
+   pb345846, which 5 owns, plus the narrower open question: is that escape a
    real leak at that placement, or a placement-sensitive assertion? Reads
    realize/maze, which pcb-easyeda-round-trip's router item also touches;
    this thread sequences behind theirs.
@@ -87,7 +84,7 @@ landed; Do-next renumbered)
    divergence (`realize.pad_board_wh`, landed 2026-09-30), not the term:
    with that fixed, `test_pcb_reference_end_to_end.py` is 5 passed at every
    seed WITH the term applied. What remains against the term is the dogfood
-   F.Cu escape assertion (item 7 above), re-measured on top of the fix. So
+   F.Cu escape assertion (Do-next 6), re-measured on top of the fix. So
    the open decision is back to "gate now or wait", plus that one
    assertion.
 2. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
@@ -125,8 +122,9 @@ landed; Do-next renumbered)
    valid" claim.
 4. **backlog/pcb-layer-preferred-direction.md** +
    **backlog/pcb-congestion-driven-spread.md** — the two escape-yield
-   levers that are not defects; wait on Do-next 1 or they optimise against
-   an artifact.
+   levers that are not defects. The sink's pads have been real since
+   2026-10-01; re-measure escape yield before tuning either, because every
+   number they were ranked on was taken against synthesized bounds.
 5. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 2, where
@@ -157,7 +155,7 @@ landed; Do-next renumbered)
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
-   it but a human looking at the render. Same root gap as Do-next 4's
+   it but a human looking at the render. Same root gap as Do-next 3's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
 9. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
@@ -199,11 +197,10 @@ landed; Do-next renumbered)
 ## Parked
 
 - **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead, and not before Do-next 1 lands and the escape-layer
-  question (Do-next 7, with its live half in 6) is settled, or it is done
-  twice. Named by item, not number: that rank has moved twice already.
+  per-write go-ahead, and not before the escape-layer question (Do-next 6,
+  with its live half in 5) is settled, or it is done twice. Named by item, not number: that rank has moved twice already.
 - **backlog/pcb-via-geometry-ignores-pad-side-and-pads.md** — unparks with
-  Do-next 2, where via-vs-pad becomes an enforced rule rather than a
+  Do-next 1, where via-vs-pad becomes an enforced rule rather than a
   reported one.
 
 - **round-7 residue (2026-09-03 review, item deleted)** — a large authored
@@ -244,8 +241,9 @@ landed; Do-next renumbered)
 
 ## No action needed
 
-- **gr346009** — soft-deleted, do not reopen; the count it exposed is
-  Do-next 1's. (Tombstone restored 2026-09-30 after the review's relink
+- **gr346009** — soft-deleted, do not reopen; the count it exposed was
+  the sink's misnamed pins, fixed 2026-10-01, and a put or DRC now names
+  any pin that matches no pad on a cached footprint. (Tombstone restored 2026-09-30 after the review's relink
   pass pruned it as "closed".)
 - **The "maze occupancy guarantee leak"** — there was no leak. The router
   cleared its own claim by 0.1703 mm on the copper that fired the finding;

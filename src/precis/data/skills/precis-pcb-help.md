@@ -244,6 +244,14 @@ get(kind="pcb", id="s", view="footprints")  # confirm U1's C-number is cached
 `parts=[...]` pulls several C-numbers in one call; a failed pull reports
 `error` in that part's own row instead of raising, so one bad C-number
 doesn't lose the rest. `force=True` re-pulls even when already cached.
+
+`pin_name_mismatch` is a different finding: the footprint IS cached, but
+a declared pin name matches none of its pads, so that pin still sits at a
+synthesized bound. Re-pulling cannot fix it; rename the pin. A design
+`put` and `view='footprints'` both list the declared names beside the
+footprint's own (`U_TEMP: declared VDD; the footprint names ADD0, ALERT,
+GND, SCL, SDA, V+`).
+
 When the vendor has nothing for a C-number, author the footprint directly
 instead — same pad shape as `footprints:[...]` in `put`'s design-authoring
 args:

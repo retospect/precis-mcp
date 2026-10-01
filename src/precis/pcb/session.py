@@ -385,6 +385,65 @@ def _real_pin_offsets(fp: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return out
 
 
+def pin_name_mismatches(
+    ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
+) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    """``(refdes, declared names with no pad, the footprint's own names)``
+    for every instance whose footprint IS cached but does not name one of
+    its declared pins.
+
+    That is a name error, not a missing footprint: the join in
+    :func:`apply_real_pin_offsets` and :func:`precis.pcb.realize.
+    pad_geometry` is by pin NAME, so an unmatched pin silently falls back
+    to a synthesized landpattern bound while the cache row still reads
+    ``cached: yes``. The EWOD sink declared ``OUT0…OUT63`` against a part
+    whose pads are ``HVOUT1…HVOUT64``, and 56 of its 59 pins were bounds
+    for a week of measurements before anyone noticed. ``footprints`` is
+    the refdes-keyed dict
+    :func:`footprints_by_refdes` returns; an instance absent from it has no
+    footprint to mismatch and is not reported here."""
+    labels: dict[int, list[str]] = {}
+    for pid in range(ir.n_pins):
+        labels.setdefault(int(ir.pin_instance[pid]), []).append(str(ir.pin_label[pid]))
+    out: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    for inst_id in range(ir.n_instances):
+        refdes = str(ir.instance_refdes[inst_id])
+        fp = footprints.get(refdes)
+        if not fp or not fp.get("pads"):
+            continue
+        real = _real_pin_offsets(fp)
+        unmatched = tuple(
+            dict.fromkeys(n for n in labels.get(inst_id, []) if n not in real)
+        )
+        if unmatched:
+            out.append((refdes, unmatched, tuple(sorted(real))))
+    return out
+
+
+def pin_name_mismatch_note(
+    mismatches: list[tuple[str, tuple[str, ...], tuple[str, ...]]],
+) -> str:
+    """The warning block a design put and ``view='footprints'`` lead with
+    when :func:`pin_name_mismatches` found any — empty otherwise."""
+    if not mismatches:
+        return ""
+
+    def _names(names: tuple[str, ...]) -> str:
+        shown = ", ".join(names[:12])
+        return shown + (f", … (+{len(names) - 12})" if len(names) > 12 else "")
+
+    lines = [
+        "⚠️  pin names that match no pad on the part's cached footprint — "
+        "these pins sit at a synthesized bound, not the real land:"
+    ]
+    for refdes, unmatched, available in mismatches:
+        lines.append(
+            f"- {refdes}: declared {_names(unmatched)}; "
+            f"the footprint names {_names(available)}"
+        )
+    return "\n".join(lines) + "\n\nNext: rename the pins to the footprint's names.\n"
+
+
 def apply_real_pin_offsets(
     ir: pcb_ir.PcbIR, footprints: dict[str, dict[str, Any]]
 ) -> int:
