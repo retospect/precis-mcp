@@ -215,6 +215,13 @@ _split_prio = split_prio
 #: set kills cycles, this caps the depth of sub-quest expansion.
 _MAX_TREE_DEPTH = 4
 
+#: Per-kind server listing cap in the tree rollup. A sub-quest with 84
+#: serving papers (qu347481, 2026-10-01) pushed the roadmap root's tree past
+#: the response frame, so the capability ledger — the block the view exists
+#: for on a roadmap root — was cut off unseen. The tree is a rollup; the
+#: full list is one ``view='links'`` away.
+_MAX_TREE_SERVERS_PER_KIND = 8
+
 #: Default-render logbook tail length — matches the web hub's ``entries[-10:]``
 #: (``src/precis_web/routes/refs.py``) so the digest and the hub agree on
 #: "recent". The full notebook lives behind ``view='logbook'``.
@@ -1181,10 +1188,16 @@ class QuestHandler(NumericRefHandler):
         for kind in sorted(by_kind):
             refs = by_kind[kind]
             lines.append(f"{indent}  {kind} ({len(refs)}) serving:")
-            for s in refs:
+            for s in refs[:_MAX_TREE_SERVERS_PER_KIND]:
                 sh = handle_registry.try_format(s.kind, s.id) or f"{s.kind}:{s.id}"
                 title = (s.title or "").splitlines()[0] if s.title else ""
                 lines.append(f"{indent}    ▸ {sh} {title[:70]}")
+            hidden = len(refs) - _MAX_TREE_SERVERS_PER_KIND
+            if hidden > 0:
+                lines.append(
+                    f"{indent}    … +{hidden} more — "
+                    f"get(kind={self.kind!r}, id={ref.id}, view='links')"
+                )
 
         # Deed ledger + tote (top-level only — a rollup, not per-node noise).
         if depth == 0:

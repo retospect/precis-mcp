@@ -296,6 +296,24 @@ class TestServesAndTree:
         assert "draft (1) serving" in tree
         assert "Serving Doc" in tree
 
+    def test_tree_caps_servers_per_kind_and_points_at_links(self, store: Any) -> None:
+        """2026-10-01: the roadmap root's tree listed 84 papers under one
+        sub-quest and the response frame cut the capability ledger off the
+        end. The tree is a rollup — eight per kind, then a pointer."""
+        from tests.workers._helpers import seed_ref
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        for i in range(11):
+            pid = seed_ref(store, title=f"Serving paper {i:02d}")
+            store.add_link(src_ref_id=pid, dst_ref_id=qid, relation="serves")
+
+        tree = h.get(id=qid, view="tree").body
+        assert "paper (11) serving" in tree
+        assert tree.count("▸ ") == 8
+        assert f"… +3 more — get(kind='quest', id={qid}, view='links')" in tree
+        assert h.get(id=qid, view="links").body.count("(serves)") == 11
+
     def test_sub_quest_recurses_under_grand_quest(self, store: Any) -> None:
         h = _handler(store)
         grand = _created_id(h.put(text="Heal the environment"))
