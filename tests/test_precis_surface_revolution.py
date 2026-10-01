@@ -67,7 +67,8 @@ def test_drum_segments_join_and_pick_the_largest_fillet() -> None:
         if tube_radius(90, 0) - rho >= rv.catenoid_cut_radius(tube_radius(24, 0))
     ]
     assert m.fillet_radius == max(fits)
-    assert m.segments[-1].end[0] == 0.0
+    # the lid ends on the axis
+    assert m.segments[-1].end[0] == pytest.approx(0.0, abs=1e-12)
     # 6 heptagon rows per catenoid, 6 pentagon rows per fillet
     signs = [d.sign for d in m.rows]
     assert signs.count(-1) == 12 and signs.count(+1) == 12

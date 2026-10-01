@@ -77,6 +77,9 @@ _CASES: dict[str, dict[str, object]] = {
     # the carbon window (gr451269). The previous 8.0 gave 0.38 Å bonds.
     "tpms": {"family": "P", "cell_A": 31.7, "n": 11, "remesh": False},
     "schwarzite": {"family": "P", "cell_A": 31.7, "n": 11, "remesh": False},
+    # The smallest clean drum (neck >= 10 on a (60,0) wall, smooth_drum.py);
+    # relax=False keeps it at ~0.1 s -- the envelope is all this file checks.
+    "smooth_drum": {"neck": 10, "wall": 60, "sheet_radius_A": 30.0, "relax": False},
     "hexfold": {
         "spec": (
             "hexfold 0.1\n\nlattice: element=C sigma=1.42\n\n"

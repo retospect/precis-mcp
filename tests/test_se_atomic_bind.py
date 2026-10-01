@@ -622,6 +622,7 @@ def test_the_generator_registry_is_reachable_from_se() -> None:
         "hexfold",
         "tpms",
         "schwarzite",
+        "smooth_drum",
     }
 
 
