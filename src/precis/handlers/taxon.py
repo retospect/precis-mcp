@@ -75,6 +75,7 @@ DEDUP_MAX_DISTANCE = 0.25
 
 #: Dedup candidates named in a refusal (the rest are counted).
 _DEDUP_SHOW = 5
+_GLOSS_CHARS = 80  # definition prefix on a candidate line
 
 
 def _dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -228,7 +229,11 @@ class TaxonHandler(NumericRefHandler):
         out = []
         for rid in ids[:_DEDUP_SHOW]:
             handle, name = self._node_label(rid)
-            out.append(f"  {handle} {name} ({self._path_label(rid)})")
+            line = f"  {handle} {name} ({self._path_label(rid)})"
+            ref = self.store.get_ref(kind=self.kind, id=rid)
+            if gloss := ((ref.meta or {}).get("definition") if ref else None):
+                line += f" — {gloss[:_GLOSS_CHARS]}"
+            out.append(line)
         if len(ids) > _DEDUP_SHOW:
             out.append(f"  … {len(ids) - _DEDUP_SHOW} more")
         return "\n".join(out)
@@ -266,7 +271,12 @@ class TaxonHandler(NumericRefHandler):
             raise BadInput(
                 f"taxon path {path!r} is ambiguous ({len(hits)} nodes):\n"
                 + self._candidate_lines(hits),
-                next="use a longer path or a handle: get(kind='taxon', id='tn<id>')",
+                next=(
+                    "use a longer path or a handle: get(kind='taxon', id='tn<id>')"
+                    if len({self._path_label(h) for h in hits}) > 1
+                    else "same path: pick by definition and use its handle: "
+                    "get(kind='taxon', id='tn<id>')"
+                ),
             )
         near = cands or [
             r.id
@@ -371,7 +381,8 @@ class TaxonHandler(NumericRefHandler):
                     "axis=/depth= only apply with under=",
                     next="search(kind='taxon', under='taxon:42', axis='method', depth=2)",
                 )
-            return super().search(q=q, page_size=page_size, page=page, **_kw)
+            resp = super().search(q=q, page_size=page_size, page=page, **_kw)
+            return self._exact_first(resp, q, page, None)
         if axis is not None and (not isinstance(axis, str) or not axis.strip()):
             raise BadInput(
                 f"axis must be a non-empty string, got {axis!r}",
@@ -407,6 +418,7 @@ class TaxonHandler(NumericRefHandler):
                 page=page,
                 **_kw,
             )
+            resp = self._exact_first(resp, q, page, set(ids))
             return Response(body=f"# {scope}\n{resp.body}", cost=resp.cost)
         rows = []
         for rid in ids:
@@ -421,6 +433,21 @@ class TaxonHandler(NumericRefHandler):
             lines[0] += f" (rows {start + 1}-{start + len(window)})"
         lines += [f"{self._hop_line(rid)}  [depth {d}]" for d, _n, rid in window]
         return Response(body="\n".join(lines))
+
+    def _exact_first(
+        self, resp: Response, q: str | None, page: int, scope: set[int] | None
+    ) -> Response:
+        """Page 1 leads with nodes whose name/slug/alias equals ``q`` — hybrid
+        ranking can put 'Tensile yield strength' above 'Yield' (gr460338)."""
+        if not q or not q.strip() or int(page) != 1:
+            return resp
+        hits = [h for h in self._term_matches(q) if scope is None or h in scope]
+        if not hits:
+            return resp
+        lead = "exact: " + "; ".join(
+            "{} {} ({})".format(*self._node_label(h), self._path_label(h)) for h in hits
+        )
+        return Response(body=f"{lead}\n{resp.body}", cost=resp.cost)
 
     # ── link: meta= (edge axis) ─────────────────────────────────────
 

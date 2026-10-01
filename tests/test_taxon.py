@@ -352,6 +352,51 @@ class TestHierarchyGuard:
                 apply_link_ops(store, mem, link=f"taxon:{t}", unlink=None, rel=rel)
         assert store.links_for(mem, direction="out", relation="specialises") == []
 
+    @pytest.mark.parametrize(
+        ("kind", "extra"),
+        [
+            ("gripe", {}),
+            ("job", {"job_type": "fix_gripe"}),
+            ("message", {"target": "discord/1/2/3"}),
+            ("todo", {}),
+        ],
+    )
+    def test_create_time_put_link_door_guarded_per_kind(
+        self, store: Any, kind: str, extra: dict[str, Any]
+    ) -> None:
+        from precis.dispatch import Hub
+        from precis.handlers.gripe import GripeHandler
+        from precis.handlers.job import JobHandler
+        from precis.handlers.message import MessageHandler
+        from precis.handlers.todo import TodoHandler
+
+        handlers = {
+            "gripe": GripeHandler,
+            "job": JobHandler,
+            "message": MessageHandler,
+            "todo": TodoHandler,
+        }
+        t = _mk(store, f"{kind} door taxon")
+
+        def _count() -> int:
+            with store.pool.connection() as conn:
+                return int(
+                    conn.execute(
+                        "select count(*) from refs where kind=%s", (kind,)
+                    ).fetchone()[0]
+                )
+
+        before = _count()
+        for rel in ("specialises", "generalises"):
+            with pytest.raises(BadInput, match=kind):
+                handlers[kind](hub=Hub(store=store)).put(
+                    text=f"a {kind} over a taxon",
+                    link=f"taxon:{t}",
+                    rel=rel,
+                    **extra,
+                )
+        assert _count() == before
+
     def test_chunk_level_target_refused(self, store: Any) -> None:
         from precis.handlers._link_tag_ops import guard_taxon_hierarchy
         from precis.handlers._link_target import LinkTarget
@@ -771,6 +816,23 @@ class TestLexicalNameAndDefinition:
             out = _verb_text(core.search(kind="taxon", q=word))
             assert f"tn{rid}" in out, (word, out)
 
+    def test_exact_name_leads_page_one(self, store: Any) -> None:
+        # gr460338: prod ranked 'Tensile yield strength' above 'Yield'
+        h = _handler(store)
+        root = _mk(store, "exq root")
+        long_ = _mk(store, "exq quuxle strength", under=root)
+        exact = _mk(store, "exq quuxle", under=root)
+        body = h.search(q="exq quuxle").body
+        assert body.splitlines()[0].startswith(f"exact: tn{exact} ")
+        assert f"tn{long_}" not in body.splitlines()[0]
+        faceted = h.search(q="exq quuxle", under=f"taxon:{root}").body
+        assert f"exact: tn{exact} " in faceted
+        assert "exact:" not in h.search(q="exq quuxle", page=2).body
+        assert "exact:" not in h.search(q="exq quux").body
+        # a match outside under= is not promoted into the facet
+        other = _mk(store, "exq other root")
+        assert "exact:" not in h.search(q="exq quuxle", under=f"taxon:{other}").body
+
     def test_card_scan_is_taxon_only(self) -> None:
         from precis.handlers.concept import ConceptHandler
         from precis.handlers.memory import MemoryHandler
@@ -916,8 +978,24 @@ class TestPathIds:
             h.get(id="pathy-shared")
         assert f"tn{t1}" in str(ei.value) and f"tn{t2}" in str(ei.value)
         assert "pathy-root-a/pathy-shared" in str(ei.value)
+        assert "longer path" in (ei.value.next or "")
         # a longer path disambiguates
         assert h.get(id="pathy-root-b/pathy-shared").body.startswith(f"# taxon {t2}:")
+
+    def test_same_path_siblings_listed_by_definition(self, store: Any) -> None:
+        # prod: two seeded "Bore diameter" nodes under measurand share a path
+        h = _handler(store)
+        root = _mk(store, "pathq root")
+        t1 = _created_id(h.put(text="pathq twin — inner-ring bore of a bearing"))
+        t2 = _created_id(h.put(text="pathq twin — bore of a hose fitting", dedup=False))
+        _link(store, t1, root)
+        _link(store, t2, root)
+        with pytest.raises(BadInput, match="ambiguous") as ei:
+            h.get(id="pathq-root/pathq-twin")
+        assert "inner-ring bore of a bearing" in str(ei.value)
+        assert "bore of a hose fitting" in str(ei.value)
+        assert "same path" in (ei.value.next or "")
+        assert "longer path" not in (ei.value.next or "")
 
     def test_unmatched_path_not_found_with_near_candidates(self, store: Any) -> None:
         h = _handler(store)

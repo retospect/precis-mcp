@@ -13,6 +13,11 @@ server; gr345366 moved to chemistry)
 
 ## Do next
 
+0. **gr459597 + backlog/quest-tick-local-first-search.md** — fix the
+   tick's paper search before tick 3: S2 calls run keyless, uncached and
+   double-retried (library 10× inside external_retry 5×), so tick 2 spent
+   ~25 min on 61×429; local-first (Reto, 2026-10-01) removes most of those
+   calls outright. Both touch the same quest/search.py path — one slice.
 1. **qu453863 activation** — no longer needs Reto's word
    (docs/conventions/thresholds.md, 2026-10-01: ticks and activation are
    go). The first live
@@ -43,10 +48,6 @@ server; gr345366 moved to chemistry)
 
 ## Horizon
 
-0. **backlog/quest-tick-local-first-search.md** — inserted 2026-10-01 by
-   the pillar review on Reto's word ("ticks should look locally first"):
-   S2 acquisition fires on every query today and the local leg sees only
-   papers. Owner re-ranks; every tick that searches pays for it.
 1. **qu453863 ticking cadence** — waits on three watched ticks (Do next
    1-2); rungs that carry numbers, driving PRIO down through qu161906 to the
    pathway quests.
