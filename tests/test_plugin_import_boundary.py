@@ -147,7 +147,8 @@ def _tables_by_package() -> dict[str, set[str]]:
         owned: set[str] = set()
         for sql in sorted(migrations.glob("*.sql")):
             owned.update(
-                m.group(1).lower() for m in create.finditer(sql.read_text("utf-8"))
+                m.group(1).lower()
+                for m in create.finditer(sql.read_text(encoding="utf-8"))
             )
         if owned:
             tables[package] = owned
