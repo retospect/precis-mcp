@@ -14,13 +14,14 @@ import pytest
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
 from precis.workers.diagnose_scan import _CAP, run_diagnose_scan_pass
+from tests._gripe import insert_gripe
 
 pytestmark = pytest.mark.db
 
 
 def _open_gripe(store: Store, title: str, *, prio: int | None = None) -> int:
     """Insert a live gripe tagged STATUS:open; return its id."""
-    ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={}, prio=prio)
+    ref = insert_gripe(store, title, meta={}, prio=prio)
     store.add_tag(
         ref.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
     )

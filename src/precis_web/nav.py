@@ -96,7 +96,7 @@ def _alerts_count(store: Store) -> int:
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
 def _gripes_count(store: Any) -> int:
-    """Live (non-terminal) ``kind='gripe'`` rows.
+    """Live (non-terminal) ``kind='gripe'`` rows; untagged counts as open.
 
     Count-only mirror of ``gripes.py::_rows``'s default ``status='live'``
     filter — keep the two in sync (both exclude
@@ -109,12 +109,14 @@ def _gripes_count(store: Any) -> int:
     with store.pool.connection() as conn:
         row = conn.execute(
             f"""
-            SELECT count(DISTINCT r.ref_id)
+            SELECT count(*)
               FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND t.namespace = 'STATUS' AND t.value NOT IN ({terminals})
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt
+                     JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                      AND t.value IN ({terminals}))
             """,
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0

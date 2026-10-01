@@ -16,6 +16,7 @@ import pytest
 from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils import handle_registry
+from tests._gripe import insert_gripe
 
 # The full-hub fixture (runtime_with_store) boots every handler, which needs
 # the [paper] extra (pysbd). Absent on host; present in the container gate.
@@ -428,7 +429,7 @@ def test_news_recent_listing_carries_record_handle(
 def test_surface_get_soft_deleted_handle_is_gone(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
-    ref = store.insert_ref(kind="gripe", slug=None, title="doomed", meta={})
+    ref = insert_gripe(store, "doomed", meta={})
     store.retire_ref(ref.id)
     h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
     out, is_error = runtime_with_store.dispatch_with_status("get", {"id": h})
@@ -491,7 +492,7 @@ def test_surface_get_never_existed_slug_kind_handle_no_recent_hint_leak(
 def test_surface_get_live_handle_routing_unchanged(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
-    ref = store.insert_ref(kind="gripe", slug=None, title="alive", meta={})
+    ref = insert_gripe(store, "alive", meta={})
     h = handle_registry.format_handle("gripe", ref.id)
     via_handle = runtime_with_store.dispatch("get", {"id": h})
     via_explicit = runtime_with_store.dispatch(
@@ -504,7 +505,7 @@ def test_surface_get_live_handle_routing_unchanged(
 def test_surface_get_soft_deleted_handle_explicit_mismatched_kind_falls_through(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:
-    ref = store.insert_ref(kind="gripe", slug=None, title="doomed too", meta={})
+    ref = insert_gripe(store, "doomed too", meta={})
     store.retire_ref(ref.id)
     h = handle_registry.format_handle("gripe", ref.id)  # 'gr<ref_id>'
     # An explicit kind= that disagrees with the handle's own type code must

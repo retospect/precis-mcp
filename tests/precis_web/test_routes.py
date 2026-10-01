@@ -4389,7 +4389,7 @@ def test_gripes_count_excludes_terminal_statuses() -> None:
 
     class _Conn:
         def execute(self, sql, params=None):
-            assert "t.value NOT IN ('done', 'wontfix')" in sql
+            assert "t.value IN ('done', 'wontfix')" in sql
             return _Cursor()
 
     class _Pool:

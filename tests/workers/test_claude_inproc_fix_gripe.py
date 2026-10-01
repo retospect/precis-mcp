@@ -15,12 +15,13 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import claude_inproc as ci
 from precis.workers.job_types.fix_gripe import RunOutcome
+from tests._gripe import insert_gripe
 
 pytestmark = pytest.mark.db
 
 
 def _open_gripe(store: Store, title: str = "a bug") -> int:
-    ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={})
+    ref = insert_gripe(store, title, meta={})
     store.add_tag(
         ref.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
     )

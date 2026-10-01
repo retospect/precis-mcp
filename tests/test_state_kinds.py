@@ -21,6 +21,7 @@ from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert
+from tests._gripe import insert_gripe
 from tests.conftest import chunk_handle, record_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────
@@ -446,8 +447,8 @@ class TestJob:
         fix attempts for a gripe" (gr311342)."""
         from precis.utils import handle_registry
 
-        gripe = store.insert_ref(kind="gripe", slug=None, title="a bug")
-        other_gripe = store.insert_ref(kind="gripe", slug=None, title="another bug")
+        gripe = insert_gripe(store, "a bug")
+        other_gripe = insert_gripe(store, "another bug")
         linked_job = store.insert_ref(kind="job", slug=None, title="fix_gripe (linked)")
         unrelated_job = store.insert_ref(
             kind="job", slug=None, title="fix_gripe (unrelated)"
@@ -470,7 +471,7 @@ class TestJob:
         assert handle_registry.format_handle("job", unrelated_job.id) not in resp.body
 
     def test_search_link_only_no_matches(self, job: JobHandler, store: Store) -> None:
-        gripe = store.insert_ref(kind="gripe", slug=None, title="a bug")
+        gripe = insert_gripe(store, "a bug")
         resp = job.search(link=f"gripe:{gripe.id}")
         assert "no job entries linked to" in resp.body
 
@@ -482,7 +483,7 @@ class TestJob:
         ``tags=`` path — page 2 must not re-show page 1's rows, and the
         header must show the actual row window (not a bare "2 of 5" that
         reads as "the first 2")."""
-        gripe = store.insert_ref(kind="gripe", slug=None, title="a popular bug")
+        gripe = insert_gripe(store, "a popular bug")
         for i in range(5):
             j = store.insert_ref(kind="job", slug=None, title=f"fix attempt {i}")
             store.add_link(
@@ -506,7 +507,7 @@ class TestJob:
         entirely inside SQL (``LIMIT``/``OFFSET``) — never by pulling
         every edge (``links_for``) onto the request thread and slicing
         in Python. Spy on both store methods to prove the bound."""
-        gripe = store.insert_ref(kind="gripe", slug=None, title="a linky bug")
+        gripe = insert_gripe(store, "a linky bug")
         for i in range(6):
             j = store.insert_ref(kind="job", slug=None, title=f"attempt {i}")
             store.add_link(

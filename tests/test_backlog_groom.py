@@ -26,6 +26,7 @@ from precis.workers.backlog_groom import (
     run_backlog_groom_pass,
 )
 from precis.workers.dispatch import run_dispatch_pass
+from tests._gripe import insert_gripe
 
 
 def _open_gripe(
@@ -33,7 +34,7 @@ def _open_gripe(
 ) -> int:
     """Insert a live gripe tagged STATUS:open (and OPEN:auto-fix by
     default — the groomer's selection gate); return its id."""
-    ref = store.insert_ref(kind="gripe", slug=None, title=title, meta={}, prio=prio)
+    ref = insert_gripe(store, title, meta={}, prio=prio)
     store.add_tag(
         ref.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
     )

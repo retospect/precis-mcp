@@ -34,6 +34,7 @@ from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.seniority import derive_evidence
 from precis.workers.chase import FindingRow, advance_finding, run_finding_chase_pass
+from tests._gripe import insert_gripe
 from tests.workers._helpers import make_mock_bge_m3
 
 _VERIFY_PATH = "precis.workers.chase._verify_support_with_caveats"
@@ -720,7 +721,7 @@ def test_intermediate_hop_with_no_support_verdict_is_skipped(store: Any) -> None
 def test_intermediate_hop_that_is_not_a_live_paper_is_skipped(store: Any) -> None:
     """A chain hop pointing at a non-paper ref (defensive -- the chain
     should only ever hold papers) is never attached as evidence."""
-    not_a_paper = store.insert_ref(kind="gripe", slug=None, title="stray ref", meta={})
+    not_a_paper = insert_gripe(store, "stray ref", meta={})
     term = _seed_paper(store, cite_key="termnp", blocks=["A direct statement."])
 
     finding = _seed_finding_with_chain(

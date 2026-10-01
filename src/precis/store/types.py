@@ -836,6 +836,19 @@ class Tag:
                                 f"(e.g. tags=['{prefix.lower()}:{value}'])"
                             ),
                         )
+                kind_values = (
+                    _KIND_STATUS_VALUES.get(kind) if kind is not None else None
+                )
+                if prefix == "STATUS" and kind_values is not None:
+                    if value not in kind_values:
+                        raise BadInput(
+                            f"invalid STATUS value for kind {kind!r}: {value!r}",
+                            options=sorted(kind_values),
+                            next=(
+                                f"kind={kind!r} STATUS must be one of "
+                                f"{sorted(kind_values)}"
+                            ),
+                        )
                 if value not in allowed:
                     raise BadInput(
                         f"invalid {prefix} value: {value!r}",
@@ -924,6 +937,17 @@ class Tag:
 # STATUS values match TodoHandler's documented lifecycle. Everything
 # else is provisional — best-effort coverage of vocabulary actually used
 # in the codebase + skill docs.
+
+# Per-kind subset of the unioned ``STATUS`` vocabulary below. ``STATUS``
+# hosts several workflows (todo, gripe, finding, ...); a kind listed here
+# only accepts its own values (``refuted`` is a finding status, not a
+# gripe one). Kinds not listed accept the full union. Gripe is also
+# enforced at commit by the 0175 deferred triggers — keep in sync.
+_KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
+    "gripe": frozenset(
+        {"open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"}
+    ),
+}
 
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # STATUS hosts two distinct workflows on the same axis:

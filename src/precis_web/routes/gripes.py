@@ -185,27 +185,30 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     ``PRIO:`` tag (a plain join would duplicate rows for a
     multi-PRIO-tagged gripe).
     """
-    clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL", "t.namespace = 'STATUS'"]
+    # A gripe with no STATUS tag counts as ``open`` (the migration-0175
+    # trigger makes that unreachable, but the list must never hide one).
+    clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL"]
+    terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
     if status_filter == "wontfix":
         clauses.append("t.value = 'wontfix'")
     elif status_filter != "all":
-        terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
-        clauses.append(f"t.value NOT IN ({terminals})")
+        clauses.append(f"COALESCE(t.value, 'open') NOT IN ({terminals})")
     sql = f"""
         SELECT r.ref_id,
                r.title,
                r.created_at,
                r.updated_at,
-               t.value AS status,
+               COALESCE(t.value, 'open') AS status,
                (SELECT p.value FROM ref_tags prt
                   JOIN tags p ON p.tag_id = prt.tag_id
                  WHERE prt.ref_id = r.ref_id AND p.namespace = 'PRIO'
                  LIMIT 1) AS prio
           FROM refs r
-          JOIN ref_tags rt ON rt.ref_id = r.ref_id
-          JOIN tags t ON t.tag_id = rt.tag_id
+          LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
+               AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
+          LEFT JOIN tags t ON t.tag_id = rt.tag_id
          WHERE {" AND ".join(clauses)}
-         ORDER BY CASE t.value {_STATUS_RANK_SQL} ELSE {len(_RANKED_VALUES)} END,
+         ORDER BY CASE COALESCE(t.value, 'open') {_STATUS_RANK_SQL} ELSE {len(_RANKED_VALUES)} END,
                   r.updated_at DESC
     """
     with store.pool.connection() as conn:

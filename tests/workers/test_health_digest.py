@@ -59,6 +59,7 @@ from precis.workers.health_digest import (
 from precis.workers.registry import ServiceKind, ServiceSpec
 from precis.workers.scheduler import Cadence
 from precis.workers.service_config import set_service_prio
+from tests._gripe import insert_gripe
 from tests.workers._helpers import make_mock_bge_m3, seed_ref
 
 # ── (c) zero-LLM, pure template ──────────────────────────────────────────
@@ -1423,7 +1424,7 @@ def test_router_auto_closes_when_condition_clears(store) -> None:
     gripe_id = int(gripes[0].id)
 
     # A plain, non-watchdog gripe must be untouched by the auto-close sweep.
-    other = store.insert_ref(kind="gripe", slug=None, title="unrelated", meta={})
+    other = insert_gripe(store, "unrelated", meta={})
     store.chunks.insert_chunks(
         other.id,
         [
