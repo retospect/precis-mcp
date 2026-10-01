@@ -963,6 +963,30 @@ class PaperHandler(Handler):
             card_kinds=("card_combined",),
         )
         triples = _dedup_card_hits(triples)
+        # Title introducer, as in :meth:`search`: FTS strips an exact-title
+        # query ("attention is all you need") to 'attent' & 'need', so the
+        # paper's card loses on ts_rank. Without this the console's paper
+        # view and the cross-kind merge (both built on search_hits) buried
+        # a paper the single-kind search ranks first. Same gate as the
+        # single-kind path (no tag filter); an inclusion restriction skips
+        # it, and excluded refs are dropped so exclude= paging holds.
+        if not normalized_tags and include_ref_ids is None:
+            triples, _callouts = FusedBlockSearch(
+                store=self.store, embedder=self.embedder, kind=self.spec.kind
+            )._inject_title_matches(
+                triples, q=q, kind=self.spec.kind, page_size=page_size
+            )
+            if resolved_exclude_ref_ids:
+                triples = [
+                    t for t in triples if t[1].id not in resolved_exclude_ref_ids
+                ]
+            # The injector stamps promoted rows with a float('inf')
+            # sentinel (a render cue for the single-kind table); a
+            # SearchHit score feeds numeric tiebreaks, so cap it at the
+            # best finite score — rank order already carries the promotion.
+            finite = [s for _b, _r, s in triples if s != float("inf")]
+            top = max(finite, default=1.0)
+            triples = [(b, r, top if s == float("inf") else s) for b, r, s in triples]
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])
         return block_hits_to_search_hits(triples, kind=self.spec.kind)

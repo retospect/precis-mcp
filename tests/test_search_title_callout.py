@@ -240,3 +240,37 @@ def test_title_match_survives_unrelated_body(store: Store) -> None:
     resp = _handler(store, e).search(q="attention is all you need", page_size=5)
     assert _TITLE in resp.body
     assert "Title match" in resp.body
+
+
+def test_search_hits_promotes_the_title_match_first(store: Store) -> None:
+    """``search_hits`` (the console's one-row-per-paper view and the
+    cross-kind merge both build on it) must rank the exact-title paper
+    first, as ``search`` does — it skipped the title introducer and
+    buried the paper under keyword-dense decoys."""
+    e = MockEmbedder(dim=1024)
+    rid = _seed(
+        store,
+        slug="vaswani17",
+        title=_TITLE,
+        text="google hereby grants permission to reproduce the tables and figures",
+        embedder=e,
+    )
+    _seed(
+        store,
+        slug="decoy25",
+        title="Order parameters need attention",
+        text=(
+            "attention needs constant attention; the parameters need attention "
+            "and further attention across every needed axis"
+        ),
+        embedder=e,
+    )
+
+    hits = _handler(store, e).search_hits(q="attention is all you need", page_size=5)
+    assert hits and hits[0].ref_id == rid
+    assert all(h.score != float("inf") for h in hits)
+
+    excluded = _handler(store, e).search_hits(
+        q="attention is all you need", page_size=5, exclude=["vaswani17"]
+    )
+    assert rid not in {h.ref_id for h in excluded}
