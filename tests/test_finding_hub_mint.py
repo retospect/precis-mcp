@@ -494,7 +494,7 @@ class TestEmbedderOutage:
     def test_put_hub_raises_upstream_and_mints_nothing(self, store) -> None:
         _seed_paper(store, cite_key="miller23a")
         before = store.count_refs(kind="finding")
-        with pytest.raises(Upstream, match="embedder at capacity") as ei:
+        with pytest.raises(Upstream, match="near-duplicate check could not run") as ei:
             _finding_hub_mint.put_hub(
                 store,
                 sentence="a claim minted during an embedder outage",
@@ -502,7 +502,8 @@ class TestEmbedderOutage:
                 supporters=[{"paper": "miller23a"}],
                 embedder=_DownEmbedder(),
             )
-        assert "retry_after_s=2.0" in str(ei.value.next)
+        assert "~2 s" in str(ei.value)
+        assert "dedup=False" in str(ei.value.next)
         assert store.count_refs(kind="finding") == before
 
     def test_dispatch_put_is_error_upstream_not_internal(
@@ -521,7 +522,7 @@ class TestEmbedderOutage:
         )
         assert is_error, out
         assert "[error:Upstream]" in out
-        assert "retry_after_s=2.0" in out
+        assert "~2 s" in out
         assert "[error:Internal]" not in out
         assert store.count_refs(kind="finding") == before
 

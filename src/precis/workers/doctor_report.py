@@ -297,7 +297,11 @@ def _ensure_asks_root(store: Store) -> int | None:
 
 def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
     """``(ref_id, seen_count)`` of a live, not-done ``waiting-for:reto``
-    ask carrying ``meta.doctor_ask_key == key``, or ``None``."""
+    ask carrying ``meta.doctor_ask_key == key``, or ``None``.
+
+    "Not done" is "no closing STATUS tag", not "the STATUS tag isn't
+    closing": an ask is minted ``STATUS:open`` and closing it can add
+    ``STATUS:done`` beside it, so a single-row STATUS read is ambiguous."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -305,11 +309,10 @@ def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
               FROM refs r
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND r.meta ->> 'doctor_ask_key' = %s
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
-                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN ('done', %s, %s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                      WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                        AND t.value IN ('done', %s, %s))
              ORDER BY r.ref_id DESC
              LIMIT 1
             """,
@@ -339,11 +342,10 @@ def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | N
                               AND t2.namespace = 'OPEN' AND t2.value = 'waiting-for:reto')
                AND (jsonb_exists_any(COALESCE(r.meta->'doctor_ask_refs', '[]'::jsonb), %s)
                     OR r.ref_id = ANY(%s))
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
-                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN ('done', %s, %s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                      WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                        AND t.value IN ('done', %s, %s))
              ORDER BY r.ref_id ASC
              LIMIT 1
             """,
