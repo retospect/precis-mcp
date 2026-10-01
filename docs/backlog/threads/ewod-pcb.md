@@ -156,7 +156,14 @@ soft-deleted)
    a board the system knows is unmanufacturable can be sent to a fab. The
    item carries the measurement and the one open design call (refuse vs
    loud banner) — Reto's, since refusing breaks exporting a mid-progress
-   board to look at it.
+   board to look at it. Reading nearby from the same round:
+   **backlog/pcb-board-feature-instances-reach-the-assembly-files.md** —
+   `view='cpl'` gives the electrode array `ARR1` a pick-and-place line,
+   because `export.cpl_csv` filters only on "has coordinates" and nothing
+   marks an instance as not-an-assembled-component. Fab-facing but not
+   fabrication-fatal; its own file records why the two obvious fixes
+   (filter on missing LCSC, filter on the `ewod_array` role) are both
+   wrong.
 7. **gr451277** — three copper-routing inefficiencies on ewod-dogfood-2
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
