@@ -774,6 +774,12 @@ class RemoteEmbedder:
 # ---------------------------------------------------------------------------
 
 
+#: An ``embed`` call with at most this many texts counts as query-sized for
+#: :class:`BoundedConcurrencyEmbedder`'s pools; matches the embedder
+#: service's ``SMALL_REQUEST_MAX_TEXTS``.
+QUERY_SIZED_MAX_TEXTS = 4
+
+
 class BoundedConcurrencyEmbedder:
     """Wraps an `Embedder` so at most ``max_concurrency`` embeds are in
     flight at once in this process, **shedding** rather than queueing past
@@ -808,6 +814,16 @@ class BoundedConcurrencyEmbedder:
     transient unavailability the agent should retry rather than a
     misconfiguration.
 
+    **Two pools of ``max_concurrency`` slots each (gr459844):** one for
+    query-sized embeds (``embed_one``, or ``embed`` of at most
+    :data:`QUERY_SIZED_MAX_TEXTS` texts) and one for larger batches. The md
+    warm pass and the skill-index build embed batches through this same
+    wrapper; with one shared pool, a 12-session cold burst shed 112 search
+    query embeds to lexical-only and 176 skill-index embeds. Separate pools
+    mean background batches can never take a query's slot, and vice versa.
+    At most ``2 * max_concurrency`` threads park in embeds, still a small
+    share of anyio's 40.
+
     Request-path only — :func:`precis.runtime.factory.build_runtime` applies
     it. Workers deliberately go unwrapped: a worker pass *wants* to block on
     a busy embedder (that patience is what ``embedder_timeout`` is for), it
@@ -821,6 +837,7 @@ class BoundedConcurrencyEmbedder:
         self._inner = inner
         self._max_concurrency = max_concurrency
         self._sem = threading.BoundedSemaphore(max_concurrency)
+        self._query_sem = threading.BoundedSemaphore(max_concurrency)
 
     @property
     def inner(self) -> Embedder:
@@ -869,7 +886,8 @@ class BoundedConcurrencyEmbedder:
         self._inner.unload()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        with self._slot(f"{len(texts)} text(s)"):
+        query_sized = len(texts) <= QUERY_SIZED_MAX_TEXTS
+        with self._slot(f"{len(texts)} text(s)", query_sized=query_sized):
             return self._inner.embed(texts)
 
     def embed_one(self, text: str) -> list[float]:
@@ -877,16 +895,18 @@ class BoundedConcurrencyEmbedder:
         # latter would take a second slot for one logical embed, so a single
         # caller could shed itself and N concurrent callers would consume
         # 2N slots.
-        with self._slot("1 text"):
+        with self._slot("1 text", query_sized=True):
             return self._inner.embed_one(text)
 
     @contextmanager
-    def _slot(self, what: str) -> Iterator[None]:
-        if not self._sem.acquire(blocking=False):
+    def _slot(self, what: str, *, query_sized: bool) -> Iterator[None]:
+        sem = self._query_sem if query_sized else self._sem
+        if not sem.acquire(blocking=False):
             from precis.errors import Upstream
 
             raise Upstream(
-                f"embedder busy — {self._max_concurrency} embeds already in "
+                f"embedder busy — {self._max_concurrency} "
+                f"{'query' if query_sized else 'batch'} embeds already in "
                 f"flight in this process, so this one ({what}) was shed "
                 "rather than queued; semantic search degraded to "
                 "lexical-only for this call",
@@ -896,7 +916,7 @@ class BoundedConcurrencyEmbedder:
         try:
             yield
         finally:
-            self._sem.release()
+            sem.release()
 
 
 # ---------------------------------------------------------------------------

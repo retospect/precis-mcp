@@ -207,6 +207,38 @@ def test_bulkhead_sheds_past_max_concurrency_instead_of_queueing() -> None:
         t.join(timeout=10.0)
 
 
+def test_bulkhead_batches_cannot_take_a_query_embeds_slot() -> None:
+    """gr459844: the md warm pass and the skill-index build embed batches
+    through this wrapper. With one shared pool a cold burst shed 112 query
+    embeds; batches and queries now have separate pools."""
+    from precis.embedder import BoundedConcurrencyEmbedder, MockEmbedder
+    from precis.errors import Upstream
+
+    inner = _BlockingEmbedder()
+    emb = BoundedConcurrencyEmbedder(inner, 1)
+    batch = threading.Thread(
+        target=lambda: emb.embed([f"t{i}" for i in range(16)]), daemon=True
+    )
+    batch.start()
+    assert inner.entered.acquire(timeout=10.0)  # the batch pool is full
+
+    with pytest.raises(Upstream, match="batch embeds"):
+        emb.embed([f"u{i}" for i in range(16)])
+    # While the batch still holds its slot, a query is admitted into the
+    # backend rather than shed.
+    query = threading.Thread(target=lambda: emb.embed(["a", "b"]), daemon=True)
+    query.start()
+    assert inner.entered.acquire(timeout=10.0)
+    with pytest.raises(Upstream, match="query embeds"):
+        emb.embed_one("second query")  # the query pool has its own ceiling
+    inner.gate.set()
+    for t in (batch, query):
+        t.join(timeout=10.0)
+
+    emb = BoundedConcurrencyEmbedder(MockEmbedder(dim=8), 1)
+    assert emb.embed(["x"] * 5)  # a 5-text batch uses the batch pool
+
+
 def test_bulkhead_releases_slots_after_each_call() -> None:
     """A slot must come back on both the success and the failure path, or the
     bulkhead degrades into a permanent outage of its own."""

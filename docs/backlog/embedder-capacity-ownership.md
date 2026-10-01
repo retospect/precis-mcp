@@ -212,5 +212,21 @@ same padding hit every request, and the md warmup's single
 
 Every request now logs one line with its text count, total and longest
 characters, seconds and passes, so a slow encode can be traced to what
-was in it. Left in this item: the owner, the fleet capacity number, and
-the shared-cache decision (Reto's call).
+was in it.
+
+The same class split was needed one layer up. The MCP process's own
+bulkhead (`BoundedConcurrencyEmbedder`) pooled query embeds with the md
+warm pass and the skill-index build, so a 12-session cold burst on a rig
+shed 112 query embeds and 176 skill-index embeds; it now has separate
+query and batch pools (78 and 3 in the same burst). And the 565-592 s
+calls were the skill index: it built inline in every concurrent first
+skill search, one 30 s-capped embed per skill in turn. It now builds once
+on a background thread, a search waits at most 5 s for it, and failed
+skills are retried after 60 s. Same burst afterwards: 0 errors, slowest
+call 8.4 s.
+
+Left in this item: the owner, the fleet capacity number, and the
+shared-cache decision (Reto's call). Capacity is the visible limit now: on
+a cold server the skill index takes tens of minutes to fill while two md
+warm-ups (a rig's and the shared server's) and the workers keep the one
+embedder busy.

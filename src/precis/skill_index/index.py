@@ -24,6 +24,8 @@ import functools
 import hashlib
 import logging
 import math
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -55,6 +57,18 @@ from precis.skill_index.chunker import CHUNKER_VERSION, Chunk, chunk_by_h2
 #: on" path a cold embedder already produces, rather than dropping
 #: dead silent for half an hour.
 _EMBED_CALL_TIMEOUT_S = 30.0
+
+#: How long a search (or the TOC renderer) waits for the build before
+#: answering without semantic hits. The build runs on its own thread and
+#: keeps going; the next call finds it done. Before gr459844 the build ran
+#: inline in every concurrent first search, one 30 s-capped embed per
+#: skill in turn, and a cold burst held one search for 592 s.
+_BUILD_WAIT_S = 5.0
+
+#: After a build in which some skills failed to embed, wait this long
+#: before the next search retries them. Skills that did embed are in the
+#: disk cache, so a retry only re-embeds the gaps.
+_BUILD_RETRY_S = 60.0
 
 #: Sentinel: the embedder call exceeded :data:`_EMBED_CALL_TIMEOUT_S`.
 _TIMED_OUT: Any = object()
@@ -155,6 +169,13 @@ class FileCorpusIndex:
         self._cache_dir = cache_dir or default_cache_dir()
         self._cache: EmbeddingCache | None = None
         self._entries: dict[str, CacheEntry] | None = None
+        # Single-flight build (gr459844): at most one build thread, shared
+        # by every caller; ``_complete`` once a build embedded every slug.
+        self._build_lock = threading.Lock()
+        self._build_thread: threading.Thread | None = None
+        self._complete = False
+        self._retry_at = 0.0
+        self._empty_slugs: set[str] = set()
 
     # ── availability ───────────────────────────────────────────────
 
@@ -175,8 +196,14 @@ class FileCorpusIndex:
 
     # ── search ─────────────────────────────────────────────────────
 
-    def search(self, q: str, page_size: int = 10) -> list[SearchHit]:
+    def search(
+        self, q: str, page_size: int = 10, *, build_wait_s: float | None = None
+    ) -> list[SearchHit]:
         """Cosine search the corpus for ``q``.
+
+        ``build_wait_s`` bounds the wait for a cold build (default
+        :data:`_BUILD_WAIT_S`, for interactive callers); a background
+        caller that would rather wait than miss passes a longer one.
 
         Returns ``[]`` when the index isn't available (see
         :meth:`is_available`) or when the corpus is empty. Build
@@ -196,7 +223,7 @@ class FileCorpusIndex:
         # answers, rather than escaping as a 500 (gripe #38690: skill
         # search returned internal server error for ordinary queries).
         try:
-            self._build()
+            self._build(build_wait_s)
         except Exception as exc:
             log.warning("skill_index: build failed: %s", exc, exc_info=True)
             return []
@@ -241,10 +268,35 @@ class FileCorpusIndex:
 
     # ── build / cache ──────────────────────────────────────────────
 
-    def _build(self) -> None:
+    def _build(self, wait_s: float | None = None) -> None:
+        """Make sure a build is running or done; wait up to ``wait_s``.
+
+        Single-flight: the first caller starts one build thread
+        (:meth:`_build_all`) and every caller, that one included, waits at
+        most ``wait_s`` (default :data:`_BUILD_WAIT_S`) for it. A caller
+        that stops waiting answers from whatever ``_entries`` holds,
+        possibly nothing, and the build carries on. A build that left some
+        slugs unembedded is retried after :data:`_BUILD_RETRY_S`.
+        """
+        if self._complete:
+            return
+        with self._build_lock:
+            thread = self._build_thread
+            if (thread is None or not thread.is_alive()) and (
+                time.monotonic() >= self._retry_at
+            ):
+                thread = threading.Thread(
+                    target=self._build_all, name="skill-index-build", daemon=True
+                )
+                self._build_thread = thread
+                thread.start()
+        if thread is not None:
+            thread.join(_BUILD_WAIT_S if wait_s is None else wait_s)
+
+    def _build_all(self) -> None:
         """Populate the in-memory entry table, embedding as needed.
 
-        Idempotent **once a successful build lands**. Until then, every
+        Complete **once a build embeds every slug**. Until then, every
         ``search`` call retries the build — so a cold-embedder first
         call doesn't poison the index with an empty entry table for
         the lifetime of the process. Broad-pass usability finding
@@ -263,7 +315,7 @@ class FileCorpusIndex:
         custom embedders, older test fakes) keep the historical
         unconditional behaviour.
         """
-        if self._entries is not None:
+        if self._complete:
             return
         is_ready = getattr(self._embedder, "is_ready", None)
         if callable(is_ready) and not is_ready():
@@ -278,12 +330,31 @@ class FileCorpusIndex:
             )
 
         out: dict[str, CacheEntry] = {}
-        for slug, raw in self._files.items():
-            entry = self._build_one(slug, raw)
-            if entry is None:
-                continue
-            out[slug] = entry
-        self._entries = out
+        failed = 0
+        try:
+            for slug, raw in self._files.items():
+                entry = self._build_one(slug, raw)
+                if entry is None:
+                    failed += slug not in self._empty_slugs
+                    continue
+                out[slug] = entry
+        except Exception:
+            log.warning("skill_index: build failed", exc_info=True)
+            failed += 1
+        # Keep slugs an earlier build embedded, in case this one lost them.
+        self._entries = {**(self._entries or {}), **out}
+        if failed:
+            self._retry_at = time.monotonic() + _BUILD_RETRY_S
+            log.info(
+                "skill_index: %d of %d slugs indexed, %d not embedded; "
+                "retrying those in %.0fs",
+                len(self._entries),
+                len(self._files),
+                failed,
+                _BUILD_RETRY_S,
+            )
+        else:
+            self._complete = True
 
     def _build_one(self, slug: str, raw: str) -> CacheEntry | None:
         """Build (or load from cache) a single slug's entry."""
@@ -297,6 +368,7 @@ class FileCorpusIndex:
 
         chunks = self._chunker(raw)
         if not chunks:
+            self._empty_slugs.add(slug)  # nothing to embed — not a failure
             return None
 
         try:

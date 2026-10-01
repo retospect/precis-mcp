@@ -56,6 +56,11 @@ _DEFAULT_THRESHOLD = 0.85
 #: calibration pass has visibility into "almost injected, didn't."
 _NEAR_MISS_BAND = 0.05
 
+#: How long a tick waits for a cold skill-index build. Ticks run in the
+#: background, so waiting beats matching nothing; the interactive
+#: default (``skill_index.index._BUILD_WAIT_S``) gives up after 5 s.
+_BUILD_WAIT_S = 600.0
+
 #: Chunk variants eligible for injection matching — the question-shaped
 #: retrieval targets from chunker.py v4 (front-matter ``summary:``/
 #: ``answers:`` twins, and bare section headings). Structural/body_only
@@ -240,7 +245,11 @@ def match_skill(task_text: str) -> SkillMatch | None:
     if index is None:
         return None
 
-    hits = index.search(task_text, page_size=_search_page_size())
+    # Ticks run in the background, so wait out a cold build rather than
+    # match nothing (the interactive default gives up after 5 s).
+    hits = index.search(
+        task_text, page_size=_search_page_size(), build_wait_s=_BUILD_WAIT_S
+    )
     best = next((h for h in hits if h.variant in _TARGET_VARIANTS), None)
     if best is None:
         return None

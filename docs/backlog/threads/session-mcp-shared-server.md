@@ -35,23 +35,19 @@ resumed — `docker ps` now shows `precis-mcp-http` alone (AC5 passes). That
 makes it the single point of failure for every session. Since 2026-10-01
 14:20Z a PID-1 supervisor holds its port across restarts, so restarts no
 longer strand sessions (gr459481), and kills a wedged server (liveness
-detector); next are embedder admission and the isolation gaps.
+detector). Since 2026-10-01 ~17:52Z it serves the deployed code: `/src`
+is a plain clone (`~/work/projects/code/precis-mcp-prod`) that
+`scripts/deploy` moves to each deployed sha, so a qland no longer restarts
+it and a deploy restarts it once (`deploy`'s change, Reto ran the
+recreate). Embedder admission is answered (gr459844); next are the
+isolation gaps.
 **Last reviewed:** 2026-09-30 (pillar review same day added gr345270 and a
 server-side-session-context Horizon pointer)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-1. **`production` branch — `deploy`'s call (Reto 2026-10-01), not this
-   thread's.** Proposed: `scripts/deploy` fast-forwards a protected
-   `production` branch to every sha it ships, and `precis-mcp-http` mounts a
-   worktree on it instead of the main checkout, so the server runs what the
-   cluster runs and restarts once per deploy rather than per qland. Since
-   gr459481 a restart no longer strands sessions, so this is about code
-   parity and churn, not outages. Handed to `deploy` 2026-10-01; whatever it
-   decides, the mount change is an ensure-script edit, and that is a
-   recreate (see the trap in item 3's backlog file).
-2. **backlog/embedder-capacity-ownership.md — reduced to the admission
-   question.** gr459088 and gr457326 are CLOSED, verified on the shared
+1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
+   capacity number and shared cache left.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
    1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
    none sufficient alone — per-batch retry (d9bd4e16), cold-cache re-arm
@@ -71,15 +67,27 @@ server-side-session-context Horizon pointer)
    embedder does one short string in 0.17 s — **the hardware was never
    the constraint.**
 
-   Server-side admission is answered (gr459844): the service shares
-   forward passes across requests, query-sized requests first, under a
-   padded-token budget. On a rig with batches queued, query embeds went
-   from 27 of 31 timing out to 0 of 125, p50 ~2 s, with the same vectors.
-   What is left in the item is the owner, the fleet capacity number and
-   Reto's shared-cache call. The completed warm (~19400 vectors, 79 MB) exposed `add()`'s per-vector
-   `np.vstack` as O(n^2); now a capacity-doubling buffer behind `_rows()`.
+   Admission is answered (gr459844), in three places:
+   - The embedder service shares forward passes across requests,
+     query-sized requests first, under a padded-token budget. On a rig with
+     batches queued, query embeds went from 27 of 31 timing out to 0 of
+     125, p50 ~2 s, with the same vectors.
+   - The MCP process's own bulkhead has separate query and batch pools.
+   - The skill index builds once, on a background thread, with failed
+     skills retried after 60 s. That build was the 565-592 s call: every
+     concurrent first skill search ran its own full build inline.
 
-3. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
+   A fresh cold server under the 12-session burst: 464 calls, 0 errors,
+   max 8.4 s (592 s before). 78 query embeds still fell back to lexical,
+   which is 12 sessions against 4 query slots doing their job. What is
+   left in the item is the owner, the fleet capacity number and Reto's
+   shared-cache call. A cold server's skill index completes in tens of
+   minutes while md warm-ups saturate the embedder, which is that
+   capacity question. The completed warm (~19400 vectors, 79 MB) exposed
+   `add()`'s per-vector `np.vstack` as O(n^2); now a capacity-doubling
+   buffer behind `_rows()`.
+
+2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
    (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
@@ -87,7 +95,7 @@ server-side-session-context Horizon pointer)
    passes since gr459481's supervisor (live 14:20Z 2026-10-01). Left: AC3,
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
-4. **gr458350** — prod credentials passed to `docker run` as `-e` values,
+3. **gr458350** — prod credentials passed to `docker run` as `-e` values,
    so `docker inspect` prints them in cleartext. The per-session launcher
    is gone with its containers; checked by name only on 2026-10-01, the
    shared server's ensure script does the same — `PRECIS_DATABASE_URL`,
@@ -100,7 +108,7 @@ server-side-session-context Horizon pointer)
    deferred rotation on 2026-09-30 ("later"); the leak path is the half
    fixable without a rotation window. Inspect with the names-only format in
    the gripe.
-5. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
+4. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
