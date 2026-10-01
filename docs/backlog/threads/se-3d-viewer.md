@@ -33,49 +33,45 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 1. **backlog/se-viewer-browser-level-check.md** — no browser-level check
    exists, so every correctness claim rests on a hand-built harness in a
-   worktree that will be reaped. Leverage: makes 2–3 and 5–6 verifiable
-   instead of assertable, and is the only guard against the defect that
-   started the thread (a dead viewer behind a green suite). 2 is the case
-   for it: that harness is what found gr458329, and it took a real design
-   to do it. SCOPE SETTLED (Reto, 2026-09-30, td458066): **local-fixture
-   lane only — no agent ever drives a browser against the prod
-   deployment.** Prod DATA still reaches the harness through `view='ops'`,
-   which is what the gr458329 dogfood used; the prod deployment itself is
-   checked by Reto by hand at a release boundary if at all. Nothing here
-   handles the Basic credential.
-2. **gr458329** — a live level change on a REAL design (prod's `unicycle-c1`,
-   copied down via `view='ops'`) fetches the new scene, then does nothing
-   visible (n=0 against a measured n=0 floor) and never writes `level` back
-   into the URL; the local fixture does both (n=222, URL updated). No console
-   error. Promoted above the setState item because it is that item's missing
-   reproducer — a real trigger, found by dogfooding rather than reasoning.
-   Next step is in the gripe: re-capture the phase-d tree dump at equal
-   expansion, which decides between "renders identically for this design" and
-   "the swap silently failed".
-3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+   worktree that will be reaped, including the scripts that resolved
+   gr458329. Leverage: makes 2–4 verifiable instead of assertable, and is
+   the only guard against the defect that started the thread (a dead viewer
+   behind a green suite). The item now carries three REQUIREMENTS the hand
+   harness paid for — a phase waits on an observable condition rather than
+   a fixed timeout, the noise floor is measured in the same run, and canvas
+   AND tree are both witnessed — the first of which is what a 2.7 s settle
+   on a 3.5 s swap cost (see below). SCOPE SETTLED (Reto, 2026-09-30,
+   td458066): **local-fixture lane only — no agent ever drives a browser
+   against the prod deployment.** Prod DATA still reaches the harness
+   through `view='ops'`; the prod deployment itself is checked by Reto by
+   hand at a release boundary if at all, and nothing here handles the Basic
+   credential.
+2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
-   Waits on 2, which may already be an instance of it.
-4. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+   No reproducer yet: gr458329 looked like one and turned out to be a
+   measurement artifact (the swap works), so this item is back to needing
+   a trigger found rather than reasoned.
+3. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
    Rule settled (td458168): the literal rule wins over its worked example,
    and the shallowest member of an identical run keeps its letter.
-5. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-6. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-7. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by the item above (ruling 2 intends the same per-tool-class
+   Blocked by 5 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon
@@ -136,10 +132,29 @@ cut from the bottom.
 - **backlog/se-3d-viewer-ux-batch.md**, client-side isolate — shipped, and
   re-verified 2026-09-30 on prod's own `unicycle-c1` copied down via
   `view='ops'`: n=44829 on isolate with NO scene refetch, pixel-identical
-  when cleared. The LIVE-LEVEL half of the same item is no longer settled —
-  see Do-next 3 (gr458329).
+  when cleared. The LIVE-LEVEL half of the same item is settled too, after
+  a false alarm: gr458329 read it as broken on a real design and the swap
+  turned out to work (43 → 32 tree rows, n=643, ~3 s) — see below.
 - The "Multiple instances of Three.js" console warning — expected, documented
   in blocktree-3d.js; no gripe.
+
+## What gr458329 turned out to be (2026-10-01)
+
+Resolved as NOT a viewer defect, and the correction is worth keeping
+because the mistake is cheap to repeat. The live level change works: on a
+copy of prod's `unicycle-c1` the tree row set goes 43 → 32 (matching the
+server's 32-node `interfaces` payload against its 43-node `refined` one),
+`location.search` picks up `?level=interfaces`, and the canvas moves by 643
+pixels in a 48×125 region. All three land at ~3 s. The probe sampled at
+2.7 s, saw none of it, and the report read as a silent swap failure.
+
+What was real is smaller and now fixed: those ~3.5 s passed with no
+spinner, no disabled control and an empty console, and `loadScene`'s
+`reloading` guard dropped a second change inside the window without a
+trace. `#bt3d-busy` plus disabling `level`/`overrides` during a refetch
+closes it. The durable lesson — a browser phase must wait on an observable
+condition, never a timeout — is a requirement on Do-next 1 rather than a
+line in a closed gripe.
 
 ## Seam
 

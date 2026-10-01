@@ -51,6 +51,10 @@
     <input type="text" id="bt3d-overrides" value="{{ overrides }}" placeholder="hub:realized, rest:envelope"
            class="border border-slate-300 rounded px-2 py-1 w-56" />
   </div>
+  {# `level` and `overrides` refetch and re-render, which on a real design
+     is seconds (gr458329 measured ~3 s on a 20-block machine). Without a
+     mark the page looks like it ignored the change. #}
+  <span id="bt3d-busy" class="text-xs text-slate-500" hidden>rebuilding scene…</span>
   <button type="button" id="bt3d-explode" class="px-3 py-1 rounded border border-slate-300 hover:bg-slate-100">
     explode
   </button>
@@ -235,6 +239,7 @@
     levelSelect: document.getElementById("bt3d-level"),
     isolateSelect: document.getElementById("bt3d-isolate"),
     overridesInput: document.getElementById("bt3d-overrides"),
+    busyEl: document.getElementById("bt3d-busy"),
     sceneUrl: {{ scene_url | tojson }},
     {% if has_atomic %}
     atomsToggle: document.getElementById("bt3d-atoms"),

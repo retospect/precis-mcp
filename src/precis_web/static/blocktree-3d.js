@@ -906,6 +906,10 @@ export async function blocktreeViewer3D({
   levelSelect,
   isolateSelect,
   overridesInput,
+  // Shown while `level`/`overrides` refetch. Optional, but without it a
+  // multi-second rebuild is indistinguishable from a control that did
+  // nothing — which is the reading gr458329 was filed under.
+  busyEl,
   // Atoms on/off for a structure-bound design. Optional — the template
   // only renders it alongside the atomic↔smooth slider.
   atomsToggle,
@@ -1625,10 +1629,22 @@ export async function blocktreeViewer3D({
     syncUrl();
   }
 
+  //: `level`/`overrides` are in flight. The two controls that trigger a
+  //: refetch are disabled for the duration rather than left live over a
+  //: guard that silently drops the second change.
   let reloading = false;
+
+  function setBusy(busy) {
+    if (busyEl) busyEl.hidden = !busy;
+    for (const el of [levelSelect, overridesInput]) {
+      if (el) el.disabled = busy;
+    }
+  }
+
   async function loadScene() {
     if (reloading) return;
     reloading = true;
+    setBusy(true);
     const camera = (() => {
       try {
         return viewer.getCameraLocationSettings();
@@ -1662,6 +1678,7 @@ export async function blocktreeViewer3D({
       showError(viewerEl, "failed to load scene: " + String(err));
     } finally {
       reloading = false;
+      setBusy(false);
     }
   }
 

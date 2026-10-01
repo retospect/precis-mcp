@@ -505,6 +505,29 @@ def test_se_view3d_scene_controls_are_not_a_submitting_form(
     assert 'type="submit"' not in r.text
 
 
+def test_se_view3d_ships_a_busy_mark_for_the_refetching_controls(
+    blocktree_client, runtime_with_store
+) -> None:
+    """``level``/``overrides`` refetch and re-render, which on a real
+    design is seconds — gr458329 measured ~3.5 s on prod's 20-block
+    `unicycle-c1`, and that silence is what made a working swap read as a
+    dead control, in a browser probe written to look for exactly this.
+    So the page must carry the mark and hand it to the module: hidden at
+    rest, shown for the duration, with the two triggering controls
+    disabled rather than live over a guard that drops the second change.
+    Only the markup contract is checkable here; that the module toggles it
+    is browser-level (backlog/se-viewer-browser-level-check.md)."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert 'id="bt3d-busy"' in r.text
+    assert 'document.getElementById("bt3d-busy")' in r.text
+    # Hidden at rest, in the markup rather than only via script: a mark
+    # that ships visible is worse than none.
+    busy_tag = r.text.split('id="bt3d-busy"', 1)[1].split(">", 1)[0]
+    assert "hidden" in busy_tag, busy_tag
+
+
 def test_view3d_url_permanently_redirects_to_the_new_default(client) -> None:
     """gr337745 moved the 3D view off ``/se/{slug}/view3d`` onto the
     bare slug URL — the old URL must still resolve via a permanent

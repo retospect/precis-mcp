@@ -30,5 +30,43 @@ it is a nightly lane rather than a per-push one, and what the seeded design
 is. `scripts/guide-capture` already solves the "drive a real browser from
 this repo" half — the missing half is a design fixture plus canvas diffing.
 
+## Requirements the hand-built harness has already proven it needs
+
+### A phase waits on an observable condition, never on a timeout
+
+Non-negotiable, and paid for twice. The hand harness settled each phase
+with a fixed `SETTLE_MS * 3` = 2.7 s. On the 5-block fixture it was tuned
+on, that is plenty. On a copy of prod's 20-block `unicycle-c1` a level
+change takes ~3.5 s — 1.2 MB of scene out, 660 KB back, then a full
+`viewer.clear()` + `render()` — so every phase-d reading was taken before
+the swap landed. It reported a zero pixel delta and an un-updated URL with
+an empty console, and gr458329 was filed on a swap failure that did not
+exist; the correct measurement is 43 tree rows -> 32 and 643 changed
+pixels, both arriving at ~3 s.
+
+A fixed wait does not merely risk a flake here. It fails SILENTLY and in
+the direction that looks like a bug, and it scales the wrong way: the
+bigger and more real the design, the more likely the harness lies. So each
+phase polls for the effect it is testing — a changed tree row set, a URL
+that carries the new parameter, a settled busy mark — with a generous
+timeout, and fails on the timeout rather than on a single late sample.
+
+### The noise floor is measured in the same run, before anything else
+
+Already observed, kept here because it is the other half of trusting a
+null: two shots with no interaction must diff to `bbox None, n=0`. A diff
+pass that cannot produce zero on an unchanged pair cannot be read as
+evidence when it produces zero on a changed one.
+
+### Canvas AND tree, because they fail independently
+
+The 11 blocks that drop between `refined` and `interfaces` on
+`unicycle-c1` are ~5 mm fasteners on a 1 m machine at a 315x469 canvas.
+They are near the edge of visible: the real delta is 643 pixels in a
+48x125 region, which a slightly different camera or canvas size could
+easily take to zero. The treeview row set is the robust witness for "did
+the scene swap" and the canvas is the witness for "does it look right" —
+a harness with only one of the two has a blind spot the other covers.
+
 Owner `src/precis_web/static/blocktree-3d.js`, `tests/precis_web/`,
 `scripts/guide-capture`.
