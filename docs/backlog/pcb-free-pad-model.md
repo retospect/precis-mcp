@@ -1,4 +1,5 @@
 ---
+pillar: 3d-design
 status: draft
 title: "pcb: a free pad — copper on a net belonging to no component"
 prio: normal
