@@ -56,6 +56,11 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
    Each needs a read first, since a fixture that deliberately drops and
    re-applies schema is not a workaround. Harmless meanwhile, because
    every plugin migration is `IF NOT EXISTS`.
+   A 2026-10-01 count found 52 files, not a dozen: grep `tests/` for
+   `MIGRATIONS_DIR.glob("*.sql")`. Most are `test_se_*` files that the
+   se-nucleic-chain and se-3d-viewer threads are editing. Do it at the start
+   of a dogfood cycle, right after a deploy has drained every tree, so it
+   collides with no sibling's in-flight edits.
 
 **gr457894 left Do next on 2026-10-01, and this is the correction that
 matters most in this file.** It sat at Do-next 1 for five rounds on the claim

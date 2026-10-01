@@ -2756,3 +2756,33 @@ def test_cleanup_detached_retains_failed_scratch_only_when_opted_in(
     d.mkdir()
     runner._cleanup_detached(str(d), failed=False)
     assert not d.exists(), "a success is never retained — nothing to diagnose"
+
+
+def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
+    """Search is unsupported on this kind, so a bare get is the only way an
+    agent finds a pathway it does not already hold a slug for. It used to
+    raise, pointing at an example slug that never existed (2026-10-01)."""
+    h = _handler(pathway_store)
+    assert "no pathways yet" in h.get().body
+
+    with pathway_store.tx() as conn:
+        for slug, title, status in (
+            ("list-ready-a", "NO → NH3 on Pd", "ready"),
+            ("list-failed-b", "pathway list-failed-b (failed)", "failed"),
+        ):
+            pathway_store.insert_ref(
+                kind="pathway",
+                slug=slug,
+                title=title,
+                meta={"status": status},
+                conn=conn,
+            )
+
+    body = h.get().body
+    assert body.startswith("2 pathways (")
+    assert "1 ready" in body and "1 failed" in body
+    assert "list-ready-a | NO → NH3 on Pd | ready |" in body
+    assert "list-failed-b |" in body
+    # The next-hint names a slug that exists, never an invented example.
+    hint = body.rsplit("next: ", 1)[1]
+    assert "id='list-ready-a'" in hint or "id='list-failed-b'" in hint

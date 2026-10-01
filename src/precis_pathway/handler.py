@@ -91,6 +91,7 @@ class PathwayHandler(Handler):
             "every intermediate and finds NEB barriers, reporting energies "
             "with pooled uncertainty (low-confidence flagged, not faked). "
             "put(kind='pathway', id='<name>', text='<config yaml>') runs it; "
+            "get(kind='pathway') with no id lists existing pathways; "
             "get(kind='pathway', id='<name>', view='network'|'profile'|"
             "'methods'|'config'). Slice 0 runs EMT in-process (qualitative). "
             "See precis-pathway-help."
@@ -339,13 +340,14 @@ class PathwayHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        if id is None:
-            raise BadInput(
-                "pathway get needs an id (the pathway slug)",
-                next="get(kind='pathway', id='no_to_no3_pd')",
-            )
-        U = _potential_arg(args)
         store = self.hub.live_store
+        if id is None:
+            # A bare get lists. Search is unsupported on this kind, so until
+            # 2026-10-01 an agent that did not already hold a slug had no way
+            # to find any of ~700 pathways — and this branch's error pointed
+            # at an example slug that never existed.
+            return Response(body=self._list(store))
+        U = _potential_arg(args)
         # A trailing ``~<source>→<target>`` step selector (Simulation step
         # deep-links) — dispatch's universal-handle/slug routing reattaches
         # any ``~selector`` suffix to the resolved id untouched (it only
@@ -503,6 +505,54 @@ class PathwayHandler(Handler):
         return Response(body=step_view(meta, pw_handle, edge))
 
     # -- compare (cross-candidate) ---------------------------------------
+    _LIST_LIMIT = 20
+
+    def _list(self, store: Store) -> str:
+        """The most recently updated pathways, with real slugs to pass back
+        as ``id=``, plus the total per status."""
+        with store.pool.connection() as conn:
+            counts = conn.execute(
+                "SELECT coalesce(meta->>'status', '?'), count(*) FROM refs "
+                "WHERE kind = 'pathway' AND retired_at IS NULL "
+                "GROUP BY 1 ORDER BY 2 DESC"
+            ).fetchall()
+            rows = conn.execute(
+                "SELECT slug_id.id_value, refs.title, refs.meta->>'status', "
+                "refs.updated_at FROM refs "
+                "LEFT JOIN ref_identifiers slug_id "
+                "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
+                "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
+                "ORDER BY refs.updated_at DESC LIMIT %s",
+                (self._LIST_LIMIT,),
+            ).fetchall()
+        if not rows:
+            return (
+                "no pathways yet. Frame one without spending compute: "
+                "put(kind='pathway', id='<name>', mode='preview', "
+                "text='<config yaml>') — see precis-pathway-help."
+            )
+        total = sum(n for _, n in counts)
+        lines = [
+            f"{total} pathways ("
+            + ", ".join(f"{n} {status}" for status, n in counts)
+            + f"); the {len(rows)} most recently updated:",
+            "",
+            "slug | title | status | updated",
+        ]
+        for slug, title, status, updated in rows:
+            lines.append(
+                f"{slug or '?'} | {title} | {status or '?'} | {updated:%Y-%m-%d %H:%MZ}"
+            )
+        first = next((slug for slug, *_ in rows if slug), None)
+        if first:
+            lines += [
+                "",
+                f"next: get(kind='pathway', id='{first}', view='analysis') · "
+                "view='compare' ranks it against every computed pathway for "
+                "the same substrate→target.",
+            ]
+        return "\n".join(lines)
+
     def _compare(
         self, store: Store, ref: Any, meta: dict[str, Any], *, U: float | None = None
     ) -> str:

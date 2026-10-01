@@ -34,6 +34,18 @@ lane, and calling it from a process without that provider gets `NotFound`
 with a `kind 'pathway' routes through host(s): …` hint — expected off-host,
 not a bug; retry from a host that has it.
 
+## Find existing pathways / list what has been run
+
+`pathway` has no `search`. A bare get lists the most recently updated
+pathways, with their slugs and the total per status:
+
+```python
+get(kind="pathway")
+```
+
+Pass a listed slug back as `id=`. `view='compare'` on one of them ranks
+it against every computed pathway for the same substrate→target.
+
 ## Frame a run without spending compute / sanity-check the network first / preview intermediates
 
 Building the network is cheap (rule-based, no ML). Do it *before* you pay for
