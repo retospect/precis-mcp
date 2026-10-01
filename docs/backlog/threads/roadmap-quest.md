@@ -13,7 +13,9 @@ gripes to Horizon, all adjacent infra the tick path depends on)
 
 ## Do next
 
-1. **qu453863 activation** — Reto-approved write only. The first live
+1. **qu453863 activation** — no longer needs Reto's word
+   (docs/conventions/thresholds.md, 2026-10-01: ticks and activation are
+   go). The first live
    tick (2026-09-30 22:01 UTC, `scripts/prod-precis quest tick 453863`,
    exit 0) took the `demand` role at tier big on the `no-demand` gap and
    wrote `meta.demand.placement_error_nm = 0.15` on qu453869, reason "one

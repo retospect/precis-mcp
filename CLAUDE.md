@@ -86,9 +86,9 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   pass. Exception: *draft* chunks edit in place by design, via the draft-edit
   store ops only (they log `chunk_events`, which drives the cascade).
 - **Session `precis` MCP targets PROD** (write-capable `agent_rw`). Writes
-  are sanctioned but land in production: write deliberately, prefer reads for
-  exploration, and do write-path *testing* on the dev DB (`scripts/dev`) —
-  never this MCP. Ad-hoc SQL: `scripts/prod-psql "SELECT …"` (prefer
+  land in production and need no ask unless destructive, outward-facing or
+  over $25 (`docs/conventions/thresholds.md`, Reto 2026-10-01); do
+  write-path *testing* on the dev DB (`scripts/dev`) — never this MCP. Ad-hoc SQL: `scripts/prod-psql "SELECT …"` (prefer
   read-only); `scripts/db` is local-only.
 - **Agent-supplied-URL fetches → `safe_get`/`safe_stream`**
   (`utils/safe_fetch.py`); raw follow-redirects httpx is an SSRF.

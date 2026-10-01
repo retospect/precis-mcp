@@ -91,6 +91,41 @@ Stop and ask before:
   the row counts you are about to destroy, wait for explicit go.
 - Force-pushing on `main`. Never. Use a feature branch and a PR.
 
+## Prod writes and quest ticks — the default is go
+
+Reto's ruling, 2026-10-01: agents write to prod and quests tick without
+asking him first. He does not want per-write control. This replaces every
+"Reto's word only" / "Reto-approved write only" line in thread files and
+session memories written before that date.
+
+**No ask needed:**
+
+- Additive or reversible writes through the verbs: `put`, `link`, `tag`,
+  `edit`, logbook entries, `meta` patches, gripes, findings, todos.
+- Quest ticks, by hand or by the loop, and setting a quest `active`.
+- Re-placing or re-routing a design, re-running a pipeline step, an
+  additive backfill. The old value survives in the event log or the
+  previous row.
+
+**Still ask, and only these:**
+
+- The destructive cases in "Operational thresholds" above: bulk delete,
+  a DB wipe, rewriting a user-owned data file.
+- What `scripts/qgo-guard` refuses: migration SQL and `safe_fetch.py`
+  take `/go`.
+- Anything that leaves precis: posting or submitting a paper, sending
+  mail, publishing to an outside service.
+- One paid run expected to cost over $25. Below that, the budget breaker
+  is the control.
+
+**Look locally first.** Before fetching from outside (Semantic Scholar, a
+publisher, perplexity, the web), search the graph: `search` across papers,
+findings, drafts and memories. A local hit is cheaper, already chunked,
+and is what the quest's own history is made of.
+
+**Say what you wrote.** Report prod writes by handle in the session's
+next message or the quest logbook, so the record exists without asking.
+
 ## Default behaviour when a threshold trips
 
 1. Stop the in-progress edit.
