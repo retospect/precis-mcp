@@ -335,7 +335,21 @@ just in the wrapper: tool concurrency 12, pool 4/16.
   embedder batch at boot leaves the cache cold for the whole process
   lifetime — now shared by every session.
 
-Next: gr457326. AC3 is unblocked.
+Next: gr457326 is CLOSED (2026-10-01, with gr459088 — md index 1% → 100%
+indexed; the warm pass was starving the embedder it waited on, not the
+other way round). AC3 is unblocked.
+
+**How to close AC3 without manufacturing a kwarg.** Attempted 2026-10-01
+04:31Z and deliberately not claimed: the served schema can be read with a
+`tools/list` over HTTP (`get` returns 10 kwargs — args full id kind kinds
+project q spec tag view) and compared against source, but that only proves
+the schema is *current*, which it also would be if nothing had changed.
+The criterion needs a kwarg that is new *across a bounce*, and inventing
+one to test with would be a change shipped for the test's sake. So this
+closes opportunistically: the next time any session lands a verb-signature
+change, read `tools/list` before and after the watchdog bounce that picks
+it up, and confirm the new kwarg appears without a client restart. Cheap
+when the change is someone else's and already landing; not worth forcing.
 
 **Still outstanding — these need a ship and a day of use, not a test:** AC1
 in the session (as opposed to headless) client, AC3 (a new verb kwarg surviving a
