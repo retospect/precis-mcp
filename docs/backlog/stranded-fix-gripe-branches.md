@@ -17,6 +17,51 @@ They are perishable. Every one was authored between 2026-09-25 and 2026-09-30
 and now sits 36–254 commits behind `main`. They rot in place: the further main
 moves, the more of each diff is either conflict or already-redundant.
 
+## Reviewed 2026-10-01: 19 keep, 2 optional, 8 salvage, 14 drop
+
+All 43 were bundled off the node and test-merged against current main
+(`git merge-tree`, a real conflict answer): 33 merge clean, 10 conflict.
+Five read-only reviewers then checked each gripe against current main and
+read each diff. **No branch's tests were run** — "has a test" means the diff
+carries one. Every KEEP still goes through the gate.
+
+- **KEEP (19)** — defect still live on main, fix sound:
+  `gripe_182230` (chase-coverage ledger; carries a migration numbered 0171
+  that main already used — renumber, then `/go` only), `gripe_228652`
+  (glyph_health at extraction — the ingest thread's rank-2 item; land first
+  there), `gripe_294498` (FIFO gate-slot tickets; also covers gr343941's
+  remaining half), `gripe_450122`, `gripe_450123` (narrow its `except` to
+  embedder causes first), `gripe_450524`, `gripe_451270`, `gripe_451274`,
+  `gripe_452084` (defect 4 only, the unbounded `kind_provider` table),
+  `gripe_452204`, `gripe_453828` (restrict the "installed but not declared"
+  check to the project's own dist), `gripe_453862` (take as the base over
+  453859 — both rewrite the same claim SQL), `gripe_454753` (unblocks the
+  nanobuds export), `gripe_454792`, `gripe_454796`, `gripe_454865`,
+  `gripe_456213` (same-batch residual; file a gripe id for it),
+  `gripe_456240`, `gripe_456641`.
+- **Optional (2)** — `gripe_180306` (hub reconcile sweep: a feature, one LLM
+  call per candidate pair; the reported pair is already merged),
+  `gripe_451269` (one docs paragraph).
+- **SALVAGE (8)** — lift parts, redo by hand: `gripe_248866` (unverified
+  whether a child process inherits the heartbeat's macOS TCC grant, which
+  would make the probe a false green; interpreter list duplicated from
+  deploy), `gripe_451276` (router still treats a pin's second pad as a
+  foreign obstacle), `gripe_451356` (substring package match false-flags;
+  where mating direction comes from is undecided), `gripe_452203` (dedup
+  still misses the gripe's own example), `gripe_453859` (lift the re-arm
+  guard and `--needs-manual`; share one pass definition with 453862),
+  `gripe_453860` (keep journal + census, drop the auto-heal — it fans out
+  ~914 refs on its first pass), `gripe_454480` (an already-fixed run
+  reopens the gripe, so it may loop), `gripe_458084` (counter, prev/next
+  links and banner stay on the loaded revision after an in-place step).
+- **DROP (14)** — fixed independently on main: `gripe_450132`,
+  `gripe_453913`, `gripe_454488`, `gripe_454563`, `gripe_454650`,
+  `gripe_456236`, `gripe_457053`, `gripe_457326`, `gripe_457361`,
+  `gripe_458087`; superseded: `gripe_228699` (by 228652), `gripe_458061`
+  (by the 457361 fix); not a fix: `gripe_452384` (patches a sibling, the
+  gripe is fixed), `gripe_311857` (widens the piped-exit guard, which
+  pre-empts Reto's open choice in `piped-exit-guard-tuning.md`).
+
 ## Still there, re-measured 2026-10-01
 
 Reto asked whether these are still around. They are — all 43, unchanged in
