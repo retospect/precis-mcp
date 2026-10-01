@@ -42,8 +42,14 @@ waited on happened 09-29 — note at the bottom)
      axially through an end rim. A bend is then a tube instance carrying
      C3 orbits (0→60→90°) or single defects (34/48/60/70/80/90°), and
      the seam mints only the remainder.
-   - The general answer is §21/§22, the smooth layer plus budget and
-     distribution, which is Horizon 11.
+   - Reto, 2026-10-01: we want two capabilities, and they are distinct.
+     (a) Authoring, this item: the author places each defect explicitly,
+     on any patch (sheet, tube wall, cap). This is exact and reproducible,
+     and it is what a hand-designed graded bend uses.
+     (b) Solving, Horizon 11: the author gives a smooth target shape, and
+     §22's budget and distribution places the defects. (b) emits (a)'s
+     defect lists, so (a) is also (b)'s output format and test oracle.
+     Do (a) first.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
      ports.py).
 2. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
@@ -161,7 +167,10 @@ waited on happened 09-29 — note at the bottom)
     §28.6 and §28.8); this thread ranks them, that item holds the
     spec. Discrete-mesh smooth solve, curvature bound, bent collar;
     delivers the tapered (collar-driven) shell the discrete washer step
-    stands in for.
+    stands in for. This is the "solving" capability of Do-next 1's split:
+    a smooth profile in (sheet → catenoid foot → tube → flare → drum →
+    rounded lid), and distributed defects out. It emits authored-defect
+    lists (gr459928).
 12. **backlog/global-structure-search-slices.md** — variable-composition
     (`add` ranges) and surrogate warm-start from a prior AGOX database;
     structure-kind search work homed here by Reto's pillar-2 ruling
