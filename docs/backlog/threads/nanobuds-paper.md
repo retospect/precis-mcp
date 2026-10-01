@@ -11,7 +11,7 @@ measured-analogue papers (Huang 2011, Seiler 2024) are in as hubs and cited,
 the 13 converted chunks are read back and repaired, and the Gap Analysis
 section now opens with the thesis and carries both analogues (2026-09-30).
 Restructure once the venue is picked.
-**Last reviewed:** 2026-09-30 (pillar review same day absorbed the nanobud
+**Last reviewed:** 2026-10-01 (pillar review 2026-09-30 same day absorbed the nanobud
 library items and the hexfold seam-figure want; pruned gr450329/gr450339,
 both STATUS:done)
 **Worktree:** `nanobuds-paper`
@@ -42,8 +42,12 @@ both STATUS:done)
    scope line drawn.
 2. **nanopub approve/sign pass over dr173020's hubs** — waits on 1 (rewording
    after signing re-opens hubs); the 173020 batch in td345830–td345836.
-3. **export + submission** — waits on 2 and td450082; docx/pdf via the local
-   prod export path against the venue's template. 43020 stays frozen.
+3. **export + submission** — waits on 2, td450082 and gr454753: the
+   draft_export job refuses on the ten image-less reproduced figures ("no
+   image yet", jo459047, 2026-10-01) and accepts no placeholder waiver, so
+   either every figure gets an image + clearance or the job grows the waiver
+   the skill already documents. docx/pdf via the local prod export path
+   against the venue's template. 43020 stays frozen.
 4. **backlog/nanobud-campaign.md**
 5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
    se-nanobud-graph (Do-next 5).
@@ -78,6 +82,9 @@ both STATUS:done)
   5-7 kinks, dc2445877) and fi458952 (schwarzon shielding, dc2445916). Filed gr458941 (every hub shows "no originator
   derived yet") and gr458943 (hygiene view and windows refuse forms the skill
   documents). The ten caption cites stay `Reproduced from [pc…]` by policy.
+- **gr459050** — dr173020 is bound draft-of two project todos (td43019 carried
+  over by the fork, td173019 its own); filed 2026-10-01, fix belongs in the
+  fork; do not drop the edge by hand, 43020's binding must stay.
 - **gr450123** — embedder contention; infra, owned elsewhere.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
   failed); read back in full by td458276 (done 2026-09-30) — a re-run over
