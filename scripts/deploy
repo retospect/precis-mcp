@@ -278,6 +278,10 @@ _move_prod_pointer() {
     if env_pointer_move "$REPO_ROOT" prod "$sha" "$mode"; then
         say "origin/prod → ${sha:0:8}"
     fi
+    # The clone the shared session MCP serves, when this machine has one.
+    if env_prod_checkout_sync "$REPO_ROOT" "$sha"; then
+        say "prod clone → ${sha:0:8} ($(env_prod_checkout_dir "$REPO_ROOT"))"
+    fi
     return 0
 }
 

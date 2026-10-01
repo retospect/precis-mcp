@@ -315,7 +315,10 @@ def test_busy_still_raised_when_loaded_and_over_capacity(_stop_probe) -> None:
     pre-existing admission-control contract."""
     service, _embedder, _clock = _mk_service(idle_s=100.0)
     _stop_probe.append(service)
-    service._sem = threading.BoundedSemaphore(0)  # force full
+    # A one-text request is query-sized and admits through the small lane,
+    # so both lanes are forced full.
+    service._sem = threading.BoundedSemaphore(0)
+    service._small_sem = threading.BoundedSemaphore(0)
 
     with pytest.raises(Busy):
         service.embed(["x"])

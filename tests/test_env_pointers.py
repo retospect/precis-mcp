@@ -48,6 +48,7 @@ def _env(**extra: str) -> dict[str, str]:
         }
     )
     env.pop("PRECIS_ENV_POINTERS", None)
+    env.pop("PRECIS_PROD_CHECKOUT", None)
     env.update(extra)
     return env
 
@@ -219,3 +220,97 @@ def test_deploy_moves_prod_from_both_success_writers() -> None:
     assert "env_pointer_move" in helper
     assert "FORCE_ROLLBACK" in helper
     assert "force" in helper
+    assert 'env_prod_checkout_sync "$REPO_ROOT" "$sha"' in helper
+
+
+def _sync(work: Path, sha: str, **env: str) -> subprocess.CompletedProcess[str]:
+    script = f'set -euo pipefail; . "{LIB}"; env_prod_checkout_sync "{work}" "{sha}"'
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_env(**env),
+        check=False,
+    )
+
+
+def _clone(origin: Path, dest: Path) -> Path:
+    _git(dest.parent, "clone", "-q", str(origin), str(dest))
+    return dest
+
+
+def test_prod_clone_defaults_to_a_sibling_of_the_main_checkout(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, _origin, _shas = repo
+    script = f'. "{LIB}"; env_prod_checkout_dir "{work}"'
+    res = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_env(),
+        check=True,
+    )
+    assert Path(res.stdout.strip()).resolve() == Path(f"{work.resolve()}-prod")
+
+
+def test_sync_moves_the_clone_to_the_deployed_sha_detached(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, origin, shas = repo
+    clone = _clone(origin, Path(f"{work}-prod"))
+    assert _sync(work, shas[0]).returncode == 0
+    assert _git(clone, "rev-parse", "HEAD") == shas[0]
+    # Detached: .git/HEAD holds the sha itself, which is what the session
+    # server's watchdog reads without a git binary.
+    assert (clone / ".git" / "HEAD").read_text(encoding="utf-8").strip() == shas[0]
+
+
+def test_sync_fetches_a_sha_the_clone_has_not_seen(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, origin, _shas = repo
+    clone = _clone(origin, Path(f"{work}-prod"))
+    (work / "f").write_text("later\n", encoding="utf-8")
+    _git(work, "add", "f")
+    _git(work, "commit", "-q", "-m", "later")
+    _git(work, "push", "-q", "origin", "main")
+    later = _git(work, "rev-parse", "HEAD")
+    assert _sync(work, later).returncode == 0
+    assert _git(clone, "rev-parse", "HEAD") == later
+
+
+def test_sync_without_a_clone_is_a_quiet_no(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, _origin, shas = repo
+    res = _sync(work, shas[0])
+    assert res.returncode == 1
+    assert res.stderr == ""
+
+
+def test_sync_leaves_a_clone_with_local_edits_alone(
+    repo: tuple[Path, Path, list[str]],
+) -> None:
+    work, origin, shas = repo
+    clone = _clone(origin, Path(f"{work}-prod"))
+    (clone / "f").write_text("someone edited the served clone\n", encoding="utf-8")
+    res = _sync(work, shas[0])
+    assert res.returncode == 1
+    assert "prod clone" in res.stderr
+    assert _git(clone, "rev-parse", "HEAD") == shas[2]
+    assert (clone / "f").read_text(encoding="utf-8").startswith("someone edited")
+
+
+def test_sync_honours_the_path_override_and_the_switch(
+    repo: tuple[Path, Path, list[str]], tmp_path: Path
+) -> None:
+    work, origin, shas = repo
+    clone = _clone(origin, tmp_path / "elsewhere")
+    assert _sync(work, shas[1], PRECIS_PROD_CHECKOUT=str(clone)).returncode == 0
+    assert _git(clone, "rev-parse", "HEAD") == shas[1]
+    off = _sync(work, shas[0], PRECIS_PROD_CHECKOUT=str(clone), PRECIS_ENV_POINTERS="0")
+    assert off.returncode == 1
+    assert _git(clone, "rev-parse", "HEAD") == shas[1]
