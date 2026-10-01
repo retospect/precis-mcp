@@ -175,6 +175,28 @@ def _doctor_ask_key(text: str) -> str:
     ).hexdigest()
 
 
+#: A git sha as the model writes one: 7-40 hex chars, mixed digit+letter
+#: (checked in :func:`_ask_refs`) so plain words like "deadbeef" or
+#: "1234567" don't count.
+_ASK_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
+_ASK_HANDLE_RE = re.compile(r"\b(gr|al|td|dr|jo)(\d+)\b", re.IGNORECASE)
+
+
+def _ask_refs(text: str) -> list[str]:
+    """Stable referents a bullet names: ``gr<id>``/``al<id>``/``td<id>``/…
+    handles and git shas, lowercased and sorted. The LLM re-words its
+    bullets every tick but keeps naming the same gripe/alert/commit, so
+    these — not the prose — are what a repeat ask is matched on
+    (gr452203)."""
+    low = text.lower()
+    refs = {f"{m.group(1)}{m.group(2)}" for m in _ASK_HANDLE_RE.finditer(low)}
+    for m in _ASK_SHA_RE.finditer(low):
+        tok = m.group(0)
+        if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+            refs.add(tok[:8])
+    return sorted(refs)
+
+
 def _parse_needs_a_human_bullets(body: str) -> tuple[list[str], int, int] | None:
     """The section's bullet texts plus its ``(start, end)`` offsets in
     ``body``, or ``None`` when :data:`NEEDS_A_HUMAN_HEADING` is absent.
@@ -278,6 +300,55 @@ def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
     return int(row[0]), int(row[1])
 
 
+def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | None:
+    """``(ref_id, seen_count)`` of an open ``waiting-for:reto`` todo that
+    already covers one of ``refs``: either it was minted for the same
+    referent (``meta.doctor_ask_refs`` overlap) or the bullet names that
+    todo directly (``td<id>``)."""
+    if not refs:
+        return None
+    td_ids = [int(r[2:]) for r in refs if r.startswith("td")]
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id, COALESCE((r.meta->>'seen_count')::int, 1)
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND EXISTS (SELECT 1 FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                            WHERE rt2.ref_id = r.ref_id
+                              AND t2.namespace = 'OPEN' AND t2.value = 'waiting-for:reto')
+               AND (jsonb_exists_any(COALESCE(r.meta->'doctor_ask_refs', '[]'::jsonb), %s)
+                    OR r.ref_id = ANY(%s))
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
+                       WHERE rtg.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) NOT IN ('done', %s, %s)
+             ORDER BY r.ref_id ASC
+             LIMIT 1
+            """,
+            (refs, td_ids, "won't-do", "auto-timeout"),
+        ).fetchone()
+    if row is None:
+        return None
+    return int(row[0]), int(row[1])
+
+
+def _only_resolved_alerts(store: Store, refs: list[str]) -> list[str] | None:
+    """The alert handles in ``refs`` when the bullet's ONLY referents are
+    alerts and every one is ``alert-state:resolved`` — nothing left to
+    ask a human about. ``None`` otherwise."""
+    if not refs or any(not r.startswith("al") for r in refs):
+        return None
+    for r in refs:
+        ref = store.get_ref(kind="alert", id=int(r[2:]))
+        if ref is None or not store.has_tag(
+            int(ref.id), "OPEN", "alert-state:resolved"
+        ):
+            return None
+    return refs
+
+
 def _mint_ask_todo(
     store: Store,
     *,
@@ -286,9 +357,12 @@ def _mint_ask_todo(
     title: str,
     detail: str | None,
     report_ref_id: int | None,
+    refs: list[str] | None = None,
 ) -> int:
     """Mint one ``waiting-for:reto`` todo for a fresh ask."""
     meta: dict[str, Any] = {"doctor_ask_key": key, "seen_count": 1}
+    if refs:
+        meta["doctor_ask_refs"] = refs
     if report_ref_id is not None:
         meta["doctor_report_id"] = report_ref_id
     with store.tx() as conn:
@@ -359,7 +433,15 @@ def convert_needs_a_human(
                 title = title[: _ASK_TITLE_MAX - 1].rstrip() + "…"
             key = _doctor_ask_key(item)
 
-            existing = _find_open_ask(store, key)
+            refs = _ask_refs(item)
+            resolved = _only_resolved_alerts(store, refs)
+            if resolved is not None:
+                rendered.append(
+                    f"- (no ask: {', '.join(resolved)} already resolved) {first_line}"
+                )
+                continue
+
+            existing = _find_open_ask(store, key) or _find_open_ask_by_refs(store, refs)
             if existing is not None:
                 ref_id, seen_count = existing
                 seen_count += 1
@@ -373,6 +455,7 @@ def convert_needs_a_human(
                     title=title,
                     detail=detail,
                     report_ref_id=report_ref_id,
+                    refs=refs,
                 )
                 rendered.append(f"- td{ref_id}: {first_line}")
 

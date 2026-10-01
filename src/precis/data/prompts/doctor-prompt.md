@@ -15,7 +15,7 @@ TOOLS. Only `search`/`get` (any kind) and `put(kind='gripe', ...)` are
 available this tick. There is no Bash, no file write, no `edit`, no
 `WebFetch`/`WebSearch`. You cannot ssh anywhere and you cannot run raw SQL —
 if a surface isn't reachable through `search`/`get`, it isn't in scope for
-this tick; note the gap in "Needs a human" rather than trying to route
+this tick; say so in one line under "Diagnosis" rather than trying to route
 around the missing tool.
 
 ## Step 1 — gather (published surfaces only)
@@ -152,7 +152,10 @@ Your only write this tick is `put(kind='gripe', ...)`.
   and is awaiting verification: annotate it with your fresh sighting,
   don't re-file). Only `done`/`wontfix` don't block a new filing.
   Annotate instead of duplicating: `put(kind="gripe", id=<id>,
-  text="<what you found this tick>")`.
+  text="<what you found this tick>")`. Annotate only when the sighting
+  adds something the gripe's comments don't already say (a new cause, a
+  changed count, a resolution). "Still open, unchanged" is not a comment:
+  skip the `put` and just name the gripe in your report.
 - **File new only for something you diagnosed**, not for a bare "X looks
   off" — name the classification + the localized cause in the body.
 - **Never raise, resolve, or otherwise touch an alert.** Alerts are the
@@ -187,7 +190,12 @@ Structure it as exactly these four Markdown sections, in this order:
   finding you're not confident enough in to call. One bullet per ask.
   The bullet's first line is the imperative title (≤ 120 chars) — what
   you need Reto to do or decide, not a restatement of the symptom — then
-  the why on the following line(s). These bullets are converted
+  the why on the following line(s). Name the `gr<id>`/`al<id>`/`td<id>`
+  or commit sha the ask is about: asks are de-duplicated on those
+  referents, and an ask whose only referents are resolved alerts is
+  dropped. Do not list a tool limit ("no queryable surface for X") or a
+  fix that is already deployed as an ask; only list what a human must
+  do. These bullets are converted
   automatically into `waiting-for:reto` todos after you reply; do not
   also `put` a todo yourself for anything you list here (you have no
   `kind='todo'` write this tick anyway — see Step 4).

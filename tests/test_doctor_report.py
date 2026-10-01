@@ -8,7 +8,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from precis import alerts
 from precis.store import Store
+from precis.store.types import Tag
 from precis.workers import doctor_report
 
 pytestmark = pytest.mark.db
@@ -318,3 +320,91 @@ def test_convert_needs_a_human_carries_the_report_ref_id(store: Store) -> None:
     todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
     assert len(todos) == 1
     assert todos[0].meta.get("doctor_report_id") == int(ref.id)
+
+
+# ── gr452203: dedup on referents, not prose ──────────────────────────
+
+
+def _open_asks(store: Store) -> list:
+    return [
+        t
+        for t in store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=50)
+        if not store.has_tag(int(t.id), "STATUS", "done")
+    ]
+
+
+def test_ask_refs_extracts_handles_and_mixed_shas() -> None:
+    refs = doctor_report._ask_refs(
+        "Deploy main@b58a18a0 (gr346813) for AL12; deadbeef and 1234567 ignored"
+    )
+    assert refs == ["al12", "b58a18a0", "gr346813"]
+
+
+def test_reworded_ask_naming_the_same_referent_does_not_mint_again(
+    store: Store,
+) -> None:
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Deploy melchior to pick up b58a18a0 (gr346813)")
+    )
+    second = doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Deploy commit b58a18a0 to melchior")
+    )
+
+    asks = _open_asks(store)
+    assert len(asks) == 1
+    assert asks[0].meta.get("seen_count") == 2
+    assert f"td{asks[0].id}" in second
+
+
+def test_ask_naming_an_open_td_reuses_it(store: Store) -> None:
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Run the nanopub re-stamp")
+    )
+    (first,) = _open_asks(store)
+
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks(f"Still need td{first.id} done, please")
+    )
+
+    assert len(_open_asks(store)) == 1
+
+
+def test_done_ask_does_not_block_a_fresh_one(store: Store) -> None:
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Deploy b58a18a0 to melchior")
+    )
+    (first,) = _open_asks(store)
+    store.add_tag(int(first.id), Tag.closed("STATUS", "done"), set_by="system")
+
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks("Deploy b58a18a0 to melchior again")
+    )
+
+    assert len(_open_asks(store)) == 1
+    assert int(_open_asks(store)[0].id) != int(first.id)
+
+
+def test_ask_about_only_resolved_alerts_mints_nothing(store: Store) -> None:
+    aid, _ = alerts.raise_alert(
+        store, source="nursery:test", fingerprint="fp1", title="t"
+    )
+    alerts.resolve_alert(store, aid)
+
+    new_body = doctor_report.convert_needs_a_human(
+        store, _body_with_asks(f"Dismiss alert al{aid}")
+    )
+
+    assert _open_asks(store) == []
+    assert "no ask" in new_body
+
+
+def test_ask_about_an_open_alert_still_mints(store: Store) -> None:
+    aid, _ = alerts.raise_alert(
+        store, source="nursery:test", fingerprint="fp2", title="t"
+    )
+
+    doctor_report.convert_needs_a_human(
+        store, _body_with_asks(f"Investigate alert al{aid}")
+    )
+
+    assert len(_open_asks(store)) == 1
