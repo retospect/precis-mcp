@@ -6,7 +6,7 @@ items is untriaged and the ordering rule is not age or prose: Do-next is
 ordered by what the month's preprint hits (quest qu459585; October = td459586).
 **Last reviewed:** 2026-10-01
 **Worktree:** `draft-authoring`
-**Active:** no — opens when Reto names it.
+**Active:** yes — Reto 2026-10-01: "draft authoring must work".
 
 Created 2026-10-01 from the memory-graph pillar review.
 

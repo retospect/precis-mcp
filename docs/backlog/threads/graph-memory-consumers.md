@@ -11,24 +11,28 @@ since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-10-01
 **Worktree:** `graph-memory-consumers`
-**Active:** no — opens at the next session restart if Reto names it.
+**Active:** yes — Reto 2026-10-01: "graph memory we want soon".
 
 ## Do next
 
 1. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. Depends on `backlog/file-mirror.md`
    (knowledge-mesh Do-next 7).
-2. **backlog/draft-authoring-graph-affordances.md** — nanobuds-paper
+2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
+   tiers, throughout code and comments, no compatibility path); gates the
+   November paper (td459587), so it lands before November even though
+   item 1 outranks it on value.
+3. **backlog/draft-authoring-graph-affordances.md** — nanobuds-paper
    evidence: work leaves the graph today (a proposal in /tmp, write checks
    in SQL, history unreachable, dedup hiding live hubs), so a live
    consumer is already going without.
-3. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
+4. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
    the render side (every kind, the browser focus page) is
    `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
-4. **backlog/server-side-session-context.md** — precondition td458385
+5. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
-5. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
+6. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
    gripes as one searchable surface; consumes the mirror once it lands.
 
 ## Horizon
@@ -49,8 +53,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
   **backlog/patent-search-parity.md** — kinds the facet cannot see.
 - **backlog/search-notation-symmetric-fold-index.md** ·
   **backlog/search-future-filters.md** · **backlog/good-search-coordinator.md**
-- **backlog/skill-index-build-once-vs-shed.md** ·
-  **backlog/vocab-align-to-literature.md** · **backlog/vocab-compaction.md**
+- **backlog/skill-index-build-once-vs-shed.md** · **backlog/vocab-compaction.md**
   — triage first; order inside the group is provisional.
 
 1. **backlog/source-code-ingest.md** → **backlog/retire-claude-context.md**

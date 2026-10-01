@@ -70,13 +70,13 @@ given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
 all three are ranked in `knowledge-mesh.md`.
 
 **Threads.** `knowledge-mesh.md` (active — substrate, the memory half and
-the surfaces) · `graph-memory-consumers.md` (dormant — agent-side
-affordances) · `ingest-and-fetch.md` (dormant, created 2026-10-01 on Reto's
+the surfaces) · `graph-memory-consumers.md` (active — agent-side
+affordances) · `ingest-and-fetch.md` (active, created 2026-10-01 on Reto's
 ruling — acquisition and extraction fidelity, what the graph is fed; triage
 before rank) · `claims-and-evidence.md` (active, created 2026-10-01 —
 the taproot/nanopub defect and follow-on cluster; Do-next 1 is the
 computed-pathway evidence edge the claim page drops) · `draft-authoring.md`
-(dormant, created 2026-10-01 — ranked by what the month's preprint hits).
+(active, created 2026-10-01 — ranked by what the month's preprint hits).
 Seams: substrate vs consumers, pipeline vs the layer that consumes it, and
 the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
 Top priority (Reto, 2026-10-01): `backlog/memory-native-authoring.md`, the
@@ -239,20 +239,21 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (16; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
-plus four on 2026-10-01):
+Active (19; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+plus seven on 2026-10-01):
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
 · `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
 `claims-and-evidence` · `se-machine-design` · `chemistry` (added
-2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01).
+2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01) ·
+`ingest-and-fetch` · `draft-authoring` · `graph-memory-consumers` (all
+three 2026-10-01: "ingest must work. draft authoring must work. graph
+memory we want soon").
 
-Dormant (6, open at the next restart if named): `graph-memory-consumers`
-· `multiscale-design-core` · `factory` (2026-10-01, the agent-lane
-items moved from pillar 3) · `pcb-platform` (created at
-the 09-30 review) · `ingest-and-fetch` (2026-10-01, Reto's ruling, triage
-first) · `draft-authoring` (2026-10-01).
+Dormant (3, open at the next restart if named): `multiscale-design-core`
+· `factory` (2026-10-01, the agent-lane items moved from pillar 3) ·
+`pcb-platform` (created at the 09-30 review).
 
 ## Retirement
 
@@ -281,6 +282,12 @@ than leaving it.
 ## Review log
 
 Newest first; one line per pass (`/pillar-review` writes it).
+
+- 2026-10-01 — Reto's rulings, not a full pass: vocabulary tiers 2 and 3
+  throughout code (td459590 done); December paper becomes a
+  molecular-machines paper, boxel dr42995 unscheduled; catpath January
+  unpaused; ingest-and-fetch, draft-authoring and graph-memory-consumers
+  active. Still open: serving-programme has no session.
 
 - 2026-10-01 — not a full pass: the paper cadence added (quest qu459585,
   October to January scheduled), and ingest-and-fetch listed as dormant.

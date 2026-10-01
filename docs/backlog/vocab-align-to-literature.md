@@ -13,6 +13,15 @@ a land-grab. Reto's ruling 2026-09-25: unify vocabulary to literature
 standard **where the literature's word is good**, update `docs/glossary.md`,
 and check MCP-facing names for consistency.
 
+**Ruling, Reto 2026-10-01 (td459590).** Do tiers 2 and 3, and carry each
+rename throughout: docs, skills, code identifiers and comments, not prose
+only. Kind renames need no compatibility path or deprecation window: agents
+read the new skills and the new MCP surface when they restart, so there
+are no long-lived callers to protect. A rename that touches prod rows ships
+as a migration through `/go`. The quest-layer house words (`quest`,
+`gripe`, `tote`, `deed`, `striving`) have no literature word and stay.
+This gates the November paper (td459587, dr449707).
+
 **Not a blanket rename.** Roughly two thirds of the coined set names something
 the literature has no word for, and those stay. The work is picking the third
 that has a standard equivalent, and distinguishing cheap changes from breaking
@@ -48,11 +57,11 @@ The coined term is actively misleading or costs a reader real effort.
 | `atom` / `compound` claim | **atomic** / **composite** claim | "compound" collides with the chemistry sense in this very corpus — an overloaded-term problem of our own making |
 | `brick` / `linker` (se atomic) | `linker` is already standard (MOF); **node / secondary building unit (SBU)** for `brick` | reticular chemistry vocabulary |
 
-## Tier 3 — MCP-surface names (breaking; needs per-name sign-off)
+## Tier 3 — MCP-surface names (approved 2026-10-01)
 
 Kind names are in prod rows, migrations, skills, agent prompts and a public
-repo. **Do not rename without an explicit per-name decision.** Listed for the
-decision, not scheduled.
+repo. Approved by the ruling above; the per-name choice below is the
+owner's, and a name whose literature word is not clearly better stays.
 
 - `se` — expands to what? If "structural element", the literature word for the
   graph it holds is **assembly** (assembly graph / liaison graph). `se` as a
@@ -119,10 +128,11 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
 ## Definition of done
 
 - Tier 1 glosses added, one line each, in the existing entries.
-- Tier 2 renamed in `docs/` and `src/precis/data/skills/`, with the old term
-  kept as `(legacy: X)` inside the winner's glossary entry per the file's own
-  retired-synonym convention.
-- Tier 3 left open with a decision recorded per name.
+- Tier 2 renamed in `docs/`, `src/precis/data/skills/`, code identifiers and
+  comments, with the old term kept as `(legacy: X)` inside the winner's
+  glossary entry per the file's own retired-synonym convention.
+- Tier 3 renames shipped (migration through `/go` where prod rows carry the
+  name), with the per-name choice recorded here.
 - The paper draft uses the post-rename vocabulary throughout.
 
 ## Open

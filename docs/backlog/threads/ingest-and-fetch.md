@@ -8,7 +8,7 @@ provisional: ranking seven items by age and prose is how a fixed bug keeps a
 rank and a live corruption loses one.
 **Last reviewed:** 2026-10-01
 **Worktree:** `ingest-and-fetch`
-**Active:** no — opens when Reto names it.
+**Active:** yes — Reto 2026-10-01: "ingest must work".
 
 Created 2026-10-01 on Reto's ruling: this cluster gets its own thread rather
 than folding into `knowledge` (which owns the layer that *consumes* the
