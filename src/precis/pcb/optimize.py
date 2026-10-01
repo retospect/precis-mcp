@@ -2620,6 +2620,12 @@ class OptimizeEngine:
         A future spread-to-fill AESTHETIC pressure belongs in the cost
         function, not in this domain."""
         ir = self.ir
+        # The widest movable part, as the diameter `bounds_for` shrinks the
+        # domain by. A domain narrower than that pins the part's centre to
+        # the domain centre, where it may never be legal.
+        widest = 2.0 * max(
+            (float(self._keepout_r[i]) for i in self._movable_xy), default=0.0
+        )
         ox0, oy0, ox1, oy1 = 0.0, 0.0, self.board_side, self.board_side
         if ir.outline and len(ir.outline) >= 3:
             ox0, oy0, ox1, oy1 = outline_bbox(ir.outline)
@@ -2627,10 +2633,20 @@ class OptimizeEngine:
             ox1, oy1 = ox1 - _EDGE_MARGIN_MM, oy1 - _EDGE_MARGIN_MM
             if ox1 <= ox0 or oy1 <= oy0:  # outline smaller than its own margin
                 return (ox0, oy0, ox0 + self.board_side, oy0 + self.board_side)
+        elif widest > self.board_side:
+            # No authored outline, so `[0, board_side]` is a nominal canvas
+            # and not a board edge. ewod-dogfood-6 has no outline; its
+            # 19 x 23.5 mm driver on the 20 mm canvas was pinned at (10, 10),
+            # on its array's plaza vias, with no legal pose anywhere
+            # (2026-10-01: 0 of 3000 moves accepted, nothing legalized).
+            half = (widest + self.board_side) / 2.0
+            c = self.board_side / 2.0
+            ox0, oy0, ox1, oy1 = c - half, c - half, c + half, c + half
         placed = np.isfinite(ir.inst_x) & np.isfinite(ir.inst_y)
         if not placed.any():
             return (ox0, oy0, ox1, oy1)
-        pad = self.board_side
+        has_outline = bool(ir.outline and len(ir.outline) >= 3)
+        pad = self.board_side if has_outline else max(self.board_side, widest)
         bx0 = max(ox0, float(ir.inst_x[placed].min()) - pad)
         by0 = max(oy0, float(ir.inst_y[placed].min()) - pad)
         bx1 = min(ox1, float(ir.inst_x[placed].max()) + pad)

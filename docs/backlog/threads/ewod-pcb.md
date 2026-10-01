@@ -209,9 +209,16 @@ Do-next renumbered)
   re-placed and re-routed, which is a prod write on Reto's word. The
   first re-place on Reto's go (2026-10-01, job 460181) accepted 0 of
   3000 moves: legality gates proposals, not the starting pose, and no
-  single step clears the via field. `OptimizeEngine.legalize_start` now
-  moves an illegal starting pose to the nearest legal one before the
-  anneal; re-place once that is deployed. Its
+  single step clears the via field. `OptimizeEngine.legalize_start`
+  (deployed in d170d29c) did not help: the re-place, job 460302, was again
+  0 of 3000 moves with nothing legalized. dogfood-6 has no authored
+  outline, so the placer's domain is the nominal 20 mm canvas, and the
+  driver's 19 x 23.5 mm keep-out shrinks that to the single point (10, 10),
+  where it sits on the vias. The fix grows the no-outline canvas to fit
+  the widest movable part (`_derive_placement_bounds`). Once it is deployed,
+  re-place and then re-route. Separately, the board needs an authored outline
+  large enough for the driver: `view='mechanical'` derives a 14 mm one
+  that excludes it entirely. Its
   `view='cpl'` no longer lists `ARR1` once deployed, and its
   `view='gerber'` opens with the DRC banner.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all

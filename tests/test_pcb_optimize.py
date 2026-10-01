@@ -2157,6 +2157,31 @@ def test_a_legal_start_is_not_legalized():
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (0.0, 0.0)
 
 
+def test_a_part_wider_than_the_nominal_canvas_is_not_pinned_to_its_centre():
+    """With no authored outline the domain is a nominal ``board_side``
+    canvas. A part whose keep-out diameter exceeds it had its centre pinned
+    to the canvas centre by ``bounds_for``, so a via there left it nowhere
+    legal to go (``ewod-dogfood-6`` 2026-10-01: a 19 x 23.5 mm driver
+    stuck at (10, 10), 0 of 3000 moves accepted, nothing legalized)."""
+    ir = _via_ir(
+        lands=[(-12.0, 0.0, 0.5, 0.5), (12.0, 0.0, 0.5, 0.5)], via_xy=(22.0, 10.0)
+    )
+    ir.outline = None
+    ir.inst_x[0], ir.inst_y[0] = 10.0, 10.0
+    ir.inst_fixed_xy[1] = True
+    # The keep-out is the courtyard around the PINS, not the land rects:
+    # put U0's pin 12 mm out so its diameter exceeds the 20 mm canvas.
+    ir.set_pin_offset(int((ir.pin_instance == 0).nonzero()[0][0]), 12.0, 0.0)
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert 2 * float(engine._keepout_r[0]) > engine.board_side  # the precondition
+    x0, y0, x1, y1 = engine.bounds_for(0)
+    assert x1 > x0 and y1 > y0  # a range, not the canvas centre
+    assert engine._placement_is_legal([(0, 10.0, 10.0)]) is False
+
+    assert engine.legalize_start() == ("U0",)
+    assert engine._fixed_via_gap(0) >= 0.15
+
+
 def test_recentre_never_slides_a_placement_across_authored_vias():
     """Authored vias are fixed to the board, so a rigid recentre of
     everything else can park a land on one after the anneal cleared it."""
