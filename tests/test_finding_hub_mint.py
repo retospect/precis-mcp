@@ -81,6 +81,27 @@ class TestPutHubDedupWiring:
                 supporters=[{"paper": "miller23a"}],
             )
 
+    def test_embedder_unavailable_is_upstream_not_internal(self, store) -> None:
+        # gr459918: block()'s embed raising EmbedderUnavailable escaped as Internal.
+        from precis.embedder import EmbedderUnavailable
+        from precis.errors import Upstream
+        from precis.handlers._finding_hub_mint import put_hub
+
+        _seed_paper(store, cite_key="miller23a")
+
+        def _boom(claim_obj: Any, store: Any, embedder: Any, **kw: Any):
+            raise EmbedderUnavailable("busy")
+
+        with pytest.raises(Upstream, match="embedder"):
+            put_hub(
+                store,
+                sentence="a fresh claim nobody has minted",
+                scope={},
+                supporters=[{"paper": "miller23a"}],
+                embedder=object(),
+                block_fn=_boom,
+            )
+
     def test_dedup_false_mints_unconditionally_and_says_so(self, store) -> None:
         _seed_paper(store, cite_key="miller23a")
         h = _make_handler(store, embedder=None)

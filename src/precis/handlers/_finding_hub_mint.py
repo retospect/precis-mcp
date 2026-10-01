@@ -62,7 +62,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from precis.errors import BadInput, Unsupported
+from precis.embedder import EmbedderUnavailable
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers._link_tag_ops import validate_relation
 from precis.response import Response
 from precis.store.types import ActorSlug, Tag
@@ -127,7 +128,16 @@ def put_hub(
             next="pass dedup=False to mint without the semantic-dedup cascade",
         )
 
-    candidates = block_fn(claim, store, embedder)
+    try:
+        candidates = block_fn(claim, store, embedder)
+    except EmbedderUnavailable as exc:
+        # Gripe #459918: an unguarded embedder hiccup escaped as [error:Internal].
+        raise Upstream(
+            "hub-mint dedup could not embed the claim — the embedder is "
+            "unavailable or at capacity; nothing was minted",
+            next="retry shortly, or pass dedup=False to mint without the "
+            "semantic-dedup cascade",
+        ) from exc
     judged = [(cand, judge_fn(sentence, cand.claim)) for cand in candidates]
     placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 

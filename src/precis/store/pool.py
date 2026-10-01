@@ -27,8 +27,10 @@ keep in sync, just the one pattern to recognise if you see it again.
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
+import weakref
 from typing import Any
 
 from psycopg import Connection, sql
@@ -179,6 +181,23 @@ DEFAULT_POOL_MAX_IDLE_SECONDS: float = 300.0
 DEFAULT_POOL_MAX_LIFETIME_SECONDS: float = 1800.0
 
 
+def _close_pool_ref(ref: weakref.ReferenceType[ConnectionPool]) -> None:
+    pool = ref()
+    if pool is not None and not pool.closed:
+        pool.close()
+
+
+def _close_at_exit(pool: ConnectionPool) -> None:
+    """Close ``pool`` at interpreter exit if its owner never did.
+
+    psycopg's own exit finalizer waits 5 s per pool thread when a pool
+    is left open (3 workers + scheduler = ~20 s of apparent hang on
+    every one-shot CLI that forgot ``store.close()``, gripe #458351).
+    Weak ref so a pool that is closed and dropped is not kept alive.
+    """
+    atexit.register(_close_pool_ref, weakref.ref(pool))
+
+
 def create_pool(
     dsn: str,
     *,
@@ -233,4 +252,5 @@ def create_pool(
         **kwargs,
     )
     pool.open(wait=True, timeout=open_timeout)
+    _close_at_exit(pool)
     return pool

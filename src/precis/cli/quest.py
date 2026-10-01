@@ -733,33 +733,36 @@ def _cmd_status(store: Store, args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
-    if args.quest_cmd == "tick":
-        _cmd_tick(store, args)
-    elif args.quest_cmd == "weave":
-        _cmd_weave(store, args)
-    elif args.quest_cmd == "review-all":
-        _cmd_review_all(store, args)
-    elif args.quest_cmd == "dossier":
-        _cmd_dossier(store, args)
-    elif args.quest_cmd == "dossier-dedup":
-        _cmd_dossier_dedup(store, args)
-    elif args.quest_cmd == "gaps":
-        _cmd_gaps(store, args)
-    elif args.quest_cmd == "frontier":
-        _cmd_frontier(store, args)
-    elif args.quest_cmd == "figure":
-        _cmd_figure(store, args)
-    elif args.quest_cmd == "redispatch":
-        _cmd_redispatch(store, args)
-    elif args.quest_cmd == "reset-compute":
-        _cmd_reset_compute(store, args)
-    elif args.quest_cmd == "status":
-        _cmd_status(store, args)
-    elif args.quest_cmd == "seed-catalyst":
-        _cmd_seed_catalyst(store, args)
-    elif args.quest_cmd == "tag-papers":
-        _cmd_tag_papers(store, args)
-    elif args.quest_cmd == "run":
-        _cmd_run(store, args)
-    elif args.quest_cmd == "set":
-        _cmd_set(store, args)
+    try:
+        if args.quest_cmd == "tick":
+            _cmd_tick(store, args)
+        elif args.quest_cmd == "weave":
+            _cmd_weave(store, args)
+        elif args.quest_cmd == "review-all":
+            _cmd_review_all(store, args)
+        elif args.quest_cmd == "dossier":
+            _cmd_dossier(store, args)
+        elif args.quest_cmd == "dossier-dedup":
+            _cmd_dossier_dedup(store, args)
+        elif args.quest_cmd == "gaps":
+            _cmd_gaps(store, args)
+        elif args.quest_cmd == "frontier":
+            _cmd_frontier(store, args)
+        elif args.quest_cmd == "figure":
+            _cmd_figure(store, args)
+        elif args.quest_cmd == "redispatch":
+            _cmd_redispatch(store, args)
+        elif args.quest_cmd == "reset-compute":
+            _cmd_reset_compute(store, args)
+        elif args.quest_cmd == "status":
+            _cmd_status(store, args)
+        elif args.quest_cmd == "seed-catalyst":
+            _cmd_seed_catalyst(store, args)
+        elif args.quest_cmd == "tag-papers":
+            _cmd_tag_papers(store, args)
+        elif args.quest_cmd == "run":
+            _cmd_run(store, args)
+        elif args.quest_cmd == "set":
+            _cmd_set(store, args)
+    finally:
+        store.close()
