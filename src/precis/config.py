@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import field_validator
+from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -431,7 +432,7 @@ class PrecisConfig(BaseSettings):
         return (
             init_settings,
             env_settings,
-            _mounted_secret_settings,  # type: ignore[return-value]
+            _MountedSecretSettings(settings_cls),
             dotenv_settings,
             file_secret_settings,
         )
@@ -443,15 +444,23 @@ class PrecisConfig(BaseSettings):
 _MOUNTED_SECRET_FIELDS = ("database_url",)
 
 
-def _mounted_secret_settings() -> dict[str, str]:
-    from precis.secrets import mounted_secret
+class _MountedSecretSettings(PydanticBaseSettingsSource):
+    """Settings source for :data:`_MOUNTED_SECRET_FIELDS` read from files."""
 
-    found: dict[str, str] = {}
-    for field in _MOUNTED_SECRET_FIELDS:
-        value = mounted_secret(f"PRECIS_{field.upper()}")
-        if value is not None:
-            found[field] = value
-    return found
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:
+        return None, field_name, False  # __call__ answers for every field at once
+
+    def __call__(self) -> dict[str, Any]:
+        from precis.secrets import mounted_secret
+
+        found: dict[str, Any] = {}
+        for field in _MOUNTED_SECRET_FIELDS:
+            value = mounted_secret(f"PRECIS_{field.upper()}")
+            if value is not None:
+                found[field] = value
+        return found
 
 
 def load_config() -> PrecisConfig:
