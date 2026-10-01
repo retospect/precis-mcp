@@ -2543,6 +2543,18 @@ def _frame(
     return c, n
 
 
+def _winding_normal(pos: np.ndarray, dang: tuple[int, ...]) -> np.ndarray:
+    """A rim's least-variance axis, signed so the dangling list winds
+    negatively about it -- the sense every non-flat rim's list has about
+    its outward normal (see ``_place_seeds``' ``_flat_sign``)."""
+    pts = pos[list(dang)]
+    c = pts.mean(axis=0)
+    d = pts - c
+    n = np.linalg.eigh(d.T @ d)[1][:, 0]
+    area = np.cross(d, np.roll(d, -1, axis=0)).sum(axis=0)
+    return n if float(area @ n) < 0 else -n
+
+
 def _flat_normals(
     pos: np.ndarray, inst_ords: dict[str, list[int]], sigma: float
 ) -> set[str]:
@@ -2565,9 +2577,8 @@ def _flat_normals(
     ``sheet`` instance -- geometry, not vocabulary, is what makes
     ``_frame``'s per-rim covariance normal a coin toss for a flat
     instance's hole rim vs its outer rim (see ``_place_seeds``'
-    ``_flat_sign``, which resolves the two rims' opposite signs from the
-    hole rim's own -- already reliable -- covariance sign, not from this
-    function's extent axis).
+    ``_flat_sign``, which signs each flat rim by its own dangling-list
+    winding, :func:`_winding_normal`).
     """
     out: set[str] = set()
     for inst, idx in inst_ords.items():
@@ -2829,54 +2840,23 @@ def _place_seeds(
 
     flat = _flat_normals(pos, inst_ords, sigma)
 
-    def _local_port(name: str, inst: str) -> str:
-        return name[len(inst) + 1 :] if name.startswith(inst + ".") else name
-
-    # A flat instance's *hole* rim keeps _frame's existing per-rim
-    # covariance+centroid sign untouched: empirically (and per the
-    # backlog dossier) it is already reliable on its own -- the hole is
-    # small and near the patch's own origin, so its small deterministic
-    # seed perturbation biases the sign consistently.  Only the *outer*
-    # rim, when the same flat instance also has a hole rim in play, is
-    # forced to the outer/hole opposition (root-caused 2026-09-28 item
-    # 3): re-deriving the outer rim's own sign independently is the coin
-    # toss (both rims read as z-noise against the same near-coincident
-    # instance centroid), so it is set to the hole rim's exact negation
-    # instead of an independently recomputed axis.  A flat instance with
-    # only one rim kind in play (no conflict to resolve) is left
-    # unanchored and falls through to the unchanged `_frame` logic below.
-    hole_ref: dict[str, np.ndarray] = {}
-    outer_seen: set[str] = set()
-    for pn, p_dang, qn, q_dang, _k, _real, _kabsch in fuse_frames:
-        if _kabsch:
-            # a menu entry's names are not port names at all (e.g. the
-            # host side is a raw `inst/site` ref, not `inst.hole`/
-            # `inst.in`) -- bucketing it here by the accident that it
-            # doesn't start with "hole" would pollute outer_seen for a
-            # flat host it has no real hole/outer conflict with.
-            # (A placement-only seam entry's names *are* real port names
-            # -- e.g. flanged_doughnut's only `top.in` occurrence is via
-            # its seam, not a real fuse -- and excluding those measurably
-            # regressed flanged_doughnut's max crossing length 10.91 A ->
-            # 11.59 A by starving `top`/`bottom` of the outer-rim
-            # disambiguation, so `real=False` entries stay in this loop.)
-            continue
-        for name, dang in ((pn, p_dang), (qn, q_dang)):
-            inst = inst_of[dang[0]]
-            if inst not in flat:
-                continue
-            if _local_port(name, inst).startswith("hole"):
-                if inst not in hole_ref:
-                    _c, n_ref = _frame(pos, dang, inst_cent[inst])
-                    hole_ref[inst] = n_ref
-            else:
-                outer_seen.add(inst)
-
-    def _flat_sign(name: str, inst: str) -> np.ndarray | None:
-        if inst not in hole_ref or inst not in outer_seen:
+    # A flat instance's rim normal is z-noise either way (``_frame``'s
+    # centroid sign reads the ±0.1 sigma seed perturbation), so it is taken
+    # from the rim's own winding instead: ``_fuse_transform``'s pairing
+    # ``P[i] <-> Q[(k-i) mod n]`` is only rigid-reachable when both
+    # dangling lists wind the same way about their normals, and every
+    # non-flat rim's list winds negatively about its outward normal
+    # (measured over every hexfold/examples fuse, 2026-10-01). Signing the
+    # flat rim to wind negatively too puts its partner on the side the
+    # topology demands; the hole and outer rims of one washer then come
+    # out opposite on their own (the annulus traverses them in opposite
+    # senses). The earlier "hole rim's centroid sign is reliable" rule
+    # held for a hex(1) hole only -- a hex(2)/hex(3) washer read the wrong
+    # sign and seeded its seams mirrored, 14-28 A bonds.
+    def _flat_sign(inst: str, dang: tuple[int, ...]) -> np.ndarray | None:
+        if inst not in flat:
             return None
-        n_hole = hole_ref[inst]
-        return n_hole if _local_port(name, inst).startswith("hole") else -n_hole
+        return _winding_normal(pos, dang)
 
     for pn, p_dang, qn, q_dang, k, real, kabsch in fuse_frames:
         ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
@@ -2889,7 +2869,7 @@ def _place_seeds(
             r2, t2 = _fuse_transform_kabsch(pos, q_dang, p_dang, k, sigma, c_b)
             add(ib, ia, r2, t2, real)
             continue
-        n_p, n_q = _flat_sign(pn, ia), _flat_sign(qn, ib)
+        n_p, n_q = _flat_sign(ia, p_dang), _flat_sign(ib, q_dang)
         r, t = _fuse_transform(pos, p_dang, q_dang, k, sigma, c_a, c_b, n_p, n_q)
         add(ia, ib, r, t, real)
         r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma, c_b, c_a, n_q, n_p)
@@ -2953,8 +2933,8 @@ def _place_seeds(
         cycle_pairs.append((ia, ib, real))
         n = len(p_dang)
         pairs = [(p_dang[i], q_dang[(k - i) % n]) for i in range(n)]
-        _c_p, n_p = _frame(pos, p_dang, inst_cent[ia], _flat_sign(pn, ia))
-        _c_q, n_q = _frame(pos, q_dang, inst_cent[ib], _flat_sign(qn, ib))
+        _c_p, n_p = _frame(pos, p_dang, inst_cent[ia], _flat_sign(ia, p_dang))
+        _c_q, n_q = _frame(pos, q_dang, inst_cent[ib], _flat_sign(ib, q_dang))
         graph_edges.append(
             (
                 ia,

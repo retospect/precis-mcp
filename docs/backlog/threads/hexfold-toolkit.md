@@ -40,6 +40,12 @@ waited on happened 09-29 — note at the bottom)
    bar in the test, then the bud placement offset and the large-lid seed.
    First because the shipped example is wrong and Reto's showcase builds
    (se `hexa-nanobud-pillar`, `hexa-nanobud-drum`) route around it.
+   **gr459812** belongs to the same family: a curved rim whose dangling
+   list winds against its outward normal seeds its seam mirrored. The C60
+   `cap(5,5)` and the DA/DB neck menus measure 4.5–6.5 Å. Flat washers
+   with `hex(r≥2)` holes had the same defect (14–28 Å) and are fixed:
+   `_winding_normal` now signs each flat rim from its winding. `geom.clash`
+   would have caught all of them.
 2. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. Reto asked for mean/extreme C–C bond lengths per build
    (gr459602); a structure's default `get` is an 80 KB atom table with no

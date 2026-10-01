@@ -124,15 +124,17 @@ def test_fused_tube_seeds_meet_at_one_bond_length(body: str, skew_deg: float) ->
         # no rigid instance placement, joint or not, resolves); `seam
         # .cycle` still reports it (INFO, single free instance).  Bound
         # with a small margin over the measurement, not an assertion
-        # that the residual is fixed.
-        ("flanged_doughnut.hx", 11.2),
+        # that the residual is fixed.  Re-measured 11.45 A (2026-10-01)
+        # once the flange -- a cap(36,0) - hex(3) washer -- got its rim
+        # normal from the dangling-list winding (_winding_normal): the
+        # flange's seam-placement edge itself dropped 18.6 -> 2.0 A, the
+        # residual moved between the three seam rims.
+        ("flanged_doughnut.hx", 11.7),
         # item 3, a flat washer (cap(24,0) - hex(1) hole) fused on both
         # its hole rim (to a neck tube) and its outer rim (to a bulge):
         # measured pre-fix max 17.86 A (both rims signed the same way);
-        # forcing the outer rim to the hole rim's exact negation (the
-        # hole rim's own sign is reliable on its own, see _flat_sign)
-        # measured max 2.12 A, matching the backlog dossier's own "drops
-        # to 2.1 A" empirical note
+        # signing each flat rim by its own winding (_flat_sign) measured
+        # max 2.10 A
         ("valve_shell.hx", 2.3),
     ],
 )
@@ -141,6 +143,26 @@ def test_example_seeds_have_no_long_crossing_bonds(name: str, bound_A: float) ->
     net = build(text, strict=False)
     lengths = _crossing_lengths(net)
     assert lengths.max() < bound_A, (name, lengths.min(), lengths.max())
+
+
+@pytest.mark.parametrize("r", [1, 2, 3])
+def test_washer_seams_seed_short_for_every_hole_size(r: int) -> None:
+    """A ``cap(6k,0) - hex(r)`` washer between a tube(6(r+1),0) neck and a
+    tube(6k,0) bulge seeds both seams short.  Its rim normal used to come
+    from ``_frame``'s centroid sign, z-noise on a flat patch: right for
+    hex(1) by luck, mirrored for hex(2)/hex(3) (max seed bond 14.4 / 19.0
+    A, stick then crumpled the washer while ``check`` saw nothing)."""
+    k = r + 3
+    text = (
+        "hexfold 0.2\norigin n\n"
+        f"n: tube({6 * (r + 1)},0, len=3)\n"
+        f"w: cap({6 * k},0) - hex({r})@(0,0,A):0\n"
+        f"b: tube({6 * k},0, len=3)\n"
+        "n.out --fuse k=0--> w.hole\n"
+        "w.in --fuse k=0--> b.in\n"
+    )
+    net = build(text, strict=True)
+    assert _crossing_lengths(net).max() < 3.0
 
 
 def test_nanobud_menu_seed_has_no_stick_clash() -> None:
