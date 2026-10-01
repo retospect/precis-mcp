@@ -64,6 +64,9 @@ se-chain-wrap-around-part to Do next)
   relaxes the loop backbone unless `relax_loops=false` (Reto ruled
   default-on 2026-09-30 night); envelope_fit skips loop atoms and names
   a protruding atom by residue; residue rows persist. Tagged done.
+  Prod-verified 2026-10-01 on `dogfood-hairpin-4` (the hairpin Reto saw
+  with overly long bonds, rebuilt with the relax): worst loop O3'–P step
+  9.74 → 1.96 Å, no envelope_fit finding, 4 complementary pairs.
 - **base-pair complementarity is a read, not a look** — Reto on
   dogfood-nucleic-3 (2026-09-30): "I am not sure if basepairs in fact
   match"; the product could not answer (`pairing.watson_crick` had no
