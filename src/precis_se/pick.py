@@ -183,6 +183,32 @@ def _domain_levels(tree: Any, strand_name: str, ord_: int) -> list[PickLevel]:
     ]
 
 
+_NO_RESIDUE_ROWS = (
+    "realized before residue rows were stored — re-realize the segment "
+    "for its base pair and domain"
+)
+
+
+def _bare_residue_level(
+    node: Any, record: Mapping[str, Any], chain: str, resseq: int
+) -> PickLevel | None:
+    """The residue row of a ``chain_atoms`` record that predates its
+    ``residues`` list: the residue is named from the atom columns, and the
+    label says why no pair or domain row follows instead of leaving them
+    silently out. ``None`` when the record has residue rows (its own
+    lookup answers) or no such residue."""
+    if record.get("residues"):
+        return None
+    name = _resname(record, chain, resseq)
+    if name is None:
+        return None
+    return PickLevel(
+        "residue",
+        f"{name} {resseq} (chain {chain}; {_NO_RESIDUE_ROWS})",
+        format_token(_uid(node), region=f"{chain}.{resseq}"),
+    )
+
+
 def _residue_levels(
     tree: Any, node: Any, record: Mapping[str, Any], row: Sequence[Any]
 ) -> list[PickLevel]:
@@ -253,9 +279,12 @@ def atom_levels(
             "atom", f"{names[ordinal]} of {resnames[ordinal]} {resseq[ordinal]}", token
         )
     ]
-    row = _residue_rows(record).get((str(chain_ids[ordinal]), int(resseq[ordinal])))
+    chain, seq = str(chain_ids[ordinal]), int(resseq[ordinal])
+    row = _residue_rows(record).get((chain, seq))
     if row is not None:
         out += _residue_levels(tree, node, record, row)
+    elif (bare := _bare_residue_level(node, record, chain, seq)) is not None:
+        out.append(bare)
     return out + _block_levels(tree, node)
 
 
@@ -296,6 +325,9 @@ def resolve_token(
         if residue is not None and record:
             key = (residue.group(1), int(residue.group(2)))
             row = _residue_rows(record).get(key)
+            bare = _bare_residue_level(node, record, *key)
+            if row is None and bare is not None:
+                return [bare, *_block_levels(tree, node)]
             if row is None:
                 raise PickError(
                     f"the structure bound to {node.name!r} has no residue "

@@ -14,17 +14,14 @@ chain by default (`relax_loops`, Reto's ruling), envelope_fit skips them,
 residue rows persist, and an undeclared pair's letters are checked
 (strict Watson–Crick, Reto's ruling); `view='pick'` resolves an atom to
 residue, base pair, domain, strand and blocks with a citable token per
-level (the resolver half of the pick hierarchy). Next: dogfood it on prod.
-**Last reviewed:** 2026-10-01 (replacement session; pick resolver built)
+level (the resolver half of the pick hierarchy), dogfooded on prod.
+Next: findings print pick tokens (Horizon 1); Do-next is blocked.
+**Last reviewed:** 2026-10-01 (pick dogfooded on prod)
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
 
-1. **dogfood `view='pick'` on prod** once it deploys — `dogfood-hairpin-4`
-   and `dogfood-nucleic-3`: an atom by ordinal and by finding label, each
-   row's token read back. Then the other structure-level findings
-   (Horizon 1) can print the token instead of `aO44`.
-2. **backlog/se-chain-wrap-around-part.md** — blocked-by
+1. **backlog/se-chain-wrap-around-part.md** — blocked-by
    hexfold-integration; DNA-SE session evidence for the want.
 
 ## Horizon
@@ -65,6 +62,12 @@ level (the resolver half of the pick hierarchy). Next: dogfood it on prod.
 
 ## No action needed
 
+- **`view='pick'` prod dogfood** — 2026-10-01 on `dogfood-hairpin-4`
+  (stem atom by ordinal and by label, loop atom, every token read back:
+  as specified) and `dogfood-nucleic-3`, realized before residue rows were
+  stored: the pick dropped residue/pair/domain silently; fixed in the
+  commit that added this line (the residue row names the residue and says
+  to re-realize).
 - **td458169** — done 2026-09-30; results in the todo's text.
 - **gr457928** — loop nucleotides chain by default: `realize_chain`
   relaxes the loop backbone unless `relax_loops=false` (Reto ruled

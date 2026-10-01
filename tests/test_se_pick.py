@@ -12,6 +12,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.store import Store
 from precis_se import pick
+from precis_se.atomic.render import bound_pick_inputs
 from precis_se.handler import SeHandler
 from tests.test_se_chain_realize import (
     _atoms,
@@ -142,6 +143,28 @@ def test_a_loop_nucleotide_has_no_pair_row(handler: SeHandler, store: Store) -> 
     # In no domain either: the loop sits between hp.0 and hp.1.
     assert [r[0] for r in rows] == ["atom", "residue", "strand", "segment", "helix"]
     assert rows[1][1] == "DA 6 (loop nucleotide after hp.0)"
+
+
+def test_a_record_without_residue_rows_says_why_pair_and_domain_are_missing(
+    handler: SeHandler, store: Store
+) -> None:
+    # Prod structures realized before residue rows were persisted carry
+    # the atom columns only; the pick names the residue and says why the
+    # pair and domain rows stop there instead of dropping them silently.
+    _hairpin(handler, "pk-old")
+    tree = _loaded(store, "pk-old")
+    node = tree.blocks["stem.s0"]
+    labels, record = bound_pick_inputs(store, node)
+    assert labels is not None and record is not None
+    legacy = {k: v for k, v in record.items() if k != "residues"}
+    ordinal = _ordinal(legacy, "O3'", 4)
+    rows = pick.atom_levels(tree, node, ordinal, labels=labels, record=legacy)
+    assert [r.level for r in rows] == ["atom", "residue", "segment", "helix"]
+    assert "re-realize" in rows[1].label
+    back = pick.resolve_token(
+        tree, pick.parse_token(rows[1].token), labels=labels, record=legacy
+    )
+    assert back == rows[1:]
 
 
 def test_pick_refusals_say_what_would_resolve(handler: SeHandler, store: Store) -> None:
