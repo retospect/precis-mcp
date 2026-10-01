@@ -726,11 +726,31 @@ def test_analysis_over_computed_graph() -> None:
 
     ranked = analysis.barriers_ranked(g)
     eas = [r["ea"] for r in ranked]
-    assert eas == sorted(eas, reverse=True)  # highest barrier first
+    # highest barrier first; uncomputed (None/NaN) barriers trail. sorted() on
+    # a list holding NaN has no defined order, so compare the finite prefix.
+    finite = [e for e in eas if e is not None and not math.isnan(e)]
+    assert eas[: len(finite)] == sorted(finite, reverse=True)
 
     path, cols = analysis.profile_positions(g, root, target)
     assert path and cols[0]["kind"] == "state"
     assert any(c["kind"] == "ts" for c in cols)  # ≥1 barrier column on the path
+
+
+def test_barriers_ranked_puts_nan_and_missing_barriers_last() -> None:
+    from precis.utils import reaction_graph as analysis
+
+    g = {
+        "links": [
+            {"source": "a", "target": "b", "barrier": 0.1},
+            {"source": "b", "target": "c", "barrier": float("nan")},
+            {"source": "c", "target": "d", "barrier": 0.9},
+            {"source": "d", "target": "e"},
+            {"source": "e", "target": "f", "barrier": 0.0},
+        ]
+    }
+    eas = [r["ea"] for r in analysis.barriers_ranked(g)]
+    assert eas[:3] == [0.9, 0.1, 0.0]
+    assert math.isnan(eas[3]) and eas[4] is None
 
 
 def test_toon_views_and_aligned_compare() -> None:

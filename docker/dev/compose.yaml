@@ -74,6 +74,18 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile
       target: dev
+      # Python 3.13 here, NOT the Dockerfile's 3.12 default (gr458726). The
+      # ship gate (check.yml) is 3.13-only, so a local gate on 3.12 tested a
+      # version main is not gated on and a full green /go said nothing about
+      # it. Scoped to this dev/gate build on Reto's 2026-10-01 ruling: the
+      # deployed runtime, agent and code-task images keep the Dockerfile
+      # default, because moving those is a fleet Python upgrade (rebuild on
+      # every host, torch/marker re-resolved, a torch change = full re-embed).
+      # The digest is the multi-arch index for python:3.13-slim-bookworm;
+      # mirror.gcr.io serves the same digest, so the mirror fallback holds.
+      args:
+        PYTHON_IMAGE: python:3.13-slim-bookworm
+        PYTHON_DIGEST: sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
       # Seed the models stage from the local :premodels tag so a dep bump
       # doesn't cascade into a ~3.8 GB model re-bake (models sits downstream
       # of deps). scripts/build-image guarantees the tag exists before

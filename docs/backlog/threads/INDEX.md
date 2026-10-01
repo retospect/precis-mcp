@@ -191,10 +191,11 @@ Waits:
 ## Not covered by any programme
 
 Recorded 2026-09-30 so the gaps are visible on the map rather than discovered
-one gripe at a time. Four were listed; two are gone — the ingest cluster has
-its own programme above, and the job-lifecycle cluster was ranked across
-`monitors-that-go-quiet` and `roadmap-quest`. The two below have a decision
-from Reto (2026-10-01) but not yet a thread that ranks them.
+one gripe at a time. Four were listed; three are gone — the ingest cluster has
+its own programme above, the job-lifecycle cluster was ranked across
+`monitors-that-go-quiet` and `roadmap-quest`, and `scripts/test`'s container
+moved to Python 3.13 (gr458726) to match the ship gate. The one below has a
+decision from Reto (2026-10-01) but not yet a thread that ranks it.
 
 - **fleet capacity is unmeasured** — gr458727. All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
@@ -208,10 +209,3 @@ from Reto (2026-10-01) but not yet a thread that ranks them.
   whoever owns `graph-maintenance-queue.md`** — measurement only, no alerting,
   because an idle GPU is often the correct state and a detector on it would be
   noise. It leaves this list once that item ranks it.
-- **the local gate and the ship gate run different Pythons** — gr458726. The
-  ship gate is 3.13-only; `scripts/test`'s container is 3.12. A full green
-  `/go` is therefore not evidence about the version main is gated on, and cost
-  a red main on 2026-09-30. Affects every thread that ships, which is why it is
-  here rather than in one of them. **Ruled 2026-10-01: move `scripts/test`'s
-  container to 3.13**, so a green local gate means what every session already
-  reads it to mean, rather than keeping two version numbers in everyone's head.

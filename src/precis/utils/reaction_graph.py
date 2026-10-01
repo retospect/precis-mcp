@@ -26,6 +26,7 @@ find a max or subtract across cells.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from itertools import pairwise
 from typing import Any, cast
@@ -153,7 +154,16 @@ def barriers_ranked(graph: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for e in _reaction_edges(graph)
     ]
-    return sorted(rows, key=lambda r: (r["ea"] is None, -(r["ea"] or 0.0)))
+
+    # A NaN barrier (the engine's "not computed") sorts last with the None
+    # ones: NaN compares false both ways, so left in the key it gives the sort
+    # no defined order and the table came out scrambled differently per Python.
+    def _key(r: dict[str, Any]) -> tuple[bool, float]:
+        ea = r["ea"]
+        missing = ea is None or math.isnan(ea)
+        return (missing, 0.0 if missing else -ea)
+
+    return sorted(rows, key=_key)
 
 
 def selectivity(graph: dict[str, Any], root: str, target: str) -> list[dict[str, Any]]:
