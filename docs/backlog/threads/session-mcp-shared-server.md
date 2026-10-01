@@ -266,6 +266,23 @@ server-side-session-context Horizon pointer)
    never viable for this corpus; it was measured against the wrong
    blocks. Landed `_MD_WARMUP_BATCH_SIZE` 64 → 16 (~22 KB, ~3 s idle).
 
+   **Acceptance of 5146528d (64→16 batches), measured 02:28-02:32Z: it
+   works, and it exposes the next defect.** The npz grew 1048844 →
+   1179916 bytes — exactly 32 × 1024 × 4, batches 1 and 2 — with mtime
+   moving from Sep 30 12:43 to Oct 1 02:31. First vectors this cache has
+   gained in thirteen hours, and it confirms the resume path: the
+   exception branch's `vector_cache.flush()` persists partial work, so the
+   next pass starts at block 33.
+
+   But batch 3 failed, burned its six retries, and the pass aborted —
+   discarding 1193 batches it never attempted. A pass now nets ~32 vectors
+   instead of 0. Against 1196 batches that is ~600 passes, and with the
+   cooldown capping at 900 s, days. One bad batch should not be fatal:
+   `on_batch_error` needs a skip-and-continue outcome beside retry and
+   abort, with skipped indices reported so a permanently-failing batch is
+   visible rather than silently never embedded. Blocks run to 22756 chars,
+   so a character cap would suit better than a block count.
+
 4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
    and the 11:10Z banner
