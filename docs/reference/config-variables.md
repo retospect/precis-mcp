@@ -41,7 +41,7 @@ The high-value switches — each gates a whole pass/kind.
 | `PRECIS_CLASSIFY_ENABLED` | Chunk-tag classify pass | off | Default-OFF by design; enable as a single-node trickle like `PRECIS_SUMMARIZE_LLM`. Activation: [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |
 | `PRECIS_PAPER_GLOSSARY_ENABLED` | Per-paper glossary pass | off | Slice built, dark by design. |
 | `PRECIS_SANDBOX_ENABLED` | Register the `sandbox_run` executor pass | off | Deploying the `code-sandbox` container alone is not enough — the pass that dispatches to it never registers without this flag. Activation: [`docs/backlog/dark-features-activation.md`](../backlog/dark-features-activation.md). |
-| `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | Autonomous GPU/token spend — operator's call. `PRECIS_QUEST_WEEKLY_CHARS` must be set too (§9). Activation: [`docs/backlog/quest-loop-activation.md`](../backlog/quest-loop-activation.md). |
+| `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | Autonomous GPU/token spend — operator's call. `PRECIS_QUEST_WEEKLY_CHARS` must be set too (§9). Activation: [`docs/backlog/qu164903-campaign.md`](../backlog/qu164903-campaign.md). |
 | `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | Activation: [`docs/backlog/backlog-groomer-items-half.md`](../backlog/backlog-groomer-items-half.md). |
 | `PRECIS_CHASE_LLM` | LLM finding-chase pass | `0` | The SQL chase covers the default path; LLM chase is opt-in. |
 | `PRECIS_DREAM_AGENT` | Dream agent enable | off | Set on the agent-profile worker process (which also carries `PRECIS_MCP_CONFIG`) so that process is the `dream_agent` scheduler cadence's eligible claimant. |
