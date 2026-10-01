@@ -2320,7 +2320,9 @@ def test_kind_shrinkage_detector_still_fires_for_a_fleet_wide_registered_loss(
 
 
 def test_kind_shrinkage_is_detected_but_never_alerted(
-    store: Store, monkeypatch: pytest.MonkeyPatch
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """gr452084: the first pass after this detector shipped minted 12
     critical alerts and none of the 12 was real, so the category is
@@ -2333,7 +2335,15 @@ def test_kind_shrinkage_is_detected_but_never_alerted(
 
     assert _detect_kind_shrinkage(store)  # detection is kept
 
-    run_nursery_pass(store)
+    with caplog.at_level("INFO", logger="precis.workers.nursery"):
+        run_nursery_pass(store)
+
+    # The log line names the lost kind, not just a count (gr452084).
+    assert any(
+        "kind-shrinkage finding(s) detected, not alerted" in r.getMessage()
+        and "lost kind(s): se" in r.getMessage()
+        for r in caplog.records
+    )
 
     assert [
         a for a in list_open_alerts(store) if a["source"] == "nursery:kind-shrinkage"

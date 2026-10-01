@@ -560,6 +560,109 @@ def test_tool_starved_pass_raises_alert_not_digest(
     assert 'text head: "No structural issues found this pass."' in detail
 
 
+def _pending_starved_stream() -> str:
+    return _stream(
+        {
+            "type": "system",
+            "subtype": "init",
+            "mcp_servers": [{"name": "precis", "status": "pending"}],
+        },
+    )
+
+
+def _stub_agent_sequence(
+    monkeypatch: pytest.MonkeyPatch, results: list[AgentResult]
+) -> list[int]:
+    calls: list[int] = []
+
+    def _call(*a: object, **kw: object) -> AgentResult:
+        calls.append(1)
+        return results[min(len(calls), len(results)) - 1]
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _call)
+    return calls
+
+
+def _starved_pending_result() -> AgentResult:
+    return AgentResult(
+        final_text="No structural issues found this pass.",
+        cost_usd=0.02,
+        duration_s=2.0,
+        turns_used=1,
+        tool_calls=0,
+        raw_stdout=_pending_starved_stream(),
+    )
+
+
+def test_pending_init_starve_is_retried_once_then_succeeds(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """gr245505: ``precis=pending`` at init + zero precis calls is a startup
+    race; the pass is re-dispatched once and the good second run is kept."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    good = AgentResult(
+        final_text="Reviewed the tree; no issues.",
+        cost_usd=0.05,
+        duration_s=5.0,
+        turns_used=3,
+        tool_calls=1,
+        raw_stdout=_stream(_assistant_tool_use("mcp__precis__search")),
+    )
+    calls = _stub_agent_sequence(monkeypatch, [_starved_pending_result(), good])
+    result = run_structural_pass(store)
+    assert len(calls) == 2
+    assert (result.ok, result.failed) == (1, 0)
+    assert _structural_digest_count(store) == 1
+    assert _tool_starved_alerts(store) == []
+
+
+def test_pending_init_starve_twice_is_recorded_without_looping(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A second starve is recorded as tool-starved exactly as before: two
+    dispatches total, no third."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    calls = _stub_agent_sequence(monkeypatch, [_starved_pending_result()])
+    result = run_structural_pass(store)
+    assert len(calls) == 2
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    assert len(_tool_starved_alerts(store)) == 1
+
+
+def test_failed_init_starve_is_not_retried(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """``precis=failed`` is a host defect, not a race: one dispatch only."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    failed = AgentResult(
+        final_text="No structural issues found this pass.",
+        cost_usd=0.02,
+        duration_s=2.0,
+        turns_used=1,
+        tool_calls=0,
+        raw_stdout=_stream(
+            {
+                "type": "system",
+                "subtype": "init",
+                "mcp_servers": [{"name": "precis", "status": "failed"}],
+            }
+        ),
+    )
+    calls = _stub_agent_sequence(monkeypatch, [failed])
+    run_structural_pass(store)
+    assert len(calls) == 1
+
+
 def test_pass_using_precis_tool_writes_digest_no_starvation_alert(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

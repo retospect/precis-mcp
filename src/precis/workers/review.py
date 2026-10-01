@@ -239,25 +239,37 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
     # tier default, which equals the old reviewer.model). Errors fold into
     # res.error rather than raising.
-    res = route(
-        LlmRequest(
-            tier=reviewer.tier,
-            source=f"review:{reviewer.name}",
-            prompt=prompt,
-            tools_needed=True,
-            model=os.environ.get(f"PRECIS_{reviewer.name.upper()}_MODEL"),
-            mcp_config=mcp_config,
-            max_turns=reviewer.max_turns,
-            timeout_s=reviewer.timeout_s,
-            # Explicit tier-1 deny (gr179501): read + emit a digest + the
-            # gripe carve-out only; no mutate/fs-write/shell/web.
-            disallowed_tools=_REVIEWER_DISALLOWED_TOOLS,
-            # Stream-json gets us cost/turns from the result event; the
-            # digest writer sees the unwrapped plain text.
-            output_format="stream-json",
-            extra_args=("--verbose",),
-        )
+    request = LlmRequest(
+        tier=reviewer.tier,
+        source=f"review:{reviewer.name}",
+        prompt=prompt,
+        tools_needed=True,
+        model=os.environ.get(f"PRECIS_{reviewer.name.upper()}_MODEL"),
+        mcp_config=mcp_config,
+        max_turns=reviewer.max_turns,
+        timeout_s=reviewer.timeout_s,
+        # Explicit tier-1 deny (gr179501): read + emit a digest + the
+        # gripe carve-out only; no mutate/fs-write/shell/web.
+        disallowed_tools=_REVIEWER_DISALLOWED_TOOLS,
+        # Stream-json gets us cost/turns from the result event; the
+        # digest writer sees the unwrapped plain text.
+        output_format="stream-json",
+        extra_args=("--verbose",),
     )
+    res = route(request)
+    if _is_tool_starved(res, mcp_config) and _precis_init_pending(res):
+        # gr245505: the model started before the precis MCP server finished
+        # its handshake (init status ``pending``) and ended in one turn with
+        # no tools. A transient race, not a defect — retry ONCE. A second
+        # starve falls through to the tool-starved handling below, unchanged
+        # (no loop, max_turns untouched).
+        log.warning(
+            "review[%s]: tool-starved with precis MCP still pending at init; "
+            "retrying once (%s)",
+            reviewer.name,
+            _tool_starved_evidence(res),
+        )
+        res = route(request)
     if res.error:
         if res.paused:
             # Window-scoped breaker trip (dollar cap / claude-OAuth quota), not a
@@ -481,6 +493,14 @@ def _tool_starved_evidence(res: LlmResult) -> str:
         f"cost=${res.cost_usd if res.cost_usd is not None else '?'}; "
         f'text head: "{head}"'
     )
+
+
+def _precis_init_pending(res: LlmResult) -> bool:
+    """True when the stream's init event listed the precis server as pending."""
+    from precis.utils.claude_agent import stream_mcp_server_status
+
+    servers = stream_mcp_server_status(res.raw_text or "")
+    return servers is not None and servers.get("precis") == "pending"
 
 
 def _is_tool_starved(res: LlmResult, mcp_config: Path | None) -> bool:

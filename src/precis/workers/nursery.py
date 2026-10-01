@@ -326,6 +326,9 @@ _SEVERITY: dict[str, str] = {
 #: an empty live set and all 12 clear on the first pass. Re-arm when
 #: gr452084's three defects are fixed — the detector keeps running and
 #: logging its count meanwhile, so nothing is lost.
+#: Max finding titles named on a muted category's log line.
+_NO_ALERT_LOG_NAMES = 10
+
 _NO_ALERT: frozenset[str] = frozenset({"orphan", "kind-shrinkage"})
 
 
@@ -411,10 +414,16 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
             # already has open, so the existing pile drains itself on the
             # next pass rather than needing a hand-written row edit.
             if surfaced:
+                # Names, bounded: one pass's log must be enough to decide
+                # whether to re-arm (gr452084); a bare count was not.
+                shown = "; ".join(f.title for f in findings[:_NO_ALERT_LOG_NAMES])
+                more = surfaced - _NO_ALERT_LOG_NAMES
                 log.info(
-                    "nursery: %d %s finding(s) detected, not alerted",
+                    "nursery: %d %s finding(s) detected, not alerted: %s%s",
                     surfaced,
                     category,
+                    shown,
+                    f" (+{more} more)" if more > 0 else "",
                 )
             resolved += resolve_stale_alerts(store, source=source, live_fingerprints=[])
             continue
