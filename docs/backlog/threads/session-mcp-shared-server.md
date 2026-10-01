@@ -217,20 +217,33 @@ server-side-session-context Horizon pointer)
    normal under load or a slot held by something that never completes —
    capacity lost rather than exhausted.
 
-   ANSWERED (my measurement, gr459088 comment 2): it is a slot held by
-   calls that never complete — capacity lost, not merely exhausted.
-   `inflight` never returns below **3 of 4** across ~8 min of polling with
-   zero load from me, and it was **0** at 00:32Z today; one slot still
-   cycles 3-4, so the release path works. A single-text embed into that
-   state is refused in **0.000s** with `{"error":"busy"}` while `inflight`
-   reads 4. Effective capacity is one slot, which is why no schedule helps.
-   The gr458940 restart reclaims the three stuck slots as well as picking
-   up the never-run bounded queue, so it will *look* like the queue fixed
-   things. Measure `inflight`'s floor afterwards before crediting the
-   queue, and keep watching it — a floor that climbs from 0 again over
-   hours means the leak is live in current code and is the real bug.
-   Which call leaks is unestablished and needs the service's own request
-   logging; that is embedder-service territory, not md_index.
+   ANSWERED, then CORRECTED (gr459088 comments 2-3). rustling measured
+   `inflight` never below 3 of 4 over 8 min and read it as leaked slots.
+   My 02:17-02:23Z round-13 sampling shows it is not a leak and not
+   ambient: **the md warm pass is the load.** With no pass running,
+   `inflight` is 0 on six samples 10 s apart and the 429 counter is flat
+   for a full minute; 36 s after a pass starts it is 4, with the pass's
+   own batch 1 timing out at ~31 s while holding the slots it is waiting
+   on. Both earlier readings sampled inside a pass; neither sampled the
+   gap. The service was never restarted (PID 892, Aug 31) — nothing was
+   reclaimed, the pass simply stopped.
+
+   Two measurements outrank the correction. An admitted single-text embed
+   takes **over 10 s** — three orders of magnitude off for bge-m3 on this
+   box — so while batches hold slots there is no usable interactive
+   capacity, only instant rejection or a long wait. And the pass cannot
+   finish by construction: 299 batches of 64 texts, four slots, batches
+   that time out at ~31 s while occupying them. Batch 1 has not completed
+   in any of the five passes since 00:42Z.
+
+   So the first move is not more capacity, it is a warm pass that stops
+   sizing itself as the service's only client: cap it to one slot, shrink
+   the batch under the timeout, or gate it on an idle gauge. rustling's
+   per-failure cooldown (575b6724) is the same instinct applied to
+   frequency. Unmeasured and decisive for the capacity question: whether
+   >10 s for one short text is this model's real speed here or CPU
+   contention from the concurrent batches — nobody has timed the embedder
+   alone on an idle machine.
 
 4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
