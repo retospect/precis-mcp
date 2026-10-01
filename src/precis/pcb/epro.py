@@ -1031,6 +1031,57 @@ class Design:
     stats: dict[str, int] = field(default_factory=dict)
 
 
+#: A footprint's ``COMPONENT_SHAPE`` layer — EasyEDA Pro's courtyard, the
+#: body outline its own component-spacing check reads. Spike-verified
+#: 2026-10-02 on the real board: 31 of its 33 footprints draw one, as
+#: ``POLY`` line runs in footprint-local mil.
+_FP_COURTYARD_LAYER = 48
+
+#: Courtyard excess around the pads when a footprint draws no courtyard
+#: of its own: IPC-7351's nominal (density level B) 0.25 mm.
+_FALLBACK_COURTYARD_EXCESS_MM = 0.25
+
+
+def _footprint_courtyard(
+    doc: EproDocument, pads: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """``{"bbox": [x0, y0, x1, y1]}`` in footprint-local mm (Y up, as the
+    pads): the bounding box of the footprint's own courtyard polygon(s),
+    grown to enclose every pad. Without one the store falls back to the
+    bare pad extent, a courtyard lying ON the pad edges, which is the
+    footprint's stored body size for its DRC bbox fallback and SVG
+    viewBox. A footprint that draws none gets the pad extent plus
+    :data:`_FALLBACK_COURTYARD_EXCESS_MM`. Non-line opcodes (arcs,
+    circles) make a polygon's flat number list unreadable as vertices, so
+    such a polygon is skipped rather than misread."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for pad in pads:
+        if pad.get("poly"):
+            xs += [v[0] for v in pad["poly"]]
+            ys += [v[1] for v in pad["poly"]]
+        else:
+            xs += [pad["x"] - pad["w"] / 2.0, pad["x"] + pad["w"] / 2.0]
+            ys += [pad["y"] - pad["h"] / 2.0, pad["y"] + pad["h"] / 2.0]
+    margin = _FALLBACK_COURTYARD_EXCESS_MM
+    for b in doc.bodies("POLY"):
+        path = b.get("path") or []
+        if b.get("layerId") != _FP_COURTYARD_LAYER or _outline_opcodes(path) - {"L"}:
+            continue
+        for x, y in _poly_points(path):
+            xs.append(Frame.length(x))
+            ys.append(-Frame.length(y) or 0.0)
+            margin = 0.0
+    return {
+        "bbox": [
+            round(min(xs) - margin, 4),
+            round(min(ys) - margin, 4),
+            round(max(xs) + margin, 4),
+            round(max(ys) + margin, 4),
+        ]
+    }
+
+
 def extract_footprints(
     project: EproProject, pcb: EproDocument
 ) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
@@ -1112,7 +1163,14 @@ def extract_footprints(
             pad_numbers(pads), chosen, f"footprint {name!r}"
         )
         warnings += dedup_warnings
-        out.append({"name": name, "pads": pads, "pin_map": pin_map})
+        out.append(
+            {
+                "name": name,
+                "pads": pads,
+                "pin_map": pin_map,
+                "courtyard": _footprint_courtyard(doc, pads),
+            }
+        )
     return out, names, warnings
 
 

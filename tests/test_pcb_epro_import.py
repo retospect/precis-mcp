@@ -750,10 +750,18 @@ def test_an_import_measures_the_source_copper_against_its_pads(imported) -> None
     assert "SIG" in measured
 
 
-def test_a_dry_run_reports_copper_without_pads_and_says_so(store) -> None:
-    result = pcb_epro.import_epro(store, _zip(), slug="epro-dry-copper", dry_run=True)
-    assert result.copper is not None and result.copper.nets
-    assert any("no pads given" in n for n in result.copper.notes)
+def test_a_dry_run_reports_the_same_copper_as_the_real_import(store) -> None:
+    """``--dry-run`` promises the real import's report. It measured gaps
+    without pads (there is no written board to read them from) until
+    2026-10-02, when the real board's dry run on prod said so in a note
+    and the real import did not; it now places the pads in memory."""
+    from precis.pcb import copper_report
+
+    dry = pcb_epro.import_epro(store, _zip(), slug="epro-dry-copper", dry_run=True)
+    real = pcb_epro.import_epro(store, _zip(), slug="epro-real-copper")
+    assert dry.copper is not None and real.copper is not None
+    assert dry.copper.notes == []
+    assert copper_report.render(dry.copper) == copper_report.render(real.copper)
 
 
 def test_the_copper_report_follows_the_current_spec(store, imported) -> None:

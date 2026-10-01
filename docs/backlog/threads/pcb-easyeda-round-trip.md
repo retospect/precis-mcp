@@ -15,6 +15,10 @@ are the thread's central gap.
 Slice 1c is complete as of 2026-10-01: the copper measurement report and
 `--update` (re-import applying moves and new parts, reporting the rest).
 The whole write path (export) is unbuilt.
+**On prod since 2026-10-02:** the real board is imported as pcb
+`heater-base-test`, APWR/BPWR annotated (td458070 closed). Dogfooding it
+found gr460567 (courtyards built from synthesized pad sizes at real pad
+positions — 96 silk drops; pcb/ir.py + session.py, handed to ewod-pcb).
 Collides with ewod-pcb on generator/DRC/realizer files:
 sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
@@ -117,15 +121,6 @@ export/fab if this file outgrows itself.
 13. **backlog/pcb-guided-place-route.md** slice 9 (JLCPCB ordering) — the
     workflow's endpoint; gated on a human granting Components/PCB scope in
     the JLCPCB Open API console.
-
-## Parked
-
-- **td458070** — what APWR and BPWR actually carry. **Answered from the
-  board file itself on 2026-10-01** (netlist trace, the current-setting
-  resistor's value from the file's own device record, and the sink's
-  datasheet) — nothing left for Reto to confirm. The derivation names his parts, so it lives in
-  the gitignored worktree notes rather than this public file. Becomes a net
-  annotation the moment the board is imported on prod.
 
 ## No action needed
 

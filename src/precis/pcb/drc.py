@@ -121,6 +121,14 @@ Coord = tuple[float, float]
 #: below any real manufacturing figure (mm), just float noise absorption.
 _EPS = 1e-9
 
+#: Tolerance for :func:`_two_tier` — a figure within 0.1 µm of a floor is
+#: AT the floor. Geometry imported from EasyEDA arrives in mil (0.0001-mil
+#: source quantum, rounded to the nanometre on the way to mm), so a ring
+#: drawn at exactly JLC's 0.150 mm reads 0.1499997 mm; against ``_EPS``
+#: that was 48 "0.000 mm short" errors on one real board (2026-10-02).
+#: Four orders below any fab tolerance, so nothing real hides in it.
+_TIER_EPS = 1e-4
+
 #: A generic courtyard fallback radius for an instance with no real
 #: footprint courtyard data supplied — the same honest fallback
 #: :class:`precis.pcb.realize.RealizeConfig`'s ``default_obstacle_radius_mm``
@@ -201,9 +209,9 @@ def _two_tier(
     the deficit below whichever tier's threshold was crossed."""
     if jlc_min is None:
         return None
-    if value_mm < jlc_min - _EPS:
+    if value_mm < jlc_min - _TIER_EPS:
         return "error", value_mm - jlc_min
-    if house_default is not None and value_mm < house_default - _EPS:
+    if house_default is not None and value_mm < house_default - _TIER_EPS:
         return "warn", value_mm - house_default
     return None
 

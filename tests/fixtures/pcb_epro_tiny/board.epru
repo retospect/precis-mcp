@@ -47,6 +47,7 @@
 {"type":"PAD","ticket":72,"id":"e7"}||{"netName":"","layerId":1,"num":"1","centerX":-30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
 {"type":"PAD","ticket":73,"id":"e8"}||{"netName":"","layerId":1,"num":"2","centerX":30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
 {"type":"PAD","ticket":74,"id":"e9"}||{"netName":"","layerId":1,"num":"3","centerX":0,"centerY":25,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
+{"type":"POLY","ticket":76,"id":"c48"}||{"groupId":0,"netName":"","layerId":48,"width":2,"path":[-60,-40,"L",60,-40,60,65,-60,65,-60,-40],"polyType":"NORMAL"}|
 {"type":"DOCHEAD","ticket":100}||{"docType":"FOOTPRINT","uuid":"tiny000000000fp2","editVersion":"3.2.149"}|
 {"type":"META","ticket":104,"id":"META"}||{"title":"SOT-23-3_L2.9-W1.3-P0.95","tags":["Footprints"]}|
 {"type":"PAD","ticket":101,"id":"f1"}||{"netName":"","layerId":1,"num":"1","centerX":-40,"centerY":-20,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60,"radius":0},"plated":true,"padType":"NORMAL"}|

@@ -2112,3 +2112,25 @@ def test_resolve_net_rules_ignores_the_layers_key():
         overrides={"layers": ["B.Cu"]},
     )
     assert with_layers == without
+
+
+def test_a_ring_drawn_at_the_floor_in_mil_is_not_short_of_it():
+    """2026-10-02, a real EasyEDA import on prod: 48 THT pads drawn at a
+    1.5 mm pad over a 1.2 mm drill -- exactly JLC's 0.150 mm ring -- arrived
+    as 59.0551 / 47.2441 mil and read 0.1499997 mm, each an error "0.000 mm
+    short". A real deficit of a micron still fires."""
+    jlc_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert jlc_min == pytest.approx(0.15)
+    at_floor = _pad(
+        "E1",
+        "F.Cu",
+        0.0,
+        0.0,
+        w=round(59.0551 * 0.0254, 6),
+        drill=round(47.2441 * 0.0254, 6),
+    )
+    short = _pad("E2", "F.Cu", 5.0, 5.0, w=1.498, drill=1.2)
+    model = {"layers": ["F.Cu"], "copper": [], "pads": [at_floor, short]}
+    findings = drc.check_annular_ring(model, _CAP4)
+    errors = [f.where.split(" ")[0] for f in findings if f.severity == "error"]
+    assert errors == ["pad[E2]"]

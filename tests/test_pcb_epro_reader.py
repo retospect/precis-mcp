@@ -581,3 +581,19 @@ def test_real_board_parses_without_surprises():
         and (b["startX"], b["startY"]) != (b["endX"], b["endY"])
     )
     assert sum(len(t["geom"]["segments"]) for t in ext.tracks) == src
+
+
+def test_a_footprint_courtyard_comes_from_its_component_shape_layer(project):
+    """With no courtyard imported, the store falls back to the bare pad
+    extent, an outline lying ON the pads. The R0603 fixture draws a
+    layer-48 (COMPONENT_SHAPE) rectangle; the SOT-23 draws none and gets
+    its pad extent plus the IPC nominal 0.25 mm."""
+    pcb = project.by_type("PCB")[0]
+    fps, _names, _warnings = epro.extract_footprints(project, pcb)
+    by_name = {f["name"]: f for f in fps}
+    assert by_name["R0603"]["courtyard"]["bbox"] == pytest.approx(
+        [-1.524, -1.651, 1.524, 1.016]
+    )
+    assert by_name["SOT-23-3_L2.9-W1.3-P0.95"]["courtyard"]["bbox"] == pytest.approx(
+        [-1.774, -1.52, 1.901, 1.52]
+    )

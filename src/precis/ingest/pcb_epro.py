@@ -39,6 +39,9 @@ from typing import Any
 from precis.pcb import copper_report, drc, epro, ir, padplace
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
+from precis.store._pcb_ops import (
+    _normalize_local_footprint as normalize_local_footprint,
+)
 
 #: What ``op='place'``/``op='route'`` accept (``_enqueue_op``) and what
 #: ``_FIXED_COPPER_FAB_PROCESS`` is pinned to. Refusing HERE, naming the
@@ -269,6 +272,23 @@ def _report(
     )
 
 
+def _design_pads(
+    design: epro.Design, stackup: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The board pads ``design`` would place once written — for a dry
+    run, which has no stored footprints to read them back from."""
+    local = dict(normalize_local_footprint(f) for f in design.footprints)
+    pin_to_net = {(k["refdes"], k["pin"]): k["net"] for k in design.connections}
+    pads, _drills = padplace.board_pads(
+        design.components,
+        {},
+        layers=[str(s["name"]) for s in stackup],
+        pin_to_net=pin_to_net,
+        local_footprints=local,
+    )
+    return pads
+
+
 def report_copper(
     store: Any, data: bytes, *, slug: str, board_uuid: str | None = None
 ) -> copper_report.CopperReport:
@@ -453,10 +473,12 @@ def import_epro(
         stats=dict(design.stats),
     )
     if dry_run:
-        # No pads without a written board, so gaps here are track/via
-        # only — the report says so in its own notes.
+        # The pads a real import would write, placed in memory: the same
+        # normaliser the store applies, so --dry-run measures gaps to pads
+        # exactly as the real import's report does (2026-10-02: it measured
+        # tracks and vias only, and said so).
         result.copper, copper_warnings = _report(
-            board, frame, stackup, design.nets, {}, []
+            board, frame, stackup, design.nets, {}, _design_pads(design, stackup)
         )
         result.warnings.extend(copper_warnings)
         return result
