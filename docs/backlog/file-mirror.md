@@ -57,7 +57,7 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
 3. **Links from the files.** An idempotent pass (`precis mirror-links`,
    runnable by the same worker that embeds file chunks) mints
    `related-to` links from two reference forms in memory files — relative
-   markdown links to a sibling file (the `[Title]` + `(<slug>.md)` form
+   markdown links to a sibling file (`[Title](slug.md)`, the form
    `MEMORY.md`'s ~100 index bullets use) and `[[slug]]` (rare in the live
    corpus: two uses, both in `MEMORY.md`) — and from skill frontmatter
    (`kinds:` → the kind's overview skill, `applies_to` verbs,
@@ -109,8 +109,7 @@ storage, so there is one alias-root grammar and one DB-backed prose kind.
    <topic>~<section>')` succeeds and appears in the finding's `view=
    'links'`.
 3. After `precis mirror-links` over the synthetic fixture, a topic file
-   with three references (two of the `[Title]` + `(<slug>.md)` form, one
-   `[[slug]]`) has
+   with three references (two `[Title](slug.md)`, one `[[slug]]`) has
    three outbound `related-to` links; deleting one reference and
    re-running removes exactly that link.
 4. `get(kind='markdown', id='skills/precis-fisheye-help', view=
