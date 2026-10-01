@@ -47,7 +47,9 @@ waited on happened 09-29 — note at the bottom)
    `_winding_normal` now signs each flat rim from its winding. `geom.clash`
    would have caught all of them.
 2. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
-   built. Reto asked for mean/extreme C–C bond lengths per build
+   built. The stats need the tier of the coordinates they were measured
+   on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier
+   visible in the viewer. Reto asked for mean/extreme C–C bond lengths per build
    (gr459602); a structure's default `get` is an 80 KB atom table with no
    summary and its probe views disagree on argument names (gr459568); the
    check echo is two-thirds per-bond INFO (gr459571). gr459602/gr459568
