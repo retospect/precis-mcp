@@ -86,7 +86,10 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 Surfaces on top: the **MCP server** (`precis serve`, the 8 verbs — the
 product; network transports gate on `PRECIS_MCP_TOKEN`; `PRECIS_MCP_PROFILE=command`
 swaps the typed surface for one `precis(command, text=)` tool over the same
-dispatcher — `tools/command_parser.py`), the **CLI**
+dispatcher — `tools/command_parser.py`; on this dev machine every Claude Code
+session shares one streamable-http server whose PID 1 is
+`mcp_supervisor.py`, which holds the port across restarts and runs
+`precis serve --fd` as a child, with `mcp_liveness.py` killing a wedged one), the **CLI**
 (`precis …`), the **web UI** (`src/precis_web/`, behind HTTP Basic against
 `web_users` — `precis_web/auth.py`, roster via `precis users`, self-service
 at `/account`: password, ORCID iD (the identity an attesting nanopub
