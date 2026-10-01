@@ -86,12 +86,6 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 6’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
-8. **Housekeeping: gr456203 and gr456212** — moved here from "No action
-   needed" 2026-09-30, because a drift report showed both are still
-   `STATUS:open` on prod while this file claimed otherwise. They were
-   auto-diagnosed as already fixed; the work is to verify that against
-   main and close them, not to write code. Listed as work because
-   "verify and close" is work until someone does it.
 
 ## Horizon
 
@@ -172,6 +166,18 @@ ring-less net crashing the stick pass, also fixed — note at the bottom)
   `composite_part_stolen` finding, naming both composites. **The cause is
   Do-next 2** (gr456213); shipping the detector without it means new
   corruption is reported rather than prevented.
+- **gr456203** — CLOSED 2026-10-01 after verifying, not on its label:
+  `_leak_finding` names the breached measure(s) and prints each value
+  against its own threshold, and
+  `test_seam_leak_names_the_breached_measure_and_its_threshold` pins it.
+- **gr456212** — CLOSED 2026-10-01, and the "auto-diagnosed as already
+  fixed" label this file carried was half wrong. The sigma half was done
+  (`seam.sigma`); the element half never landed — nothing in the join
+  path compared the two rims' elements. Shipped `seam.element` (WARN,
+  matching `seam.sigma`, because `JOINERS` is keyed on a lattice pair so
+  heterojunctions can exist later; promoting it to ERROR is a product
+  call). The load-bearing test is the negative: two carbon rims draw
+  nothing, since every ordinary join passes through it.
 - **gr454650** — CLOSED 2026-10-01, **and my 09-30 "confirmed, worse than
   filed" comment on it is retracted.** It was already fixed by
   `build._split_degenerate_tube_rims`, with four regression tests in

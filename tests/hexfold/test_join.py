@@ -291,6 +291,39 @@ def test_seam_sigma_silent_when_equal() -> None:
     assert not [f for f in composite.findings if f.code == "seam.sigma"]
 
 
+def test_seam_element_names_both_rims() -> None:
+    """gr456212's second half: the sigma check landed in 2026-09 and the
+    element one never did, so a rim of one element fused to a rim of
+    another in silence. The seam bonds `pa.dangling` to `pb.dangling` by
+    geometry and port size alone -- no element comparison exists anywhere
+    in the join path, unlike bind/generate/propose, which all check
+    `port.expected_element` against the atom."""
+    spec = "hexfold 0.2\na: tube(8,0, len=3)\n"
+    a = _resolved(spec)
+    b0 = _resolved(spec)
+    b = replace(b0, elements=("N",) * len(b0.elements))
+    composite = compose(a, a.ports["out"], b, b.ports["in"], k=0)
+    finding = next(f for f in composite.findings if f.code == "seam.element")
+    # WARN, matching seam.sigma: JOINERS is keyed on a lattice *pair* so a
+    # heterojunction entry can exist later, so refusing would pre-empt the
+    # design. Promoting to ERROR is a product call.
+    assert finding.severity == Severity.WARN
+    data = dict(finding.data)
+    assert data["a_elements"] == ["C"]
+    assert data["b_elements"] == ["N"]
+    assert "'out'" in finding.message and "'in'" in finding.message
+
+
+def test_seam_element_silent_when_both_rims_match() -> None:
+    """The load-bearing negative: every ordinary carbon join goes through
+    this check, so a wrong comparison would warn on all of them."""
+    spec = "hexfold 0.2\na: tube(8,0, len=3)\n"
+    a = _resolved(spec)
+    b = _resolved(spec)
+    composite = compose(a, a.ports["out"], b, b.ports["in"], k=0)
+    assert not [f for f in composite.findings if f.code == "seam.element"]
+
+
 # ---------- second join: a composite is itself a Block ----------
 
 

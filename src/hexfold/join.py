@@ -574,6 +574,41 @@ def compose(
                 fix="regenerate one side so both blocks share one sigma before joining",
             )
         )
+    # seam.element (gr456212's second half, 2026-09-29 prod dogfood): the
+    # sigma check above landed and the element one never did. The seam
+    # bonds `pa.dangling` to `pb.dangling` pairwise by geometry and port
+    # size alone -- nothing anywhere in the join path compares the two
+    # rims' elements, in contrast to bind/generate/propose, which all
+    # check `port.expected_element != atom.element`. So a rim of one
+    # element fuses to a rim of another in silence.
+    #
+    # WARN, not ERROR, and deliberately so: `JOINERS` is keyed on a
+    # lattice *pair* precisely so a future heterojunction entry can tell
+    # its two sides apart (`_hexfold_join`'s own docstring), so refusing
+    # here would pre-empt a direction the design already anticipates, and
+    # the placement is geometrically valid either way. Promoting this to
+    # ERROR is a product call, not a bug fix. Severity matches
+    # `seam.sigma`, whose WARN is itself pinned by a test as intentional.
+    a_els = tuple(sorted({a.elements[o] for o in pa.dangling}))
+    b_els = tuple(sorted({b.elements[o] for o in pb.dangling}))
+    if a_els != b_els:
+        findings.append(
+            Finding(
+                "seam.element",
+                Severity.WARN,
+                f"element mismatch at the seam: a's {pa.name!r} rim is "
+                f"{'/'.join(a_els)}, b's {pb.name!r} rim is "
+                f"{'/'.join(b_els)} -- the seam bonds rim atoms pairwise "
+                "by geometry and port size, never by element, so this is "
+                "placed and relaxed as if both sides were one material",
+                data=(("a_elements", list(a_els)), ("b_elements", list(b_els))),
+                fix=(
+                    "regenerate one side so both rims share an element, or "
+                    "accept the heterojunction knowing the seam was not "
+                    "parameterised for it"
+                ),
+            )
+        )
     ta, tb = pa.rim_type, pb.rim_type
     motif = "fuse"
     if ta is not None and tb is not None and ta[0] != tb[0]:
