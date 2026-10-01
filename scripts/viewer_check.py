@@ -29,6 +29,7 @@ check fails, so the workflow uploads the directory as the evidence.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import pathlib
@@ -57,6 +58,9 @@ TARGET_CHANGED_MIN = 300
 RESTORED_MAX = 200
 #: Ceiling for any one wait on an observable condition.
 WAIT_S = 60.0
+#: The PNG export vs a shot of the canvas: only the vendored filter
+#: dropdown (page chrome, left out of the export) may differ.
+EXPORT_DIFF_MAX = 0.01
 
 
 @dataclass
@@ -116,7 +120,9 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
                 "--enable-unsafe-swiftshader",
             ]
         )
-        page = browser.new_page(viewport={"width": 1600, "height": 1000})
+        page = browser.new_page(
+            viewport={"width": 1600, "height": 1000}, accept_downloads=True
+        )
         page.on(
             "console",
             lambda m: (
@@ -281,6 +287,43 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             checks.append(
                 Check("target_surface_off_restores", off["n"] <= RESTORED_MAX, off)
             )
+
+        # View export: the PNG is the canvas as on screen, scale bar
+        # included (the vendored filter dropdown is page chrome, not in
+        # it — hence a small tolerance, not zero); the SVG's scale-bar
+        # label is the one on screen.
+        screen_label = page.evaluate(
+            "() => document.querySelector('.bt3d-scale-bar-label')?.textContent || ''"
+        )
+        screen = np.asarray(
+            Image.open(io.BytesIO(canvas.screenshot())).convert("RGB")
+        ).astype(int)
+        with page.expect_download() as png_dl:
+            page.click("#bt3d-export-png")
+        png = np.asarray(Image.open(png_dl.value.path()).convert("RGB")).astype(int)
+        frac = (
+            float((np.abs(png - screen).max(axis=2) > THRESHOLD).mean())
+            if png.shape == screen.shape
+            else 1.0
+        )
+        with page.expect_download() as svg_dl:
+            page.click("#bt3d-export-svg")
+        svg = pathlib.Path(svg_dl.value.path()).read_text(encoding="utf-8")
+        checks.append(
+            Check(
+                "export_matches_screen",
+                bool(screen_label)
+                and frac < EXPORT_DIFF_MAX
+                and f">{screen_label}</text>" in svg
+                and "data:image/png;base64," in svg,
+                {
+                    "png_shape": list(png.shape),
+                    "screen_shape": list(screen.shape),
+                    "png_diff_frac": round(frac, 4),
+                    "label": screen_label,
+                },
+            )
+        )
 
         # The page scrolls to what sits below the shell: a wheel off the
         # canvas (on it, the wheel zooms) must bring the design chat into

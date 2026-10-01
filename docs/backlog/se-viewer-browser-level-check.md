@@ -18,9 +18,11 @@ control run with the explode fix removed failed `explode_moves_and_holds`
 at n=1. First GitHub run (manual dispatch) green with the same numbers.
 The pick render half then grew it to 9 checks (the selection is tinted
 too, so "restored" is now measured against the same block selected from
-a clean slate; the pick panel must list `<se:…>` tokens), and the scroll
+a clean slate; the pick panel must list `<se:…>` tokens), the scroll
 fix to 10 (`page_scrolls_to_chat`: a wheel off the canvas must bring the
-design chat on screen). Delete this
+design chat on screen), and the view export to 11
+(`export_matches_screen`: the PNG equals a canvas shot within 1%, the
+SVG carries the on-screen scale-bar label). Delete this
 item once a scheduled run on GitHub has gone green.
 
 Every test over the 3D viewer asserts the SHAPE of the emitted scene JSON.

@@ -207,3 +207,17 @@ def test_pick_refusals_say_what_would_resolve(handler: SeHandler, store: Store) 
         ).body
     )
     assert rows[0][:2] == ("offset", "stem@9 (unoccupied)")
+
+
+def test_atom_hover_names_read_the_record_or_fall_back_to_labels() -> None:
+    labels = ["aP1", "aO2"]
+    record = {
+        "names": ["P", "OP1"],
+        "resnames": ["DG", "DG"],
+        "resseq": [4, 4],
+        "chain_ids": ["A", "A"],
+    }
+    assert pick.atom_hover_names(labels, record) == ["P · DG 4 (A)", "OP1 · DG 4 (A)"]
+    # No record, or columns that do not line up with the scene: labels.
+    assert pick.atom_hover_names(labels) == labels
+    assert pick.atom_hover_names(labels, {**record, "names": ["P"]}) == labels

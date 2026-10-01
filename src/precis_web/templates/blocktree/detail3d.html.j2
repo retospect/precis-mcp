@@ -58,6 +58,12 @@
   <button type="button" id="bt3d-explode" class="px-3 py-1 rounded border border-slate-300 hover:bg-slate-100">
     explode
   </button>
+  <span class="flex items-center gap-1 text-xs text-slate-600"
+        title="the view as on screen, scale bar included — the SVG holds the scene as an image and the scale bar as vector">
+    export
+    <button type="button" id="bt3d-export-png" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">PNG</button>
+    <button type="button" id="bt3d-export-svg" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">SVG</button>
+  </span>
   <label class="flex items-center gap-1 text-xs text-slate-600">
     <input type="checkbox" id="bt3d-connections" checked />
     connections
@@ -257,6 +263,11 @@
     isolateSelect: document.getElementById("bt3d-isolate"),
     overridesInput: document.getElementById("bt3d-overrides"),
     busyEl: document.getElementById("bt3d-busy"),
+    exportEls: {
+      png: document.getElementById("bt3d-export-png"),
+      svg: document.getElementById("bt3d-export-svg"),
+    },
+    exportName: {{ slug | tojson }},
     sceneUrl: {{ scene_url | tojson }},
     {% if has_atomic %}
     atomsToggle: document.getElementById("bt3d-atoms"),

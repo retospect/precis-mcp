@@ -116,6 +116,7 @@ from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.ops import effective_envelope as se_effective_envelope
+from precis_se.pick import atom_hover_names
 from precis_surface.revolution import revolve
 from precis_web import design_chat, design_turn
 from precis_web.blocktree_3d import (
@@ -1267,10 +1268,14 @@ def _atomic_block_payload(
     world_coords = apply_rigid(xf, cart_A * _ATOMIC_A_TO_M) * scale
     world_smooth = apply_rigid(xf, smooth_A * _ATOMIC_A_TO_M) * scale
 
+    record = (struct_ref.meta or {}).get("chain_atoms")
     payload: dict[str, Any] = {
         "uid": block_uid,
         "name": name,
         "elements": elements,
+        # The hover readout's per-atom name — residue and chain for a
+        # realize_chain structure, the scene label otherwise.
+        "hover": atom_hover_names(labels, record if isinstance(record, dict) else None),
         "coords": world_coords.tolist(),
         "smooth": world_smooth.tolist(),
         # The aberration signal itself is reported in Å (an atomistic-scale

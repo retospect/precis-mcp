@@ -454,6 +454,133 @@ function _startScaleBar(viewer, viewerEl, sceneScale) {
   requestAnimationFrame(tick);
 }
 
+// ── view export (Reto, 2026-10-01) ──────────────────────────────────────
+//
+// "export as vector or png … with scale bar as it is shown on screen".
+// The vendored renderer runs without preserveDrawingBuffer, so the WebGL
+// canvas only holds the picture right after a draw: `viewer.update(true)`
+// draws synchronously, and the copy happens in the same task. The scale
+// bar is the live overlay's own DOM — read back from its boxes and drawn
+// at the same place, length and label, so the export says what the
+// screen said. The SVG carries the scene as an embedded raster (a WebGL
+// scene has no vector form to hand) and the scale bar as vector.
+
+//: The live scale bar in the WebGL canvas's CSS pixels, or null when it
+//: is hidden (no scene scale, or the camera read failed).
+function _scaleBarBox(viewerEl, glRect) {
+  const bar = viewerEl.querySelector(".bt3d-scale-bar");
+  if (!bar || bar.style.display === "none") return null;
+  const line = bar.querySelector(".bt3d-scale-bar-line");
+  const label = bar.querySelector(".bt3d-scale-bar-label");
+  if (!line || !label || !label.textContent) return null;
+  const l = line.getBoundingClientRect();
+  const t = label.getBoundingClientRect();
+  if (!l.width) return null;
+  const lineStyle = getComputedStyle(line);
+  const labelStyle = getComputedStyle(label);
+  return {
+    // The bracket: left tick, bottom rule, right tick (the line's three
+    // CSS borders), centred on the border width.
+    x0: l.left - glRect.left + 1,
+    x1: l.right - glRect.left - 1,
+    yTop: l.top - glRect.top,
+    yBottom: l.bottom - glRect.top - 1,
+    stroke: lineStyle.borderBottomColor,
+    label: label.textContent,
+    lx: t.left - glRect.left,
+    ly: t.top - glRect.top,
+    lw: t.width,
+    lh: t.height,
+    labelBg: labelStyle.backgroundColor,
+    labelColour: labelStyle.color,
+    font: `${labelStyle.fontSize} ${labelStyle.fontFamily}`,
+    padRight: parseFloat(labelStyle.paddingRight) || 0,
+  };
+}
+
+//: A 2D canvas at the WebGL canvas's device resolution holding the view
+//: as drawn now, on white; with `withBar`, the scale bar on top. Null
+//: when there is no canvas yet.
+function _exportCanvas(viewer, viewerEl, { withBar }) {
+  const gl = viewerEl.querySelector("canvas");
+  if (!gl || !gl.width || !gl.height) return null;
+  const out = document.createElement("canvas");
+  out.width = gl.width;
+  out.height = gl.height;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  viewer.update(true);
+  ctx.drawImage(gl, 0, 0);
+  if (!withBar) return out;
+  const glRect = gl.getBoundingClientRect();
+  const box = _scaleBarBox(viewerEl, glRect);
+  if (!box) return out;
+  const s = gl.width / glRect.width;
+  ctx.save();
+  ctx.scale(s, s);
+  ctx.fillStyle = box.labelBg;
+  ctx.fillRect(box.lx, box.ly, box.lw, box.lh);
+  ctx.fillStyle = box.labelColour;
+  ctx.font = box.font;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillText(box.label, box.lx + box.lw - box.padRight, box.ly + box.lh / 2);
+  ctx.strokeStyle = box.stroke;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(box.x0, box.yTop);
+  ctx.lineTo(box.x0, box.yBottom);
+  ctx.lineTo(box.x1, box.yBottom);
+  ctx.lineTo(box.x1, box.yTop);
+  ctx.stroke();
+  ctx.restore();
+  return out;
+}
+
+function _xmlEscape(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+//: The view as an SVG document: the scene as an embedded PNG, the scale
+//: bar as vector paths and text, both in the canvas's CSS pixels.
+function _exportSvg(viewer, viewerEl) {
+  const shot = _exportCanvas(viewer, viewerEl, { withBar: false });
+  if (!shot) return null;
+  const gl = viewerEl.querySelector("canvas");
+  const glRect = gl.getBoundingClientRect();
+  const w = Math.round(glRect.width);
+  const h = Math.round(glRect.height);
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`,
+    `<image width="${w}" height="${h}" href="${shot.toDataURL("image/png")}"/>`,
+  ];
+  const box = _scaleBarBox(viewerEl, glRect);
+  if (box) {
+    const f = (n) => n.toFixed(2);
+    parts.push(
+      `<g class="scale-bar">`,
+      `<rect x="${f(box.lx)}" y="${f(box.ly)}" width="${f(box.lw)}" height="${f(box.lh)}" fill="${_xmlEscape(box.labelBg)}"/>`,
+      `<text x="${f(box.lx + box.lw - box.padRight)}" y="${f(box.ly + box.lh / 2)}" text-anchor="end" dominant-baseline="central" fill="${_xmlEscape(box.labelColour)}" style="font: ${_xmlEscape(box.font)}">${_xmlEscape(box.label)}</text>`,
+      `<path d="M${f(box.x0)} ${f(box.yTop)}V${f(box.yBottom)}H${f(box.x1)}V${f(box.yTop)}" fill="none" stroke="${_xmlEscape(box.stroke)}" stroke-width="2"/>`,
+      `</g>`
+    );
+  }
+  parts.push("</svg>");
+  return parts.join("\n") + "\n";
+}
+
+function _download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ── atomic ↔ smooth overlay (gr450675) ──────────────────────────────────
 //
 // scene3d.json's own ``Shapes`` tree only ever carries box/solid envelope
@@ -701,6 +828,9 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         // ordinal in this payload, which is the bound scene's own atom
         // order — the same order the pick route resolves against.
         mesh.userData.pick = { block: b.uid, atom: i };
+        // The hover readout: element, then the atom's name (residue and
+        // chain for a realized chain, the scene label otherwise).
+        mesh.userData.hover = `${b.elements[i]} · ${(b.hover && b.hover[i]) || `#${i}`}`;
         group.add(mesh);
         atomMeshes.push(mesh);
       }
@@ -836,7 +966,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
     }
   }
 
-  //: The atom under a click, as `{block, atom}`, or null. The vendored
+  //: The atom under a point, as `{block, atom, hover}`, or null. The vendored
   //: viewer raycasts only its own parts tree, so the overlay casts its
   //: own ray, from the vendored live camera (the same private reach as
   //: the scale bar's `_worldPerPixel`). Hidden atoms — atoms off, or the
@@ -859,7 +989,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       for (const mesh of blk.atomMeshes) if (mesh.visible) atoms.push(mesh);
     }
     const hit = raycaster.intersectObjects(atoms, false)[0];
-    return hit ? hit.object.userData.pick : null;
+    return hit ? { ...hit.object.userData.pick, hover: hit.object.userData.hover } : null;
   }
 
   // ── target surface (smooth_drum's surface_meridian, revolved server-side)
@@ -1005,6 +1135,10 @@ export async function blocktreeViewer3D({
   pickUrl,
   pickEls,
   onCiteToken,
+  // View export: `{png, svg}` buttons, and the file name's stem (the
+  // design slug). Optional.
+  exportEls,
+  exportName,
 }) {
   // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
   // await: the vendored bundle defaults startOnLoad:true and runs on the
@@ -1576,6 +1710,44 @@ export async function blocktreeViewer3D({
     true
   );
 
+  // Atom hover readout: the atom under the pointer (element, then its
+  // residue and chain or scene label), the way the vendored viewer
+  // already reads out an edge's length. One raycast per animation frame
+  // at most, none while a button is held (that is an orbit).
+  // Attached on first show, and again if a render emptied the shell.
+  const hoverTip = document.createElement("div");
+  hoverTip.className = "bt3d-atom-tip";
+  hoverTip.hidden = true;
+  let hoverAt = null;
+  let hoverQueued = false;
+  function updateHover() {
+    hoverQueued = false;
+    const at = hoverAt;
+    const canvas = viewerEl.querySelector("canvas");
+    const hit = at && atomicOverlay ? atomicOverlay.pickAtom(at[0], at[1], canvas) : null;
+    if (!hit) {
+      hoverTip.hidden = true;
+      return;
+    }
+    if (!hoverTip.isConnected) viewerEl.appendChild(hoverTip);
+    const box = viewerEl.getBoundingClientRect();
+    hoverTip.textContent = hit.hover;
+    hoverTip.style.left = `${at[0] - box.left + 12}px`;
+    hoverTip.style.top = `${at[1] - box.top + 12}px`;
+    hoverTip.hidden = false;
+  }
+  viewerEl.addEventListener("pointermove", (e) => {
+    hoverAt = e.buttons ? null : [e.clientX, e.clientY];
+    if (!hoverQueued) {
+      hoverQueued = true;
+      requestAnimationFrame(updateHover);
+    }
+  });
+  viewerEl.addEventListener("pointerleave", () => {
+    hoverAt = null;
+    hoverTip.hidden = true;
+  });
+
   //: Drives the overlay from whatever the two atomic controls currently
   //: say. Called after every (re)build and on every control change, so
   //: the two never disagree — the atoms checkbox wins over the slider,
@@ -1832,6 +2004,27 @@ export async function blocktreeViewer3D({
   // each frame, so it needs no re-wiring across a scene reload — and
   // starting it again would append a second bar and a second rAF loop.
   _startScaleBar(viewer, viewerEl, data.scale);
+
+  // ── view export (Reto, 2026-10-01) ───────────────────────────────────
+  // The view as on screen, scale bar included, as a PNG or an SVG. Wired
+  // once: both read the live viewer and the live scale bar.
+  if (exportEls) {
+    const stem = () =>
+      `${exportName || "view"}-${(levelSelect && levelSelect.value) || "view"}`;
+    if (exportEls.png) {
+      exportEls.png.addEventListener("click", () => {
+        const shot = _exportCanvas(viewer, viewerEl, { withBar: true });
+        if (!shot) return;
+        shot.toBlob((blob) => blob && _download(blob, `${stem()}.png`), "image/png");
+      });
+    }
+    if (exportEls.svg) {
+      exportEls.svg.addEventListener("click", () => {
+        const svg = _exportSvg(viewer, viewerEl);
+        if (svg) _download(new Blob([svg], { type: "image/svg+xml" }), `${stem()}.svg`);
+      });
+    }
+  }
 
   // ── atomic ↔ smooth overlay slider (gr450675) ────────────────────────
   // The overlay itself is (re)built inside `renderScene`; this listener

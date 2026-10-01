@@ -303,6 +303,26 @@ def atom_levels(
     return out + _block_levels(tree, node)
 
 
+def atom_hover_names(
+    labels: Sequence[str], record: Mapping[str, Any] | None = None
+) -> list[str]:
+    """One short name per atom, in scene order, for the 3D viewer's hover
+    readout: ``O3' · DG 4 (A)`` when ``record`` (a ``realize_chain``
+    ``chain_atoms`` record) has columns aligned with ``labels``, the scene
+    label otherwise — the same fallback :func:`atom_levels` takes."""
+    columns = [
+        (record or {}).get(k) or []
+        for k in ("names", "resnames", "resseq", "chain_ids")
+    ]
+    if not record or any(len(col) != len(labels) for col in columns):
+        return [str(label) for label in labels]
+    names, resnames, resseq, chain_ids = columns
+    return [
+        f"{names[i]} · {resnames[i]} {resseq[i]} ({chain_ids[i]})"
+        for i in range(len(labels))
+    ]
+
+
 def resolve_token(
     tree: Any,
     ref: PickRef,

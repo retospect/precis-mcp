@@ -4,6 +4,7 @@ first (``docs/backlog/se-pick-hierarchy.md``, the render half)."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -104,3 +105,19 @@ def test_the_3d_page_wires_the_pick_panel(pick_client: TestClient) -> None:
     html = pick_client.get("/se/pkw").text
     assert 'id="bt3d-pick-panel"' in html
     assert '"/se/pkw/pick"' in html
+
+
+def test_atomic3d_carries_a_hover_name_per_atom(pick_client: TestClient) -> None:
+    blocks = pick_client.get("/se/pkw/atomic3d.json").json()["blocks"]
+    assert blocks
+    for b in blocks:
+        assert len(b["hover"]) == len(b["elements"])
+        # A realize_chain structure names residue and chain, not the label.
+        assert all(re.search(r" · \w+ \d+ \(\w\)$", h) for h in b["hover"])
+
+
+def test_the_3d_page_wires_the_view_export(pick_client: TestClient) -> None:
+    html = pick_client.get("/se/pkw").text
+    assert 'id="bt3d-export-png"' in html
+    assert 'id="bt3d-export-svg"' in html
+    assert 'exportName: "pkw"' in html

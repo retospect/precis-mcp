@@ -31,23 +31,23 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 ## Do next
 
-0. **Reto's prod pass, 2026-10-01 evening** (on a fleet that did NOT yet
-   carry the pick render half — it is deployed now; re-check pick steps
-   1–3 on prod). (a), the page not scrolling, is fixed: the vendored
-   three-cad-viewer.css carries a global `body{overflow:hidden;
-   user-select:none}`, undone in blocktree-3d-overrides.css; viewer_check
-   gained `page_scrolls_to_chat` (FAILs with the override removed).
-   Remaining, in this order:
-   b. **Export the view** as SVG or PNG, with the scale bar exactly as on
-      screen. Reto: "maybe as a gripe or just build it" — build it.
-   c. **Atom hover readout**, the way a bond line already shows its length
-      on mouseover: element, label, residue.
-   d. **Atoms on/off**: the `#bt3d-atoms` checkbox exists (rendered only
-      with `has_atomic`), in the control row above the shell — locally it
-      is on screen at load. Reto did not find it on prod: check
-      `/se/dogfood-fold-3` serves it (has_atomic true?) before building.
-   e. Open decision: a tinted container (0.25 opacity) reads pale tan —
-      proposed: opaque while tinted, back on deselect.
+0. **Dogfood Reto's 2026-10-01 prod pass after the next deploy.** All of
+   it is built; what is left is Reto's look on prod:
+   - pick steps 1–3 (atom click → panel → cite), which his pass predated;
+   - page scroll (vendored three-cad-viewer.css's global
+     `body{overflow:hidden; user-select:none}`, undone in
+     blocktree-3d-overrides.css);
+   - export PNG / SVG beside `explode` — the view as on screen, scale bar
+     included; the SVG holds the scene as an embedded PNG and the scale
+     bar as vector. A fully vector scene (projected edges, hidden-line
+     removal) was not asked for and is not filed;
+   - atom hover tip (element · atom name · residue (chain) for a
+     realize_chain structure, the scene label otherwise —
+     `atomic3d.json` `hover`, from `pick.atom_hover_names`);
+   - the atoms checkbox is in the control row on any structure-bound
+     design (prod `dogfood-fold-3` is bound, so it renders there).
+   Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
+   no opaque-while-tinted change.
 
 1. **backlog/se-viewer-browser-level-check.md** — BUILT 2026-10-01
    (viewer-check.yml, nightly); delete once a scheduled GitHub run is
@@ -213,10 +213,9 @@ Two gaps left then, closed 2026-10-01 with the pick render half: a
 CONTAINER partner is now tinted through its `(envelope)` leaf (selecting
 `axle` marks both cranks), and the selected block ITSELF is tinted sky
 blue against its partners' amber. The selection is re-tinted after a
-re-render (level change, isolate) instead of silently dropped. One
-reconciliation with `applyContainerMode` remains: a container envelope
-keeps its translucent 0.25 opacity, so a tinted crank reads as pale tan,
-not amber.
+re-render (level change, isolate) instead of silently dropped. A
+container envelope keeps its translucent 0.25 opacity, so a tinted crank
+reads as pale tan, not amber — Reto ruled 2026-10-01 that it stays so.
 
 The scale bar was checked at the same time and is correct, against a
 witness that does not trust its arithmetic: across five unclipped zoom
