@@ -1,6 +1,6 @@
 ---
 status: idea
-snooze-until: 2026-09-23
+snooze-until: 2026-11-01
 pillar: platform
 ---
 
@@ -26,3 +26,5 @@ No newer marker-pdf release exists. Lock reverted; still blocked.
 
 2026-09-09: rechecked PyPI — marker-pdf latest is still 2.0.0 with
 `pillow<11,>=10.1.0`. Still blocked; snoozed +2 weeks.
+
+2026-10-01: rechecked PyPI — marker-pdf latest is still 2.0.0 with `pillow<11,>=10.1.0`. Still blocked; snoozed +1 month (Reto).
