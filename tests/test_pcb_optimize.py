@@ -2206,3 +2206,44 @@ def test_build_ir_hydrates_authored_vias_and_real_lands_from_the_footprint():
         [-2.0, 0.0, 0.2, 0.8],
         [2.0, 0.0, 0.8, 0.2],
     ]
+
+
+# ── risk() reads per-class maxima, not a full scan ──────────────────────
+
+
+def test_margin_table_risk_equals_the_full_scan_through_sets_pops_and_compaction():
+    from precis.pcb.cost import (
+        _BY_NAME,
+        _CRITICALITY_WEIGHT,
+        TermValue,
+        hardened_penalty,
+    )
+    from precis.pcb.optimize import _MarginTable
+
+    names = ["gap_capacity", "courtyard_overlap", "crossings", "coupling"]
+    table = _MarginTable()
+    rng = random.Random(7)
+    for step in range(3000):
+        key = (names[rng.randrange(len(names))], rng.randrange(12))
+        if rng.random() < 0.3:
+            table.pop(key, None)
+        else:
+            raw = rng.choice([0.0, rng.random(), 1.0 + rng.random()])
+            table[key] = TermValue(key[0], _BY_NAME[key[0]].family, "r", raw, "")
+        expected = max(
+            (
+                _CRITICALITY_WEIGHT[_BY_NAME[n].criticality]
+                * hardened_penalty(tv.raw, 0.5)
+                for (n, _k), tv in table.items()
+            ),
+            default=0.0,
+        )
+        got = max(
+            (w * hardened_penalty(raw, 0.5) for w, raw in table.max_raw_by_weight()),
+            default=0.0,
+        )
+        assert got == expected, step  # exact: the same float, not approx
+    # 3000 pushes over at most 48 live keys must have compacted the heaps.
+    assert sum(len(h) for h in table._heaps.values()) <= 4 * len(table) + 64 + 1
+    with pytest.raises(TypeError):
+        del table[next(iter(table))]

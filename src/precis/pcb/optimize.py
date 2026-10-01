@@ -139,6 +139,7 @@ hardening mechanism.
 
 from __future__ import annotations
 
+import heapq
 import math
 import random
 from collections.abc import Callable, Sequence
@@ -1377,6 +1378,80 @@ MoveGeneratorFn = Callable[["OptimizeEngine", random.Random, float], "Move | Non
 MarginKey = int | tuple[int, int] | str
 
 
+class _MarginTable(dict[tuple[str, MarginKey], TermValue]):
+    """The engine's margin cache, which also keeps the largest ``raw`` per
+    criticality weight so :meth:`OptimizeEngine.risk` need not scan it.
+
+    ``risk()`` is a MAX over ``weight * hardened_penalty(raw, schedule)``,
+    and the penalty is non-decreasing in ``raw`` (its own docstring's
+    admissibility property), so each weight class's maximum is its largest
+    ``raw`` pushed through the penalty once — the same float the full scan
+    picks, bit for bit. The scan ran on every annealing step over every
+    entry: on a real board it was ~118 s of a 2000-iteration route.
+
+    One max-heap per weight with lazy deletion: a set pushes, a pop or
+    overwrite leaves a stale heap entry that :meth:`max_raw_by_weight`
+    discards when it surfaces (stale = its sequence number is no longer the
+    key's current one). Only ``__setitem__`` and ``pop`` mutate the cache in
+    the engine; every other dict mutator is refused so the heaps cannot go
+    out of step silently."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seq: dict[tuple[str, MarginKey], int] = {}
+        self._heaps: dict[float, list[tuple[float, int, tuple[str, MarginKey]]]] = {}
+        self._next = 0
+
+    def __setitem__(self, key: tuple[str, MarginKey], tv: TermValue) -> None:
+        super().__setitem__(key, tv)
+        self._next += 1
+        self._seq[key] = self._next
+        heap = self._heaps.setdefault(
+            _CRITICALITY_WEIGHT[_BY_NAME[key[0]].criticality], []
+        )
+        heapq.heappush(heap, (-tv.raw, self._next, key))
+        if len(heap) > 4 * len(self) + 64:
+            self._compact()
+
+    def pop(self, key: Any, *default: Any) -> Any:
+        self._seq.pop(key, None)
+        return super().pop(key, *default)
+
+    def __delitem__(self, key: tuple[str, MarginKey]) -> None:
+        raise TypeError("_MarginTable: use pop() so the risk heaps stay in step")
+
+    def clear(self) -> None:
+        raise TypeError("_MarginTable: not clearable — build a new one")
+
+    def update(self, *_a: Any, **_k: Any) -> None:
+        raise TypeError("_MarginTable: assign keys one at a time")
+
+    def setdefault(self, *_a: Any, **_k: Any) -> Any:
+        raise TypeError("_MarginTable: assign keys one at a time")
+
+    def popitem(self) -> tuple[tuple[str, MarginKey], TermValue]:
+        raise TypeError("_MarginTable: use pop() so the risk heaps stay in step")
+
+    def _compact(self) -> None:
+        heaps: dict[float, list[tuple[float, int, tuple[str, MarginKey]]]] = {}
+        for key, tv in self.items():
+            weight = _CRITICALITY_WEIGHT[_BY_NAME[key[0]].criticality]
+            heaps.setdefault(weight, []).append((-tv.raw, self._seq[key], key))
+        for heap in heaps.values():
+            heapq.heapify(heap)
+        self._heaps = heaps
+
+    def max_raw_by_weight(self) -> list[tuple[float, float]]:
+        """``(weight, largest raw)`` for every weight with a live entry."""
+        out: list[tuple[float, float]] = []
+        for weight, heap in self._heaps.items():
+            while heap and self._seq.get(heap[0][2]) != heap[0][1]:
+                heapq.heappop(heap)
+            if heap:
+                out.append((weight, -heap[0][0]))
+        return out
+
+
 def _pair_key(a: int, b: int) -> tuple[int, int]:
     """A sorted pair key, canonical regardless of argument order — the same
     convention ``coupling``'s ``(sa, sb)`` cache key already uses, reused
@@ -1779,7 +1854,7 @@ class OptimizeEngine:
         # pair for coupling, a net name for thermal_rise, a layer id for
         # crossings, a sorted instance-id pair for courtyard_overlap, or a
         # single instance id for board_edge_clearance.
-        self._margin: dict[tuple[str, MarginKey], TermValue] = {}
+        self._margin = _MarginTable()
         self._loop_applicable: set[int] = set()
         self._coupling_candidates = coupling_candidates(ir, config.cost)
         self._coupling_candidate_set = set(self._coupling_candidates)
@@ -2811,12 +2886,14 @@ class OptimizeEngine:
         )
 
     def risk(self) -> float:
-        if not self._margin:
-            return 0.0
+        # One penalty per criticality weight, not per entry: see
+        # `_MarginTable` for why this equals the max over every entry.
         return max(
-            _CRITICALITY_WEIGHT[_BY_NAME[name].criticality]
-            * hardened_penalty(tv.raw, self.schedule)
-            for (name, _key), tv in self._margin.items()
+            (
+                weight * hardened_penalty(raw, self.schedule)
+                for weight, raw in self._margin.max_raw_by_weight()
+            ),
+            default=0.0,
         )
 
     def total(self) -> float:
