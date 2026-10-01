@@ -46,7 +46,9 @@ import {
 } from "/static/three-cad-viewer/three-cad-viewer.esm.min.js";
 import { renderTopologyCloud } from "/static/topology-cloud.js";
 
+//: Amber = a partner of the selection, sky blue = the selection itself.
 const HIGHLIGHT_COLOUR = "#f59e0b";
+const SELECTED_COLOUR = "#0ea5e9";
 const EXPLODE_DURATION = 1.5;
 
 function walkShapes(node, visit) {
@@ -532,8 +534,8 @@ function _deviationColor(t) {
 //: server-side whenever ``has_atomic`` is false; this covers the rarer
 //: rev-mismatch/fetch-failure cases too), never a broken primary viewer.
 //:
-//: Returns ``{applyT, setVisible}`` — the smooth-slider sink and the
-//: atoms on/off switch — or ``null`` when the overlay degraded to
+//: Returns ``{applyT, setVisible, pickAtom}`` — the smooth-slider sink,
+//: the atoms on/off switch and the click raycast — or ``null`` when the overlay degraded to
 //: absence. The control LISTENERS live with the caller, not here: the
 //: overlay's meshes are injected into ``viewer._rendered.scene``, which a
 //: scene reload (``viewer.clear()``) drops, so the overlay has to be set
@@ -695,6 +697,10 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         });
         const mesh = new THREE.Mesh(sphereGeo, mat);
         mesh.scale.setScalar(atomR);
+        // What `pickAtom` hands back: the block's uid and the atom's
+        // ordinal in this payload, which is the bound scene's own atom
+        // order — the same order the pick route resolves against.
+        mesh.userData.pick = { block: b.uid, atom: i };
         group.add(mesh);
         atomMeshes.push(mesh);
       }
@@ -830,7 +836,33 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
     }
   }
 
-  return { applyT, setVisible };
+  //: The atom under a click, as `{block, atom}`, or null. The vendored
+  //: viewer raycasts only its own parts tree, so the overlay casts its
+  //: own ray, from the vendored live camera (the same private reach as
+  //: the scale bar's `_worldPerPixel`). Hidden atoms — atoms off, or the
+  //: slider at the smooth end — are not pickable.
+  const raycaster = new THREE.Raycaster();
+  function pickAtom(clientX, clientY, canvas) {
+    if (!group.visible) return null;
+    const cc = viewer && viewer._rendered && viewer._rendered.camera;
+    const camera = cc ? (cc.ortho ? cc.oCamera : cc.pCamera) : null;
+    if (!camera || !canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    raycaster.setFromCamera(ndc, camera);
+    const atoms = [];
+    for (const blk of blocks) {
+      for (const mesh of blk.atomMeshes) if (mesh.visible) atoms.push(mesh);
+    }
+    const hit = raycaster.intersectObjects(atoms, false)[0];
+    return hit ? hit.object.userData.pick : null;
+  }
+
+  return { applyT, setVisible, pickAtom };
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -922,6 +954,12 @@ export async function blocktreeViewer3D({
   // NAME on every selection (viewer pick or topology click) so the page
   // can drop it into the chat box as a handle. Optional.
   onSelectBlock,
+  // Pick panel (se-pick-hierarchy): `pickUrl` answers a click with every
+  // level the picked atom or block belongs to; `onCiteToken(token)` takes
+  // a level's token into the design chat. All optional.
+  pickUrl,
+  pickEls,
+  onCiteToken,
 }) {
   // gr338976 — disable mermaid's startOnLoad auto-run BEFORE the first
   // await: the vendored bundle defaults startOnLoad:true and runs on the
@@ -1211,17 +1249,56 @@ export async function blocktreeViewer3D({
     repaint();
   }
 
-  function selectPath(primaryPath) {
-    clearHighlight();
+  //: The leaf that carries a block's colour on screen: the block itself
+  //: when it is a leaf, its own `(envelope)` leaf when it is a container
+  //: (`data.container_paths`), else null. A container's group has no
+  //: material — tinting it is what left a selected axle's most important
+  //: partners, the crank assemblies, unmarked.
+  function tintLeafOf(path) {
+    if (recolourable(path)) return path;
+    const leaf = (data.container_paths || []).find(
+      (p) => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/")
+    );
+    return leaf && recolourable(leaf) ? leaf : null;
+  }
+
+  function tint(path, colour) {
+    const leaf = tintLeafOf(path);
+    if (!leaf || highlighted.has(leaf)) return;
+    const part = findPart(data.shapes, leaf);
+    if (!part) return;
+    highlighted.set(leaf, part.color);
+    recolour(leaf, colour);
+  }
+
+  //: The current selection's path, so a re-render (level change, isolate)
+  //: can put its tint back — `clear()` + `render()` rebuilds every
+  //: material at its own colour.
+  let selectedPath = null;
+
+  function tintSelection(primaryPath) {
+    // The selection itself first, in its own colour, so a partner that
+    // shares its envelope leaf cannot claim it amber.
+    tint(primaryPath, SELECTED_COLOUR);
     for (const c of connectionsTouching(data.connections, primaryPath)) {
       const other = c.a_path === primaryPath ? c.b_path : c.a_path;
-      for (const p of [c.path, other]) {
-        const part = findPart(data.shapes, p);
-        if (!part || highlighted.has(p) || !recolourable(p)) continue;
-        highlighted.set(p, part.color);
-        recolour(p, HIGHLIGHT_COLOUR);
-      }
+      for (const p of [c.path, other]) tint(p, HIGHLIGHT_COLOUR);
     }
+  }
+
+  //: After a re-render: the old tints went with the old materials, so the
+  //: bookkeeping is dropped (not reverted) and the selection re-tinted if
+  //: its block is still in the scene shown.
+  function retintAfterRender(shapes) {
+    highlighted.clear();
+    if (selectedPath && findPart(shapes, selectedPath)) tintSelection(selectedPath);
+    repaint();
+  }
+
+  function selectPath(primaryPath) {
+    clearHighlight();
+    selectedPath = primaryPath;
+    tintSelection(primaryPath);
     repaint();
     // The path's own last segment is now the block's NAME (viewer-toggles
     // fix, precis_web/blocktree_3d.py's module docstring — id is a "/"-
@@ -1234,6 +1311,71 @@ export async function blocktreeViewer3D({
     if (typeof onSelectBlock === "function" && part && part.name) {
       onSelectBlock(part.name);
     }
+    if (part && part.uid !== undefined) showPick({ token: `<se:${part.uid}>` });
+  }
+
+  // ── pick panel (se-pick-hierarchy) ───────────────────────────────────
+  //
+  // A pick — an atom click, or a block selection — lists every level it
+  // belongs to, innermost first, one citable token per row
+  // (`/se/<slug>/pick`, the same resolution as get(kind='se',
+  // view='pick')). "cite" hands that row's token to the design chat.
+  // Server text reaches the DOM through textContent only.
+  let pickSeq = 0;
+  async function showPick(params) {
+    if (!pickUrl || !pickEls || !pickEls.panel) return;
+    const seq = ++pickSeq;
+    const qs = new URLSearchParams(params).toString();
+    let body;
+    try {
+      const r = await fetch(`${pickUrl}?${qs}`);
+      body = await r.json();
+      if (!r.ok) throw new Error(body.error || `pick failed (${r.status})`);
+    } catch (err) {
+      if (seq !== pickSeq) return;
+      pickEls.panel.classList.remove("hidden");
+      pickEls.rows.textContent = "";
+      pickEls.subject.textContent = "";
+      pickEls.status.textContent = String(err.message || err);
+      pickEls.status.classList.remove("hidden");
+      return;
+    }
+    // A slower answer to an earlier click must not overwrite a newer one.
+    if (seq !== pickSeq) return;
+    pickEls.status.classList.add("hidden");
+    // The innermost row names the pick in words; the server's subject line
+    // for a block pick is the bare token, which says nothing to a person.
+    const first = (body.levels || [])[0];
+    pickEls.subject.textContent = first
+      ? `${first.label} (${first.level})`
+      : body.subject || "";
+    pickEls.rows.textContent = "";
+    for (const row of body.levels || []) {
+      const tr = document.createElement("tr");
+      tr.className = "border-t border-slate-100";
+      const level = document.createElement("td");
+      level.className = "py-0.5 pr-2 text-slate-400 whitespace-nowrap";
+      level.textContent = row.level;
+      const label = document.createElement("td");
+      label.className = "py-0.5 pr-2 text-slate-700";
+      label.textContent = row.label;
+      const token = document.createElement("td");
+      token.className = "py-0.5 pr-2 font-mono text-slate-500 whitespace-nowrap";
+      token.textContent = row.token;
+      const act = document.createElement("td");
+      act.className = "py-0.5 text-right";
+      if (typeof onCiteToken === "function") {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "px-2 rounded border border-slate-300 hover:bg-slate-100";
+        btn.textContent = "cite";
+        btn.addEventListener("click", () => onCiteToken(row.token));
+        act.appendChild(btn);
+      }
+      tr.append(level, label, token, act);
+      pickEls.rows.appendChild(tr);
+    }
+    pickEls.panel.classList.remove("hidden");
   }
 
   // ── comment on the selection → interview note (slice 2 of
@@ -1363,6 +1505,32 @@ export async function blocktreeViewer3D({
   //: null while one is being built / when the design has no atoms.
   let atomicOverlay = null;
 
+  // An atom click opens the pick panel. A click, not a drag: the press
+  // and release must land within a few pixels, or it was an orbit. Wired
+  // once on the viewer element (capture phase — the vendored controls
+  // own the canvas's own listeners) and reads whichever overlay the
+  // current render built.
+  const _CLICK_SLOP_PX = 4;
+  let pressAt = null;
+  viewerEl.addEventListener(
+    "pointerdown",
+    (e) => { pressAt = e.button === 0 ? [e.clientX, e.clientY] : null; },
+    true
+  );
+  viewerEl.addEventListener(
+    "pointerup",
+    (e) => {
+      const from = pressAt;
+      pressAt = null;
+      if (!from || !atomicOverlay || !pickUrl) return;
+      if (Math.hypot(e.clientX - from[0], e.clientY - from[1]) > _CLICK_SLOP_PX) return;
+      const canvas = viewerEl.querySelector("canvas");
+      const hit = atomicOverlay.pickAtom(e.clientX, e.clientY, canvas);
+      if (hit) showPick({ block: `#${hit.block}`, atom: String(hit.atom) });
+    },
+    true
+  );
+
   //: Drives the overlay from whatever the two atomic controls currently
   //: say. Called after every (re)build and on every control change, so
   //: the two never disagree — the atoms checkbox wins over the slider,
@@ -1390,6 +1558,7 @@ export async function blocktreeViewer3D({
     // load and go quiet exactly when it started lying.
     _checkPathInvariant(viewer, shapes);
     applyUiState();
+    retintAfterRender(shapes);
     if (camera) {
       try {
         viewer.setCameraLocationSettings(

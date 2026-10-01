@@ -5268,9 +5268,25 @@ def _render_pick(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
     row. The atom form is what turns a finding's ``aO44`` into "O3' of DA
     8" on ``stem@3``; the token form reads any row's token back."""
     args = args or {}
-    token = str(args.get("token") or "").strip()
-    block = str(args.get("block") or "").strip()
-    atom = args.get("atom")
+    subject, levels = pick_levels(
+        store,
+        tree,
+        block=str(args.get("block") or "").strip(),
+        atom=args.get("atom"),
+        token=str(args.get("token") or "").strip(),
+    )
+    lines = [f"# pick — {subject}", "", "| level | what | token |", "|---|---|---|"]
+    lines += [f"| {row.level} | {row.label} | `{row.token}` |" for row in levels]
+    return "\n".join(lines) + "\n"
+
+
+def pick_levels(
+    store: Any, tree: SeTree, *, block: str = "", atom: Any = None, token: str = ""
+) -> tuple[str, list[se_pick.PickLevel]]:
+    """``(subject, levels)`` for ``view='pick'`` and the web viewer's
+    ``/se/<slug>/pick`` route — one resolution, two renderings. Takes
+    ``block`` + ``atom`` or ``token``; raises :class:`BadInput` /
+    :class:`NotFound` with the message that says what would resolve."""
     if (
         bool(token) == bool(block)
         or (block and atom is None)
@@ -5321,9 +5337,7 @@ def _render_pick(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
             subject = f"atom {ordinal} ({labels[ordinal]}) of {node.name!r}"
     except (se_pick.PickError, AmbiguousLabel) as exc:
         raise BadInput(f"view='pick': {exc}") from exc
-    lines = [f"# pick — {subject}", "", "| level | what | token |", "|---|---|---|"]
-    lines += [f"| {row.level} | {row.label} | `{row.token}` |" for row in levels]
-    return "\n".join(lines) + "\n"
+    return subject, levels
 
 
 def _pick_ordinal(atom: Any, labels: list[str], block: str) -> int:

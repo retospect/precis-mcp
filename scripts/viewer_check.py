@@ -19,7 +19,9 @@ How it measures (each rule paid for by a wrong reading on the hand harness):
 - the vendored transport bar (bottom edge) and toolbar (top edge) are
   cropped off before diffing, since they appear on their own;
 - a held state (explode) is sampled as a series, not one frame;
-- "back to normal" (deselect) is asserted against the untouched base.
+- "back to normal" is asserted against a shot of the same state reached
+  directly (the wheel selected from a clean slate), never against a shot
+  that merely looks similar.
 
 Writes ``report.json`` plus every shot to ``<out-dir>``; exits 1 when any
 check fails, so the workflow uploads the directory as the evidence.
@@ -164,9 +166,22 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         floor = _diff(base, shot("01_noise"))
         checks.append(Check("noise_floor", floor["n"] <= NOISE_MAX, floor))
 
-        # Selection tints the partners; selecting another block restores them.
+        # Selection tints the block itself and its partners; selecting
+        # another block restores the first one's partners. The selection
+        # is tinted too, so "restored" is measured against the same block
+        # selected from a clean slate, not against the untouched base.
+        found = click_node("wheel")
+        wheel = settle("02_select_wheel")
+        first = _diff(base, wheel)
+        checks.append(
+            Check(
+                "select_tints_block",
+                found and first["n"] >= CHANGED_MIN,
+                {**first, "node_found": found},
+            )
+        )
         found = click_node("axle")
-        sel = _diff(base, settle("02_select_axle"))
+        sel = _diff(wheel, settle("03_select_axle"))
         checks.append(
             Check(
                 "select_tints_partners",
@@ -175,7 +190,8 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             )
         )
         found = click_node("wheel")
-        back = _diff(base, settle("03_select_wheel"))
+        again = settle("04_select_wheel_again")
+        back = _diff(wheel, again)
         checks.append(
             Check(
                 "reselect_restores_colours",
@@ -186,11 +202,11 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
 
         # Explode moves the parts and they STAY moved.
         page.click("#bt3d-explode")
-        settle("04_explode")
+        settle("05_explode")
         series = []
         for i in range(3):
             page.wait_for_timeout(1000)
-            series.append(_diff(base, shot(f"05_explode_held_{i}"))["n"])
+            series.append(_diff(again, shot(f"06_explode_held_{i}"))["n"])
         checks.append(
             Check(
                 "explode_moves_and_holds",
@@ -199,9 +215,23 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             )
         )
         page.click("#bt3d-explode")
-        unexploded = _diff(base, settle("06_unexplode"))
+        unexploded_shot = settle("07_unexplode")
+        unexploded = _diff(again, unexploded_shot)
         checks.append(
             Check("unexplode_restores", unexploded["n"] <= RESTORED_MAX, unexploded)
+        )
+
+        # The pick panel lists the selected block's levels (outside the
+        # canvas, so it cannot move a pixel above).
+        rows = page.locator("#bt3d-pick-rows tr")
+        rows.first.wait_for(timeout=int(WAIT_S * 1000))
+        tokens = rows.locator("td:nth-child(3)").all_text_contents()
+        checks.append(
+            Check(
+                "pick_panel_lists_levels",
+                bool(tokens) and all(t.startswith("<se:") for t in tokens),
+                {"tokens": tokens},
+            )
         )
 
         # Level change: the busy mark shows while the scene refetches, then
@@ -221,7 +251,10 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             "() => window.__busySeen && document.getElementById('bt3d-busy').hidden",
             timeout=int(WAIT_S * 1000),
         )
-        level = _diff(base, settle("07_level_interfaces"))
+        # Against the shot just before the change: the swap re-renders the
+        # scene and re-tints the selection, so the only difference left is
+        # the level's own geometry.
+        level = _diff(unexploded_shot, settle("08_level_interfaces"))
         checks.append(Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level))
 
         checks.append(

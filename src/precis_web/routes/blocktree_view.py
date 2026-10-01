@@ -107,7 +107,7 @@ from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.design import history as design_history
 from precis.dispatch import Hub
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.structure.probe import detect_bonds
 from precis.viz3d.sheetsmooth import deviation as sheet_deviation
@@ -916,6 +916,9 @@ async def _view3d_page(
         else ""
     )
     note_rewrite_url = f"{note_url}/rewrite" if note_url else ""
+    # The pick panel's click-time level list (se-pick-hierarchy): se only,
+    # and offered on a past revision too — reading levels writes nothing.
+    pick_url = f"/{kind}/{quote(slug, safe='')}/pick" if kind == "se" else ""
     # The design chat (slice 3) — se only, like the note panel; on a past
     # revision the partial renders one read-only line and reads nothing.
     chat = (
@@ -948,6 +951,7 @@ async def _view3d_page(
             "atomic3d_url": atomic3d_url,
             "detail_2d_url": detail_2d_url,
             "note_url": note_url,
+            "pick_url": pick_url,
             "note_rewrite_url": note_rewrite_url,
             # Scrubber state (slice 2): the revision on screen, the axis it
             # sits on, whether this is a read-only past view, and the panel.
@@ -1430,6 +1434,53 @@ async def se_scene3d(
 @router.get("/se/{slug}/atomic3d.json")
 async def se_atomic3d(request: Request, slug: str, rev: int | None = None) -> Response:
     return await _atomic3d_response(request, "se", slug, rev=rev)
+
+
+@router.get("/se/{slug}/pick")
+async def se_pick(
+    request: Request,
+    slug: str,
+    block: str = "",
+    atom: str | None = None,
+    token: str = "",
+) -> Response:
+    """Click-time level list for the viewer's pick popup: ``block`` (a
+    ``#uid``, the form ``atomic3d.json`` hands the page) + ``atom`` (its
+    0-based ordinal in that payload), or ``token`` for a block's own levels.
+    The same resolution as ``get(kind='se', view='pick')``
+    (:func:`precis_se.handler.pick_levels`), as JSON rows innermost first.
+
+    Its own route rather than a field of the scene payloads: those are
+    refetched on every level change, and a pick is one block's question.
+    Always the LIVE tree — a block uid and a bound structure's atom order
+    do not move between revisions of the tree."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    def _resolve() -> tuple[str, list[Any]]:
+        from precis_se.handler import pick_levels
+
+        tree = se_persist.load_tree(store, ref.id)
+        return pick_levels(store, tree, block=block, atom=atom, token=token)
+
+    try:
+        subject, levels = await asyncio.to_thread(_resolve)
+    except NotFound as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except BadInput as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse(
+        {
+            "subject": subject,
+            "levels": [
+                {"level": r.level, "label": r.label, "token": r.token} for r in levels
+            ],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ── comment-on-selection → interview note (slice 2 of

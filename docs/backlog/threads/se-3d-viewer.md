@@ -97,11 +97,10 @@ se-machine-design's `backlog/se-region-property-layer.md`.
    residue/base-pair instance — build the mechanism generic or the second
    instance forces a rewrite. The resolver half has SHIPPED from that
    thread (`precis_se.pick.atom_levels`, also `get(kind='se', view='pick')`;
-   contract in the item file), so what is left here is render only: a thin
-   click-time route over three precis_se calls, the atom pick on what
-   `_atomic_block_payload` already draws, the popup, token insertion — plus
-   the two tint gaps recorded below (container partners, the selected
-   block itself).
+   contract in the item file). Render half BUILT 2026-10-01: pick route,
+   atom raycast, pick panel, "cite" into the design chat, and both tint
+   gaps below closed. Left: shift-click shortcut, marking the picked atom
+   on the canvas, the hexfold region level, the datum glyph.
 2. **backlog/se-3d-viewer-ux-batch.md**, selection inspector + per-block
    findings + honesty banner — waits on 1; the first panel where a block's
    pose, envelope, ports, connects and findings read at once; unparks three
@@ -192,13 +191,14 @@ n=1 against base (wheel restored, only a sliver of the axle visible), zero
 console errors. Mermaid clicks and viewer picks go through the same
 `selectPath`, so they were dead too and are fixed by the same change.
 
-Two gaps left, deliberately not fixed here: a CONTAINER partner is never
-tinted (selecting `axle` does not mark the cranks, its most important
-partners — the box to tint is the container's `(envelope)` leaf, which
-`applyContainerMode` also drives, so the two need reconciling), and the
-selected block ITSELF is never tinted, only its partners. Both belong to
-`backlog/se-pick-hierarchy.md` (Horizon 1), which owns what a selection
-shows.
+Two gaps left then, closed 2026-10-01 with the pick render half: a
+CONTAINER partner is now tinted through its `(envelope)` leaf (selecting
+`axle` marks both cranks), and the selected block ITSELF is tinted sky
+blue against its partners' amber. The selection is re-tinted after a
+re-render (level change, isolate) instead of silently dropped. One
+reconciliation with `applyContainerMode` remains: a container envelope
+keeps its translucent 0.25 opacity, so a tinted crank reads as pale tan,
+not amber.
 
 The scale bar was checked at the same time and is correct, against a
 witness that does not trust its arithmetic: across five unclipped zoom

@@ -116,10 +116,18 @@ this item's own "uid is the identity" rule. A structure with no
 `realize_chain` record resolves atom → blocks, so a hexfold structure
 already gets the block levels; its region level is the open part.
 
-Still open for this instance, all on the se-3d-viewer side (seam agreed
-with that thread 2026-10-01: resolver here, render there): gap 1 atom pick
-on the `/se/<slug>` atoms, gap 3 popup + ask-box insertion. Agreed shape:
-a click-time `GET /se/<slug>/pick?block=…&atom=…` route returning the rows
-as JSON, never folded into the scene payloads (they are refetched on every
-level change). The route is three calls: `identity.resolve_block`,
-`atomic.render.bound_pick_inputs`, `pick.atom_levels`.
+**Render half built (2026-10-01)** — gaps 1 and 3 for this instance, on
+the se-3d-viewer side. `GET /se/<slug>/pick?block=#UID&atom=N` (or
+`?token=`) returns the rows as JSON through
+`precis_se.handler.pick_levels`, the same function `view='pick'` renders;
+never folded into the scene payloads. A click (not a drag) on an atom of
+the `/se/<slug>` overlay raycasts it client-side and fills a pick panel
+under the canvas; a block selection fills it with the block's own levels.
+Each row's "cite" drops its token at the design-chat caret as plain text
+(`designChatAddToken`, beside the existing `@name` handles). Verified in a
+browser on the test hairpin: a click on a loop atom listed atom → residue
+→ strand → segment → helix, and "cite" put `<se:UID#151>` in the chat box.
+
+Still open: the shift-click shortcut (append the block token without the
+panel); marking the picked atom on the canvas (today only the panel says
+which one); the hexfold region level; the datum glyph.

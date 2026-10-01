@@ -15,7 +15,11 @@ the committed `tests/fixtures/viewer_check/unicycle-c1.ops.json`, and
 checks green (noise n=0, select n=6725, reselect n=1, explode held at
 n=32909 across three samples, unexplode n=1, level n=643, console clean);
 control run with the explode fix removed failed `explode_moves_and_holds`
-at n=1. Delete this item once a scheduled run on GitHub has gone green.
+at n=1. First GitHub run (manual dispatch) green with the same numbers.
+The pick render half then grew it to 9 checks (the selection is tinted
+too, so "restored" is now measured against the same block selected from
+a clean slate; the pick panel must list `<se:…>` tokens). Delete this
+item once a scheduled run on GitHub has gone green.
 
 Every test over the 3D viewer asserts the SHAPE of the emitted scene JSON.
 That is exactly the assertion class that let every visibility toggle in the

@@ -153,6 +153,21 @@
       hidden.value = names.join(',');
       renderChips();
     };
+    // Called by the 3D viewer's pick panel: a level's citable token
+    // (``<se:UID#ATOM>``, ``<se:UID@3>``, …) lands at the caret as plain
+    // text. Not a handle — handles are block names; a token resolves
+    // through get(kind='se', view='pick', args={'token': …}).
+    window.designChatAddToken = function (token) {
+      if (!token) { return; }
+      const start = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+      const end = ta.selectionEnd != null ? ta.selectionEnd : start;
+      const before = ta.value.slice(0, start);
+      const pad = before.length && !/\s$/.test(before) ? ' ' : '';
+      const insert = pad + String(token) + ' ';
+      ta.value = before + insert + ta.value.slice(end);
+      const caret = start + insert.length;
+      try { ta.setSelectionRange(caret, caret); } catch (e) { /* not focusable yet */ }
+    };
   })();
   </script>
   {% endif %}

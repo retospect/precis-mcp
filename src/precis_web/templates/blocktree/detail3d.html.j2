@@ -175,6 +175,18 @@
       </div>
     </div>
     {% endif %}
+    {% if pick_url %}
+    {# se-pick-hierarchy: every level the picked atom or block belongs to,
+       innermost first; "cite" drops that level's token into the design
+       chat. Outside the canvas on purpose — the viewer-check pixel-diffs
+       the canvas rectangle, and a popup over it would read as a change. #}
+    <div id="bt3d-pick-panel" class="hidden mt-3 rounded-lg border border-slate-200 bg-white p-3 text-sm">
+      <p class="text-xs text-slate-500 mb-2">Picked <b id="bt3d-pick-subject" class="text-slate-700"></b>
+        <span class="text-slate-400">— click an atom for its residue, pair and strand; cite a level into the chat</span></p>
+      <p id="bt3d-pick-status" class="text-xs text-red-700 hidden"></p>
+      <table class="w-full text-xs"><tbody id="bt3d-pick-rows"></tbody></table>
+    </div>
+    {% endif %}
     {% if note_url %}
     <div id="bt3d-note-panel" class="hidden mt-3 rounded-lg border border-slate-200 bg-white p-3 text-sm">
       <p class="text-xs text-slate-500 mb-2">Comment on <b id="bt3d-note-block" class="text-slate-700"></b>
@@ -252,6 +264,16 @@
     },
     {% endif %}
     onSelectBlock: (name) => { if (window.designChatAddHandle) window.designChatAddHandle(name); },
+    {% if pick_url %}
+    pickUrl: {{ pick_url | tojson }},
+    pickEls: {
+      panel: document.getElementById("bt3d-pick-panel"),
+      subject: document.getElementById("bt3d-pick-subject"),
+      status: document.getElementById("bt3d-pick-status"),
+      rows: document.getElementById("bt3d-pick-rows"),
+    },
+    onCiteToken: (token) => { if (window.designChatAddToken) window.designChatAddToken(token); },
+    {% endif %}
     {% if note_url %}
     noteUrls: { save: {{ note_url | tojson }}, rewrite: {{ note_rewrite_url | tojson }} },
     noteEls: {
