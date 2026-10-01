@@ -63,8 +63,10 @@ all three are ranked in `knowledge-mesh.md`.
 
 **Threads.** `knowledge-mesh.md` (active — substrate, the memory half and
 the surfaces) · `graph-memory-consumers.md` (dormant — agent-side
-affordances). Seam: substrate vs
-consumers, recorded in `threads/INDEX.md`.
+affordances) · `ingest-and-fetch.md` (dormant, created 2026-10-01 on Reto's
+ruling — acquisition and extraction fidelity, what the graph is fed; triage
+before rank). Seams: substrate vs consumers, and pipeline vs the layer that
+consumes it, recorded in `threads/INDEX.md`.
 
 **Surfaces.** Agent: an agent never leaves the graph for SQL or a temp
 file to do its work. Human: from any node Reto reaches its evidence, its
@@ -209,9 +211,10 @@ Active (12, Reto 2026-09-30 — "the ones we have are good"):
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
 · `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh`.
 
-Dormant (5, created at the review, open at the next restart if named):
-`graph-memory-consumers` · `multiscale-design-core` · `se-machine-design`
-· `local-compute` · `pcb-platform`.
+Dormant (6, open at the next restart if named): `graph-memory-consumers`
+· `multiscale-design-core` · `se-machine-design` · `local-compute` ·
+`pcb-platform` (the five created at the review) · `ingest-and-fetch`
+(2026-10-01, Reto's ruling, triage first).
 
 ## Retirement
 
