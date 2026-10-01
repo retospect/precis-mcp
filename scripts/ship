@@ -112,7 +112,7 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # its covering tests. /go opts in; meaningless with --impacted (no coverage
 # runs there).
 # --quick (/qland): skip PYTEST and the diff-coverage gate. ruff + mypy +
-# import contracts still run — the pre-qland lint, ~3 min in the warm gate
+# import contracts + doc/skill hygiene tests still run — the pre-qland lint, ~3 min in the warm gate
 # container, no test DB and no fleet gate slot, so it does not queue behind a
 # sibling's suite. They run because their failures are not this ship's problem
 # but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
@@ -885,14 +885,21 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         #
         # Still deliberately deferred to the settle-up /go: anything only
         # pytest sees. That is what /qland is for.
-        if [[ "$DOCS_ONLY" == 1 ]]; then
-            say "quick ship — docs/config-only diff, nothing for ruff/mypy to read"
-        elif [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
+        # Doc/skill hygiene tests (seconds, -n0) run on EVERY qland, docs-only
+        # included: two qlands landed red on exactly these (gr458977).
+        HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py'
+        if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
             setup_gate_infra
-            say "pre-qland lint (ruff autofix · mypy · import contracts) — ${GATE_MODE} gate, no pytest, no gate slot"
-            run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports" \
+            if [[ "$DOCS_ONLY" == 1 ]]; then
+                say "pre-qland lint (docs/config-only: doc-pointer + skill-prose tests) — ${GATE_MODE} gate, no gate slot"
+                QLAND_CMD="$HYGIENE"
+            else
+                say "pre-qland lint (ruff autofix · mypy · import contracts · doc/skill hygiene tests) — ${GATE_MODE} gate, no gate slot"
+                QLAND_CMD="uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports && $HYGIENE"
+            fi
+            run_gate "$QLAND_CMD" \
                 || die "pre-qland lint is RED — not shipping. This is the class of failure that reddens the NEXT tree's gate, so it does not get deferred (deliberate override: PRECIS_QLAND_LINT=0). Fix it and re-run scripts/ship --quick."
             if [[ -n "$(git status --porcelain)" ]]; then
                 git add -A
