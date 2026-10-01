@@ -148,3 +148,4 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
   and still stale (taproot_edges 59.8h, anki_sync ~2.5d overdue,
   briefing_audio 111h silent, embed backlog 99 undrained) — real prod
   stalls, not closeable. 67 remain.
+- **2026-10-01** — two passes; closed gr458726, gr366640, gr458317, gr456236; gr459481 already closed; left open with fixes landed: gr457326, gr452084, gr452384, gr450123, gr451269 (re-arm/remediation/design follow-ups); stale worker clones make fix_gripe DIAGNOSIS comments unreliable.

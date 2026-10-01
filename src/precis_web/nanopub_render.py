@@ -30,6 +30,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from precis.errors import Upstream
 from precis.taproot.canon import MergeCandidate, Verdict, dedup_judge, nearest_hubs
 from precis.utils import handle_registry
 from precis_web.timefmt import abs_ts, utc_date
@@ -245,7 +246,10 @@ def _nearest_claims(
     """
     if embedder is None:
         return [], "nearest claims unavailable (no embedder)"
-    candidates = nearest_fn(sentence, scope, store, embedder, k=k + 1)
+    try:
+        candidates = nearest_fn(sentence, scope, store, embedder, k=k + 1)
+    except Upstream:
+        return [], "nearest claims unavailable (embedder unavailable; retry shortly)"
     others = [c for c in candidates if c.hub_ref_id != hub_ref_id][:k]
     rows = [
         {

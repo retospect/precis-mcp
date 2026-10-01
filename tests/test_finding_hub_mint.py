@@ -21,11 +21,18 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Unsupported
+from precis.embedder import EmbedderUnavailable
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers import _finding_hub_mint
 from precis.handlers.finding import FindingHandler
 from precis.store.types import ChunkInsert
-from precis.taproot.canon import CanonicalClaim, MergeCandidate, Verdict, Verdict3
+from precis.taproot.canon import (
+    CanonicalClaim,
+    MergeCandidate,
+    Verdict,
+    Verdict3,
+    nearest_hubs,
+)
 from precis.taproot.hub import mint_hub
 
 
@@ -385,3 +392,51 @@ class TestGetViewSimilar:
 
         assert f"fi{target}" not in body
         assert f"fi{neighbour}" in body
+
+
+# ── embedder outage: typed Upstream, fail closed (gr459918) ───────────────
+
+
+class _DownEmbedder:
+    def embed_one(self, text: str) -> list[float]:
+        raise EmbedderUnavailable("embedder at capacity", retry_after_s=2.0)
+
+
+class TestEmbedderOutage:
+    def test_put_hub_raises_upstream_and_mints_nothing(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        before = store.count_refs(kind="finding")
+        with pytest.raises(Upstream, match="embedder at capacity") as ei:
+            _finding_hub_mint.put_hub(
+                store,
+                sentence="a claim minted during an embedder outage",
+                scope={},
+                supporters=[{"paper": "miller23a"}],
+                embedder=_DownEmbedder(),
+            )
+        assert "retry_after_s=2.0" in str(ei.value.next)
+        assert store.count_refs(kind="finding") == before
+
+    def test_dispatch_put_is_error_upstream_not_internal(
+        self, store, runtime_with_store
+    ) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        runtime_with_store.hub.embedder = _DownEmbedder()
+        before = store.count_refs(kind="finding")
+        out, is_error = runtime_with_store.dispatch_with_status(
+            "put",
+            {
+                "kind": "finding",
+                "title": "a claim minted during an embedder outage",
+                "supporters": [{"paper": "miller23a"}],
+            },
+        )
+        assert is_error, out
+        assert "[error:Upstream]" in out
+        assert "retry_after_s=2.0" in out
+        assert "[error:Internal]" not in out
+        assert store.count_refs(kind="finding") == before
+
+    def test_nearest_hubs_raises_upstream(self, store) -> None:
+        with pytest.raises(Upstream, match="embedder at capacity"):
+            nearest_hubs("any sentence", {}, store, _DownEmbedder())

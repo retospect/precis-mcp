@@ -34,6 +34,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
+from precis.embedder import EmbedderUnavailable
+from precis.errors import Upstream
 from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
@@ -858,7 +860,23 @@ def block(
     ``store``/``embedder`` are explicit, injected params — testable with a
     fake store/mock embedder, no import-time DB/model dependency.
     """
-    vector = embedder.embed_one(claim.sentence)
+    try:
+        vector = embedder.embed_one(claim.sentence)
+    except EmbedderUnavailable as exc:
+        # Fail closed: skipping the ANN lookup would mint a duplicate hub.
+        log.warning(
+            "canon.block: embedder unavailable (%s); retry_after_s=%s",
+            exc,
+            exc.retry_after_s,
+        )
+        n = exc.retry_after_s
+        wait = f"~{n:g} s" if n is not None else "a little"
+        raise Upstream(
+            "claim-hub dedup needs the embedder, which is unavailable "
+            f"({exc}); nothing was minted (a mint without the dedup lookup "
+            "would create a duplicate hub)",
+            next=f"wait {wait} and retry the same call; retry_after_s={n}",
+        ) from exc
     # NB: :func:`claim_hub_predicate_sql` has no ``rt.expires_at`` filter,
     # while ``workers/health_digest.py::_check_claim_hub_dedup_index`` —
     # which watches this query's coverage invariant, and keeps its own
