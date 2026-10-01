@@ -10,24 +10,15 @@ The auto-fix lane pushed 43 branches into the agent-lane worker's own checkout
 instead of the shared remote and reported success (gr458326, fixed
 2026-09-30). All 43 were bundled off the node, test-merged against main and
 reviewed on 2026-10-01; Reto: "land them". **Done:** 18 keepers landed on
-main as one squash; six gripes closed against it, six left open with a
+main as one squash, and `gripe_182230`'s chase-coverage ledger (rewritten,
+migration 0175) went through the gate and is deployed; six gripes closed against the squash, six left open with a
 comment naming the unlanded part, the rest were already closed; the 14 drops are
 deleted on the node; the node's 67 scratch clones (18G) are removed. The
 bundle of all 43 is archived off-node, so nothing below depends on the node.
 
 ## Left
 
-1. **`gripe_182230`** — the chase-coverage ledger. As written, `hub_refine`
-   drained every recorded chunk after a pass, judged or not (a transient LLM
-   failure, an out-of-enum verdict, an unembedded chunk), which is the silent
-   drop the ledger exists to close; a claim that cannot be embedded stayed due
-   forever. Rewritten so a row drains only once its chunk is judged or
-   settled, with one test per path, and its migration renumbered to 0175
-   without the index the primary key already covers. Local branch
-   `stranded-fix/gripe-182230`, one commit. **It carries a migration, so it
-   lands through deploy's gate — never a qland.** Re-check 0175 is still
-   free before it does.
-2. **Salvage (8)** — lift the idea, redo by hand, in the owning thread:
+1. **Salvage (8)** — lift the idea, redo by hand, in the owning thread:
    - ewod-pcb / pcb-easyeda-round-trip: `gripe_451276` (the router still
      treats a pin's second pad as a foreign obstacle), `gripe_451356`
      (substring package match false-flags; where mating direction comes from
@@ -43,12 +34,12 @@ bundle of all 43 is archived off-node, so nothing below depends on the node.
      gripe, so it can loop), `gripe_248866` (unverified whether a child
      process inherits the heartbeat's macOS TCC grant, which would make the
      probe a false green; the interpreter list duplicates deploy's).
-3. **Optional (2)** — `gripe_180306` (hub reconcile sweep: a feature, one LLM
+2. **Optional (2)** — `gripe_180306` (hub reconcile sweep: a feature, one LLM
    call per candidate pair; the reported pair is already merged; a cheaper
    design is waiting on Reto under knowledge-mesh), `gripe_451269` (one docs
    paragraph).
-4. **The node's remaining 29 branches** (the 18 landed, the one rewritten, 8
-   salvage and 2 optional) — **deleting them waits on Reto.** The archive
+3. **The node's remaining 29 branches** (the 18 landed, the one rewritten and
+   deployed, 8 salvage and 2 optional) — **deleting them waits on Reto.** The archive
    bundle holds them all, so deletion loses nothing.
 
 Residual filed while landing: **gr460408** (pathway barriers come back NaN;
