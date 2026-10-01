@@ -351,7 +351,9 @@ def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
 
-    assert not ctx.failures
+    # An unrealized net fails the JOB too (Reto, 2026-10-01), naming it.
+    assert [c for _, c in ctx.failures] == ["non-convergence"]
+    assert "N1" in ctx.failures[0][0]
     rows = {r["name"]: r for r in store.pcb_route_status(ref_id)}
     assert rows.get("N1", {}).get("status") != "realized", (
         "a net whose plane was never poured is not routed, and saying it is "
@@ -404,7 +406,9 @@ def test_pcb_route_persists_optimizer_derived_plane_promotion(
     ref_id = _seed(store, "route-derived-plane", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
-    assert not ctx.failures
+    # No outline, so the forced plane cannot pour and N1 fails the job; the
+    # plane write-back under test happens before that.
+    assert [c for _, c in ctx.failures] == ["non-convergence"]
 
     rows = store.pcb_planes_list(ref_id)
     assert rows == [
@@ -433,7 +437,8 @@ def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> N
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
-    assert not ctx.failures
+    # No outline to pour the authored plane into: N1 fails the job.
+    assert [c for _, c in ctx.failures] == ["non-convergence"]
 
     after = store.pcb_planes_list(ref_id)
     assert after == before  # untouched: same layer, same net, still 'authored'
@@ -515,10 +520,12 @@ def test_pcb_route_replaces_derived_plane_rows_across_reruns(
     ref_id = _seed(store, "route-derived-rerun", _DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
     pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
-    assert not ctx1.failures
+    # The forced plane has no outline to pour into, so N1 fails each run;
+    # only that failure is acceptable here.
+    assert [c for _, c in ctx1.failures] == ["non-convergence"]
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
     pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
-    assert not ctx2.failures
+    assert [c for _, c in ctx2.failures] == ["non-convergence"]
 
     rows = store.pcb_planes_list(ref_id)
     assert len(rows) == 1  # upsert-by-replace, not a second accumulated row

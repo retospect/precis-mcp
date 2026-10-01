@@ -66,7 +66,9 @@ import heapq
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
+import numba
 import numpy as np
 
 #: Nothing owns this cell.
@@ -103,6 +105,20 @@ VIA_UNDER_BODY_COST_MM = 3.0
 #: four layers, which is not a useful amount of time to spend proving one
 #: net is boxed in.
 MAX_EXPANSIONS = 120_000
+
+#: :meth:`OccupancyGrid.route`'s first search is confined to the
+#: endpoints' bounding box grown by the larger of these: an absolute
+#: margin (room to escape a dense part and come back) and a fraction of
+#: the span (a long connection's detour scales with its length). A miss
+#: inside the window falls back to the whole grid, so these trade speed,
+#: never correctness.
+WINDOW_MARGIN_MM = 5.0
+WINDOW_SPAN_FRACTION = 0.5
+
+#: Memory bound for :func:`grid_for` when a design-rule pitch cap asks
+#: for a fine grid on a large board: 4000 x 4000 x 4 layers of int32
+#: owner cells is 256 MB.
+MAX_CELLS_PER_AXIS = 4000
 
 #: Heuristic inflation for weighted A*. Paths may be up to this factor
 #: longer than optimal; expansions drop by roughly an order of magnitude
@@ -207,10 +223,20 @@ def grid_for(
     bounds: tuple[float, float, float, float] | None = None,
     target_cells_per_axis: int = 400,
     min_pitch_mm: float = 0.05,
+    max_pitch_mm: float | None = None,
+    max_cells_per_axis: int = MAX_CELLS_PER_AXIS,
 ) -> GridSpec:
     """A grid covering ``points`` plus ``margin_mm``, clipped to
     ``bounds``, with the pitch chosen so neither axis exceeds
-    ``target_cells_per_axis``.
+    ``target_cells_per_axis`` — unless ``max_pitch_mm`` asks for finer.
+
+    ``max_pitch_mm`` is the coarsest pitch the design rules can be drawn
+    on (the caller derives it from track width and clearance). Span / 400
+    alone is a 0.5 mm pitch on a 200 mm board: measured on a real 140-part
+    4-layer board, fine-pitch pins plus clearance walled in at that pitch
+    and 81 of 89 nets came back unrouted. A small board never meets the
+    cap (50 mm / 400 = 0.125 mm), so it routes exactly as before.
+    ``max_cells_per_axis`` bounds memory when the cap would ask for more.
 
     The extent comes from the *pads*, not from the board outline. On this
     project's reference fixture the outline is a deliberately oversized
@@ -240,7 +266,10 @@ def grid_for(
         x0, y0 = min(max(x0, bx0), min(xs)), min(max(y0, by0), min(ys))
         x1, y1 = max(min(x1, bx1), max(xs)), max(min(y1, by1), max(ys))
     span = max(x1 - x0, y1 - y0, 1e-6)
-    pitch = max(min_pitch_mm, span / target_cells_per_axis)
+    pitch = span / target_cells_per_axis
+    if max_pitch_mm is not None:
+        pitch = min(pitch, max_pitch_mm)
+    pitch = max(min_pitch_mm, pitch, span / max_cells_per_axis)
     # **Round the node count DOWN, not up.** ``ceil`` puts the last node at
     # ``x0 + ceil(span/pitch)*pitch``, which is >= ``x1`` — up to a full
     # pitch OUTSIDE the very rectangle ``bounds`` was passed in to enforce.
@@ -301,25 +330,6 @@ class RoutePath:
             if a[2] != b[2]:
                 out.append((a[0], a[1], min(a[2], b[2]), max(a[2], b[2])))
         return tuple(out)
-
-
-def _dilate(mask: np.ndarray, r_cells: int) -> np.ndarray:
-    """Chebyshev (8-neighbour) dilation by ``r_cells``, per layer.
-
-    Chebyshev over-dilates diagonally by up to ``sqrt(2)`` versus a
-    Euclidean disk. That is the safe direction — it costs a little
-    routability and never a clearance violation — and it is four array
-    ORs per step instead of a distance transform.
-    """
-    out = mask
-    for _ in range(max(0, r_cells)):
-        acc = out.copy()
-        acc[:, :-1, :] |= out[:, 1:, :]
-        acc[:, 1:, :] |= out[:, :-1, :]
-        acc[:, :, :-1] |= out[:, :, 1:]
-        acc[:, :, 1:] |= out[:, :, :-1]
-        out = acc
-    return out
 
 
 def _point_in_polygon(gx: np.ndarray, gy: np.ndarray, poly: np.ndarray) -> np.ndarray:
@@ -473,6 +483,17 @@ class OccupancyGrid:
         #: number in the tens to low hundreds on any board this router
         #: sees — cheap to scan exactly, no discretisation to get wrong.
         self._pads: list[tuple[float, float, float]] = []
+        #: ``(via_radius_mm, len(_pads)) -> mask`` for
+        #: :meth:`_pad_keepout_mask`. ``_pads`` is append-only and
+        #: ``clearance_mm`` is fixed at construction, so the pad count is a
+        #: complete key. Measured 2026-10-01 on a 140-part board: rebuilding
+        #: the mask on every :meth:`route` call was 32 of route's 43 s.
+        self._pad_keepout_cache: dict[tuple[float, int], np.ndarray] = {}
+        #: Whether the most recent :meth:`route` returned ``None`` because
+        #: it hit ``max_expansions`` rather than because the open set ran
+        #: dry. Both return ``None``; only the second proves there is no
+        #: path. Read by ``realize._diagnose_unrouted``.
+        self.last_route_exhausted = False
         #: ``(ny, nx)`` boolean, or ``None`` — cells under a placed
         #: component's own body, set (once, optionally) via
         #: :meth:`set_body_mask`. ``None`` is the every-caller-today
@@ -753,6 +774,37 @@ class OccupancyGrid:
                 return False
         return True
 
+    def chord_is_free(
+        self,
+        layer: int,
+        a: tuple[float, float],
+        b: tuple[float, float],
+        n: int,
+        radius_mm: float,
+        net_id: int,
+    ) -> bool:
+        """:meth:`disk_is_free` at the ``n + 1`` evenly spaced points from
+        ``a`` to ``b`` on one layer, all of which must be free — the same
+        answer, compiled (`_chord_free_kernel`): path straightening asked
+        it ~10 M times on a 140-part board, 137 s as Python."""
+        spec = self.spec
+        return bool(
+            _chord_free_kernel(
+                self._owner,
+                int(layer),
+                float(a[0]),
+                float(a[1]),
+                float(b[0]),
+                float(b[1]),
+                int(n),
+                float(radius_mm),
+                int(net_id),
+                float(spec.x0),
+                float(spec.y0),
+                float(spec.pitch),
+            )
+        )
+
     def via_clears_pads(self, x: float, y: float, via_radius_mm: float) -> bool:
         """May a via of this (undilated) copper radius be centred at
         ``(x, y)`` without landing on, or crowding, ANY claimed pad —
@@ -794,7 +846,24 @@ class OccupancyGrid:
         than proposing one and rejecting it after the fact. Same
         circle-membership arithmetic as :meth:`stamp_disk`/
         :meth:`disk_is_free`, unioned over every pad instead of queried
-        for one point at a time."""
+        for one point at a time.
+
+        Cached per via radius; callers must not mutate the returned array
+        (``route`` only ORs it into a fresh one)."""
+        n = len(self._pads)
+        key = (via_radius_mm, n)
+        hit = self._pad_keepout_cache.get(key)
+        if hit is not None:
+            return hit
+        # A pad was added since: every cached radius is stale.
+        self._pad_keepout_cache = {
+            k: v for k, v in self._pad_keepout_cache.items() if k[1] == n
+        }
+        mask = self._build_pad_keepout_mask(via_radius_mm)
+        self._pad_keepout_cache[key] = mask
+        return mask
+
+    def _build_pad_keepout_mask(self, via_radius_mm: float) -> np.ndarray:
         spec = self.spec
         mask = np.zeros((spec.ny, spec.nx), dtype=bool)
         for px, py, pr in self._pads:
@@ -848,8 +917,88 @@ class OccupancyGrid:
                 attach[a[2] * plane + iy * spec.nx + ix] = (px, py)
 
     # -- the search ----------------------------------------------------
+    def search_window(
+        self, points: Sequence[tuple[float, float]]
+    ) -> tuple[int, int, int, int]:
+        """``(y0, y1, x0, x1)`` cell slice a search between ``points``
+        starts in: their bounding box plus :data:`WINDOW_MARGIN_MM` or
+        :data:`WINDOW_SPAN_FRACTION` of the span, whichever is larger,
+        clipped to the grid."""
+        spec = self.spec
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        span = max(max(xs) - min(xs), max(ys) - min(ys))
+        m = max(WINDOW_MARGIN_MM, WINDOW_SPAN_FRACTION * span)
+        x0 = max(0, math.floor((min(xs) - m - spec.x0) / spec.pitch))
+        x1 = min(spec.nx, math.ceil((max(xs) + m - spec.x0) / spec.pitch) + 1)
+        y0 = max(0, math.floor((min(ys) - m - spec.y0) / spec.pitch))
+        y1 = min(spec.ny, math.ceil((max(ys) + m - spec.y0) / spec.pitch) + 1)
+        return y0, y1, x0, x1
+
     def route(
         self,
+        net_id: int,
+        start: tuple[float, float],
+        goal: tuple[float, float],
+        *,
+        layers: list[int],
+        width_mm: float,
+        via_dia_mm: float | None = None,
+        pad_layer: int | None = None,
+        start_layer: int | None = None,
+        goal_layer: int | None = None,
+        attach: bool = True,
+        via_cost_mm: float = VIA_COST_MM,
+        via_body_cost_mm: float = 0.0,
+        max_expansions: int = MAX_EXPANSIONS,
+        layer_prefs: dict[int, str] | None = None,
+        extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
+        extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
+    ) -> RoutePath | None:
+        """Search a window around the endpoints first, then the whole grid.
+
+        Everything per-call in the search — the other-net dilation, the via
+        mask, the open set — is proportional to the area searched, and on a
+        fine grid over a large board the whole-board version dominated
+        routing time (2026-10-01: 1850 of 2068 s at 0.1 mm on 200x75 mm).
+        Cells outside the window are simply impassable, so a path found
+        inside it is a legal path on the full grid.
+
+        The full-grid retry runs only when the window's search ended with
+        the open set EMPTY — a detour may exist outside the box. A search
+        that ran out of ``max_expansions`` is not retried: the larger
+        search would exhaust too, and a budget failure stays reported as
+        one (:attr:`last_route_exhausted`). See :meth:`_route_in` for the
+        search itself and every parameter.
+        """
+        spec = self.spec
+        full = (0, spec.ny, 0, spec.nx)
+        pts = [start, goal, *(p for p, _ in extra_start_terminals)]
+        pts += [p for p, _ in extra_goal_terminals]
+        window = self.search_window(pts)
+        kwargs: dict[str, Any] = {
+            "layers": layers,
+            "width_mm": width_mm,
+            "via_dia_mm": via_dia_mm,
+            "pad_layer": pad_layer,
+            "start_layer": start_layer,
+            "goal_layer": goal_layer,
+            "attach": attach,
+            "via_cost_mm": via_cost_mm,
+            "via_body_cost_mm": via_body_cost_mm,
+            "max_expansions": max_expansions,
+            "layer_prefs": layer_prefs,
+            "extra_start_terminals": extra_start_terminals,
+            "extra_goal_terminals": extra_goal_terminals,
+        }
+        path = self._route_in(window, net_id, start, goal, **kwargs)
+        if path is not None or window == full or self.last_route_exhausted:
+            return path
+        return self._route_in(full, net_id, start, goal, **kwargs)
+
+    def _route_in(
+        self,
+        window: tuple[int, int, int, int],
         net_id: int,
         start: tuple[float, float],
         goal: tuple[float, float],
@@ -913,6 +1062,7 @@ class OccupancyGrid:
         every other claim in this module already follows for data it
         cannot resolve."""
         spec = self.spec
+        self.last_route_exhausted = False
         if not layers:
             return None
         sx, sy = spec.to_cell(*start)
@@ -936,24 +1086,35 @@ class OccupancyGrid:
         if start_layer not in layer_set or goal_layer not in layer_set:
             return None
 
-        foreign = (self._owner != FREE) & (self._owner != net_id)
+        # The search is confined to `window` (see `route`); outside it every
+        # cell is blocked. Keep-outs are checked ON DEMAND, cell by cell, as
+        # the search reaches them (`_disk_hits_foreign`, memoised inside
+        # `_astar_kernel`): a cell is blocked when another net's copper lies
+        # within this net's half-width (plus one cell of discretisation
+        # slack) of it. Dilating the whole window up front gave the same
+        # answer but cost ~170 s of a 280 s real-board realize — the window
+        # is most of the board, and the search touches a small part of it.
+        wy0, wy1, wx0, wx1 = window
         r_cells = math.ceil((width_mm / 2.0) / spec.pitch) + 1
-        blocked = _dilate(foreign, r_cells).reshape(-1)
+        half_track = _disk_half_chords(r_cells)
+        owner = self._owner
         # A via is not a track. It is wider (an annulus, not a trace) and
         # it exists on every layer it spans, so a cell the TRACK may
         # legally occupy is routinely a cell the via may not — the search
         # planned corridors at track width, dropped via-sized copper into
         # them, and put back 21 clearance errors an otherwise sound
         # occupancy grid had just eliminated. Layer changes are therefore
-        # gated on their own, wider mask, collapsed across layers because
-        # a through via has to clear copper on all of them.
+        # gated on their own, wider disk, checked on every layer because a
+        # through via has to clear copper on all of them.
         if via_dia_mm is None:
-            via_blocked = None
+            via_r_cells = 0
+            half_via = None
+            pad_keep = None
         else:
             via_r_cells = math.ceil((via_dia_mm / 2.0) / spec.pitch) + 1
-            via_blocked = _dilate(foreign, via_r_cells).any(axis=0)
-            # A pad keep-out on top of the other-net dilation above, not
-            # instead of it: those two masks answer different questions
+            half_via = _disk_half_chords(via_r_cells)
+            # A pad keep-out on top of the other-net disk above, not
+            # instead of it: those two answer different questions
             # (another net's copper vs. ANY net's pad — see
             # :meth:`via_clears_pads`'s own docstring for why the second
             # one cannot be folded into clearance). Folded in here, not
@@ -962,17 +1123,16 @@ class OccupancyGrid:
             # "claim before draw" discipline this module's own module
             # docstring describes, applied to the one shape (pads) that
             # was exempt from it.
-            via_blocked = (
-                via_blocked | self._pad_keepout_mask(via_dia_mm / 2.0)
-            ).reshape(-1)
+            pad_keep = self._pad_keepout_mask(via_dia_mm / 2.0)
 
         def passable(idx: int) -> bool:
-            return not blocked[idx]
-
-        def via_ok(ix: int, iy: int) -> bool:
-            if via_blocked is None:
-                return False  # no via geometry resolved -- never place one
-            return not via_blocked[iy * spec.nx + ix]
+            layer, rem = divmod(idx, plane)
+            iy, ix = divmod(rem, spec.nx)
+            if not (wy0 <= iy < wy1 and wx0 <= ix < wx1):
+                return False
+            return not _disk_hits_foreign(
+                owner, layer, iy, ix, r_cells, half_track, net_id
+            )
 
         start_idx = start_layer * plane + sy * spec.nx + sx
         goal_idx = goal_layer * plane + gy * spec.nx + gx
@@ -1035,16 +1195,13 @@ class OccupancyGrid:
         # segment decomposition gives a high degree has to carry all of its
         # tree edges through its own escape corridor — measured at 26 GND
         # segments radiating from one pin, of which about two fit.
-        g_score: dict[int, float] = {}
-        came: dict[int, int] = {}
-        closed: set[int] = set()
-        heap: list[tuple[float, int]] = []
+        # cell -> f at push time, in push order (the heap's tie-break).
+        seeds: dict[int, float] = {}
         # cell -> the exact copper coordinate that source represents, so the
         # reconstructed path can BEGIN on the trunk instead of near it.
         anchors: dict[int, tuple[float, float]] = {}
         if start_ok:
-            g_score[start_idx] = 0.0
-            heapq.heappush(heap, (heuristic(sx, sy, start_layer), start_idx))
+            seeds[start_idx] = heuristic(sx, sy, start_layer)
         if attach:
             for src, at in self._routed_cells.get(net_id, {}).items():
                 s_layer, s_rem = divmod(src, plane)
@@ -1062,12 +1219,11 @@ class OccupancyGrid:
                 # layers carried copper.
                 if s_layer not in layer_set:
                     continue
-                if src in target_idx_set or src in g_score or not passable(src):
+                if src in target_idx_set or src in seeds or not passable(src):
                     continue
-                g_score[src] = 0.0
                 anchors[src] = at
                 s_iy, s_ix = divmod(s_rem, spec.nx)
-                heapq.heappush(heap, (heuristic(s_ix, s_iy, s_layer), src))
+                seeds[src] = heuristic(s_ix, s_iy, s_layer)
         # The island-terminal sources themselves — same zero-cost seeding
         # as `attach`'s own-routed-copper sources right above, for AUTHORED
         # (not router-drawn) same-net copper instead.
@@ -1076,68 +1232,79 @@ class OccupancyGrid:
                 continue
             tcx, tcy = spec.to_cell(tx, ty)
             tidx = layer * plane + tcy * spec.nx + tcx
-            if tidx in target_idx_set or tidx in g_score or not passable(tidx):
+            if tidx in target_idx_set or tidx in seeds or not passable(tidx):
                 continue
-            g_score[tidx] = 0.0
             anchors[tidx] = (tx, ty)
-            heapq.heappush(heap, (heuristic(tcx, tcy, layer), tidx))
-        if not g_score:
+            seeds[tidx] = heuristic(tcx, tcy, layer)
+        if not seeds:
             return None
-        expansions = 0
 
-        while heap:
-            _f, cur = heapq.heappop(heap)
-            if cur in closed:
-                continue
-            closed.add(cur)
-            if cur in target_idx_set:
-                return self._reconstruct(
-                    came, cur, net_id, g_score[cur], anchors, goal_anchor.get(cur)
-                )
-            expansions += 1
-            if expansions > max_expansions:
-                return None
-            layer, rem = divmod(cur, plane)
-            iy, ix = divmod(rem, spec.nx)
-            base = g_score[cur]
+        # The search itself is `_astar_kernel`, compiled (it was ~450 s of
+        # a 1096 s real-board realize as Python). Per-layer step costs are
+        # `pitch * weight * _step_penalty(...)`, evaluated here once.
+        nx = spec.nx
+        n_steps = len(_STEPS)
+        step_dx = np.zeros((spec.n_layers, n_steps), dtype=np.int64)
+        step_dy = np.zeros((spec.n_layers, n_steps), dtype=np.int64)
+        step_off = np.zeros((spec.n_layers, n_steps), dtype=np.int64)
+        step_cost = np.zeros((spec.n_layers, n_steps), dtype=np.float64)
+        for layer in allowed:
             pref = None if layer_prefs is None else layer_prefs.get(layer)
-            for dx, dy, weight in _STEPS:
-                nxi, nyi = ix + dx, iy + dy
-                if not (0 <= nxi < spec.nx and 0 <= nyi < spec.ny):
-                    continue
-                nidx = layer * plane + nyi * spec.nx + nxi
-                if nidx in closed or not passable(nidx):
-                    continue
-                tentative = base + pitch * weight * _step_penalty(pref, dx, dy)
-                if tentative < g_score.get(nidx, math.inf):
-                    g_score[nidx] = tentative
-                    came[nidx] = cur
-                    heapq.heappush(heap, (tentative + heuristic(nxi, nyi, layer), nidx))
-            # ANY allowed layer, not just layer +/- 1. A via is a plated
-            # hole through the stackup, not a step between neighbours:
-            # this board's signal layers are 0 and 3 (1 and 2 are planes),
-            # so an adjacency-only transition made every layer change
-            # unreachable and the router silently single-layer — 8 nets
-            # unrouted with three empty layers underneath them.
-            if not via_ok(ix, iy):
-                continue
-            for other in allowed:
-                if other == layer:
-                    continue
-                nidx = other * plane + iy * spec.nx + ix
-                if nidx in closed or not passable(nidx):
-                    continue
-                under_body = self._body_mask is not None and bool(
-                    self._body_mask[iy, ix]
-                )
-                tentative = (
-                    base + via_cost_mm + (via_body_cost_mm if under_body else 0.0)
-                )
-                if tentative < g_score.get(nidx, math.inf):
-                    g_score[nidx] = tentative
-                    came[nidx] = cur
-                    heapq.heappush(heap, (tentative + heuristic(ix, iy, other), nidx))
-        return None
+            for k, (dx, dy, weight) in enumerate(_STEPS):
+                step_dx[layer, k] = dx
+                step_dy[layer, k] = dy
+                step_off[layer, k] = dy * nx + dx
+                step_cost[layer, k] = pitch * weight * _step_penalty(pref, dx, dy)
+        body = self._body_mask
+        no_mask = np.zeros((1, 1), dtype=np.bool_)
+        outcome, goal_cell, length, path = _astar_kernel(
+            owner,
+            int(net_id),
+            r_cells,
+            half_track,
+            via_r_cells,
+            half_track if half_via is None else half_via,
+            half_via is not None,
+            no_mask if pad_keep is None else pad_keep,
+            no_mask if body is None else body,
+            body is not None,
+            nx,
+            plane,
+            wx0,
+            wx1,
+            wy0,
+            wy1,
+            np.asarray(allowed, dtype=np.int64),
+            step_dx,
+            step_dy,
+            step_off,
+            step_cost,
+            np.asarray([t[0] for t in targets], dtype=np.int64),
+            np.asarray([t[1] for t in targets], dtype=np.int64),
+            np.asarray([t[2] for t in targets], dtype=np.int64),
+            np.asarray([t[3] for t in targets], dtype=np.int64),
+            np.asarray(list(seeds), dtype=np.int64),
+            np.asarray(list(seeds.values()), dtype=np.float64),
+            float(pitch),
+            float(via_cost_mm),
+            float(via_body_cost_mm),
+            float(HEURISTIC_WEIGHT),
+            int(max_expansions),
+        )
+        if outcome == _EXHAUSTED:
+            self.last_route_exhausted = True
+            return None
+        if outcome != _FOUND:
+            return None
+        came = {int(path[i]): int(path[i + 1]) for i in range(len(path) - 1)}
+        return self._reconstruct(
+            came,
+            int(goal_cell),
+            net_id,
+            float(length),
+            anchors,
+            goal_anchor.get(int(goal_cell)),
+        )
 
     def _reconstruct(
         self,
@@ -1184,6 +1351,318 @@ class OccupancyGrid:
             gxp, gyp = goal_anchor
             points = (*points[:-1], (gxp, gyp, points[-1][2]))
         return RoutePath(net_id, points, length, attached)
+
+
+@numba.njit(cache=False, nogil=True)
+def _chord_free_kernel(
+    owner: np.ndarray,
+    layer: int,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    n: int,
+    radius_mm: float,
+    net_id: int,
+    x0: float,
+    y0: float,
+    pitch: float,
+) -> bool:
+    """:meth:`OccupancyGrid.chord_is_free`, compiled. Each sample point is
+    :meth:`OccupancyGrid.disk_is_free` term for term: the same nearest-cell
+    rounding (half to even, as Python's ``round``), the same clamped box,
+    the same ``<= r**2`` disc."""
+    n_layers, ny, nx = owner.shape
+    if layer < 0 or layer >= n_layers:
+        return False
+    r_cells = math.ceil(radius_mm / pitch)
+    r2 = radius_mm * radius_mm
+    for k in range(n + 1):
+        x = ax + (bx - ax) * k / n
+        y = ay + (by - ay) * k / n
+        cx = min(max(int(np.rint((x - x0) / pitch)), 0), nx - 1)
+        cy = min(max(int(np.rint((y - y0) / pitch)), 0), ny - 1)
+        lo_x, hi_x = max(0, cx - r_cells), min(nx - 1, cx + r_cells)
+        lo_y, hi_y = max(0, cy - r_cells), min(ny - 1, cy + r_cells)
+        if lo_x > hi_x or lo_y > hi_y:
+            return False
+        for iy in range(lo_y, hi_y + 1):
+            dy = y0 + iy * pitch - y
+            for ix in range(lo_x, hi_x + 1):
+                dx = x0 + ix * pitch - x
+                if dy * dy + dx * dx <= r2:
+                    o = owner[layer, iy, ix]
+                    if o != FREE and o != net_id:
+                        return False
+    return True
+
+
+def _disk_half_chords(r_cells: int) -> np.ndarray:
+    """``half[dy + r]`` = how far the disk of radius ``r_cells`` reaches
+    along x at row offset ``dy`` (``dx² + dy² <= r²``)."""
+    return np.array(
+        [
+            math.isqrt(r_cells * r_cells - dy * dy)
+            for dy in range(-r_cells, r_cells + 1)
+        ],
+        dtype=np.int64,
+    )
+
+
+@numba.njit(cache=False, nogil=True)
+def _disk_hits_foreign(
+    owner: np.ndarray,
+    layer: int,
+    iy: int,
+    ix: int,
+    r: int,
+    half: np.ndarray,
+    net_id: int,
+) -> bool:
+    """Is any cell within ``r`` of ``(ix, iy)`` on ``layer`` (Euclidean,
+    ``dx² + dy² <= r²``) owned by a net other than ``net_id``? Contested
+    cells count as foreign.
+
+    A Euclidean disk, not the L1 diamond the earlier whole-window dilation
+    built while documenting itself as Chebyshev: a diamond reaches only
+    ``r / sqrt(2)`` along a diagonal, so a wide track's keep-out came up
+    short exactly there (2026-10-01)."""
+    n_l, ny, nx = owner.shape
+    for dy in range(-r, r + 1):
+        y = iy + dy
+        if y < 0 or y >= ny:
+            continue
+        w = half[dy + r]
+        x0 = max(0, ix - w)
+        x1 = min(nx - 1, ix + w)
+        for x in range(x0, x1 + 1):
+            o = owner[layer, y, x]
+            if o != FREE and o != net_id:
+                return True
+    return False
+
+
+#: :func:`_astar_kernel` outcomes.
+_FOUND, _EMPTY, _EXHAUSTED = 0, 1, 2
+
+
+@numba.njit(cache=False, nogil=True)
+def _astar_kernel(
+    owner: np.ndarray,
+    net_id: int,
+    r_track: int,
+    half_track: np.ndarray,
+    r_via: int,
+    half_via: np.ndarray,
+    has_via: bool,
+    pad_keep: np.ndarray,
+    body: np.ndarray,
+    has_body: bool,
+    nx: int,
+    plane: int,
+    wx0: int,
+    wx1: int,
+    wy0: int,
+    wy1: int,
+    allowed: np.ndarray,
+    step_dx: np.ndarray,
+    step_dy: np.ndarray,
+    step_off: np.ndarray,
+    step_cost: np.ndarray,
+    tx: np.ndarray,
+    ty: np.ndarray,
+    tl: np.ndarray,
+    tidx: np.ndarray,
+    seed_idx: np.ndarray,
+    seed_f: np.ndarray,
+    pitch: float,
+    via_cost_mm: float,
+    via_body_cost_mm: float,
+    weight_h: float,
+    max_expansions: int,
+) -> tuple[int, int, float, np.ndarray]:
+    """The A* loop of :meth:`OccupancyGrid._route_in`, compiled.
+
+    Same search as the pure-Python loop it replaced: the same step order,
+    the same costs (precomputed by the caller with the same expressions),
+    and a heap ordered on ``(f, cell)`` tuples, so ties pop in the same
+    order. Cells are full-grid flat indices (``layer * plane + iy * nx +
+    ix``); the bookkeeping arrays (``g``, ``came``, ``state``) cover only
+    the window.
+
+    Keep-outs are decided when the search first reaches a cell and
+    memoised in ``state``: a track cell is blocked when
+    :func:`_disk_hits_foreign` finds another net's copper within
+    ``r_track`` on its layer; a via site when it does so within ``r_via``
+    on ANY layer, or ``pad_keep`` marks it.
+
+    Returns ``(outcome, goal, length, path)`` — ``path`` lists the cells
+    from the goal back to the source it was reached from."""
+    ww = wx1 - wx0
+    wplane = (wy1 - wy0) * ww
+    n_layers = owner.shape[0]
+    n_local = n_layers * wplane
+    g = np.empty(n_local, dtype=np.float64)
+    came = np.empty(n_local, dtype=np.int64)
+    # Bits 0-1: 0 = unseen, 1 = open (g valid), 2 = closed. Bit 2: target.
+    # Bit 3: keep-out checked; bit 4: blocked.
+    state = np.zeros(n_local, dtype=np.uint8)
+    # Per window plane cell: 0 = unchecked, 1 = a via may go here, 2 = not.
+    via_state = np.zeros(wplane, dtype=np.uint8)
+    empty_path = np.empty(0, dtype=np.int64)
+    n_targets = tidx.shape[0]
+    sqrt2m1 = math.sqrt(2.0) - 1.0
+
+    for k in range(n_targets):
+        t = tidx[k]
+        layer = t // plane
+        rem = t - layer * plane
+        iy = rem // nx
+        ix = rem - iy * nx
+        state[layer * wplane + (iy - wy0) * ww + (ix - wx0)] |= 4
+
+    heap = [(seed_f[0], seed_idx[0])]
+    for k in range(1, seed_idx.shape[0]):
+        heapq.heappush(heap, (seed_f[k], seed_idx[k]))
+    for k in range(seed_idx.shape[0]):
+        s = seed_idx[k]
+        layer = s // plane
+        rem = s - layer * plane
+        iy = rem // nx
+        ix = rem - iy * nx
+        li = layer * wplane + (iy - wy0) * ww + (ix - wx0)
+        g[li] = 0.0
+        came[li] = -1
+        state[li] = (state[li] & 0xFC) | 1
+
+    expansions = 0
+    while len(heap) > 0:
+        item = heapq.heappop(heap)
+        cur = item[1]
+        layer = cur // plane
+        rem = cur - layer * plane
+        iy = rem // nx
+        ix = rem - iy * nx
+        lbase = layer * wplane
+        li = lbase + (iy - wy0) * ww + (ix - wx0)
+        if (state[li] & 3) == 2:
+            continue
+        state[li] = (state[li] & 0xFC) | 2
+        if state[li] & 4:
+            n = 1
+            j = li
+            while came[j] >= 0:
+                n += 1
+                c = came[j]
+                cl = c // plane
+                cr = c - cl * plane
+                cy = cr // nx
+                j = cl * wplane + (cy - wy0) * ww + (cr - cy * nx - wx0)
+            path = np.empty(n, dtype=np.int64)
+            path[0] = cur
+            j = li
+            k = 1
+            while came[j] >= 0:
+                c = came[j]
+                path[k] = c
+                k += 1
+                cl = c // plane
+                cr = c - cl * plane
+                cy = cr // nx
+                j = cl * wplane + (cy - wy0) * ww + (cr - cy * nx - wx0)
+            return _FOUND, cur, g[li], path
+        expansions += 1
+        if expansions > max_expansions:
+            return _EXHAUSTED, -1, 0.0, empty_path
+        base = g[li]
+        for k in range(step_off.shape[1]):
+            nxi = ix + step_dx[layer, k]
+            nyi = iy + step_dy[layer, k]
+            if nxi < wx0 or nxi >= wx1 or nyi < wy0 or nyi >= wy1:
+                continue
+            nidx = cur + step_off[layer, k]
+            nli = lbase + (nyi - wy0) * ww + (nxi - wx0)
+            sv = state[nli]
+            if not sv & 8:
+                sv |= 8
+                if _disk_hits_foreign(
+                    owner, layer, nyi, nxi, r_track, half_track, net_id
+                ):
+                    sv |= 16
+                state[nli] = sv
+            if sv & 16:
+                continue
+            st = sv & 3
+            if st == 2:
+                continue
+            tentative = base + step_cost[layer, k]
+            if st == 0 or tentative < g[nli]:
+                g[nli] = tentative
+                came[nli] = cur
+                state[nli] = (state[nli] & 0xFC) | 1
+                best = math.inf
+                for t in range(n_targets):
+                    dx = abs(nxi - tx[t])
+                    dy = abs(nyi - ty[t])
+                    octile = pitch * (max(dx, dy) + sqrt2m1 * min(dx, dy))
+                    if layer != tl[t]:
+                        octile += via_cost_mm
+                    if octile < best:
+                        best = octile
+                heapq.heappush(heap, (tentative + best * weight_h, nidx))
+        # A via changes to ANY allowed layer — see `_route_in`.
+        if not has_via:
+            continue
+        lrem = li - lbase
+        vs = via_state[lrem]
+        if vs == 0:
+            vs = 1
+            if pad_keep[iy, ix]:
+                vs = 2
+            else:
+                for vl in range(n_layers):
+                    if _disk_hits_foreign(owner, vl, iy, ix, r_via, half_via, net_id):
+                        vs = 2
+                        break
+            via_state[lrem] = vs
+        if vs == 2:
+            continue
+        under_body = has_body and body[iy, ix]
+        for a in range(allowed.shape[0]):
+            other = allowed[a]
+            if other == layer:
+                continue
+            nidx = other * plane + rem
+            nli = other * wplane + lrem
+            sv = state[nli]
+            if not sv & 8:
+                sv |= 8
+                if _disk_hits_foreign(
+                    owner, other, iy, ix, r_track, half_track, net_id
+                ):
+                    sv |= 16
+                state[nli] = sv
+            if sv & 16:
+                continue
+            st = sv & 3
+            if st == 2:
+                continue
+            tentative = base + via_cost_mm + (via_body_cost_mm if under_body else 0.0)
+            if st == 0 or tentative < g[nli]:
+                g[nli] = tentative
+                came[nli] = cur
+                state[nli] = (state[nli] & 0xFC) | 1
+                best = math.inf
+                for t in range(n_targets):
+                    dx = abs(ix - tx[t])
+                    dy = abs(iy - ty[t])
+                    octile = pitch * (max(dx, dy) + sqrt2m1 * min(dx, dy))
+                    if other != tl[t]:
+                        octile += via_cost_mm
+                    if octile < best:
+                        best = octile
+                heapq.heappush(heap, (tentative + best * weight_h, nidx))
+    return _EMPTY, -1, 0.0, empty_path
 
 
 def _merge_collinear(

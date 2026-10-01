@@ -720,10 +720,17 @@ def test_dogfood_capability_map_svg_renders(pcb):
     assert "R0C2" in resp.body or "RESV" in resp.body  # some pin label present
 
 
-def _drain_one_job(store, parent_id: int) -> None:
+def _drain_one_job(store, parent_id: int, *, unrouted_ok: bool = False) -> None:
     """Drain the job most recently enqueued under ``parent_id`` — same
     helper (and same "tolerate an unrelated stray row" reasoning, gr295496)
-    as ``tests/test_pcb_reference_end_to_end.py``'s own."""
+    as ``tests/test_pcb_reference_end_to_end.py``'s own.
+
+    ``unrouted_ok``: a route job that leaves any net unrealized ends
+    ``failed`` with ``failure_class='non-convergence'`` (Reto, 2026-10-01:
+    "it's no good if the wires are not there"), after writing its partial
+    copper. These boards leave escape nets unrouted by design today, so a
+    caller measuring that partial result accepts exactly that failure and
+    no other."""
     from precis.workers.executors._common import TERMINAL, current_status
     from precis.workers.executors.job_inproc import run_job_inproc_pass
 
@@ -739,6 +746,17 @@ def _drain_one_job(store, parent_id: int) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
+            if unrouted_ok and status == "failed":
+                with store.pool.connection() as conn:
+                    meta_row = conn.execute(
+                        "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s",
+                        (job_ref_id,),
+                    ).fetchone()
+                assert meta_row is not None
+                assert meta_row[0] == "non-convergence", (
+                    f"job {job_ref_id} failed for another reason: {meta_row[0]!r}"
+                )
+                return
             assert status == "succeeded", (
                 f"job {job_ref_id} failed to drain cleanly: status={status!r}"
             )
@@ -792,7 +810,7 @@ def test_dogfood_route_op_routes_real_geometry_and_reports_the_escape_gap(pcb, s
     # on the cluster's, so a stale-cluster re-route can't be misread.
     assert "Runs on the cluster worker's code" in resp.body
     assert "`ran_on:` line" in resp.body
-    _drain_one_job(store, ref.id)
+    _drain_one_job(store, ref.id, unrouted_ok=True)
 
     design = store.pcb_load(ref.id)
     copper = store.pcb_copper_list(int(design["board"]["board_id"]))
@@ -1238,7 +1256,7 @@ def test_dogfood_an_inner_signal_layer_nearly_closes_the_escape_gap(pcb, store):
         },
     )
     pcb.put(id=slug, args={"op": "route", "seed": 1})
-    _drain_one_job(store, ref.id)
+    _drain_one_job(store, ref.id, unrouted_ok=True)
 
     design = store.pcb_load(ref.id)
     copper = store.pcb_copper_list(int(design["board"]["board_id"]))

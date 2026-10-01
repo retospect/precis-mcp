@@ -62,6 +62,27 @@ def test_grid_for_pitch_scales_with_extent_not_with_point_count():
     assert loose.pitch > tight.pitch * 5
 
 
+def test_a_rule_pitch_cap_refines_a_large_board_and_leaves_a_small_one():
+    """Span / 400 on a 200 mm board is a 0.5 mm cell, which rounds the gap
+    between fine-pitch pads shut. The design-rule cap refines the large
+    board and never touches a board already finer than it."""
+    large = grid_for([(0.0, 0.0), (200.0, 70.0)], n_layers=4, max_pitch_mm=0.15)
+    small = grid_for([(0.0, 0.0), (40.0, 30.0)], n_layers=4, max_pitch_mm=0.15)
+    assert large.pitch == pytest.approx(0.15)
+    assert small.pitch == grid_for([(0.0, 0.0), (40.0, 30.0)], n_layers=4).pitch
+
+
+def test_the_rule_pitch_cap_is_bounded_by_the_cell_limit():
+    spec = grid_for(
+        [(0.0, 0.0), (1000.0, 10.0)],
+        n_layers=4,
+        max_pitch_mm=0.05,
+        max_cells_per_axis=2000,
+    )
+    assert spec.nx <= 2000 + 1
+    assert spec.pitch == pytest.approx(1004.0 / 2000)
+
+
 # ── the claim/query split ────────────────────────────────────────────────
 def test_core_radius_excludes_the_other_nets_width():
     """A claim covers this copper plus its OWN clearance, and nothing
@@ -88,6 +109,84 @@ def test_stamp_disk_smaller_than_a_cell_still_claims_one_cell():
     grid = OccupancyGrid(GridSpec(0.0, 0.0, 1.0, 10, 10, 1), clearance_mm=0.0)
     grid.stamp_disk((0,), 4.5, 4.5, 0.01, 3)  # dead between four centres
     assert (grid.owner[0] == 3).sum() == 1
+
+
+# ── budget exhaustion vs no path ─────────────────────────────────────────
+def test_a_route_that_runs_out_of_budget_says_so():
+    """Both outcomes return ``None``; only one of them proves there is no
+    path. Conflating them reported a far-but-open connection as walled in."""
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    path = grid.route(
+        2, (0.5, 0.5), (5.5, 5.5), layers=[0], width_mm=0.1, max_expansions=5
+    )
+    assert path is None
+    assert grid.last_route_exhausted is True
+
+
+def test_a_walled_in_route_is_not_called_exhausted():
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    for k in range(80):
+        grid.stamp_disk((0,), 3.0, k * 0.1, 0.12, 1)
+    assert grid.route(2, (1.0, 4.0), (5.0, 4.0), layers=[0], width_mm=0.1) is None
+    assert grid.last_route_exhausted is False
+
+
+def test_a_success_clears_the_exhausted_flag():
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    grid.route(2, (0.5, 0.5), (5.5, 5.5), layers=[0], width_mm=0.1, max_expansions=5)
+    assert grid.route(2, (0.5, 0.5), (1.5, 0.5), layers=[0], width_mm=0.1)
+    assert grid.last_route_exhausted is False
+
+
+def test_a_detour_outside_the_search_window_still_routes(monkeypatch):
+    """The first search is boxed to the endpoints; a wall spanning the
+    whole box forces a path around it, which only the full-grid retry can
+    find."""
+    import precis.pcb.maze as maze_mod
+
+    monkeypatch.setattr(maze_mod, "WINDOW_MARGIN_MM", 0.5)
+    monkeypatch.setattr(maze_mod, "WINDOW_SPAN_FRACTION", 0.0)
+    grid = OccupancyGrid(_spec(nx=120, ny=120, n_layers=1), clearance_mm=0.05)
+    for k in range(70):  # y = 0 .. 6.9 mm: a wall the box cannot get round
+        grid.stamp_disk((0,), 5.0, k * 0.1, 0.12, 1)
+    path = grid.route(2, (3.0, 3.0), (7.0, 3.0), layers=[0], width_mm=0.1)
+    assert path is not None
+    assert max(p[1] for p in path.points) > 3.0 + 0.5 + 1.0
+
+
+def test_a_claim_just_outside_the_window_still_blocks_inside_it(monkeypatch):
+    """The other-net mask is dilated from a read GROWN past the window, so
+    copper whose clearance reaches in is not invisible to the search."""
+    import precis.pcb.maze as maze_mod
+
+    monkeypatch.setattr(maze_mod, "WINDOW_MARGIN_MM", 0.3)
+    monkeypatch.setattr(maze_mod, "WINDOW_SPAN_FRACTION", 0.0)
+    grid = OccupancyGrid(_spec(nx=80, ny=80, n_layers=1), clearance_mm=0.05)
+    win = grid.search_window([(1.0, 2.5), (5.0, 2.5)])
+    y_edge = grid.spec.y0 + win[1] * grid.spec.pitch  # first row past the box
+    assert y_edge == pytest.approx(2.9)
+    # A short run of copper on that first outside row, over the middle of
+    # the connection. At width 0.6 its dilation reaches down through
+    # y = 2.5, so the straight line is illegal and the path must dip.
+    for k in range(11):
+        grid.stamp_disk((0,), 2.5 + k * 0.1, y_edge + 0.05, 0.12, 1)
+    path = grid.route(2, (1.0, 2.5), (5.0, 2.5), layers=[0], width_mm=0.6)
+    assert path is not None
+    assert min(p[1] for p in path.points) < 2.45, "routed through unseen copper"
+
+
+def test_the_pad_keepout_mask_sees_a_pad_added_after_it_was_cached():
+    """The mask is cached across route calls; a stale one would let a via
+    land on a pad stamped after the first route."""
+    grid = OccupancyGrid(_spec(n_layers=1), clearance_mm=0.05)
+    grid.stamp_pad((0,), 1.0, 1.0, 0.2, 3)
+    first = grid._pad_keepout_mask(0.2).copy()
+    assert grid._pad_keepout_mask(0.2) is grid._pad_keepout_mask(0.2)
+    grid.stamp_pad((0,), 4.0, 4.0, 0.2, 3)
+    second = grid._pad_keepout_mask(0.2)
+    ix, iy = grid.spec.to_cell(4.0, 4.0)
+    assert not first[iy, ix]
+    assert second[iy, ix]
 
 
 # ── the guarantee ────────────────────────────────────────────────────────
@@ -433,3 +532,74 @@ def test_unknown_router_is_rejected_rather_than_silently_defaulted():
     optimize(ir, OptimizeConfig(iters=50, seed=8))
     with pytest.raises(ValueError, match="unknown router"):
         realize(ir, config=RealizeConfig(router="freerouting"))
+
+
+def test_the_compiled_chord_check_agrees_with_disk_is_free_sample_by_sample() -> None:
+    """`chord_is_free` replaced a Python `all(disk_is_free(...))` loop in
+    path straightening; it must give the same answer on every chord,
+    including chords that leave the grid and the off-by-rounding edges."""
+    rng = np.random.default_rng(7)
+    spec = GridSpec(-1.0, -2.0, 0.1, 120, 90, 2)
+    grid = OccupancyGrid(spec, clearance_mm=0.1)
+    for net in range(1, 6):
+        for _ in range(8):
+            grid.stamp_disk(
+                (int(rng.integers(0, 2)),),
+                float(rng.uniform(-1.0, 11.0)),
+                float(rng.uniform(-2.0, 7.0)),
+                float(rng.uniform(0.05, 0.6)),
+                net,
+            )
+    agree = disagree = 0
+    for _ in range(400):
+        layer = int(rng.integers(-1, 3))
+        a = (float(rng.uniform(-2.0, 12.0)), float(rng.uniform(-3.0, 8.0)))
+        b = (float(rng.uniform(-2.0, 12.0)), float(rng.uniform(-3.0, 8.0)))
+        n = int(rng.integers(1, 40))
+        radius = float(rng.uniform(0.0, 0.5))
+        net = int(rng.integers(1, 6))
+        expected = all(
+            grid.disk_is_free(
+                (layer,),
+                a[0] + (b[0] - a[0]) * k / n,
+                a[1] + (b[1] - a[1]) * k / n,
+                radius,
+                net,
+            )
+            for k in range(n + 1)
+        )
+        got = grid.chord_is_free(layer, a, b, n, radius, net)
+        if got == expected:
+            agree += 1
+        else:
+            disagree += 1
+    assert disagree == 0, f"{disagree} of {agree + disagree} chords disagree"
+
+
+@pytest.mark.parametrize(("ny", "nx"), [(40, 50), (1, 30), (3, 3), (40, 1)])
+def test_the_keep_out_is_a_euclidean_disk_including_at_the_grid_edge(
+    ny: int, nx: int
+) -> None:
+    """The router's keep-out was a dilation documented as Chebyshev that
+    built an L1 diamond, which reaches only r/sqrt(2) along a diagonal, so
+    a wide track's clearance fell short there. `_disk_hits_foreign` must
+    agree with a brute-force disk at every cell, on grids thinner than the
+    radius too."""
+    from precis.pcb.maze import _disk_half_chords, _disk_hits_foreign
+
+    rng = np.random.default_rng(ny * 100 + nx)
+    owner = np.full((2, ny, nx), FREE, dtype=np.int32)
+    owner[rng.random((2, ny, nx)) < 0.05] = 7
+    owner[rng.random((2, ny, nx)) < 0.05] = 3  # this net's own copper
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    for r in range(8):
+        half = _disk_half_chords(r)
+        for layer in range(2):
+            foreign = owner[layer] == 7
+            for y in range(ny):
+                for x in range(nx):
+                    want = bool(
+                        (foreign & ((yy - y) ** 2 + (xx - x) ** 2 <= r * r)).any()
+                    )
+                    got = _disk_hits_foreign(owner, layer, y, x, r, half, 3)
+                    assert got == want, (r, layer, y, x)

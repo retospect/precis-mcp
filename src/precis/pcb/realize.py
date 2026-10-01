@@ -174,6 +174,10 @@ PAD_LAYER = PAD_LAYER
 
 # ── config + obstacles ───────────────────────────────────────────────────
 
+#: Routing-grid pitch as a fraction of the board's clearance — see the
+#: `maze.grid_for` call in `_realize_maze` for the measurement behind it.
+_PITCH_PER_CLEARANCE = 2.0 / 3.0
+
 
 @dataclass(frozen=True, slots=True)
 class RealizeConfig:
@@ -880,6 +884,11 @@ class UnroutedReason:
       layers to nothing. Never silently widened back to the full signal-
       layer set; the segment never reaches ``grid.route`` at all
       (:func:`_net_class_layers`, checked in :func:`_route_pass`).
+    - ``'search_budget'`` — the probe that would have decided between the
+      route-search kinds above ran out of ``max_expansions`` first, so
+      "walled in" and "too far to search" cannot be told apart. Was
+      reported as ``'no_path'`` until 2026-10-01; on a fine grid over a
+      large board that conflation is the common case, not a corner.
     """
 
     seg_id: int
@@ -1415,10 +1424,16 @@ def _realize_maze(
         ),
     )
     edge_inset = max(clearance, edge_min) + widest / 2.0
+    # The coarsest cell the clearance survives. `maze` adds one cell of
+    # slack to every keep-out, so a cell is extra clearance a fine-pitch
+    # escape has to squeeze past. Measured on a 140-part 200 mm board
+    # (clearance 0.15 mm): 0.5 mm cells routed 8/89 nets, 0.15 mm 20/89,
+    # 0.1 mm 66/89. See `maze.grid_for`.
     spec = maze.grid_for(
         [p for p, _, _, _ in pads],
         n_layers=len(ir.stackup) or 1,
         bounds=_outline_clip(ir, edge_inset),
+        max_pitch_mm=clearance * _PITCH_PER_CLEARANCE,
     )
     # Appended AFTER `grid_for`, deliberately. The grid's pitch is cut
     # from the point set it is given, so feeding it these lands would
@@ -1615,6 +1630,7 @@ def _diagnose_all(
     plane-drop branch already documents for ITS own never-searched
     segments."""
     reasons: list[UnroutedReason] = []
+    probe: maze.OccupancyGrid | None = None
     for seg_id in unrouted:
         net_id = int(ir.seg_net[seg_id])
         if net_layer_lock_fail and net_id in net_layer_lock_fail:
@@ -1645,6 +1661,8 @@ def _diagnose_all(
             continue
         rules = rules_by_net[net_id]
         n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
+        if probe is None:
+            probe = _pads_only_probe(ir, spec, pads, clearance, fixed_copper)
         reasons.append(
             _diagnose_unrouted(
                 ir,
@@ -1658,6 +1676,7 @@ def _diagnose_all(
                 group_extent,
                 max_expansions,
                 fixed_copper=fixed_copper,
+                probe=probe,
             )
         )
     for seg_id in extra_unrouted:
@@ -1989,6 +2008,23 @@ def _via_group_extent(
 _PROBE_WIDTH_FRACTION_OF_PITCH = 0.25
 
 
+def _pads_only_probe(
+    ir: PcbIR,
+    spec: maze.GridSpec,
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    clearance: float,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> maze.OccupancyGrid:
+    """The grid :func:`_diagnose_unrouted` searches: every fixed obstacle
+    and pad claimed, no routed copper."""
+    probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    _claim_fixed_copper(probe, ir, fixed_copper)
+    _claim_fiducial_keepouts(probe, ir)
+    _claim_mounting_holes(probe, ir)
+    _stamp_pads(probe, pads)
+    return probe
+
+
 def _diagnose_unrouted(
     ir: PcbIR,
     seg_id: int,
@@ -2002,6 +2038,7 @@ def _diagnose_unrouted(
     max_expansions: int,
     *,
     fixed_copper: list[dict[str, Any]] | None = None,
+    probe: maze.OccupancyGrid | None = None,
 ) -> UnroutedReason:
     """WHY ``seg_id`` never routed, in one of :class:`UnroutedReason`'s
     three route-search categories — 'BOARD TWO' finding 1's diagnostic gap
@@ -2022,6 +2059,11 @@ def _diagnose_unrouted(
     endpoint is topologically unreachable on the allowed layers
     (``'no_path'``); if it succeeds, a path exists but not one wide enough
     for this net (``'width'``).
+
+    ``probe`` is that pads-only grid, prebuilt: it is the same for every
+    segment and :meth:`maze.OccupancyGrid.route` never stamps the grid it
+    searches, so :func:`_diagnose_all` builds it once. Rebuilding it per
+    segment was 36 of 85 s of realize on a 140-part board (2026-10-01).
     """
     net_id = int(ir.seg_net[seg_id])
     a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
@@ -2041,11 +2083,8 @@ def _diagnose_unrouted(
     # congestion diagnosis even applied.
     start_layer = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
     goal_layer = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
-    probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
-    _claim_fixed_copper(probe, ir, fixed_copper)
-    _claim_fiducial_keepouts(probe, ir)
-    _claim_mounting_holes(probe, ir)
-    _stamp_pads(probe, pads)
+    if probe is None:
+        probe = _pads_only_probe(ir, spec, pads, clearance, fixed_copper)
     clear_path = probe.route(
         net_id,
         start,
@@ -2058,6 +2097,7 @@ def _diagnose_unrouted(
         attach=False,
         max_expansions=max_expansions,
     )
+    clear_exhausted = probe.last_route_exhausted
     if clear_path is not None:
         via_note = (
             f", stitching {n_vias} via(s) at a layer change" if group_extent else ""
@@ -2084,6 +2124,22 @@ def _diagnose_unrouted(
         attach=False,
         max_expansions=max_expansions,
     )
+    thin_exhausted = probe.last_route_exhausted
+    # A verdict resting on a search that gave up is not a verdict: "width"
+    # needs the full-width probe to have FINISHED without a path, and
+    # "no_path" needs the thin one to have.
+    if (thin_path is not None and clear_exhausted) or (
+        thin_path is None and thin_exhausted
+    ):
+        return UnroutedReason(
+            seg_id,
+            net_id,
+            "search_budget",
+            f"the search gave up after {max_expansions} expansions before "
+            "finding a path or proving there is none — the endpoints may be "
+            "walled in, or simply too far apart for the budget at this grid "
+            "pitch",
+        )
     if thin_path is not None:
         via_note = (
             f" (including a {group_extent:.3f}mm via GROUP at a layer change)"
@@ -4773,17 +4829,8 @@ def _chord_is_free(
 ) -> bool:
     span = dist((a[0], a[1]), (b[0], b[1]))
     n = max(1, int(span / step))
-    layers = (a[2],)
-    return all(
-        grid.disk_is_free(
-            layers,
-            a[0] + (b[0] - a[0]) * k / n,
-            a[1] + (b[1] - a[1]) * k / n,
-            radius,
-            net_id,
-        )
-        for k in range(n + 1)
-    )
+    # `disk_is_free` at each of the n + 1 samples, compiled.
+    return grid.chord_is_free(a[2], (a[0], a[1]), (b[0], b[1]), n, radius, net_id)
 
 
 def _snap_to_pads(

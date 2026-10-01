@@ -66,7 +66,17 @@ def frame(pcb):
 def test_reads_the_manifest_and_splits_every_document(project):
     assert project.title == "epro_tiny"
     assert project.editor_version == "3.2.149"
-    assert [d.doc_type for d in project.documents] == ["PCB", "FOOTPRINT"]
+    # One board, two footprints, and the DEVICE/SYMBOL pair each
+    # component's pin names come from -- the whole chain in one file.
+    assert [d.doc_type for d in project.documents] == [
+        "PCB",
+        "FOOTPRINT",
+        "FOOTPRINT",
+        "DEVICE",
+        "DEVICE",
+        "SYMBOL",
+        "SYMBOL",
+    ]
 
 
 def test_empty_string_body_is_a_payload_absent_not_an_error(pcb):
@@ -114,8 +124,10 @@ def test_the_same_short_id_in_two_documents_is_fine():
     pcb_ids = {r.id for r in docs[0].records}
     fp_ids = {r.id for r in docs[1].records}
     assert pcb_ids & fp_ids == set()  # the fixture keeps them distinct...
+    # ...and repeating the whole footprint-and-symbol tail is fine: an id
+    # inside it collides only with its own document's twin.
     doubled = stream + stream[stream.index('{"type":"DOCHEAD","ticket":70}') :]
-    assert len(epro.split_documents(doubled)) == 3  # ...and a repeat is fine
+    assert len(epro.split_documents(doubled)) == 2 * len(docs) - 1
 
 
 def test_record_before_any_dochead_is_refused():
@@ -301,19 +313,25 @@ def test_via_lands_at_the_end_of_its_track(pcb, frame):
 
 
 # ── pours ────────────────────────────────────────────────────────────────
-def test_pours_are_reported_not_imported_as_fixed_copper(pcb, frame):
-    """``pcb_fixed_copper``'s CHECK allows only track|via, and a
-    single-net pour belongs in precis as a plane assignment."""
-    ext = epro.extract_copper(pcb, frame)
-    assert all(r["ctype"] in ("track", "via") for r in ext.rows)
-    assert any("POUR region(s) on GND" in w for w in ext.warnings)
+def test_pours_are_not_measured_as_track_copper(pcb, frame):
+    """A single-net pour belongs in precis as a plane assignment
+    (``derive_stackup``), not in the copper measurement."""
+    flat, _warnings = epro.measured_copper(pcb, frame)
+    assert flat
+    assert all(r["ctype"] in ("track", "via") for r in flat)
 
 
-def test_extract_copper_merges_both_halves(pcb, frame):
-    ext = epro.extract_copper(pcb, frame)
-    assert len(ext.tracks) == len(epro.extract_tracks(pcb, frame).tracks)
-    assert len(ext.vias) == len(epro.extract_vias(pcb, frame).vias)
-    assert ext.rows == [*ext.tracks, *ext.vias]
+def test_measured_copper_is_both_halves_in_drc_item_shape(pcb, frame):
+    """The flat ``{"ctype", "layer", "net", ...geom}`` shape is what
+    ``drc.clearance_pairs_indexed`` reads; a nested ``geom`` would give
+    every item an empty polygon and every gap would silently vanish."""
+    flat, _warnings = epro.measured_copper(pcb, frame)
+    tracks = epro.extract_tracks(pcb, frame).tracks
+    vias = epro.extract_vias(pcb, frame).vias
+    assert len(flat) == len(tracks) + len(vias)
+    assert all("geom" not in r for r in flat)
+    assert {"segments", "width_mm"} <= set(flat[0])
+    assert {"x", "y", "dia_mm", "drill_mm", "span"} <= set(flat[-1])
 
 
 # ── the frame convention that fails silently ─────────────────────────────
@@ -370,8 +388,9 @@ def test_live_pad_net_rows_carry_the_net_in_the_body(pcb):
     rows = [
         r for r in pcb.of_type("PAD_NET") if r.body is not None and r.body.get("padNet")
     ]
-    assert len(rows) == 1
-    assert rows[0].body["padNet"] == "SIG"
+    assert [r.body["padNet"] for r in rows] == ["SIG", "SIG", "GND"]
+    # ...and the fourth id element is the PAD ELEMENT id, not a net: c1's
+    # row names e7, which is a pad in the footprint document.
     assert json.loads(rows[0].id)[3] == "e7"
 
 
@@ -488,7 +507,11 @@ def test_superseded_pad_net_rows_are_dropped(pcb):
     no payload names no net, and one naming a deleted component would bind
     a real net to a part that is not on the board."""
     live, notes = epro.live_pad_nets(pcb)
-    assert live == {("c1", "1"): "SIG"}
+    assert live == {
+        ("c1", "1"): "SIG",
+        ("c2", "1"): "SIG",
+        ("c2", "2"): "GND",
+    }
     assert any("superseded" in n for n in notes)
 
 
@@ -534,7 +557,10 @@ def test_real_board_parses_without_surprises():
     assert 1.0 < max(xs) - min(xs) < 1000.0
     assert 1.0 < max(ys) - min(ys) < 1000.0
 
-    ext = epro.extract_copper(pcb, frame)
+    ext = epro.Extraction(
+        tracks=epro.extract_tracks(pcb, frame).tracks,
+        vias=epro.extract_vias(pcb, frame).vias,
+    )
     assert ext.tracks or ext.vias
     # Everything must land on the board. A frame bug shows up here first.
     for t in ext.tracks:

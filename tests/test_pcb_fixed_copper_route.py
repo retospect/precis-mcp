@@ -570,3 +570,82 @@ def test_realize_twice_leaves_fixed_copper_untouched_and_never_leaks_into_derive
                 # this is that promise, checked against the real table.
                 assert seg.get("start") != [8.0, 8.0]
                 assert seg.get("end") != [9.0, 8.0]
+
+
+_DESIGN_VIA_ON_PAD = {
+    "components": [
+        {
+            "refdes": "U1",
+            "label": "mcu",
+            "x": 0.0,
+            "y": 0.0,
+            "pins": [{"name": "1"}, {"name": "2"}],
+            "fixed": "both",
+        },
+        {
+            "refdes": "R1",
+            "label": "r",
+            "x": 6.0,
+            "y": 0.0,
+            "pins": [{"name": "1"}, {"name": "2"}],
+            "fixed": "both",
+        },
+    ],
+    "nets": [{"name": "N1", "class": "signal"}, {"name": "N2", "class": "signal"}],
+    "connections": [
+        {"net": "N1", "refdes": "U1", "pin": "1"},
+        {"net": "N1", "refdes": "R1", "pin": "1"},
+        {"net": "N2", "refdes": "U1", "pin": "2"},
+        {"net": "N2", "refdes": "R1", "pin": "2"},
+    ],
+}
+
+
+def test_pcb_route_refuses_to_start_when_fixed_copper_pierces_a_foreign_pad(
+    store: Store,
+) -> None:
+    """Reto, 2026-10-01 (ewod-dogfood-6, an ARR1 via through a pad of
+    ARR1_SINK_O): fixed copper on another net's pad is a short no routing
+    can remove, so the job fails before the anneal and writes nothing."""
+    ref_id = _seed(store, "fxroute-via-on-pad", _DESIGN_VIA_ON_PAD)
+    board_id = store.pcb_ensure_board(ref_id)
+    handler = PcbHandler(hub=Hub(store=store))
+    pad = next(
+        p
+        for p in handler._drc_pads(ref_id, ["F.Cu", "B.Cu"])
+        if p.get("net") == "N2" and float(p["x"]) > 3.0
+    )
+    store.pcb_fixed_copper_put(
+        ref_id,
+        board_id,
+        "GENX",
+        "fake_gen",
+        "1",
+        [
+            {
+                "ctype": "via",
+                "layer": "F.Cu",
+                "net": "N1",
+                "geom": {
+                    "x": float(pad["x"]),
+                    "y": float(pad["y"]),
+                    "dia_mm": 0.45,
+                    "drill_mm": 0.2,
+                    "span": ["F.Cu", "B.Cu"],
+                },
+            }
+        ],
+    )
+    components_before = store.pcb_load(ref_id)["instances"]
+
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert len(ctx.failures) == 1
+    reason, failure_class = ctx.failures[0]
+    assert failure_class == "input"
+    assert "refusing to route" in reason
+    assert "N1" in reason and "N2" in reason
+    assert not ctx.summaries
+    assert all(r["status"] != "realized" for r in store.pcb_route_status(ref_id))
+    assert store.pcb_load(ref_id)["instances"] == components_before

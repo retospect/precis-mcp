@@ -65,6 +65,15 @@ vocabulary and almost nothing else. Everything below is spike-verified
   disagreements. This is the convention that fails silently — a wrong
   handedness renders a plausible board that cannot be built — so the
   check is reproduced in the test suite, not just recorded here.
+* **Converting that frame into precis' costs a HALF TURN on the bottom.**
+  precis mirrors a bottom instance's pads in **X**
+  (``padplace._transform_local_point``) where EasyEDA mirrors them in
+  **Y**, and the two reflections differ by exactly 180°. So a pad's local
+  ``y`` is negated (the same reflection :class:`Frame` applies) and a
+  bottom-side instance's rotation becomes ``(angle + 180) % 360``.
+  Verified against :func:`precis.pcb.padplace.place_pad_point` itself
+  over every side × rotation × pad combination rather than by hand
+  algebra — see :func:`extract_components`.
 """
 
 from __future__ import annotations
@@ -417,16 +426,29 @@ def copper_layers(pcb: EproDocument) -> dict[int, str]:
 
 @dataclass
 class Extraction:
-    """Copper rows in ``pcb_fixed_copper``'s own shape, plus every
-    judgement call the reader made on the way."""
+    """Copper rows (``{"ctype", "layer", "net", "geom"}``), plus every
+    judgement call the reader made on the way. A MEASUREMENT of the source
+    board, never geometry precis keeps (Reto, 2026-09-30) — see
+    :func:`measured_copper` and :mod:`precis.pcb.copper_report`."""
 
     tracks: list[dict[str, Any]] = field(default_factory=list)
     vias: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
-    @property
-    def rows(self) -> list[dict[str, Any]]:
-        return [*self.tracks, *self.vias]
+
+def measured_copper(
+    pcb: EproDocument, frame: Frame
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every track and via on ``pcb`` in the flat item shape
+    :mod:`precis.pcb.drc` reads (``{"ctype", "layer", "net", ...geom}``),
+    plus the reader's warnings — the input
+    :func:`precis.pcb.copper_report.report` measures."""
+    tracks, vias = extract_tracks(pcb, frame), extract_vias(pcb, frame)
+    flat = [
+        {"ctype": r["ctype"], "layer": r["layer"], "net": r["net"], **r["geom"]}
+        for r in (*tracks.tracks, *vias.vias)
+    ]
+    return flat, [*tracks.warnings, *vias.warnings]
 
 
 @dataclass(frozen=True)
@@ -518,8 +540,8 @@ def extract_tracks(pcb: EproDocument, frame: Frame, *, quantum: int = 4) -> Extr
     """``LINE`` records on copper layers → ``ctype='track'`` rows.
 
     Segments are grouped by ``(net, layer, width)`` and chained into
-    polylines, because that is what the author drew and what
-    ``pcb_fixed_copper`` stores; a per-segment row would multiply the row
+    polylines, because that is what the author drew; a per-segment row
+    would multiply the row
     count by ~3.5 and lose the fact that a corner is a corner.
     ``quantum`` is the mil-space rounding used to decide two endpoints are
     the same point.
@@ -537,7 +559,7 @@ def extract_tracks(pcb: EproDocument, frame: Frame, *, quantum: int = 4) -> Extr
                 out.warnings.append(
                     f"a {layers[lid]} {kind} at "
                     f"({b['startX']:.1f}, {b['startY']:.1f}) mil carries no net "
-                    f"name; skipped — fixed copper may not invent a net"
+                    f"name; skipped — a measurement cannot attribute copper to no net"
                 )
                 continue
             a = (round(b["startX"], quantum), round(b["startY"], quantum))
@@ -621,7 +643,7 @@ def extract_vias(pcb: EproDocument, frame: Frame) -> Extraction:
         if not net:
             out.warnings.append(
                 f"a via at ({x_mil:.1f}, {y_mil:.1f}) mil carries no net name; "
-                f"skipped — fixed copper may not invent a net"
+                f"skipped — a measurement cannot attribute copper to no net"
             )
             continue
         if vtype != "NORMAL" or unused:
@@ -747,27 +769,595 @@ def live_nets(pcb: EproDocument) -> tuple[list[str], list[str]]:
     return kept, notes
 
 
-def extract_copper(pcb: EproDocument, frame: Frame) -> Extraction:
-    """Every copper row this reader can recover, with all warnings merged.
+# ── placement + netlist (slice 1b) ──────────────────────────────────────
+#: ``COMPONENT.layerId`` values. The board's copper layer ids are
+#: self-describing (:func:`layer_map`) but a component's SIDE is not a
+#: copper-layer reference — 1/2 are the editor's fixed top/bottom
+#: component layers, and the spike board's 86/54 split across them agrees
+#: with Reto's own ground truth ("SW2 is top, U24 is bottom").
+_COMP_TOP, _COMP_BOTTOM = 1, 2
 
-    Pours are deliberately absent: ``pcb_fixed_copper``'s CHECK allows
-    only ``track|via``, and a single-net pour is better modelled as a
-    precis plane assignment than as frozen geometry. ``POURED`` fill is
-    discarded outright — it is derived, and it is the one record type in
-    the format that uses a different unit (see the module docstring).
+#: ``defaultPad.padType`` -> the precis pad shape
+#: ``precis.store._pcb_ops._normalize_local_footprint_pad`` accepts.
+#: ``ELLIPSE`` maps to ``circle`` only when it is actually circular; an
+#: ellipse with width != height has no precis shape at all and degrades
+#: to ``obround`` with a warning. ``RECT`` carries a corner ``radius``
+#: precis cannot express either — zero on all 256 of the spike board's
+#: rect pads, so a non-zero one is warned about rather than assumed
+#: impossible.
+_PAD_SHAPES = {"RECT": "rect", "ELLIPSE": "circle", "OVAL": "obround"}
+
+
+def component_attrs(pcb: EproDocument) -> dict[str, dict[str, str]]:
+    """``component id -> {attr key: value}``.
+
+    A ``COMPONENT`` body carries position, angle and side but neither its
+    refdes nor which footprint it uses; both are ``ATTR`` records
+    pointing back by ``parentId``. The spike board has exactly three keys
+    per component — ``Designator``, ``Footprint``, ``Device`` — 140 of
+    each, so this is the whole indirection and not a sample of it.
     """
-    tracks = extract_tracks(pcb, frame)
-    vias = extract_vias(pcb, frame)
-    merged = Extraction(
-        tracks=tracks.tracks,
-        vias=vias.vias,
-        warnings=[*tracks.warnings, *vias.warnings],
-    )
-    pours = pcb.bodies("POUR")
-    if pours:
-        nets = sorted({str(p.get("netName") or "?") for p in pours})
-        merged.warnings.append(
-            f"{len(pours)} POUR region(s) on {', '.join(nets)} are not imported "
-            f"as fixed copper; assign the single-net ones as planes instead"
+    out: dict[str, dict[str, str]] = {}
+    for r in pcb.of_type("ATTR"):
+        b = r.body or {}
+        parent, key = b.get("parentId"), b.get("key")
+        if not parent or not key:
+            continue
+        out.setdefault(str(parent), {})[str(key)] = str(b.get("value") or "")
+    return out
+
+
+def symbol_pin_names(symbol: EproDocument) -> dict[str, str]:
+    """``pad number -> pin name`` from one ``SYMBOL`` document.
+
+    A ``PIN`` record carries geometry only — no name, no number. Both are
+    ``ATTR`` records hanging off the pin by ``parentId``, keyed ``Pin
+    Number`` and ``Pin Name`` (``Pin Type`` is the third and is unused
+    here). Pairing them by ``parentId`` is what turns the schematic's
+    names into something a netlist can address.
+
+    A pin with a number and no name keeps the number as its name, which
+    is the identity case most passives are: on the spike board 100 of 140
+    components resolve to an identity map and 40 to real signal names.
+    """
+    numbers: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for r in symbol.of_type("ATTR"):
+        b = r.body or {}
+        parent, key, val = b.get("parentId"), b.get("key"), b.get("value")
+        if not parent or val in (None, ""):
+            continue
+        if key == "Pin Number":
+            numbers[str(parent)] = str(val)
+        elif key == "Pin Name":
+            names[str(parent)] = str(val)
+    return {num: names.get(pin, num) for pin, num in numbers.items()}
+
+
+def device_pin_names(project: EproProject) -> dict[str, dict[str, str]]:
+    """``device uuid -> {pad number: pin name}``, walking the whole chain.
+
+    A ``DEVICE`` document holds a single ``META`` record and no geometry;
+    its ``attributes["Symbol"]`` names the ``SYMBOL`` document that has
+    the pins. Verified end to end on the spike board: all 140 components
+    resolve a Device, a Symbol and a non-empty pin map, and no symbol
+    names a pad its footprint lacks.
+    """
+    symbols = {d.uuid: d for d in project.by_type("SYMBOL") if d.uuid}
+    out: dict[str, dict[str, str]] = {}
+    for dev in project.by_type("DEVICE"):
+        if not dev.uuid:
+            continue
+        metas = dev.bodies("META")
+        sym_uuid = (metas[0].get("attributes") or {}).get("Symbol") if metas else None
+        sym = symbols.get(str(sym_uuid)) if sym_uuid else None
+        if sym is not None:
+            out[dev.uuid] = symbol_pin_names(sym)
+    return out
+
+
+def footprint_title(footprint: EproDocument) -> str:
+    """The footprint's human name (``META.title``), or its uuid.
+
+    The uuid is what a ``COMPONENT``'s ``Footprint`` ``ATTR`` actually
+    names, but it is meaningless in ``view='bom'``; the title is the
+    library name (``SW-SMD_4P-L5.1-W5.1-P3.70-LS6.5-TL_H1.5``). All 33 of
+    the spike board's footprints carry a distinct non-empty title, so the
+    fallback is defensive rather than routine.
+    """
+    metas = footprint.bodies("META")
+    title = str((metas[0].get("title") if metas else "") or "").strip()
+    return title or f"epro:{footprint.uuid}"
+
+
+def _pad_to_precis(
+    b: dict[str, Any], where: str
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """One EasyEDA ``PAD`` body -> one precis footprint pad, or ``None``
+    when the shape has no precis equivalent at all.
+
+    Footprint-LOCAL coordinates, and the Y negation here is the same
+    reflection :class:`Frame` applies to the board: ``centerY`` grows
+    down, precis' pad-local ``y`` grows up. The rotation half of the
+    conversion is deliberately NOT here — it belongs to the instance
+    (:func:`extract_components`), because precis' ``padplace`` applies
+    the instance rotation to these local coordinates itself.
+    """
+    warnings: list[str] = []
+    num = str(b.get("num") or "").strip()
+    if not num:
+        return None, [f"{where}: a PAD with no 'num' cannot be addressed; skipped"]
+    dp = b.get("defaultPad") or {}
+    ea_shape = str(dp.get("padType") or "").upper()
+    w_mil, h_mil = dp.get("width"), dp.get("height")
+
+    pad: dict[str, Any] = {
+        "pin": num,
+        "x": Frame.length(float(b.get("centerX") or 0.0)),
+        # Y-down -> Y-up. The one-line reflection the whole frame rests on.
+        # ``or 0.0`` collapses the negative zero the negation produces at
+        # y=0: it compares equal to 0.0 but serialises as ``-0.0``, which
+        # would make a round-trip byte comparison fail on a pad that is
+        # exactly on the centre line.
+        "y": -Frame.length(float(b.get("centerY") or 0.0)) or 0.0,
+        "rot": float(b.get("padAngle") or 0.0),
+    }
+    if ea_shape == "POLYGON":
+        pts = _poly_points(dp.get("path") or [])
+        if len(pts) < 3:
+            return None, [
+                f"{where}: pad {num!r} is a POLYGON with {len(pts)} vertices; skipped"
+            ]
+        pad["shape"] = "polygon"
+        pad["poly"] = [[Frame.length(px), -Frame.length(py) or 0.0] for px, py in pts]
+    elif ea_shape in _PAD_SHAPES:
+        shape = _PAD_SHAPES[ea_shape]
+        if w_mil is None:
+            return None, [f"{where}: pad {num!r} ({ea_shape}) has no width; skipped"]
+        w = Frame.length(float(w_mil))
+        h = Frame.length(float(h_mil)) if h_mil is not None else w
+        if ea_shape == "ELLIPSE" and w_mil != h_mil:
+            shape = "obround"
+            warnings.append(
+                f"{where}: pad {num!r} is an ellipse {w_mil}x{h_mil} mil; precis "
+                f"has no ellipse shape, imported as an obround (same bbox, "
+                f"squarer ends)"
+            )
+        if ea_shape == "RECT" and float(dp.get("radius") or 0.0) != 0.0:
+            warnings.append(
+                f"{where}: pad {num!r} is a rounded rect (radius "
+                f"{dp['radius']} mil); precis has no corner radius, imported "
+                f"as a square-cornered rect of the same bbox"
+            )
+        pad["shape"] = shape
+        pad["w"] = w
+        pad["h"] = h
+    else:
+        return None, [
+            f"{where}: pad {num!r} has shape {ea_shape or '<none>'!r}, which has "
+            f"no precis equivalent; skipped rather than approximated blindly"
+        ]
+
+    hole = b.get("hole")
+    if isinstance(hole, dict) and hole.get("width"):
+        # Through-hole. ROUND is the only holeType seen (111 of the spike
+        # board's 403 pads); a slot would need width != height, which
+        # precis' single ``drill`` diameter cannot express.
+        hw = float(hole["width"])
+        hh = float(hole.get("height") or hole["width"])
+        pad["drill"] = Frame.length(hw)
+        if str(hole.get("holeType") or "ROUND").upper() != "ROUND" or hw != hh:
+            warnings.append(
+                f"{where}: pad {num!r} has a {hole.get('holeType')} hole "
+                f"{hw}x{hh} mil; precis carries one drill diameter, imported "
+                f"as round {hw} mil"
+            )
+    return pad, warnings
+
+
+def pad_numbers(pads: list[dict[str, Any]]) -> list[str]:
+    """The DISTINCT pad numbers of a footprint, in first-seen order.
+
+    Several pads legitimately share one number — a split thermal pad, a
+    connector shield broken into tabs — and they are one electrical pin,
+    not several. The spike board has one such footprint
+    (``SMD-1_BD8.7-D6.2``, three pads all numbered ``1``). Every caller
+    that means "the pins of this footprint" wants this, not the pad list:
+    precis' ``pin_map`` is keyed by pad number, so all three resolve to
+    the same pin name through ``padplace.pad_label`` — which is the
+    correct model, and why duplicates here are collapsed rather than
+    renamed apart.
+    """
+    seen: list[str] = []
+    for pad in pads:
+        num = str(pad.get("pin") or pad.get("number") or "")
+        if num and num not in seen:
+            seen.append(num)
+    return seen
+
+
+def _dedup_pin_names(
+    numbers: list[str], pin_names: dict[str, str], where: str
+) -> tuple[dict[str, str], list[str]]:
+    """``pad number -> pin name`` with name collisions broken apart.
+
+    Resolves the ``(component_id, name)`` collision four ``GND`` pins
+    would cause on ``pcb_pins`` by suffixing the pad number. Not
+    hypothetical: one of the spike board's 47 symbols names six pins
+    ``GND``. Copper still lands correctly either way, because ``PAD_NET``
+    binds a net per PAD — but two pins sharing a name cannot both exist
+    as rows, so the second would vanish and its connections with it.
+
+    Takes DISTINCT pad numbers (:func:`pad_numbers`): two pads sharing a
+    number are one pin and must keep one name, so renaming them apart
+    would invent a pin the board does not have — and would collide
+    anyway, since the suffix is that same shared number.
+    """
+    warnings: list[str] = []
+    claimed: dict[str, str] = {}
+    resolved: dict[str, str] = {}
+    for num in numbers:
+        name = pin_names.get(num, num)
+        if name in claimed:
+            renamed = f"{name}_{num}"
+            warnings.append(
+                f"{where}: pads {claimed[name]!r} and {num!r} are both named "
+                f"{name!r}; pad {num} imported as pin {renamed!r} so both "
+                f"survive (pcb_pins is keyed on the name)"
+            )
+            name = renamed
+        claimed[name] = num
+        resolved[num] = name
+    return resolved, warnings
+
+
+@dataclass
+class Design:
+    """Everything ``Store.pcb_apply`` needs, plus every judgement call.
+
+    The pure reader's whole output for the netlist/placement half —
+    :mod:`precis.ingest.pcb_epro` turns this into DB rows and adds
+    nothing to it, so what a ``--dry-run`` prints and what an import
+    writes cannot drift apart.
+    """
+
+    components: list[dict[str, Any]] = field(default_factory=list)
+    nets: list[dict[str, Any]] = field(default_factory=list)
+    connections: list[dict[str, Any]] = field(default_factory=list)
+    footprints: list[dict[str, Any]] = field(default_factory=list)
+    features: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    #: Counts the CLI prints, so a human can compare them to the source.
+    stats: dict[str, int] = field(default_factory=dict)
+
+
+def extract_footprints(
+    project: EproProject, pcb: EproDocument
+) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
+    """The ``FOOTPRINT`` documents the board actually places, as
+    ``pcb_apply`` ``footprints[]`` entries, plus ``uuid -> name``.
+
+    Only referenced footprints are emitted: the spike board's project
+    carries 33 and places 20, and an unreferenced library leftover in
+    ``pcb_local_footprints`` is noise a reader of the imported board
+    would have to explain away.
+
+    Each footprint gets ONE ``pin_map``, which is only well-defined
+    because a footprint carries one set of pin names across every
+    component that places it — verified: zero of the spike board's 20
+    placed footprints see two different maps. A board that violated that
+    would need per-variant footprints, so it is detected and warned
+    about rather than resolved by last-write-wins.
+    """
+    warnings: list[str] = []
+    by_uuid = {d.uuid: d for d in project.by_type("FOOTPRINT") if d.uuid}
+    pin_maps = device_pin_names(project)
+    attrs = component_attrs(pcb)
+
+    # footprint uuid -> the device uuids placed with it
+    placed: dict[str, set[str]] = {}
+    for r in pcb.of_type("COMPONENT"):
+        if not r.id or not r.body:
+            continue
+        a = attrs.get(r.id, {})
+        fp_uuid = a.get("Footprint")
+        if fp_uuid:
+            placed.setdefault(fp_uuid, set()).add(a.get("Device") or "")
+
+    names: dict[str, str] = {}
+    out: list[dict[str, Any]] = []
+    for fp_uuid, device_uuids in sorted(placed.items()):
+        doc = by_uuid.get(fp_uuid)
+        if doc is None:
+            warnings.append(
+                f"footprint {fp_uuid!r} is placed but the project carries no "
+                f"FOOTPRINT document for it; its components import with no pads"
+            )
+            continue
+        title = footprint_title(doc)
+        name = title
+        if name in names.values():
+            # Two footprints with one title: the join key must stay unique
+            # or one silently wins. Never seen (33 distinct titles for 33
+            # documents) but cheap to make impossible.
+            name = f"{title}~{fp_uuid[:8]}"
+            warnings.append(
+                f"two footprints share the title {title!r}; the second is "
+                f"imported as {name!r} so both keep their own pads"
+            )
+        names[fp_uuid] = name
+
+        pads: list[dict[str, Any]] = []
+        for b in doc.bodies("PAD"):
+            pad, pad_warnings = _pad_to_precis(b, f"footprint {name!r}")
+            warnings += pad_warnings
+            if pad is not None:
+                pads.append(pad)
+        if not pads:
+            warnings.append(
+                f"footprint {name!r} yielded no usable pads; its components "
+                f"import as placed outlines with nothing to solder"
+            )
+            continue
+
+        maps = {tuple(sorted(pin_maps.get(d, {}).items())) for d in device_uuids if d}
+        if len(maps) > 1:
+            warnings.append(
+                f"footprint {name!r} is placed by {len(maps)} devices that name "
+                f"its pins DIFFERENTLY; precis stores one pin map per footprint, "
+                f"so the first is used and the others fall back to pad numbers"
+            )
+        chosen = dict(sorted(maps)[0]) if maps else {}
+        pin_map, dedup_warnings = _dedup_pin_names(
+            pad_numbers(pads), chosen, f"footprint {name!r}"
         )
-    return merged
+        warnings += dedup_warnings
+        out.append({"name": name, "pads": pads, "pin_map": pin_map})
+    return out, names, warnings
+
+
+def extract_components(
+    project: EproProject,
+    pcb: EproDocument,
+    frame: Frame,
+    footprint_names: dict[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
+    """Placed ``COMPONENT`` records as ``pcb_apply`` ``components[]``,
+    plus the ``component id -> refdes`` map of the records that WON.
+
+    That map is returned rather than re-derived because a connection is
+    keyed by component id and has to reach the same row: two components
+    sharing a designator means one is skipped, and a caller that
+    re-resolved id -> refdes by name would bind the skipped one's pads to
+    the surviving row's pins — silently moving copper onto the wrong part.
+
+    **The instance rotation is not the source angle.** A bottom-side
+    component takes ``(angle + 180) % 360``, because precis mirrors a
+    bottom instance's pads in **X** (``padplace._transform_local_point``)
+    while EasyEDA mirrors them in **Y**, and those two reflections differ
+    by exactly a half turn. Verified against ``padplace.place_pad_point``
+    itself over every side x rotation combination: pad-local ``y``
+    negated plus this half turn reproduces the spike-verified source-frame
+    rule exactly, and dropping the half turn puts every bottom-side pad
+    diametrically opposite its true position — a board that renders
+    plausibly and cannot be built.
+
+    ``part_lcsc`` is deliberately absent: ``pcb_components.footprint``
+    only joins ``pcb_local_footprints`` when ``part_lcsc IS NULL``, so
+    setting it would orphan every pad this reader just recovered.
+    """
+    warnings: list[str] = []
+    attrs = component_attrs(pcb)
+    pin_maps = device_pin_names(project)
+    fp_docs = {d.uuid: d for d in project.by_type("FOOTPRINT") if d.uuid}
+
+    out: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    for r in pcb.of_type("COMPONENT"):
+        if not r.id or not r.body:
+            continue
+        b = r.body
+        a = attrs.get(r.id, {})
+        refdes = (a.get("Designator") or "").strip()
+        if not refdes:
+            warnings.append(
+                f"component {r.id!r} has no Designator attribute; skipped "
+                f"(a refdes is how every other record addresses it)"
+            )
+            continue
+        if refdes in seen:
+            warnings.append(
+                f"two components share the designator {refdes!r}; the second "
+                f"is skipped (refdes is the identity precis applies on)"
+            )
+            continue
+        seen[refdes] = r.id
+
+        layer_id = int(b.get("layerId") or _COMP_TOP)
+        if layer_id not in (_COMP_TOP, _COMP_BOTTOM):
+            warnings.append(
+                f"{refdes}: layerId {layer_id} is neither the top ({_COMP_TOP}) "
+                f"nor the bottom ({_COMP_BOTTOM}) component layer; imported as top"
+            )
+        bottom = layer_id == _COMP_BOTTOM
+        x, y = frame.xy(float(b.get("x") or 0.0), float(b.get("y") or 0.0))
+        angle = float(b.get("angle") or 0.0)
+
+        comp: dict[str, Any] = {
+            "refdes": refdes,
+            "x": x,
+            "y": y,
+            # See the docstring: the half turn is the bottom-side mirror
+            # axis difference, not a fudge factor.
+            "rot": (angle + (180.0 if bottom else 0.0)) % 360.0,
+            "layer": "bottom" if bottom else "top",
+        }
+        fp_uuid = a.get("Footprint") or ""
+        fp_name = footprint_names.get(fp_uuid)
+        if fp_name:
+            comp["footprint"] = fp_name
+
+        doc = fp_docs.get(fp_uuid)
+        # Distinct pad numbers: several pads may share one (a split thermal
+        # pad), and they are one pin. Emitting one row per PAD would give
+        # the component three identical pins and three identical
+        # connections for the same piece of copper.
+        nums = (
+            pad_numbers([{"pin": p.get("num")} for p in doc.bodies("PAD")])
+            if doc
+            else []
+        )
+        names = pin_maps.get(a.get("Device") or "", {})
+        resolved, _ = _dedup_pin_names(nums, names, refdes)
+        if resolved:
+            comp["pins"] = [{"name": resolved[n], "pad": n} for n in nums]
+        else:
+            warnings.append(
+                f"{refdes}: no pads resolved, so it carries no pins; its "
+                f"connections cannot be imported"
+            )
+        if b.get("locked"):
+            comp["fixed"] = "both"
+        out.append(comp)
+    return out, {cid: rd for rd, cid in seen.items()}, warnings
+
+
+def extract_mounting_holes(
+    pcb: EproDocument, frame: Frame
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Non-plated ``PAD`` records on the PCB document itself ->
+    ``mounting_hole`` features (the shape
+    ``session.mounting_holes_from_features`` reads).
+
+    These are free pads, belonging to no component: the spike board has
+    30, of which 24 are non-plated 6.0 mm holes (the mounting pattern)
+    and 6 are plated 10.0 mm holes on ``GND``. Only the non-plated ones
+    become features — a plated free pad is real copper on a real net with
+    no precis home at all, so it is reported rather than quietly turned
+    into a mounting hole, which would drop its net.
+    """
+    warnings: list[str] = []
+    out: list[dict[str, Any]] = []
+    plated_free = 0
+    for b in pcb.bodies("PAD"):
+        hole = b.get("hole")
+        dia_mil = (hole or {}).get("width") if isinstance(hole, dict) else None
+        if b.get("plated"):
+            plated_free += 1
+            continue
+        if not dia_mil:
+            warnings.append(
+                f"a non-plated free pad at "
+                f"({b.get('centerX')}, {b.get('centerY')}) mil has no hole; skipped"
+            )
+            continue
+        x, y = frame.xy(float(b.get("centerX") or 0.0), float(b.get("centerY") or 0.0))
+        # No ``fixed`` flag: ``pcb_features.fixed`` is an unconstrained
+        # text column that NOTHING reads (the same inertness
+        # docs/backlog/pcb-keepout-does-not-bind.md reports for
+        # ftype='keepout'), so setting it would store a freeze that binds
+        # nothing and reads as if it did. Mounting holes are already
+        # immovable in practice — no placer or router touches features.
+        out.append(
+            {
+                "ftype": "mounting_hole",
+                "geom": {"x": x, "y": y, "dia_mm": Frame.length(float(dia_mil))},
+            }
+        )
+    if plated_free:
+        nets = sorted(
+            {str(b.get("netName") or "?") for b in pcb.bodies("PAD") if b.get("plated")}
+        )
+        warnings.append(
+            f"{plated_free} plated free pad(s) on {', '.join(nets)} belong to no "
+            f"component; precis has no free-pad model, so they are NOT imported "
+            f"— their net loses those connections"
+        )
+    return out, warnings
+
+
+def build_design(
+    project: EproProject, pcb: EproDocument | None = None
+) -> tuple[Design, Frame]:
+    """The whole netlist/placement read, in one call.
+
+    Order matters and is the reason this exists as one function rather
+    than a recipe each caller repeats: the outline defines the
+    :class:`Frame` every coordinate below is expressed in, footprints
+    must be named before components can reference them, and the netlist
+    is filtered to live rows before connections are built from it so a
+    dropped net cannot leave a dangling connection.
+    """
+    board = pcb if pcb is not None else project.pcb()
+    outline, frame = board_outline(board)
+    design = Design()
+
+    footprints, fp_names, fp_warnings = extract_footprints(project, board)
+    design.footprints = footprints
+    design.warnings += fp_warnings
+
+    components, refdes_by_comp, comp_warnings = extract_components(
+        project, board, frame, fp_names
+    )
+    design.components = components
+    design.warnings += comp_warnings
+
+    nets, net_warnings = live_nets(board)
+    design.nets = [{"name": n} for n in nets]
+    design.warnings += net_warnings
+
+    pad_nets, pad_warnings = live_pad_nets(board)
+    design.warnings += pad_warnings
+
+    # (component id, pad number) -> (refdes, pin name). A connection names
+    # a PIN, so it needs the same pad->pin resolution the components got;
+    # re-deriving it here from the emitted pins keeps the two in step
+    # instead of resolving the chain twice and hoping they agree.
+    emitted = {c["refdes"]: c for c in components}
+    pin_by_comp: dict[str, dict[str, str]] = {
+        comp_id: {
+            str(p["pad"]): str(p["name"]) for p in emitted[refdes].get("pins", [])
+        }
+        for comp_id, refdes in refdes_by_comp.items()
+    }
+
+    live_net_names = set(nets)
+    dropped_conn = 0
+    for (comp_id, pad_num), net_name in sorted(pad_nets.items()):
+        refdes = refdes_by_comp.get(comp_id)
+        pin = pin_by_comp.get(comp_id, {}).get(pad_num)
+        if refdes is None or pin is None or net_name not in live_net_names:
+            dropped_conn += 1
+            continue
+        design.connections.append({"net": net_name, "refdes": refdes, "pin": pin})
+    if dropped_conn:
+        design.warnings.append(
+            f"{dropped_conn} live pad-net row(s) name a component, pad or net "
+            f"that did not survive the import; those connections are dropped"
+        )
+
+    holes, hole_warnings = extract_mounting_holes(board, frame)
+    design.warnings += hole_warnings
+    design.features = [
+        {"ftype": "outline", "geom": {"path": [[x, y] for x, y in outline]}},
+        *holes,
+    ]
+
+    rules = len(board.of_type("RULE")) + len(board.of_type("RULE_SELECTOR"))
+    if rules:
+        design.warnings.append(
+            f"{rules} RULE/RULE_SELECTOR record(s) are NOT imported: precis has "
+            f"no keepout or design-rule-area mechanism at all "
+            f"(docs/backlog/pcb-keepout-does-not-bind.md), so importing them "
+            f"would store constraints that bind nothing"
+        )
+
+    design.stats = {
+        "components": len(design.components),
+        "footprints": len(design.footprints),
+        "nets": len(design.nets),
+        "connections": len(design.connections),
+        "mounting_holes": len(holes),
+        "outline_vertices": len(outline),
+    }
+    return design, frame

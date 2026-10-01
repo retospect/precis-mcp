@@ -74,6 +74,18 @@ discipline as everywhere else in this kind): a same-layer crossing names
 the other net it crosses; a congestion failure names the gap size, its
 capacity, and how many strands wanted through it.
 
+**The route job itself fails when any net is not realized.** Its copper,
+per-net statuses and summary are still written first, so the partial board
+stays inspectable; the job's reason lists the failed nets. A failed route
+job is not a crash: read `view='route-status'`, fix, and re-route.
+
+**Fixed copper on another net's pad refuses the route.** If a fixed via or
+track has a clearance error against a pad of a different net, the job
+fails before routing and writes nothing; its reason lists each collision.
+No route can remove such a short. Move the part off the fixed copper
+(`op='move'`) or re-place, then route again. `view='drc'` shows the same
+findings.
+
 `view='congestion'` reports gaps only. With failed nets and no gap warning
 it says the failures have another cause; read `view='route-status'` for
 each net's reason. Before routing, `view='feasibility'` lists pins whose

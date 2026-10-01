@@ -2556,6 +2556,27 @@ def test_diagnose_unrouted_reason_no_path_when_the_endpoint_is_walled_in():
     assert reason.kind == "no_path", reason.message
 
 
+def test_diagnose_unrouted_reason_search_budget_when_the_probe_gives_up():
+    """The same walled-in board with a budget too small to finish the
+    search: it has not PROVED there is no path, so it must not say so."""
+    pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
+        _boxed_scenario(gap_mm=None)
+    )
+    reason = pcb_realize._diagnose_unrouted(
+        ir,
+        seg_id,
+        spec,
+        pads,
+        clearance,
+        signal_layers,
+        NetRules(track_width_mm=0.2, clearance_mm=clearance),
+        n_vias=1,
+        group_extent=None,
+        max_expansions=5,
+    )
+    assert reason.kind == "search_budget", reason.message
+
+
 def test_diagnose_unrouted_reason_congestion_when_a_corridor_exists_in_isolation():
     pcb_realize, ir, seg_id, spec, pads, clearance, signal_layers, NetRules = (
         _boxed_scenario(gap_mm=3.0)

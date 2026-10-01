@@ -143,6 +143,54 @@ def _residual_crossings(
     return failing
 
 
+def _fixed_copper_collisions(
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    fab_caps: Any,
+) -> list[str]:
+    """Every fab-illegal clearance between AUTHORED fixed copper and a pad
+    (or other fixed copper) of another net, as one line each — empty when
+    the board is clean.
+
+    Reto (2026-10-01, ewod-dogfood-6: an ARR1 via through a pad of
+    ARR1_SINK_O): "highly illegal and should prevent the router from
+    starting". Fixed copper is frozen, so the router cannot fix such a
+    collision; it can only route around a short. Same pad geometry
+    (`pads_for_ir`) and the same rule (`drc.check_clearance`) view='drc'
+    uses, restricted to error-severity findings that involve fixed copper —
+    a pad-to-pad overlap is the placer's to fix and is not judged here."""
+    if not fixed_copper:
+        return []
+    from precis.pcb import drc as pcb_drc
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "copper": list(fixed_copper),
+        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+    }
+    out: list[str] = []
+    for f in pcb_drc.check_clearance(model, fab_caps):
+        if f.severity != "error":
+            continue
+        if not any(o.get("ctype") in ("via", "track") for o in f.objects):
+            continue
+        out.append(f"{f.where}: {f.detail}")
+    return out
+
+
+def _collision_reason(what: str, collisions: list[str]) -> str:
+    shown = "\n".join(f"  {c}" for c in collisions[:10])
+    more = f"\n  (+{len(collisions) - 10} more)" if len(collisions) > 10 else ""
+    return (
+        f"pcb_route: {what} — {len(collisions)} fixed-copper clearance "
+        f"error(s) against another net's copper, which no routing can "
+        f"remove:\n{shown}{more}\nMove the part off the fixed copper "
+        "(op='move') or re-place, then route again; view='drc' lists them all."
+    )
+
+
 def _resolve_pin_swap_groups(
     ir: PcbIR,
     graph: dict[str, Any],
@@ -364,6 +412,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         local_footprints_by_name=ctx.store.pcb_local_footprints_for(pcb_ref_id),
         local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
     )
+    try:
+        fab_caps = capability_for(_process_for_stackup(ir.stackup))
+    except ValueError as exc:
+        ctx.record_failure(f"pcb_route: {exc}", failure_class="infra")
+        return
+    # Fixed copper through another net's pad is a short the router cannot
+    # remove — refuse before spending the anneal, and write nothing.
+    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
+    collisions = _fixed_copper_collisions(ir, footprints, fixed_copper, fab_caps)
+    if collisions:
+        ctx.record_failure(
+            _collision_reason("refusing to route", collisions), failure_class="input"
+        )
+        return
+
     pin_swap_warnings: list[str] = []
     pin_swap_groups = _resolve_pin_swap_groups(ir, graph, pin_swap_warnings)
     # Planar warm start BEFORE the anneal: each group's pins matched to
@@ -384,6 +447,15 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         pin_swap_groups=pin_swap_groups,
     )
     result = optimize(ir, config)
+    # The anneal moves unfrozen parts, so check again before any write: a
+    # placement that parks a pad on fixed copper is not persisted either.
+    collisions = _fixed_copper_collisions(ir, footprints, fixed_copper, fab_caps)
+    if collisions:
+        ctx.record_failure(
+            _collision_reason("the anneal placed pads on fixed copper", collisions),
+            failure_class="non-convergence",
+        )
+        return
 
     # Write back the anneal's settled plane decisions (gr267526: this used
     # to be dropped entirely — PLANE_PROMOTE/DEMOTE moves mutated
@@ -434,23 +506,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     pose = pcb_session.positions(ir)
     ctx.store.pcb_set_pose(pcb_ref_id, pose)
 
-    try:
-        fab_caps = capability_for(_process_for_stackup(ir.stackup))
-    except ValueError as exc:
-        ctx.record_failure(f"pcb_route: {exc}", failure_class="infra")
-        return
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps, class_rules=graph.get("net_classes")
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that
     # block's own comment for why.
-    # Authored fixed copper (pcb-pre-place-route-blocks Slice 1, "Realize
-    # seam"): claimed on the occupancy grid as real obstacles for every
-    # OTHER net, and short-circuits any ratsnest segment its own two pins
-    # already bridge (`RealizeResult.fixed_realized` below) — see
-    # `realize()`'s own `fixed_copper` keyword docstring for both halves.
-    fixed_copper = ctx.store.pcb_fixed_copper_list(int(board_id))
+    # Authored fixed copper (`fixed_copper`, read before the anneal for the
+    # collision gate; pcb-pre-place-route-blocks Slice 1, "Realize seam"):
+    # claimed on the occupancy grid as real obstacles for every OTHER net,
+    # and short-circuits any ratsnest segment its own two pins already
+    # bridge (`RealizeResult.fixed_realized` below) — see `realize()`'s own
+    # `fixed_copper` keyword docstring for both halves.
     rres = pcb_realize.realize(
         ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
     )
@@ -764,6 +831,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"{len(pin_swap_overrides)} pin swap(s) settled"
         f"{pin_swap_summary}\n\n" + digest_toon(result),
     )
+    # Reto's ruling (2026-10-01): "it's no good if the wires are not there.
+    # You may show it to me but it is failed." So ANY failed net fails the
+    # job — after the copper, statuses and summary above are written, so the
+    # partial board stays inspectable (view='svg'/'drc'/'route-status').
+    # Before this, a run that realized 8 of 89 nets ended SUCCEEDED.
+    if n_failed:
+        failed_names = sorted(n for n, r in rows.items() if r.get("status") == "failed")
+        shown = ", ".join(failed_names[:10])
+        more = f" (+{len(failed_names) - 10} more)" if len(failed_names) > 10 else ""
+        ctx.record_failure(
+            f"pcb_route: {n_failed} of {len(rows)} net(s) not realized: "
+            f"{shown}{more} — partial copper is written; see "
+            "view='route-status' for each net's reason",
+            failure_class="non-convergence",
+        )
 
 
 def _run(*_a: Any, **_k: Any) -> Any:

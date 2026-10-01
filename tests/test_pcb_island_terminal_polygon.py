@@ -321,7 +321,7 @@ def _route_and_count(pcb, store) -> tuple[dict[str, str], int, int]:
     assert ref is not None
     resp = pcb.put(id=slug, args={"op": "route", "seed": 1})
     assert "enqueued" in resp.body
-    _drain_one_job(store, ref.id)
+    _drain_one_job(store, ref.id, unrouted_ok=True)
     status = {str(r["name"]): str(r["status"]) for r in store.pcb_route_status(ref.id)}
     escape_pins, offered = _island_terminals_offered(pcb, store, ref.id)
     return status, escape_pins, offered

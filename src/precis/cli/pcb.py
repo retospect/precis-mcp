@@ -1,7 +1,20 @@
-"""``precis pcb`` — PCB catalog maintenance.
+"""``precis pcb`` — PCB catalog maintenance and board import.
 
 Subcommands:
 
+* ``import-epro`` — import an EasyEDA Pro ``.epro2`` board into the ``pcb``
+  kind (``docs/backlog/pcb-epro-import.md``). A CLI verb rather than the
+  MCP ``put`` surface because a real board is hundreds of pads, and
+  marshalling that through JSON arguments is the wrong pipe. ``--dry-run``
+  reads, derives and refuses exactly as the real import would, then writes
+  nothing — so the warnings can be read before committing to a board.
+  ``--update`` re-imports onto an existing import of the same board
+  (moves and new parts applied, everything else reported). Prints the
+  copper report too (below).
+* ``copper-report`` — the source board's own track widths, via sizes and
+  gaps beside the rules precis resolves for each net
+  (:mod:`precis.pcb.copper_report`). Re-run after annotating nets to see
+  which disagreements the annotations resolved. Writes nothing.
 * ``refresh-parts`` — load/refresh the ``parts`` catalog (gr264357: prod
   ``parts`` was EMPTY — the parsing layer in ``precis.pcb.catalog`` existed
   but nothing ever called it; there was no CLI verb and no worker pass).
@@ -34,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from typing import TYPE_CHECKING
 
 from precis.cli._common import resolve_dsn
@@ -42,15 +56,88 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 
+#: ``import-epro`` exit codes. Named because a script around this command
+#: needs to tell "your file is fine, precis cannot take it yet" (a layer
+#: count, an existing slug) apart from "this file is not readable" — the
+#: first is worth waiting for, the second is worth re-exporting.
+EXIT_UNREADABLE = 2
+EXIT_REFUSED = 3
+
+
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    """Register the ``pcb`` subcommand (currently: ``refresh-parts``)."""
+    """Register the ``pcb`` subcommand (``import-epro``,
+    ``refresh-parts``)."""
     p = sub.add_parser(
         "pcb",
-        help="PCB catalog maintenance (JLCPCB parts ingest).",
+        help="PCB board import and catalog maintenance.",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     psub = p.add_subparsers(dest="pcb_cmd", required=True)
+
+    ie = psub.add_parser(
+        "import-epro",
+        help="Import an EasyEDA Pro .epro2 board into the pcb kind.",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ie.add_argument("path", help="Path to the .epro2 file.")
+    ie.add_argument(
+        "--slug",
+        required=True,
+        help="The pcb slug to create. Refuses if it already exists unless "
+        "--update is given: a plain second import would EXTEND the design "
+        "(an existing refdes keeps its old position, and features have no "
+        "dedup key at all).",
+    )
+    ie.add_argument(
+        "--update",
+        action="store_true",
+        help="Re-import onto an existing import of the SAME board: moved "
+        "parts take the source's pose, new parts are added; a removed "
+        "part, a rewired pin or a changed outline is reported, not "
+        "applied (precis is where the design is being corrected).",
+    )
+    ie.add_argument(
+        "--title",
+        default=None,
+        help="Design title (default: the project's own title).",
+    )
+    ie.add_argument(
+        "--board",
+        default=None,
+        metavar="UUID",
+        help="Which PCB document to import. Required when the project "
+        "carries more than one — not theoretical: a real export was seen "
+        "holding seven, with the interesting board LAST.",
+    )
+    ie.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read, derive and refuse exactly as a real import would, then "
+        "write nothing. Reports identical counts and warnings.",
+    )
+    ie.add_argument(
+        "--database-url",
+        default=None,
+        help="Override PRECIS_DATABASE_URL.",
+    )
+    ie.set_defaults(func=run)
+
+    cr = psub.add_parser(
+        "copper-report",
+        help="Measure an imported .epro2 board's own copper against the "
+        "slug's current net rules.",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    cr.add_argument("path", help="The .epro2 file the slug was imported from.")
+    cr.add_argument("--slug", required=True, help="The imported pcb slug.")
+    cr.add_argument("--board", default=None, metavar="UUID", help="As import-epro.")
+    cr.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+    cr.set_defaults(func=run)
 
     rp = psub.add_parser(
         "refresh-parts",
@@ -99,8 +186,120 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
 def run(args: argparse.Namespace) -> None:
     """Dispatch ``precis pcb <cmd>``."""
-    if args.pcb_cmd == "refresh-parts":
+    if args.pcb_cmd == "import-epro":
+        _import_epro(args)
+    elif args.pcb_cmd == "copper-report":
+        _copper_report(args)
+    elif args.pcb_cmd == "refresh-parts":
         _refresh_parts(args)
+
+
+def _import_epro(args: argparse.Namespace) -> None:
+    import pathlib
+
+    from precis.ingest.pcb_epro import EproImportError, import_epro
+    from precis.pcb import copper_report
+    from precis.pcb.epro import EproError
+    from precis.store import Store
+
+    path = pathlib.Path(args.path)
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"pcb import-epro: cannot read {args.path!r}: {exc}") from exc
+
+    dsn = resolve_dsn(getattr(args, "database_url", None))
+    store = Store.connect(dsn)
+    try:
+        result = import_epro(
+            store,
+            data,
+            slug=args.slug,
+            title=args.title,
+            board_uuid=args.board,
+            source_name=path.name,
+            dry_run=args.dry_run,
+            update=getattr(args, "update", False),
+        )
+    except EproError as exc:
+        # The file is not readable as .epro2, or is missing something
+        # precis cannot invent (an outline). Re-exporting might fix it.
+        print(f"pcb import-epro: cannot read this board — {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_UNREADABLE) from exc
+    except EproImportError as exc:
+        # The file is fine; precis will not take it as it stands.
+        print(f"pcb import-epro: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED) from exc
+    finally:
+        store.close()
+
+    if result.update is not None:
+        what = "would update" if args.dry_run else "updated"
+    else:
+        what = "would import" if args.dry_run else "imported"
+    s = result.stats
+    print(
+        f"pcb import-epro: {what} {args.slug!r} — "
+        f"{s['components']} component(s), {s['footprints']} footprint(s), "
+        f"{s['nets']} net(s), {s['connections']} connection(s), "
+        f"{s['mounting_holes']} mounting hole(s)"
+    )
+    print(f"  stackup: {', '.join(_layer_label(layer) for layer in result.stackup)}")
+    if result.planes:
+        planes = ", ".join(f"{k}={v}" for k, v in sorted(result.planes.items()))
+        print(f"  planes:  {planes}")
+    # Every warning, always, and never a count standing in for them: each
+    # one is a thing the imported board does NOT carry, and a user who
+    # cannot see which will assume it came across.
+    for w in result.warnings:
+        print(f"  warn: {w}")
+    if result.update is not None:
+        for line in result.update.lines():
+            print(f"  {line}")
+    if result.copper is not None:
+        for line in copper_report.render(result.copper):
+            print(f"  {line}")
+    if args.dry_run:
+        print("  (dry run — nothing was written)")
+
+
+def _layer_label(layer: dict[str, object]) -> str:
+    """``In1.Cu (plane, routable)`` — a plane the router may also route on
+    is the case a bare name would hide."""
+    if layer.get("role") != "plane":
+        return str(layer["name"])
+    routable = ", routable" if layer.get("routable") else ""
+    return f"{layer['name']} (plane{routable})"
+
+
+def _copper_report(args: argparse.Namespace) -> None:
+    import pathlib
+
+    from precis.ingest.pcb_epro import EproImportError, report_copper
+    from precis.pcb import copper_report
+    from precis.pcb.epro import EproError
+    from precis.store import Store
+
+    try:
+        data = pathlib.Path(args.path).read_bytes()
+    except OSError as exc:
+        raise SystemExit(
+            f"pcb copper-report: cannot read {args.path!r}: {exc}"
+        ) from exc
+    store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
+    try:
+        rep = report_copper(store, data, slug=args.slug, board_uuid=args.board)
+    except EproError as exc:
+        print(f"pcb copper-report: cannot read this board — {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_UNREADABLE) from exc
+    except EproImportError as exc:
+        print(f"pcb copper-report: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED) from exc
+    finally:
+        store.close()
+    print(f"pcb copper-report: {args.slug!r}")
+    for line in copper_report.render(rep):
+        print(f"  {line}")
 
 
 def _refresh_parts(args: argparse.Namespace) -> None:

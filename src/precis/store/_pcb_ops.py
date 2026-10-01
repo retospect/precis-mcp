@@ -165,10 +165,23 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     is the same ``{pads, pin_map, courtyard, centroid}`` row shape
     ``part_footprints`` uses (:meth:`PcbMixin.pcb_footprints_for`'s own
     return shape) — so every reader downstream of either source (padplace/
-    realize/gerber) takes one dict shape, not two. ``pin_map`` is built
-    identity (pad number == pin name — :func:`_normalize_local_footprint_pad`
-    already made ``number`` the pin name), matching
-    :mod:`precis.pcb.easyeda`'s own ``pin_map`` construction."""
+    realize/gerber) takes one dict shape, not two.
+
+    ``pin_map`` is identity by default (pad number == pin name —
+    :func:`_normalize_local_footprint_pad` already made ``number`` the pin
+    name), matching :mod:`precis.pcb.easyeda`'s own construction. An
+    authored ``pin_map`` is honoured when given, which is what lets a
+    SEMANTIC pin name reach real copper: ``padplace.pad_label`` resolves a
+    netlist pin name through this map, so without it the only way to name
+    a pad ``"VDD"`` was to call the *pad* that — destroying the pad number
+    an EasyEDA export has to round-trip back out.
+
+    Every key must be a real pad number, because the failure it prevents
+    is silent: a typo'd or stale key would simply never match a pad, and
+    the pin it meant to name would fall back to the pad number with
+    nothing said. Pads the map omits keep their identity entry rather
+    than dropping out, so a partial map names the pins it knows and
+    leaves the rest numbered."""
     name = str(f.get("name") or "").strip()
     if not name:
         raise ValueError("pcb footprint needs a name")
@@ -177,6 +190,26 @@ def _normalize_local_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         raise ValueError(f"pcb footprint {name!r} needs at least one pad")
     pads = [_normalize_local_footprint_pad(p) for p in raw_pads]
     pin_map = {pad["number"]: {"name": pad["number"], "tags": []} for pad in pads}
+    for pad_num, entry in (f.get("pin_map") or {}).items():
+        key = str(pad_num)
+        if key not in pin_map:
+            raise ValueError(
+                f"pcb footprint {name!r}: pin_map key {key!r} is not a pad "
+                f"number on this footprint (have {sorted(pin_map)})"
+            )
+        # Accept either the full ``{name, tags}`` row shape or the bare
+        # pin name, so an importer that has only a name does not have to
+        # know the row shape to use this at all.
+        if isinstance(entry, str):
+            pin_name, tags = entry.strip(), []
+        else:
+            pin_name = str((entry or {}).get("name") or "").strip()
+            tags = list((entry or {}).get("tags") or [])
+        if not pin_name:
+            raise ValueError(
+                f"pcb footprint {name!r}: pin_map[{key!r}] needs a pin name"
+            )
+        pin_map[key] = {"name": pin_name, "tags": tags}
 
     xs: list[float] = []
     ys: list[float] = []
@@ -284,7 +317,10 @@ class PcbMixin:
         ``footprint`` field then names), ``pads`` (req, ``[{pin, shape:
         'circle'|'rect'|'obround'|'polygon', x, y, w?, h?, poly?, role?,
         mask?, paste?, drill?}]`` — see :func:`_normalize_local_footprint`
-        for the full per-field contract), optional ``courtyard``/
+        for the full per-field contract), optional ``pin_map``
+        (``{pad_number: 'PIN'}`` or ``{pad_number: {name, tags?}}`` —
+        identity for any pad it omits, and every key must be a real pad
+        number), optional ``courtyard``/
         ``centroid``/``note``. Applied BEFORE components, so a component
         in the same batch may reference a footprint just authored.
         Re-runnable: existing refdes/net names reused; an existing
@@ -1623,7 +1659,9 @@ class PcbMixin:
         x: float | None = None,
         y: float | None = None,
         rot: float | None = None,
+        layer: str | None = None,
         fixed: str | None = _UNSET,
+        conn: Connection | None = None,
     ) -> bool:
         """The inline move/rotate/(un)lock editor. Unlike
         :meth:`pcb_set_pose`'s optimizer write-back, this IS the authorized
@@ -1631,8 +1669,11 @@ class PcbMixin:
         deliberately repositioning a locked part is not the failure mode
         the optimizer's guard exists for. ``fixed`` defaults to a sentinel
         so a caller can pass ``fixed=None`` to explicitly CLEAR the lock,
-        distinct from omitting it (leave the lock alone). Returns whether a
-        live instance was found and updated."""
+        distinct from omitting it (leave the lock alone). ``layer``
+        (``top``/``bottom``) is the side — an EasyEDA ``--update`` carries
+        a flip as an edit like any other. Reuses ``conn`` inside an existing
+        transaction. Returns whether a live instance was found and
+        updated."""
         sets: list[str] = []
         params: list[Any] = []
         if x is not None:
@@ -1644,19 +1685,23 @@ class PcbMixin:
         if rot is not None:
             sets.append("rot = %s")
             params.append(float(rot))
+        if layer is not None:
+            sets.append("layer = %s")
+            params.append(layer)
         if fixed is not _UNSET:
             sets.append("fixed = %s")
             params.append(fixed)
         if not sets:
             return False
         params += [ref_id, refdes]
-        with self.tx() as conn:
-            n = conn.execute(
-                f"UPDATE pcb_instances SET {', '.join(sets)} "  # nosec B608 — sets[] is a fixed internal column-name list, never caller input
-                "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
-                params,
-            ).rowcount
-        return n > 0
+        sql = (
+            f"UPDATE pcb_instances SET {', '.join(sets)} "  # nosec B608 — sets[] is a fixed internal column-name list, never caller input
+            "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL"
+        )
+        if conn is not None:
+            return conn.execute(sql, params).rowcount > 0
+        with self.tx() as c:
+            return c.execute(sql, params).rowcount > 0
 
     def pcb_net_ids(self, ref_id: int) -> dict[str, int]:
         """``{net name: net_id}`` for a design — the join key
@@ -2110,10 +2155,24 @@ class PcbMixin:
                 )
         return True
 
-    def pcb_assign_plane(self, ref_id: int, layer_name: str, net_name: str) -> int:
+    def pcb_assign_plane(
+        self,
+        ref_id: int,
+        layer_name: str,
+        net_name: str,
+        *,
+        conn: Connection | None = None,
+    ) -> int:
         """Author a plane assignment (``pcb_planes``) — the inline "assign
         plane net" editor. Idempotent by (board, layer, net); returns
         plane_id, or 0 when ``net_name`` doesn't resolve.
+
+        Reuses ``conn`` when called inside an existing transaction, the
+        same hedge :meth:`pcb_ensure_board` offers: the ``.epro2`` import
+        writes the design, the stackup and the planes as ONE unit, because
+        a board that got its instances but not its plane assignments would
+        silently fall back to :data:`precis.pcb.DEFAULT_STACKUP`'s claim of
+        a GND plane on In1.Cu.
 
         Always stamps ``meta.source = 'authored'`` (merged on conflict,
         never overwriting unrelated meta keys) — a human's explicit
@@ -2123,25 +2182,32 @@ class PcbMixin:
         optimizer merely guessed at. The reverse (derived silently
         clobbering authored) must never happen — see
         :meth:`pcb_planes_replace_derived`."""
-        with self.tx() as conn:
-            board_id = self._pcb_ensure_board(conn, ref_id)
-            net = conn.execute(
-                "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
-                "AND retired_at IS NULL",
-                (ref_id, net_name),
-            ).fetchone()
-            if net is None:
-                return 0
-            row = conn.execute(
-                """
-                INSERT INTO pcb_planes (board_id, layer, net_id, meta)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
-                DO UPDATE SET meta = pcb_planes.meta || EXCLUDED.meta
-                RETURNING plane_id
-                """,
-                (board_id, layer_name, int(net[0]), Jsonb({"source": "authored"})),
-            ).fetchone()
+        if conn is not None:
+            return self._pcb_assign_plane(conn, ref_id, layer_name, net_name)
+        with self.tx() as c:
+            return self._pcb_assign_plane(c, ref_id, layer_name, net_name)
+
+    def _pcb_assign_plane(
+        self, conn: Connection, ref_id: int, layer_name: str, net_name: str
+    ) -> int:
+        board_id = self._pcb_ensure_board(conn, ref_id)
+        net = conn.execute(
+            "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
+            "AND retired_at IS NULL",
+            (ref_id, net_name),
+        ).fetchone()
+        if net is None:
+            return 0
+        row = conn.execute(
+            """
+            INSERT INTO pcb_planes (board_id, layer, net_id, meta)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (board_id, layer, net_id) WHERE retired_at IS NULL
+            DO UPDATE SET meta = pcb_planes.meta || EXCLUDED.meta
+            RETURNING plane_id
+            """,
+            (board_id, layer_name, int(net[0]), Jsonb({"source": "authored"})),
+        ).fetchone()
         return int(row[0]) if row is not None else 0
 
     def pcb_planes_list(self, ref_id: int) -> list[dict[str, Any]]:
@@ -2346,7 +2412,13 @@ class PcbMixin:
         editor's write path."""
         return self.pcb_upsert_net_classes(ref_id, {name: rules})
 
-    def pcb_set_stackup(self, board_id: int, stackup: list[dict[str, Any]]) -> None:
+    def pcb_set_stackup(
+        self,
+        board_id: int,
+        stackup: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
         """Replace a board's layer stackup — the write half of
         ``put(args={'op':'stackup'})``, the counterpart to the
         :data:`precis.pcb.DEFAULT_STACKUP` every board is BORN with in
@@ -2356,13 +2428,25 @@ class PcbMixin:
         :func:`precis.pcb.ir.validate_stackup` and the "does this strand
         copper already on a layer this drops" question by the handler,
         which is the side that has the design loaded and an error type to
-        raise. This method writes what it is handed."""
-        with self.tx() as conn:
-            conn.execute(
-                "UPDATE pcb_boards SET stackup = %s "
-                "WHERE board_id = %s AND retired_at IS NULL",
-                (Jsonb(stackup), board_id),
-            )
+        raise. This method writes what it is handed.
+
+        Reuses ``conn`` when called inside an existing transaction — see
+        :meth:`pcb_assign_plane` for why the ``.epro2`` import needs the
+        design, the stackup and the planes to land together."""
+        if conn is not None:
+            self._pcb_set_stackup(conn, board_id, stackup)
+            return
+        with self.tx() as c:
+            self._pcb_set_stackup(c, board_id, stackup)
+
+    def _pcb_set_stackup(
+        self, conn: Connection, board_id: int, stackup: list[dict[str, Any]]
+    ) -> None:
+        conn.execute(
+            "UPDATE pcb_boards SET stackup = %s "
+            "WHERE board_id = %s AND retired_at IS NULL",
+            (Jsonb(stackup), board_id),
+        )
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live measures of a design."""

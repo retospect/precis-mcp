@@ -32,8 +32,44 @@
 {"type":"ARC","ticket":81,"id":"a1"}||{"netName":"CURVE","layerId":1,"startX":600,"startY":100,"endX":600,"endY":300,"angle":180,"width":10,"locked":false,"arcType":"DOT"}|
 {"type":"ARC","ticket":82,"id":"a2"}||{"netName":"CURVE","layerId":1,"startX":600,"startY":300,"endX":500,"endY":300,"angle":0,"width":10,"locked":false,"arcType":"DOT"}|
 {"type":"PAD_NET","ticket":65,"id":"[\"PAD_NET\",\"c1\",\"2\",\"e8\"]"}||{"padNet":"","padLen":null,"attrsMap":{}}|
+{"type":"ATTR","ticket":66,"id":"c1e2"}||{"parentId":"c1","layerId":3,"x":null,"y":null,"key":"Device","value":"tiny000000000dv1","valueVisible":false}|
+{"type":"COMPONENT","ticket":90,"id":"c2"}||{"layerId":2,"x":500,"y":300,"angle":90,"attrs":{"Unique ID":"gge2"},"locked":false}|
+{"type":"ATTR","ticket":91,"id":"c2e0"}||{"parentId":"c2","layerId":4,"x":500,"y":270,"key":"Designator","value":"U1","valueVisible":true}|
+{"type":"ATTR","ticket":92,"id":"c2e1"}||{"parentId":"c2","layerId":4,"x":null,"y":null,"key":"Footprint","value":"tiny000000000fp2","valueVisible":false}|
+{"type":"ATTR","ticket":93,"id":"c2e2"}||{"parentId":"c2","layerId":4,"x":null,"y":null,"key":"Device","value":"tiny000000000dv2","valueVisible":false}|
+{"type":"PAD_NET","ticket":94,"id":"[\"PAD_NET\",\"c2\",\"1\",\"f1\"]"}||{"padNet":"SIG","padLen":null,"attrsMap":{}}|
+{"type":"PAD_NET","ticket":95,"id":"[\"PAD_NET\",\"c2\",\"2\",\"f2\"]"}||{"padNet":"GND","padLen":null,"attrsMap":{}}|
+{"type":"PAD","ticket":96,"id":"npth1"}||{"netName":"","layerId":12,"num":"1","centerX":50,"centerY":450,"padAngle":0,"defaultPad":{"padType":"ELLIPSE","width":60,"height":60},"hole":{"holeType":"ROUND","width":236.2205,"height":236.2205},"plated":false,"padType":"NORMAL"}|
+{"type":"PAD","ticket":97,"id":"free1"}||{"netName":"GND","layerId":12,"num":"9","centerX":900,"centerY":450,"padAngle":0,"defaultPad":{"padType":"ELLIPSE","width":173,"height":173},"hole":{"holeType":"ROUND","width":393.7,"height":393.7},"plated":true,"padType":"NORMAL"}|
 {"type":"DOCHEAD","ticket":70}||{"docType":"FOOTPRINT","uuid":"tiny000000000fp1","editVersion":"3.2.149"}|
+{"type":"META","ticket":75,"id":"META"}||{"title":"R0603","tags":["Footprints"]}|
 {"type":"CANVAS","ticket":71,"id":"CANVAS"}||{"originX":0,"originY":0,"unit":"mm"}|
 {"type":"PAD","ticket":72,"id":"e7"}||{"netName":"","layerId":1,"num":"1","centerX":-30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
 {"type":"PAD","ticket":73,"id":"e8"}||{"netName":"","layerId":1,"num":"2","centerX":30,"centerY":0,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
 {"type":"PAD","ticket":74,"id":"e9"}||{"netName":"","layerId":1,"num":"3","centerX":0,"centerY":25,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60},"plated":true,"padType":"NORMAL"}|
+{"type":"DOCHEAD","ticket":100}||{"docType":"FOOTPRINT","uuid":"tiny000000000fp2","editVersion":"3.2.149"}|
+{"type":"META","ticket":104,"id":"META"}||{"title":"SOT-23-3_L2.9-W1.3-P0.95","tags":["Footprints"]}|
+{"type":"PAD","ticket":101,"id":"f1"}||{"netName":"","layerId":1,"num":"1","centerX":-40,"centerY":-20,"padAngle":0,"defaultPad":{"padType":"RECT","width":40,"height":60,"radius":0},"plated":true,"padType":"NORMAL"}|
+{"type":"PAD","ticket":102,"id":"f2"}||{"netName":"","layerId":1,"num":"2","centerX":40,"centerY":-20,"padAngle":0,"defaultPad":{"padType":"ELLIPSE","width":50,"height":50},"hole":{"holeType":"ROUND","width":25,"height":25},"plated":true,"padType":"NORMAL"}|
+{"type":"PAD","ticket":103,"id":"f3"}||{"netName":"","layerId":1,"num":"3","centerX":0,"centerY":35,"padAngle":0,"defaultPad":{"padType":"OVAL","width":60,"height":30},"plated":true,"padType":"NORMAL"}|
+{"type":"DOCHEAD","ticket":110}||{"docType":"DEVICE","uuid":"tiny000000000dv1","editVersion":"3.2.149"}|
+{"type":"META","ticket":111,"id":"META"}||{"title":"Res_0603","tags":["Resistors"],"attributes":{"Designator":"R?","Symbol":"tiny00000000sym1","Footprint":"tiny000000000fp1"}}|
+{"type":"DOCHEAD","ticket":120}||{"docType":"DEVICE","uuid":"tiny000000000dv2","editVersion":"3.2.149"}|
+{"type":"META","ticket":121,"id":"META"}||{"title":"Reg_3V3","tags":["Power"],"attributes":{"Designator":"U?","Symbol":"tiny00000000sym2","Footprint":"tiny000000000fp2"}}|
+{"type":"DOCHEAD","ticket":130}||{"docType":"SYMBOL","uuid":"tiny00000000sym1","editVersion":"3.2.149"}|
+{"type":"PIN","ticket":131,"id":"s1p1"}||{"partId":"R.1","x":-20,"y":0,"length":10,"rotation":0}|
+{"type":"ATTR","ticket":132,"id":"s1p1n"}||{"parentId":"s1p1","key":"Pin Number","value":"1","partId":"R.1"}|
+{"type":"ATTR","ticket":133,"id":"s1p1m"}||{"parentId":"s1p1","key":"Pin Name","value":"1","partId":"R.1"}|
+{"type":"PIN","ticket":134,"id":"s1p2"}||{"partId":"R.1","x":20,"y":0,"length":10,"rotation":180}|
+{"type":"ATTR","ticket":135,"id":"s1p2n"}||{"parentId":"s1p2","key":"Pin Number","value":"2","partId":"R.1"}|
+{"type":"ATTR","ticket":136,"id":"s1p2m"}||{"parentId":"s1p2","key":"Pin Name","value":"2","partId":"R.1"}|
+{"type":"DOCHEAD","ticket":140}||{"docType":"SYMBOL","uuid":"tiny00000000sym2","editVersion":"3.2.149"}|
+{"type":"PIN","ticket":141,"id":"s2p1"}||{"partId":"U.1","x":-20,"y":10,"length":10,"rotation":0}|
+{"type":"ATTR","ticket":142,"id":"s2p1n"}||{"parentId":"s2p1","key":"Pin Number","value":"1","partId":"U.1"}|
+{"type":"ATTR","ticket":143,"id":"s2p1m"}||{"parentId":"s2p1","key":"Pin Name","value":"VDD","partId":"U.1"}|
+{"type":"PIN","ticket":144,"id":"s2p2"}||{"partId":"U.1","x":-20,"y":0,"length":10,"rotation":0}|
+{"type":"ATTR","ticket":145,"id":"s2p2n"}||{"parentId":"s2p2","key":"Pin Number","value":"2","partId":"U.1"}|
+{"type":"ATTR","ticket":146,"id":"s2p2m"}||{"parentId":"s2p2","key":"Pin Name","value":"GND","partId":"U.1"}|
+{"type":"PIN","ticket":147,"id":"s2p3"}||{"partId":"U.1","x":-20,"y":-10,"length":10,"rotation":0}|
+{"type":"ATTR","ticket":148,"id":"s2p3n"}||{"parentId":"s2p3","key":"Pin Number","value":"3","partId":"U.1"}|
+{"type":"ATTR","ticket":149,"id":"s2p3m"}||{"parentId":"s2p3","key":"Pin Name","value":"GND","partId":"U.1"}|

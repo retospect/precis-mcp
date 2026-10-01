@@ -143,26 +143,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "-- a test oracle by design, not a production checker (see this "
         "module's own docstring note on reference-oracle bugs)"
     ),
-    "src/precis/pcb/epro.py::read_archive": (
-        "pcb-epro-import slice 1a shipped the PURE reader ahead of its "
-        "Store-facing consumer; precis.ingest.pcb_epro and the "
-        "`precis pcb import-epro` CLI are slice 1b. Remove all five epro "
-        "entries when that lands -- they are one unwired call path, not five"
-    ),
-    "src/precis/pcb/epro.py::board_outline": (
-        "same slice-1a call path as read_archive"
-    ),
-    "src/precis/pcb/epro.py::extract_copper": (
-        "same slice-1a call path as read_archive; the --copper=fixed call "
-        "site into store.pcb_fixed_copper_put is slice 1c"
-    ),
-    "src/precis/pcb/epro.py::live_nets": (
-        "same slice-1a call path as read_archive; drops nets nothing "
-        "references, per Reto's 2026-09-30 ruling. The ingest half calls it"
-    ),
-    "src/precis/pcb/epro.py::Extraction.rows": (
-        "the flat track+via list pcb_fixed_copper_put takes; slice 1c is the call site"
-    ),
     "src/precis/pcb/escape.py::escape_graph_to_dict": (
         "serializes an EscapeGraph for the part_footprints.escape jsonb "
         "cache; the caching call site (escape-routing precompute) isn't "
@@ -368,13 +348,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "wiring a producer removes this entry."
     ),
     # ---- class methods/properties: legitimately unwired ------------------
-    "src/precis/pcb/maze.py::OccupancyGrid.owner": (
-        "a raw ``._owner`` occupancy-array accessor used only by "
-        "tests/test_pcb_maze.py's own assertions (grepped) -- a "
-        "test-inspection property, same status as OccupancyGrid.pads' "
-        "sibling ``._pads`` before the 2026-08-29 stamp_pad fix, except "
-        "this one was never meant to feed a production reader"
-    ),
     "src/precis/pcb/jlc_api.py::JlcApiClient.component_info": (
         "the single-part live-stock lookup ('in stock now' check at "
         "part-selection time, own docstring) -- its sibling "
