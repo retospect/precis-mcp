@@ -54,8 +54,11 @@ atoms and no envelope but must be citable the same way.
      path is available via `topology` but is not the citation key: not
      every structure comes from hexfold.
    - region (hexfold module inside a block): `<se:UID/REGION>`.
-   - datum: `<se:UID@axis>`, `<se:UID@face:top>` — the datum grammar,
-     namespaced under the block it is declared against.
+   - helix offset / base pair: `<se:HELIXUID@3>` (built). `@` means a
+     helix offset and nothing else — Reto, 2026-10-01: one glyph, one
+     meaning. A datum token (the datum grammar, namespaced under its
+     block, e.g. `axis`, `face:top`) takes a glyph of its own when the
+     first datum pick is built; it is not `@`.
    - Rendering: token → label + level, so the message shows
      `<axle cone (se:7f3a…)>` to the human and the UID to the resolver.
    Resolver in `precis_se` (pure, over `SeTree` + `topology`), used by the

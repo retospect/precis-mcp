@@ -25,8 +25,10 @@ rename must not break a citation:
   base pair when two antiparallel strands occupy it. The backlog item
   first wrote this ``<se:UID@h0:3>``; that keyed on the helix *label*
   against the grammar's own rule, and a helix is a block with a uid of its
-  own. Any other ``@…`` is a datum selector (:mod:`precis_se.datums`) and
-  is not resolved here.
+  own. ``@`` means a helix offset and nothing else (Reto, 2026-10-01: one
+  glyph, one meaning — it already reads ``stem@3`` in every label); a
+  datum token, when one is wanted, gets its own glyph. No base letter in
+  the token: the address survives a sequence edit, the row shows letters.
 
 A structure that ``realize_chain`` did not mint still resolves: the atom
 row names the scene label and the block rows follow, with no residue
@@ -40,7 +42,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from precis_se.chain.pairing import PAIRED, derive_pairing
+from precis_se.chain.pairing import PAIRED, UNPAIRED, derive_pairing
 from precis_se.chain.vocab import HELIX_ROLE, STRAND_ROLE, chain_role
 from precis_se.identity import block_by_uid
 
@@ -61,15 +63,15 @@ class PickLevel:
 
 @dataclass(frozen=True)
 class PickRef:
-    """A parsed token — at most one of ``atom``/``region``/``datum``."""
+    """A parsed token — at most one of ``atom``/``region``/``offset``."""
 
     uid: int
     atom: int | None = None
     region: str | None = None
-    datum: str | None = None
+    offset: int | None = None
 
 
-_TOKEN = re.compile(r"^<se:(\d+)(?:#(\d+)|/([^<>#@/\s]+)|@([^<>\s]+))?>$")
+_TOKEN = re.compile(r"^<se:(\d+)(?:#(\d+)|/([^<>#@/\s]+)|@(\d+))?>$")
 _RESIDUE_REGION = re.compile(r"^([A-Za-z0-9]+)\.(-?\d+)$")
 _DOMAIN_REGION = re.compile(r"^d(\d+)$")
 
@@ -79,15 +81,15 @@ def format_token(
     *,
     atom: int | None = None,
     region: str | None = None,
-    datum: str | None = None,
+    offset: int | None = None,
 ) -> str:
     """The token text for one reference (module docstring's grammar)."""
     if atom is not None:
         return f"<se:{uid}#{atom}>"
     if region is not None:
         return f"<se:{uid}/{region}>"
-    if datum is not None:
-        return f"<se:{uid}@{datum}>"
+    if offset is not None:
+        return f"<se:{uid}@{offset}>"
     return f"<se:{uid}>"
 
 
@@ -101,12 +103,12 @@ def parse_token(text: Any) -> PickRef:
             f"{text!r} is not an se reference token — the forms are <se:UID>, "
             "<se:UID#ATOM>, <se:UID/REGION> and <se:UID@OFFSET>"
         )
-    uid, atom, region, datum = match.groups()
+    uid, atom, region, offset = match.groups()
     return PickRef(
         uid=int(uid),
         atom=int(atom) if atom is not None else None,
         region=region,
-        datum=datum,
+        offset=int(offset) if offset is not None else None,
     )
 
 
@@ -149,7 +151,7 @@ def _resname(record: Mapping[str, Any], chain: str, resseq: int) -> str | None:
 
 def _offset_levels(tree: Any, helix: Any, offset: int) -> list[PickLevel]:
     """The row for one helix offset: ``pair`` when two antiparallel strands
-    occupy it, ``offset`` otherwise (single, parallel, crowded or empty),
+    occupy it (marked unpaired or not — the label says which), ``offset`` otherwise (single, parallel, crowded or empty),
     with each occupant's letter in occupant order."""
     occupancy = derive_pairing(tree).at(helix.name, offset)
     label = f"{helix.name}@{offset}"
@@ -160,9 +162,9 @@ def _offset_levels(tree: Any, helix: Any, offset: int) -> list[PickLevel]:
         letters = "·".join(o.letter or "?" for o in occupancy.occupants)
         strands = " / ".join(f"{o.strand}.{o.ord}" for o in occupancy.occupants)
         label += f" ({letters}, {occupancy.status}: {strands})"
-        if occupancy.status == PAIRED:
+        if occupancy.status in (PAIRED, UNPAIRED):
             level = "pair"
-    return [PickLevel(level, label, format_token(_uid(helix), datum=str(offset)))]
+    return [PickLevel(level, label, format_token(_uid(helix), offset=offset))]
 
 
 def _domain_levels(tree: Any, strand_name: str, ord_: int) -> list[PickLevel]:
@@ -342,13 +344,11 @@ def resolve_token(
             "the regions that do are '<chain>.<resseq>' on a realize_chain "
             "segment and 'd<ord>' on a strand"
         )
-    if ref.datum is not None:
-        if ref.datum.isdigit() and chain_role(node) == HELIX_ROLE:
-            return _offset_levels(tree, node, int(ref.datum)) + _block_levels(
-                tree, node
-            )
+    if ref.offset is not None:
+        if chain_role(node) == HELIX_ROLE:
+            return _offset_levels(tree, node, ref.offset) + _block_levels(tree, node)
         raise PickError(
-            f"'@{ref.datum}' on block {node.name!r} is not a helix offset — a "
-            "datum selector resolves through view='datums', not here"
+            f"'@{ref.offset}' names a helix offset, and block {node.name!r} is "
+            "not a helix"
         )
     return _block_levels(tree, node)

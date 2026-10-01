@@ -141,6 +141,7 @@ from precis_se.chain.pairing import (
     PAIRED,
     PARALLEL,
     SINGLE,
+    UNPAIRED,
     derive_pairing,
     strand_length_nt,
     watson_crick,
@@ -189,7 +190,7 @@ class SeHandler(Handler):
             "generate/realize/set_build_frame/clear_build_frame/"
             "set_chromophore/set_optical_link/set_optics/"
             "declare_states/declare_transitions/set_current_state/"
-            "declare_helix/declare_strand/add_domain/remove_domain/"
+            "declare_helix/declare_strand/add_domain/unpair/remove_domain/"
             "clear_chain/layout_chain); "
             "declare_helix block= n_units= (bp) + lattice='honeycomb'|"
             "'square' row= col= OR path={'waypoints':[[x,y,z],…]} declares "
@@ -3128,13 +3129,15 @@ def _render_chain(tree: SeTree) -> str:
             else se_chain_layout.segment_ranges(geom.n_units, per)
         )
         segments = _segment_cell(ranges, laid_out=bool(stored))
-        counts = {PAIRED: 0, SINGLE: 0, PARALLEL: 0, CROWDED: 0}
+        counts = {PAIRED: 0, SINGLE: 0, PARALLEL: 0, CROWDED: 0, UNPAIRED: 0}
         for offset in range(geom.n_units):
             occ = pairing.at(name, offset)
             if occ is not None:
                 counts[occ.status] += 1
         free = geom.n_units - sum(counts.values())
         occupancy = f"{counts[PAIRED]} paired · {counts[SINGLE]} single · {free} free"
+        if counts[UNPAIRED]:
+            occupancy += f" · {counts[UNPAIRED]} unpaired"
         if counts[PARALLEL] or counts[CROWDED]:
             occupancy += f" · {counts[PARALLEL] + counts[CROWDED]} CONFLICT"
         lattice_site = ((node.chain or {}).get("path") or {}).get("lattice") or {}
@@ -3200,8 +3203,10 @@ def _render_chain(tree: SeTree) -> str:
     lines.append("## derived pairing (co-occupancy of a helix offset, never declared)")
     if pairing.offsets:
         runs = pairing.single_runs()
+        unpaired = f" · {len(pairing.unpaired)} unpaired" if pairing.unpaired else ""
         lines.append(
-            f"{len(pairing.pairs)} paired offset(s) · {len(pairing.singles)} "
+            f"{len(pairing.pairs)} paired offset(s){unpaired} · "
+            f"{len(pairing.singles)} "
             f"single-stranded in {len(runs)} run(s) · {len(pairing.conflicts)} "
             "conflict(s)"
         )

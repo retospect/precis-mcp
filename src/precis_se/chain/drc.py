@@ -60,6 +60,11 @@ What each rule is, and why it is at the tier it is:
   ``OffsetOccupancy.declarations``); the first-declaring occupant still wins
   for every other purpose (``geometry``), this rule only reports that a
   second domain said something else.
+- ``chain_unpaired`` (info) / ``chain_unpaired_run`` (warn) — offsets the
+  ``unpair`` op marked: one stays at its duplex position and is named; a
+  run of two or more is a folding question, not a rigid duplex.
+  ``chain_unpaired_stray`` (warn) — a mark on an offset that is no longer a
+  two-strand pair, so it does nothing.
 - ``chain_malformed`` (error) — a stored ``chain`` record that does not fit
   the schema at all. Not in the spec's list; it is the same
   defence-in-depth every other stored jsonb payload in se gets
@@ -94,6 +99,8 @@ from precis_se.chain.pairing import (
     CROWDED,
     PAIRED,
     PARALLEL,
+    UNPAIRED,
+    OffsetOccupancy,
     Pairing,
     derive_pairing,
     watson_crick,
@@ -825,6 +832,70 @@ def _disagree_findings(pairing: Pairing, findings: list[ValidationIssue]) -> Non
         )
 
 
+def _unpaired_findings(pairing: Pairing, findings: list[ValidationIssue]) -> None:
+    """``chain_unpaired`` / ``chain_unpaired_run`` / ``chain_unpaired_stray``
+    — the ``unpair`` op's marks, read back. A lone unpaired offset is
+    modelled at its duplex position (owner ruling 2026-10-01); two or more
+    consecutive are not a duplex shape at all and are a folding question."""
+    for key in sorted(pairing.offsets):
+        occ = pairing.offsets[key]
+        if occ.unpaired_by and occ.status != UNPAIRED:
+            findings.append(
+                ValidationIssue(
+                    rule="chain_unpaired_stray",
+                    subject=f"{occ.helix}[{occ.offset}]",
+                    detail=(
+                        "declared unpaired but not a two-strand pair "
+                        f"(status {occ.status}), so the mark does nothing — "
+                        "clear it with unpair(clear=true)"
+                    ),
+                    severity="warn",
+                )
+            )
+    runs: list[list[OffsetOccupancy]] = []
+    for occ in sorted(pairing.unpaired, key=lambda o: (o.helix, o.offset)):
+        prev = runs[-1][-1] if runs else None
+        if (
+            prev is not None
+            and prev.helix == occ.helix
+            and prev.offset == occ.offset - 1
+        ):
+            runs[-1].append(occ)
+        else:
+            runs.append([occ])
+    for run in runs:
+        first = run[0]
+        if len(run) == 1:
+            who = " vs ".join(
+                f"{o.strand}#{o.ord} {o.letter or '?'}" for o in first.occupants
+            )
+            findings.append(
+                ValidationIssue(
+                    rule="chain_unpaired",
+                    subject=f"{first.helix}[{first.offset}]",
+                    detail=(
+                        f"declared unpaired ({who}) — modelled at its duplex "
+                        "position, which a single unpaired base keeps"
+                    ),
+                    severity="info",
+                )
+            )
+            continue
+        findings.append(
+            ValidationIssue(
+                rule="chain_unpaired_run",
+                subject=f"{first.helix}[{first.offset}:{run[-1].offset + 1}]",
+                detail=(
+                    f"{len(run)} consecutive unpaired offsets are placed at "
+                    "duplex positions, which is not their shape — a run this "
+                    "long is a folding question (fold_layout's ViennaRNA fold, "
+                    "or oxDNA), not a rigid duplex"
+                ),
+                severity="warn",
+            )
+        )
+
+
 def findings(tree: Any) -> list[ValidationIssue]:
     """Every pure ``chain_*`` finding for ``tree``. Empty when the design
     declares no chain at all (the overwhelmingly common case — this pass
@@ -848,5 +919,6 @@ def findings(tree: Any) -> list[ValidationIssue]:
     _occupancy_findings(pairing, out)
     _geometry_findings(pairing, geoms, out)
     _disagree_findings(pairing, out)
+    _unpaired_findings(pairing, out)
     out.extend(floppy_findings(pairing, loops))
     return out

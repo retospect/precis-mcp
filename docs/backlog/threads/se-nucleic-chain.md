@@ -15,8 +15,10 @@ residue rows persist, and an undeclared pair's letters are checked
 (strict Watson–Crick, Reto's ruling); `view='pick'` resolves an atom to
 residue, base pair, domain, strand and blocks with a citable token per
 level (the resolver half of the pick hierarchy), dogfooded on prod.
-Next: findings print pick tokens (Horizon 1); Do-next is blocked.
-**Last reviewed:** 2026-10-01 (pick dogfooded on prod)
+The `unpair` op marks one offset not a base pair (one stays at its duplex
+position; a run warns as a folding question — Reto, 2026-10-01). Next:
+dogfood `unpair` on prod; Do-next is blocked.
+**Last reviewed:** 2026-10-01 (unpair op shipped)
 **Worktree:** `se-nucleic-chain`
 
 ## Do next
@@ -34,9 +36,8 @@ Next: findings print pick tokens (Horizon 1); Do-next is blocked.
 2. **backlog/ewod-synthesis-protocol.md** (ewod-pcb thread's) — the zone
    compiler that consumes make_steps' make tree (live on prod since
    5ca0cfff); the first end-to-end design → dispense protocol.
-3. **backlog/se-chain-insertions-deletions.md** — per-offset chain edits;
-   its 2026-09-30 section carries the unpair/nick/mismatch op (the action
-   a base-pair pick offers); waits on Reto's ruling on the op shape.
+3. **backlog/se-chain-insertions-deletions.md** — accepted
+   insertions/deletions and the sheet-twist finding.
 4. **backlog/nanostructure-check-tiers.md** §"Chains: the physics tier is
    oxDNA" — oxDNA as a rented relax rung against relax_chain's block-scale
    settle; waits on 1–3 and the oxDNA binary in the image; the only
@@ -61,6 +62,13 @@ Next: findings print pick tokens (Horizon 1); Do-next is blocked.
   available; file it then (Horizon 5).
 
 ## No action needed
+
+- **per-offset unpair** — shipped 2026-10-01 in the commit that added
+  this line: `unpair(at='<helix>@<offset>', clear?)` writes
+  `overrides[offset]='unpaired'` on both occupants; findings
+  `chain_unpaired` (info), `chain_unpaired_run` (warn, folding question),
+  `chain_unpaired_stray` (warn). A `set_domain` narrowing a domain past
+  its own mark stays refused (clear the mark first).
 
 - **`view='pick'` prod dogfood** — 2026-10-01 on `dogfood-hairpin-4`
   (stem atom by ordinal and by label, loop atom, every token read back:

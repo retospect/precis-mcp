@@ -274,6 +274,9 @@ handler-level and are not in this table.
   (``strand``/``ord`` select it; any ``add_domain`` field except ``ord``
   changes it, absent meaning unchanged). Pure, so moving a crossover by a
   base pair needs no human Apply.
+- ``unpair``             — mark one helix offset (``at='<helix>@<offset>'``)
+  as not a base pair, on both occupying domains' ``overrides``;
+  ``clear=true`` takes it off. Pure.
 - ``clear_chain``        — un-declare a block's chain record, cascading
   to whatever it gave meaning (a helix's segments and the domains along
   it; a strand's whole route).
@@ -320,7 +323,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 from precis.blocktree import ops as blocktree
@@ -344,7 +347,7 @@ from precis_se.bom import BomError, BomLine, vet_bom_fields
 from precis_se.chain import layout as chain_layout
 from precis_se.chain import occupancy as chain_occupancy
 from precis_se.chain import vocab as chain_vocab
-from precis_se.chain.vocab import ChainError, DomainSpec
+from precis_se.chain.vocab import UNPAIRED, ChainError, DomainSpec
 from precis_se.fret import (
     FretError,
     validate_chromophore,
@@ -3072,6 +3075,90 @@ def _op_set_domain(tree: SeTree, op: dict[str, Any]) -> None:
             break
 
 
+def _op_unpair(tree: SeTree, op: dict[str, Any]) -> None:
+    """Mark ONE helix offset as not a base pair — ``at='<helix>@<offset>'``,
+    or ``clear=true`` to take the mark off again.
+
+    Two strands co-occupying an offset read as a pair by construction, but a
+    designed mismatch bulge or a deliberately unpaired base is the same
+    co-occupancy without the pair. The mark is a per-domain
+    ``overrides[offset] = 'unpaired'`` (never a 1-bp domain, never a change
+    to the domain list), written on BOTH occupants so neither strand's
+    reading disagrees, and replacing any geometry override at that offset —
+    a geometry is a claim about a pair. One unpaired offset stays at its
+    duplex position (a ``chain_unpaired`` finding names it); a run of them
+    is a folding question, which :func:`precis_se.chain.drc.findings` warns
+    about rather than modelling.
+
+    Pure, like ``set_domain``: no row is added or removed, so it needs no
+    human Apply and runs in ``design_turn``'s dry run."""
+    at = op.get("at")
+    if at is None:
+        raise OpError("unpair needs 'at' — '<helix>@<offset>'")
+    try:
+        token, offset = chain_occupancy.parse_target(at, what="unpair 'at'")
+    except ChainError as exc:
+        raise OpError(str(exc)) from exc
+    helix = _block_key(tree, token, what="helix")
+    clear = bool(op.get("clear"))
+    occupants = [
+        d
+        for d in tree.domains
+        if d.helix == helix and not d.free and d.start <= offset < d.end
+    ]
+    if not occupants:
+        helices = sorted({d.helix for d in tree.domains})
+        extent = ", ".join(
+            f"{h}[{min(d.start for d in tree.domains if d.helix == h)}:"
+            f"{max(d.end for d in tree.domains if d.helix == h)})"
+            for h in helices
+        )
+        raise OpError(
+            f"unpair: nothing occupies {helix}@{offset}. Occupied helices: "
+            f"{extent or '(none)'}"
+        )
+    if clear:
+        marked = [
+            d for d in occupants if (d.overrides or {}).get(str(offset)) == UNPAIRED
+        ]
+        if not marked:
+            raise OpError(
+                f"unpair clear: no domain marks {helix}@{offset} unpaired — "
+                "nothing to clear"
+            )
+        for d in marked:
+            kept = {k: v for k, v in (d.overrides or {}).items() if k != str(offset)}
+            _replace_domain(tree, d, overrides=kept or None)
+        return
+    who = ", ".join(
+        f"{d.strand}#{d.ord} {'→' if d.forward else '←'}" for d in occupants
+    )
+    if len(occupants) == 1:
+        raise OpError(
+            f"unpair: only {who} occupies {helix}@{offset} — it is already "
+            "single-stranded, there is no pair to unmark"
+        )
+    if len(occupants) > 2 or occupants[0].forward == occupants[1].forward:
+        raise OpError(
+            f"unpair: {helix}@{offset} is occupied by {who} — not a two-strand "
+            "antiparallel pair, so that is the chain_occupancy problem to fix "
+            "first (view='drc')"
+        )
+    for d in occupants:
+        _replace_domain(
+            tree, d, overrides={**(d.overrides or {}), str(offset): UNPAIRED}
+        )
+
+
+def _replace_domain(tree: SeTree, old: DomainSpec, **changes: Any) -> None:
+    """Swap one domain row for an edited copy, by identity (``DomainSpec`` is
+    a dataclass, so ``index`` would match the first field-equal row)."""
+    for i, row in enumerate(tree.domains):
+        if row is old:
+            tree.domains[i] = replace(old, **changes)
+            return
+
+
 def _op_remove_domain(tree: SeTree, op: dict[str, Any]) -> None:
     """Drop one domain from a strand's route — ``strand=`` + ``ord=``.
 
@@ -3290,6 +3377,7 @@ _OPS = {
     "declare_strand": _op_declare_strand,
     "add_domain": _op_add_domain,
     "set_domain": _op_set_domain,
+    "unpair": _op_unpair,
     "remove_domain": _op_remove_domain,
     "clear_chain": _op_clear_chain,
     "layout_chain": _op_layout_chain,

@@ -71,6 +71,11 @@ _DOMAIN_META_KEYS = frozenset(
     }
 )
 
+#: The per-offset override value that says "this offset is NOT paired" —
+#: the one entry of ``overrides`` that is not a Leontis–Westhof family.
+#: Owner ruling 2026-10-01 (``docs/backlog/se-chain-insertions-deletions.md``).
+UNPAIRED = "unpaired"
+
 #: Units per ``layout_chain`` segment when the helix declares no lattice
 #: (a lattice's own ``pitch_units`` is the default when it does — "one
 #: lattice repeat"). 21 bp is the
@@ -600,9 +605,11 @@ def build_domain(
 def vet_overrides(
     raw: Any, what: str, *, start: int, end: int
 ) -> dict[str, Any] | None:
-    """Per-offset pair-geometry overrides — ``{offset: geometry}``, offsets
-    inside the domain's own range (2026-09-28 decision: an override, never
-    a 1-bp domain). Keys come back as strings, since that is what a jsonb
+    """Per-offset overrides — ``{offset: geometry}``, offsets inside the
+    domain's own range (2026-09-28 decision: an override, never a 1-bp
+    domain). A value is a Leontis–Westhof family or :data:`UNPAIRED` (the
+    ``unpair`` op's mark: this offset is not a base pair, whoever else
+    occupies it). Keys come back as strings, since that is what a jsonb
     object round-trips."""
     if raw is None:
         return None
@@ -624,7 +631,10 @@ def vet_overrides(
                 f"{what}: override offset {offset} is outside this domain's "
                 f"range [{start}, {end})"
             )
-        out[str(offset)] = vet_geometry(value, f"{what} overrides[{offset}]")
+        if isinstance(value, str) and value.strip().lower() == UNPAIRED:
+            out[str(offset)] = UNPAIRED
+        else:
+            out[str(offset)] = vet_geometry(value, f"{what} overrides[{offset}]")
     return out or None
 
 

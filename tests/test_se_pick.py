@@ -64,16 +64,25 @@ def test_token_grammar_round_trips_and_refuses_junk() -> None:
         ("<se:41#44>", pick.PickRef(41, atom=44)),
         ("<se:41/A.8>", pick.PickRef(41, region="A.8")),
         ("<se:38/d1>", pick.PickRef(38, region="d1")),
-        ("<se:40@3>", pick.PickRef(40, datum="3")),
+        ("<se:40@3>", pick.PickRef(40, offset=3)),
     ]:
         assert pick.parse_token(token) == ref
         assert (
             pick.format_token(
-                ref.uid, atom=ref.atom, region=ref.region, datum=ref.datum
+                ref.uid, atom=ref.atom, region=ref.region, offset=ref.offset
             )
             == token
         )
-    for junk in ("se:41", "<se:stem>", "<se:41#x>", "<se:41#1/A.8>", "<nm:41>"):
+    # '@' is a helix offset and nothing else — no datum, no base letter.
+    for junk in (
+        "se:41",
+        "<se:stem>",
+        "<se:41#x>",
+        "<se:41#1/A.8>",
+        "<nm:41>",
+        "<se:41@axis>",
+        "<se:41@3G>",
+    ):
         with pytest.raises(pick.PickError, match="not an se reference token"):
             pick.parse_token(junk)
 
@@ -189,7 +198,7 @@ def test_pick_refusals_say_what_would_resolve(handler: SeHandler, store: Store) 
     refused({"token": f"<se:{uid['hp']}/d7>"}, "has no domain 7")
     refused({"token": f"<se:{uid['stem.s0']}/A.99>"}, "no residue A.99")
     refused({"token": f"<se:{uid['stem.s0']}/post>"}, "does not resolve")
-    refused({"token": f"<se:{uid['stem.s0']}@axis>"}, "view='datums'")
+    refused({"token": f"<se:{uid['stem.s0']}@3>"}, "is not a helix")
 
     # An unoccupied offset is an answer, not a refusal.
     rows = _rows(

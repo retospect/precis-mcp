@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + fifteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
+summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + eighteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -16,7 +16,7 @@ answers:
   - why does view='drc' say chain_fold_unavailable, and what is chain_offtarget telling me?
   - why does declare_helix/add_domain reject a bare number?
   - how do I export a chain design to scadnano/caDNAno/oxDNA/PDB (view='export')?
-applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
+applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
 status: active
 tags: verbs, design
 kinds: se
@@ -147,6 +147,15 @@ edit(kind='se', id='design', ops=[
     {'op': 'set_domain', 'strand': 'st0', 'ord': 1, 'start': 8, 'end': 16},
 ])
 ```
+
+`unpair` — `at='<helix>@<offset>'` marks one offset NOT a base pair (an
+`overrides[offset]='unpaired'` on both occupying domains; the domain list is
+untouched; `clear=true` undoes it). Needs exactly two antiparallel occupants.
+One unpaired offset stays at its duplex position (`chain_unpaired`, info);
+two or more consecutive is a folding question — `chain_unpaired_run` (warn)
+says to use `fold_layout`'s ViennaRNA fold or oxDNA, no new geometry is made.
+`chain_unpaired_stray` (warn): the mark sits on an offset that is no longer a
+two-strand pair; `unpair(clear=true)` it. View `chain` counts them.
 
 `remove_domain` — `strand=` + `ord=`. **Destructive** by the `remove_`
 prefix rule (a human-Apply proposal in the web turn, like `remove_block`).
@@ -306,7 +315,7 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
   realized atom belongs to, a citable `<se:…>` token per level; see
   [[precis-se-chain-atoms-help]].
 
-## DRC — the fifteen `chain_*` findings
+## DRC — the eighteen `chain_*` findings
 
 | rule | tier | fires when | fix |
 |---|---|---|---|

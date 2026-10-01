@@ -11,7 +11,10 @@ consequences fall out of it rather than needing their own vocabulary:
 - two occupants running the same way, or three or more → a
   ``chain_occupancy`` finding. Triplexes are out of scope for this cut
   (they need a third backbone azimuth), so this reports them rather than
-  modelling them.
+  modelling them;
+- two antiparallel occupants where a domain marks the offset ``unpaired``
+  (the ``unpair`` op) → **unpaired**: occupied by both strands, a base pair
+  by neither's account — kept out of ``pairs`` so no pairing check applies.
 
 **Cost is O(total domain length)**, not O(n²): each domain writes its
 offsets into one dict and nothing ever compares two domains directly. A
@@ -34,13 +37,22 @@ from typing import Any
 
 from precis_se.chain import nucleic
 from precis_se.chain.occupancy import apply_occupancy
-from precis_se.chain.vocab import STRAND_ROLE, DomainSpec, chain_role, group_domains
+from precis_se.chain.vocab import (
+    STRAND_ROLE,
+    DomainSpec,
+    chain_role,
+    group_domains,
+)
+from precis_se.chain.vocab import (
+    UNPAIRED as UNPAIRED_MARK,
+)
 
 #: An offset's occupancy verdict.
 PAIRED = "paired"
 SINGLE = "single"
 PARALLEL = "parallel"
 CROWDED = "crowded"
+UNPAIRED = "unpaired"
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,11 @@ class OffsetOccupancy:
     #: disagreement. ``declarations[0]`` is always the occupant
     #: ``geometry`` above came from — the first to declare.
     declarations: tuple[tuple[Occupant, str], ...] = ()
+    #: Occupants whose domain marks this offset ``unpaired``
+    #: (``overrides[offset] == "unpaired"``, the ``unpair`` op). Non-empty
+    #: on two antiparallel occupants makes the status ``unpaired``; on
+    #: anything else it is a stray mark (``chain_unpaired_stray``).
+    unpaired_by: tuple[Occupant, ...] = ()
 
 
 @dataclass
@@ -96,6 +113,7 @@ class Pairing:
     pairs: list[OffsetOccupancy] = field(default_factory=list)
     singles: list[OffsetOccupancy] = field(default_factory=list)
     conflicts: list[OffsetOccupancy] = field(default_factory=list)
+    unpaired: list[OffsetOccupancy] = field(default_factory=list)
 
     def at(self, helix: str, offset: int) -> OffsetOccupancy | None:
         return self.offsets.get((helix, offset))
@@ -179,6 +197,7 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
     raw: dict[tuple[str, int], list[Occupant]] = {}
     geometry: dict[tuple[str, int], str] = {}
     declarations: dict[tuple[str, int], list[tuple[Occupant, str]]] = {}
+    unpaired_by: dict[tuple[str, int], list[Occupant]] = {}
     all_domains = sorted(
         (d for route in tables.by_strand.values() for d in route),
         key=lambda d: (d.strand, d.ord),
@@ -194,7 +213,13 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
                 letter=letters.get(domain.strand, {}).get((domain.ord, offset)),
             )
             raw.setdefault(key, []).append(occupant)
-            declared = overrides.get(str(offset)) or domain.geometry
+            override = overrides.get(str(offset))
+            if override == UNPAIRED_MARK:
+                # Not a geometry declaration — and the domain's whole-domain
+                # geometry does not reach an offset it says is not paired.
+                unpaired_by.setdefault(key, []).append(occupant)
+                continue
+            declared = override or domain.geometry
             if declared is not None:
                 if key not in geometry:
                     geometry[key] = declared
@@ -205,12 +230,14 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
     for key in sorted(raw):
         helix, offset = key
         occupants = tuple(raw[key])
+        marks = tuple(unpaired_by.get(key, []))
         if len(occupants) == 1:
             status = SINGLE
         elif len(occupants) == 2:
-            status = (
-                PAIRED if occupants[0].forward != occupants[1].forward else PARALLEL
-            )
+            if occupants[0].forward == occupants[1].forward:
+                status = PARALLEL
+            else:
+                status = UNPAIRED if marks else PAIRED
         else:
             status = CROWDED
         record = OffsetOccupancy(
@@ -220,10 +247,13 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
             status=status,
             geometry=geometry.get(key),
             declarations=tuple(declarations.get(key, [])),
+            unpaired_by=marks,
         )
         out.offsets[key] = record
         if status == PAIRED:
             out.pairs.append(record)
+        elif status == UNPAIRED:
+            out.unpaired.append(record)
         elif status == SINGLE:
             out.singles.append(record)
         else:
