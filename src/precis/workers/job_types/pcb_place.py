@@ -89,6 +89,17 @@ def _on_fixed_vias_note(refdes: tuple[str, ...]) -> str:
     )
 
 
+def _legalized_note(refdes: tuple[str, ...]) -> str:
+    """The job summary's line naming parts moved off an illegal starting
+    pose before the anneal — empty when the stored placement was legal."""
+    if not refdes:
+        return ""
+    return (
+        f"moved {len(refdes)} part(s) off an illegal starting position "
+        f"before annealing: {', '.join(refdes)}\n\n"
+    )
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
     pcb_ref_id = int(params["pcb_ref_id"])
@@ -196,6 +207,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         "job_summary",
         f"placed {moved} instance(s), {result.iters} iters — "
         f"cost {result.cost_before:.4f} -> {result.cost_after:.4f}\n\n"
+        + _legalized_note(result.legalized)
         + _on_fixed_vias_note(result.on_fixed_vias)
         + digest_toon(result),
     )

@@ -2119,6 +2119,38 @@ def test_a_part_seeded_on_an_authored_via_is_walked_off_it_and_a_locked_one_is_n
     assert not any(tv.region == "U0~fixed_via" for tv in engine._margin.values())
 
 
+def test_a_part_stored_inside_a_dense_via_field_is_legalized_before_the_anneal():
+    """A via field on a 1 mm pitch leaves no legal pose within one
+    TRANSLATE step, so before ``legalize_start`` every proposal was
+    rejected and the part never moved (``ewod-dogfood-6``, 2026-10-01: 0
+    of 3000 accepted). The start pass moves it to the nearest legal pose
+    and names it."""
+    from precis.pcb.ir import FixedVia
+
+    ir = _via_ir(lands=_TWO_LANDS, via_xy=(0.0, 0.0))
+    ir.fixed_vias = tuple(
+        FixedVia(x=float(x), y=float(y), dia_mm=0.6)
+        for x in range(-6, 7)
+        for y in range(-6, 7)
+    )
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert engine._placement_is_legal([(0, 0.0, 0.0)]) is False
+
+    result = optimize(ir, OptimizeConfig(seed=3, iters=50))
+    assert result.legalized == ("U0",)
+    assert result.on_fixed_vias == ()
+    assert OptimizeEngine(ir, OptimizeConfig(seed=3))._fixed_via_gap(0) >= 0.15
+
+
+def test_a_legal_start_is_not_legalized():
+    """Negative control: a part already clear of the via is left to the
+    anneal, and nothing is reported as legalized."""
+    ir = _via_ir(lands=_TWO_LANDS, via_xy=(0.0, 0.0))
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
+    assert engine.legalize_start() == ()
+    assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (0.0, 0.0)
+
+
 def test_recentre_never_slides_a_placement_across_authored_vias():
     """Authored vias are fixed to the board, so a rigid recentre of
     everything else can park a land on one after the anneal cleared it."""

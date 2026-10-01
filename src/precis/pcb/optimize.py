@@ -642,6 +642,9 @@ class OptimizeResult:
     #: short run may not find one — the caller must say so, not report a
     #: clean placement.
     on_fixed_vias: tuple[str, ...] = ()
+    #: Refdes of every instance :meth:`OptimizeEngine.legalize_start`
+    #: moved off an illegal STARTING pose before the anneal ran.
+    legalized: tuple[str, ...] = ()
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -2601,6 +2604,75 @@ class OptimizeEngine:
                     return False
         return True
 
+    def legalize_start(self) -> tuple[str, ...]:
+        """Move every movable rigid body whose CURRENT pose is illegal to
+        the nearest legal one, before the anneal starts. Returns the
+        refdes of every instance it moved.
+
+        Legality gates proposals, never the incumbent, so the anneal can
+        only leave an illegal pose by proposing a fully legal one in a
+        single step. A part stored on a dense via field (the EWOD driver
+        on its array's plaza vias, ``ewod-dogfood-6`` 2026-10-01) has no
+        legal pose within one TRANSLATE step: 0 of 3000 proposals were
+        accepted and the part never moved. The graded slope cannot help
+        there, because a step that improves the gap but still touches a
+        via is rejected as illegal.
+
+        The search walks square rings of :data:`_LEGALIZE_STEP_MM` around
+        the current pose, nearest ring first, keeping each member's own
+        rotation. A body with nowhere legal to go is left where it is,
+        and ``on_fixed_vias`` and DRC still report it."""
+        ir = self.ir
+        moved: list[str] = []
+        seen: set[int] = set()
+        x0, y0, x1, y1 = self._placement_bounds
+        max_rings = math.ceil(max(x1 - x0, y1 - y0) / _LEGALIZE_STEP_MM)
+        for inst in self._movable_xy:
+            members = self._rigid_members(int(inst))
+            if seen.intersection(members):
+                continue
+            seen.update(members)
+            if any(bool(ir.inst_fixed_xy[m]) for m in members):
+                continue
+            old = [(m, float(ir.inst_x[m]), float(ir.inst_y[m])) for m in members]
+            if any(math.isnan(x) or math.isnan(y) for _m, x, y in old):
+                continue
+            if self._placement_is_legal(old):
+                continue
+            target = self._nearest_legal_offset(old, max_rings)
+            if target is None:
+                continue
+            dx, dy = target
+            old_pose = tuple(
+                (float(ir.inst_x[m]), float(ir.inst_y[m]), float(ir.inst_rot[m]))
+                for m in members
+            )
+            new_pose = tuple((x + dx, y + dy, rot) for x, y, rot in old_pose)
+            self.apply_move(Move(MoveKind.TRANSLATE, members, old_pose, new_pose))
+            moved.extend(str(ir.instance_refdes[m]) for m in members)
+        return tuple(moved)
+
+    def _nearest_legal_offset(
+        self, old: list[tuple[int, float, float]], max_rings: int
+    ) -> tuple[float, float] | None:
+        """The smallest ``(dx, dy)`` on the :data:`_LEGALIZE_STEP_MM`
+        lattice that makes every member of ``old`` legal, searched ring
+        by ring outward; ``None`` when no lattice point is."""
+        step = _LEGALIZE_STEP_MM
+        for ring in range(1, max_rings + 1):
+            offsets = [
+                (i, j)
+                for i in range(-ring, ring + 1)
+                for j in range(-ring, ring + 1)
+                if max(abs(i), abs(j)) == ring
+            ]
+            offsets.sort(key=lambda ij: ij[0] * ij[0] + ij[1] * ij[1])
+            for i, j in offsets:
+                dx, dy = i * step, j * step
+                if self._placement_is_legal([(m, x + dx, y + dy) for m, x, y in old]):
+                    return (dx, dy)
+        return None
+
     def _world_courtyard(
         self,
         inst: int,
@@ -3055,6 +3127,11 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 #: legal`). One draw would silently disable TRANSLATE for parts in a
 #: crowded neighbourhood — the parts that most need to move.
 _LEGALIZE_TRIES = 8
+#: Lattice pitch, mm, of :meth:`OptimizeEngine.legalize_start`'s ring
+#: search: fine enough to find a gap between plaza vias on a 1 mm pitch,
+#: coarse enough that a search across a whole board stays in the
+#: thousands of legality checks.
+_LEGALIZE_STEP_MM = 0.25
 
 
 def _sample_delta_1d(rng: random.Random, step: float, lo: float, hi: float) -> float:
@@ -3503,6 +3580,7 @@ def optimize(
         force=reseed,
     )
     engine = OptimizeEngine(ir, config)
+    legalized = engine.legalize_start()
     report_schedule = 1.0 if config.iters > 1 else 0.0
     engine.schedule = report_schedule
     cost_before = engine.total()
@@ -3537,6 +3615,7 @@ def optimize(
             if engine._is_movable(i)
             and engine._fixed_via_gap(i) < _FIXED_VIA_CLEARANCE_MM
         ),
+        legalized=legalized,
     )
 
 

@@ -227,7 +227,12 @@ landed; Do-next renumbered)
   that produced that is fixed in code (2026-10-01, authored vias are
   placement obstacles) but **the stored board still carries the bad
   placement** — it stays red until the fix is deployed and the board is
-  re-placed and re-routed, which is a prod write on Reto's word. Its
+  re-placed and re-routed, which is a prod write on Reto's word. The
+  first re-place on Reto's go (2026-10-01, job 460181) accepted 0 of
+  3000 moves: legality gates proposals, not the starting pose, and no
+  single step clears the via field. `OptimizeEngine.legalize_start` now
+  moves an illegal starting pose to the nearest legal one before the
+  anneal; re-place once that is deployed. Its
   `view='cpl'` no longer lists `ARR1` once deployed, and its
   `view='gerber'` opens with the DRC banner.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
