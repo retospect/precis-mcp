@@ -127,3 +127,37 @@ already reduces N from twelve toward one for session MCPs specifically).
 
 Closest existing items: `embed-freshness.md`, `session-mcp-http-server.md`,
 `mcp-shared-server-multiprocess.md`, `gr457326`, `gr450123`, `gr456034`.
+
+## The md-warmup evidence is spent — what remains is admission (2026-10-01)
+
+This item cited gr457326's dogfood as proof that the bounded wait queue
+was insufficient and host-level admission was warranted. That inference no
+longer holds, and not for the reason gr458940 gave either. The whole md
+warmup failure was the warm pass starving the service it was waiting on:
+batches sized at 64 blocks collected the long ones (up to 22756 chars),
+blew the 15 s client budget, and orphaned server-side computation that
+kept its slot — so the pass manufactured the saturation that then rejected
+its own retries. Four fixes closed it, in order: per-batch retry
+(d9bd4e16) made progress possible, the cold-cache re-arm (2b729531) made
+it recur, a 16-block / 25 000-char cap (5146528d) made batch 1 pass, and
+skip-and-continue on a bad batch (ae7bdb6a) actually drained the queue.
+Measured on the shared server: **1% → 84% of blocks indexed**, cache
+1.05 MB → 45 MB in under half an hour, after thirteen hours of zero
+progress. The embedder timed idle is ~0.17 s for one short string and
+3.6 s for 64 blocks — an order of magnitude faster than it looked under
+self-inflicted load. **The hardware is not the constraint; do not buy
+capacity on this evidence.**
+
+What survives, and it is the part this item should now be about: a warm
+batch and a one-string interactive query compete for the same four
+undifferentiated slots. While a batch runs there is no usable interactive
+capacity — a query embed is either rejected in under a millisecond or
+admitted into a multi-second wait. Right-sizing the batch shortens that
+window but does not separate the classes, so a large enough corpus or a
+second batch client reopens it. That is a server-side admission question:
+either a reserved slot for single-text requests, or a priority queue that
+lets an interactive embed overtake a background batch.
+
+Urgency has genuinely dropped rather than moved — passes now complete, so
+the window is narrow. Reclassify accordingly rather than treating the
+September evidence as live.

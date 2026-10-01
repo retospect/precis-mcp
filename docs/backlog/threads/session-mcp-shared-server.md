@@ -193,145 +193,30 @@ server-side-session-context Horizon pointer)
    reads `git_source watched-checkout`, `source_drift none`, and
    `md_vector_warmup retrying after attempt 1/4 (EmbedderUnavailable)`,
    which is how all of the above was observed rather than guessed.
-3. **gr459088 — the embedder sheds continuously; gr457326's retry and
-   re-arm are both working and both futile.** Dogfooded on prod
-   2026-10-01 01:20-01:25Z. rustling's re-arm (2b729531) does fire — seven
-   seconds after a cold-cache `search(kind='md')` the log shows `warming md
-   index vector cache for 1 root(s)` — and then fails the same way the two
-   boot passes did, always on **batch 1 of 299**, so progress is zero
-   rather than partial. A live md search says so itself:
-   `semantic: 1% of blocks indexed`.
+3. **backlog/embedder-capacity-ownership.md — reduced to the admission
+   question.** gr459088 and gr457326 are CLOSED, verified on the shared
+   server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
+   1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
+   none sufficient alone — per-batch retry (d9bd4e16), cold-cache re-arm
+   (2b729531), 16-block/25 000-char cap (5146528d), skip-and-continue
+   (ae7bdb6a), live warmup state (10f307e5).
 
-   The cause is not retry policy. Calling `http://127.0.0.1:8181/embed`
-   directly, bypassing precis: four of five attempts are refused at the
-   admission gate with `429 {"error":"busy"}` in under a millisecond, and
-   the fifth is admitted and does not return within 20 s. The service is up
-   and answering — it has nothing free to answer with. Sixty-two seconds of
-   backoff against a service shedding for forty minutes buys nothing, and
-   no schedule short of hours would.
+   Root cause for anyone who finds this later: the warm pass starved the
+   service it was waiting on. 64-block batches collected the long blocks
+   (up to 22756 chars), blew the 15 s client budget, and each timeout
+   orphaned a server-side computation that kept its slot — so the pass
+   manufactured the saturation that rejected its own retries, and
+   `embed_missing` sending the first 64 *missing* blocks made batch 1
+   always the worst one. Two intermediate diagnoses were wrong and both
+   fell to measurement rather than argument: "the embedder sheds
+   continuously" (idle between passes — inflight 0 on six samples) and
+   "slots are leaked" (they release when the pass stops). Timed idle the
+   embedder does one short string in 0.17 s — **the hardware was never
+   the constraint.**
 
-   So this item is no longer "re-arm the warm pass": that landed and is
-   verified. It is capacity, or a warm pass that yields to request-path
-   traffic instead of racing 15 sessions for the same four slots. Open
-   question in the gripe: whether the one admitted request taking >20 s is
-   normal under load or a slot held by something that never completes —
-   capacity lost rather than exhausted.
-
-   ANSWERED, then CORRECTED (gr459088 comments 2-3). rustling measured
-   `inflight` never below 3 of 4 over 8 min and read it as leaked slots.
-   My 02:17-02:23Z round-13 sampling shows it is not a leak and not
-   ambient: **the md warm pass is the load.** With no pass running,
-   `inflight` is 0 on six samples 10 s apart and the 429 counter is flat
-   for a full minute; 36 s after a pass starts it is 4, with the pass's
-   own batch 1 timing out at ~31 s while holding the slots it is waiting
-   on. Both earlier readings sampled inside a pass; neither sampled the
-   gap. The service was never restarted (PID 892, Aug 31) — nothing was
-   reclaimed, the pass simply stopped.
-
-   Two measurements outrank the correction. An admitted single-text embed
-   takes **over 10 s** — three orders of magnitude off for bge-m3 on this
-   box — so while batches hold slots there is no usable interactive
-   capacity, only instant rejection or a long wait. And the pass cannot
-   finish by construction: 299 batches of 64 texts, four slots, batches
-   that time out at ~31 s while occupying them. Batch 1 has not completed
-   in any of the five passes since 00:42Z.
-
-   So the first move is not more capacity, it is a warm pass that stops
-   sizing itself as the service's only client: cap it to one slot, shrink
-   the batch under the timeout, or gate it on an idle gauge. rustling's
-   per-failure cooldown (575b6724) is the same instinct applied to
-   frequency. Unmeasured and decisive for the capacity question: whether
-   >10 s for one short text is this model's real speed here or CPU
-   contention from the concurrent batches — nobody has timed the embedder
-   alone on an idle machine.
-
-   That last question is ANSWERED — it is contention, not the model.
-   Timed from inside the container between passes: 8/16/32/64 blocks →
-   0.3/1.3/1.9/3.6 s, and one short string 0.17 s. bge-m3 on this box is
-   about an order of magnitude faster than the >10 s seen under load, so
-   "more slots or smaller work" resolves to smaller work; the hardware is
-   not the constraint.
-   Two more findings that make "shrink the batch" the specific move.
-   First, the mechanism: the pass is single-threaded, one `embed()` in
-   flight, yet `inflight` reaches 4 — abandoned requests keep their
-   slots. The client gives up at 15 s x 2 while the service keeps
-   computing, so each timeout orphans a server-side computation and six
-   retries orphan six. Hence the invariant log shape: one ~31 s timeout,
-   then only instant 429s. The pass fills four slots with its own
-   abandoned work, which is why frequency alone cannot fix it.
-   Second, why it is always batch 1: `embed_missing` sends the first 64
-   *missing* blocks, and the small early blocks are already cached, so
-   batch 1 is 89355 chars (max single block 22756) — 3.3x the 27038 that
-   64 was sized against. ~12 s idle, over budget under any load. 64 was
-   never viable for this corpus; it was measured against the wrong
-   blocks. Landed `_MD_WARMUP_BATCH_SIZE` 64 → 16 (~22 KB, ~3 s idle).
-   Then the abort contract, which httpmcp's acceptance found next
-   (gr459088 comment 6): batch 3 failed, burned its retries, and the
-   pass ABORTED — discarding 1193 batches it never attempted, so a pass
-   netted ~32 vectors of 76k, which at ~600 passes and the 900 s
-   cooldown ceiling is days. `on_batch_error` now returns a tri-state
-   (`BatchErrorAction`: retry / skip / abort) instead of a bool: a
-   retryable error that outlasts the per-batch budget skips that batch
-   and the pass carries on, abort is reserved for non-retryable errors,
-   and the skipped indices are reported — `warm with gaps (N new, M
-   batch(es) skipped)` in `precis-status`, logged with the first one, so
-   a batch that fails every pass is visible rather than silently never
-   embedded. A gapped pass deliberately counts as a failure for the
-   re-arm backoff, so the gaps get another chance without hammering.
-   And sizing moved to the axis that predicts the deadline:
-   `batch_chars=25_000` alongside the count cap, because a count of 64
-   is anywhere between trivial and impossible when blocks run 3..22756
-   chars — the count-only cap kept failing on whichever batch collected
-   the long ones.
-   Accepted on prod: cache 1179916 → 45252876 bytes in 19 min (~11000
-   vectors), and a live md search reports **60% of blocks indexed**
-   against 1% all night. Skip-and-continue was the difference.
-   One more gap closed on the way (gr459088 comment 7): the
-   `md_vector_warmup` row never rendered during a *healthy* pass, since
-   `record_warmup_state` was only called on a batch error or at the
-   terminal state — so the surface built to answer "is the cache
-   warming?" was blank for the whole hour it mattered, and "warming
-   normally" looked identical to "never started". `embed_missing` now
-   takes `on_batch_done(done, count, added)` and the pass publishes
-   `warming: batch i/N (k new)` as it goes, plus a `warming: starting`
-   claim before the first embed (planning reads every block off disk,
-   seconds on a large tree).
-
-   **Acceptance of 5146528d (64→16 batches), measured 02:28-02:32Z: it
-   works, and it exposes the next defect.** The npz grew 1048844 →
-   1179916 bytes — exactly 32 × 1024 × 4, batches 1 and 2 — with mtime
-   moving from Sep 30 12:43 to Oct 1 02:31. First vectors this cache has
-   gained in thirteen hours, and it confirms the resume path: the
-   exception branch's `vector_cache.flush()` persists partial work, so the
-   next pass starts at block 33.
-
-   But batch 3 failed, burned its six retries, and the pass aborted —
-   discarding 1193 batches it never attempted. A pass now nets ~32 vectors
-   instead of 0. Against 1196 batches that is ~600 passes, and with the
-   cooldown capping at 900 s, days. One bad batch should not be fatal:
-   `on_batch_error` needs a skip-and-continue outcome beside retry and
-   abort, with skipped indices reported so a permanently-failing batch is
-   visible rather than silently never embedded. Blocks run to 22756 chars,
-   so a character cap would suit better than a block count.
-
-   **Acceptance of ae7bdb6a (tri-state `BatchErrorAction` + 25 000-char
-   cap), 02:55Z: the md index is warm for the first time.** Cache
-   1179916 → 45252876 bytes in 19 min (~11 000 vectors, 38×), and a live
-   `search(kind='md')` reports **60% of blocks indexed** against 1% all
-   night. Skip-and-continue was the whole difference: the pass stops
-   dying on whichever batch collects the long blocks.
-
-   One observability gap found while accepting it, minor and not a
-   blocker: `md_vector_warmup` renders only once `record_warmup_state`
-   has been called, which first happens on a batch error or at the
-   pass's terminal state. A process warming cleanly shows **no row at
-   all** for the whole pass, so precis-status cannot distinguish "warming
-   normally" from "never started" — confirmed at 63 s into a healthy
-   pass. Recording a `warming: batch 1/N` state at pass start would close
-   it. Note also the deliberate contract change in ae7bdb6a: a gapped
-   pass counts as a failure for the cooldown ladder, so `COLD` now means
-   a *non-retryable* error and a fully-down embedder reports gaps rather
-   than COLD — anything asserting on COLD needs to know that.
+   What is left is server-side admission: a warm batch and a one-string
+   query share four undifferentiated slots, so a pass still crowds out
+   interactive embeds for its window. Narrow now that passes complete.
 
 4. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
