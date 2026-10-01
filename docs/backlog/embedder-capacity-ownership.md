@@ -62,10 +62,18 @@ container (`precis-mcp-http`), not twelve, and its md cache is fully warm.
 relaunch: `launchctl print gui/<uid>/com.precis.embedder` showed
 `last exit reason = OS_REASON_CODESIGNING`, and nothing was listening on
 8181 even though the plist sets `KeepAlive`. A second, plain `launchctl
-kickstart gui/<uid>/com.precis.embedder` (no `-k`) came up clean. So
-anything that automates this restart must check afterwards that 8181 is
-listening, not trust the exit code. Also, `kickstart -k gui/$UID/...` failed
-from a shell where `$UID` did not expand; write the uid out (`id -u`).
+kickstart gui/<uid>/com.precis.embedder` (no `-k`) came up clean. Also,
+`kickstart -k gui/$UID/...` failed from a shell where `$UID` did not expand;
+write the uid out (`id -u`).
+
+**Restarts are now automatic on this machine** (Reto, 2026-10-01).
+`scripts/embedder-reload install` loads a launchd watcher on the primary
+checkout's `.git/logs/HEAD`. It restarts the embedder only when a file the
+serving path runs, or the dependency lock, changed since the sha it was last
+started on — the list is `WATCHED_PATHS` in the script. Success means
+`/healthz` answers; on no answer it retries with a plain kickstart, and if
+that fails too it keeps the old sha so the next HEAD move retries. Log:
+`~/Library/Logs/precis-embedder-reload.log`.
 
 ## Motivation / why
 

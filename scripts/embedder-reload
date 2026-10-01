@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# scripts/embedder-reload — restart the dev-machine embedder when its code moves.
+#
+# The embedder on this machine (launchd agent com.precis.embedder, port 8181)
+# runs EDITABLE out of the primary checkout, and `scripts/ship` fast-forwards
+# that checkout on every merge. The files on disk change many times a day; the
+# running process keeps the code it imported at start. gr458940: it ran a
+# 30-day-old build, so a fix landed 3 days earlier had never executed.
+#
+# This script closes that gap. A second launchd agent
+# (com.precis.embedder-reload, written by `install`) runs it whenever the
+# primary checkout's HEAD moves. It restarts the embedder only when a file the
+# serving path executes, or the dependency lock, changed between the sha the
+# embedder was last started on and HEAD — a merge touching anything else costs
+# nothing, so a qland burst does not bounce every session's embeddings.
+#
+# A restart can fail closed (2026-10-01: macOS killed the relaunch with
+# OS_REASON_CODESIGNING and KeepAlive did not recover it; a plain kickstart
+# without -k did). So success means /healthz answers, never the launchctl exit
+# code: kickstart -k, wait, then plain kickstart, wait again. The started-on
+# sha is recorded only after /healthz answers, so a failed restart is retried
+# on the next HEAD move.
+#
+# Usage:
+#   scripts/embedder-reload              # check + restart if needed (what launchd runs)
+#   scripts/embedder-reload check        # print the decision, change nothing
+#   scripts/embedder-reload force        # restart now regardless of the diff
+#   scripts/embedder-reload install      # write + load the watcher agent
+#   scripts/embedder-reload uninstall    # unload + remove the watcher agent
+#
+# Env (tests override these):
+#   EMBEDDER_RELOAD_REPO    checkout the embedder runs from (default: the primary)
+#   EMBEDDER_RELOAD_STATE   file holding the started-on sha
+#   EMBEDDER_RELOAD_URL     embedder base URL (default http://127.0.0.1:8181)
+#   EMBEDDER_RELOAD_LABEL   launchd label (default com.precis.embedder)
+#   EMBEDDER_RELOAD_WAIT_S  seconds to wait for /healthz per attempt (default 90)
+set -euo pipefail
+
+# Paths whose change alters what the running service executes. The CLI
+# imports far more (precis.cli.main pulls in every subcommand), but only these
+# run while serving; uv.lock/pyproject cover a dependency change, which `uv run`
+# applies on restart.
+WATCHED_PATHS=(
+    src/precis/embedder_service.py
+    src/precis/embedder.py
+    src/precis/embedder_wire.py
+    src/precis/errors.py
+    src/precis/config.py
+    src/precis/cli/serve_embeddings.py
+    pyproject.toml
+    uv.lock
+)
+
+primary_checkout() {
+    # The first `git worktree list` entry is the primary, whichever tree this
+    # script was invoked from.
+    git -C "$(dirname "$0")" worktree list --porcelain | sed -n '1s/^worktree //p'
+}
+
+REPO="${EMBEDDER_RELOAD_REPO:-$(primary_checkout)}"
+STATE="${EMBEDDER_RELOAD_STATE:-${HOME}/.cache/precis/embedder-started-sha}"
+URL="${EMBEDDER_RELOAD_URL:-http://127.0.0.1:8181}"
+LABEL="${EMBEDDER_RELOAD_LABEL:-com.precis.embedder}"
+WAIT_S="${EMBEDDER_RELOAD_WAIT_S:-90}"
+WATCHER_LABEL="com.precis.embedder-reload"
+WATCHER_PLIST="${HOME}/Library/LaunchAgents/${WATCHER_LABEL}.plist"
+
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) embedder-reload: $*"; }
+
+head_sha() { git -C "$REPO" rev-parse HEAD; }
+
+# Prints the watched paths that differ between $1 and $2, one per line.
+# A started-on sha git no longer knows (gc'd, rewritten) counts as "changed":
+# the cost of a spurious restart is seconds, the cost of a missed one is weeks.
+changed_paths() {
+    if ! git -C "$REPO" cat-file -e "$1^{commit}" 2>/dev/null; then
+        echo "(unknown started-on sha $1)"
+        return
+    fi
+    git -C "$REPO" diff --name-only "$1" "$2" -- "${WATCHED_PATHS[@]}"
+}
+
+healthy() { curl -fsS -o /dev/null --max-time 3 "${URL}/healthz"; }
+
+wait_healthy() {
+    local deadline=$((SECONDS + WAIT_S))
+    while ((SECONDS < deadline)); do
+        healthy && return 0
+        sleep 2
+    done
+    return 1
+}
+
+restart() {
+    local target="gui/$(id -u)/${LABEL}"
+    log "restarting ${target}"
+    launchctl kickstart -k "$target" || log "kickstart -k exited $? (checking /healthz anyway)"
+    sleep 3
+    wait_healthy && return 0
+    # The fail-closed case: the relaunch was killed and KeepAlive did not
+    # bring it back. A plain kickstart starts a stopped job.
+    log "no /healthz after ${WAIT_S}s — plain kickstart"
+    launchctl kickstart "$target" || log "kickstart exited $?"
+    wait_healthy
+}
+
+record() {
+    mkdir -p "$(dirname "$STATE")"
+    echo "$1" >"$STATE"
+}
+
+decide() {
+    # Prints "restart <reason>" or "skip <reason>".
+    local head started changed
+    head="$(head_sha)"
+    if [[ ! -s "$STATE" ]]; then
+        echo "skip no started-on sha recorded — baselining at ${head:0:8}"
+        return
+    fi
+    started="$(cat "$STATE")"
+    if [[ "$started" == "$head" ]]; then
+        echo "skip embedder already started on ${head:0:8}"
+        return
+    fi
+    changed="$(changed_paths "$started" "$head")"
+    if [[ -z "$changed" ]]; then
+        echo "skip ${started:0:8}..${head:0:8} touches no embedder path"
+    else
+        echo "restart ${started:0:8}..${head:0:8} changed: $(echo "$changed" | paste -sd ' ' -)"
+    fi
+}
+
+run() {
+    local head decision
+    head="$(head_sha)"
+    decision="$(decide)"
+    log "${decision}"
+    if [[ "$decision" == restart* ]]; then
+        do_restart "$head"
+    else
+        # Nothing the embedder runs changed: move the baseline forward so
+        # the next diff covers only the new commits.
+        record "$head"
+    fi
+}
+
+do_restart() {
+    if restart; then
+        record "$1"
+        log "embedder healthy on ${1:0:8}"
+    else
+        log "FAILED: embedder not answering ${URL}/healthz — left the started-on sha unchanged so the next HEAD move retries"
+        return 1
+    fi
+}
+
+install_watcher() {
+    local self logf
+    self="${REPO}/scripts/embedder-reload"
+    logf="${HOME}/Library/Logs/precis-embedder-reload.log"
+    mkdir -p "$(dirname "$WATCHER_PLIST")"
+    # WatchPaths on logs/HEAD: `git merge --ff-only` (what ship runs in the
+    # primary) appends there on every HEAD move. ThrottleInterval coalesces a
+    # qland burst into one run.
+    cat >"$WATCHER_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by scripts/embedder-reload install. Restarts com.precis.embedder
+     when the checkout it runs from moves a file its serving path executes. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${WATCHER_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${self}</string>
+  </array>
+  <key>WatchPaths</key>
+  <array>
+    <string>${REPO}/.git/logs/HEAD</string>
+  </array>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${logf}</string>
+  <key>StandardErrorPath</key>
+  <string>${logf}</string>
+</dict>
+</plist>
+EOF
+    launchctl bootout "gui/$(id -u)/${WATCHER_LABEL}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$WATCHER_PLIST"
+    log "installed ${WATCHER_PLIST} (log: ${logf})"
+}
+
+uninstall_watcher() {
+    launchctl bootout "gui/$(id -u)/${WATCHER_LABEL}" 2>/dev/null || true
+    rm -f "$WATCHER_PLIST"
+    log "removed ${WATCHER_LABEL}"
+}
+
+case "${1:-run}" in
+run) run ;;
+check) decide ;;
+force) do_restart "$(head_sha)" ;;
+install) install_watcher ;;
+uninstall) uninstall_watcher ;;
+*)
+    echo "usage: $0 [run|check|force|install|uninstall]" >&2
+    exit 2
+    ;;
+esac
