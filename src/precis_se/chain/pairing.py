@@ -114,6 +114,9 @@ class Pairing:
     singles: list[OffsetOccupancy] = field(default_factory=list)
     conflicts: list[OffsetOccupancy] = field(default_factory=list)
     unpaired: list[OffsetOccupancy] = field(default_factory=list)
+    #: Each helix's register insertions/deletions (:func:`helix_indels`) —
+    #: kept so a run's nucleotide count is the bases in it, not its span.
+    indels: Mapping[str, HelixIndel] = field(default_factory=dict)
 
     def at(self, helix: str, offset: int) -> OffsetOccupancy | None:
         return self.offsets.get((helix, offset))
@@ -121,15 +124,33 @@ class Pairing:
     def single_runs(self) -> list[tuple[str, int, int]]:
         """Contiguous single-occupancy runs as ``(helix, first, last)``,
         inclusive — what ``chain_floppy`` measures and what a realizer
-        needs to know is not a duplex."""
+        needs to know is not a duplex. A deleted offset holds no base, so
+        a run continues across it rather than splitting in two (a 7-nt
+        strand read as 4 + 3 would hide a floppy span)."""
         runs: list[tuple[str, int, int]] = []
         for occ in sorted(self.singles, key=lambda o: (o.helix, o.offset)):
-            if runs and runs[-1][0] == occ.helix and runs[-1][2] == occ.offset - 1:
+            deleted = self.indels.get(occ.helix, HelixIndel()).deletions
+            if (
+                runs
+                and runs[-1][0] == occ.helix
+                and all(o in deleted for o in range(runs[-1][2] + 1, occ.offset))
+            ):
                 helix, first, _last = runs[-1]
                 runs[-1] = (helix, first, occ.offset)
             else:
                 runs.append((occ.helix, occ.offset, occ.offset))
         return runs
+
+    def run_nt(self, helix: str, first: int, last: int) -> int:
+        """Bases in ``helix[first..last]`` inclusive: the span, less its
+        deleted offsets, plus its inserted bases."""
+        indel = self.indels.get(helix, HelixIndel())
+        span = range(first, last + 1)
+        return (
+            len(span)
+            - sum(1 for o in span if o in indel.deletions)
+            + sum(indel.insertions.get(o, 0) for o in span)
+        )
 
 
 @dataclass(frozen=True)
@@ -290,7 +311,7 @@ def derive_pairing(tree: Any, state: Mapping[str, str | None] | None = None) -> 
                 family = nucleic.canonical_geometry(declared) or declared
                 declarations.setdefault(key, []).append((occupant, family))
 
-    out = Pairing()
+    out = Pairing(indels=indels)
     for key in sorted(raw):
         helix, offset = key
         occupants = tuple(raw[key])

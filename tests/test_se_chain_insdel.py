@@ -100,6 +100,21 @@ def _sheet(
     return tree
 
 
+def test_a_single_stranded_run_continues_across_a_deleted_offset() -> None:
+    # Prod dogfood (dogfood-insdel-1): a strand over h0[36:44) with offset
+    # 40 deleted read as two runs, 4 nt + 3 nt — each under ssDNA's
+    # persistence length, so the 7-nt floppy span went unreported.
+    tree = _sheet(n_helices=2, register={"deletions": [40]})
+    apply_ops(
+        tree, [{"op": "set_domain", "strand": "s0", "ord": 0, "start": 36, "end": 44}]
+    )
+    pairing = derive_pairing(tree)
+    assert ("h0", 36, 43) in pairing.single_runs()
+    assert pairing.run_nt("h0", 36, 43) == 7
+    floppy = [f.subject for f in _by_rule(tree, "chain_floppy")]
+    assert "h0[36:44]" in floppy
+
+
 # ── (a)/(b) the global twist finding ────────────────────────────────────
 
 

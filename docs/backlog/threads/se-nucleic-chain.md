@@ -70,7 +70,11 @@ dogfooded on prod. Do-next is blocked.
   helix's real-twist residual passes half a base; `chain_twist_register`
   skips a lone helix; sequence, pairing and exports honour them. The
   24-helix origami fixture now warns (≈137° per helix, no corrections),
-  as it should.
+  as it should. Dogfooded on prod 2026-10-01 (`dogfood-insdel-1`, 2 square
+  helices × 64): +34.3°/helix warning, one deletion each → +0.0°, route nt
+  drops; a single-stranded run split at the deleted offset (7 nt read as
+  4 + 3, hiding `chain_floppy`) — fixed in the commit that added this
+  sentence.
 
 - **per-offset unpair** — shipped 2026-10-01 in the commit that added
   this line: `unpair(at='<helix>@<offset>', clear?)` writes

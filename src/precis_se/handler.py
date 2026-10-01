@@ -3275,9 +3275,10 @@ def _render_chain(tree: SeTree) -> str:
                 [
                     {
                         "span": f"{helix}[{first}:{last + 1}]",
-                        "nt": str(last - first + 1),
+                        "nt": str(pairing.run_nt(helix, first, last)),
                         "contour": format_quantity(
-                            (last - first + 1) * se_nucleic.SS_CONTOUR_PER_NT_M,
+                            pairing.run_nt(helix, first, last)
+                            * se_nucleic.SS_CONTOUR_PER_NT_M,
                             "length",
                         ),
                     }

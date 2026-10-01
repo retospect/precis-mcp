@@ -746,7 +746,7 @@ def floppy_findings(
     c = nucleic.SS_CONTOUR_PER_NT_M
     for helix, first, last in pairing.single_runs():
         lp, note = reader(helix)
-        n_nt = last - first + 1
+        n_nt = pairing.run_nt(helix, first, last)
         span = n_nt * c
         if span <= lp:
             continue
