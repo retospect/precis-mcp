@@ -185,7 +185,10 @@ the seam; every OTHER port on `a`/`b` becomes a composite port
 Findings land in the build record (`view='block'` → "## generated
 (join)"): `seam.sigma` WARN (`a`/`b` built at different bond-length
 `sigma` — the seam places and re-relaxes with `a`'s sigma only, straining
-`b`'s bonds; regenerate one side onto a shared sigma), `seam.rings`
+`b`'s bonds; regenerate one side onto a shared sigma), `seam.element`
+WARN (the two rims carry different elements, `data.a_elements`/
+`b_elements` — the seam bonds them as one material; regenerate one side
+onto a shared element, or accept the heterojunction), `seam.rings`
 (census), `seam.adapter`/`seam.strain` INFO, `seam.leak` WARN (re-relax
 perturbed geometry past the seam radius, naming which of `|dl|`/
 `|dtheta|` breached and its threshold — raise `seam_radius` or resolve a

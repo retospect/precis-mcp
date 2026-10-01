@@ -631,6 +631,7 @@ no ERROR. No `__bool__`.
 | `seam.strain` `[impl 0.2]` | INFO | `hexfold.join.compose`: rms/max bond-length deviation from sigma over the re-relaxed (movable) atoms (`data.rms_A`, `data.max_A`, `data.bonds`) |
 | `seam.radius.unmeasured` `[impl 0.2]` | INFO | `hexfold.join.compose`: a mixed rim (no `Port.rim_type`) has no measured decay length, so the join falls back to the conservative zigzag radius (`data.side`, `data.radius`) |
 | `seam.sigma` `[impl 0.2]` | WARN | `hexfold.join.compose`: `a`/`b` were built at different `sigma` (bond length) -- the seam places and re-relaxes with `a`'s sigma only, so `b`'s bonds are strained (`data.a_sigma`, `data.b_sigma`); fix is to regenerate one side onto a shared sigma |
+| `seam.element` `[impl 0.2]` | WARN | `hexfold.join.compose`: the two rims being fused carry different elements (`data.a_elements`, `data.b_elements`, each the sorted set over that rim's dangling atoms) -- the seam bonds rim atoms pairwise by geometry and port size only, so it is placed and relaxed as one material; WARN not ERROR because `JOINERS` is keyed on a lattice pair for future heterojunctions; fix is to regenerate one side onto a shared element, or accept the heterojunction |
 | `join.part_addressed` `[impl 0.2]` | ERROR | `precis_se.atomic.join`: an endpoint names a block already claimed as a *part* of another composite -- a part may not belong to two composites, and its free rim is already the owner's own port; the message redirects to `<owner>.<part>_<port>`, walking the full nested prefix (`data.block`, `data.owner`, `data.port`). Raised before any lattice check |
 | `join.pose_dropped` `[impl 0.2]` | INFO | `precis_se.atomic.join`: `b` carried a non-identity pose/rot before the join; a join places `b` by the seam transform, so that pose is discarded (`data.block`) |
 | `join.reparented` `[impl 0.2]` | INFO | `precis_se.atomic.join`: `b` was authored under an ordinary (non-composite) parent and moves into the composite, discarding that authored parent -- `a`'s parent survives, inherited by the composite (`data.block`, `data.old_parent`). Not the two-composite case, which is `join.part_addressed` |
@@ -1324,7 +1325,8 @@ seam-ring census while leaving everything outside the seam radius
 bit-for-bit untouched; `seam.adapter`, `seam.leak`, `seam.strain`,
 `seam.radius.unmeasured`, `seam.terminated`, `seam.sigma` (a's sigma used
 for both placement and re-relax; b's bonds strain if the two blocks
-weren't built to the same sigma) findings (§13). The se op
+weren't built to the same sigma), `seam.element` (the two rims' elements
+differ; the seam is placed as one material) findings (§13). The se op
 (`precis_se/atomic/join.py`'s `join` op, store-aware prepare/finish over
 `compose`, dispatched by the joined ports' `lattice` annotation *pair* --
 `JOINERS` keys on the canonical sorted 2-tuple of both sides, not a
