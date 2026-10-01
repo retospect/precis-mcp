@@ -1102,10 +1102,17 @@ export async function blocktreeViewer3D({
   // explicit opt-in, not the default.
   const _CONTAINER_OPACITY = 0.25;
 
-  function _containerGroup(path) {
+  //: The vendored ObjectGroup at a scene path, or null. Private reach
+  //: (`_rendered.nestedGroup`), guarded by every caller; the vendored API
+  //: has no public accessor for a group's materials.
+  function _groupAt(path) {
     return viewer && viewer._rendered && viewer._rendered.nestedGroup
       ? viewer._rendered.nestedGroup.groups[path]
       : null;
+  }
+
+  function _containerGroup(path) {
+    return _groupAt(path);
   }
 
   function applyContainerMode(mode) {
@@ -1151,27 +1158,57 @@ export async function blocktreeViewer3D({
     }
   }
 
-  function recolour(path, colour) {
+  //: Can `updatePart` recolour this path at all? Two kinds it rejects by
+  //: construction, and asking anyway spends a console error per click:
+  //: a drawn connection is an edges-only leaf (no shape geometry to tint),
+  //: and a block with children is a group, not a leaf ObjectGroup. Neither
+  //: is an error worth reporting — they are skipped, not failed. (Not
+  //: `data.container_paths`: that lists each container's `(envelope)`
+  //: LEAF, which is recolourable — the group above it is not.)
+  function recolourable(path) {
     const part = findPart(data.shapes, path);
-    if (!part || !viewer) return;
+    if (!part || (Array.isArray(part.parts) && part.parts.length)) return false;
+    return !(data.connections || []).some((c) => c.path === path);
+  }
+
+  //: `updatePart` mutates the scene graph and does not ask for a frame, so
+  //: without this the colour lands and the canvas keeps showing the old
+  //: one until some unrelated interaction repaints it — measured n=0 on a
+  //: real design. Same reason, and same call, as the container-mode setter.
+  function repaint() {
+    if (!viewer) return;
     try {
-      viewer.updatePart(path, { ...part, color: colour }, { skipBounds: true });
+      viewer.update(true);
+    } catch (err) {
+      console.error("blocktree-3d: highlight redraw failed", err);
+    }
+  }
+
+  //: Tint a leaf's own materials. NOT `viewer.updatePart`: that writes
+  //: `color` into the vendored parts bookkeeping and rebuilds geometry, and
+  //: never touches a material — every highlight routed through it changed
+  //: nothing on screen (0 pixels, no error). The vendored `highlight()`
+  //: recolours here, the same way.
+  function recolour(path, colour) {
+    if (!viewer || !recolourable(path)) return;
+    try {
+      const grp = _groupAt(path);
+      if (!grp) return;
+      for (const mesh of [grp.front, grp.back]) {
+        if (!mesh || !mesh.material || !mesh.material.color) continue;
+        mesh.material.color.set(colour);
+        mesh.material.needsUpdate = true;
+      }
     } catch (err) {
       // Best-effort: a recolour glitch must never break picking/explode.
-      console.error("blocktree-3d: updatePart failed for", path, err);
+      console.error("blocktree-3d: recolour failed for", path, err);
     }
   }
 
   function clearHighlight() {
     for (const [path, colour] of highlighted) recolour(path, colour);
     highlighted.clear();
-    if (viewer) {
-      try {
-        viewer.updateBounds();
-      } catch {
-        // non-fatal — see recolour's own try/catch
-      }
-    }
+    repaint();
   }
 
   function selectPath(primaryPath) {
@@ -1180,11 +1217,12 @@ export async function blocktreeViewer3D({
       const other = c.a_path === primaryPath ? c.b_path : c.a_path;
       for (const p of [c.path, other]) {
         const part = findPart(data.shapes, p);
-        if (!part || highlighted.has(p)) continue;
+        if (!part || highlighted.has(p) || !recolourable(p)) continue;
         highlighted.set(p, part.color);
         recolour(p, HIGHLIGHT_COLOUR);
       }
     }
+    repaint();
     // The path's own last segment is now the block's NAME (viewer-toggles
     // fix, precis_web/blocktree_3d.py's module docstring — id is a "/"-
     // joined name chain), not its uid, so the mermaid/topology-cloud node

@@ -156,6 +156,41 @@ closes it. The durable lesson — a browser phase must wait on an observable
 condition, never a timeout — is a requirement on Do-next 1 rather than a
 line in a closed gripe.
 
+## Selection highlighting never reached the screen (2026-10-01)
+
+Clicking a topology-cloud node highlighted the cloud node and changed zero
+canvas pixels, on every design, since highlighting existed. `selectPath`
+tints each partner through `recolour`, which called the vendored
+`viewer.updatePart(path, {...part, color})` — and `updatePart` writes
+`color` only into its own bookkeeping copy of the parts tree, then rebuilds
+geometry; it never touches a material. Partly hidden by eight console
+errors per click from the two kinds it rejects outright (connection leaves
+are edges-only, containers are not leaf groups), which read as the cause
+and were not.
+
+Now: `recolour` tints the leaf's own `front`/`back` material the way the
+vendored `highlight()` does, skips connection leaves and non-leaf blocks up
+front, and repaints once per selection. Measured on the prod copy: select
+`axle` → n=6725 (wheel and both bearings amber), select `wheel` next →
+n=1 against base (wheel restored, only a sliver of the axle visible), zero
+console errors. Mermaid clicks and viewer picks go through the same
+`selectPath`, so they were dead too and are fixed by the same change.
+
+Two gaps left, deliberately not fixed here: a CONTAINER partner is never
+tinted (selecting `axle` does not mark the cranks, its most important
+partners — the box to tint is the container's `(envelope)` leaf, which
+`applyContainerMode` also drives, so the two need reconciling), and the
+selected block ITSELF is never tinted, only its partners. Both belong to
+`backlog/se-pick-hierarchy.md` (Horizon 1), which owns what a selection
+shows.
+
+The scale bar was checked at the same time and is correct, against a
+witness that does not trust its arithmetic: across five unclipped zoom
+steps, label metres ÷ bar pixels × the model's own pixel height lands at
+0.96–1.14 m for a design whose root envelope is 1.05 m tall. The residual
+drift tracks render size (anti-aliased edges lost at small zoom), not the
+bar.
+
 ## explode was inert from its own feature commit (2026-10-01)
 
 Found by probing two affordances nothing had ever driven in a browser —

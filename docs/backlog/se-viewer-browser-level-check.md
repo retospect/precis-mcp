@@ -95,6 +95,24 @@ zero afterwards can be read as "survived".
 Generalises past this phase: any assertion of the form "X is still true
 after Y" needs separate evidence that Y happened at all.
 
+### A clean console is not evidence of an applied change
+
+Selection highlighting called a vendored setter that accepted the colour,
+threw nothing, and changed no material — dead on every design, invisible
+to everything but a pixel diff. And when it DID log errors (for the two
+part kinds it rejects), those errors looked like the cause and were not:
+silencing them left the canvas exactly as unchanged. The witness for "did
+the picture change" is the picture.
+
+### A numeric claim needs a witness that does not share its arithmetic
+
+The scale bar's label and its own pixel width always agree with each other
+— they are computed from the same camera read. Checking it means a second,
+independent measurement: the model's pixel extent from the image, against a
+known real dimension of the design. Self-consistency across zoom catches a
+missing zoom term; only the independent witness catches a bar that is
+consistently off by a decade.
+
 ### The noise floor is measured in the same run, before anything else
 
 Already observed, kept here because it is the other half of trusting a
