@@ -1069,6 +1069,13 @@ def test_op_place_rejects_non_4_layer_stackup(pcb, store):
         pcb.put(id="op-2layer", args={"op": "place"})
 
 
+@pytest.mark.parametrize("negotiate", [-1, 101])
+def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negotiate):
+    pcb.put(id="op-negotiate", args=_CROSSED)
+    with pytest.raises(BadInput, match="negotiate"):
+        pcb.put(id="op-negotiate", args={"op": "route", "negotiate": negotiate})
+
+
 def test_op_unknown_rejected(pcb):
     pcb.put(id="op-bad", args=_CROSSED)
     with pytest.raises(BadInput, match="unknown op"):

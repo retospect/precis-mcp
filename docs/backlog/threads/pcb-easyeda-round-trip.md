@@ -48,8 +48,13 @@ sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
-**Last reviewed:** 2026-10-02 (handoff: everything landed is deployed;
-nothing uncommitted)
+**Last reviewed:** 2026-10-02 (negotiated congestion landed DARK after
+the orchestrator's review fixes; the real-board number still waits on
+review-queue `pcb-easyeda-round-trip-1`. Export slice 2b's writer
+(`epro_write.py`, `view='epro'`, 22 tests green) is built and parked on
+local branch `pcb-epro-2b`, held for design review — restore it with
+`git checkout pcb-epro-2b -- src/precis/pcb/epro_write.py
+tests/test_pcb_epro_export.py src/precis/handlers/pcb.py`.)
 **Worktree:** `pcb-easyeda-round-trip`
 
 ## Do next
@@ -72,9 +77,11 @@ nothing uncommitted)
    diagonals), and a pad no longer reads as walled in by the CONTESTED
    sliver between it and a fine-pitch neighbour (the 11 `no_path` nets):
    **65/89**. A history-cost PathFinder term was tried and LOST (62/89 at
-   best). Left: 19 congestion + 3 `search_budget`. NEXT = shared-occupancy
-   negotiated congestion (usage counts per cell, rip-up by net) — a new
-   grid model, item step 12 says why a cost term is not enough.
+   best). Left: 19 congestion + 3 `search_budget`. Negotiated congestion
+   is built and lands DARK (item step 13: off by default, opt-in
+   `negotiate=N`). NEXT = the real-board number off vs on, which needs the
+   `.epro2` back or Reto's OK to run on a prod-row dump
+   (review-queue `pcb-easyeda-round-trip-1`).
 2. **backlog/pcb-keepout-does-not-bind.md** — this thread's own finding,
    filed 2026-09-30; a keepout imported from a real board has no
    enforcement path, so re-routing can silently violate an

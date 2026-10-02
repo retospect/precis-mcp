@@ -51,6 +51,10 @@ put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0}
   authoring time, or via `op='move'` below) is respected by both — a
   locked instance is never moved, guaranteed at the database write
   boundary, not just by the optimizer's own move generators.
+- `op='route'` also accepts `negotiate` (int 0–100, default 0 = off):
+  experimental negotiated-congestion iterations, tried only when the
+  normal rip-up passes leave nets unrouted; capped at 60 s, and the result
+  is kept only if it routes more nets. Unmeasured on real boards yet.
 - **Idempotent per (design, op, content-hash).** A re-submit against
   *unchanged* netlist/placement state and the same `iters`/`seed`
   collapses onto the in-flight/prior job instead of minting a duplicate —

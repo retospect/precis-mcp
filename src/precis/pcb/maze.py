@@ -63,6 +63,7 @@ check_connectivity` has to :func:`precis.pcb.drc.check_clearance`.
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -125,6 +126,15 @@ MAX_CELLS_PER_AXIS = 4000
 #: on open board. PCB routes are not shortest-path-critical — a 15% longer
 #: trace is invisible, a 60-second route is not.
 HEURISTIC_WEIGHT = 1.15
+
+#: :class:`Negotiation`'s price schedule, VPR's defaults (Betz & Rose):
+#: the present-congestion factor starts at 0.5 and grows 1.5x per
+#: iteration, so early iterations explore and late ones force a split;
+#: each iteration a cell spends contested adds one history unit, priced at
+#: ``NEGOTIATE_HIST_FAC`` grid steps.
+NEGOTIATE_PRES_FAC = 0.5
+NEGOTIATE_PRES_GROWTH = 1.5
+NEGOTIATE_HIST_FAC = 1.0
 
 _SQRT2 = math.sqrt(2.0)
 #: (dx, dy) in-plane steps and their per-step length in grid units.
@@ -886,35 +896,89 @@ class OccupancyGrid:
         """Claim a routed path's corridor. Sampling every point of the
         (already collinear-merged) polyline is not enough — merged runs
         skip intermediate cells — so each span is re-sampled at half-pitch
-        steps before stamping."""
+        steps before stamping (:func:`path_samples`)."""
         radius = self.core_radius_mm(width_mm)
-        step = self.spec.pitch / 2.0
+        for px, py, lo, hi in path_samples(path, self.spec.pitch / 2.0):
+            self.stamp_disk(range(lo, hi + 1), px, py, radius, path.net_id)
+        self.register_attach(path)
+
+    def register_attach(self, path: RoutePath) -> None:
+        """Record ``path``'s centreline as attach points for its net's next
+        connection, without claiming any copper. :meth:`stamp_path` does
+        both; :class:`Negotiation` needs only this half, because a
+        negotiated path's copper is counted in its usage map, not owned."""
         spec = self.spec
         plane = spec.nx * spec.ny
         attach = self._routed_cells.setdefault(path.net_id, {})
-        for a, b in zip(path.points, path.points[1:], strict=False):
-            if a[2] != b[2]:  # a via: claim it on every layer it spans
-                lo, hi = min(a[2], b[2]), max(a[2], b[2])
-                self.stamp_disk(range(lo, hi + 1), a[0], a[1], radius, path.net_id)
-                for layer in range(lo, hi + 1):
-                    ix, iy = spec.to_cell(a[0], a[1])
-                    attach[layer * plane + iy * spec.nx + ix] = (a[0], a[1])
-                continue
-            seg_len = math.hypot(b[0] - a[0], b[1] - a[1])
-            n = max(1, math.ceil(seg_len / step))
-            for k in range(n + 1):
-                t = k / n
-                px = a[0] + (b[0] - a[0]) * t
-                py = a[1] + (b[1] - a[1]) * t
-                self.stamp_disk(
-                    (a[2],),
-                    px,
-                    py,
-                    radius,
-                    path.net_id,
-                )
-                ix, iy = spec.to_cell(px, py)
-                attach[a[2] * plane + iy * spec.nx + ix] = (px, py)
+        for px, py, lo, hi in path_samples(path, spec.pitch / 2.0):
+            ix, iy = spec.to_cell(px, py)
+            for layer in range(lo, hi + 1):
+                attach[layer * plane + iy * spec.nx + ix] = (px, py)
+
+    def forget_attach(self, net_id: int) -> None:
+        """Drop every attach point of ``net_id`` — its paths were ripped up."""
+        self._routed_cells.pop(net_id, None)
+
+    def is_attach_point(self, net_id: int, x: float, y: float, layer: int) -> bool:
+        """Is ``(x, y)`` on ``layer`` exactly a centreline point this net's
+        copper already occupies? A negotiated path that began on its own
+        net's copper is only valid where that copper still lies."""
+        spec = self.spec
+        ix, iy = spec.to_cell(x, y)
+        at = self._routed_cells.get(net_id, {}).get(
+            layer * spec.nx * spec.ny + iy * spec.nx + ix
+        )
+        return at is not None and abs(at[0] - x) < 1e-9 and abs(at[1] - y) < 1e-9
+
+    def path_is_legal(
+        self,
+        path: RoutePath,
+        *,
+        width_mm: float,
+        via_dia_mm: float | None,
+        start_exempt: bool,
+        goal_exempt: bool,
+    ) -> bool:
+        """Would :meth:`route` have been allowed to walk ``path`` on this
+        grid as it stands? The same keep-outs, cell for cell: a track cell
+        must have no foreign copper within the routing net's half-width
+        plus one cell; a via site none within the via's, on any layer, and
+        no pad keep-out. ``start_exempt``/``goal_exempt`` mark an end that
+        sits on the net's own pad, where :meth:`_route_in` ignores
+        CONTESTED slivers (``endpoint_passable``).
+
+        Used to commit a :class:`Negotiation` result onto a hard grid: a
+        path that passes is exactly as legal as one the search found."""
+        tl, tiy, tix, viy, vix = path_cells(path, self.spec)
+        if tl.shape[0] == 0:
+            return False
+        r_track = math.ceil((width_mm / 2.0) / self.spec.pitch) + 1
+        if via_dia_mm is None:
+            if viy.shape[0]:
+                return False
+            r_via, half_via, pad_keep = 0, _disk_half_chords(0), np.zeros((1, 1), bool)
+        else:
+            r_via = math.ceil((via_dia_mm / 2.0) / self.spec.pitch) + 1
+            half_via = _disk_half_chords(r_via)
+            pad_keep = self._pad_keepout_mask(via_dia_mm / 2.0)
+        return bool(
+            _path_legal_kernel(
+                self._owner,
+                int(path.net_id),
+                tl,
+                tiy,
+                tix,
+                r_track,
+                _disk_half_chords(r_track),
+                viy,
+                vix,
+                r_via,
+                half_via,
+                pad_keep,
+                bool(start_exempt),
+                bool(goal_exempt),
+            )
+        )
 
     # -- the search ----------------------------------------------------
     def search_window(
@@ -954,6 +1018,7 @@ class OccupancyGrid:
         layer_prefs: dict[int, str] | None = None,
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
+        negotiation: Negotiation | None = None,
     ) -> RoutePath | None:
         """Search a window around the endpoints first, then the whole grid.
 
@@ -990,6 +1055,7 @@ class OccupancyGrid:
             "layer_prefs": layer_prefs,
             "extra_start_terminals": extra_start_terminals,
             "extra_goal_terminals": extra_goal_terminals,
+            "negotiation": negotiation,
         }
         path = self._route_in(window, net_id, start, goal, **kwargs)
         if path is not None or window == full or self.last_route_exhausted:
@@ -1016,6 +1082,7 @@ class OccupancyGrid:
         layer_prefs: dict[int, str] | None = None,
         extra_start_terminals: Sequence[tuple[tuple[float, float], int]] = (),
         extra_goal_terminals: Sequence[tuple[tuple[float, float], int]] = (),
+        negotiation: Negotiation | None = None,
     ) -> RoutePath | None:
         """Weighted-A* from ``start`` to ``goal`` for a trace of
         ``width_mm``, through cells this net's centreline may legally
@@ -1274,6 +1341,8 @@ class OccupancyGrid:
                 step_cost[layer, k] = pitch * weight * _step_penalty(pref, dx, dy)
         body = self._body_mask
         no_mask = np.zeros((1, 1), dtype=np.bool_)
+        no_soft = np.zeros((1, 1, 1), dtype=np.int16)
+        no_hist = np.zeros((1, 1, 1), dtype=np.float32)
         outcome, goal_cell, length, path = _astar_kernel(
             owner,
             int(net_id),
@@ -1307,6 +1376,11 @@ class OccupancyGrid:
             float(via_body_cost_mm),
             float(HEURISTIC_WEIGHT),
             int(max_expansions),
+            negotiation is not None,
+            no_soft if negotiation is None else negotiation.usage,
+            no_hist if negotiation is None else negotiation.hist,
+            0.0 if negotiation is None else float(negotiation.pres_fac),
+            0.0 if negotiation is None else float(negotiation.hist_fac),
         )
         if outcome == _EXHAUSTED:
             self.last_route_exhausted = True
@@ -1525,6 +1599,11 @@ def _astar_kernel(
     via_body_cost_mm: float,
     weight_h: float,
     max_expansions: int,
+    negotiate: bool,
+    usage: np.ndarray,
+    hist: np.ndarray,
+    pres_fac: float,
+    hist_fac: float,
 ) -> tuple[int, int, float, np.ndarray]:
     """The A* loop of :meth:`OccupancyGrid._route_in`, compiled.
 
@@ -1541,6 +1620,13 @@ def _astar_kernel(
     ``r_track`` on its layer; a via site when it does so within ``r_via``
     on ANY layer, or ``pad_keep`` marks it.
 
+    With ``negotiate`` (:class:`Negotiation`), entering a cell also pays
+    for other nets' claims in the same keep-out disk: the step cost plus
+    ``hist_fac * pitch * hist`` at the cell, times ``1 + pres_fac * k``
+    where ``k`` is the most nets claiming one cell of the disk. A via pays
+    ``1 + pres_fac * k`` over its own disk on every layer. Costs only grow,
+    so the heuristic stays admissible.
+
     Returns ``(outcome, goal, length, path)`` — ``path`` lists the cells
     from the goal back to the source it was reached from."""
     ww = wx1 - wx0
@@ -1554,6 +1640,12 @@ def _astar_kernel(
     state = np.zeros(n_local, dtype=np.uint8)
     # Per window plane cell: 0 = unchecked, 1 = a via may go here, 2 = not.
     via_state = np.zeros(wplane, dtype=np.uint8)
+    # Negotiated surcharges, filled when bit 3 is set: the cell's present
+    # multiplier and its additive history term; per plane cell, a via's.
+    n_soft = n_local if negotiate else 1
+    soft_m = np.ones(n_soft, dtype=np.float64)
+    soft_h = np.zeros(n_soft, dtype=np.float64)
+    via_m = np.ones(wplane if negotiate else 1, dtype=np.float64)
     empty_path = np.empty(0, dtype=np.int64)
     n_targets = tidx.shape[0]
     sqrt2m1 = math.sqrt(2.0) - 1.0
@@ -1567,7 +1659,12 @@ def _astar_kernel(
         # Bit 3 too: the caller already decided each target is passable
         # (`_route_in`'s `endpoint_passable` for the primary goal), and
         # re-checking it here with the plain keep-out would undo that.
-        state[layer * wplane + (iy - wy0) * ww + (ix - wx0)] |= 4 | 8
+        tli = layer * wplane + (iy - wy0) * ww + (ix - wx0)
+        state[tli] |= 4 | 8
+        if negotiate:
+            ku = _disk_max_usage(usage, layer, iy, ix, r_track, half_track)
+            soft_m[tli] = 1.0 + pres_fac * ku
+            soft_h[tli] = hist_fac * pitch * hist[layer, iy, ix]
 
     heap = [(seed_f[0], seed_idx[0])]
     for k in range(1, seed_idx.shape[0]):
@@ -1637,13 +1734,20 @@ def _astar_kernel(
                     owner, layer, nyi, nxi, r_track, half_track, net_id
                 ):
                     sv |= 16
+                elif negotiate:
+                    ku = _disk_max_usage(usage, layer, nyi, nxi, r_track, half_track)
+                    soft_m[nli] = 1.0 + pres_fac * ku
+                    soft_h[nli] = hist_fac * pitch * hist[layer, nyi, nxi]
                 state[nli] = sv
             if sv & 16:
                 continue
             st = sv & 3
             if st == 2:
                 continue
-            tentative = base + step_cost[layer, k]
+            if negotiate:
+                tentative = base + (step_cost[layer, k] + soft_h[nli]) * soft_m[nli]
+            else:
+                tentative = base + step_cost[layer, k]
             if st == 0 or tentative < g[nli]:
                 g[nli] = tentative
                 came[nli] = cur
@@ -1672,10 +1776,18 @@ def _astar_kernel(
                     if _disk_hits_foreign(owner, vl, iy, ix, r_via, half_via, net_id):
                         vs = 2
                         break
+            if vs == 1 and negotiate:
+                ku = 0
+                for vl in range(n_layers):
+                    kl = _disk_max_usage(usage, vl, iy, ix, r_via, half_via)
+                    if kl > ku:
+                        ku = kl
+                via_m[lrem] = 1.0 + pres_fac * ku
             via_state[lrem] = vs
         if vs == 2:
             continue
         under_body = has_body and body[iy, ix]
+        via_mult = via_m[lrem] if negotiate else 1.0  # read only when negotiating
         for a in range(allowed.shape[0]):
             other = allowed[a]
             if other == layer:
@@ -1689,13 +1801,27 @@ def _astar_kernel(
                     owner, other, iy, ix, r_track, half_track, net_id
                 ):
                     sv |= 16
+                elif negotiate:
+                    ku = _disk_max_usage(usage, other, iy, ix, r_track, half_track)
+                    soft_m[nli] = 1.0 + pres_fac * ku
+                    soft_h[nli] = hist_fac * pitch * hist[other, iy, ix]
                 state[nli] = sv
             if sv & 16:
                 continue
             st = sv & 3
             if st == 2:
                 continue
-            tentative = base + via_cost_mm + (via_body_cost_mm if under_body else 0.0)
+            if negotiate:
+                tentative = (
+                    base
+                    + (via_cost_mm + (via_body_cost_mm if under_body else 0.0))
+                    * via_mult
+                    + soft_h[nli] * soft_m[nli]
+                )
+            else:
+                tentative = (
+                    base + via_cost_mm + (via_body_cost_mm if under_body else 0.0)
+                )
             if st == 0 or tentative < g[nli]:
                 g[nli] = tentative
                 came[nli] = cur
@@ -1711,6 +1837,372 @@ def _astar_kernel(
                         best = octile
                 heapq.heappush(heap, (tentative + best * weight_h, nidx))
     return _EMPTY, -1, 0.0, empty_path
+
+
+def path_samples(path: RoutePath, step: float) -> list[tuple[float, float, int, int]]:
+    """``(x, y, layer_lo, layer_hi)`` points covering ``path``'s copper:
+    each span re-sampled at ``step``, each via once over every layer it
+    spans. The one sampling :meth:`OccupancyGrid.stamp_path`,
+    :meth:`OccupancyGrid.register_attach` and :meth:`Negotiation.
+    claim_cells` share, so a negotiated claim covers the cells a hard stamp
+    would."""
+    out: list[tuple[float, float, int, int]] = []
+    for a, b in zip(path.points, path.points[1:], strict=False):
+        if a[2] != b[2]:
+            out.append((a[0], a[1], min(a[2], b[2]), max(a[2], b[2])))
+            continue
+        seg_len = math.hypot(b[0] - a[0], b[1] - a[1])
+        n = max(1, math.ceil(seg_len / step))
+        for k in range(n + 1):
+            t = k / n
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2], a[2]))
+    return out
+
+
+def path_cells(
+    path: RoutePath, spec: GridSpec
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The cells a :meth:`OccupancyGrid.route` result walks:
+    ``(layer, iy, ix)`` of every centreline cell in path order, then
+    ``(iy, ix)`` of every layer change. Exact for a search result, whose
+    polyline is cell centres in unit-step runs (an attach or goal anchor
+    moves an end point within its own cell only)."""
+    cells = [(*spec.to_cell(x, y), layer) for x, y, layer in path.points]
+    tl: list[int] = []
+    tiy: list[int] = []
+    tix: list[int] = []
+    viy: list[int] = []
+    vix: list[int] = []
+    if cells:
+        ix, iy, layer = cells[0]
+        tl.append(layer)
+        tiy.append(iy)
+        tix.append(ix)
+    for (ax, ay, al), (bx, by, bl) in itertools.pairwise(cells):
+        if al != bl:
+            viy.append(ay)
+            vix.append(ax)
+            tl.append(bl)
+            tiy.append(by)
+            tix.append(bx)
+            continue
+        n = max(abs(bx - ax), abs(by - ay))
+        for k in range(1, n + 1):
+            tl.append(al)
+            tiy.append(ay + round((by - ay) * k / n))
+            tix.append(ax + round((bx - ax) * k / n))
+    as_i64 = lambda v: np.asarray(v, dtype=np.int64)  # noqa: E731
+    return as_i64(tl), as_i64(tiy), as_i64(tix), as_i64(viy), as_i64(vix)
+
+
+class Negotiation:
+    """Negotiated congestion (PathFinder, McMurchie & Ebeling 1995) over
+    an :class:`OccupancyGrid`'s cells.
+
+    The hard grid lets the first net to claim a corridor keep it, so a
+    connection that loses the race fails even when a different split of
+    the board would fit both. Here routed copper is not OWNED: each cell
+    counts how many nets' claims cover it (``usage``), and a search pays to
+    come near another net's copper instead of being refused. The price
+    rises every iteration (``pres_fac``), and cells that stayed contested
+    accumulate a permanent surcharge (``hist``), so nets that have
+    somewhere else to go move away and the one that needs the corridor
+    keeps it.
+
+    The grid's own owner array still holds the static copper (pads, fixed
+    copper, holes, plane fan-out); that stays a hard wall. A negotiated
+    result is only a proposal: :func:`precis.pcb.realize._realize_maze`
+    commits it onto a fresh hard grid through
+    :meth:`OccupancyGrid.path_is_legal`, so the no-overlap guarantee never
+    rests on the negotiation having converged.
+
+    A history cost on the HARD grid was tried first and lost (backlog
+    ``pcb-router-fails-at-real-board-size.md`` step 12): without sharing,
+    nets cannot negotiate, only detour."""
+
+    def __init__(
+        self, spec: GridSpec, *, pres_fac: float = 0.5, hist_fac: float = 1.0
+    ) -> None:
+        self.spec = spec
+        shape = (spec.n_layers, spec.ny, spec.nx)
+        self.usage = np.zeros(shape, dtype=np.int16)
+        self.hist = np.zeros(shape, dtype=np.float32)
+        self.pres_fac = pres_fac
+        self.hist_fac = hist_fac
+        self._own = np.zeros(shape, dtype=np.uint8)
+        self._mark = np.zeros(spec.n_cells, dtype=np.uint8)
+        self._net_cells: dict[int, np.ndarray] = {}
+
+    def claim_cells(
+        self, samples: Sequence[tuple[float, float, int, int, float]]
+    ) -> np.ndarray:
+        """Flat indices of the cells a hard grid's :meth:`OccupancyGrid.
+        stamp_disk` would claim for each ``(x, y, layer_lo, layer_hi,
+        radius_mm)``, deduplicated."""
+        if not samples:
+            return np.empty(0, dtype=np.int64)
+        arr = np.asarray(samples, dtype=np.float64)
+        spec = self.spec
+        rc = np.ceil(arr[:, 4] / spec.pitch)
+        bound = int((((2 * rc + 1) ** 2) * (arr[:, 3] - arr[:, 2] + 1)).sum())
+        out = np.empty(bound, dtype=np.int64)
+        n = _claim_cells_kernel(
+            self._mark,
+            arr[:, 0].copy(),
+            arr[:, 1].copy(),
+            arr[:, 2].astype(np.int64),
+            arr[:, 3].astype(np.int64),
+            arr[:, 4].copy(),
+            float(spec.x0),
+            float(spec.y0),
+            float(spec.pitch),
+            spec.ny,
+            spec.nx,
+            out,
+        )
+        return out[:n]
+
+    def set_net(self, net_id: int, cells: Sequence[np.ndarray]) -> None:
+        """Make ``cells`` (the union of the net's connection claims) the
+        net's usage, replacing whatever it held."""
+        self.rip_net(net_id)
+        if not cells:
+            return
+        union = np.unique(np.concatenate(cells))
+        self.usage.reshape(-1)[union] += 1
+        self._net_cells[net_id] = union
+
+    def rip_net(self, net_id: int) -> None:
+        cells = self._net_cells.pop(net_id, None)
+        if cells is not None:
+            self.usage.reshape(-1)[cells] -= 1
+
+    def conflicts(
+        self,
+        net_id: int,
+        path: RoutePath,
+        *,
+        width_mm: float,
+        via_dia_mm: float | None,
+    ) -> np.ndarray:
+        """Flat indices of ``path``'s centreline cells (and via sites, on
+        every layer) that another net's claim reaches — the cells
+        :meth:`OccupancyGrid.path_is_legal` would refuse were that net's
+        copper owned. Empty means no conflict."""
+        spec = self.spec
+        tl, tiy, tix, viy, vix = path_cells(path, spec)
+        own = self._own.reshape(-1)
+        mine = self._net_cells.get(net_id)
+        if mine is not None:
+            own[mine] = 1
+        r_track = math.ceil((width_mm / 2.0) / spec.pitch) + 1
+        r_via = (
+            0 if via_dia_mm is None else math.ceil((via_dia_mm / 2.0) / spec.pitch) + 1
+        )
+        hits = _conflict_kernel(
+            self.usage,
+            self._own,
+            tl,
+            tiy,
+            tix,
+            r_track,
+            _disk_half_chords(r_track),
+            viy,
+            vix,
+            r_via,
+            _disk_half_chords(r_via),
+        )
+        if mine is not None:
+            own[mine] = 0
+        return hits
+
+    def add_history(self, cells: np.ndarray) -> None:
+        if cells.shape[0]:
+            self.hist.reshape(-1)[np.unique(cells)] += 1.0
+
+
+@numba.njit(cache=False, nogil=True)
+def _claim_cells_kernel(
+    mark: np.ndarray,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    rad: np.ndarray,
+    x0: float,
+    y0: float,
+    pitch: float,
+    ny: int,
+    nx: int,
+    out: np.ndarray,
+) -> int:
+    """:meth:`Negotiation.claim_cells`: :meth:`OccupancyGrid.stamp_disk`'s
+    cell set per sample (same rounding, same nearest-cell fallback when the
+    disk covers no cell centre), written once each into ``out``."""
+    plane = ny * nx
+    n = 0
+    for s in range(xs.shape[0]):
+        x = xs[s]
+        y = ys[s]
+        r = rad[s]
+        rc = math.ceil(r / pitch)
+        cx = min(max(int(np.rint((x - x0) / pitch)), 0), nx - 1)
+        cy = min(max(int(np.rint((y - y0) / pitch)), 0), ny - 1)
+        lo_x, hi_x = max(0, cx - rc), min(nx - 1, cx + rc)
+        lo_y, hi_y = max(0, cy - rc), min(ny - 1, cy + rc)
+        any_inside = False
+        best = math.inf
+        bx = lo_x
+        by = lo_y
+        for iy in range(lo_y, hi_y + 1):
+            dy = y0 + iy * pitch - y
+            for ix in range(lo_x, hi_x + 1):
+                dx = x0 + ix * pitch - x
+                d2 = dy * dy + dx * dx
+                if d2 < best:
+                    best = d2
+                    bx = ix
+                    by = iy
+                if d2 <= r * r:
+                    any_inside = True
+                    for layer in range(lo[s], hi[s] + 1):
+                        idx = layer * plane + iy * nx + ix
+                        if mark[idx] == 0:
+                            mark[idx] = 1
+                            out[n] = idx
+                            n += 1
+        if not any_inside and lo_x <= hi_x and lo_y <= hi_y:
+            for layer in range(lo[s], hi[s] + 1):
+                idx = layer * plane + by * nx + bx
+                if mark[idx] == 0:
+                    mark[idx] = 1
+                    out[n] = idx
+                    n += 1
+    for i in range(n):
+        mark[out[i]] = 0
+    return n
+
+
+@numba.njit(cache=False, nogil=True)
+def _disk_max_usage(
+    usage: np.ndarray, layer: int, iy: int, ix: int, r: int, half: np.ndarray
+) -> int:
+    """Most nets' claims on any one cell within ``r`` of ``(ix, iy)``."""
+    n_l, ny, nx = usage.shape
+    best = 0
+    for dy in range(-r, r + 1):
+        y = iy + dy
+        if y < 0 or y >= ny:
+            continue
+        w = half[dy + r]
+        for x in range(max(0, ix - w), min(nx - 1, ix + w) + 1):
+            u = usage[layer, y, x]
+            if u > best:
+                best = u
+    return best
+
+
+@numba.njit(cache=False, nogil=True)
+def _disk_hits_other_usage(
+    usage: np.ndarray,
+    own: np.ndarray,
+    layer: int,
+    iy: int,
+    ix: int,
+    r: int,
+    half: np.ndarray,
+) -> bool:
+    n_l, ny, nx = usage.shape
+    for dy in range(-r, r + 1):
+        y = iy + dy
+        if y < 0 or y >= ny:
+            continue
+        w = half[dy + r]
+        for x in range(max(0, ix - w), min(nx - 1, ix + w) + 1):
+            if usage[layer, y, x] - own[layer, y, x] > 0:
+                return True
+    return False
+
+
+@numba.njit(cache=False, nogil=True)
+def _conflict_kernel(
+    usage: np.ndarray,
+    own: np.ndarray,
+    tl: np.ndarray,
+    tiy: np.ndarray,
+    tix: np.ndarray,
+    r_track: int,
+    half_track: np.ndarray,
+    viy: np.ndarray,
+    vix: np.ndarray,
+    r_via: int,
+    half_via: np.ndarray,
+) -> np.ndarray:
+    """:meth:`Negotiation.conflicts`: flat indices of conflicting cells."""
+    n_l, ny, nx = usage.shape
+    plane = ny * nx
+    out = np.empty(tl.shape[0] + viy.shape[0] * n_l, dtype=np.int64)
+    n = 0
+    for i in range(tl.shape[0]):
+        if _disk_hits_other_usage(
+            usage, own, tl[i], tiy[i], tix[i], r_track, half_track
+        ):
+            out[n] = tl[i] * plane + tiy[i] * nx + tix[i]
+            n += 1
+    for i in range(viy.shape[0]):
+        hit = False
+        for layer in range(n_l):
+            if _disk_hits_other_usage(
+                usage, own, layer, viy[i], vix[i], r_via, half_via
+            ):
+                hit = True
+                break
+        if hit:
+            for layer in range(n_l):
+                out[n] = layer * plane + viy[i] * nx + vix[i]
+                n += 1
+    return out[:n]
+
+
+@numba.njit(cache=False, nogil=True)
+def _path_legal_kernel(
+    owner: np.ndarray,
+    net_id: int,
+    tl: np.ndarray,
+    tiy: np.ndarray,
+    tix: np.ndarray,
+    r_track: int,
+    half_track: np.ndarray,
+    viy: np.ndarray,
+    vix: np.ndarray,
+    r_via: int,
+    half_via: np.ndarray,
+    pad_keep: np.ndarray,
+    start_exempt: bool,
+    goal_exempt: bool,
+) -> bool:
+    """:meth:`OccupancyGrid.path_is_legal`."""
+    n_l = owner.shape[0]
+    last = tl.shape[0] - 1
+    for i in range(tl.shape[0]):
+        if (i == 0 and start_exempt) or (i == last and goal_exempt):
+            if _disk_hits_net(
+                owner, tl[i], tiy[i], tix[i], r_track, half_track, net_id
+            ):
+                return False
+        elif _disk_hits_foreign(
+            owner, tl[i], tiy[i], tix[i], r_track, half_track, net_id
+        ):
+            return False
+    for i in range(viy.shape[0]):
+        if pad_keep[viy[i], vix[i]]:
+            return False
+        for layer in range(n_l):
+            if _disk_hits_foreign(
+                owner, layer, viy[i], vix[i], r_via, half_via, net_id
+            ):
+                return False
+    return True
 
 
 def _merge_collinear(

@@ -507,7 +507,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     ctx.store.pcb_set_pose(pcb_ref_id, pose)
 
     realize_config = pcb_realize.RealizeConfig(
-        fab_caps=fab_caps, class_rules=graph.get("net_classes")
+        fab_caps=fab_caps,
+        class_rules=graph.get("net_classes"),
+        negotiate_iterations=int(params.get("negotiate") or 0),
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that

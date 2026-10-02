@@ -262,6 +262,24 @@ rebuilt its pads-only probe grid per segment (36 of 85 s of realize).
    (present + history cost on overuse, legality only at the end), which
    the hard-ownership grid cannot express — that is a new occupancy model
    (per-cell usage counts + rip-up by net), not a cost term.
+13. BUILT, DARK (off by default) — negotiated congestion
+   (`maze.Negotiation`, `realize._negotiate`). It runs only when the
+   re-ordering passes leave a net unrouted, and only when asked for
+   (`op='route'` `negotiate=N`, `RealizeConfig.negotiate_iterations`).
+   Routed copper counts per-cell usage instead of owning cells; price
+   rises per iteration (VPR schedule), contested cells gain history,
+   whole conflicted nets are ripped and re-routed; 60 s wall-clock cap.
+   The proposal commits onto a fresh hard grid through
+   `OccupancyGrid.path_is_legal` (the search's own disks), verbatim
+   (snapped as negotiated, never straightened, so branch attach points
+   survive), and is kept only if it fails fewer nets. Fable review
+   2026-10-02: accepted the method, required verbatim commit, default off
+   and the time cap (all done). **Unmeasured on the real board**: the
+   `.epro2` is gone, and running on a prod-row dump needs Reto
+   (review-queue `pcb-easyeda-round-trip-1`). Before it is default-on:
+   that number with a pinned method (board id + row snapshot, routable
+   layers, pitch, seed, config, off vs on, script path), and a generator
+   version bump so stored boards show the copper change.
 
 Literature, for the fix owner: grid-maze routers are known to degrade on
 fine-pitch parts on large boards because cell size couples to board size;

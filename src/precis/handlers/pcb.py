@@ -564,6 +564,17 @@ class PcbHandler(Handler):
             params["iters"] = int(opts["iters"])
         if opts.get("seed") is not None:
             params["seed"] = int(opts["seed"])
+        # Opt-in negotiated congestion (realize.RealizeConfig.
+        # negotiate_iterations); off unless asked for.
+        if op == "route" and opts.get("negotiate") is not None:
+            negotiate = int(opts["negotiate"])
+            cap = pcb_realize.MAX_NEGOTIATE_ITERATIONS
+            if not 0 <= negotiate <= cap:
+                raise BadInput(
+                    f"pcb: negotiate={negotiate} is out of range; give 0 (off) "
+                    f"to {cap} negotiated-congestion iterations."
+                )
+            params["negotiate"] = negotiate
         board_id = (graph.get("board") or {}).get("board_id")
         # Raw store rows, verbatim -- `content_hash` itself does the
         # narrowing (job-written-field exclusion, authored-vs-derived

@@ -119,6 +119,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -177,6 +178,11 @@ PAD_LAYER = PAD_LAYER
 #: Routing-grid pitch as a fraction of the board's clearance — see the
 #: `maze.grid_for` call in `_realize_maze` for the measurement behind it.
 _PITCH_PER_CLEARANCE = 2.0 / 3.0
+
+
+#: Most negotiation iterations one route op may ask for (``negotiate=``);
+#: the handler refuses more. VPR converges in tens of iterations.
+MAX_NEGOTIATE_ITERATIONS = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +269,16 @@ class RealizeConfig:
     #: the same connection unrouted, because it is losing a corridor race,
     #: not running out of search.
     route_passes: int = 12
+    #: Negotiated-congestion iterations (:func:`_negotiate`) run when the
+    #: ``route_passes`` re-ordering leaves any net unrouted. ``0`` (off) by
+    #: default until a pinned real-board measurement shows it helps; opt in
+    #: per call (``pcb_route``'s ``negotiate`` param). The loop stops at the
+    #: first iteration with no conflict.
+    negotiate_iterations: int = 0
+    #: Wall-clock cap on the whole negotiation, in seconds, checked before
+    #: each net; when it runs out the proposal so far is committed. A route
+    #: op holds a worker lane for as long as it runs.
+    negotiate_budget_s: float = 60.0
     #: Give each signal layer a preferred routing axis (H, V, diagonal, in
     #: stackup order — :func:`precis.pcb.maze.preferred_directions`).
     #: Off-axis steps cost more; nothing is forbidden. Unstructured routing
@@ -1486,38 +1502,70 @@ def _realize_maze(
     Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
     best: Outcome | None = None
     best_score = (0, 0)
-    for _attempt in range(max(1, config.route_passes)):
-        attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
-        attempt_grid.set_body_mask(body_mask)
-        outcome = _route_pass(
+
+    def attempts(order: list[int], preferred: dict[int, _Proposal] | None) -> None:
+        """Up to ``config.route_passes`` passes, failures to the front."""
+        nonlocal best, best_score
+        for _attempt in range(max(1, config.route_passes)):
+            attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+            attempt_grid.set_body_mask(body_mask)
+            outcome = _route_pass(
+                ir,
+                order,
+                plane_ids,
+                attempt_grid,
+                config,
+                rules_by_net,
+                pads,
+                clearance,
+                signal_layers,
+                spec,
+                pad_geoms,
+                ink_field=ink_field,
+                fixed_copper=fixed_copper,
+                island_terminals=island_terminals,
+                net_layers=net_layers,
+                preferred=preferred,
+            )
+            # Fewest failed NETS first — a net with any unrouted segment
+            # fails the route job (Reto, 2026-10-01) — then fewest failed
+            # segments.
+            score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
+            if best is None or score < best_score:
+                best, best_score = outcome, score
+            if not outcome[2]:
+                return
+            # Failures go to the front for the next attempt, keeping their
+            # relative order. A connection that has already lost a race
+            # gets first refusal on the next one.
+            failed = [s for s in order if s in set(outcome[2])]
+            order = failed + [s for s in order if s not in set(failed)]
+
+    attempts(order, None)
+    if best_score[0] and config.negotiate_iterations > 0:
+        # The re-ordering passes left nets unrouted: negotiate (see
+        # `_negotiate`), then commit the proposal onto a hard grid the same
+        # way, conflict-free nets first. Kept only if it scores better, so
+        # it can cost time but never realized nets.
+        proposal, conflicted = _negotiate(
             ir,
             order,
             plane_ids,
-            attempt_grid,
+            spec,
+            body_mask,
             config,
             rules_by_net,
             pads,
             clearance,
             signal_layers,
-            spec,
             pad_geoms,
-            ink_field=ink_field,
-            fixed_copper=fixed_copper,
-            island_terminals=island_terminals,
-            net_layers=net_layers,
+            ink_field,
+            fixed_copper,
+            island_terminals,
+            net_layers,
         )
-        # Fewest failed NETS first — a net with any unrouted segment fails
-        # the route job (Reto, 2026-10-01) — then fewest failed segments.
-        score = (len({int(ir.seg_net[s]) for s in outcome[2]}), len(outcome[2]))
-        if best is None or score < best_score:
-            best, best_score = outcome, score
-        if not outcome[2]:
-            break
-        # Failures go to the front for the next attempt, keeping their
-        # relative order. A connection that has already lost a race gets
-        # first refusal on the next one.
-        failed = [s for s in order if s in set(outcome[2])]
-        order = failed + [s for s in order if s not in set(failed)]
+        settled = [s for s in order if int(ir.seg_net[s]) not in conflicted]
+        attempts(settled + [s for s in order if s not in set(settled)], proposal)
     assert best is not None  # the loop runs at least once
     tracks, vias, unrouted, island_terminal_notes = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
@@ -2178,6 +2226,375 @@ def _diagnose_unrouted(
     )
 
 
+def _claim_static(
+    ir: PcbIR,
+    plane_ids: list[int],
+    grid: maze.OccupancyGrid,
+    config: RealizeConfig,
+    rules_by_net: dict[int, NetRules],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    pad_geoms: list[PadGeom],
+    ink_field: _InkField | None,
+    fixed_copper: list[dict[str, Any]] | None,
+) -> tuple[list[RealizedTrack], list[RealizedVia], list[int]]:
+    """Everything a routing attempt claims before its first search: fixed
+    copper, fiducial and mounting-hole keep-outs, pads, and the plane
+    fan-out stubs. Returns the fan-out's copper and the plane segments it
+    could not serve."""
+    _claim_fixed_copper(grid, ir, fixed_copper)
+    _claim_fiducial_keepouts(grid, ir)
+    _claim_mounting_holes(grid, ir)
+    _stamp_pads(grid, pads)
+    # Plane-served segments are dog-bone stubs, not searched routes — but
+    # they ARE copper, so they get realized (and claimed) first, before
+    # any route can be planned through where they sit.
+    plane_tracks, plane_vias, plane_failed = _plane_fanout(
+        ir, plane_ids, grid, config, rules_by_net, pad_geoms, ink_field=ink_field
+    )
+    unrouted: list[int] = []
+    # A pin with no legal drop leaves its net's segments unserved. Report
+    # the segments, because that is the unit `unrouted` is counted in and
+    # the unit a reader can act on.
+    if plane_failed:
+        stranded = {int(ir.pin_net[p]) for p in plane_failed}
+        unrouted += [s for s in plane_ids if int(ir.seg_net[s]) in stranded]
+    return list(plane_tracks), list(plane_vias), unrouted
+
+
+@dataclass(frozen=True, slots=True)
+class _SegRequest:
+    """One segment's search, resolved: what :func:`_route_pass` and
+    :func:`_negotiate` both hand ``grid.route``. ``failed`` marks a segment
+    with no legal search at all (no allowed layer, or an end with no copper
+    on one)."""
+
+    seg_id: int
+    net_id: int
+    rules: NetRules
+    failed: bool
+    start: Point
+    end: Point
+    eff_start: Point
+    eff_goal: Point
+    start_layer: int
+    goal_layer: int
+    n_vias: int
+    group_extent: float | None
+    terms: tuple[_EndTerminals, _EndTerminals] | None
+    route_kwargs: dict[str, Any]
+
+
+def _seg_request(
+    ir: PcbIR,
+    seg_id: int,
+    config: RealizeConfig,
+    rules_by_net: dict[int, NetRules],
+    clearance: float,
+    signal_layers: list[int],
+    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
+    net_layers: dict[int, list[int]] | None,
+) -> _SegRequest | None:
+    """Resolve ``seg_id``'s search — ``None`` when a pin has no L3 position
+    yet (nothing to draw, not a failure). See :func:`_route_pass`."""
+    a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
+    start, end = pin_point(ir, a), pin_point(ir, b)
+    if start is None or end is None:
+        return None
+    net_id = int(ir.seg_net[seg_id])
+    rules = rules_by_net[net_id]
+
+    def failed() -> _SegRequest:
+        return _SegRequest(
+            seg_id, net_id, rules, True, start, end, start, end, 0, 0, 1, None, None, {}
+        )
+
+    # Rulings 2026-09-19 item 7: this net's own routable subset,
+    # never the board-wide `signal_layers` directly once a class lock
+    # applies — see `_route_pass`'s own docstring paragraph on
+    # `net_layers`. A net locked to nothing at all (`_net_class_layers`
+    # found no usable layer) never reaches `grid.route`: there is
+    # nothing legal to search, and an empty `layers=` list would only
+    # crash `_side_layer` below, not fail cleanly.
+    allowed_layers = (net_layers or {}).get(net_id, signal_layers)
+    if not allowed_layers:
+        return failed()
+    # How much room ONE layer change costs this net. A via group is
+    # sized by ampacity, not by geometry: a 5A rail cannot cross
+    # layers through a single via, and a router that plans for one
+    # and then stitches four has just put three of them through
+    # somebody else's copper. So the search is told the group's full
+    # extent up front and only changes layer where the whole group
+    # fits.
+    n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
+    terms = (island_terminals or {}).get(seg_id)
+    term_a = terms[0] if terms else ()
+    term_b = terms[1] if terms else ()
+    # This segment's OWN two pad layers, never a shared `PAD_LAYER` —
+    # `_side_layer` is the same bottom/top rule `pads` above was built
+    # with, so a route between a top- and a bottom-mounted pin enters
+    # and leaves on the copper its own pads actually sit on instead of
+    # both ends being pinned to the top layer regardless of mount side.
+    native_a = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
+    native_b = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
+    allowed_set = set(allowed_layers)
+    # A locked net's endpoint whose own native pad ISN'T on an allowed
+    # layer (e.g. an EWOD electrode's F.Cu body, locked to B.Cu) has
+    # NO real copper `grid.route` may legally start from at its own
+    # XY — `grid.OccupancyGrid.route` requires `start_layer`/
+    # `goal_layer` to be IN its own `layers=` set, unconditionally, so
+    # simply forcing that native point onto the locked layer (this
+    # module's first attempt) would plant a phantom track origin on
+    # bare board where no copper exists. See `_resolve_route_end`'s
+    # own docstring for the real substitution this uses instead.
+    eff_start, start_layer, extra_a = _resolve_route_end(
+        native_a, start, term_a, allowed_set
+    )
+    eff_goal, goal_layer, extra_b = _resolve_route_end(
+        native_b, end, term_b, allowed_set
+    )
+    if start_layer is None or goal_layer is None:
+        return failed()
+    assert eff_start is not None and eff_goal is not None  # same branch as above
+    kwargs: dict[str, Any] = {
+        "layers": allowed_layers,
+        "width_mm": rules.track_width_mm,
+        "via_dia_mm": group_extent,
+        "start_layer": start_layer,
+        "goal_layer": goal_layer,
+        "via_body_cost_mm": config.via_body_cost_mm,
+        "max_expansions": config.max_expansions,
+        "layer_prefs": (
+            _layer_preferences(ir, signal_layers)
+            if config.preferred_directions
+            else None
+        ),
+        "extra_start_terminals": tuple((t.point, layer) for t, layer in extra_a),
+        "extra_goal_terminals": tuple((t.point, layer) for t, layer in extra_b),
+    }
+    return _SegRequest(
+        seg_id,
+        net_id,
+        rules,
+        False,
+        start,
+        end,
+        eff_start,
+        eff_goal,
+        start_layer,
+        goal_layer,
+        n_vias,
+        group_extent,
+        terms,
+        kwargs,
+    )
+
+
+def _preferred_fits(
+    grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest
+) -> bool:
+    """May a negotiated ``path`` be committed onto ``grid`` as it stands?
+    Legal cell for cell (:meth:`maze.OccupancyGrid.path_is_legal`), and, if
+    it began on its own net's copper, that copper must still be there at
+    the same point — an earlier connection the commit re-searched or
+    straightened may have moved it, and a branch left starting on bare
+    board severs the net with DRC reading clean."""
+    if len(path.points) < 2:
+        return False
+    first, last = path.points[0], path.points[-1]
+    spec = grid.spec
+    if path.attached and not grid.is_attach_point(
+        req.net_id, first[0], first[1], first[2]
+    ):
+        return False
+    start_exempt = (
+        not path.attached
+        and first[2] == req.start_layer
+        and spec.to_cell(first[0], first[1]) == spec.to_cell(*req.eff_start)
+    )
+    goal_exempt = last[2] == req.goal_layer and spec.to_cell(
+        last[0], last[1]
+    ) == spec.to_cell(*req.eff_goal)
+    return grid.path_is_legal(
+        path,
+        width_mm=req.rules.track_width_mm,
+        via_dia_mm=req.group_extent,
+        start_exempt=start_exempt,
+        goal_exempt=goal_exempt,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Proposal:
+    """One negotiated segment: ``raw`` is the search result, whose cells
+    :func:`_preferred_fits` checks; ``copper`` is ``raw`` snapped onto its
+    pads, what the negotiation claimed and attached to and what a commit
+    stamps."""
+
+    raw: maze.RoutePath
+    copper: maze.RoutePath
+
+
+def _negotiation_claims(
+    grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest, clearance: float
+) -> list[tuple[float, float, int, int, float]]:
+    """The ``(x, y, layer_lo, layer_hi, radius)`` disks a hard commit of
+    ``path`` would stamp: :meth:`maze.OccupancyGrid.stamp_path`'s corridor
+    plus :func:`_route_pass`'s via group on every layer."""
+    radius = grid.core_radius_mm(req.rules.track_width_mm)
+    out = [
+        (x, y, lo, hi, radius)
+        for x, y, lo, hi in maze.path_samples(path, grid.spec.pitch / 2.0)
+    ]
+    rules = req.rules
+    if rules.via_dia_mm is not None and rules.via_drill_mm is not None:
+        via_r = grid.core_radius_mm(rules.via_dia_mm)
+        pitch = rules.via_dia_mm + clearance
+        top = grid.spec.n_layers - 1
+        for vx, vy, _lo, _hi in path.vias:
+            for k in range(req.n_vias):
+                out.append(
+                    (vx + (k - (req.n_vias - 1) / 2.0) * pitch, vy, 0, top, via_r)
+                )
+    return out
+
+
+def _negotiate(
+    ir: PcbIR,
+    order: list[int],
+    plane_ids: list[int],
+    spec: maze.GridSpec,
+    body_mask: np.ndarray,
+    config: RealizeConfig,
+    rules_by_net: dict[int, NetRules],
+    pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
+    clearance: float,
+    signal_layers: list[int],
+    pad_geoms: list[PadGeom],
+    ink_field: _InkField | None,
+    fixed_copper: list[dict[str, Any]] | None,
+    island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
+    net_layers: dict[int, list[int]] | None,
+) -> tuple[dict[int, _Proposal], set[int]]:
+    """Negotiated congestion over the routed nets (:class:`maze.
+    Negotiation`): a proposal per segment, plus the nets still in conflict
+    when the iterations or ``config.negotiate_budget_s`` ran out.
+
+    Each iteration rips up and re-routes every net that ended the last one
+    in conflict, whole (its connections attach to one another, so a net is
+    the unit that moves). Nets route in ``order``'s first-appearance order,
+    their segments in ``order``. Static copper is claimed exactly as a
+    routing attempt claims it (:func:`_claim_static`) and stays a wall.
+
+    Claims and attach points come from the SNAPPED path, the copper a
+    commit stamps verbatim, so a later branch's attach point survives the
+    commit. A search that exhausts ``max_expansions`` keeps the segment's
+    previous proposal: late iterations inflate every cost, and losing a net
+    there would be a budget artefact, not congestion. A kept proposal may
+    attach to sibling copper this iteration just re-routed elsewhere; it
+    still counts as a claim here, and at commit the attach check rejects
+    it and the segment searches again — so a kept proposal is a claim,
+    not a promise of validity.
+
+    ``config.negotiate_budget_s`` is checked before each net, so the
+    wall-clock bound holds inside an iteration too."""
+    grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
+    grid.set_body_mask(body_mask)
+    _claim_static(
+        ir,
+        plane_ids,
+        grid,
+        config,
+        rules_by_net,
+        pads,
+        pad_geoms,
+        ink_field,
+        fixed_copper,
+    )
+    neg = maze.Negotiation(
+        spec, pres_fac=maze.NEGOTIATE_PRES_FAC, hist_fac=maze.NEGOTIATE_HIST_FAC
+    )
+    reqs: dict[int, _SegRequest] = {}
+    by_net: dict[int, list[int]] = {}
+    for seg_id in order:
+        req = _seg_request(
+            ir,
+            seg_id,
+            config,
+            rules_by_net,
+            clearance,
+            signal_layers,
+            island_terminals,
+            net_layers,
+        )
+        if req is None or req.failed:
+            continue
+        reqs[seg_id] = req
+        by_net.setdefault(req.net_id, []).append(seg_id)
+    paths: dict[int, _Proposal] = {}
+    conflicted = set(by_net)
+    deadline = time.monotonic() + config.negotiate_budget_s
+    for _iteration in range(config.negotiate_iterations):
+        out_of_time = False
+        for net_id, segs in by_net.items():
+            if net_id not in conflicted:
+                continue
+            # Per net, not per iteration: one iteration on a real board can
+            # run for minutes. A partial iteration's proposals are still
+            # usable, since the commit re-checks every one; ``conflicted``
+            # stays the last full iteration's set.
+            if time.monotonic() > deadline:
+                out_of_time = True
+                break
+            neg.rip_net(net_id)
+            grid.forget_attach(net_id)
+            claims = []
+            for seg_id in segs:
+                req = reqs[seg_id]
+                raw = grid.route(
+                    net_id,
+                    req.eff_start,
+                    req.eff_goal,
+                    negotiation=neg,
+                    **req.route_kwargs,
+                )
+                if raw is not None and len(raw.points) >= 2:
+                    copper = _snap_to_pads(raw, req.start, req.end, spec.pitch)
+                    paths[seg_id] = _Proposal(raw, copper)
+                elif not grid.last_route_exhausted:
+                    paths.pop(seg_id, None)
+                prop = paths.get(seg_id)
+                if prop is None:
+                    continue
+                grid.register_attach(prop.copper)
+                claims.append(
+                    neg.claim_cells(
+                        _negotiation_claims(grid, prop.copper, req, clearance)
+                    )
+                )
+            neg.set_net(net_id, claims)
+        if out_of_time:
+            break
+        conflicted = set()
+        for net_id, segs in by_net.items():
+            for seg_id in segs:
+                prop = paths.get(seg_id)
+                if prop is None:
+                    continue
+                hits = neg.conflicts(
+                    net_id,
+                    prop.raw,
+                    width_mm=reqs[seg_id].rules.track_width_mm,
+                    via_dia_mm=reqs[seg_id].group_extent,
+                )
+                if hits.shape[0]:
+                    conflicted.add(net_id)
+                    neg.add_history(hits)
+        if not conflicted:
+            break
+        neg.pres_fac *= maze.NEGOTIATE_PRES_GROWTH
+    return paths, conflicted
+
+
 def _route_pass(
     ir: PcbIR,
     order: list[int],
@@ -2194,6 +2611,8 @@ def _route_pass(
     fixed_copper: list[dict[str, Any]] | None = None,
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None = None,
     net_layers: dict[int, list[int]] | None = None,
+    preferred: dict[int, _Proposal] | None = None,
+    accepted: list[int] | None = None,
 ) -> tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]:
     """One complete routing attempt onto a fresh ``grid``, in ``order``.
 
@@ -2229,115 +2648,70 @@ def _route_pass(
     an allowed layer as the search's primary endpoint instead (the plaza
     via's own B.Cu landing, for the EWOD escape case) — never a
     fabricated point on bare board — and fails the segment outright when
-    no such terminal exists."""
-    _claim_fixed_copper(grid, ir, fixed_copper)
-    _claim_fiducial_keepouts(grid, ir)
-    _claim_mounting_holes(grid, ir)
-    _stamp_pads(grid, pads)
+    no such terminal exists.
 
-    tracks: list[RealizedTrack] = []
-    vias: list[RealizedVia] = []
-    unrouted: list[int] = []
+    ``preferred`` (:func:`_negotiate`'s proposal) maps a segment to a path
+    to commit instead of searching, used only when its search cells are
+    still legal on this grid as it stands (:func:`_preferred_fits`), and
+    then committed verbatim — snapped as negotiated, not straightened.
+    Anything else searches as usual. ``accepted`` collects the segments
+    committed that way."""
+    tracks, vias, unrouted = _claim_static(
+        ir,
+        plane_ids,
+        grid,
+        config,
+        rules_by_net,
+        pads,
+        pad_geoms,
+        ink_field,
+        fixed_copper,
+    )
     island_notes: dict[int, str] = {}
 
-    # Plane-served segments are dog-bone stubs, not searched routes — but
-    # they ARE copper, so they get realized (and claimed) first, before
-    # any route can be planned through where they sit.
-    plane_tracks, plane_vias, plane_failed = _plane_fanout(
-        ir, plane_ids, grid, config, rules_by_net, pad_geoms, ink_field=ink_field
-    )
-    tracks += plane_tracks
-    vias += plane_vias
-    # A pin with no legal drop leaves its net's segments unserved. Report
-    # the segments, because that is the unit `unrouted` is counted in and
-    # the unit a reader can act on.
-    if plane_failed:
-        stranded = {int(ir.pin_net[p]) for p in plane_failed}
-        unrouted += [s for s in plane_ids if int(ir.seg_net[s]) in stranded]
-
     for seg_id in order:
-        a, b = int(ir.seg_pin_a[seg_id]), int(ir.seg_pin_b[seg_id])
-        start, end = pin_point(ir, a), pin_point(ir, b)
-        if start is None or end is None:
+        req = _seg_request(
+            ir,
+            seg_id,
+            config,
+            rules_by_net,
+            clearance,
+            signal_layers,
+            island_terminals,
+            net_layers,
+        )
+        if req is None:
             continue  # no L3 position yet — nothing to draw, not a failure
-        net_id = int(ir.seg_net[seg_id])
-        rules = rules_by_net[net_id]
-        # Rulings 2026-09-19 item 7: this net's own routable subset,
-        # never the board-wide `signal_layers` directly once a class lock
-        # applies — see `_route_pass`'s own docstring paragraph on
-        # `net_layers`. A net locked to nothing at all (`_net_class_layers`
-        # found no usable layer) never reaches `grid.route`: there is
-        # nothing legal to search, and an empty `layers=` list would only
-        # crash `_side_layer` below, not fail cleanly.
-        allowed_layers = (net_layers or {}).get(net_id, signal_layers)
-        if not allowed_layers:
+        if req.failed:
             unrouted.append(seg_id)
             continue
-        # How much room ONE layer change costs this net. A via group is
-        # sized by ampacity, not by geometry: a 5A rail cannot cross
-        # layers through a single via, and a router that plans for one
-        # and then stitches four has just put three of them through
-        # somebody else's copper. So the search is told the group's full
-        # extent up front and only changes layer where the whole group
-        # fits.
-        n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
-        terms = (island_terminals or {}).get(seg_id)
-        term_a = terms[0] if terms else ()
-        term_b = terms[1] if terms else ()
-        # This segment's OWN two pad layers, never a shared `PAD_LAYER` —
-        # `_side_layer` is the same bottom/top rule `pads` above was built
-        # with, so a route between a top- and a bottom-mounted pin enters
-        # and leaves on the copper its own pads actually sit on instead of
-        # both ends being pinned to the top layer regardless of mount side.
-        native_a = _side_layer(ir, int(ir.pin_instance[a]), signal_layers)
-        native_b = _side_layer(ir, int(ir.pin_instance[b]), signal_layers)
-        allowed_set = set(allowed_layers)
-        # A locked net's endpoint whose own native pad ISN'T on an allowed
-        # layer (e.g. an EWOD electrode's F.Cu body, locked to B.Cu) has
-        # NO real copper `grid.route` may legally start from at its own
-        # XY — `grid.OccupancyGrid.route` requires `start_layer`/
-        # `goal_layer` to be IN its own `layers=` set, unconditionally, so
-        # simply forcing that native point onto the locked layer (this
-        # module's first attempt) would plant a phantom track origin on
-        # bare board where no copper exists. See `_resolve_route_end`'s
-        # own docstring for the real substitution this uses instead.
-        eff_start, start_layer, extra_a = _resolve_route_end(
-            native_a, start, term_a, allowed_set
-        )
-        eff_goal, goal_layer, extra_b = _resolve_route_end(
-            native_b, end, term_b, allowed_set
-        )
-        if start_layer is None or goal_layer is None:
-            unrouted.append(seg_id)
-            continue
-        assert eff_start is not None and eff_goal is not None  # same branch as above
-        path = grid.route(
-            net_id,
-            eff_start,
-            eff_goal,
-            layers=allowed_layers,
-            width_mm=rules.track_width_mm,
-            via_dia_mm=group_extent,
-            start_layer=start_layer,
-            goal_layer=goal_layer,
-            via_body_cost_mm=config.via_body_cost_mm,
-            max_expansions=config.max_expansions,
-            layer_prefs=(
-                _layer_preferences(ir, signal_layers)
-                if config.preferred_directions
-                else None
-            ),
-            extra_start_terminals=tuple((t.point, layer) for t, layer in extra_a),
-            extra_goal_terminals=tuple((t.point, layer) for t, layer in extra_b),
-        )
+        net_id, rules, n_vias = req.net_id, req.rules, req.n_vias
+        group_extent, terms = req.group_extent, req.terms
+        start, end = req.start, req.end
+        pref = (preferred or {}).get(seg_id)
+        committed = pref is not None and _preferred_fits(grid, pref.raw, req)
+        if committed:
+            assert pref is not None
+            path: maze.RoutePath | None = pref.raw
+            if accepted is not None:
+                accepted.append(seg_id)
+        else:
+            path = grid.route(net_id, req.eff_start, req.eff_goal, **req.route_kwargs)
         if path is None or len(path.points) < 2:
             unrouted.append(seg_id)
             continue
         note = _describe_used_terminal(path, terms)
         if note is not None:
             island_notes[seg_id] = note
-        path = _snap_to_pads(path, start, end, spec.pitch)
-        if config.straighten:
+        if committed:
+            # Verbatim: the negotiation claimed and attached to exactly this
+            # copper, so a later branch's attach point is still on it. A
+            # straighten here would move the copper under that branch.
+            assert pref is not None
+            path = pref.copper
+        else:
+            path = _snap_to_pads(path, start, end, spec.pitch)
+        if config.straighten and not committed:
             path = _straighten(
                 path,
                 grid,
