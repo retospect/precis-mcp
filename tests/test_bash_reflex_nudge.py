@@ -281,3 +281,55 @@ def test_coderef_nudge_still_silent_on_stop_word(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert out == ""
+
+
+# ── Rule D: sed -n slice -> Read ────────────────────────────────────────────
+
+_rule_d = _mod._rule_d
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sed -n '10,40p' src/precis/paper.py",
+        'sed -n "10,40p" src/precis/paper.py',
+        "sed -n '10,40 p' src/precis/paper.py",
+        "sed -n 10,40p src/precis/paper.py",
+        "sed -n '7p' README.md",
+    ],
+)
+def test_sed_slice_fires_rule_d(cmd: str) -> None:
+    note = _rule_d(cmd)
+    assert note is not None
+    assert "Read" in note and "offset=" in note
+
+
+def test_sed_slice_offset_limit_values() -> None:
+    note = _rule_d("sed -n '10,40p' a.py")
+    assert note is not None
+    assert "offset=10, limit=31" in note
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git log | sed -n '1,5p'",
+        "sed -n '1,5p' a.py | head",
+        "sed -n '1,5p' a.py && echo hi",
+        "sed -n '1,5p' < a.py",
+        "sed -n '1,5p'",
+        "sed -n '/foo/p' a.py",
+        "sed -n '40,10p' a.py",
+        "sed -i 's/a/b/' a.py",
+    ],
+)
+def test_sed_non_slice_silent(cmd: str) -> None:
+    assert _rule_d(cmd) is None
+
+
+def test_main_emits_rule_d(monkeypatch, capsys) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sed -n '1,9p' x.py"}}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    assert main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "[read]" in out["hookSpecificOutput"]["additionalContext"]

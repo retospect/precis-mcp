@@ -5,115 +5,36 @@ pillar: platform
 
 # token-review: bash-reflex-nudge misses real traffic; compact-thrash re-reads
 
-Transcript sample (6 largest sessions) shows the nudges don't move behavior:
-(a) Rule A matches only bare-identifier greps while real traffic is
-multi-pattern tree-wide greps — add an exploratory-grep rule nudging
-search_code/navigator, rate-limited per session; (b) Rule B fires per call
-but never escalates — count per session, escalate after ~5, and wrap the
-retyped DSN-extraction boilerplate as a helper (`scripts/agent-dsn`?);
-`_SSH_RE` misses spark/castor/pollux; (c) post-compact sessions re-Read the
-same governing doc — extend the PreCompact nudge to ask for a state-so-far
-note naming the doc + line ranges. Owner `scripts/hooks/bash-reflex-nudge.py`,
-`scripts/hooks/precompact-persist.sh`. Two further hooks stay deferred unless
-pain shows: bare-pytest nudge; Stop-with-dirty-worktree reminder.
+Open gaps from the token-review passes (2026-07 .. 2026-10-02). Shipped:
+`sed -n` slice → Read nudge (`bash-reflex-nudge.py` Rule D) and the
+50-edit delegation nudge (`scripts/hooks/edit-delegation-nudge.py`, Rule F).
 
-2026-08-15 pass adds (d) **Rule D**: `sed -n '<N>,<M>p' <local-file>` used
-instead of Read `offset`/`limit` (36–63 calls/session, ~72K tokens of
-tool_result across just two sessions) and `echo "=== label ==="` narration
-wrapping compound Bash probes (308/420 Bash calls in the worst session, 73%) —
-both named in CLAUDE.md but outside Rules A–C and outside rtk's rewrite list
-(`sed` isn't a known command, so the reflex is invisible to compression AND
-nudging). Nudge `sed -n` range-reads on existing local paths toward
-`Read(offset/limit)`, and flag any Bash command containing a literal
-`echo "===` independently (cheaper detection, no path resolution).
-Concentrated in primary-checkout orchestration sessions, not worktree feature
-sessions. The 07-29 fixes are holding (cluster-ops delegation + coderef nudge
-confirmed working in the same sample).
+- (a) **Rule A** matches only bare-identifier greps while real traffic is
+  multi-pattern tree-wide greps — add an exploratory-grep rule nudging
+  search_code/navigator, rate-limited per session.
+- (b) **Rule B** fires per call but never escalates — count per session,
+  escalate after ~5, and wrap the retyped DSN-extraction boilerplate as a
+  helper (`scripts/agent-dsn`?); `_SSH_RE` misses spark/castor/pollux.
+- (c) Post-compact sessions re-Read the same governing doc — extend the
+  PreCompact nudge to ask for a state-so-far note naming the doc + line
+  ranges. Owner `scripts/hooks/precompact-persist.sh`. Compact thrash:
+  10-22 auto-compacts in each of the top 8 sessions (10-02 pass).
+- (d) **Rule D, `echo "==="` half**: narration wrapping compound Bash probes
+  is not hook-coded (only CLAUDE.md prose) and regressed to 8-9% of Bash calls
+  in the worst sessions (09-02 pass). Flag any Bash command containing a
+  literal `echo "===` (cheap detection, no path resolution). Also open:
+  re-slicing the same file — 613 of 2758 sed/Read-by-path calls hit a path
+  already read 3+ times in that session (10-02 pass); a per-session
+  per-path counter on Read could nudge.
+- (e) **Rule E**: raw `Bash tail -N .../tasks/<id>.output` polling instead of
+  the `Monitor` tool. Ratio improved (12:1 → 1.75-3:1 in most sessions, still
+  19:1 and 6:1 in two); no `TaskOutput` re-poll loops left (10-02). Nudge
+  repeated `tail .../tasks/*.output` on the same path toward `Monitor` if the
+  next pass doesn't converge further.
+- (f) **Wrong tier**: `c6fc74be` ran four `general-purpose` agents on the
+  `fable` model whose whole job was wording gripe text (gripe-filer / haiku
+  remit).
+- Two further hooks stay deferred unless pain shows: bare-pytest nudge;
+  Stop-with-dirty-worktree reminder.
 
-2026-08-23 pass adds two more, from the 6 largest sessions since 08-15
-(19.5MB–5.3MB; `echo "==="` narration is now essentially gone — 0/6 files —
-so that half of Rule D shipped; `sed -n` is not fixed, still 2–76 calls/file):
-(e) **Rule E**: raw `Bash tail -N .../tasks/<id>.output` polling for
-background-job status instead of the `Monitor` tool, often bundled with a
-`git log`/`git rev-parse` probe in the same call — ~111 raw polls vs. 9
-`Monitor` calls across the 6-file sample (3 of 6 files used `Monitor` zero
-times). Nudge repeated `tail .../tasks/*.output` on the same path within a
-session toward `Monitor`. (f) **Rule F**: session `b30f9d07` (web-basic-auth
-feature build) ran almost entirely un-delegated — 366 raw `Bash`, 104 `Edit`,
-32 `Write`, **zero** `coder` dispatches for standard multi-file feature work
-(`auth.py` edited 22×, `users.py` 16×, `test_auth.py` 13×), plus 34 raw
-`ssh melchior` calls with zero `cluster-ops`/`cluster-admin` dispatch (Rule B
-confirmed still firing-but-ignored, at unusually high volume in this one
-session). Candidate: a PreToolUse-on-Edit nudge that counts same-session
-Edit/Write calls against feature-shaped files and suggests `coder` dispatch
-past a threshold — orthogonal to the existing Bash-only rules, so likely a
-separate hook. Not yet confirmed as a repeat-session pattern (single session
-so far); watch the next pass for recurrence before committing to the hook.
-
-test: hook unit tests on the new patterns.
-
-2026-09-02 pass (6 largest sessions since 08-23, 4.1–73MB — the top one,
-`8b8de41e`/humble-honking-plum, a 5-day 25023-line PCB-build marathon, is
-~4x the next-largest; see below). Findings:
-
-- **Rule D `echo "==="` regressed**: the 08-23 "0/6 files, shipped" read was
-  premature — `bash-reflex-nudge.py` as shipped only ever implemented Rules
-  A–C (coderef, cluster-ops, redundant-cd); the echo/sed-n halves of Rule D
-  were **never hook-coded**, only added to CLAUDE.md prose. Prose-only
-  enforcement decayed: `echo "===` narration is back at 184/2028 Bash calls
-  (9%) in the worst session (`8b8de41e`), 58/742 (8%) in `3bb9607b`
-  (greedy-gliding-anchor), 2–4% in three more, 0% in one. `sed -n` (never
-  claimed fixed) is worse than the 08-23 range: 303/2028 (15%) and 172/742
-  (23%) in the two worst sessions, vs. 2–76/file previously. Actually ship
-  the two Rule-D sub-nudges as hook code this time, not prose.
-- **Rule E (tail-poll vs `Monitor`) improved but uneven**: ratio dropped from
-  ~12:1 raw-tail:Monitor (08-23, 6-file aggregate) to session-level ratios of
-  1.75:1 (`8b8de41e`: 65 vs 37), 2.3:1 (`378acf66`: 37 vs 16), 3:1 (`nano3d`:
-  21 vs 7) — real progress, plausibly the CLAUDE.md Monitor-tool prose
-  landing. But `7a148de6` is still 19:1 (38 tail vs 2 Monitor) and
-  `3bb9607b` 6:1 (37 vs 6) — adoption isn't uniform. No hook exists yet;
-  still prose-only. Leave as-is one more pass (trending right direction) but
-  flag for a nudge if the next pass doesn't converge further.
-- **Rule F CONFIRMED RECURRING** (was "watch for recurrence" after single
-  occurrence `b30f9d07` on 08-23): session `378acf66` (main checkout,
-  nanopub web-routes/templates feature build) ran 179 `Edit` + 32 `Write`
-  across 20+ files (`test_nanopub_routes.py` 32x, `nanopub/index.html.j2`
-  31x, `base.html.j2` 11x, `auth.py` 9x, `nanopub_render.py` 8x, `routes/
-  nanopub.py` 7x) with **zero** `coder` agent dispatches — 15 `Agent` calls
-  total, all `cluster-ops`/`issue-closer`/`reviewer`/`Explore`, none for the
-  actual feature implementation. 892 of the session's assistant turns ran on
-  `claude-opus-5` (vs. 1178 on `claude-fable-5`) — this is opus-tier main-loop
-  doing mechanical multi-file edits a `coder` dispatch would have done
-  cheaper. Two independent sessions, two different repos of work
-  (auth feature / nanopub feature), same shape: build the PreToolUse-on-Edit
-  nudge now (count same-session Edit/Write against feature-shaped files,
-  suggest `coder` past a threshold — e.g. ~15–20 edits with 0 prior `Agent`
-  dispatches this session).
-
-Aggregate delegation health otherwise looks fine this pass: the other 4
-sampled sessions show healthy `Agent` dispatch (bash:agent ratios 9–30,
-subagent types spanning `coder`/`reviewer`/`navigator`/`extract`/
-`cluster-ops`/`issue-closer` as intended) — Rule F is a real but
-session-specific failure mode, not a fleet-wide default.
-
-## 2026-10-02 pass (25 largest sessions since 09-25, 13.9k Bash calls)
-
-- **Rule D `sed -n` still unfixed, now 17% of Bash**: 2303 of 13891 calls;
-  worst sessions 255-269 each. The >5 KB slices alone are 196 calls / ~1.4 MB
-  (`paper.py` 128 calls/954 KB, `nucleic.py` 68 calls/486 KB), i.e. the same
-  bytes a `Read` with `limit` returns, but outside every hook.
-- **Re-slicing the same file**: 613 of 2758 sed/Read-by-path calls hit a path
-  already read 3+ times in that session (worst 82/215 in one session; top
-  paths `poster.tex` 38x, `threads/session-mcp-shared-server.md` 30x,
-  `pcb/optimize.py` 30x). Each is a fresh slice, so no one slice looks wasteful.
-- **Rule F recurred (fourth time)**: `1894f8a5` 1177 Bash/338 Edit/70 Write with
-  6 Agent calls (no `coder`); `56904dec` 170 Edit/85 Write, 3 Agent
-  (navigator/extract/cluster-ops, no `coder`); `ea8b2acd` 132 Edit/76 Write,
-  2 `coder`. Item is still unshipped; the nudge should be built.
-- **Wrong tier, new**: `c6fc74be` ran four `general-purpose` agents on the
-  `fable` model whose whole job was "Word the ... gripe" text (gripe-filer /
-  haiku remit; it also had 3 real gripe-filer dispatches).
-- **Compact thrash**: 10-22 auto-compacts in each of the top 8 sessions
-  (20, 22, 20, 18 in the four Bash-heavy marathons).
-- Improved: no `TaskOutput` re-poll loops left (0 in the top 8; was 778 KB).
-- Image re-reads split off to a gripe (not a hook matter).
+Owner `scripts/hooks/bash-reflex-nudge.py`; tests `tests/test_bash_reflex_nudge.py`.

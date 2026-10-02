@@ -115,6 +115,15 @@
         ]
       },
       {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/edit-delegation-nudge.py\""
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {

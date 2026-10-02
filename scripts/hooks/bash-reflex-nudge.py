@@ -26,6 +26,12 @@ ambiguous, both rules stay silent rather than guess.
   (or ``cluster-admin`` for a documented write/runbook step) so raw log/psql
   dumps land in the sub-agent's cheap context, not the caller's.
 
+- **Rule D (sed -n slice).** A plain ``sed -n 'X,Yp' <file>`` (or ``'Np'``,
+  ``'X,Y p'``) reading one file — no pipe, ``&&``, ``;`` or redirect — is
+  the ``Read`` tool's ``offset``/``limit`` done by hand, outside every
+  compression/nudge path. Nudges toward ``Read``. Silent on pipelines (sed
+  filtering another command's output) and on stdin reads.
+
 Wired in .claude/settings.json (PreToolUse, matcher "Bash").
 """
 
@@ -138,6 +144,30 @@ def _rule_b(command: str) -> str | None:
     return None
 
 
+# ``sed -n '12,40p' path`` / ``sed -n "12,40 p" path`` / ``sed -n 12p path``;
+# the file operand must be a single plain token (no shell metacharacters).
+_SED_SLICE = re.compile(
+    r"""^\s*sed\s+-n\s+(?P<q>['"]?)(?P<a>\d+)(?:,(?P<b>\d+))?\s*p(?P=q)\s+"""
+    r"""(?P<file>[^\s|&;<>$`()'"*?]+)\s*$"""
+)
+
+
+def _rule_d(command: str) -> str | None:
+    m = _SED_SLICE.match(_CD_PREFIX.sub("", command, count=1))
+    if not m:
+        return None
+    a = int(m.group("a"))
+    b = int(m.group("b") or a)
+    if b < a:
+        return None
+    return (
+        f"[read] `sed -n '{a},{b}p' {m.group('file')}` is a hand-rolled Read "
+        f"slice — use the Read tool with `offset={a}, limit={b - a + 1}` "
+        "instead: same bytes, but line-numbered, and the harness tracks the "
+        "file state so re-slicing the same file is visible and edits stay valid."
+    )
+
+
 def _rule_c(command: str, cwd: str) -> str | None:
     """Nudge a redundant ``cd <own-worktree>; …`` prefix.
 
@@ -178,7 +208,12 @@ def main() -> int:
         return 0
     cwd = payload.get("cwd") or ""
 
-    note = _rule_a(command) or _rule_b(command) or _rule_c(command, cwd)
+    note = (
+        _rule_a(command)
+        or _rule_b(command)
+        or _rule_c(command, cwd)
+        or _rule_d(command)
+    )
     if note is None:
         return 0
     print(
