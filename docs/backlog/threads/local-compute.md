@@ -70,10 +70,16 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    lanes. Ruled 22:03Z (local-compute-5): **castor big model, pollux
    science, spark embeddings**. In order:
    a. **backlog/serving-programme-followups.md items 1-2** — the
-      `/mnt/cluster` NFS hang is fleet-wide, not spark-only (2026-10-02
-      read: spark, castor and pollux all hang; the server is caspar). The
-      recovery is review item local-compute-6. Then spark host prep. Now duty prerequisites,
-      not bench prep.
+      `/mnt/cluster` NFS hang (server caspar) hits only the Linux Sparks;
+      the Macs read it fine. caspar's nfsd is healthy, so the approved
+      restart (local-compute-6) stopped at its read-only gate. The leading
+      suspect is asymmetric routing: caspar's replies to the Sparks take the
+      Tailscale tunnel (MTU 1280) while the Sparks send to caspar directly on
+      the LAN (design note §6). Any fix goes to Reto as its own review item.
+      Then spark host prep. These are duty prerequisites, not bench prep.
+      **Then backlog/cluster-fileserver-move.md** — Reto ruled
+      (local-compute-7) that no Mac or Spark serves files: the share moves to
+      finnmaccool, after a read-only probe and an approved plan.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
       one box (spec in its decisions log). Runs on spark as the bench while
@@ -87,8 +93,9 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       science, spark embeddings. spark's role is a fleet LAN embedder that
       replaces the per-node loopback copies, in a new `embedder` group, NOT
       `inference` (which would bring the worker/watch/dft plays with it).
-      All six machines are in `llm-capacity-plan.md`. The Mac count and the
-      ad-hoc compute rule are review item local-compute-7.
+      All machines, the file server included, are in
+      `llm-capacity-plan.md`. Ad-hoc heavy compute goes to spark at half
+      its cores, never melchior (ruled, local-compute-7).
 5. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4b); wires
    the model Slice 0 picks into the tier ladder.
 6. **backlog/llm-dispatch-feedback-controller.md** — ~32 running sequences

@@ -51,8 +51,8 @@ Planned additions, as rows with a status column:
 
 - External HPC via slullama (`slullama-hpc-placement.md`; key registration
   pending with Reto, review items `reto-meluxina-1` / `local-compute-3`).
-- spark stays **off** cluster duty (standing ruling); listed so nobody
-  re-adds it from this table.
+- spark is back on duty in the embeddings role (Reto 2026-10-02, review
+  items local-compute-4/5), not in the `inference` group.
 
 ### Six machines, roles ruled 2026-10-02
 
@@ -65,13 +65,17 @@ Reto (review items local-compute-4 and local-compute-5, 21:03Z and 22:03Z):
 | spark | Spark (GB10) | local embeddings | science lanes, until the `/mnt/cluster` hang is fixed |
 | melchior | Mac | dev + MCP server + gate containers | ad-hoc heavy compute (Reto: "don't wear it down") |
 | balthazar | Mac (small) | scheduler; small local model | heavy compute |
-| caspar | Mac | Postgres + NFS server | any compute (standing rule) |
+| caspar | Mac | Postgres (+ the `/mnt/cluster` NFS export until it moves) | any compute (standing rule) |
+| finnmaccool | file server | the cluster share, mounted directly by every node | — |
 
 **Ad-hoc heavy compute** (one-off runs outside the job queue, e.g. the
-catalysis PBE single points) goes to **spark** while its embeddings role
-leaves the CPU mostly free, and to pollux only through the science lanes.
-Proposed cap: half spark's cores, no `/mnt/cluster` paths. The Mac count
-(three) and this rule are review item local-compute-7.
+catalysis PBE single points) goes to **spark**: at most half its cores,
+local scratch only, no `/mnt/cluster` paths. Never melchior. Anything that
+should repeat gets a job type on pollux. Ruled by Reto 2026-10-02 in review
+item local-compute-7, which also confirmed the six-machine list.
+
+**No Mac or Spark serves files** (same ruling). The share moves off caspar
+to finnmaccool; see `cluster-fileserver-move.md`.
 
 ## Explicitly NOT in scope
 
