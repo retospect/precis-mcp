@@ -27,14 +27,12 @@ off that gap until it closes.
   `params.moves`). Residual gr462067: rigidly connected, unparented blocks
   stay still during the sweep. Its first consumer is
   `hexfold-t-handle-bearing` (hexfold-toolkit).
-- **Local se tests are blind until precis-dev is rebuilt.** The image
-  predates the nm→se rename. `check-entry-points --heal` repairs one
-  throwaway `uv run --with numba` env, but pytest runs in another, so
-  no `precis_se` migration reaches the test DB. Every se DB test then
-  fails `unknown kind: 'se'`, the untouched `test_se_atomic_bind.py`
-  included. Gate se work on GitHub (`scripts/ship --remote`). The
-  orchestrator rebuilds the image after the round 1 deploy; the
-  mechanism is gr462134.
+- **Inferred insertion (Reto 2026-10-02):** `moves` stays required.
+  Reto asked whether tool travel and bolt insertion can be inferred; the
+  proposal (an insertion-corridor check beside `toolaccess`, no
+  migration) is in
+  `~/.claude/projects/-Users-reto-precis-mcp/review-queue/answered/se-machine-design-1.md`.
+  If Reto agrees, file it as a backlog item and rank it here.
 
 ## Do next
 
