@@ -48,8 +48,13 @@ paper needs.
    tracker. `backlog/qu164903-campaign.md` residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
-2. **qu202467 restart** — report filed 2026-10-02 (review item
-   chemistry-7; Reto decides). The "six unresolved gold stubs" blocker was
+2. **qu202467 (NO from exhaust → fertilizer N) restart** — RULED
+   2026-10-02 (chemistry-7, option 1): restart after round 2 deploys,
+   capped at 3 ticks. No tick-cap mechanism exists, so chemistry enforces
+   it by hand: set STATUS:active after the deploy, record `meta.tick_count`
+   at that moment, and when it reaches +3, re-pause to dormant unless one of
+   those ticks cited [pa220629], [pa215329], [pa198891], [pa417969] or
+   [pa202897] or changed the ledger from them. Report the outcome either way. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
    tick's literature section shows about 12 of 484 served papers, and the
    cite instruction read "unlisted" as "stub". Fixed in abf642971
