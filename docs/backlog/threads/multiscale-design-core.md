@@ -35,6 +35,10 @@ consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; consumed here for pocket specs. Seam, not a duplicate
    rank — see below.
+6. **backlog/njit-hot-loops.md** — numba kernels for the shared geometry
+   loops (structure pair-MIC, hexfold stick relax shipped 2026-10-01); open:
+   prod-data parity check (Reto), chain relax, pcb coupling pairs (pcb
+   thread owns), serve warm-up.
 
 ## Parked
 
