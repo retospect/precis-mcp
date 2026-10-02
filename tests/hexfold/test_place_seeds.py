@@ -339,7 +339,14 @@ def test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves() -> None:
     max crossing bond 24.25 A pre-slice-3.  place_graph reconciles both
     (a genuine 2-edge redundancy between the same pair, k=1 vs k=0 --
     ``registry.closure`` WARN, residual 1 of 5 symmetry steps, an
-    irreducible discrete mismatch) -- measured max 3.72 A."""
+    irreducible discrete mismatch) -- measured max 3.72 A.
+
+    The shorter crossing bonds are not a better geometry: two straight
+    rigid tubes cannot close a ring, and the joint solve gets there by
+    stacking ``b`` exactly on ``a`` (centroid distance 0.0, seed atoms
+    0.00 A apart), which ``geom.seed_overlap`` reports as an ERROR
+    (gr462074).  This test pins the bookkeeping (one ``seam.cycle``,
+    bounded crossing bonds), not the embedding."""
     text = (_EXAMPLES / "tube_ring_closure.hx").read_text(encoding="utf-8")
     net = build(text, strict=False)
     lengths = _crossing_lengths(net)

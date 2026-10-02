@@ -115,6 +115,10 @@ class Profile:
     #: it and ``clash_A`` it is a WARN: a strained stick junction (a
     #: [9-6]/[8-7] bud neck relaxes to 1.2-1.5 A, gr459567).
     clash_error_A: float = 1.0
+    #: ``geom.seed_overlap`` (ERROR): two non-bonded atoms this close in the
+    #: placed seed, before stick runs -- coincident atoms, a placement bug,
+    #: reported whatever the relaxer does with them afterwards
+    seed_overlap_A: float = 0.7
 
     DEFAULT: ClassVar[Profile]
     STRICT: ClassVar[Profile]

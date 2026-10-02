@@ -369,6 +369,35 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
             )
         )
 
+    # The seed tier: the same pair test on the placed seed, before stick
+    # runs.  A seed with coincident atoms is wrong whatever the relaxer
+    # makes of it afterwards (stick untangles some, a stiffer repulsion
+    # would lift others out of geom.clash's ERROR band while the angles
+    # get worse), so it is reported on its own and never cleared by the
+    # relaxed numbers.
+    seed_clashes = (
+        _clash_pairs(np.asarray(net.seed3), net.bonds, profile.clash_A)
+        if net.seed3 is not None
+        else []
+    )
+    seed_overlaps = [x for x in seed_clashes if x[0] < profile.seed_overlap_A]
+    for d, i, j in seed_overlaps[:10]:
+        out.append(
+            Finding(
+                "geom.seed_overlap",
+                Severity.ERROR,
+                f"atoms {i} ({inst[i]}) and {j} ({inst[j]}) are seeded {d:.2f} A "
+                f"apart (under {profile.seed_overlap_A:.2f} A): the placement put "
+                "them on top of each other",
+                where=str(i),
+                data=(
+                    ("atoms", [i, j]),
+                    ("instances", [inst[i], inst[j]]),
+                    ("distance", round(d, 3)),
+                ),
+            )
+        )
+
     b_arr = np.array([x[0] for x in bond_dev]) if bond_dev else np.zeros(1)
     a_arr = np.array([x[0] for x in ang_dev]) if ang_dev else np.zeros(1)
     out.append(
@@ -388,11 +417,17 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
                 ("angle_count", len(ang_dev)),
                 ("clash_count", len(clashes)),
                 ("clash_min", round(clashes[0][0], 3) if clashes else None),
+                ("seed_clash_count", len(seed_clashes)),
+                (
+                    "seed_clash_min",
+                    round(seed_clashes[0][0], 3) if seed_clashes else None,
+                ),
                 (
                     "suppressed",
                     max(0, len(bond_bad) - 10)
                     + max(0, len(ang_bad) - 10)
-                    + max(0, len(clashes) - 10),
+                    + max(0, len(clashes) - 10)
+                    + max(0, len(seed_overlaps) - 10),
                 ),
                 ("max_force_final", round(max_force, 4)),
             ),

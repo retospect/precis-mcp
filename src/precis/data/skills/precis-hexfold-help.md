@@ -133,7 +133,12 @@ a clean check without it is not a clean geometry). Nanobud menus
 shipped specs still overlap, are known, and are not yet fixed:
 `capped_tube`, `capped_tube_da_neck`, `sheet_pill_bump` (0.90–0.92 Å,
 curved rims seeded mirrored, gr459812), `tube_ring_closure` (0.49 Å,
-gr462074) and `flanged_doughnut` (0.27 Å inside a washer, gr462075). Their ERROR is real ·
+gr462074) and `flanged_doughnut` (0.27 Å inside a washer, gr462075).
+`geom.seed_overlap` ERROR: atoms under 0.7 Å in the placed seed, before
+stick. A clean relaxed geometry does not clear it. Raised by
+`tube_ring_closure`, `sheet_sw`, `flanged_doughnut` and
+`sheet_pill_bump` (their seeds stack atoms; `sheet_sw`, gr462144, relaxes
+clean anyway). Their ERROR is real ·
 `annot.sublattice`/`annot.host_sublattices` INFO.
 
 ## Rim types (spec §10)

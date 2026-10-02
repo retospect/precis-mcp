@@ -3071,9 +3071,12 @@ def _place_seeds(
         if inst_of.get(i) is not None and inst_of.get(i) == inst_of.get(j):
             same_nbrs.setdefault(i, []).append(j)
             same_nbrs.setdefault(j, []).append(i)
+    # each link filed under both orientations, (this-side atom, far-side
+    # atom), so two links written in opposite orders still find each other
     links_between: dict[tuple[str, str], list[tuple[int, int]]] = {}
     for ai, bi in bond_links:
         links_between.setdefault((inst_of[ai], inst_of[bi]), []).append((ai, bi))
+        links_between.setdefault((inst_of[bi], inst_of[ai]), []).append((bi, ai))
     for ai, bi in bond_links:
         ia, ib = inst_of[ai], inst_of[bi]
         if ia == ib:

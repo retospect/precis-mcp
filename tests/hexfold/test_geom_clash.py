@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from hexfold.build import build
 from hexfold.check import _clash_pairs, check
 from hexfold.report import Profile, Severity
 
@@ -122,6 +123,33 @@ def test_bud_placement_does_not_depend_on_the_bfs_origin(
     assert s_b["clash_min"] is None or s_b["clash_min"] > Profile.DEFAULT.clash_error_A
 
 
+@pytest.mark.parametrize(
+    "second",
+    ["b/(1,0,B) --bond--> h/(6,0,B)", "h/(6,0,B) --bond--> b/(1,0,B)"],
+    ids=["same_order", "opposite_order"],
+)
+def test_bond_pair_seats_both_bonds_whatever_order_they_are_written(
+    second: str,
+) -> None:
+    # the [2+2] pair, hand-written: a link written host-to-bud must still
+    # find its bud-to-host partner, or the second bond seeds at 2.04 A
+    spec = (
+        "hexfold 0.2\norigin h\nh: tube(8,8, len=12)\nb: fullerene(C60)\n"
+        f"b/(0,0,A) --bond--> h/(6,0,A)\n{second}\n"
+    )
+    net = build(spec, strict=False)
+    assert net.seed3 is not None
+    pos = np.array(net.seed3)
+    inst = [a.instance for a in net.atoms]
+    lengths = [
+        float(np.linalg.norm(pos[i] - pos[j]))
+        for i, j, _ in net.bonds
+        if inst[i] != inst[j]
+    ]
+    assert len(lengths) == 2
+    assert max(lengths) < 1.5, lengths
+
+
 def test_mirrored_bud_is_reported() -> None:
     _s, menu = _summary_and_place(_fig(*REVIEW_FIGS["bud96"]))
     assert menu == {"place.mirrored"}
@@ -162,6 +190,33 @@ def test_clash_pairs_skip_bonded_and_shared_neighbour_pairs() -> None:
 
 
 def test_clash_bar_comes_from_the_profile() -> None:
-    spec = (_EX / "sheet_bud_22.hx").read_text(encoding="utf-8")
+    # nanobud_96 clashes at the default bar (its [9-6] neck), so the
+    # loosened profile is what clears it, not a clean build
+    spec = (_EX / "nanobud_96.hx").read_text(encoding="utf-8")
+    assert [f for f in check(spec, geometry=True).findings if f.code == "geom.clash"]
     loose = check(spec, geometry=True, profile=Profile(clash_A=0.1))
     assert not [f for f in loose.findings if f.code == "geom.clash"]
+
+
+# ---------- the seed tier ----------
+
+
+def test_stacked_seed_is_an_error_even_when_stick_untangles_it() -> None:
+    # sheet_sw's placed seed stacks atoms (0.002 A apart); stick happens to
+    # relax it to 1.65 A, so geom.clash alone would call it nearly clean
+    r = check((_EX / "sheet_sw.hx").read_text(encoding="utf-8"), geometry=True)
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    seed = [f for f in r.findings if f.code == "geom.seed_overlap"]
+    assert seed and all(f.severity == Severity.ERROR for f in seed)
+    assert all(dict(f.data)["distance"] < Profile.DEFAULT.seed_overlap_A for f in seed)
+    assert summary["seed_clash_min"] < Profile.DEFAULT.seed_overlap_A
+    assert summary["clash_min"] > Profile.DEFAULT.clash_error_A
+
+
+@pytest.mark.parametrize("name", ["pillar", "nanobud_96", "valve_shell"])
+def test_sound_seeds_raise_no_seed_overlap(name: str) -> None:
+    # a bud neck seeds near 1.6 A: inside clash_A, far above an overlap
+    r = check((_EX / f"{name}.hx").read_text(encoding="utf-8"), geometry=True)
+    assert not [f for f in r.findings if f.code == "geom.seed_overlap"]
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    assert summary["seed_clash_min"] is None or summary["seed_clash_min"] > 1.0

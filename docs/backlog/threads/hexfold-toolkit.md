@@ -30,7 +30,121 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
-1. **gr459928** — graded bends. Reto, 2026-10-01: the drum should have
+1. **gr459567 family: overlaps the clash check now reports.** The bud
+   placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
+   and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
+   are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
+   verdict (2026-10-02 14:55Z, `reviews/hexfold-toolkit.review.md`) sets
+   the order:
+   - **Seed tier: built 2026-10-02.** `geom.seed_overlap` is an ERROR
+     for seed pairs under 0.7 Å, and `geom.summary` gains
+     `seed_clash_count`/`seed_clash_min`. Exactly the four seed-wrong
+     examples raise it. The bud necks seed at 1.44–1.78 Å; stick is what
+     squeezes them.
+   - **Next, the seeds**, each measurable now by its seed numbers:
+     - **Any sheet with an authored heptagon stacks its seed, and stick
+       does not fix it** (found 2026-10-02). `sheet(30,30)` +
+       one heptagon: 1,350 seed pairs at 0.00 Å → 742 pairs at 0.53 Å
+       after stick. Two heptagons: 1,045 → 430 at 0.59 Å. A pentagon or
+       a centred Stone–Wales is clean.
+       - Cause: `_patch_seed3` seeds a sheet at its flat lattice
+         positions. A heptagon's inserted 60° wedge has nowhere to go in
+         a plane, so its copies sit on existing atoms. Cones get a lift
+         (`_cone_seed`); negative-curvature sheets get none.
+       - This is capability (a) of gr459928 (authored defects on a
+         sheet), and its only tests check topology. The fix is a saddle
+         lift for heptagon sheets: a seed construction, so a design note
+         goes to review first.
+     - **gr462144** `sheet_sw`: seed 144, 0.002 Å. It is the same
+       mechanism. The Stone–Wales sits at (4,4) of a 12×12 sheet, and
+       its heptagon wedge runs off the edge before the pentagon cancels
+       it; the same defect centred on a 30×30 sheet is clean. Stick
+       happens to untangle it. The saddle seed should cover it.
+     - **gr462074** `tube_ring_closure`: seed 212 pairs, 0.00 Å. **Not a
+       placement bug.** Two straight rigid tubes cannot close a ring, so
+       the joint cycle solve stacks `b` exactly on `a` (centroid distance
+       0.0). The example is a `registry.closure` fixture, and its ERROR
+       is the correct report. The example comment and
+       `test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves`'s
+       docstring now say so. Close gr462074 on that reading when the MCP
+       is back (it was down at 20:00Z).
+     - **gr462075** `flanged_doughnut`: every seed pair under 0.7 Å
+       (22, min 0.15 Å) lies among the 24 atoms of the `outer` k=3 seam.
+       Seam atoms are seeded at their rim neighbours' mean (the gr347187
+       fix), and the three rims they average over (`top.in`,
+       `bottom.in`, `flange.hole`) are placed up to 11.45 Å apart by the
+       known part-graph cycle residual
+       (`test_example_seeds_have_no_long_crossing_bonds`' 11.7 bound). So
+       the root is that residual, not the seam seeding: re-seeding the
+       seam would only hide it. That is a `place_graph` item and needs a
+       design note of its own.
+     - **gr462075** `flanged_doughnut` (+`_oh`): seed 89, 0.15 Å.
+     - **gr459812** `sheet_pill_bump`: seed 66, 0.49 Å. `capped_tube` and
+       `capped_tube_da_neck` seed clean (≥ 1.47 Å) and only stick
+       crushes them, so they belong to the spring check below, not here.
+       A curved rim seeding its seam mirrored on the *fuse* path is the
+       same symptom the menu path had. Measure whether the cause is the
+       same; if it is, note that a tube cannot simply be reflected,
+       because it is chiral.
+   - **Then the springs, before any `K_REP` change.** Where the seed is
+     fine and stick compresses the junction (buds, DA/DB necks, capped
+     tubes), angle deviations stay at 47–61°. Check the rest angle and
+     rest length stick gives the attach atoms and their first
+     neighbours. A 120° rest angle on a 4-coordinate [2+2]/junction atom
+     would squeeze its neighbours together exactly as observed. If that
+     is the cause, fix it there and leave the repulsion constant alone.
+     Item 8 (gr346966: cap-seam angles relaxing to 82–93°) is probably
+     the same question at a different junction; check both together.
+   - **Only then `K_REP`.** Measured for the C1 review: at 1.0 the bud
+     minima rise to 1.58–1.75 Å, clean specs are unchanged, but strain
+     moves into bonds and `sheet_sw` regresses. Adopting it needs a
+     relaxer version stamped on stored results and the catalogue's
+     measured rows regenerated in the same commit. Sweep the non-bud
+     prod structures before it lands. Until then
+     `test_nanobud_menu_seed_has_no_stick_clash` holds [9-6]/[8-7] to
+     1.0 Å, not 1.8 (W2, partial).
+   - **A per-element-pair clash bar (W3).** Armchair-bay H–H measures
+     1.87 Å on `tube(8,8)` and 1.88 Å on `tube(10,5)` stick builds, 0.07
+     Å above the 1.8 bar. Zigzag and sheet edges give H–H of at least
+     2.46 Å and C–H of at least 2.52 Å. An H–H bar of about 1.5 Å would
+     keep a legitimate bay from tripping.
+   - **Which face a bond seeds on, on a flat sheet.**
+     `build._surface_normal` cannot get a sign from the instance centroid
+     on a flat instance, so it falls back to largest-component-positive.
+     Every bond-verb attachment to a sheet therefore seeds on the same
+     face. That is fine for one bud. A design that wants buds on both
+     faces, or a sheet whose outside is fixed by the assembly, has no way
+     to say so. The fix is an authored face, or reading it from the
+     assembly. From the round-2 review.
+   - **Not testable today:** the non-C60 refusal (`place.mirror_refused`)
+     and the second-host check (`place.inward`) have no test. The grammar
+     has only one fullerene, C60, and one menu per bud, so no spec reaches
+     either branch.
+   - The 2026-10-02 baseline before the fix (`check(geometry=True)`,
+     clash count / min Å): capped_tube 38/0.91 · capped_tube_da_neck
+     51/0.92 · flanged_doughnut(+_oh) 591/0.27 · nanobud_22 89/0.85 ·
+     nanobud_87 17/1.22 · nanobud_96 13/1.47 · nanobud_da_neck 12/1.16 ·
+     nanobud_db_neck 9/1.05 · sheet_bud_22 76/0.82 · sheet_pill_bump
+     32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
+     only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
+     14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
+2. **gr459928 — graded bends, re-ranked behind item 1 on 2026-10-02**
+   (C2 verdict). The far-rims-pinned relax put the graded corner one ring
+   row ahead of the baseline, which is the resolution of the measurement:
+
+   | run | convex turn arc | intermediate rows |
+   |---|---|---|
+   | one seam | 4.5 Å | 3 |
+   | graded 3+3, k=3 | 5.6 Å | 4 |
+   | misphased k=0 (+3 5-7 pairs) | 7.4 Å | 6 |
+
+   The misphased control spreads the turn more than the designed one, so
+   turn width follows defect count and placement. Don't build tube-wall
+   surgery on this. The decisive test is the 3-row (2+2+2) corner, which
+   needs the irregular hole. When it exists, also report the arc length
+   over which the slope covers the middle 80% of the total turn (it does
+   not depend on where one row lands relative to a threshold).
+   Background. Reto, 2026-10-01: the drum should have
    "no 1-ring-90-degree turns". Each bend should step through
    progressively steeper rings: sheet, slight slope, steeper, tube, then
    flare out a little, more, a lot.
@@ -73,19 +187,29 @@ waited on happened 09-29 — note at the bottom)
    - Built topologically 2026-10-02, **unrelaxed**: the convex corner
      3+3, a flat washer's outer rim onto a p=3 frustum's hole, frustum
      rim onto the wider tube (`CORNER_33` in the test file). The tests
-     prove a defect census and Euler closure, not a corner. Relaxed
-     2026-10-02 (stick seed, then ASE Tersoff-1988 C, FIRE to fmax 0.02;
-     probe `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/corner.py`,
-     not in the repo). It **embeds as an outward slope**: the mean radius
-     rises monotonically along the axis, neck 4.9 Å, washer 5.3–9.0,
-     frustum 8.9–12.7, tube 11.0–13.5. Linear (r,z) fits give the washer
-     at 26° and the frustum at 42°, so the convex turn is 26→42→90. The
-     one-seam baseline (washer straight onto a `(24,0)` wall, 6 pentagons
-     in one ring) is 30→90. The frustum relaxes flatter than its 60° cone,
-     so the grading is partial: the last step is 48°, not 30°. In both
-     cases the washer is not flat after relaxing, because the 6-heptagon
-     neck seam turns only about 60°. The misphased k=0 relax was stopped
-     unfinished by the 10-02 demo hold. Still unencoded as a test. Clean only at
+     prove a defect census and Euler closure, not a corner.
+   - **Relaxed 2026-10-02, the result is borderline.** Method, per the
+     orchestrator's C2 verdict:
+     - neck and wall 7 periods long, only the far rims pinned;
+     - Tersoff-1988 C;
+     - slope between successive ring rows from their mean (r, z);
+     - "convex turn" = from the flattest row after the neck turn to the
+       first row at ≥ 80°.
+
+     Results, by arc length and number of intermediate rows:
+     - one-seam baseline: 4.5 Å, 3 rows;
+     - graded 3+3 (k=3): 5.6 Å, 4 rows;
+     - misphased k=0: 7.4 Å, 6 rows, with three extra 5-7 pairs.
+
+     So grading buys one row. The k=3 washer never flattens (11.6° at
+     its flattest), and turn width tracks defect count as much as design.
+     Probes and plot are in
+     `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/`
+     (`corner3.py`, `corner_profile.png`). The earlier 26°/42° figures
+     came from whole-instance fits and are retracted. Recommendation,
+     awaiting the verdict: don't rank tube-wall surgery on this. The
+     decisive test is the 3-row (2+2+2) corner, which needs the irregular
+     hole; move this item behind the gr459567 family. Clean only at
      k ≡ 3 mod 4 on the washer seam; any other phase adds three 5-7
      pairs. The flare at the tube top is the foot construction again. A
      seam's phase decides whether corners line up, so the k ranking
@@ -103,45 +227,6 @@ waited on happened 09-29 — note at the bottom)
      - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
      ports.py, seams.py, meridian.py, f3.hx, f33.hx).
-2. **gr459567 family: overlaps the clash check now reports.** The bud
-   placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
-   and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
-   are ERROR under 1.0 Å and WARN up to 1.8 Å. Measurements are in the
-   design note `reviews/hexfold-toolkit.md` and on the gripe. Still open,
-   in this order:
-   - **gr459812**: `capped_tube` (0.91 Å), `capped_tube_da_neck` (0.92)
-     and `sheet_pill_bump` (0.90) are ERROR examples. A curved rim seeds
-     its seam mirrored on the *fuse* path, the same symptom the menu path
-     had. Measure first whether it shares the menu path's cause (a
-     pairing that winds against the host normal). If it does, a tube
-     cannot just be reflected, because it is chiral.
-   - **gr462075**: `flanged_doughnut` (+`_oh`) is an ERROR example,
-     0.27 Å inside the `bottom` washer.
-   - **gr462074**: `tube_ring_closure` is an ERROR example, 0.49 Å.
-   - **The stick junction squeeze.** A [9-6]/[8-7] neck seeds at
-     1.57/1.78 Å and stick squeezes it to 1.19–1.53 Å, because its
-     repulsion (K_REP 0.1, cutoff 1.3σ) is weak against bonds at 1.0.
-     Adding non-ring angle springs made it worse (1.12 Å). Any change to
-     the repulsion moves every stick output, so it needs its own design
-     note. `test_nanobud_menu_seed_has_no_stick_clash` holds those menus
-     to 1.0 Å, not 1.8, until then (W2, partial).
-   - **A per-element-pair clash bar (W3).** Armchair-bay H–H measures
-     1.87 Å on `tube(8,8)` and 1.88 Å on `tube(10,5)` stick builds, 0.07
-     Å above the 1.8 bar. Zigzag and sheet edges give H–H of at least
-     2.46 Å and C–H of at least 2.52 Å. An H–H bar of about 1.5 Å would
-     keep a legitimate bay from tripping.
-   - **Not testable today:** the non-C60 refusal (`place.mirror_refused`)
-     and the second-host check (`place.inward`) have no test. The grammar
-     has only one fullerene, C60, and one menu per bud, so no spec reaches
-     either branch.
-   - The 2026-10-02 baseline before the fix (`check(geometry=True)`,
-     clash count / min Å): capped_tube 38/0.91 · capped_tube_da_neck
-     51/0.92 · flanged_doughnut(+_oh) 591/0.27 · nanobud_22 89/0.85 ·
-     nanobud_87 17/1.22 · nanobud_96 13/1.47 · nanobud_da_neck 12/1.16 ·
-     nanobud_db_neck 9/1.05 · sheet_bud_22 76/0.82 · sheet_pill_bump
-     32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
-     only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
-     14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
 3. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier
