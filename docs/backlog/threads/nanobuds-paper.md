@@ -36,17 +36,17 @@ edges + pin every hub cite; claims-and-evidence also offered a fallback
 fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
 4cf8b684e (round 1). In this order:
 
-0. **After the round-1 deploy** (two things wait on it):
-   - pa2615: `edit(kind='paper', id='pa2615', year=2007,
-     journal='Nature Nanotechnology')`, then verify `view='bibtex'`. Its
-     wrong doi/paper_id rows are deleted (Reto-approved); citekey `wang22c`
-     and an `openalex` row (likely Wang 2022's) remain — ask before
-     touching them. Nature SI has no DOI of its own; main paper is pa2069.
-   - Regenerate se design `nanobud-review-figs` (hexfold placement fix
-     3aec1f3c2, gr459567 gap 3; old structures 461785–461789), re-measure
-     geom.clash (hexfold measured 0/0/0 on bud22/bud87/gsheet22, 12–16 neck
-     pairs ≥1.49 Å on bud96/gsheet96), render, and file a look-at for Reto
-     BEFORE anything goes into dr173020.
+0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
+   pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
+   verified; citekey still `wang22c`, no rename door on paper edit).
+   `nanobud-review-figs` regenerated with the placement fix (old
+   structures retired): closest non-bonded pair 1.34–1.38 Å, none
+   < 1.25 Å; only the two [9-6] necks carry geom.clash WARNs (1.49–1.72
+   Å). Rendered (`nanobud-fidelity/figs/render_buds.py`, contact sheet
+   in `figs/render/`) and filed as look-at item 17; nothing goes into the
+   draft before Reto's ok. Still to do on the deploy:
+   `precis enrich-rearm --refs <cited paper ids> --apply` on prod, then
+   export with `bib_style='chem-rsc'`.
 1. **Figures** (items 5/6): the five kept third-party figures are in
    (dc4291496–dc4291500, permission `requested`, Reto files RightsLink at
    submission; image door = `put(args={'image': b64, …})`, scripts in
@@ -57,17 +57,40 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    and dc3015720/23/30 from the regenerated structures (no
    structure→figure door, gr461790; local route viz3d `stick_scene` →
    `render_svg` → `image=`).
-2. **Citations** (item 7): Sharma cut, ASE/pymatgen cited (pa4423,
-   pa1944). Style + volume/pages: per-export `bib_style` (`chem-rsc`) and
-   Crossref volume/issue/pages into paper meta + an `enrich-rearm` CLI
-   (coder branch, to land); then re-arm the ~120 cited papers and export
-   with `bib_style='chem-rsc'`. Source-fit list: audit of the 121-entry
-   refs.bib (`nanobud-fidelity/source-fit.md`) → one review item. Known
-   already: entry `a98` is a reference-list line ("Reichlin … xenon")
-   filed as a paper.
-3. **Reground batches**: 461608, 461803 done; 462063 (batch 3) running;
-   `nanobud-fidelity/chain-batches.sh` feeds 4–8 one at a time (log
-   `chain.log`). After the last: td351821 NEXT (a)–(c).
+2. **Citations** (items 7/14, done 2026-10-02 14:40Z except item 15):
+   Sharma cut; ASE/pymatgen cited (pa4423, pa1944). `bib_style` +
+   Crossref volume/issue/pages + `precis enrich-rearm` landed 6d92b2ba3
+   (undeployed): after the deploy, `enrich-rearm --refs <cited ids>
+   --apply` on prod, then export with `bib_style='chem-rsc'`. Item 14:
+   16 weak edges removed (patent edge by link id, backup
+   `nanobud-fidelity/removed-link-2397876.json`), Hamoudi/Liu/Dai sentences
+   cut, Antonenko sentence re-grounded on pc13280, 32 hub cites pinned to
+   their verified originating passage (`apply_pins.py`). The 150 unpinned
+   cites wait for claims-and-evidence's ruled fallback (Reto,
+   review-queue answered/reto-cite-standard-1.md). Item 15 open: HOMA/NICS
+   primaries not held, ref 893 (Tans 1998 inside an issue scan), the
+   phosphorene preprint, and the td450082 script restage.
+   **Printed-source read (orchestrator verdict, reviews/
+   nanobuds-paper.review.md §1, accepted):** once claims-and-evidence's
+   ruled fallback has a stable before/after key set for dr173020 (their
+   note §3, after the orchestrator has looked at their samples), read
+   only the ~150 sources it prints. One row per (hub, source chunk):
+   does the passage state the sentence's claim as its own result —
+   yes / no / cites-another / partial, with the passage quoted, in the
+   `evidence-edge-verification` row shape. Hand-check 15 rows across the
+   four answers before trusting totals. Report "n of 150 printed sources
+   do not carry their sentence" plus method in the fidelity pack. Over
+   $25 → review item first.
+3. **Reground batches: DONE 2026-10-02 ~20:15Z** (461608, 461803,
+   462063, 462112 … 462390). Cited hubs now: 168, 696 evidence edges, 61
+   still withheld on 56 hubs. OPEN.md items 5 and 7 settled: dc2445904
+   re-pinned `[fi191135>pc417923,pc417910]` (its old pin pc417846 was not
+   an edge), dc2445957 `[fi272040>pc209495]`. Left from td351821 NEXT:
+   (b) the PRUNE-judged withheld edges → Reto keep/remove; (c) the
+   spurious disputes (pa44589 on fi191150; prior-review records
+   pa255164/pa192706/pa255165 on fi191315/fi191316/fi191329; pc396933 on
+   fi269543). The (a) fidelity re-check folds into the printed-source read
+   above.
 
 The items below are all Reto's; each is a `waiting-for:reto` todo under
 td173019.
