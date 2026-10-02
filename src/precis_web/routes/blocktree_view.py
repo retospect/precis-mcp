@@ -90,12 +90,14 @@ job).
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import logging
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -1301,19 +1303,18 @@ _ATOMIC3D_CACHE_MAX_BYTES = 256 * 1024 * 1024
 
 
 class _PayloadCache:
-    """Thread-safe LRU of built atomic block payloads, bounded by
-    approximate bytes (``len`` of the payload's JSON). The route builds in
-    ``asyncio.to_thread``, so every access takes the lock."""
+    """Thread-safe LRU of built atomic block payloads AND of the encoded
+    response bodies (keyed ``("body", etag)``), bounded by approximate bytes
+    (``len`` of a payload's JSON, or the body's own byte length). The route
+    builds in ``asyncio.to_thread``, so every access takes the lock."""
 
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
         self._lock = threading.Lock()
-        self._items: OrderedDict[tuple[Any, ...], tuple[dict[str, Any], int]] = (
-            OrderedDict()
-        )
+        self._items: OrderedDict[tuple[Any, ...], tuple[Any, int]] = OrderedDict()
         self._bytes = 0
 
-    def get(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
+    def get(self, key: tuple[Any, ...]) -> Any:
         with self._lock:
             hit = self._items.get(key)
             if hit is None:
@@ -1321,8 +1322,9 @@ class _PayloadCache:
             self._items.move_to_end(key)
             return hit[0]
 
-    def put(self, key: tuple[Any, ...], payload: dict[str, Any]) -> None:
-        size = len(json.dumps(payload, separators=(",", ":")))
+    def put(self, key: tuple[Any, ...], payload: Any, size: int | None = None) -> None:
+        if size is None:
+            size = len(json.dumps(payload, separators=(",", ":")))
         if size > self.max_bytes:
             return
         with self._lock:
@@ -1479,6 +1481,7 @@ def _build_atomic3d(
     *,
     rev: int | None,
     if_none_match: str | None = None,
+    body_cached: Callable[[str], bool] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, float, str | None]:
     """Off the event loop, mirroring :func:`_build_scene3d`'s own rev
     handling: the live tree by default, or the ``rev`` snapshot — every
@@ -1519,6 +1522,9 @@ def _build_atomic3d(
     etag = f'"{digest}"'
     if if_none_match is not None and _etag_matches(if_none_match, etag):
         return None, scale, etag
+    # The caller holds the encoded body under this ETag: no block build.
+    if body_cached is not None and body_cached(etag):
+        return None, scale, etag
     blocks: list[dict[str, Any]] = []
     complete = True
     for name, node, block_uid, _struct_ref, _key in planned:
@@ -1549,6 +1555,42 @@ def _etag_matches(header: str, etag: str) -> bool:
     return any(part.strip().removeprefix("W/") == wanted for part in header.split(","))
 
 
+def _atomic3d_body(
+    store: Store, kind: str, ref_id: int, *, rev: int | None, if_none_match: str | None
+) -> tuple[tuple[bytes, bytes] | None, str | None]:
+    """The encoded response body ``(json_bytes, gzip_bytes)`` plus its ETag,
+    or ``(None, etag)`` for a 304. A complete body is cached under
+    ``("body", etag)``: on a hit, serialising and gzipping 3.86 MB of JSON
+    (0.5 s of a 0.66 s build on the drum, gr462703) is not repeated. A
+    partial body (``etag`` None) is never cached."""
+    blocks, scale, etag = _build_atomic3d(
+        store,
+        kind,
+        ref_id,
+        rev=rev,
+        if_none_match=if_none_match,
+        body_cached=lambda e: _ATOMIC3D_CACHE.get(("body", e)) is not None,
+    )
+    if blocks is None and etag is not None:
+        if if_none_match is not None and _etag_matches(if_none_match, etag):
+            return None, etag  # 304
+        hit = _ATOMIC3D_CACHE.get(("body", etag))
+        if hit is not None:
+            return hit, etag
+        # Evicted between the check and the read: build it after all.
+        blocks, scale, etag = _build_atomic3d(store, kind, ref_id, rev=rev)
+    blocks = blocks or []
+    deviation_max = max((max(b["deviation"], default=0.0) for b in blocks), default=0.0)
+    raw = json.dumps(
+        {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    body = (raw, gzip.compress(raw, compresslevel=6))
+    if etag is not None:
+        _ATOMIC3D_CACHE.put(("body", etag), body, size=len(body[0]) + len(body[1]))
+    return body, etag
+
+
 async def _atomic3d_response(
     request: Request, kind: str, slug: str, *, rev: int | None = None
 ) -> Response:
@@ -1559,27 +1601,32 @@ async def _atomic3d_response(
         return JSONResponse({"error": "not found"}, status_code=404)
     inm = request.headers.get("if-none-match")
 
-    def _build() -> tuple[list[dict[str, Any]] | None, float, str | None]:
-        return _build_atomic3d(store, kind, ref.id, rev=rev, if_none_match=inm)
+    def _build() -> tuple[tuple[bytes, bytes] | None, str | None]:
+        return _atomic3d_body(store, kind, ref.id, rev=rev, if_none_match=inm)
 
     try:
-        blocks, scale, etag = await asyncio.to_thread(_build)
+        body, etag = await asyncio.to_thread(_build)
     except _NoSuchRevision as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
     # `private, no-cache`: the browser keeps the (large) body but must
     # revalidate with the ETag, so a revisit costs a 304, not 1+ MB.
     headers = (
-        {"Cache-Control": "private, no-cache", "ETag": etag}
+        {"Cache-Control": "private, no-cache", "ETag": etag, "Vary": "Accept-Encoding"}
         if etag is not None
-        else {"Cache-Control": "no-store"}
+        else {"Cache-Control": "no-store", "Vary": "Accept-Encoding"}
     )
-    if blocks is None:
+    if body is None:
         return Response(status_code=304, headers=headers)
-    deviation_max = max((max(b["deviation"], default=0.0) for b in blocks), default=0.0)
-    return JSONResponse(
-        {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
-        headers=headers,
-    )
+    raw, gz = body
+    # Pre-encoded: GZipMiddleware passes a response that already carries
+    # Content-Encoding through untouched.
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(
+            gz,
+            media_type="application/json",
+            headers={**headers, "Content-Encoding": "gzip"},
+        )
+    return Response(raw, media_type="application/json", headers=headers)
 
 
 def _bound_structure_atoms(

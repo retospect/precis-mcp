@@ -407,3 +407,42 @@ def test_atomic3d_partial_failure_is_not_cacheable(
     assert r.json()["blocks"] == []
     assert "etag" not in r.headers
     assert r.headers["cache-control"] == "no-store"
+
+
+def test_atomic3d_body_cache_serves_encoded_bytes(
+    atomic3d_client, runtime_with_store, monkeypatch
+) -> None:
+    """gr462703 verdict 1b — a repeat request serves the cached gzip body
+    (no second serialise + compress), and a matching ETag is still a 304
+    even when the body is cached."""
+    from precis_web.routes import blocktree_view as bv
+
+    bv._ATOMIC3D_CACHE.clear()
+    compressed: list[int] = []
+    real = bv.gzip.compress
+
+    def counting(data: bytes, *a: Any, **kw: Any) -> bytes:
+        compressed.append(len(data))
+        return real(data, *a, **kw)
+
+    monkeypatch.setattr(bv.gzip, "compress", counting)
+    _seed_c60_structure(runtime_with_store, "c60body")
+    _seed_atomic_se(runtime_with_store, slug="c60bodydesign", structure_slug="c60body")
+    url = "/se/c60bodydesign/atomic3d.json"
+
+    r1 = atomic3d_client.get(url, headers={"Accept-Encoding": "gzip"})
+    assert r1.status_code == 200
+    assert r1.headers["content-encoding"] == "gzip"
+    assert len(r1.json()["blocks"]) == 1
+    assert len(compressed) == 1
+
+    r2 = atomic3d_client.get(url, headers={"Accept-Encoding": "gzip"})
+    assert r2.json() == r1.json()
+    assert len(compressed) == 1  # served from the body cache
+
+    r3 = atomic3d_client.get(url, headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in r3.headers
+    assert r3.json() == r1.json()
+
+    r4 = atomic3d_client.get(url, headers={"If-None-Match": r1.headers["etag"]})
+    assert r4.status_code == 304
