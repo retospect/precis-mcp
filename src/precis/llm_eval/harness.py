@@ -89,7 +89,11 @@ def run_axis(
             res = dispatch_fn(
                 LlmRequest(
                     tier=tier,
-                    prompt=t.prompt,
+                    # The claude transports read only ``prompt``; local and
+                    # openai-compat prefer ``messages``. Flatten as a fallback.
+                    prompt=t.prompt
+                    or "\n\n".join(m["content"] for m in t.messages or []),
+                    messages=t.messages,
                     model=model,
                     tools_needed=t.tools_needed,
                     endpoint=endpoint,

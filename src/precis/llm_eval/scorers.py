@@ -11,9 +11,12 @@ Two axes score **deterministically** and ship now:
 * ``needle`` (``long-context-recall``) — was the planted fact retrieved?
 * ``tool_json`` (``tool-structured``) — did the structured answer match?
 
-The heavy axes (``code`` = run the fix's tests, ``summarize-extract`` = rubric
-judge, ``reasoning-convergence`` = prefer live telemetry) need a test-runner /
-judge and are declared but not wired here — the harness logs them skipped
+``summarize-extract`` also has ``summary`` — the production-path variant that
+replays the summariser's own messages and grades the reply with the worker's
+own parse/reject functions plus an invented-number check (no judge model).
+
+Heavy axes without a wired scorer (e.g. ``reasoning-convergence`` = prefer live
+telemetry) are declared but not wired here — the harness logs them skipped
 rather than silently dropping them (see :data:`SCORERS`).
 """
 
@@ -126,6 +129,63 @@ def score_keypoints(
     return hits / len(kps)
 
 
+_NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _numbers(text: str) -> set[str]:
+    """Numeric tokens of ``text``, thousands commas removed (``12,000`` -> ``12000``)."""
+    return {m.replace(",", "") for m in _NUM_RE.findall(text or "")}
+
+
+def score_summary(
+    response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
+) -> float:
+    """summarize-extract, production path: grade a reply with the worker's own checks.
+
+    ``expect = {"chunk_text": str, "nonprose": bool, "keypoints": [str]?}``.
+    The reply is run through :func:`llm_summarize.parse_summary` and
+    :func:`llm_summarize._reject_reason` (the exact gates a stored summary
+    passes); empty or rejected -> 0. The brief (first line) must be a
+    parenthetical tag ``(...)`` iff the chunk is non-prose; a mismatch -> 0, and a
+    correctly tagged non-prose chunk scores 1.0.
+
+    Invented-number rule: the summariser prompt demands quantities verbatim, so
+    every numeric token in the summary must also occur as a numeric token in the
+    chunk (thousands commas stripped on both sides); a number absent from the
+    passage is a hallucination -> 0. Otherwise the score is keypoint coverage
+    (matched / total, :func:`_norm` substring), or 1.0 when no keypoints given.
+    """
+    from precis.workers.llm_summarize import (
+        EmptySummaryError,
+        _reject_reason,
+        parse_summary,
+    )
+
+    chunk_text = str(expect.get("chunk_text") or "")
+    try:
+        summary = parse_summary(response_text or "")
+    except EmptySummaryError:
+        return 0.0
+    if not summary.strip():
+        return 0.0
+    if _reject_reason(summary, chunk_text) is not None:
+        return 0.0
+    brief = summary.split("\n", 1)[0].strip()
+    is_tag = brief.startswith("(") and brief.endswith(")")
+    nonprose = bool(expect.get("nonprose"))
+    if nonprose != is_tag:
+        return 0.0
+    if nonprose:
+        return 1.0
+    if not _numbers(summary) <= _numbers(chunk_text):
+        return 0.0
+    kps = [str(k) for k in (expect.get("keypoints") or [])]
+    if not kps:
+        return 1.0
+    hay = _norm(summary)
+    return sum(1 for k in kps if _norm(k) and _norm(k) in hay) / len(kps)
+
+
 def _extract_code(text: str) -> str:
     """Pull the last fenced code block from a reply (whole reply if unfenced)."""
     blocks = re.findall(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
@@ -180,6 +240,7 @@ SCORERS: dict[str, Scorer] = {
     "exact": score_exact,
     "keypoints": score_keypoints,
     "code": score_code,
+    "summary": score_summary,
 }
 
 
@@ -202,5 +263,6 @@ __all__ = [
     "score_exact",
     "score_keypoints",
     "score_needle",
+    "score_summary",
     "score_tool_json",
 ]

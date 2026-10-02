@@ -20,7 +20,16 @@ then the big model on one spark, then the rungs that consume it.
    each item below.
 2. **backlog/local-summarizer.md** — the first workload to go local again
    (~1.8M-chunk backlog, bulk and content-light); gated on
-   `backlog/model-qualification.md`, measured by 1.
+   `backlog/model-qualification.md`, measured by 1. The gate's instrument is
+   built (WIP on this branch, not landed): `llm_eval` scorer `summary`
+   replays the production summariser messages and grades with the worker's
+   own parse/reject plus an invented-number check;
+   `scripts/llm_eval/build_summarize_gold.py` samples already-summarised
+   paper chunks read-only into gitignored `gold_set/local/`. Resume: re-run
+   `UV_WITH="--with numba" scripts/test tests/test_llm_eval.py` (last
+   assertion edited after the last run), qland, then build the set and
+   compare a local candidate vs `glm-4.7-flash`. Waiting on review item
+   local-compute-2 (cluster read to find the candidate; gold-set location).
 3. **Single-spark big model** — **backlog/vllm-per-node-serving.md Slice 0**
    (Nemotron NVFP4 vs gpt-oss control; go/no-go for the oversubscription
    design), after its two spark prerequisites,

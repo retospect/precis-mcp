@@ -17,6 +17,10 @@ Each task is one JSON object::
       "tools_needed": false
     }
 
+A task may instead carry an OpenAI-shaped ``"messages": [{"role": "system",
+"content": "…"}, …]`` list (``prompt`` then empty): the production summariser
+path sends its own message list, so the gold set replays it verbatim.
+
 ``axis`` must be a catalog capability axis (:data:`llm_catalog.CAPABILITY_AXES`);
 ``scorer`` names a wired scorer (:data:`scorers.SCORERS`) — a task naming an
 unwired scorer (the heavy code/summarize axes) is loaded but the harness skips
@@ -45,6 +49,25 @@ class GoldTask:
     prompt: str
     expect: dict[str, Any] = field(default_factory=dict)
     tools_needed: bool = False
+    #: OpenAI-shaped message list replayed verbatim (``prompt`` is then empty).
+    messages: list[dict[str, str]] | None = None
+
+
+def _load_messages(raw: Any, where: str) -> list[dict[str, str]] | None:
+    """Validate a task's optional ``messages`` as a list of {role, content} strs."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(
+        isinstance(m, dict)
+        and isinstance(m.get("role"), str)
+        and isinstance(m.get("content"), str)
+        for m in raw
+    ):
+        raise BadInput(
+            f"llm eval: {where} 'messages' must be a list of "
+            "{role, content} string objects"
+        )
+    return [{"role": m["role"], "content": m["content"]} for m in raw]
 
 
 def default_gold_path() -> Path:
@@ -83,6 +106,7 @@ def load_gold_set(path: str | Path | None = None) -> list[GoldTask]:
                 prompt=str(item.get("prompt") or ""),
                 expect=dict(item.get("expect") or {}),
                 tools_needed=bool(item.get("tools_needed", False)),
+                messages=_load_messages(item.get("messages"), f"gold task #{i}"),
             )
         )
     return tasks

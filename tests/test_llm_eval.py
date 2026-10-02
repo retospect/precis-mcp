@@ -189,3 +189,131 @@ def test_compare_runs_both_without_recording(store: Any) -> None:
     # so neither card is written — it returns a report per model to render A/B.
     assert set(reports) == {"good", "bad"}
     assert all(hasattr(r, "ordinals") for r in reports.values())
+
+
+# ── production-path summary scorer ────────────────────────────────
+
+_CHUNK = (
+    "The sintered pellets reached a density of 12,000 kg/m3 after 4.5 h at "
+    "1200 C. Cracking was observed in the samples quenched from 1400 C."
+)
+_GOOD = (
+    "BRIEF: Sintered pellets reach 12,000 kg/m3 after 4.5 h at 1200 C.\n"
+    "DETAIL: Quenching from 1400 C cracks the samples."
+)
+
+
+def _summ(text: str, **expect: Any) -> float:
+    from precis.llm_eval.scorers import score_summary
+
+    exp = {"chunk_text": _CHUNK, "nonprose": False, **expect}
+    return score_summary(text, None, exp)
+
+
+def test_summary_good_scores_one() -> None:
+    assert _summ(_GOOD) == 1.0
+
+
+def test_summary_thousands_comma_normalised() -> None:
+    assert _summ(_GOOD.replace("12,000", "12000")) == 1.0
+
+
+def test_summary_invented_number_scores_zero() -> None:
+    assert _summ(_GOOD.replace("4.5 h", "7 h")) == 0.0
+
+
+def test_summary_empty_and_echo_score_zero() -> None:
+    assert _summ("") == 0.0
+    assert _summ("BRIEF: At most 15 words, self-contained.\nDETAIL: Something.") == 0.0
+
+
+def test_summary_tag_matching() -> None:
+    tag = "BRIEF: (reference list)\nDETAIL: Citations."
+    assert _summ(tag) == 0.0  # prose mis-tagged
+    assert _summ(tag, nonprose=True) == 1.0
+    assert _summ(_GOOD, nonprose=True) == 0.0  # nonprose answered in prose
+
+
+def test_summary_keypoint_coverage() -> None:
+    assert _summ(_GOOD, keypoints=["12,000", "cracks", "zirconia", "quench"]) == 0.75
+
+
+# ── GoldTask.messages + run_axis passthrough ──────────────────────
+
+
+def test_gold_task_messages_load_and_validate(tmp_path: Any) -> None:
+    import json
+
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    p = tmp_path / "g.json"
+    base = {"task_id": "m", "axis": "summarize-extract", "scorer": "summary"}
+    p.write_text(json.dumps([{**base, "messages": msgs}]), encoding="utf-8")
+    assert load_gold_set(p)[0].messages == msgs
+    p.write_text(json.dumps([base]), encoding="utf-8")
+    assert load_gold_set(p)[0].messages is None
+    for bad in ("x", [{"role": "user"}], [{"role": "user", "content": 3}]):
+        p.write_text(json.dumps([{**base, "messages": bad}]), encoding="utf-8")
+        with pytest.raises(BadInput):
+            load_gold_set(p)
+
+
+def test_run_axis_passes_messages_through() -> None:
+    from precis.llm_eval.harness import run_axis
+    from precis.utils.llm.router import Tier
+
+    msgs = [
+        {"role": "system", "content": "instructions"},
+        {"role": "user", "content": "summarise"},
+    ]
+    task = GoldTask(
+        task_id="s1",
+        axis="summarize-extract",
+        scorer="summary",
+        prompt="",
+        messages=msgs,
+        expect={"chunk_text": _CHUNK, "nonprose": False},
+    )
+    seen: list[Any] = []
+
+    def _d(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(text=_GOOD, data=None, error=None)
+
+    res = run_axis([task], model="m", tier=Tier.SMALL, dispatch_fn=_d)
+    assert seen[0].messages == msgs
+    # claude transports read only ``prompt``: it carries the flattened messages
+    assert seen[0].prompt == "instructions\n\nsummarise"
+    assert res.mean_score == 1.0
+
+
+# ── gold builder pure helpers ─────────────────────────────────────
+
+
+def test_build_summarize_gold_row_to_task() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).parent.parent / "scripts/llm_eval/build_summarize_gold.py"
+    spec = importlib.util.spec_from_file_location("build_summarize_gold", path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    row = {
+        "chunk_id": 7,
+        "ref_id": 3,
+        "ord": 2,
+        "chunk_kind": "paragraph",
+        "text": _CHUNK,
+        "section_path": ["Results"],
+        "keywords": None,
+        "numerics": [],
+        "ref_kind": "paper",
+        "title": "Sintering",
+        "incumbent": "(reference list)\n\nCitations.",
+    }
+    t = mod.row_to_task(row, "CARD")
+    assert t["task_id"] == "summ-7" and t["scorer"] == "summary"
+    assert t["axis"] in llm_catalog.CAPABILITY_AXES and t["prompt"] == ""
+    assert t["expect"]["nonprose"] is True and t["expect"]["chunk_text"] == _CHUNK
+    assert any(_CHUNK in m["content"] for m in t["messages"])
+    assert not mod.incumbent_is_tag("Prose brief.\n\nDetail (x).")
