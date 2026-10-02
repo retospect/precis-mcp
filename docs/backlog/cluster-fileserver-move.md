@@ -116,14 +116,17 @@ go to the orchestrator as a branch; overlay edits go to Reto.
 
 ## Full migration plan (review item local-compute-9)
 
-**Principle:** the DB node must never depend on the NAS, and the mount path
+**Principle:** the DB node's serving path (Postgres, pgbouncer) must
+never depend on the NAS, and no retained backup lives on it. The mount path
 stays `/mnt/cluster` on every node. That way no service path changes, and
 no Full Disk Access grant has to be redone.
 
 **What moves:** the DB node's share is 176 GB in about 1.1M files.
 - `gguf` 113 GB: llama.cpp weights. `roles/llamacpp/tasks/sync.yml`
   rsyncs these to local disk.
-- `backups` 63 GB: stays on the DB node (Reto).
+- `backups` 63 GB: 3 nights of local DB dumps. They are already archived
+  on the NAS, and after phase 1 none are retained on the DB node.
+- `git/`, `souls/`, `data/`: B2-synced trees; they move with the share.
 - `aizynth-models` 0.75 GB, `logs` 0.1 GB, `scripts`, `workspaces` and
   the rest are small.
 
@@ -157,17 +160,49 @@ no Full Disk Access grant has to be redone.
    - the DB node leaves `nfs_servers`, and the NAS is not managed by
      `roles/nfs_server`.
 
-### Phase 1: take the DB node off the share (DB node only)
+### Phase 1: take the DB node off the share (revised; Reto on local-compute-9)
 
-4. **Repoint the DB node.** Apply the `host_local_root` change on the DB
-   node. `mv` `backups/`, `scripts/` and the pgbouncer and backup logs
-   into it; this is the same volume, so it is instant. Re-run the
-   backups, pgbouncer and config_pull roles on the DB node. Check that
-   the 03:30 pg_dump lands and that pgbouncer is logging.
-   - Touches: the DB node's cron jobs, the pgbouncer plist and its config.
-   - pgbouncer needs a restart. Prod DB access drops for a few seconds;
-     do it in the deploy window.
-   - Rollback: set the variable back and `mv` the directories back.
+Reto: "Backups should be on a different machine than db. Only the papers
+live on the file server exclusively."
+
+**Today (read 2026-10-02 23:35Z):**
+- The 03:30 dump goes to a local directory on the DB node. At about 04:31
+  it is tar+zstd'd onto the NAS, which holds 76 archives (1.2 TB, 90-day
+  retention); the last 3 nights landed, about 21 GB each.
+- The DB node also keeps 3 nights locally (63 GB) for fast restore. Those
+  are the backups sitting next to the database.
+- The 04:30 B2 sync uploads the DB node's local dumps, plus
+  `backups/configs` and the share's `git/`, `souls/` and `data/` trees.
+  No log line confirms B2 success, so that is unverified.
+
+4a. **No retained backups on the DB node.**
+    - The dump still writes to local disk while it runs. Writing it over
+      NFS puts lockd in the path, which is the hang `roles/backups` warns
+      about.
+    - Once the NAS archive is written and `zstd -t` verifies it, the local
+      dump is deleted. The DB node then holds a backup only from 03:30 to
+      about 04:31.
+    - A restore reads the NAS archive (21 GB, about 75 s at 290 MB/s, then
+      a parallel `pg_restore`).
+    - Touches: `pg_backup.sh.j2`. Local retention becomes "until
+      verified"; the free-space guard stays.
+    - Rollback: the 2-day value.
+4b. **B2 reads the off-box copies.**
+    - The postgres leg syncs the NAS archives instead of the DB node's
+      local dumps. The other legs read the moved trees on the NAS.
+    - It stays where the B2 credentials live (the DB node), now as a NAS
+      client.
+    - Add a success log line and a check that last night's upload exists.
+4c. **Host-local operational paths on the DB node.** Scripts, the backup
+    and config-pull logs and pgbouncer's logfile move to
+    `host_local_root`. They are not backups, so local is right.
+    - pgbouncer restarts, a few seconds of downtime. Reto: run when ready,
+      no round window needed.
+    - Rollback: the variable back, `mv` back.
+4d. **Where the copies end up:** the NAS (90 days, RAID6) and B2 offsite.
+    Both are off the DB machine and none are on it. A third copy on a
+    Mac's local disk is possible but not proposed: the NAS and B2 are
+    already two independent off-box copies.
 
 ### Phase 2: copy (no client sees a change)
 
@@ -237,18 +272,13 @@ No.
   bulk traffic is the weights sync (113 GB, about 7 minutes at 2.5 Gb/s),
   so it isn't needed now.
 
-### Open questions for Reto
+### Rulings (Reto, local-compute-9, 2026-10-02 22:49Z)
 
-1. **Who creates the export and the `cluster` user?**
-   - Recommended: you, in the TOS web UI. TOS probably regenerates
-     `/etc/exports` from its own configuration, so a hand edit over ssh
-     may not survive an update. Not verified.
-   - Either way, I give you the exact field values. The alternative is
-     an agent over the root ssh, but only through TOS's own tooling,
-     after checking that the change survives a TOS update.
-2. **The window:** phase 1 restarts pgbouncer, and phase 3 reboots the
-   Sparks and pauses the science lanes for about 30 minutes. Is the next
-   round deploy window acceptable?
-3. **The DB node's nightly 03:00 "update + reboot" root cron:** it takes
-   the share away from every hard-mounted client nightly today. It goes
-   away for the share with this move. Keep it for the DB node itself?
+1. **Export and `cluster` user:** not ruled. The default is Reto in the
+   TOS web UI, with field values from local-compute (review item
+   local-compute-10).
+2. **Timing:** "it is when it is". Run each phase when it is ready; no
+   round window needed. The FS fix is a priority now.
+3. **The DB node's 03:00 update+reboot cron:** keep.
+4. **Backups:** off the DB machine (phase 1 revised above). Only the
+   papers live exclusively on the file server.

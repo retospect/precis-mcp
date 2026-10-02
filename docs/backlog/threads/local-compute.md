@@ -82,9 +82,14 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       finnmaccool, after a read-only probe and an approved plan.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
-      one box (spec in its decisions log). Runs on spark as the bench while
-      it holds no traffic. It picks the model 3 may run on, and unblocks 5
-      and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
+      one box (spec in its decisions log). **Runs on castor now, from local
+      NVMe, independent of the NFS move** (Reto 2026-10-02,
+      local-compute-9: "why is local llm gated on filesystem stuff?"). It
+      never needed the share. The gate came from sequencing: the bench was
+      on spark, and spark's host-prep list put "unhang the NFS mount"
+      first for the eval-run-spine. castor is the box the model will
+      serve on anyway. It picks the model 3 may run on, and unblocks 5 and
+      6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round
       deploy window (Reto's ruling 4).

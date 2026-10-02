@@ -169,7 +169,14 @@ spark-as-bench-only framing below where they conflict.**
 **Decided 2026-09-29 (Reto):** castor first, pollux later for throughput if
 needed; replication over sharding; one model fully resident per box.
 
-**Bench host: `spark` (decided 2026-09-29).** Slice 0 and the frozen eval
+**Superseded 2026-10-02: Slice 0 runs on castor, from local NVMe** (Reto,
+review item local-compute-9). castor is the big-model box under the role
+split (local-compute-5), and it serves nothing today. spark now carries
+embeddings and ad-hoc compute, and its share is hung. Slice 0 does not need
+`/mnt/cluster`: weights and images go to castor's local disk. The frozen
+eval world stays wherever `eval-run-spine.md` places it.
+
+**Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
 world (`eval-run-spine.md`) run there, not on a serving box. It is the same
 128 GB hardware as castor, so the concurrency curve transfers exactly; it
 runs zero precis units, so an eval loop hammering it cannot disturb prod
