@@ -351,7 +351,7 @@ _GEOMETRY_ROUNDING_SLACK_MM = 0.001
 #: generator's expansion to its version here, so changing the output without
 #: bumping this fails the gate instead of serving stale copper on prod.
 VERSIONS: dict[str, int] = {
-    "ewod_pad_array": 3,
+    "ewod_pad_array": 4,
 }
 
 
@@ -2546,6 +2546,39 @@ def _expand_ewod_pad_array(name: str, params: dict[str, Any]) -> GeneratorExpans
         raise ValueError(
             "ewod_pad_array: expansion produced zero pads -- check grid/variant"
         )
+
+    # Board-frame rows are computed in the array's own frame (origin at the
+    # grid origin); the component pose and mask_open already sit at the
+    # anchor, so shift the fixed copper, the ledger's via points and the
+    # sink seeds too -- a part's own footprint copper must never be
+    # separable from it (Reto 2026-10-02). The generator has no rotation
+    # param (component rot is always 0), so a translation is the whole
+    # transform. Version 4.
+    if x_anchor or y_anchor:
+        for row in copper:
+            geom = row["geom"]
+            if row["ctype"] == "via":
+                geom["x"] += x_anchor
+                geom["y"] += y_anchor
+            else:
+                for seg in geom["segments"]:
+                    sx, sy = seg["start"]
+                    ex, ey = seg["end"]
+                    seg["start"] = [sx + x_anchor, sy + y_anchor]
+                    seg["end"] = [ex + x_anchor, ey + y_anchor]
+        for led in ledger_pads.values():
+            if "via" in led:
+                led["via"] = {
+                    "x": led["via"]["x"] + x_anchor,
+                    "y": led["via"]["y"] + y_anchor,
+                }
+        for sc in sink_components:
+            sc["x"] += x_anchor
+            sc["y"] += y_anchor
+        for key, sink_led in ledger_sinks.items():
+            if not key.startswith("_"):
+                sink_led["x"] += x_anchor
+                sink_led["y"] += y_anchor
 
     footprint_name = f"__gen_{name}"
     footprint = {"name": footprint_name, "pads": pads}

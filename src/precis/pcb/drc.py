@@ -1144,7 +1144,9 @@ def check_annular_ring(
     for pad in _drilled_pad_ring_items(model):
         w = float(pad.get("w", 0.0))
         h = float(pad.get("h", w))
-        dia = min(w, h)
+        # An oblique pad's w/h are its rotated bbox; `land_min_mm` is the
+        # land's real narrow side (realize.pads_for_ir).
+        dia = float(pad.get("land_min_mm") or min(w, h))
         drill = float(pad["drill"])
         ring = (dia - drill) / 2.0
         result = _two_tier(ring, jlc_min, house)

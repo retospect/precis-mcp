@@ -57,8 +57,8 @@ refusing to route an illegal placement, which is the right home for it.
 `session.land_rects_by_instance` covers an obliquely rotated pad with a
 square of its longer side and a polygon pad with its bounding box. Both
 over-cover, so they can only reject a legal position, never admit an
-illegal one. Same question as
-`pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md`.
+illegal one. (`pads_for_ir` now emits an oblique pad as its true rotated
+polygon; this placer keep-out box is still the conservative cover.)
 
 ### 4. A rigid recentre is vetoed outright
 

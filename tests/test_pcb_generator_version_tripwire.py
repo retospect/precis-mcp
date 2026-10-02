@@ -41,7 +41,7 @@ _CASES: dict[str, list[dict[str, Any]]] = {
 #: generator -> (version, digest over every case's expansion). Re-pin both
 #: together, never the digest alone.
 _PINNED: dict[str, tuple[int, str]] = {
-    "ewod_pad_array": (3, "889788bc99ef8d1b"),
+    "ewod_pad_array": (4, "889788bc99ef8d1b"),
 }
 
 
@@ -112,3 +112,44 @@ def test_stale_generators_lists_only_rows_behind_the_code():
     assert "OLD (ewod_pad_array)" in note
     assert "put the same generators entry again" in note
     assert generators.stale_generator_note([]) == ""
+
+
+def _fixed_points(exp: generators.GeneratorExpansion) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = []
+    for row in exp.copper:
+        geom = row["geom"]
+        if row["ctype"] == "via":
+            pts.append((geom["x"], geom["y"]))
+        else:
+            for seg in geom["segments"]:
+                pts.append((seg["start"][0], seg["start"][1]))
+                pts.append((seg["end"][0], seg["end"][1]))
+    return pts
+
+
+def test_fixed_copper_travels_with_the_array_anchor():
+    """A part's own footprint copper is never separable from it (Reto
+    2026-10-02): an array at (50, 50) emits every via/stub endpoint, ledger
+    via point and sink seed exactly (50, 50) from the origin array's."""
+    sink: dict[str, Any] = _CASES["ewod_pad_array"][1]
+    origin = generators.expand("ewod_pad_array", "G1", dict(sink))
+    moved = generators.expand("ewod_pad_array", "G1", {**sink, "x": 50.0, "y": 50.0})
+    o_pts, m_pts = _fixed_points(origin), _fixed_points(moved)
+    assert len(o_pts) == len(m_pts) > 0
+    assert any(r["ctype"] == "via" for r in origin.copper)
+    for (ox, oy), (mx, my) in zip(o_pts, m_pts, strict=True):
+        assert (mx - ox, my - oy) == pytest.approx((50.0, 50.0))
+    for o, m in zip(
+        origin.ledger["pads"].values(), moved.ledger["pads"].values(), strict=True
+    ):
+        if "via" in o:
+            assert m["via"]["x"] - o["via"]["x"] == pytest.approx(50.0)
+            assert m["via"]["y"] - o["via"]["y"] == pytest.approx(50.0)
+    assert len(origin.components) == len(moved.components) > 1
+    for o_c, m_c in zip(origin.components[1:], moved.components[1:], strict=True):
+        assert (m_c["x"] - o_c["x"], m_c["y"] - o_c["y"]) == pytest.approx((50.0, 50.0))
+    # Every moved via/stub point sits inside the array's own mask_open field.
+    poly = moved.features[0]["geom"]["polygon"]
+    xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    for vx, vy in m_pts:
+        assert min(xs) <= vx <= max(xs) and min(ys) <= vy <= max(ys)

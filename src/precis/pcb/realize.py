@@ -1227,17 +1227,75 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     Only rect/obround have an orientation to get wrong: a circle's w/h
     are its diameter, and a polygon pad carries a true rotated ring
     instead. An oblique (non-90-degree-multiple) rotation is NOT handled
-    here — :func:`_pad_shape` falls back to a conservative enclosing
-    circle for that case while ``pads_for_ir`` keeps an axis-aligned
-    rect, a divergence that over-claims on the grid (so it cannot leak
-    copper into a pad) but can still make the DRC measure the wrong
-    outline. That one wants a rotated polygon, not a swap."""
+    here — :func:`_pad_shape` claims a conservative enclosing circle for
+    that case, and ``pads_for_ir`` emits the true rotated outline as a
+    polygon pad (:func:`oblique_pad_ring`), so w/h are not read."""
     if geom.shape not in ("rect", "obround"):
         return geom.w_mm, geom.h_mm
     rot = 0.0 if math.isnan(inst_rot) else inst_rot
     if geom.synthesized and padplace.rect_swaps_wh(rot):
         return geom.h_mm, geom.w_mm
     return geom.w_mm, geom.h_mm
+
+
+#: Vertices per semicircular cap of an oblique obround's polygon outline.
+_OBLIQUE_CAP_SEGMENTS = 16
+
+
+def pad_is_oblique(geom: PadGeom, inst_rot: float) -> bool:
+    """True for a rect/obround pad whose board-space extent is NOT an
+    axis-aligned box — the case :func:`pad_board_wh`'s w/h cannot describe
+    and :func:`oblique_pad_ring` exists for. Same axis-alignment decision
+    :func:`_pad_shape` makes (a synthesized pad's off the instance
+    rotation, a real pad's off :attr:`PadGeom.axis_aligned`)."""
+    if geom.shape not in ("rect", "obround"):
+        return False
+    rot = 0.0 if math.isnan(inst_rot) else inst_rot
+    if geom.synthesized:
+        return not padplace.pad_axis_aligned(rot)
+    return not geom.axis_aligned
+
+
+def oblique_pad_ring(
+    geom: PadGeom, inst_rot: float, *, mirrored: bool = False
+) -> list[tuple[float, float]]:
+    """The true board-space outline of an oblique rect/obround pad, as
+    vertices relative to the pad centre.
+
+    The authored ``w`` x ``h`` outline is rotated by the pad's own ``rot``,
+    then placed like any footprint-local offset
+    (:func:`~precis.pcb.landpattern.rotate_offset`: mirror, then instance
+    rotation). A rect is its four corners; an obround is a stadium — two
+    semicircular caps of ``min(w, h) / 2`` joined along the long axis,
+    tessellated at :data:`_OBLIQUE_CAP_SEGMENTS` per cap with every vertex
+    ON the true arc (so the ring sits at most ~0.5% of the radius inside
+    the real outline, always within :func:`_pad_shape`'s circumscribed
+    circle)."""
+    w, h = geom.w_mm, geom.h_mm
+    local: list[tuple[float, float]]
+    if geom.shape == "obround" and w != h:
+        r = min(w, h) / 2.0
+        n = _OBLIQUE_CAP_SEGMENTS
+        if w > h:
+            half = w / 2.0 - r
+            cap_a, cap_b, start_a, start_b = (half, 0.0), (-half, 0.0), -90.0, 90.0
+        else:
+            half = h / 2.0 - r
+            cap_a, cap_b, start_a, start_b = (0.0, half), (0.0, -half), 0.0, 180.0
+        local = []
+        for centre, start in ((cap_a, start_a), (cap_b, start_b)):
+            for i in range(n + 1):
+                a = math.radians(start + 180.0 * i / n)
+                local.append((centre[0] + r * math.cos(a), centre[1] + r * math.sin(a)))
+    else:
+        hw, hh = w / 2.0, h / 2.0
+        local = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    rot = 0.0 if math.isnan(inst_rot) else inst_rot
+    out: list[tuple[float, float]] = []
+    for lx, ly in local:
+        px, py = landpattern.rotate_offset(lx, ly, geom.pad_rot_deg)
+        out.append(landpattern.rotate_offset(px, py, rot, mirrored=mirrored))
+    return out
 
 
 def _pad_shape(geom: PadGeom, point: Point, inst_rot: float) -> maze.PadShape:
@@ -5944,6 +6002,10 @@ class PadGeom:
     paste: str | None = None
     drill_mm: float | None = None
     axis_aligned: bool = True
+    #: The source footprint pad's own ``rot`` (0 for a synthesized pad) —
+    #: only :func:`oblique_pad_ring` reads it, to build the true outline of
+    #: a rect/obround pad whose total rotation is not a 90-multiple.
+    pad_rot_deg: float = 0.0
 
 
 #: Which pin a raw footprint pad belongs to — :func:`precis.pcb.padplace.
@@ -5968,6 +6030,7 @@ def _real_pad_sizes(
         str | None,
         float | None,
         bool,
+        float,
     ],
 ]:
     """This one instance's REAL per-pin pad size (plus
@@ -6086,6 +6149,7 @@ def _real_pad_sizes(
             str | None,
             float | None,
             bool,
+            float,
         ],
     ] = {}
     for pad in pads:
@@ -6115,6 +6179,7 @@ def _real_pad_sizes(
             str(paste) if paste is not None else None,
             float(drill) if drill is not None else None,
             padplace.pad_axis_aligned(total_rot),
+            raw_rot_by_name.get(name, 0.0),
         )
     return out
 
@@ -6159,6 +6224,7 @@ def pad_geometry(
                 str | None,
                 float | None,
                 bool,
+                float,
             ],
         ],
     ] = {}
@@ -6172,7 +6238,7 @@ def pad_geometry(
         inst_id = int(ir.pin_instance[pid])
         real = real_by_inst.get(inst_id, {}).get(str(ir.pin_label[pid]))
         if real is not None:
-            w, h, shape, poly, role, mask, paste, drill, axis_aligned = real
+            w, h, shape, poly, role, mask, paste, drill, axis_aligned, pad_rot = real
             out.append(
                 PadGeom(
                     w,
@@ -6185,6 +6251,7 @@ def pad_geometry(
                     paste=paste,
                     drill_mm=drill,
                     axis_aligned=axis_aligned,
+                    pad_rot_deg=pad_rot,
                 )
             )
         else:
@@ -6573,7 +6640,33 @@ def pads_for_ir(
                 pad["pin_unmatched"] = True
         if geom.shape != "circle":
             pad["h"] = pad_h
-        if geom.shape == "polygon" and geom.poly:
+        if pad_is_oblique(geom, float(ir.inst_rot[inst_id])):
+            # An obliquely-rotated rect/obround is NOT an axis-aligned w x
+            # h box: emit its true rotated outline as a polygon pad so the
+            # DRC, gerber, fab preview and connectivity all measure the
+            # real land. ``w``/``h`` become the ring's bbox -- the
+            # "informational bbox" a polygon pad carries (gerber.py's
+            # module docstring), which keeps the silk's box tests
+            # conservative. The router's claim stays the enclosing circle
+            # (`_pad_shape`), which contains this ring.
+            ring = oblique_pad_ring(
+                geom,
+                float(ir.inst_rot[inst_id]),
+                mirrored=bool(ir.inst_bottom[inst_id]),
+            )
+            xs = [rx for rx, _ in ring]
+            ys = [ry for _, ry in ring]
+            pad["shape"] = "polygon"
+            # The land's own narrow dimension, before the bbox below
+            # replaces w/h: the annular-ring rule must keep judging the
+            # true land, not its (wider) rotated bbox.
+            pad["land_min_mm"] = round(min(float(pad["w"]), float(pad["h"])), 4)
+            pad["w"] = round(max(xs) - min(xs), 4)
+            pad["h"] = round(max(ys) - min(ys), 4)
+            pad["poly"] = [
+                [round(point[0] + rx, 4), round(point[1] + ry, 4)] for rx, ry in ring
+            ]
+        elif geom.shape == "polygon" and geom.poly:
             # `point` is already the rotated+translated pin CENTER
             # (`pin_point`); the ring is stored relative to that same
             # center (`PadGeom.poly`'s own docstring), so it only needs
