@@ -15,24 +15,33 @@ off that gap until it closes.
 
 ## Resume state (2026-10-02)
 
-- **Region slice A** (Do next 1): parked on local branch
-  `se-region-slice-a` (WIP e9526e5cf; migrations core 0180 + se 0018).
-  Cherry-pick it back once the joint sweep has landed. It cannot qland
-  (it carries migrations), so it goes through the orchestrator's round
-  gate after a Fable review.
+- **Region slice A** (Do next 1): built and CI-green, handed to the
+  orchestrator to squash-land after 0181 (round 2). Branch
+  `worktree-agent-a48fe82af9f90530b`, tip 47677a6b7; migrations core
+  `0182_se_measurand_seed.sql` + se `0018_se_regions.sql`. Grammar, review
+  verdicts and three open calls (taxon-id identity, pin scope,
+  unbound-block exemption):
+  `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`
+  §3–§5. After it lands, dogfood on prod when the round deploys.
+- **Joint sweep** shipped c5a2e8624 (`params.range` + required
+  `params.moves`). Residual gr462067: rigidly connected, unparented blocks
+  stay still during the sweep. Its first consumer is
+  `hexfold-t-handle-bearing` (hexfold-toolkit).
 - **Local se tests are blind until precis-dev is rebuilt.** The image
   predates the nm→se rename. `check-entry-points --heal` repairs one
   throwaway `uv run --with numba` env, but pytest runs in another, so
   no `precis_se` migration reaches the test DB. Every se DB test then
   fails `unknown kind: 'se'`, the untouched `test_se_atomic_bind.py`
-  included. Gate se work on GitHub (`scripts/ship --remote`).
+  included. Gate se work on GitHub (`scripts/ship --remote`). The
+  orchestrator rebuilds the image after the round 1 deploy; the
+  mechanism is gr462134.
 
 ## Do next
 
 1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
    axes (charge, field, optical); the peer session (unicycle) is already
    the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
-   (measurands, selectors, pockets) built, parked (Resume state); B waits on
+   (measurands, selectors, pockets) built, landing in round 2 (Resume state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
 2. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
