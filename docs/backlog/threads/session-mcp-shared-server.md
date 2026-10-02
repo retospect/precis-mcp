@@ -100,14 +100,20 @@ capacity and isolation gaps.
      time it again on the real install.
    - a client idle ~2 h (last call before 14:59:27Z) went through a
      recreate at 17:01Z, and its next tool call reached the new server.
-   **Install plan (Reto, review items -1 and -2):**
-   - melchior installs after the round-1 deploy, in one `--recreate`.
-     **Timing is the orchestrator's**: it drops every session, so tell
-     the orchestrator first, take the before-state (who is already
-     disconnected), and count as stranded only a session whose next call
-     fails and fails again 60 s later.
-   - Reto's dev-Mac session installs the same script afterwards; keep the
-     scratch copy until then.
+   **Installed on melchior 2026-10-02 ~20:56Z** (Reto ran the `cp` and the
+   `--recreate`; a session's `cp` was denied by the permission
+   classifier):
+   - port 8765 refused for under a second (forwarder stop and start both
+     at 20:56:42Z);
+   - supervisor bound at 20:56:43Z; prepare took 7 s (copy 2, deps 4,
+     metadata 1);
+   - generation 1 started 20:56:50Z, serving 567f207fd with no source
+     drift.
+   This first stop ran through the pre-drain supervisor; drains apply
+   from the next recreate. The orchestrator's sweep counts the drops
+   against a before-state of 5 DOWN.
+   **Still to do:** Reto's dev-Mac session installs the same script; keep
+   the scratch copy until then.
    **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the
    next. Fixed in 7f006bf09 (round 2); it loads at the first recreate
@@ -118,46 +124,13 @@ capacity and isolation gaps.
    hand. 8765 was refused for 24 s, so every connected session on melchior
    gave up at 15:04:29Z and needed `/mcp`. `wait_mcp` now takes
    `PRECIS_MCP_ENSURE`, and its test never reaches the real script.
-1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
-   capacity number and shared cache left — Reto's call, td461158.** gr459088 and gr457326 are CLOSED, verified on the shared
-   server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
-   1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
-   none sufficient alone — per-batch retry (d9bd4e16), cold-cache re-arm
-   (2b729531), 16-block/25 000-char cap (5146528d), skip-and-continue
-   (ae7bdb6a), live warmup state (10f307e5).
-
-   Root cause for anyone who finds this later: the warm pass starved the
-   service it was waiting on. 64-block batches collected the long blocks
-   (up to 22756 chars), blew the 15 s client budget, and each timeout
-   orphaned a server-side computation that kept its slot — so the pass
-   manufactured the saturation that rejected its own retries, and
-   `embed_missing` sending the first 64 *missing* blocks made batch 1
-   always the worst one. Two intermediate diagnoses were wrong and both
-   fell to measurement rather than argument: "the embedder sheds
-   continuously" (idle between passes — inflight 0 on six samples) and
-   "slots are leaked" (they release when the pass stops). Timed idle the
-   embedder does one short string in 0.17 s — **the hardware was never
-   the constraint.**
-
-   Admission is answered (gr459844), in three places:
-   - The embedder service shares forward passes across requests,
-     query-sized requests first, under a padded-token budget. On a rig with
-     batches queued, query embeds went from 27 of 31 timing out to 0 of
-     125, p50 ~2 s, with the same vectors.
-   - The MCP process's own bulkhead has separate query and batch pools.
-   - The skill index builds once, on a background thread, with failed
-     skills retried after 60 s. That build was the 565-592 s call: every
-     concurrent first skill search ran its own full build inline.
-
-   A fresh cold server under the 12-session burst: 464 calls, 0 errors,
-   max 8.4 s (592 s before). 78 query embeds still fell back to lexical,
-   which is 12 sessions against 4 query slots doing their job. What is
-   left in the item is the owner, the fleet capacity number and Reto's
-   shared-cache call. A cold server's skill index completes in tens of
-   minutes while md warm-ups saturate the embedder, which is that
-   capacity question. The completed warm (~19400 vectors, 79 MB) exposed
-   `add()`'s per-vector `np.vstack` as O(n^2); now a capacity-doubling
-   buffer behind `_rows()`.
+1. **backlog/embedder-capacity-ownership.md — decided, handed to
+   local-compute.** Reto ruled 2026-10-02 (item -4, td461158 closed):
+   - the embedder service owns aggregate capacity, held by local-compute;
+   - a provisional capacity number is recorded;
+   - no host-level admission token, no shared vector cache.
+   The N-client load test waits for the local LLM rungs. Root cause and
+   the admission fix (gr459844) are in the item.
 
 2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
    as "precis-status reports the new sha", which gr457361 made unpassable,
@@ -171,48 +144,43 @@ capacity and isolation gaps.
    process opens: one DB role for every session (measured: no
    PRECIS_MCP_DB_ROLE/_ENFORCE, DSN user agent_rw), no fairness on a
    first-come semaphore, no supervision for a single point of failure whose
-   image rebuild bounces every session. Ranked last because its acceptance
-   criteria are verified by probing the surface they fix — that surface is
-   now trustworthy, so this is unblocked rather than waiting. The role
-   bullet decides whether coding jobs can ever leave containers; Reto's
-   call, td461159.
+   image rebuild bounces every session. The role bullet is closed (Reto,
+   item -5, td461159): coding jobs never leave containers and the shared
+   server stays interactive-only at `agent_rw`. Its reopen trigger is in
+   Parked. Left: fairness and the pool-storm test.
 
 ## Runbook
 
-- **A deploy that changes `[project.entry-points]`** (every plugin-split
-  extraction): the image's venv is a path-editable install (pth →
-  `/app/src`), so new modules import but entry points stay at the image
-  build's — e.g. `precis.skills` missing, and the moved skill is NotFound.
-  After the deploy moves the prod clone, refresh in place:
-  `docker exec precis-mcp-http uv pip install --python /opt/venv/bin/python
-  --no-deps -e /app`, then SIGTERM the serve child (pid from the
-  supervisor's "generation N started (pid X)" log line) so the supervisor
-  respawns it — never `--recreate` for this (gr460711). Any later recreate
-  reverts it to the image's metadata until Do-next 0 (c) lands.
-- **Installing a staged ensure script** is the agent's job after a deploy
-  (Reto 2026-10-01): diff, cp, `--recreate`, verify with the names-only
-  `docker inspect` format and precis-status, and have deploy send one ping
-  covering every restart.
+- **A deploy that changes `[project.entry-points]` or `uv.lock`** needs
+  no hand step on melchior since the 2026-10-02 install. The watchdog
+  bounce re-runs the prepare step, which reinstalls project metadata when
+  `pyproject.toml` changed and syncs new or bumped dependencies; check
+  the `precis-prepare:` lines in `docker logs`. A dependency with no
+  wheel, or an autocatpath bump, still needs an image rebuild.
+- **Installing a staged ensure script:** the auto-mode permission
+  classifier denies a session copying over the live script ("Modify
+  Shared Resources"). Reto runs the `cp`; the session prepares the
+  staged file, diffs it, and verifies the result. Tell the orchestrator
+  before any `--recreate`, so it can count drops and sweep.
+- **A rig never uses the live name:** use scratch `rig*.sh` with their
+  own `PRECIS_MCP_HTTP_NAME`. The installed script refuses
+  PORT/STATE/IMAGE/SRC overrides on `precis-mcp-http` unless
+  `PRECIS_MCP_LIVE=1` (gr462596).
 
 ## Horizon
 
-1. **backlog/mcp-shared-transport-concurrency.md**, role isolation — one
-   process holds one DB role for every session, and agent_container.py
-   depends on that separation to make a read-only agent's writes fail in
-   Postgres. SET ROLE is ruled out under transaction pooling, so per-role
-   pools or session-keyed authz. An authz boundary, not throughput.
-2. **backlog/mcp-shared-transport-concurrency.md**, fairness — sizing the
+1. **backlog/mcp-shared-transport-concurrency.md**, fairness — sizing the
    semaphore is not fairness; one session's burst holds every permit while
    another's cheap read queues, and it gets reported as "the MCP is slow".
-3. **backlog/mcps-venv-deploy-gaps.md** — the shared server is a hand-rolled
+2. **backlog/mcps-venv-deploy-gaps.md** — the shared server is a hand-rolled
    dev-machine service by decision (Reto, 2026-09-29); whether the fleet
    mcps role adopts this shape decides if the ensure script stays a wrapper
    or becomes an Ansible role. Until then the two must not entangle.
-4. **backlog/mcp-shared-server-multiprocess.md** — `--workers 1` is correct
+3. **backlog/mcp-shared-server-multiprocess.md** — `--workers 1` is correct
    and is the ceiling; the inventory of what must leave process memory
    first. Arc, not work: 12 concurrent searches finish in 4.78 s against a
    2.06 s single call.
-5. **K-parallel exercise-mcp on dev** (unfiled) — the acceptance gate that
+4. **K-parallel exercise-mcp on dev** (unfiled) — the acceptance gate that
    proves 1 and 2 worked; earlier it measures an idle server.
 6. **pgbouncer cl_waiting observability** (td458386) — granted by Reto
    2026-09-30, not yet wired; prerequisite for every future claim about
@@ -243,6 +211,13 @@ capacity and isolation gaps.
     FastMCP; still blocked, so last.
 
 ## Parked
+
+- **Role isolation on the shared server** (Reto 2026-10-02, item -5) —
+  closed as "coding jobs never leave containers; the shared server stays
+  interactive-only at agent_rw". Unparks when a judge/extract job class
+  declares `write:none` AND per-container serve boot shows up as a
+  measured cost; then build per-role pools keyed on the bearer token
+  (backlog/mcp-shared-transport-concurrency.md).
 
 - **pgbouncer admin-console read access** (td458386) — **granted by Reto
   2026-09-30**; unparks when the coordinates are in the overlay and a

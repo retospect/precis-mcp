@@ -225,8 +225,22 @@ on a background thread, a search waits at most 5 s for it, and failed
 skills are retried after 60 s. Same burst afterwards: 0 errors, slowest
 call 8.4 s.
 
-Left in this item: the owner, the fleet capacity number, and the
-shared-cache decision (Reto's call). Capacity is the visible limit now: on
-a cold server the skill index takes tens of minutes to fill while two md
-warm-ups (a rig's and the shared server's) and the workers keep the one
-embedder busy.
+## Decided (Reto, 2026-10-02T20:47Z, review item session-mcp-shared-server-4)
+
+- **Owner:** the embedder service (`src/precis/embedder_service.py`),
+  held by the **local-compute** thread. Its admission (query slots,
+  shortest-first passes under a padded-token budget) is the one place every
+  caller meets, and local-compute also owns the local LLM rungs, the next
+  contender for the same box.
+- **Capacity, provisional:** 12.7–13.6 texts/s of mixed long-paragraph
+  batches while query embeds run at p50 ~2 s / p95 ~5 s, 0 of 125 failed
+  (the gr459844 rig above, on a GPU shared with the live embedder, so a
+  floor). The N-client load test waits until the local LLM rungs land on
+  the same box, because the number changes then anyway.
+- **No host-level admission token** (gr450123 option (a)): there is one
+  embedder process per host and its admission already is host-level.
+- **No shared vector cache:** one session-MCP container since td458385,
+  with its cache on a host mount that survives recreates (gr460339).
+
+Left in this item, for local-compute: the N-client load test once the LLM
+rungs share the box; then this item can go.

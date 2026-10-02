@@ -43,7 +43,17 @@ The open work is the tier that needs a real database:
   (`tests/conftest.py`): no `PoolTimeout`, bounded wait, no deadlock,
   clean teardown. Watch for the suite's lock-holding-connection leak
   hard-fail, which a connection storm is the most likely test to trip.
-- **Role isolation under one process.** Live, not hypothetical: the
+- **Role isolation under one process — DECIDED, closed (Reto,
+  2026-10-02T20:57Z, review item session-mcp-shared-server-5, option 3):
+  coding jobs never leave containers; the shared server stays
+  interactive-only at `agent_rw`.** Reason: no job in `src/` declares
+  `write:none` today (the envelope rollout is dark), and read-only jobs that
+  do appear already run in containers where `agent_ro` is enforced. The
+  container also enforces network egress and filesystem exposure, which
+  the shared server has no equivalent for. **Reopen trigger:** build
+  per-role pools keyed on the bearer token once a judge/extract job class
+  declares `write:none` *and* per-container serve boot shows up as a
+  measured cost. Context kept below. Live, not hypothetical: the
   shared server holds one role for every attached session, because
   `_apply_db_role` reads process-level `PRECIS_MCP_DB_ROLE` in the
   pool's per-connection configure hook. `agent_container.py` depends on exactly that separation to make
@@ -65,8 +75,8 @@ and the role bullet below is why. Also not in scope: changing
 stdio callers; the shared server sets its own via env.
 
 ## Acceptance criteria
-- A decision, recorded here, on whether coding jobs can ever leave
-  containers — it turns entirely on the role-isolation bullet.
+- ~~A decision, recorded here, on whether coding jobs can ever leave
+  containers~~ — recorded 2026-10-02: they do not (role-isolation bullet).
 - The pool-storm and role-isolation tests exist and are honest about
   what they show (the role one is expected to document a gap, not a
   passing property).

@@ -106,8 +106,19 @@ cmd_status() {
   need_tmux
   # precis MCP per pane: a session that gave up on it is otherwise silent
   # (gr462596) — DOWN means run /mcp → precis → Reconnect in that window.
-  local mcp
-  mcp=$(python3 "$(dirname "$0")/lib/fleet_mcp_state.py" 2>/dev/null || true)
+  # The helper sits beside this script; a copy run from elsewhere (an
+  # unsynced tree, `git show origin/main:scripts/fleet`) falls back to the
+  # main checkout's. No helper or a failed one prints `?`, never `-`, which
+  # means "no MCP events yet".
+  local mcp="" unknown="?" helper="$(dirname "$0")/lib/fleet_mcp_state.py"
+  [ -f "$helper" ] || helper="$root/scripts/lib/fleet_mcp_state.py"
+  if [ ! -f "$helper" ]; then
+    echo "scripts/fleet: no fleet_mcp_state.py beside this script or in $root — mcp column unknown" >&2
+  elif mcp=$(python3 "$helper"); then
+    unknown="-"
+  else
+    echo "scripts/fleet: $helper failed — mcp column unknown" >&2
+  fi
   printf '%-3s %-28s %-8s %-7s %s\n' "#" window ctx state mcp
   tmux list-windows -F '#{window_index} #{window_name} #{pane_id}' | while read -r idx w pid; do
     pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
@@ -116,7 +127,7 @@ cmd_status() {
     elif printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy
     else st=idle; fi
     m=$(printf '%s\n' "$mcp" | awk -v p="$pid" '$1 == p {print $2; exit}')
-    printf '%-3s %-28s %-8s %-7s %s\n' "$idx" "$w" "${pct:--}" "$st" "${m:--}"
+    printf '%-3s %-28s %-8s %-7s %s\n' "$idx" "$w" "${pct:--}" "$st" "${m:-$unknown}"
   done
 }
 
