@@ -88,6 +88,7 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 
 ## Log
 
+- **2026-10-02** — Healthy; one finding. Postmaster restarted 2026-10-02 03:01Z, so all pg_stat counters are ~7h old (not comparable to 09-16; `app_settings` seq_scans now 338k vs 8.6M is the reset, not a fix). No long-runners (one 1.3 s chunk-candidate CTE). Bloat all <5% (`worker_logs` 4.4%, `ref_tags` 4.4%). Seq-scans by tuples read: `ref_tags` 8.3G (30k scans x 275k rows, 834k-row table, 464M idx_scan — planner choice), `chunks` 7.5G, `chunk_embeddings` 4.9G, `worker_logs` 3.9G; new outlier `kind_provider` 4,038 scans on 51k rows = gr461595 (ephemeral-container roster rows + nursery detector scan). `llm_call_log` request/response hash indexes (228 MB) still idx_scan=0 and still undropped: filed as gr461596 (was only a log line before). Other idx_scan=0 this window (`paper_authors` trgm/openalex/orcid, 26 MB) is within the 7h window — re-check next pass.
 - **2026-09-16** — Healthy; no long-runners, bloat all <5%. `app_settings` seq_scans 8.6M (3x from 2026-08-23's 2.9M) — the 13-row table is polled hot; `docs/backlog/db-resident-settings.md` (cache TTL) is now the actionable fix. Known drop candidates unchanged: `llm_call_log` request/response hash indexes (~206 MB, lifetime idx_scan 0/2) — verify-then-drop migration pending since 2026-08-07. `ref_tags` seq_scan/size ratio climbing (199k on 120 MB).
 Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict.
 
