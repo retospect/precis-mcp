@@ -29,10 +29,10 @@ since 567f207f; Reto approved both as they are, review item
 se-3d-viewer-1; level chips landed for round 2)
 **Worktree:** `se-3d-viewer`
 
-**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702, WebGL fallback) is
-in build; 2 (gr462703, progress bar) waits on the design note's verdict.
-After those the next build is 5 (the fastener insertion DRC); 3 needs a
-reproducer and 4 a design. The nightly viewer check covers the atomic overlay
+**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
+and waits on Reto for the cause; 2 (gr462703) has its server half shipped
+and the bar shipped; instancing is next. After those the next build is 5
+(the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02 (first dispatched run green, 11 + 16 checks); atom pick
 and hover are its remaining blind spot. Two traps for whoever picks this
 up:
@@ -74,21 +74,33 @@ up:
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
 1. **gr462702** — "3D viewer failed to start: Error creating WebGL context"
-   on hexa-smooth-drum-v2 in some browsers (Reto). The vendored renderer
+   on hexa-smooth-drum-v2 in some browsers (Reto). SHIPPED (62a22b1d): a
+   plain message plus the 2D view on a start failure or a lost context,
+   and `viewer_check.py nowebgl` in the nightly. The vendored renderer
    asks for WebGL2 only (three r163+ has no WebGL1 path), and the bare
    message means no WebGL2 context at all, so a retry with relaxed
-   attributes cannot help. Building: a plain message plus the 2D SVG as a
-   fallback, a lost-context message, and a `viewer_check.py nowebgl`
-   browser check. Which browsers fail is review item se-3d-viewer-3. If
-   other se pages work in the same browser, the cause is Chrome blocking
-   WebGL for the site after GPU crashes, and the fix is instanced atoms and
-   bonds: today each is its own mesh and material, ~15,000 on the drum.
-2. **gr462703** — a progress bar from request to first frame (Reto).
-   Measured first (design note `reviews/se-3d-viewer.md` §1): ~3.6 s on
-   the drum, 60% of it the server build of `atomic3d.json`, which is pure
-   Python per-atom loops (`sheetsmooth.smooth_sheet`, `ring_faces`), then
-   ~0.7 s client mesh build. Proposal: vectorise and cache the server
-   phase, then a 4-step bar over the rest. Waits on the note's verdict.
+   attributes cannot help. Cause still open: which browsers fail is review
+   item se-3d-viewer-3. If other se pages work there, it is Chrome blocking
+   WebGL for the site after GPU crashes, and instancing (item 2) is the fix.
+2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
+   Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server
+   phase SHIPPED: vectorised smoothing (1.0 s → 0.04 s), payload and gzip
+   body cached per structure revision with an ETag (f9a8735a, 985cd41b).
+   First visit on the drum 3.6 s → 1.55 s (local). The bar SHIPPED in
+   round 2: scene → render → server (stripe + seconds, stall text at 30 s,
+   2D fallback at 2 min) → download (running MB) → building N atoms
+   (chunked per 1000), checked nightly by `strain`'s `progress_*` checks.
+   Its 30 s / 2 min paths are unexercised (they need a slow server), and
+   `progress_build_repaints` needs a fixture over 1000 atoms (the small
+   drum has 1304). Next, in order:
+   - instanced atom and bond meshes. The ~0.78 s client mesh build is now
+     the largest phase; each atom and bond is still its own mesh and
+     material, ~15,000 on the drum.
+   - start the `scene3d`/`atomic3d` fetches from an inline script before
+     the module bundle parses: ~0.5 s of page and module load comes before
+     the first request today (verdict 1c: note it, not now).
+   Reto's own timing (review item se-3d-viewer-4) decides only whether
+   instancing moves ahead of the bar's remaining work.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later

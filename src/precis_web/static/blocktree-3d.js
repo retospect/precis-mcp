@@ -172,8 +172,9 @@ function _isWebglError(err) {
 // Replace the dead 3D viewer with a plain message, the design's 2D SVG
 // inline, and a link to the 2D page; the 3D-only controls are disabled so
 // they cannot throw. Built with createElement/textContent only (see
-// showError). `reload` adds a "reload the 3D view" button (context lost).
-function showViewerFallback(viewerEl, err, { reload = false } = {}) {
+// showError). `reload` adds a "reload the 3D view" button (context lost);
+// `message` replaces the generated text (the atom-view timeout).
+function showViewerFallback(viewerEl, err, { reload = false, message = null } = {}) {
   const webgl = _isWebglError(err);
   const box = document.createElement("div");
   box.id = "bt3d-fallback";
@@ -181,7 +182,9 @@ function showViewerFallback(viewerEl, err, { reload = false } = {}) {
   box.style.height = "100%";
   const msg = document.createElement("p");
   msg.id = "bt3d-fallback-message";
-  if (webgl) {
+  if (message) {
+    msg.textContent = message;
+  } else if (webgl) {
     msg.textContent = reload
       ? "The 3D view lost its WebGL 2 context (usually a graphics driver reset or the browser reclaiming it), so it cannot draw any more. Reloading the 3D view usually brings it back."
       : "The 3D view needs WebGL 2, which this browser could not start. Usual causes: hardware acceleration turned off, an older browser, or WebGL blocked for this site after a graphics crash — reloading or another browser may help.";
@@ -793,13 +796,125 @@ function _bt3dMark(name) {
   }
 }
 
-async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
+//: The load progress bar (gr462703): `el` is the template's `#bt3d-progress`
+//: (`data-phase` = scene|render|server|download|build|done|timeout, label
+//: in `#bt3d-progress-label`, fill in `#bt3d-progress-fill`). Null when the
+//: page has no bar; callers guard on that.
+function _makeProgress(el) {
+  if (!el) return null;
+  const label = el.querySelector("#bt3d-progress-label");
+  const fill = el.querySelector("#bt3d-progress-fill");
+  let ticker = null;
+  function stop() {
+    if (ticker) clearInterval(ticker);
+    ticker = null;
+  }
+  // `fraction` null = indeterminate stripe (no honest percentage exists).
+  function set(phase, text, fraction = null) {
+    stop();
+    el.hidden = false;
+    el.dataset.phase = phase;
+    if (fraction === null) {
+      el.dataset.mode = "indeterminate";
+    } else {
+      delete el.dataset.mode;
+      fill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+    }
+    if (label) label.textContent = text;
+  }
+  return {
+    set,
+    // Indeterminate stripe with elapsed seconds; after `stallAfterS` the
+    // label says what is known instead.
+    waiting(phase, text, stallAfterS, stallText) {
+      set(phase, `${text} · 0 s`);
+      const t0 = performance.now();
+      ticker = setInterval(() => {
+        const secs = Math.floor((performance.now() - t0) / 1000);
+        if (label) label.textContent = secs >= stallAfterS ? stallText : `${text} · ${secs} s`;
+      }, 1000);
+    },
+    timeout(text) {
+      set("timeout", text);
+      delete el.dataset.mode;
+    },
+    done() {
+      stop();
+      el.dataset.phase = "done";
+      el.hidden = true;
+    },
+    // A failed load: the error box says why; the bar just goes away.
+    hide() {
+      stop();
+      el.hidden = true;
+    },
+  };
+}
+
+const _ATOMIC_STALL_S = 30;
+const _ATOMIC_TIMEOUT_S = 120;
+const _ATOMIC_STALL_TEXT =
+  "No answer from the server for 30 s. The page keeps waiting until 2 min, then shows the 2D view instead.";
+const _ATOMIC_TIMEOUT_TEXT =
+  "The atom view timed out: no answer from the server after 2 min. Showing the 2D view instead.";
+
+//: Fetch atomic3d.json as a stream so the bar can show real downloaded MB
+//: (Content-Length is the gzip size while the stream yields decoded bytes,
+//: so no percentage is computed). Aborts at 2 min; the thrown error then
+//: has `.timedOut` set. `progress` may be null (a re-render's refetch).
+async function _fetchAtomicPayload(url, progress) {
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, _ATOMIC_TIMEOUT_S * 1000);
+  try {
+    if (progress) {
+      progress.waiting("server", "building atom view on the server", _ATOMIC_STALL_S, _ATOMIC_STALL_TEXT);
+    }
+    const r = await fetch(url, { signal: ctl.signal });
+    if (!r.ok) throw new Error(`atomic3d fetch failed (${r.status})`);
+    const chunks = [];
+    let bytes = 0;
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      bytes += value.length;
+      if (progress) progress.set("download", `downloading ${(bytes / 1e6).toFixed(1)} MB`);
+    }
+    const all = new Uint8Array(bytes);
+    let off = 0;
+    for (const c of chunks) {
+      all.set(c, off);
+      off += c.length;
+    }
+    return JSON.parse(new TextDecoder().decode(all));
+  } catch (err) {
+    if (timedOut) {
+      const e = new Error("atomic3d timed out");
+      e.timedOut = true;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+//: Yield to the browser so the bar repaints between build slices.
+function _nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
+}
+//: Atoms per slice of the overlay's mesh build (bonds proportionally).
+const _BUILD_SLICE_ATOMS = 1000;
+
+async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, progress = null, isStale = () => false) {
   const [THREE, data] = await Promise.all([
     import("/static/three/three.module.min.js"),
-    fetch(atomicUrl).then((r) => {
-      if (!r.ok) throw new Error(`atomic3d fetch failed (${r.status})`);
-      return r.json();
-    }),
+    _fetchAtomicPayload(atomicUrl, progress),
   ]);
   _bt3dMark("bt3d-atomic-fetched");
   if (!data.blocks || !data.blocks.length) return null;
@@ -935,6 +1050,25 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
     cagedEnvelopePaths.length = 0;
   }
 
+  // Progress over the whole payload: atoms are what the label counts, the
+  // bar's fill also advances through the bonds.
+  let totalAtoms = 0, totalBonds = 0;
+  for (const b of data.blocks) {
+    totalAtoms += b.elements.length;
+    totalBonds += (b.bonds || []).length;
+  }
+  let atomsDone = 0, bondsDone = 0;
+  const reportBuild = async () => {
+    if (!progress) return;
+    const frac = (atomsDone + bondsDone) / Math.max(1, totalAtoms + totalBonds);
+    progress.set(
+      "build",
+      `building ${atomsDone.toLocaleString()} of ${totalAtoms.toLocaleString()} atoms`,
+      frac
+    );
+    await _nextFrame();
+  };
+
   try {
     for (const b of data.blocks) {
       cageEnvelope(sceneShapes ? findPathByUid(sceneShapes, b.uid) : null);
@@ -959,8 +1093,11 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         mesh.userData.hover = `${b.elements[i]} · ${(b.hover && b.hover[i]) || `#${i}`}`;
         group.add(mesh);
         atomMeshes.push(mesh);
+        atomsDone++;
+        if (atomsDone % _BUILD_SLICE_ATOMS === 0) await reportBuild();
       }
       const bondMeshes = [];
+      const bondSlice = Math.max(1, Math.ceil((_BUILD_SLICE_ATOMS * (b.bonds || []).length) / Math.max(1, n)));
       for (const [i, j] of b.bonds || []) {
         const mat = new THREE.MeshStandardMaterial({
           color: _BOND_GREY,
@@ -969,6 +1106,8 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         const mesh = new THREE.Mesh(cylGeo, mat);
         group.add(mesh);
         bondMeshes.push({ mesh, i, j, hot: false });
+        bondsDone++;
+        if (bondMeshes.length % bondSlice === 0) await reportBuild();
       }
 
       // The smoothed surface — fan-triangulated rings, coloured per vertex
@@ -1014,6 +1153,11 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         surfPositions: positions,
         surfColors: colors,
       });
+    }
+    // A newer render replaced the scene while this build yielded.
+    if (isStale()) {
+      scene.remove(group);
+      return null;
     }
   } catch (err) {
     restoreEnvelopes();
@@ -1320,6 +1464,8 @@ export async function blocktreeViewer3D({
   // multi-second rebuild is indistinguishable from a control that did
   // nothing — which is the reading gr458329 was filed under.
   busyEl,
+  // The load progress bar (`#bt3d-progress`, gr462703). Optional.
+  progressEl,
   // Atoms on/off for a structure-bound design. Optional — the template
   // only renders it alongside the atomic↔smooth slider.
   atomsToggle,
@@ -1359,17 +1505,22 @@ export async function blocktreeViewer3D({
       theme: "default",
     });
   }
+  const progress = _makeProgress(progressEl);
+  if (progress) progress.set("scene", "loading design…");
   let data;
   try {
     const resp = await fetch(sceneUrl);
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}));
+      if (progress) progress.hide();
       showError(viewerEl, body.error || `failed to load scene (${resp.status})`);
       return;
     }
     data = await resp.json();
     _bt3dMark("bt3d-scene-fetched");
+    if (progress) progress.set("render", "building the 3D scene…");
   } catch (err) {
+    if (progress) progress.hide();
     showError(viewerEl, "failed to load scene: " + String(err));
     return;
   }
@@ -2116,9 +2267,14 @@ export async function blocktreeViewer3D({
 
   let firstRenderMarked = false;
   let atomicBuiltMarked = false;
+  //: The bar covers the first overlay load only.
+  let progressSpent = false;
+  //: Bumped per render: a build that yielded across a newer render is stale.
+  let renderGen = 0;
 
   function renderScene(shapes, { camera = null, refit = true } = {}) {
     shownShapes = shapes;
+    renderGen++;
     viewer.clear();
     viewer.render(shapes, renderOptions, viewerOptions);
     if (!firstRenderMarked) {
@@ -2148,8 +2304,14 @@ export async function blocktreeViewer3D({
     // whatever position the user left it at.
     if (atomicUrl && smoothEls && smoothEls.slider) {
       atomicOverlay = null;
-      _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes)
+      const gen = renderGen;
+      // A level-change refetch of the scene shows no server/download/build
+      // phases: only the first overlay load drives the bar.
+      const prog = progressSpent ? null : progress;
+      progressSpent = true;
+      _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes, prog, () => gen !== renderGen)
         .then((overlay) => {
+          if (gen !== renderGen) return;
           atomicOverlay = overlay;
           if (overlay) applyAtomState();
           // After the overlay meshes are in and the legend/strain rows are
@@ -2158,10 +2320,21 @@ export async function blocktreeViewer3D({
             atomicBuiltMarked = true;
             requestAnimationFrame(() => _bt3dMark("bt3d-atomic-built"));
           }
+          if (prog) prog.done();
         })
         .catch((err) => {
           console.error("blocktree-3d: atomic overlay failed", err);
+          if (err && err.timedOut) {
+            // The envelope view already drawn is replaced by the 2D view,
+            // as the bar's stall text promised.
+            if (prog) prog.timeout(_ATOMIC_TIMEOUT_TEXT);
+            showViewerFallback(viewerEl, err, { message: _ATOMIC_TIMEOUT_TEXT });
+          } else if (prog) {
+            prog.hide();
+          }
         });
+    } else if (progress) {
+      progress.done();
     }
     if (!refit) return;
     const fittedHeight = _fitViewerToShell(
@@ -2205,6 +2378,7 @@ export async function blocktreeViewer3D({
     viewer = new Viewer(display, viewerOptions, notify);
     renderScene(data.shapes);
   } catch (err) {
+    if (progress) progress.hide();
     showViewerFallback(viewerEl, err);
     console.error("blocktree-3d: viewer init failed", err);
     return;

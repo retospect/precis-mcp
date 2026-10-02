@@ -225,3 +225,35 @@ body {
 #bt3d-viewer .bt3d-chip-dash {
   opacity: 0.4;
 }
+
+/* gr462703 load progress bar: a thin track above the viewer shell (a
+ * sibling of #bt3d-viewer, so it never covers the canvas controls).
+ * Determinate phases set the fill's width; the others (data-mode=
+ * "indeterminate") slide a stripe. */
+#bt3d-progress[hidden] {
+  display: none;
+}
+#bt3d-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: #e2e8f0;
+}
+#bt3d-progress-fill {
+  height: 100%;
+  width: 0;
+  background: #1d4ed8;
+}
+#bt3d-progress[data-mode="indeterminate"] #bt3d-progress-fill {
+  width: 30%;
+  animation: bt3d-progress-slide 1.2s ease-in-out infinite;
+}
+#bt3d-progress[data-phase="timeout"] #bt3d-progress-fill {
+  background: #b91c1c;
+  width: 100%;
+  animation: none;
+}
+@keyframes bt3d-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}

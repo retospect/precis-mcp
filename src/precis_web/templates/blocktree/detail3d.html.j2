@@ -145,6 +145,13 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
   <div>
     <h2 class="text-sm font-semibold text-slate-700 mb-2">Assembly</h2>
+    {# Load progress (gr462703): sits above the viewer shell, not inside it —
+       the viewer's fallback replaces the shell's children. blocktree-3d.js
+       drives data-phase (scene|render|server|download|build|done|timeout). #}
+    <div id="bt3d-progress" data-phase="scene" class="mb-1">
+      <div id="bt3d-progress-track"><div id="bt3d-progress-fill"></div></div>
+      <div id="bt3d-progress-label" class="text-xs text-slate-500" aria-live="polite">loading design…</div>
+    </div>
     <div id="bt3d-viewer" class="relative w-full rounded-lg border border-slate-200 bg-white" style="height: 520px;"
          data-svg-url="{{ svg_url }}" data-2d-url="{{ detail_2d_url }}"></div>
     <p class="text-[11px] text-slate-400 mt-1">
@@ -304,6 +311,7 @@
     isolateSelect: document.getElementById("bt3d-isolate"),
     overridesInput: document.getElementById("bt3d-overrides"),
     busyEl: document.getElementById("bt3d-busy"),
+    progressEl: document.getElementById("bt3d-progress"),
     exportEls: {
       png: document.getElementById("bt3d-export-png"),
       svg: document.getElementById("bt3d-export-svg"),

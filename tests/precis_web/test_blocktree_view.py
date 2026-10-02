@@ -548,6 +548,26 @@ def test_se_view3d_ships_a_busy_mark_for_the_refetching_controls(
     assert "hidden" in busy_tag, busy_tag
 
 
+def test_se_view3d_page_carries_the_load_progress_bar(
+    blocktree_client, runtime_with_store
+) -> None:
+    """gr462703: the bar sits above the viewer shell (a sibling, so the
+    fallback's ``replaceChildren`` cannot take it), starts on the ``scene``
+    phase, announces its label politely, and is handed to the module.
+    That the phases advance is browser-level (``viewer_check.py``
+    ``progress_phases_in_order``)."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert 'id="bt3d-progress"' in r.text
+    bar_tag = r.text.split('id="bt3d-progress"', 1)[1].split(">", 1)[0]
+    assert 'data-phase="scene"' in bar_tag, bar_tag
+    label_tag = r.text.split('id="bt3d-progress-label"', 1)[1].split(">", 1)[0]
+    assert 'aria-live="polite"' in label_tag, label_tag
+    assert 'document.getElementById("bt3d-progress")' in r.text
+    assert r.text.index('id="bt3d-progress"') < r.text.index('id="bt3d-viewer"')
+
+
 def test_view3d_url_permanently_redirects_to_the_new_default(client) -> None:
     """gr337745 moved the 3D view off ``/se/{slug}/view3d`` onto the
     bare slug URL — the old URL must still resolve via a permanent

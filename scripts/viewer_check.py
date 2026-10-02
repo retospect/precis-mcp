@@ -494,6 +494,27 @@ def _row_counts(page: Any, row_id: str) -> dict[str, int]:
     )
 
 
+_PROGRESS_OBSERVER_JS = """
+window.__bt3dPhases = [];
+window.__bt3dBuildLabels = [];
+new MutationObserver((records) => {
+  for (const r of records) {
+    const bar = document.getElementById("bt3d-progress");
+    if (r.type === "attributes" && r.target.id === "bt3d-progress") {
+      window.__bt3dPhases.push(r.oldValue);
+    } else if (bar && bar.dataset.phase === "build" && bar.contains(r.target)) {
+      window.__bt3dBuildLabels.push(
+        document.getElementById("bt3d-progress-label").textContent
+      );
+    }
+  }
+}).observe(document, {
+  subtree: true, childList: true, characterData: true,
+  attributes: true, attributeFilter: ["data-phase"], attributeOldValue: true,
+});
+"""
+
+
 def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
     """The strain layers (Reto, 2026-10-02) on an atomic
     design: each layer's checkbox and threshold slider change the picture,
@@ -509,6 +530,11 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
 
     with sync_playwright() as p:
         browser, page, _canvas, shot, settle = _open(p, out, console)
+        # Installed before navigation so the observer sees the bar from its
+        # first phase. data-phase's old values give the sequence even when
+        # two changes land in one task; the build label is logged per
+        # change (one per ~1000-atom slice).
+        page.add_init_script(_PROGRESS_OBSERVER_JS)
         page.goto(f"{base_url}/se/{slug}", wait_until="networkidle", timeout=180000)
         page.wait_for_selector("#bt3d-viewer canvas", timeout=int(WAIT_S * 1000))
         # The overlay is built after the scene; its first paint stamps the
@@ -516,6 +542,36 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
         page.wait_for_function(
             "() => document.getElementById('bt3d-smooth-legend')?.dataset.total",
             timeout=int(WAIT_S * 3 * 1000),
+        )
+        page.wait_for_function(
+            "() => document.getElementById('bt3d-progress')?.hidden",
+            timeout=int(WAIT_S * 1000),
+        )
+        seen = page.evaluate(
+            "() => [...window.__bt3dPhases, "
+            "document.getElementById('bt3d-progress').dataset.phase]"
+        )
+        phases = [x for i, x in enumerate(seen) if i == 0 or x != seen[i - 1]]
+        want = ["server", "download", "build", "done"]
+        it = iter(phases)
+        in_order = all(w in it for w in want)  # subsequence test
+        checks.append(
+            Check(
+                "progress_phases_in_order",
+                in_order and phases[-1] == "done",
+                {"phases": phases, "want": want},
+            )
+        )
+        build_labels = page.evaluate("() => [...new Set(window.__bt3dBuildLabels)]")
+        checks.append(
+            Check(
+                "progress_build_repaints",
+                len(build_labels) >= 2,
+                {
+                    "distinct_build_labels": len(build_labels),
+                    "labels": build_labels[:5],
+                },
+            )
         )
         base = settle("s00_base")
         page.wait_for_timeout(600)
