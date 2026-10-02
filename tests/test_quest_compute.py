@@ -4691,6 +4691,52 @@ class TestTierLadderHarvest:
         assert again["keys_unstamped"] == 3
         assert again["stamped"] == 0
 
+    def test_backfill_cli_dry_run_prints_counts_and_apply_writes(
+        self, store: Any, capsys: Any
+    ) -> None:
+        """``precis quest backfill-network-basis``: the default is a dry run
+        that prints the counts and writes nothing; ``--apply`` writes."""
+        import argparse
+
+        from precis.cli.quest import _cmd_backfill_network_basis
+
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "tier": "screening",
+                "config": {"network": "ammonia", "template": "parked"},
+                "autocatpath_version": "0.22.0",
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"selectivity_margin": 0.4}, "pathway_ref": pw}
+        )
+        store.stamp_ref_meta(sid, {"selectivity_margin": 0.4, "span": 9.9})
+
+        _cmd_backfill_network_basis(store, argparse.Namespace(id=qid, apply=False))
+        out = capsys.readouterr().out
+        assert f"quest {qid}: DRY RUN" in out
+        assert "would stamp 1 (selectivity_margin=1)" in out
+        assert "1 no reproducing pathway" in out
+        assert "candidates written: 0" in out
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "network_basis_by_key" not in meta
+
+        _cmd_backfill_network_basis(store, argparse.Namespace(id=qid, apply=True))
+        out = capsys.readouterr().out
+        assert f"quest {qid}: APPLIED" in out
+        assert "stamped 1 (selectivity_margin=1)" in out
+        assert "candidates written: 1" in out
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"]["selectivity_margin"]["template"] == (
+            "parked"
+        )
+
     def test_backfill_keeps_existing_stamps(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)

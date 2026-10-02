@@ -134,6 +134,19 @@ the duration, and record the pause in the quest logbook.
 - **Design review §15 (2026-10-02):** S1 common tangent with s_conf; S2
   pass = β across the window, lattice by ratio; S3 strain controls; no
   `refines`; separate failure count for hydrogenation by subsurface H.
+- **Stage 0 ran (2026-10-02, design note §16; `scratch/pdh-stage0/`).**
+  MACE-MP-0 medium, float64 CPU, 2x2x2 conventional cell.
+  - Gates pass: a(β)/a(Pd) = 1.032 at x = 0.59; x = 1.0 across the window,
+    with the last step at −0.098 V_RHE.
+  - But the potential makes H–H net repulsive, so it has no α/β
+    miscibility gap at this sampling (arrangement noise matches the hull
+    curvature at mid x). The "+0.11 V step" is a grid artefact.
+  - It overbinds absorbed H by about 0.19 eV per H, so H loads from
+    +0.25 V. P1 passes because of that error.
+  - It is validated for geometry at a given x, not for x(U).
+  - **Decided, Reto 2026-10-02 (`catalysis-selectivity-18`):** x ≈ 0.625
+    from experiment, geometry from MACE. Proceed with stages 1–3 (≈ 15
+    GPU-h plus the strain controls).
 - **Open (`catalysis-selectivity-17`):** the reference scale of pa5303 and
   pa166889 sits behind publisher SI paywalls (403). It is Reto's check.
   Until then no operating point is written.

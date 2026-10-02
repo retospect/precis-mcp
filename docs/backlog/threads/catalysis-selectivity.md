@@ -51,7 +51,13 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
    network (2026-10-02); independent of 1–3. A candidate whose bulk
    dissolves across the operating window cannot be the catalyst, so it is
    ruled out before selectivity is spent on it (qu202468). The job (A)
-   builds now; the gate (B) waits on A and on Reto's operating point.
+   is built and reviewed (design note §18). It goes to the orchestrator as
+   branch `worktree-agent-af864454b1508ef28` (tip `224232762`) for round 2,
+   not a qland, because it changes deploy roles. The orchestrator owns that
+   branch now. After it lands: clamp the within-tol note's margin at 0 (a
+   ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"). The gate (B) waits on A
+   landing, the MP key in the vault (Reto), and qu202468's operating point
+   (set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10).
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
    named; blocked by 1 and 2 because a window over an incomplete network
    or the wrong substrate is the wrong window. Post-processing only, so cheap once 1 lands. Also
@@ -71,7 +77,33 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
 
 ## Parked
 
-- (none)
+- **Gas references under MACE-MP-0 misprice the N molecules.** Measured
+  2026-10-02 (design note §17):
+  - NO→NH₃ U_eq shifted +0.13 V;
+  - NH₃/NH₂OH overstabilised and N₂ understabilised against experiment
+    (not one ½H₂ error);
+  - H on Pd 0.20–0.28 eV too stable against ½H₂ vs PBE. The error varies
+    by metal (Cu −0.22, Pt +0.10), so a μ_H shift is a Pd-only correction.
+    That H* error biases `selectivity_margin` on the 112 of 213 candidates
+    whose worst branch point is a supply edge (A1).
+
+  **Decided, Reto 2026-10-02 (`catalysis-selectivity-19`): both levers.**
+  - Per-molecule gas corrections fitted to experiment, keyed by (backend,
+    model): NH₃ +0.794, NO +0.150, N₂O +0.549, NH₂OH +0.999 eV for
+    mace/medium, with the reservoirs as anchors.
+  - A Pd-only H* shift (+0.25 eV, PBE anchor), keyed by (backend, model,
+    host metal).
+  - Both are recorded in every result.
+
+  Briefs delivered to the catpath session (window 21) on 2026-10-02:
+  - `scratch/catsel-catpath-brief-corrections.md`;
+  - the NH₂OH `thermo.GASES` fix (`scratch/catsel-catpath-brief-href.md`),
+    delivered by the review session.
+
+  After that release: an offline re-score of qu164903 in precis. It must
+  reproduce the 299 validated replay rows with both levers off before it
+  writes. qu164903's tier promotion is paused until then (Reto runs the
+  meta write; the undo is in design note §19).
 
 ## No action needed
 
