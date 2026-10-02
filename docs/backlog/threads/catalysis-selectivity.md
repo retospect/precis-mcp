@@ -84,6 +84,17 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
      objective, which it generalises.
    - The proof-of-concept paper (Fe-doped Pd, ~Nov 2026) belongs to
      qu459585, not this thread.
+4. **backlog/encapsulated-metal-candidate-space.md** (Reto, 2026-10-02:
+   **file only**) supplies the optimizer's candidate space: carbon-encapsulated
+   metal families F1–F4, a carbon/cap Pourbaix layer, and
+   host/containment constraints in the Shapley mask.
+   - It is blocked by Horizon 3's first slices.
+   - Its NO→NH₃ demo feeds qu164903 directly: F3/F4 sites become
+     candidates on the same reaction and references.
+   - Its F4 single-atom crater is the first slice.
+   - It reuses `precis_surface` + `hexfold.smooth` for the cage
+     generator, and leaves hexfold-toolkit's and nanobuds-paper's items
+     alone. F2 is flagged as touching the nanobuds paper.
 
 ## Parked
 
