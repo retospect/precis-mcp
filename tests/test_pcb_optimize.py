@@ -1146,6 +1146,17 @@ def test_digest_carries_per_term_and_per_region_breakdown():
     assert "gap_capacity" in text
 
 
+def test_region_cells_cap_long_lists_with_a_count():
+    """ewod-dogfood-6 job 461063: one region named every electrode pair and
+    the summary overran the response frame."""
+    from precis.pcb.optimize import _capped_list
+
+    keys = tuple(f"N{i}" for i in range(1500))
+    assert _capped_list(keys) == "N0,N1,N2,N3,N4,N5,N6,N7,+1492 more"
+    assert _capped_list(("A", "B")) == "A,B"
+    assert _capped_list(()) == ""
+
+
 def test_optimize_config_rejects_soft_p_norm():
     with pytest.raises(ValueError):
         OptimizeConfig(cost=CostConfig(p_norm=2.0))

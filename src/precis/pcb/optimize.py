@@ -3879,8 +3879,8 @@ def digest_toon(result: OptimizeResult) -> str:
                 "region": r.region,
                 "peak_term": r.peak_term,
                 "peak_penalty": round(r.peak_penalty, 6),
-                "nets": ",".join(r.nets),
-                "locked": ",".join(r.locked_instances),
+                "nets": _capped_list(r.nets),
+                "locked": _capped_list(r.locked_instances),
             }
             for r in result.digest.regions
         ]
@@ -3891,6 +3891,21 @@ def digest_toon(result: OptimizeResult) -> str:
     else:
         regions_table = "(no margin-bearing regions)"
     return "\n\n".join([header, terms_table, regions_table])
+
+
+#: Entries a region-table cell lists before it switches to a count. An 8x8
+#: EWOD field's one region names every electrode pair (well over a thousand
+#: keys), which pushed the place job's summary past the response frame and
+#: buried the table in one cell (ewod-dogfood-6, job 461063).
+_REGION_CELL_MAX = 8
+
+
+def _capped_list(items: Sequence[str]) -> str:
+    """``items`` comma-joined, cut to :data:`_REGION_CELL_MAX` with a
+    ``+N more`` tail."""
+    shown = ",".join(items[:_REGION_CELL_MAX])
+    rest = len(items) - _REGION_CELL_MAX
+    return f"{shown},+{rest} more" if rest > 0 else shown
 
 
 __all__ = [
