@@ -30,34 +30,6 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
-0. **Bud placement offset (gr459567, gap 3): first task after the
-   2026-10-02 demo hold lifts** (orchestrator, from Reto). se
-   `nanobud-review-figs` piles atoms. nanobuds-paper measured these
-   counts of pairs < 1.25 Å (figures on gr459567): bud87 31 (closest
-   0.78 Å), bud96 23 (0.73), gsheet96 27 (0.63), gsheet22 5, and bud22
-   0, though bud22 has 48 over-coordinated atoms. Fix the placement, verify
-   with `geom.clash` on those five blocks, then tell nanobuds-paper so it
-   can regenerate; three of its figures wait on this. The placement is a
-   construction change, so it goes through the orchestrator's design
-   review (`reviews/hexfold-toolkit.md`) before landing. `geom.clash`
-   itself (91090fa8e) is on this branch only, not on main, and it
-   reports the overlap without fixing it.
-   - The orchestrator reviewed `geom.clash` on 2026-10-02
-     (`reviews/hexfold-toolkit.review.md`). Verdict: qland 91090fa8e
-     as is (WARN) once the hold lifts. Then re-run the 12-of-21 example
-     clash table once and keep it here as the baseline the placement fix
-     is judged against.
-   - **W1**, in the placement-fix commit: an ERROR band below 1.0 Å, WARN
-     from 1.0 Å to `Profile.clash_A`. Each shipped example still under
-     1.0 Å is either fixed or named in the skill as a known-overlapping
-     spec.
-   - **W2**, same commit: raise the bar in
-     `test_nanobud_menu_seed_has_no_stick_clash` from `> 1.0 Å` to
-     `Profile.clash_A`.
-   - **W3**, not a blocker: on the hydrogen-terminated examples, record
-     the smallest non-1-3 distance by element pair. Armchair-bay H–H
-     pairs sit near 2.0 Å. If any legitimate pair falls under 2.0 Å,
-     make the bar per element pair.
 1. **gr459928** — graded bends. Reto, 2026-10-01: the drum should have
    "no 1-ring-90-degree turns". Each bend should step through
    progressively steeper rings: sheet, slight slope, steeper, tube, then
@@ -131,34 +103,45 @@ waited on happened 09-29 — note at the bottom)
      - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
      ports.py, seams.py, meridian.py, f3.hx, f33.hx).
-2. **gr459567 + gr459595** — non-bonded clashes the check cannot see.
-   Every bud menu seeds the fullerene overlapping its host (the help
-   skill's own `tube(10,10)` + C60 `[9-6]` example: 0.56 Å bud/host), and
-   an unholed `cap(36,0)` lid crumples into itself (0.63 Å). `geom.*`
-   covers bonded terms only, so both pass `fidelity='check'`, and
-   `test_nanobud_menu_seed_has_no_stick_clash` pins `> 1.0 Å` — overlap —
-   as passing. One fix family: a `geom.clash` finding, a real clearance
-   bar in the test, then the bud placement offset and the large-lid seed.
-   First because the shipped example is wrong and Reto's showcase builds
-   (se `hexa-nanobud-pillar`, `hexa-nanobud-drum`) route around it.
-   **gr459812** belongs to the same family: a curved rim whose dangling
-   list winds against its outward normal seeds its seam mirrored. The C60
-   `cap(5,5)` and the DA/DB neck menus measure 4.5–6.5 Å. Flat washers
-   with `hex(r≥2)` holes had the same defect (14–28 Å) and are fixed:
-   `_winding_normal` now signs each flat rim from its winding.
-   - 2026-10-02: `geom.clash` built (WARN, `Profile.clash_A` 1.8 Å,
-     1-2 and 1-3 pairs excluded; `tests/hexfold/test_geom_clash.py`).
-     gr459595 (large lid) is fixed and closed; its repro is now a clean
-     case in that test. Still open: the `> 1.0 Å` bar in
-     `test_nanobud_menu_seed_has_no_stick_clash`, and the bud placement
-     offset (a construction change, so design review first).
-   - The check flags 12 of 21 shipped examples, not only buds:
-     `capped_tube` (0.91 Å inside the C60 cap), the DA/DB necks,
-     `sheet_pill_bump` (0.90), `flanged_doughnut` (591 pairs, 0.27 Å inside
-     its `bottom` washer, which e69a3b4e9 should have fixed), and
-     `tube_ring_closure` (0.49). Per-example table on gr459567. Triage per
-     case before fixing any of them; the cap and neck cases look like
-     gr459812.
+2. **gr459567 family: overlaps the clash check now reports.** The bud
+   placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
+   and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
+   are ERROR under 1.0 Å and WARN up to 1.8 Å. Measurements are in the
+   design note `reviews/hexfold-toolkit.md` and on the gripe. Still open,
+   in this order:
+   - **gr459812**: `capped_tube` (0.91 Å), `capped_tube_da_neck` (0.92)
+     and `sheet_pill_bump` (0.90) are ERROR examples. A curved rim seeds
+     its seam mirrored on the *fuse* path, the same symptom the menu path
+     had. Measure first whether it shares the menu path's cause (a
+     pairing that winds against the host normal). If it does, a tube
+     cannot just be reflected, because it is chiral.
+   - **gr462075**: `flanged_doughnut` (+`_oh`) is an ERROR example,
+     0.27 Å inside the `bottom` washer.
+   - **gr462074**: `tube_ring_closure` is an ERROR example, 0.49 Å.
+   - **The stick junction squeeze.** A [9-6]/[8-7] neck seeds at
+     1.57/1.78 Å and stick squeezes it to 1.19–1.53 Å, because its
+     repulsion (K_REP 0.1, cutoff 1.3σ) is weak against bonds at 1.0.
+     Adding non-ring angle springs made it worse (1.12 Å). Any change to
+     the repulsion moves every stick output, so it needs its own design
+     note. `test_nanobud_menu_seed_has_no_stick_clash` holds those menus
+     to 1.0 Å, not 1.8, until then (W2, partial).
+   - **A per-element-pair clash bar (W3).** Armchair-bay H–H measures
+     1.87 Å on `tube(8,8)` and 1.88 Å on `tube(10,5)` stick builds, 0.07
+     Å above the 1.8 bar. Zigzag and sheet edges give H–H of at least
+     2.46 Å and C–H of at least 2.52 Å. An H–H bar of about 1.5 Å would
+     keep a legitimate bay from tripping.
+   - **Not testable today:** the non-C60 refusal (`place.mirror_refused`)
+     and the second-host check (`place.inward`) have no test. The grammar
+     has only one fullerene, C60, and one menu per bud, so no spec reaches
+     either branch.
+   - The 2026-10-02 baseline before the fix (`check(geometry=True)`,
+     clash count / min Å): capped_tube 38/0.91 · capped_tube_da_neck
+     51/0.92 · flanged_doughnut(+_oh) 591/0.27 · nanobud_22 89/0.85 ·
+     nanobud_87 17/1.22 · nanobud_96 13/1.47 · nanobud_da_neck 12/1.16 ·
+     nanobud_db_neck 9/1.05 · sheet_bud_22 76/0.82 · sheet_pill_bump
+     32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
+     only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
+     14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
 3. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier

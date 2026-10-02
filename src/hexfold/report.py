@@ -111,6 +111,10 @@ class Profile:
     #: this.  Every clean stick build measured so far keeps them >= 2.0 A
     #: (the bud-less pillar, gr459567; the washer-closed drum, gr459595).
     clash_A: float = 1.8
+    #: below this a ``geom.clash`` is an ERROR: two atoms overlap.  Between
+    #: it and ``clash_A`` it is a WARN: a strained stick junction (a
+    #: [9-6]/[8-7] bud neck relaxes to 1.2-1.5 A, gr459567).
+    clash_error_A: float = 1.0
 
     DEFAULT: ClassVar[Profile]
     STRICT: ClassVar[Profile]

@@ -125,9 +125,15 @@ phase residual, `data.residual` of `data.period`) · `gen.stale` WARN
 ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 · `frag.unrealized` INFO ·
 `geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN ·
-`geom.clash` WARN (two non-bonded atoms under 1.8 Å in the stick
-geometry, both instances named — a bud sunk into its host; a clean check
-without it is not a clean geometry) ·
+`geom.clash` ERROR under 1.0 Å (overlapping atoms), WARN from 1.0 to
+1.8 Å (two non-bonded atoms in the stick geometry, both instances named;
+a clean check without it is not a clean geometry). Nanobud menus
+(`[9-6]`, `[8-7]`, `[2+2]`) seed the C60 outside its host. `[9-6]` and
+`[8-7]` keep WARN clashes of 1.2–1.5 Å at the junction neck. These
+shipped specs still overlap, are known, and are not yet fixed:
+`capped_tube`, `capped_tube_da_neck`, `sheet_pill_bump` (0.90–0.92 Å,
+curved rims seeded mirrored, gr459812), `tube_ring_closure` (0.49 Å,
+gr462074) and `flanged_doughnut` (0.27 Å inside a washer, gr462075). Their ERROR is real ·
 `annot.sublattice`/`annot.host_sublattices` INFO.
 
 ## Rim types (spec §10)

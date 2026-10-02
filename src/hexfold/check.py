@@ -345,12 +345,21 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
     inst = {a.ord: a.instance for a in net.atoms}
     clashes = _clash_pairs(coords, net.bonds, profile.clash_A)
     for d, i, j in clashes[:10]:
+        # two bands: under clash_error_A no reading of the pair is a
+        # geometry (overlapping atoms), between it and clash_A a squeezed
+        # but possible one (a strained stick junction)
+        overlap = d < profile.clash_error_A
         out.append(
             Finding(
                 "geom.clash",
-                Severity.WARN,
+                Severity.ERROR if overlap else Severity.WARN,
                 f"atoms {i} ({inst[i]}) and {j} ({inst[j]}) are {d:.2f} A apart "
-                f"and not bonded (bar {profile.clash_A:.2f} A)",
+                f"and not bonded (bar {profile.clash_A:.2f} A"
+                + (
+                    f", overlap under {profile.clash_error_A:.2f} A)"
+                    if overlap
+                    else ")"
+                ),
                 where=str(i),
                 data=(
                     ("atoms", [i, j]),

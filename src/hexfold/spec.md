@@ -619,7 +619,10 @@ no ERROR. No `__bool__`.
 | `gen.stale` `[spec 0.2]` | WARN | generated section's hash ≠ hash of the authored sections |
 | `frag.unrealized` | INFO | fragment referenced but not built (no rdkit) |
 | `geom.summary` | INFO | rms/max bond-length and angle deviation, `clash_count`/`clash_min` (geometry tier) |
-| `geom.clash` `[impl 0.2, 2026-10-02]` | WARN | two atoms neither bonded nor sharing a bonded neighbour sit closer than `Profile.clash_A` (1.8 Å) in the stick geometry; names both atoms and instances, ten worst listed (a bud sunk into its host, a crumpled lid — gr459567) |
+| `geom.clash` `[impl 0.2, 2026-10-02]` | ERROR / WARN | two atoms neither bonded nor sharing a bonded neighbour sit closer than `Profile.clash_A` (1.8 Å) in the stick geometry; ERROR under `Profile.clash_error_A` (1.0 Å, overlapping atoms), WARN between (a squeezed junction); names both atoms and instances, ten worst listed (a bud sunk into its host, a crumpled lid — gr459567) |
+| `place.mirrored` `[impl 0.2, 2026-10-02]` | INFO | a nanobud menu's C60 seed was reflected (in x, about its centroid) because the proper fit of its pairing seats it inside the host; C60 is achiral, so the molecule is unchanged |
+| `place.mirror_refused` `[impl 0.2, 2026-10-02]` | WARN | the same case for a cage not known to be achiral (anything but C60): not reflected, left seeded inside its host |
+| `place.inward` `[impl 0.2, 2026-10-02]` | WARN | after placement a cage still seeds inside one of its hosts (a cage bridging two hosts, decided off the first) |
 | `geom.bond.long` / `geom.bond.short` | WARN | bond deviates from σ beyond threshold |
 | `geom.angle.dev` | WARN | vertex angle deviates from its ideal — ring ideal for sp², 109.47° for sp³ (0.2 fix; 0.1 used the ring ideal at sp³ atoms too) |
 | `geom.join.angle` | INFO | fuse join angle ψ (derived) |

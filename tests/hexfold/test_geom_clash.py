@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from hexfold.check import _clash_pairs, check
+from hexfold.report import Profile, Severity
 
 _EX = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
 
@@ -30,15 +31,102 @@ def _clash(spec: str) -> tuple[list[dict], dict]:
     return clashes, summary
 
 
-def test_sunk_bud_reports_a_clash_naming_both_instances() -> None:
-    clashes, summary = _clash((_EX / "sheet_bud_22.hx").read_text(encoding="utf-8"))
-    assert clashes, "a [2+2] bud seeded into its host must not check clean"
+def test_squeezed_bud_neck_reports_a_warn_clash_naming_both_instances() -> None:
+    # a [9-6] neck squeezes to ~1.5 A under stick: a clash, not an overlap
+    r = check((_EX / "nanobud_96.hx").read_text(encoding="utf-8"), geometry=True)
+    found = [f for f in r.findings if f.code == "geom.clash"]
+    clashes = [dict(f.data) for f in found]
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    assert clashes
+    assert {f.severity for f in found} == {Severity.WARN}
     assert summary["clash_count"] >= len(clashes)
     assert len(clashes) <= 10  # capped like the other geom.* codes
-    assert summary["clash_min"] < 1.8
     assert {"b", "h"} in [set(c["instances"]) for c in clashes]
     worst = min(c["distance"] for c in clashes)
     assert worst == summary["clash_min"]
+
+
+def test_clash_under_the_overlap_bar_is_an_error() -> None:
+    spec = (_EX / "nanobud_96.hx").read_text(encoding="utf-8")
+    r = check(spec, geometry=True, profile=Profile(clash_error_A=1.6))
+    found = [f for f in r.findings if f.code == "geom.clash"]
+    by_sev = {
+        sev: [dict(f.data)["distance"] for f in found if f.severity == sev]
+        for sev in (Severity.ERROR, Severity.WARN)
+    }
+    assert by_sev[Severity.ERROR] and all(d < 1.6 for d in by_sev[Severity.ERROR])
+    assert all(d >= 1.6 for d in by_sev[Severity.WARN])
+
+
+# ---------- nanobud placement (gr459567 gap 3) ----------
+
+#: se design nanobud-review-figs' five blocks, verbatim (prod, 2026-10-02):
+#: before the placement fix they measured 0.62-0.85 A ([2+2] ball lying on
+#: the wall, [9-6]/[8-7] ball inside its tube or under its sheet)
+REVIEW_FIGS = {
+    "bud22": ("tube(8,8, len=12)", "h", "(6,0,A):0 [2+2]"),
+    "bud87": ("tube(8,8, len=12)", "h", "(6,0,A):0 [8-7]"),
+    "bud96": ("tube(8,8, len=12)", "h", "(6,0,A):0 [9-6]"),
+    "gsheet22": ("sheet(25A, 12)", "s", "(5,5,A):0 [2+2]"),
+    "gsheet96": ("sheet(25A, 12)", "s", "(5,5,A):0 [9-6]"),
+}
+
+
+def _fig(host: str, h: str, site: str, origin: str | None = None) -> str:
+    return (
+        f"hexfold 0.2\norigin {origin or h}\n{h}: {host}\n"
+        f"b: fullerene(C60)\nb @ {h}/{site}\n"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(REVIEW_FIGS))
+def test_review_figure_buds_do_not_overlap_their_host(name: str) -> None:
+    host, h, site = REVIEW_FIGS[name]
+    r = check(_fig(host, h, site), geometry=True)
+    errors = [
+        f for f in r.findings if f.code == "geom.clash" and f.severity == Severity.ERROR
+    ]
+    assert errors == []
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    if "[2+2]" in site:
+        # the cycloadduct leaves no squeezed neck
+        assert summary["clash_count"] == 0, summary["clash_min"]
+
+
+def _summary_and_place(spec: str) -> tuple[dict, set[str]]:
+    r = check(spec, geometry=True)
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    return summary, {f.code for f in r.findings if f.code.startswith("place.")}
+
+
+@pytest.mark.parametrize(
+    ("host", "h", "site"),
+    [
+        REVIEW_FIGS["bud22"],  # bond path, tube
+        REVIEW_FIGS["gsheet22"],  # bond path, sheet: seated edge-on if wrong
+        ("tube(8,8, len=12)", "h", "(1,0,A):0 [2+2]"),  # 12.9 of 14.1 A to the end
+        REVIEW_FIGS["bud96"],  # menu path
+    ],
+    ids=["bud22", "gsheet22", "tube_end_22", "bud96"],
+)
+def test_bud_placement_does_not_depend_on_the_bfs_origin(
+    host: str, h: str, site: str
+) -> None:
+    # with the bud as origin the host is the moved side: the bond path
+    # orients it by its own surface normal and the menu path reflects the
+    # bud's seed up front, so both roots give the same geometry
+    by_root = {o: _summary_and_place(_fig(host, h, site, o)) for o in (h, "b")}
+    (s_h, p_h), (s_b, p_b) = by_root[h], by_root["b"]
+    assert s_h["clash_count"] == s_b["clash_count"], by_root
+    assert p_h == p_b, by_root
+    assert s_b["clash_min"] is None or s_b["clash_min"] > Profile.DEFAULT.clash_error_A
+
+
+def test_mirrored_bud_is_reported() -> None:
+    _s, menu = _summary_and_place(_fig(*REVIEW_FIGS["bud96"]))
+    assert menu == {"place.mirrored"}
+    _s, bond = _summary_and_place(_fig(*REVIEW_FIGS["bud22"]))
+    assert bond == set()
 
 
 @pytest.mark.parametrize(
@@ -74,8 +162,6 @@ def test_clash_pairs_skip_bonded_and_shared_neighbour_pairs() -> None:
 
 
 def test_clash_bar_comes_from_the_profile() -> None:
-    from hexfold.report import Profile
-
     spec = (_EX / "sheet_bud_22.hx").read_text(encoding="utf-8")
     loose = check(spec, geometry=True, profile=Profile(clash_A=0.1))
     assert not [f for f in loose.findings if f.code == "geom.clash"]

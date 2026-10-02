@@ -30,7 +30,8 @@ import numpy as np
 import pytest
 
 from hexfold.build import Net, _flat_normals, build
-from hexfold.report import Severity
+from hexfold.check import _clash_pairs
+from hexfold.report import Profile, Severity
 from hexfold.stick import stick
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
@@ -165,28 +166,39 @@ def test_washer_seams_seed_short_for_every_hole_size(r: int) -> None:
     assert _crossing_lengths(net).max() < 3.0
 
 
-def test_nanobud_menu_seed_has_no_stick_clash() -> None:
-    """Item 1's six-point Kabsch fit places the bud's six attach atoms
-    close but the rest of the C60 ball still needs clearance from the
-    host tube's convex surface -- verified via ``stick()``: at zero
-    outward offset the closest non-bonded bud/host pair relaxed to 0.69 A
-    (a real clash); one sigma of clearance in the seed (see
-    :func:`hexfold.build._fuse_transform_kabsch`) relaxes to 1.22 A.
-    """
-    text = (_EXAMPLES / "nanobud_87.hx").read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("name", "clear_A"),
+    [
+        # [2+2]: the ball clears its host by a real margin
+        ("nanobud_22.hx", 1.6),
+        # [9-6]/[8-7]: the junction neck squeezes under stick to 1.2-1.5 A
+        # (a WARN, not an overlap); the seed itself clears 1.57/1.78 A
+        ("nanobud_96.hx", Profile.DEFAULT.clash_error_A),
+        ("nanobud_87.hx", Profile.DEFAULT.clash_error_A),
+    ],
+)
+def test_nanobud_menu_seed_has_no_stick_clash(name: str, clear_A: float) -> None:
+    """The C60 sits outside its host tube after ``stick()``, and no
+    non-bonded pair (1-2 and 1-3 excluded, as ``geom.clash``) overlaps.
+    This pinned ``> 1.0 A`` bud/host on nanobud_87 alone and passed while
+    every [9-6]/[8-7] ball sat *inside* its tube (centre 2.5 A from the
+    axis of a 6.8 A tube) and the [2+2] ball lay on the wall at 0.85 A
+    (gr459567)."""
+    text = (_EXAMPLES / name).read_text(encoding="utf-8")
     net = build(text, strict=False)
     pos = stick(net)
-    inst = [a.instance for a in net.atoms]
-    bonded = {(i, j) for i, j, _ in net.bonds} | {(j, i) for i, j, _ in net.bonds}
-    b_idx = [i for i, x in enumerate(inst) if x == "b"]
-    h_idx = [i for i, x in enumerate(inst) if x == "h"]
-    min_d = min(
-        float(np.linalg.norm(pos[i] - pos[j]))
-        for i in b_idx
-        for j in h_idx
-        if (i, j) not in bonded
-    )
-    assert min_d > 1.0, min_d
+    inst = np.array([a.instance for a in net.atoms])
+    host, ball = pos[inst == "h"], pos[inst == "b"]
+    c = host.mean(axis=0)
+    axis = np.linalg.svd(host - c)[2][0]
+    rel = host - c
+    host_r = float(np.linalg.norm(rel - np.outer(rel @ axis, axis), axis=1).mean())
+    bc = ball.mean(axis=0) - c
+    ball_r = float(np.linalg.norm(bc - (bc @ axis) * axis))
+    # the cage radius is 3.5 A: its centre clears the wall by most of it
+    assert ball_r > host_r + 2.5, (ball_r, host_r)
+    clashes = _clash_pairs(pos, net.bonds, Profile.DEFAULT.clash_A)
+    assert not clashes or clashes[0][0] > clear_A, clashes[:3]
 
 
 def test_flat_normals_threshold_is_absolute_not_relative() -> None:

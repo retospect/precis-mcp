@@ -2752,12 +2752,11 @@ def _fuse_transform_kabsch(
     target only moves Kabsch's translation term (the found rotation and
     the six residual point-to-point distances are unchanged), but it
     rigidly carries the *whole* bud instance -- not just its six bonded
-    atoms -- one sigma further from the host surface, which is what
-    actually closed the remaining bud/host non-bonded clash (0.80 A at
-    zero offset, >1.0 A at one sigma, on nanobud_87.hx): the bud's six
-    attach atoms get pulled back in by ``stick()``'s bond springs either
-    way, but the rest of the C60 ball needs the extra clearance to clear
-    the host tube's convex surface first.
+    atoms -- one sigma further from the host surface.  The offset size
+    does not decide the stick geometry: a 2 sigma offset measured within
+    0.1 A of 1 sigma after ``stick()`` on every bud example (gr459567).
+    Which side of the host the body lands on does: see
+    :func:`_kabsch_lands_inward`.
     """
     n = len(p_dang)
     _c_p, n_p = _frame(pos, p_dang, inst_c_p)
@@ -2773,22 +2772,102 @@ def _fuse_transform_kabsch(
     return r, t
 
 
+def _kabsch_lands_inward(
+    pos: np.ndarray,
+    p_dang: tuple[int, ...],
+    q_dang: tuple[int, ...],
+    k: int,
+    sigma: float,
+    inst_c_p: np.ndarray,
+    q_ords: list[int],
+) -> bool:
+    """Whether :func:`_fuse_transform_kabsch` seats instance Q's body on
+    the *inward* side of host P's attach site (behind P's rim normal).
+
+    A proper rotation fitted to a menu correspondence does that whenever
+    the two paired lists wind oppositely about the host normal: the only
+    det +1 fit is then the reflected placement (gr459812's mirror, on the
+    menu path).  Measured on nanobud_96.hx: the C60 centre seeded 2.5 A
+    from the axis of a 6.8 A-radius tube, so every [9-6]/[8-7] build sat
+    its ball inside its host (bud/host clash 0.62 A on a sheet).  The
+    caller reflects the fullerene's local seed in x about its centroid
+    when this holds: an achiral cage's mirror image is the same molecule
+    (same bonds, same lengths), and the reflected seed winds the other way.  It is decided once per
+    fullerene, before any edge transform is computed, so the result does
+    not depend on which side the BFS reaches first.
+    """
+    r, t = _fuse_transform_kabsch(pos, p_dang, q_dang, k, sigma, inst_c_p)
+    _c_p, n_p = _frame(pos, p_dang, inst_c_p)
+    host_c = pos[list(p_dang)].mean(axis=0)
+    qc = pos[q_ords].mean(axis=0)
+    return float((r @ qc + t - host_c) @ n_p) < 0.0
+
+
+def _surface_normal(
+    pos: np.ndarray, a_ord: int, a_nbrs: list[int], c_a: np.ndarray, sigma: float
+) -> np.ndarray:
+    """Unit normal to the surface at atom a: the least-variance axis of a
+    and its in-instance neighbours, signed away from the instance centroid
+    ``c_a``.  On a flat instance that sign is seed noise, so below
+    ``0.1 sigma`` it falls back to largest-component-positive
+    (deterministic; either face of a sheet is a valid side)."""
+    pts = pos[[a_ord, *a_nbrs]]
+    c = pts.mean(axis=0)
+    n = np.linalg.eigh((pts - c).T @ (pts - c))[1][:, 0]
+    s = float((pos[a_ord] - c_a) @ n)
+    if abs(s) < 0.1 * sigma:
+        s = float(n[int(np.argmax(np.abs(n)))])
+    return n if s > 0.0 else -n
+
+
 def _bond_transform(
     pos: np.ndarray,
     a_ord: int,
     b_ord: int,
     sigma: float,
+    c_a: np.ndarray,
+    c_b: np.ndarray,
+    a_nbrs: list[int],
+    b_nbrs: list[int],
+    partner: tuple[int, int] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """(R, t) placing instance B so atom b sits sigma outside atom a.
 
-    B's bulk lies on the far side: the b->B-centroid direction maps onto
-    the outward direction u = a - centroid(A)."""
-    c_a = pos.mean(axis=0)
-    u = pos[a_ord] - c_a
-    u = u / (np.linalg.norm(u) or 1.0)
-    b_centroid_off = pos.mean(axis=0) - pos[b_ord]
-    # rotate (b -> centroid B) onto +u so B's body sits beyond the bond
-    r = _rot_min(b_centroid_off / (np.linalg.norm(b_centroid_off) or 1.0), u)
+    u is A's surface normal at a (:func:`_surface_normal`); B's own
+    outward surface normal at b maps onto -u, so the two surfaces face
+    each other across the bond.  That is exact for a ball, a tube and a
+    sheet alike, whichever of the two is the moved side; the b ->
+    centroid(B) direction is not (from a C60 it is radial, from a tube's
+    attach atom away from mid-length it is mostly axial, and from a sheet
+    it lies in the plane).  With a
+    ``partner`` link (a2, b2) between the same two instances (a [2+2]
+    cycloaddition), B is then twisted about u so b -> b2 runs along
+    a -> a2, seating the second bond too.
+
+    ``c_a``/``c_b`` are the *instances'* centroids.  This used the
+    whole-net mean for both (the trap :func:`_frame`'s docstring names),
+    which bears no relation to either instance once several share the
+    seed array: every [2+2] bud seeded part-sunk into its host (tube(10,10)
+    + C60: ball centre 8.6 A from the axis where 11.7 A clears it; 89
+    bud/host pairs under 1.8 A after stick, min 0.85 A, gr459567).
+    """
+    u = _surface_normal(pos, a_ord, a_nbrs, c_a, sigma)
+    r = _rot_min(_surface_normal(pos, b_ord, b_nbrs, c_b, sigma), -u)
+    if partner is not None:
+        a2, b2 = partner
+        want = pos[a2] - pos[a_ord]
+        have = r @ (pos[b2] - pos[b_ord])
+        want = want - (want @ u) * u
+        have = have - (have @ u) * u
+        ang = math.atan2(float(np.cross(have, want) @ u), float(have @ want))
+        ux = np.array([[0.0, -u[2], u[1]], [u[2], 0.0, -u[0]], [-u[1], u[0], 0.0]])
+        twist = np.eye(3) + math.sin(ang) * ux + (1.0 - math.cos(ang)) * (ux @ ux)
+        r = twist @ r
+        # seat the bond pair's midpoints sigma apart, so the cage curvature
+        # splits between both bonds instead of stretching the second
+        mid_a = (pos[a_ord] + pos[a2]) / 2.0
+        mid_b = (pos[b_ord] + pos[b2]) / 2.0
+        return r, mid_a + sigma * u - r @ mid_b
     t = pos[a_ord] + sigma * u - r @ pos[b_ord]
     return r, t
 
@@ -2865,6 +2944,81 @@ def _place_seeds(
 
     inst_cent = {k_: pos[v].mean(axis=0) for k_, v in inst_ords.items()}
 
+    # A menu attach whose fit would seat the bud inside its host reflects
+    # the bud's local seed first (_kabsch_lands_inward), in x about its
+    # centroid.  Only C60 is reflected: it is achiral, so its mirror image
+    # is the same molecule.  A host tube's mirror is the other hand, and a
+    # cage not known to be achiral is refused with a finding rather than
+    # silently swapped for its enantiomer.  The decision is made once per
+    # cage, off its first menu frame; every frame is then re-checked, so
+    # a cage bridging two hosts that still lands inward on one is reported.
+    spec_inst = {inst.name: inst for inst in spec.instances}
+    menu_frames: list[tuple[str, str, tuple[int, ...], tuple[int, ...], int]] = []
+    for _pn, p_dang, _qn, q_dang, k, _real, kabsch in fuse_frames:
+        if not kabsch:
+            continue
+        ia, ib = inst_of[p_dang[0]], inst_of[q_dang[0]]
+        for host, bud, h_dang, b_dang in (
+            (ia, ib, p_dang, q_dang),
+            (ib, ia, q_dang, p_dang),
+        ):
+            b_inst, h_inst = spec_inst.get(bud), spec_inst.get(host)
+            if b_inst and h_inst and b_inst.kind == "fullerene" != h_inst.kind:
+                menu_frames.append((host, bud, h_dang, b_dang, k))
+                break
+
+    def _inward(frame: tuple[str, str, tuple[int, ...], tuple[int, ...], int]) -> bool:
+        host, bud, h_dang, b_dang, kk = frame
+        return _kabsch_lands_inward(
+            pos, h_dang, b_dang, kk, sigma, inst_cent[host], inst_ords[bud]
+        )
+
+    decided: set[str] = set()
+    for frame in menu_frames:
+        host, bud = frame[0], frame[1]
+        if bud in decided:
+            continue
+        decided.add(bud)
+        if not _inward(frame):
+            continue
+        b_inst = spec_inst[bud]
+        if dict(b_inst.params).get("0") != "C60":
+            findings.append(
+                Finding(
+                    "place.mirror_refused",
+                    Severity.WARN,
+                    f"{bud} seeds inside {host}; only an achiral C60 is "
+                    "reflected into place, so it is left inward",
+                    where=bud,
+                    span=b_inst.span,
+                )
+            )
+            continue
+        qc = inst_cent[bud]
+        pos[inst_ords[bud], 0] = 2.0 * qc[0] - pos[inst_ords[bud], 0]
+        findings.append(
+            Finding(
+                "place.mirrored",
+                Severity.INFO,
+                f"{bud}'s seed reflected so it sits outside {host} "
+                "(the menu pairing winds against the host normal)",
+                where=bud,
+                span=b_inst.span,
+            )
+        )
+    for frame in menu_frames:
+        host, bud = frame[0], frame[1]
+        if _inward(frame):
+            findings.append(
+                Finding(
+                    "place.inward",
+                    Severity.WARN,
+                    f"{bud} still seeds inside {host} after placement",
+                    where=bud,
+                    span=spec_inst[bud].span,
+                )
+            )
+
     edges: dict[str, list[tuple[str, np.ndarray, np.ndarray, bool]]] = {}
 
     def add(inst_a: str, inst_b: str, r: np.ndarray, t: np.ndarray, real: bool) -> None:
@@ -2912,13 +3066,41 @@ def _place_seeds(
         add(ia, ib, r, t, real)
         r2, t2 = _fuse_transform(pos, q_dang, p_dang, k, sigma, c_b, c_a, n_q, n_p)
         add(ib, ia, r2, t2, real)
+    same_nbrs: dict[int, list[int]] = {}
+    for i, j, _ in net.bonds:
+        if inst_of.get(i) is not None and inst_of.get(i) == inst_of.get(j):
+            same_nbrs.setdefault(i, []).append(j)
+            same_nbrs.setdefault(j, []).append(i)
+    links_between: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for ai, bi in bond_links:
+        links_between.setdefault((inst_of[ai], inst_of[bi]), []).append((ai, bi))
     for ai, bi in bond_links:
         ia, ib = inst_of[ai], inst_of[bi]
         if ia == ib:
             continue
-        r, t = _bond_transform(pos, ai, bi, sigma)
+        other = next(
+            (lk for lk in links_between[(ia, ib)] if lk[0] != ai and lk[1] != bi), None
+        )
+        c_a, c_b = inst_cent[ia], inst_cent[ib]
+        nb_a, nb_b = same_nbrs.get(ai, []), same_nbrs.get(bi, [])
+        if other is not None:
+            # a bond pair: fit each surface over both attach atoms' patches,
+            # so the normal sits square to the pair rather than tilted to a
+            nb_a = sorted(({other[0], *nb_a, *same_nbrs.get(other[0], [])}) - {ai})
+            nb_b = sorted(({other[1], *nb_b, *same_nbrs.get(other[1], [])}) - {bi})
+        r, t = _bond_transform(pos, ai, bi, sigma, c_a, c_b, nb_a, nb_b, other)
         add(ia, ib, r, t, True)
-        r2, t2 = _bond_transform(pos, bi, ai, sigma)
+        r2, t2 = _bond_transform(
+            pos,
+            bi,
+            ai,
+            sigma,
+            c_b,
+            c_a,
+            nb_b,
+            nb_a,
+            (other[1], other[0]) if other else None,
+        )
         add(ib, ia, r2, t2, True)
 
     origin = spec.origin or net.atoms[0].instance
