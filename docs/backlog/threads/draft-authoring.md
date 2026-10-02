@@ -29,12 +29,13 @@ citations with no warnings beyond the ten placeholders and 160 unsigned hubs;
    that chunk, carries the others' edges over, and skips edges whose stored
    meta is unchanged. The hub-mint cost (`put(kind='finding', supporters=)`
    94–182 s: ~10 serial MEDIUM dedup judges) is fixed by
-   `canon.judge_candidates` (concurrent judges). Next: after deploy, re-read
-   prod `tool_calls` text-write p50 on dr173020 and close the item if it
-   dropped to seconds.
-2. **`draft-hygiene-lints` § house-style lint** — built 2026-10-02
-   (`utils/house_style.py`; write hint + hygiene line). dr173020's 9 em-dashes
-   in 6 chunks will show in its hygiene view once deployed.
+   `canon.judge_candidates` (concurrent judges). Deployed in 567f207f
+   (15:05Z 2026-10-02): the first 2 text edits after it ran in 0.23 s and
+   0.26 s, against a 24 s p50 before. Round 2 (d9a4c6568) makes export run
+   a full link sync before its edge-reading gates and caps the judges at 4.
+   Next: re-read text-write latency at n≥20 and the first
+   `put(kind='finding', supporters=)` after the deploy (log in
+   `reviews/draft-authoring.8df403606.md`), then close the item.
 
 Hit, owned by another thread: `draft-authoring-graph-affordances`
 (graph-memory-consumers) — (b) chunk history and (c) "did my edit land" are
