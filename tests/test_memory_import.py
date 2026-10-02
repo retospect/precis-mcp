@@ -187,7 +187,9 @@ def test_graph_edit_between_runs_is_not_overwritten(
     ref_id = _nodes(store)["commit-style"]
     MemoryHandler(hub=hub).edit(id=ref_id, text="edited in the graph", title="Graph")
 
-    (mem / "commit-style.md").write_text("---\nname: x\n---\nfile changed\n", "utf-8")
+    (mem / "commit-style.md").write_text(
+        "---\nname: x\n---\nfile changed\n", encoding="utf-8"
+    )
     import_memory_dir(store, mem)
 
     ref = store.get_ref(kind="memory", id=ref_id)
