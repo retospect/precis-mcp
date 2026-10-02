@@ -347,7 +347,10 @@ done
 # All three steps run inside ONE `uv run` (gr462134): with UV_WITH set,
 # every `uv run --with` builds a fresh overlay env, so a heal in its own
 # `uv run` patched an env pytest never saw and plugin migrations (se)
-# silently went undiscovered.
+# silently went undiscovered. `-P` keeps `-m` from prepending the cwd
+# (/app) to sys.path, so imports resolve exactly as bare `pytest`'s did;
+# bare `pytest` itself would run the base venv's interpreter, not the
+# healed overlay.
 if [[ -n "$TESTMON_LOG" ]]; then
     # --impacted: stream to the terminal AND capture, so a post-run guard can
     # see the same text a human would tail (see the TESTMON_LOG comment
@@ -360,7 +363,7 @@ if [[ -n "$TESTMON_LOG" ]]; then
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
+        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "${TESTMON_MARKER_ARGS[@]+"${TESTMON_MARKER_ARGS[@]}"}" "$@" \
         2>&1 | tee "$TESTMON_LOG"
@@ -373,7 +376,7 @@ else
         "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" "${TESTMON_ENV[@]+"${TESTMON_ENV[@]}"}" \
         "${ARTIFACT_ENV[@]+"${ARTIFACT_ENV[@]}"}" \
         -v "${WORKTREE}":/app precis-dev \
-        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
+        bash -lc 'uv run --no-sync ${UV_WITH} bash -c "python3 scripts/lib/check-core-deps.py && python3 scripts/lib/check-entry-points.py --heal && exec python3 -P -m pytest -q --no-header --tb=short -p no:warnings \"\$@\"" _ "$@"' \
         _ "${NPROC[@]+"${NPROC[@]}"}" "${TESTMON_ARGS[@]+"${TESTMON_ARGS[@]}"}" \
         "${FAST_ARGS[@]+"${FAST_ARGS[@]}"}" "$@"
 fi
