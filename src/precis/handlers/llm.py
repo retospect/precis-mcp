@@ -39,7 +39,9 @@ class LlmHandler(NumericRefHandler):
             "(model_id, tier_floor, offerings, capability axes, provenance). Read "
             "with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', "
             "q='careful SQL'). The llm_reconcile pass mints + refreshes cards "
-            "against the live OpenRouter feed and flags drift. Never exported. "
+            "against the live OpenRouter feed and flags drift. "
+            "get(kind='llm', id='/placement') reports the local vs cloud share "
+            "of logged calls, routed vs landed, per tier and day. Never exported. "
             "See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
@@ -112,6 +114,11 @@ class LlmHandler(NumericRefHandler):
                 ref = self._ref_for(id)
                 return super().get(id=ref.id, view=view, q=q, **_kw)
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _list_view(self, view: str) -> Response | None:
+        if view == "placement":
+            return Response(body=self._render_placement())
+        return super()._list_view(view)
 
     # ── put: guarded funnel to the shared catalog writer ────────────
 
@@ -304,6 +311,69 @@ class LlmHandler(NumericRefHandler):
             for src, r in by_src:
                 err = f", err {r.error_rate:.0%}" if r.error_rate is not None else ""
                 lines.append(f"  {src}: {r.calls} calls, ${r.cost_usd:.4f}{err}")
+        return "\n".join(lines)
+
+    def _render_placement(
+        self, *, window_days: int = 7, source: str | None = None
+    ) -> str:
+        """``id='/placement'`` — local vs cloud share of logged LLM calls:
+        landed (``placement``) per tier and per UTC day, and the routed-vs-landed
+        split (``placement_routed``) where the row carries it."""
+        from precis.format import render_agent_table
+
+        def pct(n: int, d: int) -> str:
+            return f"{n / d:.1%}" if d else "—"
+
+        lines = [f"# llm placement — last {window_days}d"]
+        by_tier = llm_catalog.placement_share(
+            self.store, by="tier", window_days=window_days, source=source
+        )
+        if not by_tier:
+            lines.append("no llm_call_log rows in the window.")
+            return "\n".join(lines)
+        calls = sum(r.calls for r in by_tier)
+        local = sum(r.landed_local for r in by_tier)
+        known = sum(r.routed_known for r in by_tier)
+        lines.append(
+            f"landed local: {local}/{calls} ({pct(local, calls)}); routed recorded "
+            f"on {known}/{calls} — rows before migration 0179 count as landed only."
+        )
+        schema = [
+            "key",
+            "calls",
+            "landed_local",
+            "routed_local",
+            "kept_local",
+            "fell_to_cloud",
+            "billed_usd",
+        ]
+
+        def table(rows: list[llm_catalog.PlacementShareRow]) -> list[str]:
+            data = [
+                {
+                    "key": r.key,
+                    "calls": str(r.calls),
+                    "landed_local": f"{r.landed_local} ({pct(r.landed_local, r.calls)})",
+                    "routed_local": str(r.routed_local),
+                    "kept_local": pct(r.routed_local_kept, r.routed_local),
+                    "fell_to_cloud": str(r.routed_local - r.routed_local_kept),
+                    "billed_usd": f"{r.billed_usd:.2f}",
+                }
+                for r in rows
+            ]
+            return [render_agent_table(data, schema=schema)]
+
+        lines += ["", "## by tier", *table(by_tier)]
+        by_day = llm_catalog.placement_share(
+            self.store, by="day", window_days=window_days, source=source
+        )
+        lines += ["", "## by day (UTC)", *table(by_day)]
+        lines += [
+            "",
+            "kept_local = routed local AND landed local, over routed local. "
+            "fell_to_cloud = routed local, landed cloud (skip, busy slot, or "
+            "failover). billed_usd excludes rows landed local (priced, not spent).",
+        ]
         return "\n".join(lines)
 
     def _render_reviews(self, ref: Ref) -> str:

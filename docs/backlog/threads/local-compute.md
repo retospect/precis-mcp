@@ -14,9 +14,10 @@ then the big model on one spark, then the rungs that consume it.
 
 ## Do next
 
-1. **backlog/local-cloud-share-report.md** — Slice 2, the routed-vs-landed
-   view; Slice 1 (`placement_routed`, migration 0179) shipped 2026-10-02 and
-   fills from its deploy on. Everything below is judged by that number.
+1. **Local share is measurable**: `get(kind='llm', id='/placement')`
+   (routed vs landed, per tier and day). `placement_routed` (migration 0179)
+   fills only from the round-1 deploy on. Read the number before and after
+   each item below.
 2. **backlog/local-summarizer.md** — the first workload to go local again
    (~1.8M-chunk backlog, bulk and content-light); gated on
    `backlog/model-qualification.md`, measured by 1.

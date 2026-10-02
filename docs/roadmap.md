@@ -161,9 +161,9 @@ days to 2026-10-01 all went cloud (~$298). The tier ladder moved to cloud at
 every rung on 2026-08-15; the castor/pollux/spark LLM servers have been
 stopped since 2026-08-23, GPUs idle, DeepSeek-V4-Flash and Qwen3 weights
 staged on castor; the last local call was 2026-09-10 (the melchior
-summariser model). The share itself is unmeasured: `llm_call_log` records
-the routed `placement` but not where a call landed
-(`backlog/local-cloud-share-report.md` Slice 1 adds the column). No monitor
+summariser model). The share is measured by `get(kind='llm',
+id='/placement')`: landed (`placement`) and routed (`placement_routed`,
+migration 0179, recorded from the round-1 deploy on). No monitor
 answers "is capacity idle", and `backlog/cluster-scheduling.md` tears
 servers down when the backlog drains — the inverse of this pillar, now
 superseded by `backlog/graph-maintenance-queue.md`. The embedder is the
@@ -182,7 +182,8 @@ per-session DB roles). Dormant:
 nothing hits the ~28 calls/s ceiling at ~15 sessions).
 
 **Surfaces.** One console row answers busy or idle per tier
-(`backlog/local-cloud-share-report.md`, `backlog/graph-maintenance-queue.md`).
+(`get(kind='llm', id='/placement')` for the share;
+`backlog/graph-maintenance-queue.md` for busy-or-idle).
 
 ## Pillar 4 — personal integration (A, HELD)
 

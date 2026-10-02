@@ -38,8 +38,8 @@ eval's output as a standalone capability with no consumer.
 - Pin `placement='local'` for the `graph-maintenance-queue.md` lanes
   specifically — that item's whole premise is local-capacity consumption,
   so its calls should never silently fall back to cloud
-  (`local-cloud-share-report.md`'s routed-vs-landed gap is exactly the
-  failure mode to avoid here).
+  (the `fell_to_cloud` column of `get(kind='llm', id='/placement')` is
+  exactly the failure mode to avoid here).
 - `content-sensitivity-placement.md` as the precondition for routing
   anything proprietary through these new local rungs — sensitivity gating
   must exist before proprietary content is eligible for a local-only path

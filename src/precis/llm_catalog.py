@@ -486,6 +486,81 @@ def llm_tote_by_source(
     return [(r[0] or "?", _tote_row(r[1:])) for r in rows]
 
 
+# ── local vs cloud share (routed vs landed) ─────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementShareRow:
+    """One group of the local-vs-cloud report over ``llm_call_log``.
+
+    Landed = ``placement`` (the rung that ran, 0112; NULL counts as cloud,
+    the caps' fail-closed rule). Routed = ``placement_routed`` (0179); rows
+    without it (pre-0179, non-router writers) count in ``calls`` and the
+    landed share only — ``routed_known`` is the denominator of the split.
+    """
+
+    key: str
+    calls: int
+    landed_local: int
+    routed_known: int
+    routed_local: int
+    #: routed local AND landed local — ``routed_local - this`` fell back.
+    routed_local_kept: int
+    #: routed cloud but landed local (rare; a cloud rung 0 with a local fallback).
+    routed_cloud_landed_local: int
+    #: ``cost_usd`` summed over rows not landed local — money, not priced time.
+    billed_usd: float
+
+
+def placement_share(
+    store: Store,
+    *,
+    by: str = "tier",
+    window_days: int = 7,
+    source: str | None = None,
+) -> list[PlacementShareRow]:
+    """Routed-vs-landed local share, grouped ``by='tier'`` (busiest first) or
+    ``by='day'`` (UTC date, newest first), over the last ``window_days``.
+    ``source`` narrows to one ``llm_call_log.source``. A live query."""
+    if by == "tier":
+        key_sql, order = "COALESCE(tier, '?')", "count(*) DESC, 1"
+    elif by == "day":
+        key_sql, order = (
+            "to_char((ts AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD')",
+            "1 DESC",
+        )
+    else:
+        raise ValueError(f"placement_share by={by!r}: expected 'tier' or 'day'")
+    sql = (
+        f"SELECT {key_sql}, count(*), "
+        "count(*) FILTER (WHERE placement = 'local'), "
+        "count(*) FILTER (WHERE placement_routed IS NOT NULL), "
+        "count(*) FILTER (WHERE placement_routed = 'local'), "
+        "count(*) FILTER (WHERE placement_routed = 'local' AND placement = 'local'), "
+        "count(*) FILTER (WHERE placement_routed = 'cloud' AND placement = 'local'), "
+        "COALESCE(sum(cost_usd) FILTER (WHERE placement IS DISTINCT FROM 'local'), 0) "
+        "FROM llm_call_log "
+        "WHERE ts > now() - (%s * interval '1 day') "
+        "AND (%s::text IS NULL OR source = %s) "
+        f"GROUP BY 1 ORDER BY {order}"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (window_days, source, source)).fetchall()
+    return [
+        PlacementShareRow(
+            key=str(r[0]),
+            calls=int(r[1]),
+            landed_local=int(r[2]),
+            routed_known=int(r[3]),
+            routed_local=int(r[4]),
+            routed_local_kept=int(r[5]),
+            routed_cloud_landed_local=int(r[6]),
+            billed_usd=float(r[7]),
+        )
+        for r in rows
+    ]
+
+
 # ── observed-axis derivation (the operational "reasoning" signal) ───────
 
 #: Minimum realized calls before telemetry is trusted enough to set an ordinal.
@@ -1143,6 +1218,7 @@ __all__ = [
     "REVIEW_TYPES",
     "SERVED_BY_KEYS",
     "SERVED_BY_SOURCES",
+    "PlacementShareRow",
     "ToteRow",
     "append_review",
     "build_meta",
@@ -1150,6 +1226,7 @@ __all__ = [
     "list_reviews",
     "llm_tote",
     "llm_tote_by_source",
+    "placement_share",
     "record_benchmark",
     "record_eval",
     "record_observed_axes",

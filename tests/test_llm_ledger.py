@@ -224,3 +224,80 @@ class TestProvenanceTrust:
             > PROVENANCE_TRUST["measured-eval"]
             > PROVENANCE_TRUST["published-benchmark"]
         )
+
+
+class TestPlacementShare:
+    """`llm_call_log` local-vs-cloud report: landed (`placement`) and the
+    routed-vs-landed split (`placement_routed`, migration 0179)."""
+
+    @staticmethod
+    def _log(
+        store: Any,
+        source: str,
+        tier: str,
+        placement: str | None,
+        routed: str | None,
+        cost: float = 0.01,
+    ) -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO llm_call_log (source, tier, transport, model, "
+                "cost_usd, errored, placement, placement_routed) "
+                "VALUES (%s, %s, 'openai_tools', 'm', %s, false, %s, %s)",
+                (source, tier, cost, placement, routed),
+            )
+
+    def _seed(self, store: Any, source: str) -> None:
+        for _ in range(3):  # routed local, kept local
+            self._log(store, source, "small", "local", "local", cost=0.5)
+        self._log(store, source, "small", "cloud", "local")  # fell to cloud
+        self._log(store, source, "big", "cloud", "cloud", cost=0.25)
+        self._log(store, source, "big", None, None, cost=0.25)  # pre-0179 row
+
+    def test_by_tier_counts(self, store: Any) -> None:
+        from uuid import uuid4
+
+        from precis.llm_catalog import placement_share
+
+        src = f"placement-{uuid4().hex[:8]}"
+        self._seed(store, src)
+        rows = {r.key: r for r in placement_share(store, by="tier", source=src)}
+        small, big = rows["small"], rows["big"]
+        assert (small.calls, small.landed_local, small.routed_known) == (4, 3, 4)
+        assert (small.routed_local, small.routed_local_kept) == (4, 3)
+        assert small.billed_usd == pytest.approx(0.01)  # local rows are priced
+        assert (big.calls, big.landed_local, big.routed_known) == (2, 0, 1)
+        # NULL placement counts as billed (the caps' fail-closed rule).
+        assert big.billed_usd == pytest.approx(0.5)
+        assert list(rows) == ["small", "big"]  # busiest first
+
+    def test_by_day_and_bad_group(self, store: Any) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from precis.llm_catalog import placement_share
+
+        src = f"placement-{uuid4().hex[:8]}"
+        self._seed(store, src)
+        rows = placement_share(store, by="day", source=src)
+        assert len(rows) == 1 and rows[0].calls == 6
+        assert rows[0].key == datetime.now(UTC).date().isoformat()
+        with pytest.raises(ValueError):
+            placement_share(store, by="model")
+
+    def test_view_renders(self, store: Any) -> None:
+        from uuid import uuid4
+
+        src = f"placement-{uuid4().hex[:8]}"
+        self._seed(store, src)
+        body = _handler(store)._render_placement(source=src)
+        assert "landed local: 3/6 (50.0%)" in body
+        assert "routed recorded on 5/6" in body
+        assert "## by tier" in body and "## by day (UTC)" in body
+
+    def test_view_empty_and_path_dispatch(self, store: Any) -> None:
+        h = _handler(store)
+        assert "no llm_call_log rows" in h._render_placement(source="never-logged")
+        # The path view is reachable through get(); content depends on the
+        # shared DB, so only the header is pinned.
+        assert h.get(id="/placement").body.startswith("# llm placement")

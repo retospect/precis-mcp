@@ -56,6 +56,18 @@ band**: `observed-telemetry` (measured on your traffic) > `measured-eval` (your
 own golden sets) > `published-benchmark` (vendor numbers, low-trust). These
 never blend — a vendor MMLU score never outweighs a measured result.
 
+## How much LLM traffic runs locally
+
+```python
+get(kind="llm", id="/placement")
+```
+
+Last 7 days of `llm_call_log`, per tier and per UTC day: calls landed local
+(the rung that ran), and for rows that record it, calls routed local, the share
+kept local, and how many fell back to cloud (local rung skipped, slot busy, or
+failover). `billed_usd` leaves out calls that landed local, because their cost
+is a priced estimate, not money spent.
+
 ## Leave a note about how a model did
 ## Record that a model was great / weak at something
 
