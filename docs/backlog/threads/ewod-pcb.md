@@ -20,11 +20,12 @@ Do-next renumbered)
 
 ## Do next
 
-0. **backlog/pcb-silk-refdes-side-follows-part-rotation.md**: Reto's own
-   board (heater-base-test, 2026-10-02). Rot-180 0402 columns put their
-   refdes on the opposite side from R51, R23 differs again, and each label
-   breaks its neighbour's courtyard outline. The cause is in `silk.py`,
-   which this thread owns.
+0. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
+   board (heater-base-test, 2026-10-02). The rotation half is fixed: label
+   spots are now chosen in the board frame. Still open: a row or column of
+   identical parts gets no shared label side (R23), and in tight columns
+   the labels break the neighbouring courtyard outlines. Both are in
+   `silk.py`, which this thread owns.
 1. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
    canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid

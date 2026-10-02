@@ -30,10 +30,12 @@ already applies to copper.
    **Read from one side, at any part rotation.** Glyph orientation is
    pinned to 0 degrees regardless of the part's own rotation — a label
    never goes vertical or upside-down, so nobody ever turns the board to
-   read a refdes. Only the label's ANCHOR follows the part's rotation
-   (:func:`_place`, same as every other placed silk primitive here) —
-   where the label sits relative to its own footprint still tracks the
-   footprint, the letters themselves never do. Bottom-side text is still
+   read a refdes. The label's SPOT is chosen in the board frame too: every
+   candidate is keyed off the courtyard as placed (rotated and mirrored),
+   so "below" is below on the board at any rotation. A part-frame spot
+   with board-frame text put a rot-180 0402's label above it, overlapping
+   it, and labelled a 180-symmetric part differently at rot 0 and rot 180
+   (heater-base-test, 2026-10-02). Bottom-side text is still
    mirrored (``mirror=True`` into :func:`precis.pcb.stroke_font.layout_text`)
    because ``B.Silkscreen`` is viewed through the board — "one orientation
    per side" is the rule, not "bottom silk reads from the top".
@@ -313,9 +315,10 @@ def _refdes_candidates(
     n_rings: int, per_ring: int
 ) -> tuple[tuple[float, float, str, str, str], ...]:
     """Candidate refdes placements, tried in order, as ``(dx_units,
-    dy_units, h_align, v_align, label)`` in the INSTANCE's own local frame
-    — so a relocated label moves with the part's own rotation/mirror, not
-    with the board's absolute axes.
+    dy_units, h_align, v_align, label)`` in the BOARD frame, relative to the
+    part origin (module docstring, "Read from one side"). ``h_align`` is
+    for top-side text; :func:`build_silk` swaps left/right for mirrored
+    bottom-side glyphs.
 
     ``dx``/``dy`` are scaled by the courtyard's reach IN THAT DIRECTION
     plus a gap before use (:func:`_courtyard_support_mm`), and their
@@ -431,9 +434,9 @@ def _bottom_edge_candidates(
     constant for why it can't be exactly ON the line) puts the LOWEST ink
     of every glyph a stroke tolerance above that line, growing upward into
     the box — never past it, since ``height_mm`` is normally far smaller
-    than the courtyard. Local instance frame, same as :data:`_CANDIDATES`
-    — a relocated label still moves with the part's own rotation/mirror
-    through :func:`_place`, never the board's absolute axes. Empty for a
+    than the courtyard. ``box_local`` is the courtyard in the BOARD frame
+    relative to the part origin (already rotated/mirrored), same as
+    :data:`_CANDIDATES`, so "bottom" is the board's bottom. Empty for a
     pinless/courtyard-less instance — nothing to key a bottom edge off."""
     if not box_local:
         return ()
@@ -475,9 +478,8 @@ def _below_box_candidates(
 
     Tried after :func:`_bottom_edge_candidates`'s three and before
     :data:`_CANDIDATES`' radial ladder (see the call site in
-    :func:`build_silk`). Local instance frame, same as both — a relocated
-    label still moves with the part's own rotation/mirror through
-    :func:`_place`. Empty for a pinless/courtyard-less instance, same as
+    :func:`build_silk`). Board frame relative to the part origin, same as
+    both. Empty for a pinless/courtyard-less instance, same as
     :func:`_bottom_edge_candidates`."""
     if not box_local:
         return ()
@@ -2846,11 +2848,24 @@ def build_silk(
         # radial-ladder entries, the only group the tile-bleed reorder
         # below ever touches (both the over-box and below-box groups key
         # off this instance's OWN hull, never a neighbour's).
+        # Every spot is keyed off the courtyard as it sits ON THE BOARD
+        # (rotated and mirrored, but still relative to the part origin),
+        # not the part's own frame: the glyphs are laid out in the board
+        # frame (text_rot 0), so an anchor in the part frame put a rot-180
+        # 0402's "below" label above it, its v_align growing the text back
+        # over the part (heater-base-test, 2026-10-02). "Below" now means
+        # below on the board at every rotation, and a 180-symmetric part
+        # labels the same way at rot 0 and rot 180.
+        box_board = (
+            _place(box_local, cx=0.0, cy=0.0, rot=rot, mirror=mirror)
+            if box_local
+            else []
+        )
         raw_candidates: list[tuple[Point, str, str, str, bool]] = [
             (*cand, False)
             for cand in (
-                *_bottom_edge_candidates(box_local, stroke_width_mm),
-                *_below_box_candidates(box_local, stroke_width_mm),
+                *_bottom_edge_candidates(box_board, stroke_width_mm),
+                *_below_box_candidates(box_board, stroke_width_mm),
             )
         ]
         for du, dv, h_align, v_align, spot in _CANDIDATES:
@@ -2859,15 +2874,20 @@ def build_silk(
             # square courtyard this replaced pushed every label out by the
             # larger of the two (see `_courtyard_support_mm`).
             off = (
-                _courtyard_support_mm(box_local, du, dv) + gap
+                _courtyard_support_mm(box_board, du, dv) + gap
                 if (du, dv) != (0.0, 0.0)
                 else 0.0
             )
             raw_candidates.append(((du * off, dv * off), h_align, v_align, spot, True))
 
         scored: list[tuple[bool, Point, list[Point], str, str, str]] = []
-        for local_anchor, h_align, v_align, spot, is_ladder in raw_candidates:
-            (ax, ay) = _place([local_anchor], cx=cx, cy=cy, rot=rot, mirror=mirror)[0]
+        for board_offset, h_align, v_align, spot, is_ladder in raw_candidates:
+            ax, ay = cx + board_offset[0], cy + board_offset[1]
+            if mirror:
+                # Bottom-side glyphs mirror about the anchor, which flips
+                # which way a left/right-aligned label grows; swap so the
+                # text still extends the way the spot intends.
+                h_align = {"left": "right", "right": "left"}.get(h_align, h_align)
             corners = stroke_font.text_bbox_corners(
                 refdes,
                 anchor=(ax, ay),

@@ -1077,7 +1077,51 @@ def test_a_part_rotated_180_gets_upright_text_not_mirrored_text():
     )
 
 
-def test_bottom_side_text_still_mirrors():
+@pytest.mark.parametrize("side", ["top", "bottom"])
+@pytest.mark.parametrize("pair", [(0.0, 180.0), (90.0, 270.0)])
+def test_a_180_symmetric_part_labels_the_same_spot_at_rot_and_rot_plus_180(pair, side):
+    """heater-base-test (2026-10-02): R11/R12/R14/R19 (rot 180) had their
+    label on the other side from rot-0 parts, overlapping their own body,
+    because the spot was picked in the part's frame while the text grows in
+    the board frame. A 2-pad part is the same part at rot and rot+180, so
+    its label must land on exactly the same board spot."""
+
+    def segs(rot):
+        result = build_silk(
+            from_graph(
+                _graph("R1", 2, x=10.0, y=5.0, rot=rot), stackup=DEFAULT_STACKUP
+            ),
+            pads=[],
+            instance_sides={"R1": side},
+        )
+        return sorted(
+            (
+                round(s["start"][0], 4),
+                round(s["start"][1], 4),
+                round(s["end"][0], 4),
+                round(s["end"][1], 4),
+            )
+            for d in result.draws[side]
+            if d["role"] == "refdes"
+            for s in d["segments"]
+        )
+
+    a, b = segs(pair[0]), segs(pair[1])
+    assert a
+    assert a == b
+
+
+@pytest.mark.parametrize("rot", [0.0, 90.0, 180.0, 270.0])
+def test_a_below_label_hangs_below_the_part_on_the_board_at_any_rotation(rot):
+    """The bottom-edge/below-box spots mean the board's bottom: the label
+    of a lone part never rises above the part's own origin."""
+    result = build_silk(
+        from_graph(_graph("U1", 16, x=10.0, y=5.0, rot=rot), stackup=DEFAULT_STACKUP),
+        pads=[],
+    )
+    ys = [p[1] for s in _refdes_segments(result) for p in (s["start"], s["end"])]
+    assert ys
+    assert max(ys) < 5.0
     """ "Read from one side" means one orientation PER SIDE, not that
     bottom silk should read from the top: B.Silkscreen is viewed through
     the board, so its text is still mirrored in the file (unlike the
