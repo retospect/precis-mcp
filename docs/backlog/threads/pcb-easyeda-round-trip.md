@@ -16,16 +16,25 @@ Slice 1c is complete as of 2026-10-01: the copper measurement report and
 `--update` (re-import applying moves and new parts, reporting the rest).
 The whole write path (export) is unbuilt.
 **On prod since 2026-10-02:** the real board is imported as pcb
-`heater-base-test`, APWR/BPWR annotated (td458070 closed). Dogfooding it
-found gr460567 (courtyards built from synthesized pad sizes at real pad
-positions — 96 silk drops; pcb/ir.py + session.py, handed to ewod-pcb).
+`heater-base-test`, APWR/BPWR annotated (td458070 closed), all 89 nets
+unrouted. Dogfooding it found gr460567 (courtyards from synthesized pad
+sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones;
+closed). DRC still shows 4 annular-ring errors on the SATA connector's
+slot holes (imported as round, with a warning; no slot model yet —
+gr461213, Horizon 14).
+Its footprints predate EasyEDA-courtyard import, and `--update` does not
+refresh existing footprints (harmless today).
+**Trap:** `op='route'` runs the place anneal first and MOVES every
+unfrozen part; it re-placed 103 parts on this board once (restored with
+`import-epro --update` + `op='rip'` per net). Measure routing with the
+env-gated local real-board test, never `op='route'` on Reto's board.
 Collides with ewod-pcb on generator/DRC/realizer files:
 sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
-**Last reviewed:** 2026-09-30 (pillar review same day added
-pcb-keepout-does-not-bind and gr451356)
+**Last reviewed:** 2026-10-02 (handoff: everything landed is deployed;
+nothing uncommitted)
 **Worktree:** `pcb-easyeda-round-trip`
 
 ## Do next
@@ -121,6 +130,10 @@ export/fab if this file outgrows itself.
 13. **backlog/pcb-guided-place-route.md** slice 9 (JLCPCB ordering) — the
     workflow's endpoint; gated on a human granting Components/PCB scope in
     the JLCPCB Open API console.
+14. **gr461213** — slot holes: precis carries one drill diameter, so an
+    imported slot drills round at its long axis (Reto's SATA pads 23/24)
+    and DRC flags a ring the real slot has. Waits on nothing; fab-correctness
+    blocker before ordering that board.
 
 ## No action needed
 

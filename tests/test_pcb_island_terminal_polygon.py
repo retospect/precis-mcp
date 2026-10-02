@@ -301,13 +301,13 @@ def _ring_design() -> dict[str, Any]:
     }
 
 
-def _ring_seed(pcb) -> str:
-    pcb.put(id="ewod-ring-1", args=_ring_design())
+def _ring_seed(pcb, slug: str) -> str:
+    pcb.put(id=slug, args=_ring_design())
     pcb.store.part_footprint_put(
         _RING_LCSC,
         _ring_footprint(_RING_PINS, per_side=20, x_half=8.5, y_half=11.5),
     )
-    return "ewod-ring-1"
+    return slug
 
 
 @pytest.fixture
@@ -315,8 +315,11 @@ def pcb(store):
     return PcbHandler(hub=Hub(store=store))
 
 
-def _route_and_count(pcb, store) -> tuple[dict[str, str], int, int]:
-    slug = _ring_seed(pcb)
+def _route_and_count(pcb, store, slug: str) -> tuple[dict[str, str], int, int]:
+    # A fresh board per call: re-seeding an existing slug extends it, so a
+    # second arm would re-route the first arm's routed board and its
+    # re-place would start from the first arm's sink pose, not the seed's.
+    slug = _ring_seed(pcb, slug)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     resp = pcb.put(id=slug, args={"op": "route", "seed": 1})
@@ -374,9 +377,11 @@ def test_ring_sink_route_op_realizes_more_escape_nets_with_polygon_touch(
     symptom), the fix offers all of them (whether the router's own
     occupancy search then finds a path is independent, per (2) below)."""
     monkeypatch.setattr(pcb_connectivity, "_pad_poly", lambda pad: None)
-    before, before_pins, before_offered = _route_and_count(pcb, store)
+    before, before_pins, before_offered = _route_and_count(
+        pcb, store, "ewod-ring-circle"
+    )
     monkeypatch.undo()
-    after, after_pins, after_offered = _route_and_count(pcb, store)
+    after, after_pins, after_offered = _route_and_count(pcb, store, "ewod-ring-poly")
     assert after_pins == before_pins
     # Every electrode pin with fixed copper on its own net gets an island
     # terminal with the fix, whether its own escape direction is straight
