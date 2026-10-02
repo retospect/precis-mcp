@@ -1386,6 +1386,18 @@ def _run_fix_gripe(store: Store, ref_id: int, spec: Any) -> None:
         if outcome.status == "succeeded":
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
             _set_status(store, gripe_id, "in_review", conn=conn)
+        elif outcome.status == "already_fixed":
+            # gr454480: the agent verified the defect is already gone. The
+            # job did its work, so no failure bubble; the gripe goes to
+            # in_review for a human to confirm and close. Never reopen it —
+            # the groomer re-mints only STATUS:open gripes, so reopening is
+            # what made an already-fixed gripe loop. A gripe that went
+            # terminal meanwhile is left as it is.
+            from precis.workers.job_types.fix_gripe import _TERMINAL_GRIPE_STATUSES
+
+            _set_status(store, ref_id, _SUCCEEDED, conn=conn)
+            if _current_status(conn, gripe_id) not in _TERMINAL_GRIPE_STATUSES:
+                _set_status(store, gripe_id, "in_review", conn=conn)
         elif outcome.status == "skipped":
             # GLM/OpenRouter fleet-flip safety gate (backend=openai), the
             # container-unavailable fail-closed gate, or a gr451170

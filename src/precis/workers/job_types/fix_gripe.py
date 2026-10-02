@@ -372,7 +372,7 @@ class RunOutcome:
     """Result of one fix_gripe attempt — what the executor needs to
     transition status and write the summary."""
 
-    status: str  # "succeeded" | "failed" | "skipped"
+    status: str  # "succeeded" | "failed" | "skipped" | "already_fixed"
     summary_text: str
     gripe_comment_text: str
     branch: str | None
@@ -630,7 +630,7 @@ def run(
     base_sha = _git_rev_parse(clone_dir, "origin/main")
 
     try:
-        _spawn_claude(cfg, clone_dir, prompt)
+        agent_result = _spawn_claude(cfg, clone_dir, prompt)
     except ValueError as exc:
         # Mount/workdir validation (containerize_claude_argv, agent_container)
         # raises ValueError on a bad Mount/workdir shape — a config bug, not a
@@ -730,6 +730,28 @@ def run(
             _git_err(exc),
         )
     if branch_sha is None or branch_sha == base_sha:
+        # gr454480: no commit because the defect is already gone is a
+        # finished job, not a failed one — failing it reopened the gripe and
+        # burned an unpark attempt per re-mint until the leaf parked.
+        evidence = _already_fixed_evidence(agent_result)
+        if evidence is not None:
+            return RunOutcome(
+                status="already_fixed",
+                summary_text=(
+                    f"fix_gripe job:{job_id} for gripe:{gripe_id}: the agent "
+                    f"found the defect already fixed and made no commits. "
+                    f"Took {wall:.1f}s. Evidence: {evidence}"
+                ),
+                gripe_comment_text=(
+                    f"[worker:job:{job_id}] no fix needed — the agent reports "
+                    f"this is already fixed on main: {evidence}\n"
+                    "Moved to in_review: verify the claim, then close the "
+                    "gripe (or reopen it if the defect is still there)."
+                ),
+                branch=branch,
+                sha=None,
+                wall_seconds=wall,
+            )
         return RunOutcome(
             status="failed",
             summary_text=(
@@ -926,7 +948,45 @@ def _compose_prompt(
         "'fix(area): what changed'), no body."
     )
     lines.append("- Do NOT touch main. Do NOT switch branches.")
+    lines.append(
+        "- If the bug is already fixed on this branch (you checked the code "
+        "and the defect is no longer there), make NO commits and end your "
+        f"final message with one line: '{ALREADY_FIXED_MARKER} <the commit, "
+        "or file and function, that shows the fix>'. Use it only when you "
+        "verified the fix is present, never because you could not fix it."
+    )
     return "\n".join(lines)
+
+
+#: The line a fix agent ends on when it made no commit because the defect is
+#: already gone (gr454480) — see :func:`_already_fixed_evidence`.
+ALREADY_FIXED_MARKER = "ALREADY FIXED:"
+_EVIDENCE_MAX = 500
+
+
+def _already_fixed_evidence(agent_result: Any) -> str | None:
+    """The agent's evidence when its final message's last non-blank line is
+    :data:`ALREADY_FIXED_MARKER` ``<evidence>``, else ``None``.
+
+    Honoured only on a clean finish: a run cut off by ``max_turns`` or the
+    budget (``terminal_reason`` set) never got to verify anything, whatever
+    it said along the way. The evidence is agent-written text headed for a
+    gripe comment, so it is capped at :data:`_EVIDENCE_MAX` characters.
+    """
+    if getattr(agent_result, "terminal_reason", None) is not None:
+        return None
+    text = getattr(agent_result, "final_text", None)
+    if not isinstance(text, str):
+        return None
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines or not lines[-1].startswith(ALREADY_FIXED_MARKER):
+        return None
+    evidence = lines[-1][len(ALREADY_FIXED_MARKER) :].strip()
+    if not evidence:
+        return None
+    if len(evidence) > _EVIDENCE_MAX:
+        evidence = evidence[: _EVIDENCE_MAX - 1].rstrip() + "…"
+    return evidence
 
 
 # ── Subprocess + git plumbing ─────────────────────────────────────

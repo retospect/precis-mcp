@@ -10,6 +10,7 @@ Helpers:
 
 - :meth:`record_heartbeat` — UPSERT one host's snapshot into
   ``host_heartbeat``.
+- :meth:`record_nas_attestation` — UPDATE-only per-process NAS attestation.
 - :meth:`recent_heartbeats` — read all snapshots, ordered by host.
   Used by db-backed tests and any future ``precis status`` CLI; the
   web layer reads the same table via raw SQL so its fake-store tests
@@ -85,7 +86,7 @@ class HeartbeatMixin:
 
         Re-running for the same ``host`` overwrites the previous row
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
-        always measured from the most recent report — EXCEPT two keys
+        always measured from the most recent report — EXCEPT three keys
         that are nested-merged instead of replaced, because a host can run
         more than one worker process (melchior runs both ``system`` and
         ``agent``), each advertising its own per-process entry under the
@@ -99,7 +100,10 @@ class HeartbeatMixin:
           process's live pass/idle snapshot, published by the ``Now``
           Status sub-tab.
 
-        Both merge new-wins-per-process-key (old ∪ new, new overrides on a
+        - ``meta.nas_ok_by_process`` (gr248866) — each process's own NAS
+          readability attestation.
+
+        All merge new-wins-per-process-key (old ∪ new, new overrides on a
         shared key), keeping every live process's own entry visible
         regardless of write order.
         """
@@ -116,7 +120,10 @@ class HeartbeatMixin:
             "    || COALESCE(EXCLUDED.meta->'boot_ids', '{}'::jsonb),"
             "  'activity',"
             "  COALESCE(host_heartbeat.meta->'activity', '{}'::jsonb)"
-            "    || COALESCE(EXCLUDED.meta->'activity', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'activity', '{}'::jsonb),"
+            "  'nas_ok_by_process',"
+            "  COALESCE(host_heartbeat.meta->'nas_ok_by_process', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'nas_ok_by_process', '{}'::jsonb)"
             ")"
         )
         params = (
@@ -133,6 +140,29 @@ class HeartbeatMixin:
             with self.pool.connection() as c:
                 with c.transaction():
                     c.execute(sql, params)
+
+    def record_nas_attestation(
+        self, host: str, process: str, entry: dict[str, Any]
+    ) -> bool:
+        """Merge one process's NAS attestation into
+        ``meta.nas_ok_by_process[process]`` (gr248866).
+
+        UPDATE-only and does NOT bump ``ts``: this is not a liveness beat,
+        and a process must never mint a heartbeat row (that would fake
+        liveness and make host-dark track a host by accident). Returns
+        whether a row was updated (False = this host has no heartbeat row).
+        """
+        sql = (
+            "UPDATE host_heartbeat SET meta = COALESCE(meta, '{}'::jsonb) "
+            "|| jsonb_build_object('nas_ok_by_process', "
+            "  COALESCE(meta->'nas_ok_by_process', '{}'::jsonb) "
+            "  || jsonb_build_object(%s::text, %s::jsonb)) "
+            "WHERE host = %s"
+        )
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                cur = conn.execute(sql, (process, Jsonb(entry), host))
+                return bool(cur.rowcount)
 
     def recent_heartbeats(self) -> list[HostHeartbeat]:
         """Return every host's latest snapshot, ordered by host name."""

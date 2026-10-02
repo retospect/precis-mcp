@@ -108,6 +108,12 @@ search(kind="job", link="gripe:42")
 Or look at the gripe — it transitions to `STATUS:in_review`
 once a fix has landed on main (landed, not yet verified).
 
+An agent that finds the defect already gone makes no commit and
+ends on an `ALREADY FIXED: <evidence>` line. The job then succeeds
+with nothing landed, and the gripe goes to `STATUS:in_review` with
+the evidence as a comment — verify it and close. This holds only on
+a clean finish; an agent cut off by `max_turns` still fails.
+
 ## Where does the fix land?
 ## How do I see the fix?
 

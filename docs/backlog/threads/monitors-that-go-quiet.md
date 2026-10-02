@@ -10,31 +10,36 @@ itself to a table the sweeper prunes. Two more landed the same day: a CLI that
 exited 0 while printing a refusal now exits 3 on stderr, and the fix_gripe lane
 stopped reporting deliveries it had not made — a fix branch counts as delivered
 only once `git ls-remote` finds it on the repo's real upstream, which the lane
-had never once reached. What remains is one signal that lies by omission (a
-worker host no detector can see) and the tail of the stranded fix branches
-(19 landed 2026-10-01; eight salvage items left, each owned by a thread). The last held decision closed 2026-09-30: `ship --quick`
+had never once reached. On 2026-10-02 the NAS probe stopped attesting only its
+own interpreter: each NAS-touching process now attests itself (gr248866, built,
+awaiting deploy). What remains is one signal that lies by omission, a worker
+host no detector can see. The last held decision closed 2026-09-30: `ship --quick`
 warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 "a day or two", and never refuses on an age it could not look up. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **This thread's three stranded-branch salvage items** — gr452203
-   (Do-next 4 below), gr454480 (Parked, the lane) and gr248866 (does a child
-   process inherit the heartbeat's macOS TCC grant? if not, the probe is a
-   false green). The stranded-branch work itself is finished and deployed
-   (2026-10-01/02): 19 keepers landed incl. `gripe_182230` as migration 0175,
-   all 43 node branches deleted, scratch clones gone. Each salvage branch's
-   code is only in the bundle — location and per-item notes in
-   **backlog/stranded-fix-gripe-branches.md**; the other five salvage items
-   belong to other threads and are named there. Reto's open call on the
-   reconcile-sweep design (gripe_180306) is td461151.
+1. **Verify gr248866 after deploy.** Each long-running NAS-touching process
+   now lists `/opt/nas` on boot and every
+   `PRECIS_NAS_ATTEST_INTERVAL_SECONDS` (600) and writes
+   `host_heartbeat.meta.nas_ok_by_process[<process>]` with its own resolved
+   `exe`. The writers are web (lifespan), `precis serve` (`main`), and the
+   worker/heartbeat (`_collect_and_upsert`). `_detect_nas_denied` alerts per
+   (host, process) on a fresh (30 min) `ok=false` entry. The legacy top-level
+   `nas_ok` check remains only for rows with no attestations. Check: after
+   the deploy, every Mac's row carries `precis-web`/worker keys with recent
+   `ts` and `ok=true`. Three known gaps are recorded on the gripe (comment 7)
+   and in `precis.workers.heartbeat`'s docstring: one-shot timer
+   interpreters never attest, caspar has no row to land on, and stdio serves
+   share one key. Reto's open call on the reconcile-sweep design
+   (gripe_180306) is td461151.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
@@ -42,35 +47,6 @@ gr346534, soft-deleted)
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
-3. **gr458459** — backlog-lint has told every session in the fleet to
-   delete open specs for at least two days and the count is growing 2→5;
-   4 of 5 current hits are false and the tool's own footer says so without
-   gating the advice. An advisory with this a false-positive rate trains
-   the fleet to ignore the channel the one genuine hit arrives on.
-4. **gr452203** — doctor asks never dedup: 161 open `waiting-for:reto`
-   todos, 161 unique keys, `seen_count=1` on every one, because the dedup
-   key hashes the model's re-authored prose instead of the referenced
-   gripe/alert handle. Rebuilds at ~20 rows/day without a fix.
-   The stranded `gripe_452203` tried this and is salvage only: its dedup
-   still misses the gripe's own example.
-5. **gr452084** — the nursery kind-shrinkage detector fired 12 critical
-   alerts on its first pass and 0 were real (stale-boot comparisons, a
-   deliberately retired kind, env-gated kinds). Net-negative for this
-   thread's own "unremarkable doctor report" goal until fixed.
-   Only its defect 4 (the unbounded `kind_provider` table) landed
-   2026-10-01, from the stranded branch; the false criticals are still open.
-6. **Verify the structural reviewer gets its tools** (gr245505, closed). On
-   10+ runs from 2026-09-19 it finished its one turn while
-   `mcp init: precis=pending`, making zero tool calls. Two fixes deployed
-   in 81154bc0. The first is the root fix: `claude -p` runs get
-   `CLAUDE_CODE_MCP_STARTUP_WAIT_MS=30000`
-   (`claude_agent._prepare_agent_env` and the container executor's env).
-   It needs CLI 2.1.274 or later; melchior has 2.1.285. The second is a
-   retry-once in `review.py`, the backstop. Check: the first structural
-   review after that deploy makes more than 0 tool calls. A fresh
-   `structural:tool-starved` alert reading `precis=pending` means the wait
-   is not taking effect; reopen gr245505 with that alert's detail. The three
-   duplicate Reto asks (td459083, td456036, td454135) are done.
 
 ## Horizon
 
@@ -99,9 +75,10 @@ gr346534, soft-deleted)
 
 ## Parked
 
-- **the fix_gripe self-repair lane** (**gr454480**, **gr458326**,
-  **gr452384**, **gr456240**) — failing at every stage: a clean exit with
-  no commits counted as a failure, "pushed to origin" claimed and never
+- **the fix_gripe self-repair lane** (**gr458326**, **gr452384**,
+  **gr456240**) — failing at every stage: a clean exit with
+  no commits counted as a failure (gr454480, fixed 2026-10-02 — see No
+  action needed), "pushed to origin" claimed and never
   verified (43 branches stranded on the worker node, never reaching
   origin), a hard `max_turns=20` ceiling with no escalation on complex
   fixes, and infra-class failures (API rate limits, container
@@ -114,8 +91,7 @@ gr346534, soft-deleted)
   with a non-force (fast-forward CAS) push, the `scripts/ship` protocol. Still
   inert until melchior's fix checkout holds a push credential — operator
   steps are on gr458326; until then every job skips at the dry run as before. gr456240's infra-failure classification landed 2026-10-01 from its stranded
-  branch; gr454480's branch is salvage only — an already-fixed run reopens the
-  gripe, so it can loop. Side effect to watch: the reset of the 39 parked gripes to
+  branch. Side effect to watch: the reset of the 39 parked gripes to
   `open` re-surfaced at least one already-fixed gripe as current
   (gr458087 — the STRtree fix it proposed is in `check_via_pad_keepout`
   and cites it; ewod-pcb re-measured 2026-09-30 and queued the close for
@@ -123,6 +99,33 @@ gr346534, soft-deleted)
   asked before it is ranked.
 
 ## No action needed
+
+- **gr245505** — verified on prod 2026-10-02. After the 81154bc0 deploy
+  (cut 2026-10-01 23:14Z), the 2 structural reviews took 4 and 11 turns
+  (`llm_call_log`, `source='review:structural'`), and no
+  `review:tool-starved:structural` alert has fired. In the 7 days before
+  the deploy, 7 of 29 runs were single-turn starves. The last pre-deploy
+  alert (459405) read `precis=pending`, but its text head was a usage-limit
+  message, so the usage cap may have caused that one. Tool-call counts are
+  not persisted; `turns_used` is the proxy.
+
+- **gr454480** — fixed 2026-10-02, pending close. A fix agent that makes no
+  commit because the defect is already gone now ends on an
+  `ALREADY FIXED: <evidence>` line; `fix_gripe.run` returns `already_fixed`,
+  and the executor marks the job succeeded and moves the gripe to
+  `in_review` with the evidence in a comment — no failure bubble, no
+  reopen. The groomer only mints for `STATUS:open` gripes, so this cannot
+  loop the way the stranded branch did. The line is honoured only on a
+  clean finish (no `terminal_reason`), so an agent cut off by `max_turns`
+  still fails.
+- **gr458459, gr452203, gr452084** — shipped by sibling sessions
+  2026-10-01 and deployed (in `origin/prod`). backlog-lint gates on
+  front-matter `status:` and names its evidence (1977b48b8); doctor asks
+  dedup on the gripe/alert/commit handles a bullet names (52a6ed3ed) — prod
+  2026-10-02: 50 open asks, down from 161, with `seen_count=2` on the first
+  re-asks; the kind-shrinkage detector has its recency anchor and registry
+  cross-check (`_detect_kind_shrinkage`) — prod: 0 kind-shrinkage alerts
+  since 2026-10-01.
 
 - **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
   inertness is no longer a code-reading claim. Four real runs

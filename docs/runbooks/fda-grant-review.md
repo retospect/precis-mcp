@@ -27,11 +27,16 @@ builds; it cannot recur on python.org's Developer-ID-signed ones.
 Two guards exist; this runbook is the **second**:
 
 1. **Real-time backstop** — the nursery `nas-denied` detector
-   (`_detect_nas_denied`, `src/precis/workers/nursery.py`). The `precis
-   heartbeat` reporter probes `/opt/nas` from its own launchd context each tick
-   and records `host_heartbeat.meta.nas_ok`; a fresh `false` raises a
-   **critical** alert per host (auto-resolves when it flips back). Catches an
-   *actual* lockout in minutes.
+   (`_detect_nas_denied`, `src/precis/workers/nursery.py`). Each long-running
+   NAS-touching process (web, `precis serve`, worker/heartbeat) lists
+   `/opt/nas` itself on boot and every 10 min, and records
+   `host_heartbeat.meta.nas_ok_by_process[<process>]`, including its resolved
+   `exe`. It has to be the process itself because a subprocess inherits its
+   parent's TCC attribution. A fresh `ok=false` raises a **critical** alert per
+   (host, process) naming the binary to re-grant; the alert auto-resolves
+   when the entry flips back. Catches an *actual* lockout within minutes. It
+   does not cover one-shot timer interpreters, or caspar, which has no
+   heartbeat row (gr248866).
 2. **Proactive drift audit (this pass)** — a slow monthly check that the
    *currently-resolved* daemon interpreters on each Mac are still on
    python.org (Developer-ID signed) and still **granted**, catching drift (a
@@ -63,8 +68,8 @@ For each macOS host, three checks:
       `TeamIdentifier=` line that is not `not set`.
   (b) **Grants are present** — each resolved path shows up in
       `kTCCServiceSystemPolicyAllFiles` with `auth_value = 2`.
-  (c) **Heartbeat is healthy** — `host_heartbeat.meta.nas_ok = true` for the
-      host.
+  (c) **Heartbeat is healthy** — every `host_heartbeat.meta.nas_ok_by_process`
+      entry for the host has `ok = true` and a recent `ts`.
 
 ```bash
 for v in /opt/precis/venv/bin/python3 /opt/precis/embedder-venv/bin/python3 \
@@ -80,7 +85,7 @@ sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
 ```
 
 ```bash
-scripts/prod-psql "SELECT host, meta->>'nas_ok' AS nas_ok FROM host_heartbeat;"
+scripts/prod-psql "SELECT h.host, e.key AS process, e.value->>'ok' AS ok, e.value->>'exe' AS exe, e.value->>'ts' AS ts FROM host_heartbeat h, jsonb_each(COALESCE(h.meta->'nas_ok_by_process','{}')) e ORDER BY 1,2;"
 ```
 
 ### Remediate any drift

@@ -20,7 +20,7 @@ on Reto's Mac) is the only copy now and the source for every branch below.
 
 ## Left
 
-1. **Salvage (8)** — lift the idea, redo by hand, in the owning thread:
+1. **Salvage (8, 2 done)** — lift the idea, redo by hand, in the owning thread:
    - ewod-pcb / pcb-easyeda-round-trip: `gripe_451276` (the router still
      treats a pin's second pad as a foreign obstacle), `gripe_451356`
      (substring package match false-flags; where mating direction comes from
@@ -31,11 +31,11 @@ on Reto's Mac) is the only copy now and the source for every branch below.
      fans out ~914 refs on its first pass).
    - se-3d-viewer: `gripe_458084` (counter, prev/next links and banner stay on
      the loaded revision after an in-place step).
-   - monitors-that-go-quiet: `gripe_452203` (the dedup still misses the
-     gripe's own example), `gripe_454480` (an already-fixed run reopens the
-     gripe, so it can loop), `gripe_248866` (unverified whether a child
-     process inherits the heartbeat's macOS TCC grant, which would make the
-     probe a false green; the interpreter list duplicates deploy's).
+   - monitors-that-go-quiet: `gripe_248866` (a child process inherits the
+     heartbeat's macOS TCC grant — answered in the gripe's comment 2 — so
+     its subprocess probe is a false green; the interpreter list duplicates
+     deploy's). `gripe_452203` and `gripe_454480` are done: both were
+     redone by hand on main (52a6ed3ed, and gr454480 on 2026-10-02).
 2. **Optional (2)** — `gripe_180306` (hub reconcile sweep: a feature, one LLM
    call per candidate pair; the reported pair is already merged; a cheaper
    design is waiting on Reto under knowledge-mesh), `gripe_451269` (one docs

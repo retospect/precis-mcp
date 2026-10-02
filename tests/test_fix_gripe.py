@@ -1126,6 +1126,77 @@ class TestRunExceptionMapping:
         assert outcome.status == "failed"
         assert "made no commits" in outcome.summary_text
 
+    def test_no_commit_with_already_fixed_line_maps_to_already_fixed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """gr454480: no commit because the defect is gone is not a failure."""
+
+        def _verified(*_a: object, **_k: object) -> object:
+            return _FakeAgentResult(
+                "Checked nursery.py.\n\nALREADY FIXED: 52a6ed3ed _ask_refs\n"
+            )
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _verified)
+        assert outcome.status == "already_fixed"
+        assert "52a6ed3ed _ask_refs" in outcome.gripe_comment_text
+        assert outcome.sha is None
+
+    def test_already_fixed_line_after_exhaustion_is_still_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A run cut off by max_turns never verified anything, whatever it
+        said along the way."""
+
+        def _cut_off(*_a: object, **_k: object) -> object:
+            return _FakeAgentResult(
+                "ALREADY FIXED: probably abc1234", terminal_reason="max_turns"
+            )
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _cut_off)
+        assert outcome.status == "failed"
+
+
+@dataclass(frozen=True)
+class _FakeAgentResult:
+    final_text: str
+    terminal_reason: str | None = None
+
+
+@pytest.mark.parametrize(
+    ("text", "terminal_reason", "expected"),
+    [
+        ("done.\nALREADY FIXED: abc1234 in foo.py", None, "abc1234 in foo.py"),
+        ("ALREADY FIXED: abc1234\n\n  \n", None, "abc1234"),
+        # Not the last line: the agent went on to say something else.
+        ("ALREADY FIXED: abc1234\nactually no, still broken", None, None),
+        ("ALREADY FIXED:   ", None, None),
+        ("could not fix it", None, None),
+        ("ALREADY FIXED: abc1234", "max_turns", None),
+    ],
+)
+def test_already_fixed_evidence(
+    text: str, terminal_reason: str | None, expected: str | None
+) -> None:
+    result = _FakeAgentResult(text, terminal_reason)
+    assert fix_gripe._already_fixed_evidence(result) == expected
+
+
+def test_already_fixed_evidence_tolerates_a_bare_result() -> None:
+    assert fix_gripe._already_fixed_evidence(object()) is None
+    assert fix_gripe._already_fixed_evidence(None) is None
+
+
+def test_already_fixed_evidence_is_capped() -> None:
+    got = fix_gripe._already_fixed_evidence(
+        _FakeAgentResult("ALREADY FIXED: " + "x" * 2000)
+    )
+    assert got is not None and len(got) == fix_gripe._EVIDENCE_MAX
+
+
+def test_prompt_names_the_already_fixed_marker() -> None:
+    prompt = fix_gripe._compose_prompt(ref_title="t", blocks=[_FakeBlock("body")])
+    assert fix_gripe.ALREADY_FIXED_MARKER in prompt
+
 
 # ── run(): a resolved gripe skips clean (gr451170 fix 1) ───────────
 #
@@ -1925,3 +1996,46 @@ def test_run_fix_gripe_content_failure_leaves_retry_after_unstamped(
     assert meta.get("failure_class") != "transient"
     # The failure still bubbles — it's a real attempt against the cap.
     assert any("child-failed:" in v for v in _open_tag_values(store, todo_id))
+
+
+def _already_fixed_outcome() -> RunOutcome:
+    return RunOutcome(
+        status="already_fixed",
+        summary_text="fix_gripe job:1 for gripe:2: already fixed. Evidence: abc1234",
+        gripe_comment_text="[worker:job:1] no fix needed: abc1234",
+        branch="gripe_2",
+        sha=None,
+        wall_seconds=40.0,
+    )
+
+
+def test_run_fix_gripe_already_fixed_goes_to_review_without_a_bubble(
+    store: Store,
+) -> None:
+    """gr454480: an already-fixed verdict finishes the job, moves the gripe to
+    in_review (out of the groomer's STATUS:open selection, so no re-mint
+    loop) and spends nothing against the parent's unpark cap."""
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+
+    claude_inproc._run_fix_gripe(
+        store, job_id, _FakeFixGripeSpec(_already_fixed_outcome())
+    )
+
+    assert "STATUS:succeeded" in _open_tag_values(store, job_id)
+    assert "STATUS:in_review" in _open_tag_values(store, gripe_id)
+    assert not any("child-failed:" in v for v in _open_tag_values(store, todo_id))
+
+
+def test_run_fix_gripe_already_fixed_leaves_a_closed_gripe_closed(
+    store: Store,
+) -> None:
+    todo_id, gripe_id, job_id = _mk_parked_fix_gripe_job(store)
+    store.add_tag(
+        gripe_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+    claude_inproc._run_fix_gripe(
+        store, job_id, _FakeFixGripeSpec(_already_fixed_outcome())
+    )
+
+    assert "STATUS:done" in _open_tag_values(store, gripe_id)

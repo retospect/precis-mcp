@@ -11,6 +11,7 @@ DB connect.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -48,9 +49,19 @@ def create_app(
             log.info("precis web: building runtime")
             app.state.runtime = build_runtime()
             owns_runtime = True
+        nas_stop = threading.Event()
+        if owns_runtime:
+            from precis.workers.heartbeat import start_nas_attest_thread
+
+            start_nas_attest_thread(
+                app.state.runtime.store,
+                default_process="precis-web",
+                should_stop=nas_stop.is_set,
+            )
         try:
             yield
         finally:
+            nas_stop.set()
             if owns_runtime:
                 store = getattr(app.state.runtime, "store", None)
                 if store is not None:

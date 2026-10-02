@@ -53,9 +53,11 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
   ``DISPATCH_STALL_MINUTES`` with nothing running — symptom-level, so it
   catches both a stalled and a never-started agent-profile executor,
   freezing the planner cluster-wide either way.
-* **nas-denied** — a fresh ``host_heartbeat`` reports the NAS EPERM from
-  its own launchd context — that host's launchd/cron daemons are all
-  locked out of ``/opt/nas``.
+* **nas-denied** — a process attests EPERM reading the NAS in a fresh
+  ``host_heartbeat.meta.nas_ok_by_process`` entry (web/serve/worker each
+  attest themselves — Full Disk Access is per binary); one symptom per
+  (host, process), naming the ``exe`` to re-grant. Rows with no attestations
+  fall back to the legacy top-level ``nas_ok`` check.
 * **host-dark** — freshest ``host_heartbeat`` stale past
   ``HOST_DARK_SILENCE_MIN``, for every host not explicitly retired
   (``meta.retired``; ``precis heartbeat --retire <host>``). Since
@@ -1529,27 +1531,89 @@ def _detect_dead_workers(store: Store) -> list[Symptom]:
     return out
 
 
+#: How fresh a ``nas_ok_by_process`` entry's ``ts`` must be to alert. Wider
+#: than the legacy 5-min heartbeat gate: web/serve attest every ~10 min.
+NAS_ATTEST_FRESH_MIN = 30
+
+
+def _nas_attest_fresh(ts: Any) -> bool:
+    """True when an attestation ``ts`` (ISO-8601, ``Z`` or offset) parses and
+    is within :data:`NAS_ATTEST_FRESH_MIN`. Malformed -> False (never raises)."""
+    if not isinstance(ts, str):
+        return False
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - dt).total_seconds() <= NAS_ATTEST_FRESH_MIN * 60
+
+
 def _detect_nas_denied(store: Store) -> list[Symptom]:
-    """Hosts whose latest heartbeat reports the NAS unreadable from the
-    launchd context — every launchd/cron daemon there is locked out of
-    /opt/nas. Gated on a fresh (<5 min) heartbeat so a stale row (host/DB
-    outage — a different failure) doesn't linger as a false NAS alert.
-    Root cause is almost always a Full Disk Access grant broken by a brew
-    python upgrade; see OPEN-ITEMS 'melchior daemon NAS lockout'.
+    """Processes (or, for not-yet-redeployed hosts, whole hosts) locked out
+    of /opt/nas.
+
+    macOS grants Full Disk Access per binary, so each long-running process
+    attests itself into ``host_heartbeat.meta.nas_ok_by_process`` (gr248866,
+    see :mod:`precis.workers.heartbeat`); one symptom per (host, process)
+    with a fresh (<``NAS_ATTEST_FRESH_MIN``) ``ok = false`` entry, naming the
+    ``exe`` to re-grant. ``ok = null`` (transient probe error) never alerts.
+
+    Legacy: a fresh (<5 min) row whose heartbeat interpreter reports
+    top-level ``nas_ok = false`` still alerts — but only when the row carries
+    no ``nas_ok_by_process`` entries, so a redeployed host doesn't
+    double-alert. Root cause is almost always a Full Disk Access grant broken
+    by a brew python upgrade; see OPEN-ITEMS 'melchior daemon NAS lockout'.
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(
+        att_rows = conn.execute(
+            """
+            SELECT host, meta->'nas_ok_by_process'
+              FROM host_heartbeat
+             WHERE jsonb_typeof(meta->'nas_ok_by_process') = 'object'
+             ORDER BY host
+            """
+        ).fetchall()
+        legacy_rows = conn.execute(
             """
             SELECT host, meta->>'nas_path' AS path, meta->>'nas_errno' AS errno
               FROM host_heartbeat
              WHERE ts > now() - interval '5 minutes'
                AND meta->>'nas_ok' = 'false'
+               AND (jsonb_typeof(meta->'nas_ok_by_process') IS DISTINCT FROM 'object'
+                    OR meta->'nas_ok_by_process' = '{}'::jsonb)
              ORDER BY host
              LIMIT 50
             """
         ).fetchall()
     out: list[Symptom] = []
-    for host, path, _errno in rows:
+    for host, by_process in att_rows:
+        for process, entry in sorted((by_process or {}).items()):
+            if not isinstance(entry, dict) or entry.get("ok") is not False:
+                continue
+            if not _nas_attest_fresh(entry.get("ts")):
+                continue
+            path = entry.get("path") or "/opt/nas/botshome"
+            exe = entry.get("exe") or "its python interpreter"
+            out.append(
+                Symptom(
+                    category="nas-denied",
+                    ref_id=None,
+                    fingerprint_key=f"nas-denied:{host}:{process}",
+                    title=f"{process} on {host} locked out of the NAS",
+                    detail=(
+                        f"{process} on {host}: denied reading {path} (errno "
+                        f"{entry.get('errno')}) — Full Disk Access is granted "
+                        f"per binary and this process's interpreter lost it. "
+                        f"Re-grant FDA to {exe} in System Settings > Full Disk "
+                        f"Access, then `launchctl kickstart -k` the {process} "
+                        "daemon (kickstart keeps the old env, irrelevant here "
+                        "since FDA is not env)."
+                    ),
+                )
+            )
+    for host, path, _errno in legacy_rows:
         out.append(
             Symptom(
                 category="nas-denied",

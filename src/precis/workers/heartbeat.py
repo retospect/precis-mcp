@@ -31,6 +31,23 @@ Temperature is best-effort, priority order:
    reads Intel-only SMC keys (returns 0.0), so IOKit is the only numeric
    source short of ``sudo powermetrics`` (qualitative-only there).
 4. ``None`` — host still reports load + liveness.
+
+**Per-process NAS attestation (gr248866).** macOS grants Full Disk Access per
+binary, so the heartbeat's own ``_probe_nas`` only proves *its* interpreter
+can read ``/opt/nas`` — another venv's python (web, MCP serve) can lose its
+grant while ``meta.nas_ok`` stays true. A subprocess inherits its parent's
+TCC attribution, so spawning other interpreters attests nothing: each
+long-running process attests itself into ``meta.nas_ok_by_process[<process>]``
+(``{ok, path, errno|err, exe, pid, ts}``) — the worker via its heartbeat
+beat, web/serve via :func:`start_nas_attest_thread` (UPDATE-only, never bumps
+``ts``). Nursery's ``nas-denied`` detector alerts on any fresh ``ok=false``
+entry and names the ``exe`` to re-grant. Known gaps: (i) one-shot
+cron/launchd-timer interpreters are not long-running and do not attest; (ii)
+a host with no ``host_heartbeat`` row (caspar, daemon-free by design) cannot
+receive attestations — logged once per process; (iii) several stdio
+``precis serve`` processes on one host without distinct ``PRECIS_PROCESS``
+share one key, latest write wins, so one serve's denial can be overwritten by
+another's success within the window.
 """
 
 from __future__ import annotations
@@ -41,10 +58,12 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -327,6 +346,35 @@ def _probe_nas() -> dict[str, Any]:
         if _nas_probe_thread is thread:
             _nas_probe_thread = None
     return result
+
+
+def nas_attestation_entry(probe: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn a :func:`_probe_nas` result into this process's
+    ``nas_ok_by_process`` entry, or ``None`` when the probe returned ``{}``
+    (path absent: host doesn't mount the NAS, so no signal).
+
+    ``ok`` is ``True`` (readable), ``False`` (EPERM; carries ``errno``) or
+    ``None`` (transient probe error/timeout; carries ``err``, recorded but
+    never alerted). ``exe`` is the real interpreter path — FDA is granted
+    per binary, so the alert must name what to re-grant.
+    """
+    if not probe:
+        return None
+    ok: bool | None = bool(probe["nas_ok"]) if "nas_ok" in probe else None
+    entry: dict[str, Any] = {"ok": ok, "path": probe.get("nas_path")}
+    if ok is False and probe.get("nas_errno") is not None:
+        entry["errno"] = probe["nas_errno"]
+    if ok is None:
+        entry["err"] = probe.get("nas_probe_err", "unknown")
+    entry["exe"] = os.path.realpath(sys.executable)
+    entry["pid"] = os.getpid()
+    entry["ts"] = datetime.now(UTC).isoformat()
+    return entry
+
+
+def nas_process_key(default_process: str) -> str:
+    """``PRECIS_PROCESS`` when set, else the caller's default role name."""
+    return _resolve_process_name_for_boot() or default_process
 
 
 def _parse_first_float(text: str) -> float | None:
@@ -667,7 +715,14 @@ def _collect_and_upsert(
     }
     if ephemeral:
         meta["ephemeral"] = True
-    meta.update(_probe_nas())
+    nas_probe = _probe_nas()
+    meta.update(nas_probe)
+    # gr248866: also attest per process, so a different interpreter losing
+    # its Full Disk Access grant can't hide behind this one's top-level
+    # ``nas_ok``. Same probe result (no second probe).
+    nas_entry = nas_attestation_entry(nas_probe)
+    if nas_entry is not None:
+        meta["nas_ok_by_process"] = {nas_process_key("precis-heartbeat"): nas_entry}
     # §H boot epoch: this process's own {process: boot_id} entry, merged
     # (never clobbered) with any other process's entry on the same host row
     # by record_heartbeat's nested-merge SQL — see _heartbeat_ops.py.
@@ -907,6 +962,75 @@ def start_heartbeat_thread(
     return thread
 
 
+#: Seconds between a process's self-attestations (module global so tests can
+#: monkeypatch it; ``PRECIS_NAS_ATTEST_INTERVAL_SECONDS`` overrides, default 600).
+_NAS_ATTEST_INTERVAL_SECONDS = 600.0
+
+
+def _nas_attest_interval_s() -> float:
+    raw = os.environ.get("PRECIS_NAS_ATTEST_INTERVAL_SECONDS")
+    if raw:
+        try:
+            val = float(raw)
+        except ValueError:
+            val = 0.0
+        if val > 0:
+            return val
+    return _NAS_ATTEST_INTERVAL_SECONDS
+
+
+def _nas_attest_thread_body(
+    store: Any,
+    default_process: str,
+    should_stop: Callable[[], bool],
+) -> None:
+    warned = False
+    while not should_stop():
+        try:
+            entry = nas_attestation_entry(_probe_nas())
+            if entry is not None:
+                host = resolve_host()
+                key = nas_process_key(default_process)
+                landed = store.record_nas_attestation(host, key, entry)
+                if not landed and not warned:
+                    warned = True
+                    log.warning(
+                        "nas attestation: no host_heartbeat row for host %r — "
+                        "%s's NAS attestation has nowhere to land (host runs "
+                        "no heartbeat)",
+                        host,
+                        key,
+                    )
+        except Exception:
+            log.warning("nas attestation: tick failed", exc_info=True)
+        _sleep_with_stop_check(_nas_attest_interval_s(), should_stop)
+
+
+def start_nas_attest_thread(
+    store: Any,
+    *,
+    default_process: str,
+    should_stop: Callable[[], bool] | None = None,
+) -> threading.Thread:
+    """Start a daemon thread that attests THIS process's NAS readability
+    on start and every ``PRECIS_NAS_ATTEST_INTERVAL_SECONDS`` (default 600)
+    into ``host_heartbeat.meta.nas_ok_by_process`` (see module docstring).
+
+    Uses the passed ``store`` (its pool is thread-safe). Never raises out of
+    the thread. UPDATE-only: a host without a heartbeat row logs one warning
+    per process lifetime and the loop continues silently.
+    """
+    stop = should_stop or (lambda: False)
+    thread = threading.Thread(
+        target=_nas_attest_thread_body,
+        args=(store, default_process, stop),
+        name="nas-attest",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def advertise_boot_id_now(store: Store, *, host: str | None = None) -> str:
     """Mint (once) and immediately advertise this process's boot epoch.
 
@@ -969,8 +1093,10 @@ __all__ = [
     "collect_top_cpu",
     "current_boot_id",
     "mint_boot_id",
+    "nas_attestation_entry",
     "read_temp_c",
     "resolve_host",
     "run_heartbeat_pass",
     "start_heartbeat_thread",
+    "start_nas_attest_thread",
 ]

@@ -1430,6 +1430,9 @@ def main(
     # PRECIS_CHECKOUT_WATCHDOG, so this is a no-op everywhere else.
     start_checkout_watchdog()
     runtime = _init_runtime()
+    from precis.workers.heartbeat import start_nas_attest_thread
+
+    start_nas_attest_thread(runtime.store, default_process="precis-serve")
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)
 
