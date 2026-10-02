@@ -2252,6 +2252,23 @@ class TestGeneralizedFrontier:
         assert "quest_harvested_upto" not in c.measures
         assert "quest_autocatpath_harvested_upto" not in c.measures
 
+    def test_substrate_variant_provenance_is_not_a_measure(self, store: Any) -> None:
+        """A hydride twin's ``bare_twin_ref`` (a ref id) and ``substrate_level``
+        never rank (docs/backlog/pd-hydride-substrate.md)."""
+        _qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "barrier": 0.5,
+                "bare_twin_ref": ids[1],
+                "substrate_level": {"phase": "beta", "x": 0.63, "a": 4.0908},
+            },
+        )
+        c = _candidate_from_structure(store, store.fetch_refs_by_ids({ids[0]})[ids[0]])
+        assert c.measures.get("barrier") == 0.5
+        assert "bare_twin_ref" not in c.measures
+        assert "substrate_level" not in c.measures
+
     def test_barrier_tradeoff_puts_both_on_front(self, store: Any) -> None:
         # c0 lower energy but higher barrier; c1 the reverse → neither dominates.
         qid, ids = self._two_candidates(store)

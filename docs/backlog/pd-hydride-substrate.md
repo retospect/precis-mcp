@@ -86,6 +86,11 @@ Surface H* coverage at −0.3 V is modelled on neither substrate. The
 comparison stands, but absolute margins do not describe the operating
 surface.
 
+Related (not this item): `frontier._candidate_from_structure` lifts every
+numeric top-level structure meta key into a ranking measure. Every
+bookkeeping key needs listing in `_META_NON_MEASURE`, which is fragile; an
+allowlist of measure keys would be safer (design review §20.7).
+
 ## Explicitly NOT in scope
 
 - Re-equilibrating H content along a pathway: it is fixed per run, and the

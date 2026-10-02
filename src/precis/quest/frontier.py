@@ -1218,6 +1218,12 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         # (:func:`apply_network_demotion`), never measures.
         "network_basis",
         "network_basis_by_key",
+        # substrate-variant provenance (docs/backlog/pd-hydride-substrate.md):
+        # the bare candidate this one was derived from (a ref id — numeric,
+        # so it would otherwise rank as a measure) and the substrate level
+        # dict ({phase, x, a, U_step}).
+        "bare_twin_ref",
+        "substrate_level",
     }
 )
 
