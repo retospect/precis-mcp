@@ -31,6 +31,7 @@ import base64
 import binascii
 import logging
 import re
+from datetime import UTC
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -103,6 +104,13 @@ def _is_draft_chunk_handle(s: str) -> bool:
     """True iff ``s`` addresses a draft chunk (``dc<id>`` / ``¶<base58>``,
     optionally with a relative operator)."""
     return bool(_DRAFT_CHUNK_HANDLE_RE.match(s.strip()))
+
+
+def _landed_sha_line(text: str | None) -> str:
+    """Trailing ``sha:<12>`` ack line for a text edit — the same short form
+    ``get`` prints and ``edit(base_sha=)`` accepts. Computed over the text
+    the store returned (what landed), so a chained edit needs no re-read."""
+    return f"\nsha:{content_sha(text or '')[:12]}"
 
 
 #: Job status → short display label for :func:`_summarize_job_counts`
@@ -445,6 +453,7 @@ class DraftHandler(Handler):
         view: str | None = None,
         targets: list[str] | None = None,
         project: str | int | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         if project is not None:
@@ -505,12 +514,17 @@ class DraftHandler(Handler):
                 from precis.handlers._review_view import render_review_diff_view
 
                 return render_review_diff_view(self.store, s)
+            if view == "history":  # the chunk's chunk_events, newest first
+                return self._render_history(s, args)
+            if view == "proposals":  # open anchored todos carrying proposed_text
+                return self._render_proposals(s)
             if view is not None:
                 # No silent degrade to the lone-chunk render (was the bug —
                 # an unrecognized view fell through here unnoticed).
                 raise BadInput(
                     f"unknown draft chunk view {view!r}",
-                    next="view ∈ backfill|toc|wordcount|review-diff, or a "
+                    next="view ∈ backfill|toc|wordcount|review-diff|history|"
+                    "proposals, or a "
                     f"focus-ladder label {'|'.join(extent_ladder)}",
                 )
             return self._render_chunk(s)
@@ -562,11 +576,11 @@ class DraftHandler(Handler):
             # outline footer (below) shows the same data truncated to 8
             # entries per list.
             return self._render_hygiene(s, ref)
-        if view == "review-diff":
+        if view in ("review-diff", "history", "proposals"):
             raise BadInput(
-                "review-diff targets a chunk (dc<id>), not a whole draft",
+                f"{view} targets a chunk (dc<id>), not a whole draft",
                 next="point it at a chunk handle: "
-                "get(kind='draft', id='dc123', view='review-diff')",
+                f"get(kind='draft', id='dc123', view='{view}')",
             )
         if view not in (None, "outline"):
             # 'outline' is the default render (view omitted); accept it as an
@@ -1908,6 +1922,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.temperature_form_hint(new_text)
                 body += _draft_lint.math_form_hint(new_text, old_text)
                 body += _draft_lint.dangling_edit_hint(self.store, new_text, old_text)
+                body += _landed_sha_line(c.text)
             return Response(body=body)
         if text is not None:
             # Capture the prior text *before* the rewrite so the abbrev
@@ -1940,6 +1955,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.temperature_form_hint(str(text))
                 body += _draft_lint.math_form_hint(str(text), old_text)
                 body += _draft_lint.dangling_edit_hint(self.store, str(text), old_text)
+                body += _landed_sha_line(c.text)
             return Response(body=body)
         raise BadInput(
             "edit(kind='draft') requires text= (rewrite), move= (reorder/reparent), "
@@ -2640,6 +2656,7 @@ class DraftHandler(Handler):
         return Response(
             body=f"edited table {(c or chunk).dc} ({rows}×{cols}){extra}; "
             f"markdown re-derived{label_loss_hint}"
+            f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 
     def _edit_latex_table_in_place(
@@ -2801,6 +2818,7 @@ class DraftHandler(Handler):
             body=f"edited table {(c or chunk).dc}{extra}; patched the raw "
             "LaTeX in place — label/rules/multicolumn spans/spacing "
             f"untouched{label_loss_hint}"
+            f"{_landed_sha_line(c.text) if c is not None else ''}"
         )
 
     def _resolve_project(self, project: str | int) -> int:
@@ -3333,6 +3351,85 @@ class DraftHandler(Handler):
             "(tag remove the bubble + STATUS:done) to unblock the parent."
         )
         return out
+
+    def _render_history(self, handle: str, args: dict[str, Any] | None) -> Response:
+        """``view='history'`` — one chunk's ``chunk_events``, newest first.
+
+        The read that replaced digging pre-edit text out of
+        ``chunk_events`` by SQL. ``args={'limit': N}`` raises the
+        default 50-row cap, up to 500."""
+        limit = (args or {}).get("limit", 50)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 500
+        ):
+            raise BadInput(
+                f"history limit must be an int in 1..500, got {limit!r}",
+                next=f"get(kind='draft', id='{handle}', view='history', "
+                "args={'limit': 100})",
+            )
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None:
+            raise NotFound(f"draft chunk {handle!r} not found")
+        events = self.store.drafts.chunk_events(chunk.chunk_id, limit=limit)
+        header = f"# {chunk.dc} — history (newest first)"
+        if not events:
+            return Response(body=f"{header}\n\nno chunk_events recorded for {chunk.dc}")
+        rows = []
+        for e in events:
+            prev = (e["prev_text"] or "").strip()
+            first = prev.splitlines()[0] if prev else ""
+            source = e["source"]
+            rows.append(
+                {
+                    "ts": e["ts"].astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "event": e["event_kind"],
+                    "source": ",".join(f"{k}={v}" for k, v in sorted(source.items())),
+                    "sha": (e["content_sha"] or "")[:12],
+                    "prev": first[:120] + "…" if len(first) > 120 else first,
+                }
+            )
+        table = toon.dump(rows, schema=["ts", "event", "source", "sha", "prev"])
+        more = (
+            f"\n\nshowing the newest {limit}; args={{'limit': N}} (≤500) for more"
+            if len(events) == limit
+            else ""
+        )
+        return Response(body=f"{header}\n\n{table}{more}")
+
+    def _render_proposals(self, handle: str) -> Response:
+        """``view='proposals'`` — open anchored todos carrying
+        ``meta.proposed_text``, each as a unified diff against the
+        chunk's current text. Read-only: accepting one is an ordinary
+        ``edit`` by the reviewer."""
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None:
+            raise NotFound(f"draft chunk {handle!r} not found")
+        props = self.store.drafts.open_proposals(chunk.chunk_id)
+        header = f"# {chunk.dc} — proposals  sha:{content_sha(chunk.text)[:12]}"
+        if not props:
+            return Response(
+                body=f"{header}\n\nno open proposals. File one: put(kind='todo', "
+                f"text='<why>', meta={{'anchor': '{chunk.dc}', "
+                "'proposed_text': '<replacement>'}})"
+            )
+        blocks = []
+        for p in props:
+            diff = format_unified_diff(
+                chunk.text or "", p["proposed_text"], file_label=chunk.dc
+            )
+            blocks.append(
+                f"## td{p['ref_id']} — {p['title']}\n"
+                f"{diff or '(identical to the current text)'}"
+            )
+        return Response(
+            body=f"{header}\n\n"
+            + "\n\n".join(blocks)
+            + "\n\nAccept: edit(kind='draft', "
+            f"id='{chunk.dc}', text=<proposed>, base_sha=<sha above>), then close "
+            "the todo with tag(kind='todo', id='td<N>', add=['STATUS:done'])."
+        )
 
     def _render_chunk(self, handle: str) -> Response:
         # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``

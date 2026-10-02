@@ -3,8 +3,10 @@
 **Status:** ends when an agent never leaves the graph to do its work — no
 temp file for a proposal, no SQL for a write check, no guessing which
 capability exists — and text-file memory it replaces is retired per
-`docs/roadmap.md`. North-star: `backlog/draft-authoring-graph-affordances.md`
-(the evidence) + `backlog/fisheye-level2.md` (the focus verb). The memory
+`docs/roadmap.md`. North-star: `backlog/fisheye-level2.md` (the focus verb); the
+nanobuds draft evidence (proposal in /tmp, history by SQL, write checks by
+SQL) was closed 2026-10-02 by draft `view='history'`/`'proposals'` and the
+landed-sha edit ack. The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
 (fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
@@ -26,17 +28,13 @@ what a live consumer is already going without.
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
    `envelope` row moved to tier 2: it is not an outer bound.
-3. **backlog/draft-authoring-graph-affordances.md** — nanobuds-paper
-   evidence: work leaves the graph today (a proposal in /tmp, write checks
-   in SQL, history unreachable, dedup hiding live hubs), so a live
-   consumer is already going without.
-4. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
+3. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
    the render side (every kind, the browser focus page) is
    `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
-5. **backlog/server-side-session-context.md** — precondition td458385
+4. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
-6. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
+5. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
    gripes as one searchable surface; consumes the mirror once it lands.
 
 ## Horizon
@@ -88,8 +86,8 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **backlog/context-sentence-rag-over-body.md** — small enabler.
 - **backlog/universal-short-codes.md** — small enabler.
 - **gr343055** — `render_figure_chunk` has no production caller, so a
-  draft graph-figure stays a placeholder; unparks with
-  draft-authoring-graph-affordances.
+  draft graph-figure stays a placeholder; parks behind Do-next 1 with
+  the other draft-authoring surface gripes.
 - **gr454753**, **gr454749** — draft export gate inconsistency and the
   raw-identifier-in-prose guard; both are draft-authoring surface
   questions, park behind Do-next 1 rather than fixed independently here.

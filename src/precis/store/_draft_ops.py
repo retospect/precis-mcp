@@ -1198,6 +1198,75 @@ class DraftStore(_AbbrevMixin):
             reqs.sort(key=lambda r: _REQUEST_ORDER.get(r["status"], 9))
         return out
 
+    def chunk_events(self, chunk_id: int, *, limit: int = 50) -> list[dict[str, Any]]:
+        """A chunk's ``chunk_events`` rows, newest first, capped at ``limit``.
+
+        Each row is ``{ts, event_kind, source, content_sha, prev_text}``.
+        Read-only; backs ``get(kind='draft', id='dc<N>', view='history')``.
+        Raises :class:`NotFound` for an unknown chunk id (a chunk with no
+        events returns ``[]``)."""
+        with self.pool.connection() as conn:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM chunks WHERE chunk_id = %s", (chunk_id,)
+                ).fetchone()
+                is None
+            ):
+                raise NotFound(f"no chunk {chunk_id}")
+            rows = conn.execute(
+                "SELECT ts, event_kind, source, content_sha, prev_text "
+                "FROM chunk_events WHERE chunk_id = %s "
+                "ORDER BY ts DESC, event_id DESC LIMIT %s",
+                (chunk_id, limit),
+            ).fetchall()
+        return [
+            {
+                "ts": r[0],
+                "event_kind": r[1],
+                "source": dict(r[2] or {}),
+                "content_sha": r[3],
+                "prev_text": r[4],
+            }
+            for r in rows
+        ]
+
+    def open_proposals(self, chunk_id: int) -> list[dict[str, Any]]:
+        """Open anchored todos on ``chunk_id`` that carry
+        ``meta.proposed_text``, oldest first — ``[{ref_id, title,
+        proposed_text}]``. Anchor forms match :meth:`anchored_todos`
+        (``dc<id>``, bare base-58 handle, legacy ``¶handle``). A todo with
+        a terminal ``STATUS`` (done / won't-do / wontfix / auto-timeout) is
+        excluded; review-mode todos (``meta.review`` set) are not change
+        requests and are skipped."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT handle FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no chunk {chunk_id}")
+            anchors = [f"dc{chunk_id}"]
+            if row[0]:
+                anchors += [row[0], f"¶{row[0]}"]
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, r.meta->>'proposed_text' "
+                "FROM refs r "
+                "WHERE r.kind = 'todo' AND r.retired_at IS NULL "
+                "  AND r.meta->>'anchor' = ANY(%s) "
+                "  AND r.meta->>'proposed_text' IS NOT NULL "
+                "  AND r.meta->>'review' IS NULL "
+                "  AND NOT EXISTS ("
+                "    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+                "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+                "      AND t.value IN ('done', 'won''t-do', 'wontfix', "
+                "                      'auto-timeout')) "
+                "ORDER BY r.ref_id",
+                (anchors,),
+            ).fetchall()
+        return [
+            {"ref_id": r[0], "title": r[1] or "", "proposed_text": r[2] or ""}
+            for r in rows
+        ]
+
     # ---- element→chunk bindings ------------------------------
     #
     # A diagram (figure / mermaid) element is bound to the chunk it depicts

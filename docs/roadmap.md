@@ -60,7 +60,8 @@ this pillar), `backlog/measures-substrate.md`, `backlog/graph-gardener.md`,
 unthreaded at the review and is now `graph-memory-consumers.md`. The
 review's evidence that the mission had not sunk in: a paper session did its
 proposal in a temp file and its write checks in SQL because the surface had
-no affordance (`backlog/draft-authoring-graph-affordances.md`); the memory
+no affordance (shipped 2026-10-02 as draft `view='history'`/`'proposals'`
+and the landed-sha edit ack); the memory
 skill declares precis memory a different system from the harness files
 (`backlog/file-mirror.md`); fisheye raises `Unsupported` on paper and
 memory, and no human graph browse existed (`backlog/fisheye-everywhere.md`,

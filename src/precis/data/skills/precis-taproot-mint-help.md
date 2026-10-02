@@ -234,10 +234,12 @@ Before every mint, search the claim sentence you are about to write:
 search(kind="finding", q="<the claim sentence>", status="*", mode="semantic")
 ```
 
-`status='*'` is **required** — the default filter is `status='established'`
-and silently hides most hubs. If a search returns nothing on a topic the
-corpus plainly covers, round-trip a hub you know exists before trusting
-the empty.
+With `status=` omitted, the search returns every claim hub, whatever its
+lifecycle state, plus the `established` findings. `status='*'` drops the
+filter entirely and also returns non-hub `tracing`/`dead_chain` rows.
+Either works for dedup; `'*'` returns the most. If a search returns
+nothing on a topic the corpus plainly covers, round-trip a hub you know
+exists before trusting the empty result.
 
 Then judge each near hit:
 

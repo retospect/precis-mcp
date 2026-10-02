@@ -52,6 +52,8 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
+| `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'limit':N}`, ≤500) |
+| `get(id='dc<id>', view='proposals')` | open anchored todos with `meta.proposed_text`, as diffs vs the current text |
 | `get(id='<slug>', view='links')` | the draft's link graph (cites/cross-refs/notes) |
 | `get(kind='draft', project=<todo-id>)` | reverse lookup: that project's draft |
 
@@ -414,6 +416,10 @@ delete(id="dc20", mode="cascade")  # delete heading AND its contents
 delete(id="nanotrans")  # ref-level id → soft-delete the WHOLE draft
 ```
 
+Every text edit's ack ends with `sha:<12>`, the sha of the text that
+landed. Pass it as `base_sha=` on the next edit to chain without a
+re-read; a stale sha is refused.
+
 `find=` is located **literally**; every occurrence is swapped for
 `text=` (pass `text=''` to delete a span). If `find=` isn't present the
 edit is **refused**, chunk untouched. `dry_run=True` gives a unified
@@ -627,6 +633,11 @@ put(kind='todo', parent_id='<project>', text='tighten this paragraph',
     meta={'anchor': 'dc12'}, ...)        # a change request, anchored
 link(src='dc12', rel='derived-from', dst='memory:7x2')  # provenance
 ```
+
+To propose a rewrite for someone else to accept, put the replacement in
+`meta.proposed_text` on that anchored todo; `get(id='dc12',
+view='proposals')` shows each open one as a diff. Nothing applies it
+automatically: the reviewer runs an ordinary `edit`, then closes the todo.
 
 A change-request `todo` anchored to a handle flows through the normal
 todo tree → dispatch → jobs; the executor decides one job vs fan-out per

@@ -61,6 +61,6 @@ All `backlog/<slug>.md`; unranked inside each group until Do-next 1 runs.
   view); this thread holds authoring and export of the draft itself. Neither
   reorders the other.
 - `graph-memory-consumers.md` parks gr454753/gr454749 (export gate) behind its
-  `draft-authoring-graph-affordances`; if the October triage hits them they move
+  Do-next 1 (`memory-native-authoring`); if the October triage hits them they move
   here.
 - `claims-and-evidence.md` owns the claim side of cite-time attach.
