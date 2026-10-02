@@ -42,6 +42,20 @@ actually fired. An `.epro2` import (`pcb-easyeda-round-trip`) is the
 likely first real source, so sequence with that thread rather than
 against it.
 
+## Exposure, re-checked 2026-10-02 (round-1 diff review)
+
+The orchestrator asked whether the new post-route DRC gate
+(`pcb_session.routed_drc_findings`) can strip a good net or keep a bad one
+next to an oblique pad. **Not for router copper:** `_pad_shape`'s circle
+has diameter `hypot(w, h)`, the rect's circumscribed circle, so it contains
+both the true rotated pad and the unrotated rect the model shows, and grid
+clearance from that circle is clearance from both. The real exposure is
+AUTHORED copper, which no grid claim protects: `pcb_route.
+_fixed_copper_collisions` (refuses to route) and `view='drc'` both judge it
+against the unrotated rect, so they can refuse a legal board or pass a
+short at an oblique pad's true corner. That is why this item now sits in
+ewod-pcb's Do-next.
+
 ## Acceptance
 
 - A rect pad on an instance at, say, 30° appears in `pads_for_ir`'s output
@@ -51,4 +65,7 @@ against it.
   over-claim is allowed to stay; a claim narrower than the pad is the
   thing that must never happen).
 - A test that fails if the model's pad is the unrotated rect — not merely
-  one that passes on an axis-aligned fixture, which is vacuous here.
+  one that passes on an axis-aligned fixture, which is vacuous here. Use
+  45°: authored copper placed in the gap the unrotated rect wrongly covers
+  must pass `_fixed_copper_collisions`, and copper on the true corner the
+  unrotated rect misses must fail it.

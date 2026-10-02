@@ -308,23 +308,31 @@ one rail are interchangeable *with each other*) — that item computes
 equivalence from the netlist with no LLM; this one needs an authored or
 extracted *affinity*, which is a different fact.
 
-## Open decisions for Reto
+## Reto's rulings on the open decisions, 2026-10-02 (review item ewod-pcb-1)
 
-1. **Authored copper on a `move`:** refuse the move, or translate the
-   `pcb_fixed_copper` rows with their owning instance? Today it is neither,
-   which is how `ARR1` can desync from its own plaza vias.
-2. **Does `move` grow a multi-pose form**, or do we accept a
-   parking-slot workflow and let swaps be a two-step dance that can dead-end
-   on a dense board?
-3. ~~**`route` that cannot finish:** refuse the whole commit, or commit
-   only the DRC-clean nets?~~ **Resolved as (b) by rulings already on
-   record**, not a new call: "routing is valid (but may be incomplete)"
-   (2026-09-30), "you may show it to me but it is failed" (2026-10-01),
-   and the copper table above (router copper yields). So the route job
-   DRCs its own router copper before writing; a net whose router copper
-   violates a geometric rule is stripped and lands `failed` with
-   `drc:<rule>` in its note. Option (a)'s single transaction is still
-   open as crash-safety, separate from validity.
+1. **A part's own footprint copper always moves with it** — "it must not
+   be possible to separate them". That covers its `pcb_fixed_copper` rows
+   (ARR1's plaza vias and stubs, stored in the absolute board frame):
+   `op='move'` translates/rotates them with the instance. **Routed copper
+   attached to the moved part** is kept where it is still valid and the
+   offending segments are ripped otherwise: "moves if possible, or
+   ripup... maybe better to rip up or remove offending segments". Ripping
+   is the default; rubber-banding the attached tracks is optional polish.
+   The board stays valid but incomplete, never invalid. **Built 2026-10-02**
+   (`handlers/pcb.py::_move_generator_group`, `Store.pcb_move_group`): a
+   move of any generator member moves the whole group (the generator's own
+   refdes plus every `{name}_…` instance) and its fixed copper as one rigid
+   body in one transaction; members are judged by `pose_conflicts`, carried
+   copper by the route gate's fixed-copper rule (only collisions the move
+   ADDS refuse it); router nets on a moved pad or colliding with the group
+   are ripped and listed. Known gap: `ewod_pad_array` emits its copper in
+   the array-local frame and ignores `params.x/y`, so an array authored
+   off the origin starts desynced and a group move preserves it (0 such
+   arrays in prod, 2026-10-02) — generator fix queued in the thread.
+2. **Multi-pose move: yes** ("totally, that would be awesome"). `op='move'`
+   takes a list of poses validated together as one resulting state.
+3. **Route commits only DRC-clean nets** (3b) — built 2026-10-02, see
+   Acceptance.
 
 ## Acceptance
 
@@ -333,8 +341,8 @@ extracted *affinity*, which is a different fact.
   single-part `op='move'` (2026-10-01)** via
   `OptimizeEngine.pose_conflicts`, which applies the placer's own rule set and
   checks the moved part only. The other mutation paths listed above
-  (`pcb_apply`, `view='route'`, `op='footprint'`, `op='class_rules'`, the
-  job writes) are still open, as are open decisions 1–2.
+  (`pcb_apply`, `view='route'`, `op='footprint'`, `op='class_rules'`) are
+  still open, and ruling 2 (multi-pose move) is unbuilt.
 - Negative control: a legal mutation is NOT refused. Without it the refusal
   path can be vacuously "always refuse". (Has a test for `op='move'`.)
 - An incumbent-invalid board is reported as invalid rather than silently

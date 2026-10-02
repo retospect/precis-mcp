@@ -208,6 +208,16 @@ also enforces. The error names the rule and what it hit:
 existing conflicts elsewhere on the board don't block the move. A move
 that only changes `fixed` is never checked.
 
+Moving a part a **generator** emitted (an `ewod_pad_array` or one of its
+sinks) moves the whole generator group as one rigid body: every instance
+it emitted and all of its authored fixed copper (plaza vias, stubs) turn
+and shift together, so a pad never separates from its own escape via. The
+carried copper is judged against every other part's pads and fixed copper
+first; any error refuses the whole move and writes nothing. Router copper
+on a net touching a moved pad (or colliding with the moved group) is
+ripped, not kept: the response lists `ripped N net(s): …` — re-route them
+with `op='route'`.
+
 `op='class_rules'` upserts one net class's rules (`{name, rules}` — same
 shape as `put(args={'net_classes': {...}})` at design-authoring time, just
 scoped to one class). **Honest limit:** the stored rules are not yet READ

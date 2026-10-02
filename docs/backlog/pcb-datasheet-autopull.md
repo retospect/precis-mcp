@@ -40,7 +40,10 @@ then the PDF. Check first whether prod has JLC API credentials
 2. **Worker job** (`datasheet_pull`, own lane): resolve URL → fetch with
    `safe_get`/`safe_stream` (supplier URLs are external input; raw httpx is
    an SSRF) → dedupe by content sha (one datasheet per part family, many
-   parts) → ingest as a `datasheet` ref with `source_url` and sha in meta →
+   parts) → ingest as a `datasheet` ref with `meta.source_url` (the fetch URL)
+   and `meta.part_lcsc` (the C-number) — the keys claims-and-evidence's
+   `precis.nanopub.evidence.datasheet_url` reads — carrying exactly one
+   `pdf_sha256` identifier, which the nanopub cites as `urn:sha256` →
    link `datasheet-of` to the part. Idempotency key: C-number + URL.
 3. **Failure is a recorded state, not silence:** no URL, fetch refused,
    not a PDF — each lands as a named reason on the part, readable from
@@ -55,9 +58,10 @@ then the PDF. Check first whether prod has JLC API credentials
 - **knowledge-mesh** (owner of the mesh half): the follow-up wants the
   datasheet's content (key specs, ratings, pinouts) as graph nodes linked to
   the part and the datasheet ref. That consumer reads the refs this item
-  produces; building it is theirs. The review session flagged its exact
-  shape as a reading of a one-line remark, to be confirmed with Reto
-  (review item `ewod-pcb-2`).
+  produces; building it is theirs. **Shape confirmed by Reto 2026-10-02
+  (review item `ewod-pcb-2`, option 1):** ratings, key specs, package and
+  the pin table as nodes, each citing its datasheet page and linked to the
+  part, and the pin table checked against the footprint's pad map.
 - **gr458878** (pin-level datasheet provenance): needs a datasheet to exist
   before a pin fact can cite its page.
 

@@ -1755,3 +1755,307 @@ def test_polarized_refdes_matches_tant_and_pol_case_insensitively(pcb):
         ]
     }
     assert pcb._polarized_refdes(design) == frozenset({"C9", "C10"})
+
+
+# ── op='move' of a generator member: the group moves rigidly ─────────────
+# Reto's ruling 2026-10-02 (docs/backlog/pcb-always-valid-board-invariant.md,
+# "Reto's rulings" item 1): a part's own footprint copper always moves with
+# it; routed copper on a moved pad is ripped, never kept dangling.
+
+
+def _gen_board(pcb, slug, *, p1_from_via=None):
+    """ARR1 (6x6 + 4 bottom sinks, at the origin: the generator emits its
+    fixed copper in the array-local frame, so only x=y=0 is self-consistent)
+    plus two plain parts P1/P2 on their own net NX, authored in a second put
+    so P1 can be placed relative to the array's own first via
+    (``p1_from_via`` = an offset from it; default: far away)."""
+    pcb.put(
+        id=slug,
+        args={
+            "generators": [
+                {
+                    "name": "ARR1",
+                    "generator": "ewod_pad_array",
+                    "params": {
+                        "grid": [6, 6],
+                        "sink_grid": {
+                            "part": "C639448",
+                            "channels_per_sink": 8,
+                            "channel_pins": [f"OUT{i}" for i in range(16)],
+                            "top_plate_pin": "CPLT",
+                            "power": {"VDD": "VCC_HV", "GND": "GND"},
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    ref = pcb.store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    board_id = int(pcb.store.pcb_graph(ref.id)["board"]["board_id"])
+    p1_xy = (300.0, 300.0)
+    if p1_from_via is not None:
+        via = next(
+            r for r in pcb.store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via"
+        )
+        p1_xy = (via["x"] + p1_from_via[0], via["y"] + p1_from_via[1])
+    pcb.put(
+        id=slug,
+        args={
+            "footprints": [
+                {
+                    "name": "padp",
+                    "pads": [
+                        {
+                            "pin": "1",
+                            "shape": "rect",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "w": 1.0,
+                            "h": 1.0,
+                        }
+                    ],
+                }
+            ],
+            "components": [
+                {
+                    "refdes": "P1",
+                    "label": "p",
+                    "footprint": "padp",
+                    "x": p1_xy[0],
+                    "y": p1_xy[1],
+                    "pins": [{"name": "1"}],
+                },
+                {
+                    "refdes": "P2",
+                    "label": "p",
+                    "footprint": "padp",
+                    "x": 320.0,
+                    "y": 300.0,
+                    "pins": [{"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "NX", "class": "signal"}],
+            "connections": [
+                {"net": "NX", "refdes": "P1", "pin": "1"},
+                {"net": "NX", "refdes": "P2", "pin": "1"},
+            ],
+        },
+    )
+    return ref, board_id
+
+
+def _poses(store, ref_id):
+    with store.pool.connection() as conn:
+        return {
+            r[0]: (r[1], r[2], r[3])
+            for r in conn.execute(
+                "SELECT refdes, x, y, rot FROM pcb_instances "
+                "WHERE ref_id = %s AND retired_at IS NULL",
+                (ref_id,),
+            ).fetchall()
+        }
+
+
+def _fixed_snapshot(store, board_id):
+    """Every active fixed-copper row as (kind, net, flat rounded coords),
+    sorted — order-free, so an UPDATE that reshuffles the heap is fine."""
+    out = []
+    for r in store.pcb_fixed_copper_list(board_id):
+        if r["ctype"] == "via":
+            coords = (round(r["x"], 4), round(r["y"], 4))
+        else:
+            coords = tuple(
+                round(v, 4)
+                for s in r["segments"]
+                for p in (s["start"], s["end"])
+                for v in p
+            )
+        out.append((r["ctype"], r["net"], coords))
+    return sorted(out, key=repr)
+
+
+def _shifted(rows, dx, dy):
+    out = []
+    for kind, net, coords in rows:
+        out.append(
+            (
+                kind,
+                net,
+                tuple(
+                    round(v + (dx if i % 2 == 0 else dy), 4)
+                    for i, v in enumerate(coords)
+                ),
+            )
+        )
+    return sorted(out, key=repr)
+
+
+def test_op_move_generator_member_carries_the_whole_group_and_its_copper(pcb, store):
+    ref, board_id = _gen_board(pcb, "mv-grp")
+    poses0 = _poses(store, ref.id)
+    fixed0 = _fixed_snapshot(store, board_id)
+    assert any(k == "via" for k, _, _ in fixed0)  # the control is not vacuous
+    assert any(k == "track" for k, _, _ in fixed0)
+    sinks = [r for r in poses0 if r.startswith("ARR1_SINK_")]
+    assert len(sinks) == 4
+
+    resp = pcb.put(
+        id="mv-grp", args={"op": "move", "refdes": "ARR1", "x": 20.0, "y": 15.0}
+    )
+
+    for name in ["ARR1", *sinks]:
+        assert name in resp.body  # the response names every member that moved
+    poses1 = _poses(store, ref.id)
+    for name in ["ARR1", *sinks]:
+        x0, y0, _ = poses0[name]
+        x1, y1, _ = poses1[name]
+        assert (x1 - x0, y1 - y0) == pytest.approx((20.0, 15.0), abs=1e-9)
+    assert poses1["P1"] == poses0["P1"] and poses1["P2"] == poses0["P2"]
+    assert _fixed_snapshot(store, board_id) == _shifted(fixed0, 20.0, 15.0)
+
+
+def test_op_move_generator_member_rotation_turns_copper_about_the_moved_origin(
+    pcb, store
+):
+    ref, board_id = _gen_board(pcb, "mv-rot")
+    vias0 = {
+        r["net"]: (r["x"], r["y"])
+        for r in store.pcb_fixed_copper_list(board_id)
+        if r["ctype"] == "via"
+    }
+    pcb.put(id="mv-rot", args={"op": "move", "refdes": "ARR1", "rot": 90.0})
+    vias1 = {
+        r["net"]: (r["x"], r["y"])
+        for r in store.pcb_fixed_copper_list(board_id)
+        if r["ctype"] == "via"
+    }
+    assert vias1.keys() == vias0.keys() and vias0
+    # Board rot is clockwise: 90 deg takes the offset (dx, dy) to (dy, -dx).
+    for net, (x0, y0) in vias0.items():
+        dx, dy = x0, y0
+        assert vias1[net] == pytest.approx((dy, -dx), abs=1e-6)
+    poses = _poses(store, ref.id)
+    assert poses["ARR1"][2] == 90.0
+    assert all(poses[f"ARR1_SINK_{i}"][2] == 90.0 for i in range(4))
+
+
+def test_op_move_a_sink_moves_the_array_it_belongs_to(pcb, store):
+    ref, _board_id = _gen_board(pcb, "mv-sink")
+    before = _poses(store, ref.id)
+    pcb.put(
+        id="mv-sink",
+        args={
+            "op": "move",
+            "refdes": "ARR1_SINK_0",
+            "x": before["ARR1_SINK_0"][0] + 10.0,
+            "y": before["ARR1_SINK_0"][1],
+        },
+    )
+    after = _poses(store, ref.id)
+    assert after["ARR1"][0] == pytest.approx(before["ARR1"][0] + 10.0)
+    assert after["ARR1"][1] == pytest.approx(before["ARR1"][1])
+
+
+def test_op_move_a_non_generator_part_leaves_fixed_copper_untouched(pcb, store):
+    """Negative control: P2 has no generator, so only P2 moves."""
+    ref, board_id = _gen_board(pcb, "mv-plain")
+    poses0 = _poses(store, ref.id)
+    fixed0 = _fixed_snapshot(store, board_id)
+    resp = pcb.put(
+        id="mv-plain", args={"op": "move", "refdes": "P2", "x": 330.0, "y": 310.0}
+    )
+    assert "moved" in resp.body and "generator group" not in resp.body
+    poses1 = _poses(store, ref.id)
+    assert poses1["P2"][:2] == (330.0, 310.0)
+    assert {k: v for k, v in poses1.items() if k != "P2"} == {
+        k: v for k, v in poses0.items() if k != "P2"
+    }
+    assert _fixed_snapshot(store, board_id) == fixed0
+
+
+def test_op_move_group_whose_via_lands_on_another_parts_pad_is_refused(pcb, store):
+    # P1's land sits exactly where a carried via will be after a +30 mm move.
+    ref, board_id = _gen_board(pcb, "mv-bad", p1_from_via=(30.0, 0.0))
+    poses0 = _poses(store, ref.id)
+    fixed0 = _fixed_snapshot(store, board_id)
+    with pytest.raises(BadInput, match=r"clearance: via\[.*pad\[P1/1"):
+        pcb.put(
+            id="mv-bad",
+            args={"op": "move", "refdes": "ARR1", "x": 30.0, "y": 0.0},
+        )
+    assert _poses(store, ref.id) == poses0
+    assert _fixed_snapshot(store, board_id) == fixed0
+
+
+def test_op_move_rips_the_nets_on_a_moved_pad_and_keeps_routed_copper_elsewhere(
+    pcb, store
+):
+    ref, board_id = _gen_board(pcb, "mv-rip")
+    nets = store.pcb_net_ids(ref.id)
+    arr_net = next(
+        r["net"] for r in store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via"
+    )
+    store.pcb_routes_write(
+        ref.id,
+        board_id,
+        {arr_net: {"status": "realized"}, "NX": {"status": "realized"}},
+    )
+    track = {
+        "segments": [{"shape": "line", "start": [400.0, 400.0], "end": [405.0, 400.0]}],
+        "width_mm": 0.2,
+    }
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {"ctype": "track", "layer": "B.Cu", "net_id": nets[arr_net], "geom": track},
+            {"ctype": "track", "layer": "B.Cu", "net_id": nets["NX"], "geom": track},
+        ],
+    )
+    assert store.pcb_nets_with_router_copper(board_id) == {arr_net, "NX"}
+
+    resp = pcb.put(
+        id="mv-rip", args={"op": "move", "refdes": "ARR1", "x": 20.0, "y": 15.0}
+    )
+
+    assert f"ripped 1 net(s): {arr_net}" in resp.body
+    assert "re-route with op='route'" in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == {"NX"}
+    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref.id)}
+    assert status[arr_net] == "unrouted"
+    assert status["NX"] == "realized"
+
+
+def test_op_move_rips_a_router_net_whose_copper_the_moved_group_lands_on(pcb, store):
+    """Not on a moved pad, but a carried via now sits on its track: it
+    yields (ripped) instead of leaving a short on the board."""
+    ref, board_id = _gen_board(pcb, "mv-rip2")
+    nets = store.pcb_net_ids(ref.id)
+    via = next(r for r in store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via")
+    vx, vy = via["x"] + 20.0, via["y"] + 15.0  # where that via lands
+    store.pcb_routes_write(ref.id, board_id, {"NX": {"status": "realized"}})
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "B.Cu",
+                "net_id": nets["NX"],
+                "geom": {
+                    "segments": [
+                        {
+                            "shape": "line",
+                            "start": [vx - 2.0, vy],
+                            "end": [vx + 2.0, vy],
+                        }
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
+    resp = pcb.put(
+        id="mv-rip2", args={"op": "move", "refdes": "ARR1", "x": 20.0, "y": 15.0}
+    )
+    assert "ripped 1 net(s): NX (collides with the moved group" in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == set()

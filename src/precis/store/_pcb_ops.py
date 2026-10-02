@@ -30,6 +30,7 @@ from psycopg.types.json import Jsonb
 
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import generators as pcb_generators
+from precis.pcb import geom as pcb_geom
 from precis.pcb.capabilities import capability_for
 
 
@@ -1708,6 +1709,70 @@ class PcbMixin:
         with self.tx() as c:
             return c.execute(sql, params).rowcount > 0
 
+    def pcb_move_group(
+        self,
+        ref_id: int,
+        board_id: int,
+        poses: list[tuple[str, float, float, float]],
+        *,
+        generator_names: Iterable[str],
+        pivot: tuple[float, float],
+        target: tuple[float, float],
+        dtheta_deg: float,
+        rip_nets: Iterable[str],
+        lock: tuple[str, str | None] | None = None,
+    ) -> list[str]:
+        """The rigid group move (``op='move'`` on a generator member), ONE
+        transaction: every ``(refdes, x, y, rot)`` pose written, every
+        active ``pcb_fixed_copper`` row of ``generator_names`` carried by
+        the same rigid transform (:func:`precis.pcb.geom.
+        rigid_transform_geom`), and every net of ``rip_nets`` that has
+        router copper ripped (:meth:`pcb_rip_route`'s reset). Any failure
+        rolls all of it back. Returns the nets actually ripped."""
+        names = list(generator_names)
+        ripped: list[str] = []
+        with self.tx() as conn:
+            for refdes, x, y, rot in poses:
+                if not self.pcb_move_instance(
+                    ref_id, refdes, x=x, y=y, rot=rot, conn=conn
+                ):
+                    raise ValueError(f"pcb instance {refdes!r} not found")
+            if lock is not None:  # (refdes, new `fixed` value; None clears)
+                self.pcb_move_instance(ref_id, lock[0], fixed=lock[1], conn=conn)
+            if names:
+                rows = conn.execute(
+                    "SELECT fixed_id, geom FROM pcb_fixed_copper "
+                    "WHERE board_id = %s AND retired_at IS NULL "
+                    "AND generator_name = ANY(%s) ORDER BY fixed_id",
+                    (board_id, names),
+                ).fetchall()
+                for fixed_id, geom in rows:
+                    moved = pcb_geom.rigid_transform_geom(
+                        geom or {}, pivot=pivot, target=target, dtheta_deg=dtheta_deg
+                    )
+                    conn.execute(
+                        "UPDATE pcb_fixed_copper SET geom = %s WHERE fixed_id = %s",
+                        (Jsonb(moved), fixed_id),
+                    )
+            for net in rip_nets:
+                if self._pcb_rip_route(conn, ref_id, net):
+                    ripped.append(net)
+        return ripped
+
+    def pcb_nets_with_router_copper(self, board_id: int) -> set[str]:
+        """Names of the active nets that own at least one DERIVED
+        ``pcb_copper`` row — the nets a part move can strand."""
+        with self.pool.connection() as conn:
+            return {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT DISTINCT n.name FROM pcb_copper c "
+                    "JOIN pcb_nets n ON n.net_id = c.net_id "
+                    "WHERE c.board_id = %s AND n.retired_at IS NULL",
+                    (board_id,),
+                ).fetchall()
+            }
+
     def pcb_net_ids(self, ref_id: int) -> dict[str, int]:
         """``{net name: net_id}`` for a design — the join key
         :meth:`pcb_routes_write`/:meth:`pcb_copper_replace`'s callers use to
@@ -2079,7 +2144,9 @@ class PcbMixin:
         )
         return cur.rowcount
 
-    def pcb_rip_route(self, ref_id: int, net_name: str) -> bool:
+    def pcb_rip_route(
+        self, ref_id: int, net_name: str, *, conn: Connection | None = None
+    ) -> bool:
         """The rip-up primitive: reset one net's sketch back to
         ``'unrouted'`` and drop its realized copper — the LLM's lever when
         the realizer reports an over-capacity gap (backlog's rip-up loop).
@@ -2088,36 +2155,41 @@ class PcbMixin:
         geometry, since a pinned choice that caused the squeeze shouldn't
         survive the rip that was meant to escape it. Returns whether a
         route row existed to rip (``False`` for an already-unrouted net —
-        nothing to rip)."""
-        with self.tx() as conn:
-            row = conn.execute(
-                "SELECT rt.route_id, rt.board_id, rt.net_id FROM pcb_routes rt "
-                "JOIN pcb_nets n ON n.net_id = rt.net_id "
-                "WHERE n.ref_id = %s AND n.name = %s AND n.retired_at IS NULL",
-                (ref_id, net_name),
-            ).fetchone()
-            if row is None:
-                return False
-            route_id, board_id, net_id = int(row[0]), int(row[1]), int(row[2])
-            conn.execute(
-                "UPDATE pcb_routes SET tree = NULL, topology = NULL, "
-                "layer_assign = NULL, status = 'unrouted', fail = NULL, "
-                "updated_at = now() WHERE route_id = %s",
-                (route_id,),
-            )
-            conn.execute(
-                "DELETE FROM pcb_copper WHERE board_id = %s AND net_id = %s",
-                (board_id, net_id),
-            )
-            # The last route run's digest no longer describes the stored
-            # copper: count the rips on it so view='congestion' says so. The
-            # next route run overwrites `last_route` wholesale, resetting it.
-            conn.execute(
-                "UPDATE refs SET meta = jsonb_set(meta, '{last_route,ripped}', "
-                "to_jsonb(COALESCE((meta #>> '{last_route,ripped}')::int, 0) + 1)) "
-                "WHERE ref_id = %s AND jsonb_typeof(meta -> 'last_route') = 'object'",
-                (ref_id,),
-            )
+        nothing to rip). Reuses ``conn`` inside an existing transaction."""
+        if conn is not None:
+            return self._pcb_rip_route(conn, ref_id, net_name)
+        with self.tx() as c:
+            return self._pcb_rip_route(c, ref_id, net_name)
+
+    def _pcb_rip_route(self, conn: Connection, ref_id: int, net_name: str) -> bool:
+        row = conn.execute(
+            "SELECT rt.route_id, rt.board_id, rt.net_id FROM pcb_routes rt "
+            "JOIN pcb_nets n ON n.net_id = rt.net_id "
+            "WHERE n.ref_id = %s AND n.name = %s AND n.retired_at IS NULL",
+            (ref_id, net_name),
+        ).fetchone()
+        if row is None:
+            return False
+        route_id, board_id, net_id = int(row[0]), int(row[1]), int(row[2])
+        conn.execute(
+            "UPDATE pcb_routes SET tree = NULL, topology = NULL, "
+            "layer_assign = NULL, status = 'unrouted', fail = NULL, "
+            "updated_at = now() WHERE route_id = %s",
+            (route_id,),
+        )
+        conn.execute(
+            "DELETE FROM pcb_copper WHERE board_id = %s AND net_id = %s",
+            (board_id, net_id),
+        )
+        # The last route run's digest no longer describes the stored
+        # copper: count the rips on it so view='congestion' says so. The
+        # next route run overwrites `last_route` wholesale, resetting it.
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{last_route,ripped}', "
+            "to_jsonb(COALESCE((meta #>> '{last_route,ripped}')::int, 0) + 1)) "
+            "WHERE ref_id = %s AND jsonb_typeof(meta -> 'last_route') = 'object'",
+            (ref_id,),
+        )
         return True
 
     def pcb_pin_topology(

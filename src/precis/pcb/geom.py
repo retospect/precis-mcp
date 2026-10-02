@@ -824,3 +824,43 @@ def rounded_polygon(
     if closed:
         out.append(out[0])
     return out
+
+
+def rigid_transform_geom(
+    geom: dict[str, Any],
+    *,
+    pivot: Point,
+    target: Point,
+    dtheta_deg: float,
+) -> dict[str, Any]:
+    """``geom`` carried by a rigid move: rotated ``dtheta_deg`` about
+    ``pivot`` (board frame, clockwise-from-north like
+    :func:`precis.pcb.landpattern.rotate_offset`, so copper turns the way a
+    pad does) and then ``pivot`` lands on ``target`` — a pure translation
+    when ``dtheta_deg`` is 0. Handles the two ``pcb_copper``/
+    ``pcb_fixed_copper`` geometry shapes: a via's ``{x, y, ...}`` and a
+    track's ``{segments: [{start, end, center?, ...}], ...}``; every other
+    key (widths, span, drill) is size, not position, and is copied. Also
+    works on the flat item shape ``pcb_fixed_copper_list`` returns (geom
+    fields merged beside ``ctype``/``layer``/``net``). Returns a new dict."""
+    from precis.pcb.landpattern import rotate_offset
+
+    def move(pt: Any) -> list[float]:
+        dx, dy = float(pt[0]) - pivot[0], float(pt[1]) - pivot[1]
+        rx, ry = rotate_offset(dx, dy, dtheta_deg)
+        return [target[0] + rx, target[1] + ry]
+
+    out = dict(geom)
+    if "x" in out and "y" in out:
+        out["x"], out["y"] = move((out["x"], out["y"]))
+    segs = out.get("segments")
+    if segs:
+        new_segs = []
+        for seg in segs:
+            s = dict(seg)
+            for key in ("start", "end", "center"):
+                if s.get(key) is not None:
+                    s[key] = move(s[key])
+            new_segs.append(s)
+        out["segments"] = new_segs
+    return out

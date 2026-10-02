@@ -18,6 +18,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+from typing import Any
 
 import pytest
 
@@ -832,3 +833,38 @@ def test_rounded_polygon_clamps_instead_of_self_intersecting():
     assert max(x for x, _ in out) <= 10.0 + 1e-9
     assert min(y for _, y in out) >= -1e-9
     assert max(y for _, y in out) <= 4.0 + 1e-9
+
+
+def test_rigid_transform_geom_turns_vias_tracks_and_arc_centres() -> None:
+    from precis.pcb.geom import rigid_transform_geom
+
+    track: dict[str, Any] = {
+        "segments": [
+            {"shape": "line", "start": [3.0, 0.0], "end": [3.0, 2.0]},
+            {
+                "shape": "arc",
+                "start": [3.0, 2.0],
+                "end": [1.0, 4.0],
+                "center": [1.0, 2.0],
+                "cw": False,
+            },
+        ],
+        "width_mm": 0.2,
+    }
+    # Pivot (1, 0) -> target (10, 20), 90 deg clockwise: offset (dx, dy) -> (dy, -dx).
+    out = rigid_transform_geom(
+        track, pivot=(1.0, 0.0), target=(10.0, 20.0), dtheta_deg=90.0
+    )
+    line, arc = out["segments"]
+    assert line["start"] == pytest.approx([10.0, 18.0])  # offset (2, 0)
+    assert line["end"] == pytest.approx([12.0, 18.0])  # offset (2, 2)
+    assert arc["center"] == pytest.approx([12.0, 20.0])  # offset (0, 2)
+    assert arc["cw"] is False and out["width_mm"] == 0.2
+    assert track["segments"][0]["start"] == [3.0, 0.0]  # input untouched
+
+    via = {"x": 2.0, "y": 1.0, "dia_mm": 0.6, "span": ["F.Cu", "B.Cu"]}
+    moved = rigid_transform_geom(
+        via, pivot=(0.0, 0.0), target=(5.0, 5.0), dtheta_deg=0.0
+    )
+    assert (moved["x"], moved["y"]) == (7.0, 6.0)
+    assert moved["dia_mm"] == 0.6 and moved["span"] == ["F.Cu", "B.Cu"]

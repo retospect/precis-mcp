@@ -856,6 +856,127 @@ def placement_drc_findings(
     )
 
 
+def fixed_copper_findings(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    fab_caps: CapabilityRow,
+) -> list[DrcFinding]:
+    """Every error-severity clearance finding between AUTHORED fixed copper
+    and a pad (or other fixed copper) of another net — the structured form
+    of what ``pcb_route``'s pre-route gate refuses on (its
+    ``_fixed_copper_collisions`` renders these as lines), and what
+    ``op='move'`` of a generator group judges its carried copper by. A
+    pad-to-pad overlap is the placer's to fix and is not included."""
+    if not fixed_copper:
+        return []
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "copper": list(fixed_copper),
+        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+    }
+    return [
+        f
+        for f in pcb_drc.check_clearance(model, fab_caps)
+        if f.severity == "error"
+        and any(o.get("ctype") in ("via", "track") for o in f.objects)
+    ]
+
+
+def fixed_via_pad_findings(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    fab_caps: CapabilityRow,
+) -> list[DrcFinding]:
+    """``via_pad_keepout`` errors for AUTHORED vias against pads — the rule
+    ``clearance`` cannot express (a same-net via on a land), judged on
+    fixed copper only (``op='move'`` of a generator group's carried vias)."""
+    vias = [r for r in fixed_copper if r.get("ctype") == "via"]
+    if not vias:
+        return []
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = {
+        "layers": layers,
+        "copper": vias,
+        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+    }
+    return [
+        f
+        for f in pcb_drc.check_via_pad_keepout(model, fab_caps)
+        if f.severity == "error"
+    ]
+
+
+def router_copper_conflicts(
+    ir: pcb_ir.PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    *,
+    router_rows: list[dict[str, Any]],
+    carried_rows: list[dict[str, Any]],
+    members: set[str],
+    fab_caps: CapabilityRow,
+) -> dict[str, list[str]]:
+    """``{net: [finding line, ...]}`` for every net whose STORED router
+    copper (``router_rows``, flat ``pcb_copper_list`` items) has an ERROR
+    finding against a moved generator group — the group's own pads
+    (``members``, refdes) or its carried fixed copper (``carried_rows``,
+    already at their new pose). The model holds ONLY those plus the router
+    rows, so a router-vs-router or router-vs-bystander pair (not this
+    move's doing) never appears. Clearance, via/pad and via/via keep-out."""
+    if not router_rows:
+        return {}
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    pads = [
+        p
+        for p in pcb_realize.pads_for_ir(ir, layers, footprints)
+        if str(p.get("refdes")) in members
+    ]
+    model = {
+        "layers": layers,
+        "pads": pads,
+        "copper": [
+            *({**r, "net": r.get("net") or ""} for r in carried_rows),
+            *({**r, "derived": True} for r in router_rows),
+        ],
+    }
+    findings = [
+        *pcb_drc.check_clearance(model, fab_caps),
+        *pcb_drc.check_via_pad_keepout(model, fab_caps),
+        *pcb_drc.check_via_via_keepout(model, fab_caps),
+    ]
+    out: dict[str, list[str]] = {}
+    for f in findings:
+        if f.severity != "error":
+            continue
+        objs = f.objects
+        if f.rule == "clearance":
+            involves_group = any(not o.get("derived") for o in objs)
+        elif f.rule == "via_via_keepout":
+            involves_group = any(
+                not (o.get("a_derived") and o.get("b_derived")) for o in objs
+            )
+        else:  # via_pad_keepout: the other side is always a group pad
+            involves_group = True
+        if not involves_group:
+            continue
+        for obj in objs:
+            for net_key, flag_key in _ROUTER_NET_KEYS:
+                if obj.get(flag_key) and obj.get(net_key):
+                    out.setdefault(str(obj[net_key]), []).append(f"{f.rule}: {f.where}")
+    return out
+
+
 def routed_drc_findings(
     ir: pcb_ir.PcbIR,
     rres: RealizeResult,

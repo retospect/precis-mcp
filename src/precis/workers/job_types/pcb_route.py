@@ -161,24 +161,12 @@ def _fixed_copper_collisions(
     (`pads_for_ir`) and the same rule (`drc.check_clearance`) view='drc'
     uses, restricted to error-severity findings that involve fixed copper —
     a pad-to-pad overlap is the placer's to fix and is not judged here."""
-    if not fixed_copper:
-        return []
-    from precis.pcb import drc as pcb_drc
-
-    layers = [str(layer.get("name")) for layer in ir.stackup]
-    model = {
-        "layers": layers,
-        "copper": list(fixed_copper),
-        "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
-    }
-    out: list[str] = []
-    for f in pcb_drc.check_clearance(model, fab_caps):
-        if f.severity != "error":
-            continue
-        if not any(o.get("ctype") in ("via", "track") for o in f.objects):
-            continue
-        out.append(f"{f.where}: {f.detail}")
-    return out
+    return [
+        f"{f.where}: {f.detail}"
+        for f in pcb_session.fixed_copper_findings(
+            ir, footprints, fixed_copper, fab_caps
+        )
+    ]
 
 
 def _collision_reason(what: str, collisions: list[str]) -> str:

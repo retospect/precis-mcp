@@ -29,9 +29,18 @@ Do-next renumbered)
 1. **backlog/pcb-always-valid-board-invariant.md** — the route job now
    DRCs its own router copper before writing (2026-10-02, undeployed):
    a violating net is stripped and lands `failed` with `drc:<rule>`.
-   Decision 3 was read off standing rulings; review item ewod-pcb-1 lets
-   Reto overrule it and still holds decisions 1-2 (move carries authored
-   copper; multi-pose move). After the deploy, re-route ewod-dogfood-6 and
+   Reto confirmed 3b and ruled 1-2 on 2026-10-02 (recorded in the item):
+   **Pending (orchestrator round-4 verdict, 2026-10-02):** on pcb 460559
+   the gate stripped 13 nets the router realized. pcb-easyeda-round-trip
+   is classifying each one as a router fault or a gate fault from its
+   offline run; ewod-pcb fixes the gate-side ones. Suspects sent to them:
+   net-class/voltage clearance the router's grid ignores, quantize
+   rounding at the floor, a both-nets strip where one would do, via
+   floors. Ruling 1 (a moved generator member carries its whole group and fixed
+   copper, rips stale router nets) built 2026-10-02. **Next:** fix
+   `ewod_pad_array` to emit its copper at the array anchor (`params.x/y`,
+   generator version bump + tripwire update; 0 prod arrays off origin), then
+   the multi-pose `op='move'` validated as one state. After the deploy, re-route ewod-dogfood-6 and
    check the summary's "stripped by post-route DRC" count — expected 0,
    since the board already reads 0 geometric DRC errors.
    **Now `status: canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
@@ -52,7 +61,14 @@ Do-next renumbered)
    datasheet nodes, gr458878 pin provenance) and nothing here blocks it.
    The mesh half is knowledge-mesh's; its shape is in review item
    ewod-pcb-2.
-3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
+3. **backlog/pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md**
+   — promoted from Horizon 2026-10-02 (round-1 diff review). The DRC model
+   shows a rect pad at an oblique angle as its unrotated rect. Router copper
+   is safe (its grid claim is the circumscribed circle), but the pre-route
+   fixed-copper refusal and `view='drc'` judge authored copper against the
+   wrong outline. Small fix (emit the rotated polygon); queued right after
+   the move slice, before the datasheet pull's build.
+4. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
    **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a
    $0.046 term overruled courtyard_overlap). With legality moved out of the
@@ -60,7 +76,7 @@ Do-next renumbered)
    what survives is tuning clarity for the next person adding a term — and
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
-4. **dogfood-6's 25 failed escapes are not corridor starvation.**
+5. **dogfood-6's 25 failed escapes are not corridor starvation.**
    Measured 2026-10-02: `view='congestion'` reports 0 over-capacity gaps;
    the failures split 8 `congestion` / 17 `no_path`. So
    backlog/pcb-placer-starves-the-escape-corridor.md lost its only
@@ -71,12 +87,12 @@ Do-next renumbered)
    What is left is a router question, and the router half belongs to
    pcb-easyeda-round-trip: hand them dogfood-6 as the fixture rather than
    diagnosing it here.
-5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
+6. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
-   only registered generator is `ewod_pad_array`). Sits beside 4: both are
+   only registered generator is `ewod_pad_array`). Sits beside 5: both are
    the escape corridor, this one is where the primitive lives. Reto
    2026-09-26/27: board = data, engine = general.
-6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+7. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on came from the then-unlanded
    routing_area term. That term landed 2026-10-01 (Reto's call) and on that
@@ -134,10 +150,7 @@ Do-next renumbered)
 4. **backlog/pcb-missing-constraint-classes.md** +
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
-   a class becomes enforceable rather than advisory. Reading nearby:
-   backlog/pcb-oblique-rotated-pad-is-an-axis-aligned-rect-in-the-model.md
-   is the same "what shape is this pad" question at an oblique angle, and
-   an .epro2 import is its likely first real source. **gr458878** (filed on
+   a class becomes enforceable rather than advisory. **gr458878** (filed on
    Reto's word 2026-09-30) is the pin-level datasheet-provenance gap: a
    datasheet links to a PART, but no pin selector exists so no pin fact can
    cite the page it came from — and the payoff is validation, since the
@@ -161,7 +174,7 @@ Do-next renumbered)
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
-   it but a human looking at the render. Same root gap as Do-next 4's
+   it but a human looking at the render. Same root gap as Do-next 5's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
 8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
@@ -232,7 +245,7 @@ Do-next renumbered)
   connectivity) + 1 `silk_missing` (ARR1_SINK_0's bottom refdes has no
   spot clear of the 55 plaza vias: a real board finding). **Zero geometric
   errors.** 160 warnings, all copper at JLC minimums. Its 25 failures are
-  Do-next 4's fixture. Earlier history (the 116-error placement; jobs
+  Do-next 5's fixture. Earlier history (the 116-error placement; jobs
   460181/460302 accepting 0 of 3000 moves for lack of an outline) is in
   git log.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
