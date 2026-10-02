@@ -1685,6 +1685,17 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
             relation = validate_relation(op["relation"])
         except MeasureError as exc:
             raise OpError(f"{opname}: {exc}") from exc
+        feature = (relation or {}).get("feature")
+        if feature is not None:
+            from precis_se.datums import parse_selector
+
+            if parse_selector(feature).kind in ("atoms", "sites"):
+                raise OpError(
+                    f"{opname}: relation feature {feature!r} is refused until "
+                    "atom-level computers land (slice B): an atom index has no "
+                    "stable meaning across structure versions without a pin; "
+                    "use it as the measure's datum (pinned) instead"
+                )
     if relation is not None:
         out["relation"] = relation
     strength = _vet_vocab(op, "strength", _STRENGTHS, opname=opname)

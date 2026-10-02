@@ -1604,3 +1604,44 @@ def test_a_retired_taxon_falls_back_to_the_snapshot(handler: SeHandler) -> None:
     assert gone.measurand_live is None
     assert measurand_name(gone) == "surface-charge-density"
     assert (gone.measurand_ref, gone.unit) == (m.measurand_ref, "C/m^2")
+
+
+@pytest.mark.parametrize("selector", [_ATOMS, _SITES])
+def test_atoms_and_sites_are_refused_as_a_relation_feature(selector: str) -> None:
+    with pytest.raises(OpError, match="refused until atom-level computers"):
+        _bound(_add("a", "frame", relation={"feature": selector}))
+    tree = _bound(_add("a", "frame"))
+    with pytest.raises(OpError, match="slice B"):
+        apply_ops(
+            tree,
+            [
+                {
+                    "op": "set_measure",
+                    "block": "b",
+                    "name": "a",
+                    "relation": {"feature": selector},
+                }
+            ],
+        )
+    with pytest.raises(OpError, match="slice B"):  # inline pocket measure
+        _bound(
+            {
+                "op": "add_pocket",
+                "block": "b",
+                "name": "p",
+                "regions": [
+                    {
+                        "selector": "ring:b.top",
+                        "measures": [{"name": "m", "relation": {"feature": selector}}],
+                    }
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize("selector", [_ATOMS, _SITES])
+def test_the_same_selector_is_still_accepted_as_a_datum(selector: str) -> None:
+    tree = _bound(
+        _add("a", selector), _add("b2", "frame", relation={"feature": "ring:b.top"})
+    )
+    assert tree.measures[0].datum == selector

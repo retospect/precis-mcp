@@ -135,6 +135,8 @@ are pinned the same way, because a regeneration may renumber them.
   (`set_measure datum=`) to pin it to the version now bound.
 - `datum_pin` is exported in `view='ops'` and kept on replay; do not
   pass it by hand.
+- `atoms:`/`sites:` are refused as a `relation` `feature` until atom-level
+  computers land: they carry no pin there. Use them as the `datum`.
 
 ## Region findings in view='drc'
 
