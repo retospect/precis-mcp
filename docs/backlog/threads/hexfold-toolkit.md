@@ -212,8 +212,12 @@ waited on happened 09-29 — note at the bottom)
     rounded lid), and distributed defects out. It emits authored-defect
     lists (gr459928). The smooth-drum slice there (Reto 2026-10-01) has
     its meridian (`precis_surface.revolution`, table radii from
-    `hexfold.radii`) and row fit (`precis_surface.rowfit`) landed; open
-    are the viewer overlay and a carbon wrapper that mints the fit.
+    `hexfold.radii`), row fit (`precis_surface.rowfit`), viewer overlay
+    and carbon wrapper (se generator `smooth_drum`) landed; prod has se
+    `hexa-smooth-drum-v2`. Next after it:
+    **backlog/smooth-drum-engineered-mode.md** (Reto 2026-10-02): an exact
+    nanotube stalk with rotationally symmetric collars, beside today's
+    organic loft.
 12. **backlog/global-structure-search-slices.md** — variable-composition
     (`add` ranges) and surrogate warm-start from a prior AGOX database;
     structure-kind search work homed here by Reto's pillar-2 ruling
