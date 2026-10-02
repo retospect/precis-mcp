@@ -86,6 +86,24 @@ capacity and isolation gaps.
    staged at `~/.claude/projects/-Users-reto-precis-mcp/scratch/gr460711/ensure.sh`
    on melchior and rig-verified; install it after the deploy that carries
    the supervisor change, in one recreate.
+   **(d) not reproduced, 2026-10-02 11:08Z:** an interactive `claude`
+   (v2.1.285, haiku, driven through tmux) on the rig went through one
+   recreate, one respawn, then two hard `docker rm -f` recreates 55 s
+   apart, and answered a tool call from the new container each time. The
+   reconnect-budget hypothesis is unproven; the 10-01 stranding may have
+   needed an older client or a call in flight. The server-side fixes stand
+   on their own: fewer recreates, drained ones.
+   **(e) dependencies, added at the orchestrator's request:** the
+   numba crash (2026-10-02 ~10:25Z, fixed by a hand image rebuild) shows
+   the prepare step must also install new dependencies — (c)'s
+   `--no-deps` reinstall would not have caught it. Staged: when `uv.lock`
+   changes, dry-run the image's own sync (`uv sync --frozen
+   --no-install-project --all-extras --no-dev --inexact
+   --no-install-package autocatpath`) and run it only if the plan adds a
+   package or changes a version. Rig: numba uninstalled, one respawn,
+   `synced dependencies from uv.lock: numba==0.67.0`, child up 6 s later.
+   Still needs an image rebuild: a dep with no wheel, or an autocatpath
+   bump.
    **Second gap, same day:** `scripts/deploy` moves the prod clone only on
    the machine that runs it, so melchior's clone (made 10:01Z) never moved
    while deploys ran elsewhere — the server served 06e3f3d7 under a
