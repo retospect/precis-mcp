@@ -17,7 +17,7 @@ kinds: [part, pcb]
 A `part` is reference data in the LCSC/JLCPCB catalog, addressed by its **LCSC
 C-number** (`C25804`). It is **ingest-only** (loaded via `precis pcb
 refresh-parts` / the `parts_refresh` worker, from the JLCPCB Open API or the
-community `jlcparts` dump) — you `get` and `search` it, never `put` it.
+community `jlcparts` dump) — you `get`, `search` and link it, never `put` it.
 The whole catalog is **JLCPCB-assemblable by definition**, so a part you find
 here can be placed and soldered by the fab. This skill feeds the `part` field
 of a `pcb` component ([[precis-pcb-help]]).
@@ -69,6 +69,25 @@ get(
 
 Use this to confirm a candidate before committing it to a design — especially
 `package` (must match your footprint) and `basic`.
+
+## Link a part — it becomes a ref on first use
+
+A part joins the graph lazily: the first add-mode link to `part:<C-no>` mints
+its ref (handle `pn<id>`), and later links reuse it.
+
+```python
+link(kind="component", id="my-cap", rel="realized-by", target="part:C25804")
+link(kind="memory", id=42, target="part:C25804")  # any kind with a link verb
+```
+
+- A C-number that is not in the catalog has nothing to mint from, so the
+  link is refused (`NotFound`). `mode='remove'` and `like=` never mint.
+- Once a part has a ref, `get(kind='part', id='C25804')` adds `ref: pn<id>`
+  and its links under the catalog row. If the daily catalog refresh later
+  drops the row, `get` still shows the ref and its links, with "no longer in
+  the catalog".
+- `edit(kind='datasheet', id=…, part_lcsc='C25804')` links the datasheet
+  `datasheet-of` the part ([[precis-datasheet-help]]).
 
 ## Use it in a design — the auto-stamp
 

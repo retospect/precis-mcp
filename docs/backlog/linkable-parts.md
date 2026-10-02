@@ -29,44 +29,12 @@ linkable:
 
 ## In scope
 
-Two independently shippable slices; neither needs a migration.
-
-**Slice 1 — the part ref and the link door.**
-
-1. **Identity.** A part ref is `refs(kind='part', slug='<C-no>')`, slug
-   the upper-case LCSC number (so `insert_ref` writes the `cite_key` row
-   `get_ref` resolves by), plus a second identifier row
-   `ref_identifiers('lcsc', '<C-no>')`. Title `<mfr_part> — <description>`
-   from the catalog row at mint time; `set_by` the calling actor.
-   Chunkless, so the embed and summary cascade never sees it. The
-   reserved handle `pn<ref_id>` becomes a live universal handle with the
-   first ref (`KIND_CODES` already has it).
-2. **One mint step, write doors only.** New
-   `Store.ensure_part_ref(lcsc, *, set_by, conn=None) -> int`:
-   find by the `lcsc` identifier, else mint; race rule as
-   `upsert_stub_paper` (`ON CONFLICT DO NOTHING` on the identifier, then
-   re-probe). It mints only for a C-number present in `parts` and raises
-   `NotFound` otherwise; an existing ref is returned whether or not its
-   row is still in the catalog. `parse_link_target` never mints (it also
-   serves unlink and `like=`). The add-mode link doors
-   (`apply_link_ops`, `NumericRefHandler.link`) call `ensure_part_ref`
-   for a `part:<C-no>` target before parsing; unlink and read paths
-   resolve only.
-3. **`get(kind='part', id=<C-no>)`** reads the live catalog row as today
-   and, when a ref exists, appends its link ring. A ref whose row has
-   left the catalog renders the ref's title and links with one line
-   "no longer in the catalog (as of the last refresh)", not `NotFound`.
-   A C-number with neither row nor ref still raises `NotFound`.
-4. **Datasheets, dual-write.** `DatasheetHandler.edit(part_lcsc=…)`
-   keeps writing `meta.part_lcsc` (read by `nanopub/evidence.py`,
-   `export/docx.py`, `export/latex.py`) and also writes
-   `datasheet-of` → the part ref (relation seeded in 0054).
-5. **`component realized-by part`** uses the existing `realized-by` /
-   `realizes` pair (migration 0156, already the cad catalog-part sync's
-   design → component edge). Only the part ref as a target is new.
-6. **Runtime doc.** The part skill says a part is linkable, how it mints
-   and the catalog-absent case; `precis-relations` gets one line under
-   `realized-by` for component → part.
+Slice 1 (the part ref and the link door) shipped 2026-10-02: a part ref is
+`refs(kind='part', slug=<C-no>)` plus `ref_identifiers('lcsc', <C-no>)`,
+minted by `Store.ensure_part_ref` from the add-mode link doors only;
+`get(kind='part')` shows the ref and its ring; a datasheet's `part_lcsc`
+dual-writes `datasheet-of`; `pn<ref_id>` is a live handle. Slice 2 builds
+on `ensure_part_ref`.
 
 **Slice 2 — board edges and backfill.**
 
@@ -92,24 +60,6 @@ Two independently shippable slices; neither needs a migration.
 
 ## Acceptance criteria
 
-Slice 1:
-1. `link(kind='memory', id=M, target='part:C25804', rel='related-to')`
-   mints exactly one part ref; a second link to the same C-number reuses
-   it; two concurrent first links converge on one ref.
-2. `link(..., target='part:C99999999')` for a C-number not in `parts`
-   raises `NotFound` and mints nothing; `link(..., mode='remove',
-   target='part:C25804')` and `like='part:C25804'` never mint.
-3. `get(kind='part', id='C25804')` shows the catalog row and, once
-   linked, the link ring; after the row leaves the catalog (simulated
-   staging swap) it shows the ref with the "no longer in the catalog"
-   line instead of raising.
-4. `edit(kind='datasheet', id=…, part_lcsc='C25804')` sets
-   `meta.part_lcsc` and writes `datasheet-of` → the part ref; the
-   nanopub/docx/latex readers are unchanged.
-5. `link(kind='component', id=…, rel='realized-by', target='part:C25804')`
-   shows in both refs' rings.
-6. `pn<ref_id>` resolves as a universal handle.
-
 Slice 2:
 7. `_pcb_apply` adding two instances of C25804 (R1, R2) leaves one
    `pcb contains part` edge with `{refdes: ['R1','R2'], qty: 2}`;
@@ -121,14 +71,9 @@ Slice 2:
 
 ## Target + blast radius
 
-- `src/precis/store/` (`ensure_part_ref`; `_pcb_ops.py::_pcb_apply`
-  reconcile)
-- `src/precis/handlers/_link_tag_ops.py`, `handlers/_numeric_ref.py`
-  (add-mode mint call), `handlers/_link_target.py` (resolve only)
-- `src/precis/handlers/part.py` (get with ref + ring),
-  `handlers/datasheet.py` (dual-write)
+- `src/precis/store/_pcb_ops.py::_pcb_apply` reconcile
 - a `precis pcb link-parts` CLI verb
-- skills: part help, `precis-relations`
+- skills: `precis-pcb-help` (the board's part edges)
 - no migration
 
 ## Open questions / decisions log
@@ -148,3 +93,12 @@ Slice 2:
 - **[open, non-blocking]** A C-number not in the catalog refuses to mint
   (AC 2). Revisit if a hand-authored board needs a part the catalog has
   dropped; the alternative is minting from the board's own snapshot.
+- **[decided 2026-10-02, slice 1 build]** Three choices the spec left
+  open. (a) `component` had no `link` verb, so AC 5 had no door: it got
+  the generic one (`apply_link_ops`), with `made-of` and `contains` still
+  refused there and kept on `put`. (b) Put-time `link=` (memory/todo/
+  gripe `put`) resolves only; its `NotFound` for an unminted part names
+  `link()` as the door. (c) A datasheet `part_lcsc` outside the catalog
+  keeps the meta write (old behaviour) and skips the edge, saying so in
+  the ack; only the edge the previous `part_lcsc` implied is moved, so a
+  hand-made family-datasheet link stays.

@@ -1,7 +1,11 @@
 """PartHandler — the LCSC/JLCPCB catalog kind.
 
-A ``part`` is reference data in the ``parts`` catalog table (NOT a ref;
-addressed by its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``).
+A ``part`` is reference data in the ``parts`` catalog table, addressed by
+its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``. A part
+becomes a ref lazily, on its first add-mode link
+(:meth:`Store.ensure_part_ref`, docs/backlog/linkable-parts.md); ``get``
+then appends the ref's link ring, and keeps rendering the ref after the
+daily catalog swap drops its row.
 It is **ingest-only** — populated by ``precis pcb refresh-parts`` / the
 ``parts_refresh`` worker (JLCPCB Open API cursor walk, falling back to the
 community ``jlcparts`` SQLite dump absent API credentials), never by
@@ -20,9 +24,11 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._links_render import render_links_section
 from precis.pcb.catalog import min_unit_price
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.utils import handle_registry
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +40,8 @@ class PartHandler(Handler):
         description=(
             "LCSC/JLCPCB catalog part — reference data addressed "
             "by LCSC C-number (get(kind='part', id='C25804')). Ingest-only "
-            "(jlcparts dump). search(kind='part', q='0.1uF 0402 X7R') filters "
+            "(jlcparts dump); linkable: link(target='part:C25804') mints its "
+            "ref on first use. search(kind='part', q='0.1uF 0402 X7R') filters "
             "to JLCPCB-assemblable parts and prefers Basic + high-turnover + "
             "cheap. Used by a pcb design to pick manufacturable parts. "
             "See precis-part-select-help."
@@ -59,26 +66,41 @@ class PartHandler(Handler):
             )
         lcsc = str(id).strip().upper()
         row = self.store.part_row(lcsc)
-        if row is None:
+        ref_id = self.store.part_ref_id(lcsc)
+        ref = self.store.get_ref(kind="part", id=ref_id) if ref_id is not None else None
+        if row is None and ref is None:
             raise NotFound(
                 f"part {lcsc} not in the catalog",
                 next="the parts catalog is populated by the parts_refresh worker "
                 "(precis pcb refresh-parts); search(kind='part', q='...') once "
                 "it has run",
             )
-        payload = {
-            "lcsc": row["lcsc"],
-            "mfr_part": row["mfr_part"],
-            "description": row["description"],
-            "assemblable": row["jlcpcb_assemblable"],
-            "basic": row["basic"],
-            "stock": row["stock"],
-            "package": row["package"],
-            "height_mm": row["height_mm"],
-            "datasheet_url": row["datasheet_url"],
-            "restocks": row["restock_count"],
-        }
-        return Response(body=render_agent_table([payload]))
+        if row is not None:
+            payload = {
+                "lcsc": row["lcsc"],
+                "mfr_part": row["mfr_part"],
+                "description": row["description"],
+                "assemblable": row["jlcpcb_assemblable"],
+                "basic": row["basic"],
+                "stock": row["stock"],
+                "package": row["package"],
+                "height_mm": row["height_mm"],
+                "datasheet_url": row["datasheet_url"],
+                "restocks": row["restock_count"],
+            }
+            body = render_agent_table([payload])
+        else:
+            assert ref is not None
+            body = (
+                f"# {lcsc} — {ref.title}\n"
+                f"{lcsc} is no longer in the catalog (as of the last refresh); "
+                "its ref and links remain."
+            )
+        if ref is not None:
+            # the section arrives with its own leading blank line
+            body += f"\nref: {handle_registry.format_handle('part', ref.id)}"
+            body += render_links_section(self.store, ref, limit=12)
+        return Response(body=body)
 
     # ── search ───────────────────────────────────────────────────────
     def search(

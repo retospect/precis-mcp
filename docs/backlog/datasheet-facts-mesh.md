@@ -4,7 +4,7 @@ title: a pulled datasheet's ratings, key specs, package and pin table land as pa
 pillar: memory-graph
 prio: normal
 model: sonnet
-blocked-by: linkable-parts
+blocked-by: measures-substrate
 ---
 
 # datasheet facts in the mesh
@@ -22,7 +22,7 @@ checked against the footprint's pad map, which nothing checks today
 
 ## In scope
 
-1. **Subject.** The part ref (`linkable-parts.md`); the datasheet links
+1. **Subject.** The part ref (shipped, linkable-parts slice 1); the datasheet links
    `datasheet-of` → part.
 2. **Ratings and key specs** as `measures` rows with `subject_ref_id` =
    the part ref, measurand = a taxon node, the value normalised to the

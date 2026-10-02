@@ -128,8 +128,10 @@ an enclosure *contains* the bracket — different edges, different meaning).
 A component with no `contains` children is automatically a **leaf** — this
 is the PCB-leaf boundary (ADR 0071): a PCBA is one line item here, its
 internals stay in the `pcb`/`part` subsystem, and the rollup below never
-descends into it. There is no `realized_by` → `part` binding yet — a leaf
-component doesn't link to a catalog C-number.
+descends into it. A leaf can name the catalog part that builds it with
+`link(kind='component', id=<slug>, rel='realized-by', target='part:C25804')`
+(the part's ref is minted on its first link, [[precis-part-select-help]]);
+`made-of` and `contains` stay on `put`.
 
 ```python
 get(kind="component", id="enclosure", view="tree")

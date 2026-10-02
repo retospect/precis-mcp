@@ -230,13 +230,18 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
             else None
         )
         if ref is None:
+            if kind == "part":
+                next_hint = (
+                    f"link(kind=..., id=..., target={target!r}) mints the part "
+                    "ref on its first link; then this target resolves"
+                )
+            elif is_numeric:
+                next_hint = f"check it exists: get(kind={kind!r}, id={identifier})"
+            else:
+                next_hint = f"check it exists: get(kind={kind!r}, id={identifier!r})"
             raise NotFound(
                 f"link target {target!r} resolves to no live {kind} ref",
-                next=(
-                    f"check it exists: get(kind={kind!r}, id={identifier!r})"
-                    if not is_numeric
-                    else f"check it exists: get(kind={kind!r}, id={identifier})"
-                ),
+                next=next_hint,
             )
 
     # Resolve the block selector, if any. Two forms: numeric pos
@@ -289,6 +294,24 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
     )
 
 
+def mint_lazy_link_target(target: str, *, store: Store) -> None:
+    """Mint the lazy ref a ``part:<C-no>`` target names, if it has none.
+
+    Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``),
+    called before :func:`parse_link_target`, which never mints: it also
+    serves unlink and ``like=``. A C-number absent from the catalog raises
+    ``NotFound`` and mints nothing (docs/backlog/linkable-parts.md).
+    """
+    if not isinstance(target, str):
+        return
+    kind, sep, rest = target.strip().partition(":")
+    if not sep or kind.strip() != "part":
+        return
+    identifier = rest.partition("~")[0].strip()
+    if identifier and handle_registry.parse(identifier) is None:
+        store.ensure_part_ref(identifier)
+
+
 def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     """Look up `kinds.is_numeric` for the given kind slug.
 
@@ -336,4 +359,4 @@ def _kind_is_numeric(kind: str, *, store: Store) -> bool:
     )
 
 
-__all__ = ["LinkTarget", "parse_link_target"]
+__all__ = ["LinkTarget", "mint_lazy_link_target", "parse_link_target"]

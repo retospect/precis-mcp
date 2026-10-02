@@ -49,6 +49,8 @@ options list. Link verb mechanics and target grammar live in
 | `corroborates` | (none) | Evidence A supports an existing point: either a claim hub (evidence edge) or a point already woven into a dossier, grouped with it. |
 | `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
+| `realized-by` | `realizes` | A is made real by B: a cad design's catalog part → the component that realizes it, or a component → the catalog part that builds it (`target='part:C25804'`; the part's ref is minted on its first link). |
+| `datasheet-of` | `has-datasheet` | Datasheet A documents part B. `edit(kind='datasheet', part_lcsc='C25804')` writes it. |
 
 ## Which endpoints does a relation accept?
 ## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?

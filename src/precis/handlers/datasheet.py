@@ -30,7 +30,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
+from precis.handlers._link_tag_ops import apply_link_ops
 from precis.handlers.paper import PaperHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -131,10 +132,11 @@ class DatasheetHandler(PaperHandler):
         Any bibliographic field (``title`` / ``year`` / ``authors`` / …) is
         forwarded to the paper editor unchanged.
 
-        NB the ``part_lcsc`` is stored on the datasheet's ``meta`` rather than
-        as a ``datasheet-of`` graph edge: ``part`` is a catalog-table kind, not
-        a ``refs`` row, so it can't yet be a link target. Promote to the seeded
-        relation once parts become ref-backed.
+        ``part_lcsc`` is dual-written: ``meta.part_lcsc`` (read by the
+        nanopub evidence, docx and latex exporters) and a ``datasheet-of``
+        edge to the part's lazy ref, minted on first use. Changing it moves
+        the edge off the previous part; a blank clears both. A C-number not
+        in the catalog keeps the meta write and skips the edge.
 
         ``dry_run=True`` previews the datasheet-specific ``meta`` patch (and,
         when bibliographic fields are also passed, the inherited paper
@@ -171,14 +173,47 @@ class DatasheetHandler(PaperHandler):
             assert meta_preview is not None
             return meta_preview
 
+        edge_note = ""
         if meta_patch:
             ref_id = self._resolve_paper_ref_id(id)
+            if "part_lcsc" in meta_patch:
+                edge_note = self._sync_datasheet_of(ref_id, meta_patch["part_lcsc"])
             self.store.update_paper_fields(ref_id, meta_patch=meta_patch, source="edit")
         if bib:
             # The paper editor rebuilds search cards + returns its own summary;
             # let it own the response when bibliographic fields also changed.
-            return super().edit(id=id, dry_run=dry_run, **bib)
-        return Response(body=f"updated datasheet {id}: {', '.join(meta_patch)}.")
+            resp = super().edit(id=id, dry_run=dry_run, **bib)
+            return Response(body=resp.body + edge_note) if edge_note else resp
+        return Response(
+            body=f"updated datasheet {id}: {', '.join(meta_patch)}.{edge_note}"
+        )
+
+    def _sync_datasheet_of(self, ref_id: int, new_lcsc: str) -> str:
+        """Mirror ``meta.part_lcsc`` onto the ``datasheet-of`` edge; returns
+        a note for the ack. Only the edge the previous ``part_lcsc`` implied
+        is removed: a hand-made ``datasheet-of`` to another part (a family
+        datasheet) stays."""
+        ref = self.store.get_ref(kind="datasheet", id=ref_id)
+        old_lcsc = str((ref.meta or {}).get("part_lcsc") or "") if ref else ""
+        if old_lcsc and old_lcsc != new_lcsc:
+            old_part = self.store.part_ref_id(old_lcsc)
+            if old_part is not None:
+                self.store.remove_link(
+                    src_ref_id=ref_id, dst_ref_id=old_part, relation="datasheet-of"
+                )
+        if not new_lcsc:
+            return ""
+        try:
+            apply_link_ops(
+                self.store,
+                ref_id,
+                link=f"part:{new_lcsc}",
+                unlink=None,
+                rel="datasheet-of",
+            )
+        except NotFound:
+            return f" Part {new_lcsc} is not in the catalog: no datasheet-of edge."
+        return f" datasheet-of → part:{new_lcsc}."
 
     @staticmethod
     def _datasheet_meta_patch(

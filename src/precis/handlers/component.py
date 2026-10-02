@@ -69,7 +69,14 @@ from precis import supply
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._link_tag_ops import (
+    apply_link_ops,
+    format_link_tag_ack,
+    require_link_target,
+    validate_link_mode,
+)
 from precis.handlers._link_target import LinkTarget, parse_link_target
+from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store._component_ops import (
@@ -134,6 +141,7 @@ class ComponentHandler(Handler):
         supports_get=True,
         supports_put=True,
         supports_search=True,
+        supports_link=True,
         is_numeric=False,
         id_required=False,
         views=_VIEWS,
@@ -1495,6 +1503,47 @@ class ComponentHandler(Handler):
 
     # ── search ───────────────────────────────────────────────────────
 
+    # ── link ─────────────────────────────────────────────────────────
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Add/remove a link from this component to another ref, e.g. the
+        catalog part that realizes it (``rel='realized-by'``,
+        ``target='part:C25804'``, which mints the part ref on first link).
+        ``made-of`` and ``contains`` keep their own ``put`` doors (material
+        check; qty and refdes on the edge)."""
+        if rel in _PUT_DOOR_RELS:
+            raise BadInput(
+                f"rel={rel!r} is written through put, not link",
+                next=_PUT_DOOR_RELS[rel],
+            )
+        target = require_link_target("component", target)
+        validate_link_mode(mode)
+        ref = resolve_live_slug_ref(self.store, kind="component", id=str(id).strip())
+        n_added, n_removed = apply_link_ops(
+            self.store,
+            ref.id,
+            link=target if mode == "add" else None,
+            unlink=target if mode == "remove" else None,
+            rel=rel,
+        )
+        return Response(
+            body=format_link_tag_ack(
+                kind=self.spec.kind,
+                ref_label=str(ref.slug),
+                n_links_added=n_added,
+                n_links_removed=n_removed,
+                n_tags_added=0,
+                n_tags_removed=0,
+            )
+        )
+
     def search(
         self,
         *,
@@ -1607,6 +1656,13 @@ class ComponentHandler(Handler):
                 rows, schema=["component", "value", "conditions", "maturity", "source"]
             )
         )
+
+
+#: Relations a component writes through ``put``, with the call to use.
+_PUT_DOOR_RELS: dict[str, str] = {
+    "made-of": "put(kind='component', id=<slug>, made_of='material:<slug>')",
+    "contains": "put(kind='component', id=<slug>, contains='component:<child>', qty=1)",
+}
 
 
 def _fmt_spec(value: Any) -> str:

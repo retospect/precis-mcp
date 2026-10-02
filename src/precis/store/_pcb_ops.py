@@ -28,10 +28,12 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.errors import NotFound
 from precis.pcb import DEFAULT_STACKUP
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb.capabilities import capability_for
+from precis.store.types import ActorSlug
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -3136,6 +3138,98 @@ class PcbMixin:
             "restock_count": r[10],
             "ewma_stock": r[11],
         }
+
+    def part_ref_id(self, lcsc: str, *, conn: Connection | None = None) -> int | None:
+        """The live part ref for an LCSC C-number, or ``None``. Never mints."""
+
+        def _do(c: Connection) -> int | None:
+            row = c.execute(
+                "SELECT ri.ref_id FROM ref_identifiers ri "
+                "JOIN refs r ON r.ref_id = ri.ref_id "
+                "WHERE ri.id_kind = 'lcsc' AND ri.id_value = %s "
+                "  AND r.kind = 'part' AND r.retired_at IS NULL",
+                (lcsc.strip().upper(),),
+            ).fetchone()
+            return int(row[0]) if row is not None else None
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def ensure_part_ref(
+        self,
+        lcsc: str,
+        *,
+        set_by: ActorSlug = "agent",
+        conn: Connection | None = None,
+    ) -> int:
+        """Find-or-mint the lazy ``part`` ref for a catalog C-number.
+
+        A part ref is ``refs(kind='part', slug=<C-no>)`` plus a
+        ``ref_identifiers('lcsc', <C-no>)`` row, chunkless (the embed and
+        summary cascade never sees it), titled from the catalog row at
+        mint time (docs/backlog/linkable-parts.md). An existing live ref
+        is returned whether or not its row is still in ``parts``; a mint
+        needs the row and raises :class:`NotFound` without it.
+
+        Race: two first links both miss the probe and both insert; the
+        ``lcsc`` identifier's primary key serialises them, the loser's
+        insert claims nothing, its savepoint rolls back and it re-probes
+        onto the winner. A retired owner's identifier is reclaimed, as
+        :meth:`insert_ref` does for ``cite_key``.
+        """
+        key = lcsc.strip().upper()
+
+        class _Lost(Exception):
+            pass
+
+        def _do(c: Connection) -> int:
+            hit = self.part_ref_id(key, conn=c)
+            if hit is not None:
+                return hit
+            row = c.execute(
+                "SELECT mfr_part, description FROM parts WHERE lcsc = %s", (key,)
+            ).fetchone()
+            if row is None:
+                raise NotFound(
+                    f"part {key} is not in the catalog and has no ref",
+                    next="search(kind='part', q='...') for a catalog C-number",
+                )
+            title = " — ".join(s for s in (row[0], row[1]) if s) or key
+            try:
+                with c.transaction():
+                    ref = self.insert_ref(
+                        kind="part",
+                        slug=key,
+                        title=title,
+                        meta={"set_by": set_by},
+                        conn=c,
+                    )
+                    claimed = c.execute(
+                        "INSERT INTO ref_identifiers "
+                        "(id_kind, id_value, ref_id, source) "
+                        "VALUES ('lcsc', %s, %s, %s) "
+                        "ON CONFLICT (id_kind, id_value) DO UPDATE "
+                        "  SET ref_id = EXCLUDED.ref_id, source = EXCLUDED.source "
+                        "  WHERE EXISTS (SELECT 1 FROM refs r "
+                        "    WHERE r.ref_id = ref_identifiers.ref_id "
+                        "      AND r.retired_at IS NOT NULL) "
+                        "RETURNING ref_id",
+                        (key, ref.id, set_by),
+                    ).fetchone()
+                    if claimed is None:
+                        raise _Lost
+                    return int(ref.id)
+            except _Lost:
+                won = self.part_ref_id(key, conn=c)
+                assert won is not None, f"lcsc {key} claimed by no live part ref"
+                return won
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def part_footprint_get(self, lcsc: str) -> dict[str, Any] | None:
         """The Flow B EasyEDA cache row for a C-number, or None. ``escape``

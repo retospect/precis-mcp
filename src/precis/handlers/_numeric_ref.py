@@ -44,7 +44,7 @@ from precis.handlers._link_tag_ops import (
     validate_link_mode,
     validate_relation,
 )
-from precis.handlers._link_target import parse_link_target
+from precis.handlers._link_target import mint_lazy_link_target, parse_link_target
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -1419,13 +1419,16 @@ class NumericRefHandler(Handler):
         link_target = None
         relation = None
         try:
-            link_target = parse_link_target(target, store=self.store)
-        except (NotFound, BadInput) as exc:
-            target_err = exc
-        try:
             relation = validate_relation(rel, store=self.store)
         except BadInput as exc:
             rel_err = exc
+        try:
+            # Mint a lazy part ref only for an add that will go ahead.
+            if mode == "add" and rel_err is None:
+                mint_lazy_link_target(target, store=self.store)
+            link_target = parse_link_target(target, store=self.store)
+        except (NotFound, BadInput) as exc:
+            target_err = exc
         if target_err is not None and rel_err is not None:
             raise BadInput(
                 "link validation failed: "

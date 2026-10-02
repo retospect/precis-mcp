@@ -191,10 +191,10 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 # (yet). The codes still exist for registry completeness + the totality
 # test.
 _FILE_BACKED_KINDS = frozenset({"skill", "python", "md"})
-# ``part`` lives in the ``parts`` catalog table, addressed by its
-# LCSC C-number — not a refs-backed decimal handle. ``pcb`` / ``datasheet``
-# are refs-backed and resolve normally.
-_OTHER_TABLE_KINDS = frozenset({"tag", "part"})
+# ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
+# C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live
+# decimal handle (docs/backlog/linkable-parts.md).
+_OTHER_TABLE_KINDS = frozenset({"tag"})
 
 # --- codeless kinds (providers / stateless tools / live adapters) ---------
 # Registered handler kinds (``dispatch.boot()``) that are never addressed by

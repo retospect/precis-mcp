@@ -27,7 +27,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast, get_args
 
 from precis.errors import BadInput, NotFound
-from precis.handlers._link_target import LinkTarget, parse_link_target
+from precis.handlers._link_target import (
+    LinkTarget,
+    mint_lazy_link_target,
+    parse_link_target,
+)
 from precis.store import Store, Tag
 from precis.store.types import Relation
 
@@ -459,6 +463,7 @@ def apply_link_ops(
     n_removed = 0
 
     if link is not None:
+        mint_lazy_link_target(link, store=store)
         target = parse_link_target(link, store=store)
         guard_taxon_hierarchy(store, src_ref_id, target, relation)
         check_relation_constraints(store, relation, src_ref_id, target)

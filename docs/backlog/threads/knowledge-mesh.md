@@ -40,14 +40,13 @@ graph-health-metrics, five parked gripes, and the seam with
    `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
    (an errored dedup judgment read as "different") is owned by
    claims-and-evidence.
-3. **backlog/linkable-parts.md** — Reto ruled 2026-10-02
-   (knowledge-mesh-6, "this is what we do"): a catalog part becomes a
-   chunkless ref on first use (`ref_identifiers('lcsc', …)`), `component
-   realized-by part`, `pcb contains part` with the refdes; items inside a
-   design stay addressed through it. Ready-vetted 2026-10-02, blockers
-   resolved in the item; no migration (`realized-by` exists, 0156). Two
-   slices: the part ref + link door, then board edges + backfill.
-   Unblocks datasheet-facts-mesh (Horizon 16).
+3. **backlog/linkable-parts.md** slice 2 — board edges: `_pcb_apply`
+   reconciles `pcb contains part` (refdes list + qty on the edge), plus a
+   `precis pcb link-parts --dry-run` backfill. Slice 1 (lazy part ref on
+   first link, `pn` handles, part ring, datasheet `datasheet-of`
+   dual-write, component `link` verb) landed 2026-10-02, undeployed;
+   post-deploy, link one prod memory to a real C-number and read
+   `get(kind='part')`. No migration.
 4. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
@@ -124,8 +123,8 @@ graph-health-metrics, five parked gripes, and the seam with
     three more) from the capability-landscape comparison; sequenced behind
     the substrate (Do-next 1-6) by choice, not blocked.
 
-16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 3 and Do-next
-    5; a pulled datasheet's ratings, specs, package and pin table as
+16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 5 (its part
+    ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
     knowledge-mesh-6); the pin table feeds gr458878's pad-map check.
 17. **backlog/greenfield-schema-review.md** — file only (Reto,

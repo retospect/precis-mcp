@@ -45,14 +45,19 @@ are scoped out of `search(kind='paper')` and vice-versa.
 ## Where a datasheet comes from
 
 Most arrive from a part's `datasheet_url` or an operator drop — ask an
-operator if one's missing (`docs/runbooks/datasheet-ops.md`). Link it to
-the part, and set vendor/subtype/part (flows into the exported citation):
+operator if one's missing (`docs/runbooks/datasheet-ops.md`). Set
+vendor/subtype/part; they flow into the exported citation, and `part_lcsc`
+also links the datasheet `datasheet-of` the part (its ref is minted on first
+use, [[precis-part-select-help]]):
 
 ```python
-link(kind='datasheet', id='<slug>', rel='datasheet-of', to='part:<C-number>')
 edit(kind='datasheet', id='<slug>', vendor='Espressif Systems',
      subtype='app-note', part_lcsc='C2934569')
 ```
+
+A family datasheet that covers several parts takes one more link per extra
+part: `link(kind='datasheet', id='<slug>', rel='datasheet-of',
+target='part:<C-number>')`.
 
 ## The move
 
