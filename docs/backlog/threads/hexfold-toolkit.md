@@ -30,6 +30,34 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
+0. **Bud placement offset (gr459567, gap 3): first task after the
+   2026-10-02 demo hold lifts** (orchestrator, from Reto). se
+   `nanobud-review-figs` piles atoms. nanobuds-paper measured these
+   counts of pairs < 1.25 Å (figures on gr459567): bud87 31 (closest
+   0.78 Å), bud96 23 (0.73), gsheet96 27 (0.63), gsheet22 5, and bud22
+   0, though bud22 has 48 over-coordinated atoms. Fix the placement, verify
+   with `geom.clash` on those five blocks, then tell nanobuds-paper so it
+   can regenerate; three of its figures wait on this. The placement is a
+   construction change, so it goes through the orchestrator's design
+   review (`reviews/hexfold-toolkit.md`) before landing. `geom.clash`
+   itself (91090fa8e) is on this branch only, not on main, and it
+   reports the overlap without fixing it.
+   - The orchestrator reviewed `geom.clash` on 2026-10-02
+     (`reviews/hexfold-toolkit.review.md`). Verdict: qland 91090fa8e
+     as is (WARN) once the hold lifts. Then re-run the 12-of-21 example
+     clash table once and keep it here as the baseline the placement fix
+     is judged against.
+   - **W1**, in the placement-fix commit: an ERROR band below 1.0 Å, WARN
+     from 1.0 Å to `Profile.clash_A`. Each shipped example still under
+     1.0 Å is either fixed or named in the skill as a known-overlapping
+     spec.
+   - **W2**, same commit: raise the bar in
+     `test_nanobud_menu_seed_has_no_stick_clash` from `> 1.0 Å` to
+     `Profile.clash_A`.
+   - **W3**, not a blocker: on the hydrogen-terminated examples, record
+     the smallest non-1-3 distance by element pair. Armchair-bay H–H
+     pairs sit near 2.0 Å. If any legitimate pair falls under 2.0 Å,
+     make the bar per element pair.
 1. **gr459928** — graded bends. Reto, 2026-10-01: the drum should have
    "no 1-ring-90-degree turns". Each bend should step through
    progressively steeper rings: sheet, slight slope, steeper, tube, then
@@ -73,9 +101,19 @@ waited on happened 09-29 — note at the bottom)
    - Built topologically 2026-10-02, **unrelaxed**: the convex corner
      3+3, a flat washer's outer rim onto a p=3 frustum's hole, frustum
      rim onto the wider tube (`CORNER_33` in the test file). The tests
-     prove a defect census and Euler closure, not a corner; **the next
-     step on this item is to relax it** (stick, then Tersoff, as the foot
-     was) and show it embeds as an outward slope. Clean only at
+     prove a defect census and Euler closure, not a corner. Relaxed
+     2026-10-02 (stick seed, then ASE Tersoff-1988 C, FIRE to fmax 0.02;
+     probe `~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/corner.py`,
+     not in the repo). It **embeds as an outward slope**: the mean radius
+     rises monotonically along the axis, neck 4.9 Å, washer 5.3–9.0,
+     frustum 8.9–12.7, tube 11.0–13.5. Linear (r,z) fits give the washer
+     at 26° and the frustum at 42°, so the convex turn is 26→42→90. The
+     one-seam baseline (washer straight onto a `(24,0)` wall, 6 pentagons
+     in one ring) is 30→90. The frustum relaxes flatter than its 60° cone,
+     so the grading is partial: the last step is 48°, not 30°. In both
+     cases the washer is not flat after relaxing, because the 6-heptagon
+     neck seam turns only about 60°. The misphased k=0 relax was stopped
+     unfinished by the 10-02 demo hold. Still unencoded as a test. Clean only at
      k ≡ 3 mod 4 on the washer seam; any other phase adds three 5-7
      pairs. The flare at the tube top is the foot construction again. A
      seam's phase decides whether corners line up, so the k ranking
@@ -107,8 +145,20 @@ waited on happened 09-29 — note at the bottom)
    list winds against its outward normal seeds its seam mirrored. The C60
    `cap(5,5)` and the DA/DB neck menus measure 4.5–6.5 Å. Flat washers
    with `hex(r≥2)` holes had the same defect (14–28 Å) and are fixed:
-   `_winding_normal` now signs each flat rim from its winding. `geom.clash`
-   would have caught all of them.
+   `_winding_normal` now signs each flat rim from its winding.
+   - 2026-10-02: `geom.clash` built (WARN, `Profile.clash_A` 1.8 Å,
+     1-2 and 1-3 pairs excluded; `tests/hexfold/test_geom_clash.py`).
+     gr459595 (large lid) is fixed and closed; its repro is now a clean
+     case in that test. Still open: the `> 1.0 Å` bar in
+     `test_nanobud_menu_seed_has_no_stick_clash`, and the bud placement
+     offset (a construction change, so design review first).
+   - The check flags 12 of 21 shipped examples, not only buds:
+     `capped_tube` (0.91 Å inside the C60 cap), the DA/DB necks,
+     `sheet_pill_bump` (0.90), `flanged_doughnut` (591 pairs, 0.27 Å inside
+     its `bottom` washer, which e69a3b4e9 should have fixed), and
+     `tube_ring_closure` (0.49). Per-example table on gr459567. Triage per
+     case before fixing any of them; the cap and neck cases look like
+     gr459812.
 3. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier

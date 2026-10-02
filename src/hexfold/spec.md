@@ -618,7 +618,8 @@ no ERROR. No `__bool__`.
 | `op.dangling` `[spec 0.2]` | ERROR | an atom-addressed op names an atom that no longer exists after regeneration |
 | `gen.stale` `[spec 0.2]` | WARN | generated section's hash ≠ hash of the authored sections |
 | `frag.unrealized` | INFO | fragment referenced but not built (no rdkit) |
-| `geom.summary` | INFO | rms/max bond-length and angle deviation (geometry tier) |
+| `geom.summary` | INFO | rms/max bond-length and angle deviation, `clash_count`/`clash_min` (geometry tier) |
+| `geom.clash` `[impl 0.2, 2026-10-02]` | WARN | two atoms neither bonded nor sharing a bonded neighbour sit closer than `Profile.clash_A` (1.8 Å) in the stick geometry; names both atoms and instances, ten worst listed (a bud sunk into its host, a crumpled lid — gr459567) |
 | `geom.bond.long` / `geom.bond.short` | WARN | bond deviates from σ beyond threshold |
 | `geom.angle.dev` | WARN | vertex angle deviates from its ideal — ring ideal for sp², 109.47° for sp³ (0.2 fix; 0.1 used the ring ideal at sp³ atoms too) |
 | `geom.join.angle` | INFO | fuse join angle ψ (derived) |

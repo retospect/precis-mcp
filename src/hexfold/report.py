@@ -107,6 +107,10 @@ class Profile:
     ignore: frozenset[str] = frozenset()
     bond_tol_A: float = 0.10
     angle_tol_deg: float = 10.0
+    #: ``geom.clash`` bar: two atoms more than two bonds apart closer than
+    #: this.  Every clean stick build measured so far keeps them >= 2.0 A
+    #: (the bud-less pillar, gr459567; the washer-closed drum, gr459595).
+    clash_A: float = 1.8
 
     DEFAULT: ClassVar[Profile]
     STRICT: ClassVar[Profile]

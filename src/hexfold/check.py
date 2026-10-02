@@ -342,6 +342,24 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
             )
         )
 
+    inst = {a.ord: a.instance for a in net.atoms}
+    clashes = _clash_pairs(coords, net.bonds, profile.clash_A)
+    for d, i, j in clashes[:10]:
+        out.append(
+            Finding(
+                "geom.clash",
+                Severity.WARN,
+                f"atoms {i} ({inst[i]}) and {j} ({inst[j]}) are {d:.2f} A apart "
+                f"and not bonded (bar {profile.clash_A:.2f} A)",
+                where=str(i),
+                data=(
+                    ("atoms", [i, j]),
+                    ("instances", [inst[i], inst[j]]),
+                    ("distance", round(d, 3)),
+                ),
+            )
+        )
+
     b_arr = np.array([x[0] for x in bond_dev]) if bond_dev else np.zeros(1)
     a_arr = np.array([x[0] for x in ang_dev]) if ang_dev else np.zeros(1)
     out.append(
@@ -359,11 +377,56 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
                 ("angle_rms", round(float(np.sqrt((a_arr**2).mean())), 1)),
                 ("angle_max", round(float(np.abs(a_arr).max()), 1)),
                 ("angle_count", len(ang_dev)),
-                ("suppressed", max(0, len(bond_bad) - 10) + max(0, len(ang_bad) - 10)),
+                ("clash_count", len(clashes)),
+                ("clash_min", round(clashes[0][0], 3) if clashes else None),
+                (
+                    "suppressed",
+                    max(0, len(bond_bad) - 10)
+                    + max(0, len(ang_bad) - 10)
+                    + max(0, len(clashes) - 10),
+                ),
                 ("max_force_final", round(max_force, 4)),
             ),
         )
     )
+    return out
+
+
+def _clash_pairs(
+    coords: np.ndarray, bonds: tuple[tuple[int, int, int], ...] | list, bar: float
+) -> list[tuple[float, int, int]]:
+    """Every pair closer than ``bar`` that is neither bonded nor shares a
+    bonded neighbour, closest first (ties by atom ids).  1-3 pairs are left
+    to ``geom.angle.dev``: a squeezed angle already reports them, and a
+    4-ring's diagonal sits near 2.0 A by construction.  A cell list keeps it
+    linear in atom count; hexfold carries no scipy."""
+    n = len(coords)
+    nbrs: list[set[int]] = [set() for _ in range(n)]
+    for i, j, *_ in bonds:
+        nbrs[i].add(j)
+        nbrs[j].add(i)
+    cells: dict[tuple[int, int, int], list[int]] = {}
+    keys = np.floor(np.asarray(coords) / bar).astype(np.int64)
+    for i in range(n):
+        cells.setdefault(
+            (int(keys[i, 0]), int(keys[i, 1]), int(keys[i, 2])), []
+        ).append(i)
+    out: list[tuple[float, int, int]] = []
+    offsets = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)]
+    for (cx, cy, cz), members in cells.items():
+        for dx, dy, dz in offsets:
+            other = cells.get((cx + dx, cy + dy, cz + dz))
+            if not other:
+                continue
+            for i in members:
+                near = nbrs[i]
+                for j in other:
+                    if j <= i or j in near or near & nbrs[j]:
+                        continue
+                    d = float(np.linalg.norm(coords[i] - coords[j]))
+                    if d < bar:
+                        out.append((d, i, j))
+    out.sort()
     return out
 
 

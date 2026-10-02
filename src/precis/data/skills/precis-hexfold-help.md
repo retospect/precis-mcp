@@ -125,6 +125,9 @@ phase residual, `data.residual` of `data.period`) · `gen.stale` WARN
 ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 · `frag.unrealized` INFO ·
 `geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN ·
+`geom.clash` WARN (two non-bonded atoms under 1.8 Å in the stick
+geometry, both instances named — a bud sunk into its host; a clean check
+without it is not a clean geometry) ·
 `annot.sublattice`/`annot.host_sublattices` INFO.
 
 ## Rim types (spec §10)
