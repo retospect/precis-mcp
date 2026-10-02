@@ -28,7 +28,7 @@ the same week, because none of them were top-level functions —
    fab's minimum printable silk stroke width, so it is off the allow
    list.
 4. ``maze.GridSpec.n_cells`` (a public property with zero references in
-   the whole tree — STILL true, see the allow list below).
+   the whole tree — used since 2026-10-02 by ``maze.Negotiation``).
 5. ``check_npth_clearance`` reading a ``model["drills"]`` dict key
    nothing populates (``padplace.py`` hardcodes every drill
    ``"plated": True`` — a producer/consumer gap on an untyped dict key,
@@ -184,10 +184,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "own docstring: 'ground truth' crossing count for MEASURING a "
         "swap's payoff; only tests want that today"
     ),
-    "src/precis/pcb/realize.py::rip_net": (
-        "net-removal half of an interactive route-edit path; no such "
-        "handler verb is wired yet"
-    ),
     "src/precis/pcb/realize.py::pin_topology": (
         "own docstring: a thin delegate for the same not-yet-wired "
         "rip-up/re-realize loop as rip_net"
@@ -216,12 +212,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "same Slice 5 tiling engine, not yet wired"
     ),
     # ---- class methods/properties (widened 2026-08-29) --------------
-    "src/precis/pcb/maze.py::GridSpec.n_cells": (
-        "real defect flagged by this widened gate 2026-08-29 (module "
-        "docstring item (4)): zero references anywhere in the tree "
-        "including tests -- not fixed here (out of this agent's remit, "
-        "reported to the caller as a real gap, not a design choice)"
-    ),
     # ---- capabilities.FIELDS entries (widened 2026-08-29) -------------
     "src/precis/pcb/capabilities.py::FIELDS.soldermask_dam_mm": (
         "real defect flagged by this widened gate 2026-08-29 (module "

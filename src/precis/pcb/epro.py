@@ -1488,9 +1488,11 @@ def build_design(
         design.warnings.append(
             f"{rules} RULE/RULE_SELECTOR record(s) are NOT imported — "
             f"EasyEDA's design-rule table and its per-net/area assignments "
-            f"(clearance, track width, possibly rule areas). The board's own "
-            f"per-net rules are lost; set net classes on the imported nets "
-            f"before re-routing"
+            f"(clearance, track width, keepout areas). precis has no keepout "
+            f"mechanism (docs/backlog/pcb-keepout-does-not-bind.md), so any "
+            f"keepout among them would bind nothing; the board's own per-net "
+            f"rules are lost too. Set net classes on the imported nets before "
+            f"re-routing"
         )
 
     design.stats = {
