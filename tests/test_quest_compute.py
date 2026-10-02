@@ -1314,10 +1314,15 @@ class TestHarvest:
             *,
             hub: Any = None,
             force_backend: Any = None,
-            tier: Any = None,
+            tier: str = compute_mod._TIER_NEB,
         ) -> str:
             calls.append(
-                {"structure_ref_id": structure_ref_id, "hub": hub, "config": config}
+                {
+                    "structure_ref_id": structure_ref_id,
+                    "hub": hub,
+                    "config": config,
+                    "tier": tier,
+                }
             )
             return f"autocatpath[ml] dispatched for {structure_ref_id}"
 
@@ -1331,6 +1336,8 @@ class TestHarvest:
         assert calls[0]["structure_ref_id"] == sid
         assert calls[0]["hub"] is hub
         assert calls[0]["config"] == {"substrate": "NO", "target": "NH3"}
+        # the fixture's aggregate job carries no stamped pathway → neb
+        assert calls[0]["tier"] == compute_mod._TIER_NEB
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 1
 
@@ -5626,9 +5633,14 @@ class TestDispatchAutocatpath:
         store.stamp_ref_meta(verified, {"tier": compute_mod._TIER_VERIFY})
         store.stamp_ref_meta(screened, {"tier": compute_mod._TIER_SCREENING})
 
-        compute_mod.redispatch_candidates(store, qid)
-
         tp = compute_mod._find_tier_pathway
+        dry = compute_mod.redispatch_candidates(store, qid, dry_run=True)
+        assert dry == "would re-dispatch 2 candidate(s): screening 1, verify 1"
+        assert tp(store, verified, compute_mod._TIER_VERIFY) is None
+
+        note = compute_mod.redispatch_candidates(store, qid)
+        assert note.endswith("(screening 1, verify 1)")
+
         assert tp(store, verified, compute_mod._TIER_VERIFY) is not None
         assert tp(store, verified, compute_mod._TIER_NEB) is None
         assert tp(store, screened, compute_mod._TIER_SCREENING) is not None
@@ -5660,16 +5672,12 @@ class TestDispatchAutocatpath:
         )
         pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_SCREENING)
         assert pid is not None
-        ref = store.fetch_refs_by_ids({sid})[sid]
         job_meta = {"job_type": "autocatpath_seed", "params": {"pathway_ref_id": pid}}
-        assert (
-            compute_mod._retry_tier(store, ref, job_meta) == compute_mod._TIER_SCREENING
-        )
-        # legacy explore job (no pathway id) falls back to the candidate's rung, then neb
-        assert compute_mod._retry_tier(store, ref, {}) == compute_mod._TIER_NEB
+        assert compute_mod._retry_tier(store, job_meta) == compute_mod._TIER_SCREENING
+        # a legacy job with no pathway id retries at neb, even on a candidate
+        # since promoted to verify (orchestrator review 2026-10-02)
         store.stamp_ref_meta(sid, {"tier": compute_mod._TIER_VERIFY})
-        ref = store.fetch_refs_by_ids({sid})[sid]
-        assert compute_mod._retry_tier(store, ref, {}) == compute_mod._TIER_VERIFY
+        assert compute_mod._retry_tier(store, {}) == compute_mod._TIER_NEB
 
     def test_candidate_ids_ignore_non_structure_serves_links(self, store: Any) -> None:
         """A quest's `serves` in-links mix structures with papers/dossier/todos;

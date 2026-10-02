@@ -30,8 +30,9 @@ The engine shipped (`cathub_db.batch_import`, proven on PengRole2020.db).
 Remaining: a `precis import <source> --filter` CLI + resumable cursor, and
 the first *open* bulk-source adapter — pivot to OC20 (anonymous S3) or
 AQCat25 (HF gated:auto), batch-mirroring a filtered Pd/Cu/Ni × N/O/NHx slice
-(few-thousand configs, embeds/searches cleanly); the source pick is now
-review item chemistry-3 in `chem-database-tie-ins.md`.
+(few-thousand configs, embeds/searches cleanly); Reto picked
+Catalysis-Hub first (2026-10-02, `chem-database-tie-ins.md`); he is
+requesting the SUNCAT credentials.
 Catalysis-Hub is parked: ALL public channels now need SUNCAT creds (GraphQL
 401s keyless; the cathub "public" pg password was rotated server-side) — if
 creds arrive, thread X-API-Key from a precis secret + a clean keyless error.

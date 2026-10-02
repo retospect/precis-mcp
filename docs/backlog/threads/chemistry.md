@@ -77,11 +77,12 @@ it at five; engine-over-UI still holds.
    3-5 because a report over unhealthy seeds is the artefact problem again.
 5. **backlog/chem-database-tie-ins.md** — MOF and catalyst database
    tie-ins (Reto, 2026-10-02): structure seeds, reference energies,
-   screening. Four decisions are with Reto (review queue chemistry-2..5),
-   and nothing is built before his answers. Ranked here because the
+   screening. Decided 2026-10-02: MOF library + ODAC23 references,
+   Catalysis-Hub first (Reto requests the SUNCAT credentials), on-demand
+   import, show-and-flag only. Build order in the item; step 1 (CIF import
+   + CoRE MOF/QMOF adapter) needs no credentials. Ranked here because the
    November trust-demo paper needs reference energies UMA was not trained
-   on. Answering chemistry-3 also settles `structure-import.md`'s pending
-   source pick.
+   on.
 6. **backlog/autocatpath-integration.md** — the remaining slices of the
    native integration (most shipped; present state is in the
    `src/precis_pathway/` docstrings and ADR 0069); read with 4.

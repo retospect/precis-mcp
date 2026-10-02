@@ -2492,14 +2492,16 @@ def _redispatch_tier(store: Store, quest_id: int, structure: Any) -> str:
     return _TIER_SCREENING if _fidelity_ladder_enabled(store, quest_id) else _TIER_NEB
 
 
-def _retry_tier(store: Store, structure: Any, job_meta: dict[str, Any]) -> str:
+def _retry_tier(store: Store, job_meta: dict[str, Any]) -> str:
     """The rung an infra retry re-runs at: the failed run's own.
 
     Read from the failed job's pathway (``params.pathway_ref_id`` → the
     dispatch-time ``meta.tier`` stamp), so a failed screening seed retries at
-    screening rather than escalating to neb. Falls back to the candidate's
-    highest completed rung, then ``neb`` (a legacy explore job predates both
-    stamps).
+    screening rather than escalating to neb. A job with no pathway id or an
+    unstamped pathway retries at ``neb``: every pre-ladder retry ran at neb,
+    and the candidate's current rung says nothing about which job failed (a
+    legacy explore job on a since-promoted candidate would otherwise retry
+    at verify — orchestrator review, 2026-10-02).
     """
     params = job_meta.get("params")
     pid = params.get("pathway_ref_id") if isinstance(params, dict) else None
@@ -2511,7 +2513,7 @@ def _retry_tier(store: Store, structure: Any, job_meta: dict[str, Any]) -> str:
         tier = (pref.meta or {}).get("tier") if pref is not None else None
         if tier in _TIERS:
             return str(tier)
-    return _candidate_rung(getattr(structure, "meta", None)) or _TIER_NEB
+    return _TIER_NEB
 
 
 def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
@@ -3340,7 +3342,7 @@ def harvest_measures(
                         s.id,
                         reaction,
                         hub=hub,
-                        tier=_retry_tier(store, s, cp_job_meta),
+                        tier=_retry_tier(store, cp_job_meta),
                     )
                     store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
                     notes.append(
@@ -3366,7 +3368,7 @@ def harvest_measures(
                             s.id,
                             reaction,
                             hub=hub,
-                            tier=_retry_tier(store, s, cp_job_meta),
+                            tier=_retry_tier(store, cp_job_meta),
                         )
                         _bump_seed_infra_retry_count(store, s.id)
                         notes.append(
@@ -3408,7 +3410,7 @@ def harvest_measures(
                         s.id,
                         reaction,
                         hub=hub,
-                        tier=_retry_tier(store, s, cp_job_meta),
+                        tier=_retry_tier(store, cp_job_meta),
                     )
                     store.stamp_ref_meta(
                         s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
@@ -3590,6 +3592,7 @@ def redispatch_candidates(
     *,
     hub: Any | None = None,
     include_ruled_out: bool = False,
+    dry_run: bool = False,
 ) -> str:
     """Re-dispatch a autocatpath barrier eval for every candidate of a quest.
 
@@ -3603,30 +3606,43 @@ def redispatch_candidates(
     whose rule-out was decided on now-suspect stale barriers.
 
     Each candidate re-runs at its own highest completed rung
-    (:func:`_redispatch_tier`), not a blanket ``neb``.
+    (:func:`_redispatch_tier`), not a blanket ``neb``. The note counts
+    candidates per rung so the spend is visible; ``dry_run=True`` returns
+    that count without dispatching (before dedup — a candidate whose
+    content key is unchanged would collapse onto its existing job).
     """
-    hub = hub or _hub_for(store)
     reaction = _quest_reaction_config(store, quest_id)
     if reaction is None:
         return f"redispatch skipped: quest {quest_id} has no reaction_config"
-    n = 0
     sids = _candidate_struct_ids(store, quest_id)
     refs = store.fetch_refs_by_ids(set(sids))
+    plan: list[tuple[int, str]] = []
     for sid in sids:
         if not include_ruled_out and any(
             str(t).startswith("ruled-out:") for t in store.tags_for(sid)
         ):
             continue
-        note = dispatch_autocatpath(
-            store,
-            sid,
-            reaction,
-            hub=hub,
-            tier=_redispatch_tier(store, quest_id, refs.get(sid)),
+        plan.append((sid, _redispatch_tier(store, quest_id, refs.get(sid))))
+
+    def _per_rung(tiers: list[str]) -> str:
+        counts = {t: tiers.count(t) for t in _TIERS if t in tiers}
+        return ", ".join(f"{t} {c}" for t, c in counts.items()) or "none"
+
+    if dry_run:
+        return (
+            f"would re-dispatch {len(plan)} candidate(s): "
+            f"{_per_rung([t for _, t in plan])}"
         )
+    hub = hub or _hub_for(store)
+    dispatched: list[str] = []
+    for sid, tier in plan:
+        note = dispatch_autocatpath(store, sid, reaction, hub=hub, tier=tier)
         if note.startswith("autocatpath["):
-            n += 1
-    return f"re-dispatched {n} candidate(s) on the deployed engine"
+            dispatched.append(tier)
+    return (
+        f"re-dispatched {len(dispatched)} candidate(s) on the deployed engine "
+        f"({_per_rung(dispatched)})"
+    )
 
 
 def _promotion_sort_key(store: Store, quest_id: int, c: Any) -> float:

@@ -184,6 +184,12 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="Also re-evaluate candidates ruled out on now-suspect stale barriers.",
     )
+    rd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print how many candidates would re-run at each ladder rung; "
+        "dispatch nothing.",
+    )
     rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     bf = qsub.add_parser(
@@ -725,8 +731,9 @@ def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
     note = redispatch_candidates(
         store,
         args.id,
-        hub=Hub(store=store),
+        hub=None if args.dry_run else Hub(store=store),
         include_ruled_out=args.include_ruled_out,
+        dry_run=args.dry_run,
     )
     print(f"quest {args.id}: {note}")
 

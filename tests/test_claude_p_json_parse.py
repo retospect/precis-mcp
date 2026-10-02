@@ -106,6 +106,31 @@ class TestPayloadFromResult:
         res = SimpleNamespace(data=None, text="prose only")
         assert tick_mod._payload_from_result(res) is None
 
+    def test_stray_bracket_after_dossier_text_is_repaired(self) -> None:
+        """gr345366 cause B: the prod shape parses after the repair."""
+        text = '{"dossier_text": "x"], "directions": ["d"]}'
+        res = SimpleNamespace(data=None, text=text)
+        assert tick_mod._payload_from_result(res) == {
+            "dossier_text": "x",
+            "directions": ["d"],
+        }
+
+    def test_repair_of_a_dropped_opener_is_rejected_by_type(self) -> None:
+        """A reply that dropped an opener repairs into valid JSON of the wrong
+        shape (a one-element list becomes its scalar or object); the type
+        check rejects it instead of letting it through (orchestrator review
+        2026-10-02)."""
+        for text in (
+            '{"dossier_text": "x", "directions": "d"]}',
+            '{"proposals": {"name": "p"}], "dossier_text": "x"}',
+        ):
+            res = SimpleNamespace(data=None, text=text)
+            assert tick_mod._payload_from_result(res) is None, text
+
+    def test_wrongly_typed_data_is_rejected(self) -> None:
+        res = SimpleNamespace(data={"dossier_text": ["a", "b"]}, text="")
+        assert tick_mod._payload_from_result(res) is None
+
 
 class TestTickLlmMaxUsd:
     def test_default(self, monkeypatch) -> None:

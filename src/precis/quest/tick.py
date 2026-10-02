@@ -1755,21 +1755,59 @@ _PAYLOAD_KEYS: frozenset[str] = frozenset(
 )
 
 
+#: Declared top-level types of a tick payload's keys (the prompt schema). A
+#: key present with a non-null value of another type fails the payload.
+_PAYLOAD_TYPES: dict[str, type] = {
+    "logbook": list,
+    "ledger_add": list,
+    "ledger_ops": list,
+    "dialectic_ops": list,
+    "proposals": list,
+    "searches": list,
+    "directions": list,
+    "dossier_text": str,
+    "dossier_markdown": str,
+}
+
+
+def _payload_type_error(payload: dict[str, Any]) -> str | None:
+    """The first key whose value has the wrong top-level type, as a short
+    message, or ``None`` when every present key matches
+    :data:`_PAYLOAD_TYPES`.
+
+    Applied to every payload, repaired or not: the stray-closer repair can
+    turn a reply that dropped an opener (``"directions": "d"]``) into valid
+    JSON of the wrong shape, and nothing downstream may coerce a scalar or
+    an object into a list (orchestrator review, 2026-10-02).
+    """
+    for key, want in _PAYLOAD_TYPES.items():
+        value = payload.get(key)
+        if value is not None and not isinstance(value, want):
+            return f"{key} is {type(value).__name__}, expected {want.__name__}"
+    return None
+
+
 def _payload_from_result(res: Any) -> dict[str, Any] | None:
     """Prefer the router's parsed ``.data``; fall back to parsing ``.text``.
 
     ``.data`` only wins when it looks like a tick payload (carries at least
     one :data:`_PAYLOAD_KEYS` key) — otherwise it is a transport mis-parse
-    and the raw text is the better source.
+    and the raw text is the better source. Either way the payload must pass
+    :func:`_payload_type_error`; a wrongly typed one is ``None`` (unparseable).
     """
     data = getattr(res, "data", None)
     if isinstance(data, dict) and data and (_PAYLOAD_KEYS & data.keys()):
-        return data
-    # Opt-in stray-closer repair (gr345366 cause B): the tick's model
-    # sometimes writes a stray ``]`` after ``dossier_text``.
-    return extract_json_object(
-        getattr(res, "text", "") or "", repair_stray_closers=True
-    )
+        payload: dict[str, Any] | None = data
+    else:
+        # Opt-in stray-closer repair (gr345366 cause B): the tick's model
+        # sometimes writes a stray ``]`` after ``dossier_text``.
+        payload = extract_json_object(
+            getattr(res, "text", "") or "", repair_stray_closers=True
+        )
+    if payload is not None and (err := _payload_type_error(payload)) is not None:
+        log.warning("quest tick: payload rejected, %s", err)
+        return None
+    return payload
 
 
 #: The hypothesis-dedup Jaccard floor + its token-overlap primitives now

@@ -7,9 +7,8 @@ pillar: quests
 # MOF and catalyst database tie-ins
 
 Reto, 2026-10-02: "we should have mof and catalyst database tie ins". This
-file maps the candidates and what each would feed. Four decisions are open
-with Reto (review queue `chemistry-2`..`chemistry-5`), so nothing is built
-until he answers.
+file maps the candidates and what each would feed. Reto decided the four
+open questions on 2026-10-02 (see Decided).
 
 ## What exists already
 
@@ -73,26 +72,43 @@ The three uses:
    database property (stability, facet energy, pore size) before spending
    compute.
 
-## Undecided — with Reto
+## Decided (Reto, 2026-10-02T13:24Z, review items chemistry-2..5)
 
-- `chemistry-2`: what the MOF tie-in is for (a structure library, MOFs as
-  catalyst candidates, or adsorption/separation screening).
-- `chemistry-3`: which catalyst source comes first, and whether Reto will
-  request SUNCAT credentials and a Materials Project key.
-- `chemistry-4`: mirror filtered slices into prod, or look up on demand
-  and import only what gets cited or used.
-- `chemistry-5`: how external reference energies reach a quest (comparison
-  and distrust flag only, or a calibration offset applied to ranking).
+- **MOFs (chemistry-2):** a MOF structure library (CoRE MOF and/or QMOF)
+  plus ODAC23 adsorption energies as reference values. MOFs as catalyst
+  candidates in the engine are out of scope until a quest asks for them.
+- **Catalyst source (chemistry-3):** Catalysis-Hub first. Reto is
+  requesting the SUNCAT credentials himself. BEAST DB is the fallback if
+  the credentials stall; Materials Project comes second.
+- **Storage (chemistry-4):** look up on demand and import on use. Only
+  small calibration slices are bulk-imported.
+- **Quest hook (chemistry-5):** show and flag only. The candidate shows its
+  own energy next to the external reference with the method difference
+  stated. A gap above a threshold sets a distrust flag, the same mechanism
+  as the `wrong_site` gate. Ranking stays on our own numbers; no
+  calibration offset until the gaps have been measured.
 
-## Acceptance criteria (draft — fixed by the answers)
+## Build order
 
-- The first source has an adapter in `structure/importers/` with a test
-  that runs on a recorded raw record, with no network.
+1. **CIF import + a CoRE MOF / QMOF adapter.** Open sources, no
+   credentials needed, and they unblock the MOF library.
+2. **The reference-comparison hook + distrust flag.** First fed from the
+   ODAC23 slice; Catalysis-Hub feeds it once the SUNCAT credentials land.
+3. **The Catalysis-Hub credential path:** thread `X-API-Key` from a precis
+   secret, and give a clean keyless error (`structure-import.md`).
+4. **BEAST DB** (licence check first) and **Materials Project** adapters.
+
+## Acceptance criteria
+
+- Each source has an adapter in `structure/importers/` with a test that
+  runs on a recorded raw record, with no network.
 - An imported record carries `provenance="external"` and the source's
   `method` fingerprint, and never serves a compute cache hit.
-- For the reference use: one quest's candidate shows its ML energy next to
-  the external reference with a method-mismatch note, readable through
-  `get`.
+- An on-demand lookup imports only the record it returns; a repeat lookup
+  reuses the `(dataset, config_id)` row.
+- One quest candidate shows its own energy next to the external reference
+  with a method-mismatch note, readable through `get`. A gap above the
+  threshold sets the distrust flag, and the candidate's rank is unchanged.
 
 Owner: `src/precis/structure/importers/`; the quest hook is in
 `src/precis/quest/`. Overlaps `structure-import.md` § bulk corpus and
