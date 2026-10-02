@@ -274,12 +274,31 @@ rebuilt its pads-only probe grid per segment (36 of 85 s of realize).
    (snapped as negotiated, never straightened, so branch attach points
    survive), and is kept only if it fails fewer nets. Fable review
    2026-10-02: accepted the method, required verbatim commit, default off
-   and the time cap (all done). **Unmeasured on the real board**: the
-   `.epro2` is gone, and running on a prod-row dump needs Reto
-   (review-queue `pcb-easyeda-round-trip-1`). Before it is default-on:
-   that number with a pinned method (board id + row snapshot, routable
-   layers, pitch, seed, config, off vs on, script path), and a generator
-   version bump so stored boards show the copper change.
+   and the time cap (all done). Landed dark 825e451aa.
+   **Measured 2026-10-02, and it does not earn default-on: +1 net for
+   2.5× the time.** Method: pcb 460559 (heater-base-test) prod rows dumped
+   read-only 2026-10-02 10:55Z to
+   `~/.claude/projects/-Users-reto-precis-mcp/scratch/pcb_boards_460559_458868.json`
+   (`pcb_board_dump.py`); harness `scratch/pcb_route_offline.py` runs
+   `pcb_route._dispatch` unmodified against a fake store (layers, pitch,
+   fab caps and net classes as the job derives them from the rows), every
+   instance frozen (`--freeze`), seed 1, iters 200, code c23ef0aa9 on a Mac
+   host. Off (`--negotiate 0`): **55/89** realized, realize 79 s. On
+   (`--negotiate 30`, 60 s budget): **56/89**, realize 197 s. Same harness,
+   one run each.
+   **The baseline is 55, not 65.** The 65/89 above came from the
+   env-gated `.epro2` test before 2026-10-02's import fixes. Since then
+   the board's 24 Ø6 mounting holes and 8 footprint holes reach the router
+   as keep-outs, and the post-route DRC gate strips nets. Off-run failure
+   tags: 18 `unrouted` alone, 13 `drc` (with `same-layer-crossing`, which
+   is the placement IR's straight-line crossing from
+   `pcb_route._residual_crossings`, not routed copper), 3 unrouted with
+   `same-layer-crossing`. **The 13 `drc` nets are the next thing to
+   diagnose**: the router realized them, and the gate stripped them. Either
+   the router lays copper the DRC refuses (a legality mismatch between
+   maze disks and DRC geometry, e.g. oblique pads, which DRC may see as
+   their unrotated rectangle), or the gate is wrong. Either way it is
+   cheaper than more congestion work.
 
 Literature, for the fix owner: grid-maze routers are known to degrade on
 fine-pitch parts on large boards because cell size couples to board size;

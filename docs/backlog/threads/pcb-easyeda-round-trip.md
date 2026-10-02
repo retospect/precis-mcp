@@ -75,11 +75,13 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    diagonals), and a pad no longer reads as walled in by the CONTESTED
    sliver between it and a fine-pitch neighbour (the 11 `no_path` nets):
    **65/89**. A history-cost PathFinder term was tried and LOST (62/89 at
-   best). Left: 19 congestion + 3 `search_budget`. Negotiated congestion
-   is built and lands DARK (item step 13: off by default, opt-in
-   `negotiate=N`). NEXT = the real-board number off vs on, which needs the
-   `.epro2` back or Reto's OK to run on a prod-row dump
-   (review-queue `pcb-easyeda-round-trip-1`).
+   best). Negotiated congestion landed DARK (825e451aa) and was measured
+   2026-10-02 on the prod-row dump (Reto approved): **55 → 56/89 at
+   2.5× the time**, so it stays off. The current baseline is 55, not 65:
+   the board now carries its real holes, and the post-route DRC gate
+   strips 13 realized nets (method + tags in the item, step 13).
+   NEXT = why the gate strips those 13 (router/DRC legality mismatch, or
+   a wrong gate), measured with the same harness.
 2. **The real board's design-rule table is dropped at import** — the 184
    records once read as keepouts are 16 `RULE` + 168 `RULE_SELECTOR`,
    which in Pro are most likely the design-rule table and its per-net
@@ -107,6 +109,14 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    every later export slice rests on an unverified premise, and the view's
    UNVERIFIED banner stays. On pass: drop the banner and the
    description's "not yet opened" in the same commit.
+5. **backlog/pcb-export-dir-confinement.md** — the four file exports
+   write to any agent-supplied `dir`. Cheap and mechanical, and it closes
+   a write-anywhere path on the shared server, so it ranks above the
+   design work in Horizon. Filed from the orchestrator's round-1 review.
+6. **backlog/pcb-realize-silk-version-stamp.md** — nothing versions
+   realized copper, so a router change is invisible on stored boards.
+   Needed before any router change goes default-on (negotiation's R3).
+   The router half is this thread's; the silk half is ewod-pcb's.
 
 ## Horizon
 
