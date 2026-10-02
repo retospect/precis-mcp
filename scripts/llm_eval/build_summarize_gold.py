@@ -8,7 +8,9 @@ production prompt (``_Claimed`` -> ``fetch_doc_card`` -> ``build_messages``) and
 emits a ``GoldTask`` (axis ``summarize-extract``, scorer ``summary``) whose
 ``messages`` replay that prompt verbatim against a candidate model.
 
-Read-only: one ``SET TRANSACTION READ ONLY`` session, plain SELECTs, no
+Read-only: one transaction opened with ``SET TRANSACTION READ ONLY``
+(transaction-scoped; never a session-level SET, which would poison
+pgbouncer's pooled server connections), plain SELECTs, no
 ``chunk_claims``, no ``FOR UPDATE``.
 
 Bias: ``expect.nonprose`` is derived from the *incumbent* summary (a brief that
