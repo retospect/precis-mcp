@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# scripts/fleet — bring up and drive the thread-session fleet in tmux.
+#
+# One tmux window per active thread (`claude -w <slug>`), plus a `review`
+# window at index 1 that walks Reto through what the sessions need from him.
+# The orchestrator session (`/fleet`) runs this; nothing here lands or
+# deploys. State is derived from tmux at call time; the only stored input is
+# `.claude/fleet/threads.tsv` (slug, effort, design-review flag), which
+# follows the active set in `docs/roadmap.md`.
+#
+#   scripts/fleet up [--stagger N]   create every missing window (idempotent)
+#   scripts/fleet status             window · index · ctx% · busy/idle/dialog
+#   scripts/fleet say <file> [win…]  send one message; skips open dialogs
+#   scripts/fleet effort             send each window its /effort level
+#   scripts/fleet watch-ctx          emit a line as a window crosses 60/70/80/90% ctx
+#   scripts/fleet queue-dir          print the review-queue directory
+set -euo pipefail
+
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+root=$(dirname "$common")
+conf="$(git rev-parse --show-toplevel)/.claude/fleet"
+table="$conf/threads.tsv"
+# Outside any worktree, so a reaped tree cannot take the queue with it.
+state="$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')"
+queue="$state/review-queue"
+reviews="$state/reviews"
+model="${PRECIS_FLEET_MODEL:-opus}"
+
+threads() { grep -v -e '^#' -e '^[[:space:]]*$' "$table"; }
+windows() { tmux list-windows -F '#{window_name}'; }
+has_window() { windows | grep -q -x -- "$1"; }
+has_dialog() { tmux capture-pane -p -t "$1" | grep -q -e 'Enter to select' -e 'Do you want to'; }
+need_tmux() { [ -n "${TMUX:-}" ] || { echo "scripts/fleet: run inside tmux" >&2; exit 2; }; }
+
+fill() { # substitute {slug} {queue} {reviews} in a message file, one line out
+  sed -e "s|{slug}|$2|g" -e "s|{queue}|$queue|g" -e "s|{reviews}|$reviews|g" "$1" | tr '\n' ' '
+}
+
+send() { # send <window> <text>; refuses a window with a dialog open
+  if has_dialog "$1"; then echo "SKIPPED (dialog open): $1"; return 0; fi
+  tmux send-keys -t "$1" -l "$2"
+  tmux send-keys -t "$1" Enter
+  echo "sent: $1"
+}
+
+cmd_up() {
+  need_tmux
+  local stagger=10
+  [ "${1:-}" = "--stagger" ] && stagger="$2"
+  mkdir -p "$queue/open" "$queue/answered" "$reviews"
+  if ! has_window review; then
+    local prompt="You are the review session. Read $conf/review-protocol.md and follow it; the queue directory is $queue. Start with the gather step, then give Reto the status board and the first cluster."
+    if tmux list-windows -F '#{window_index}' | grep -q -x 1; then
+      tmux new-window -d -b -t 1 -n review -c "$root" "claude --model $model '$prompt'"
+    else
+      tmux new-window -d -t 1 -n review -c "$root" "claude --model $model '$prompt'"
+    fi
+    echo "created: review"
+  fi
+  threads | while IFS=$'\t' read -r slug _effort _review; do
+    if has_window "$slug"; then echo "exists: $slug"; continue; fi
+    tmux new-window -d -n "$slug" -c "$root" \
+      "claude -w $slug --model $model 'Resume the work on $slug'"
+    echo "created: $slug"
+    sleep "$stagger"
+  done
+}
+
+cmd_status() {
+  need_tmux
+  tmux list-windows -F '#{window_index} #{window_name}' | while read -r idx w; do
+    pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
+    pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 || true)
+    if printf '%s\n' "$pane" | grep -q -e 'Enter to select' -e 'Do you want to'; then st=DIALOG
+    elif printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy
+    else st=idle; fi
+    printf '%-3s %-28s %-8s %s\n' "$idx" "$w" "${pct:--}" "$st"
+  done
+}
+
+cmd_say() {
+  need_tmux
+  local file="$1"; shift
+  local wins
+  if [ $# -gt 0 ]; then wins="$*"; else wins=$(threads | cut -f1); fi
+  for w in $wins; do
+    has_window "$w" || { echo "no window: $w"; continue; }
+    send "$w" "$(fill "$file" "$w")"
+  done
+}
+
+cmd_effort() {
+  need_tmux
+  # `/effort` saves its level as the default for new sessions, last write
+  # wins: send medium first so the saved default ends on high.
+  for level in medium high; do
+    threads | while IFS=$'\t' read -r slug effort _review; do
+      [ "$effort" = "$level" ] || continue
+      has_window "$slug" && send "$slug" "/effort $level"
+    done
+  done
+}
+
+cmd_watch_ctx() {
+  need_tmux
+  local seen="" w pane pct bucket st
+  while true; do
+    for w in $(windows | grep -v -x -e organizer -e presentation); do
+      pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
+      pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 | grep -o '^[0-9]*' || true)
+      [ -z "$pct" ] && continue
+      [ "$pct" -lt 60 ] && continue
+      bucket=$((pct / 10 * 10))
+      case "$seen" in *" $w:$bucket"*) continue ;; esac
+      seen="$seen $w:$bucket"
+      if printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy; else st=idle; fi
+      echo "ctx $w ${pct}% $st"
+    done
+    sleep 60
+  done
+}
+
+case "${1:-}" in
+  up) shift; cmd_up "$@" ;;
+  status) cmd_status ;;
+  say) shift; cmd_say "$@" ;;
+  effort) cmd_effort ;;
+  watch-ctx) cmd_watch_ctx ;;
+  queue-dir) echo "$queue" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

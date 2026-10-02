@@ -1,0 +1,25 @@
+# The fleet: one row per active thread in docs/roadmap.md, tab-separated.
+# Change this file in the same commit as the roadmap's active set.
+#   slug	effort	design-review
+# effort: the /effort level the session runs at.
+# design-review: yes = design-bearing changes get the orchestrator's review
+# before they land (.claude/fleet/msg-design-review.txt).
+nanobuds-paper	high	no
+catalysis-selectivity	high	yes
+chemistry	medium	no
+draft-authoring	medium	no
+claims-and-evidence	high	no
+session-mcp-shared-server	high	no
+knowledge-mesh	high	no
+graph-memory-consumers	high	no
+ingest-and-fetch	medium	no
+hexfold-toolkit	high	yes
+se-3d-viewer	medium	no
+se-nucleic-chain	medium	no
+se-machine-design	high	no
+ewod-pcb	medium	no
+pcb-easyeda-round-trip	high	yes
+local-compute	medium	no
+roadmap-quest	high	no
+monitors-that-go-quiet	medium	no
+plugin-split	medium	no

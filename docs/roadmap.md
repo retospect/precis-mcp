@@ -248,8 +248,11 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (18; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
-plus seven on 2026-10-01, minus serving-programme):
+Active (19; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+plus seven on 2026-10-01, minus serving-programme, plus
+`catalysis-selectivity` on 2026-10-02; `.claude/fleet/threads.tsv` is the
+same set as the sessions `/fleet` opens, changed in the same commit):
+`catalysis-selectivity` ·
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
 until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`

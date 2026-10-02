@@ -80,6 +80,7 @@ board*.svg
 !.claude/settings.json
 !.claude/skills/
 !.claude/agents/
+!.claude/fleet/
 
 # Session-liveness anchor: an untracked marker a live session drops at a
 # worktree root so the auto-reaper won't cull it mid-session. Never source.

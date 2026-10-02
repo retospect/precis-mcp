@@ -58,7 +58,11 @@ for overlap; once your task is clear, write one line to `.claude/purpose`.
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,
 `scripts/round none`, or `scripts/round eta <text>` — instead of messaging;
-leave deploys to the coordinator (`/round`).
+leave deploys to the coordinator (`/round`). The fleet itself — one tmux
+window per active thread plus Reto's `review` window — comes up, and
+recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
+session a question for Reto is a review-queue item
+(`.claude/fleet/review-protocol.md`), not a stop in the pane.
 Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
 (`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
 delete what shipped, insert what you filed at its rank (README there).
