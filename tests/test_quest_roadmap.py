@@ -23,6 +23,8 @@ from precis.quest import roadmap_ledger as ledger
 from precis.quest import roadmap_tick as rt
 from precis.quest.dossier import dossier_ref_id
 from precis.quest.gaps import quest_gaps
+from precis.quest.logbook import append_entry
+from precis.quest.search import AcquiringSearch, QueryReport
 from precis.quest.weave_tick import mark_roadmap_quest
 from precis.store.types import ChunkInsert
 from precis_se.handler import SeHandler
@@ -558,6 +560,183 @@ class TestSupplyRole:
         assert "supply_written" not in result
         assert "supply" not in (store.get_ref(kind="quest", id=cap).meta or {})
         assert result["dry"] is True
+
+
+class _SpySearch(AcquiringSearch):
+    """An AcquiringSearch whose graph always "answers" (10 local hits in prod):
+    the outside leg runs only when ``force_external`` is set. Records the flag
+    as seen DURING each search call."""
+
+    def __init__(self, hits: list[tuple[int, float]] | None = None) -> None:
+        super().__init__(1, SimpleNamespace(store=object(), embedder=None))
+        self.hits = hits or []
+        self.seen: list[bool] = []
+
+    def __call__(
+        self, store: Any, query: str, exclude_ref_ids: list[int]
+    ) -> list[tuple[int, float | None]]:
+        self.seen.append(self.force_external)
+        self._reports[query] = QueryReport(
+            local=10,
+            external_ran=self.force_external,
+            forced=self.force_external,
+        )
+        return list(self.hits)
+
+
+def _supply_metas(store: Any, cap: int, meta_key: str) -> list[dict[str, Any]]:
+    return [
+        b.meta[meta_key]
+        for b in store.chunks.list_chunks_for_ref(cap)
+        if b.chunk_kind == "quest_log" and meta_key in (b.meta or {})
+    ]
+
+
+def _unmet_gap_detail(store: Any, root: int) -> str:
+    (gap,) = [g for g in quest_gaps(store, root) if g.kind == "unmet-capability"]
+    return gap.detail
+
+
+class TestSupplyEscalation:
+    """A dry supply tick escalates the next one to search outside; two dry
+    ticks that searched outside log "not found outside" once."""
+
+    def _dry_tick(self, store: Any, root: int, fn: Any, query: str) -> dict[str, Any]:
+        client = ScriptedClient({"searches": [query]})
+        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        assert result["ok"] and result["role"] == "supply"
+        return result
+
+    def test_dry_ticks_escalate_then_stop_and_log_once(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _SpySearch()
+
+        # tick 1: no history → local-first, nothing outside.
+        self._dry_tick(store, root, fn, "q1")
+        assert fn.seen == [False]
+        assert _supply_metas(store, cap, "supply_outcome") == [
+            {"key": KEY, "dry": True, "external": False, "queries": ["q1"]}
+        ]
+        assert "outside searched: no" in _entries(store, cap, "observation")[-1].text
+
+        # tick 2: escalated; the flag is set DURING the search, restored after.
+        self._dry_tick(store, root, fn, "q2")
+        assert fn.seen == [False, True]
+        assert fn.force_external is False
+        assert _supply_metas(store, cap, "supply_outcome")[-1] == {
+            "key": KEY,
+            "dry": True,
+            "external": True,
+            "queries": ["q2"],
+        }
+        assert "not found outside" not in _unmet_gap_detail(store, root)
+
+        # tick 3: still escalated (only one outside-dry tick so far).
+        self._dry_tick(store, root, fn, "q3")
+        assert fn.seen == [False, True, True]
+        assert fn.force_external is False
+        assert _supply_metas(store, cap, "supply_not_found_outside") == []
+
+        # tick 4: two outside-dry ticks → local-first again, verdict logged once.
+        self._dry_tick(store, root, fn, "q4")
+        assert fn.seen == [False, True, True, False]
+        (nf,) = _supply_metas(store, cap, "supply_not_found_outside")
+        assert nf == {"key": KEY, "queries": ["q2", "q3"]}
+        nf_text = [
+            e.text for e in _entries(store, cap, "observation") if "not found" in e.text
+        ]
+        assert len(nf_text) == 1 and "q2; q3" in nf_text[0]
+        assert _unmet_gap_detail(store, root).endswith(
+            "; not found outside (2 queries)"
+        )
+
+        # tick 5: still dry, still not escalating, no second verdict entry.
+        self._dry_tick(store, root, fn, "q5")
+        assert fn.seen[-1] is False
+        assert len(_supply_metas(store, cap, "supply_not_found_outside")) == 1
+
+        # tick 6: a tick that writes a supply resets the streak and the verdict.
+        paper = seed_paper(
+            store,
+            cite_key="dna23",
+            body="DNA origami placement achieved 2.1 nm positional accuracy.",
+        )
+        fn.hits = [(paper, 1.0)]
+        client = ScriptedClient(
+            {"searches": ["q6"]},
+            {
+                "findings": [
+                    {
+                        "claim": "DNA origami placement achieves 2.1 nm accuracy",
+                        "value": 2.1,
+                        "paper": f"pa{paper}",
+                        "quote": "DNA origami placement achieved 2.1 nm positional accuracy.",
+                    }
+                ]
+            },
+        )
+        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        assert result["supply_written"]["value"] == 2.1
+        assert _supply_metas(store, cap, "supply_outcome")[-1]["dry"] is False
+        assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
+        assert "not found outside" not in _unmet_gap_detail(store, root)
+
+    def test_plain_search_fn_is_never_escalated(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        seen: list[str] = []
+
+        def _plain(s: Any, q: str, ex: list[int]) -> list[tuple[int, float]]:
+            seen.append(q)
+            return []
+
+        for q in ("a", "b"):
+            result = rt.roadmap_tick(
+                store, ScriptedClient({"searches": [q]}), root, search_fn=_plain
+            )
+            assert result["ok"]
+        # No report_for → external never counted; the outcome is still logged.
+        assert [o["external"] for o in _supply_metas(store, cap, "supply_outcome")] == [
+            False,
+            False,
+        ]
+        assert seen == ["a", "b"]
+
+    def test_history_streak_resets_on_a_written_tick(self, store: Any) -> None:
+        _root, cap = make_root(store, demand=2.0, supply=None)
+
+        def _log(meta_key: str, payload: dict[str, Any]) -> None:
+            append_entry(
+                store,
+                cap,
+                text="x",
+                entry_type="observation",
+                by="agent",
+                extra_meta={meta_key: payload},
+            )
+
+        def _outcome(*, dry: bool, external: bool, q: str, key: str = KEY) -> None:
+            _log(
+                "supply_outcome",
+                {"key": key, "dry": dry, "external": external, "queries": [q]},
+            )
+
+        _outcome(dry=True, external=True, q="old")
+        _outcome(dry=False, external=False, q="wrote")  # resets the streak
+        _outcome(dry=True, external=False, q="a")
+        _outcome(dry=True, external=True, q="b")
+        _outcome(dry=True, external=True, q="other-key", key="other")  # ignored
+        h = ledger.supply_history(store, cap, KEY)
+        assert (h.streak, h.ext_dry, h.ext_queries) == (2, 1, ("b",))
+        assert h.not_found_queries is None
+        _log("supply_not_found_outside", {"key": KEY, "queries": ["b", "c"]})
+        assert ledger.supply_history(store, cap, KEY).not_found_queries == 2
+        assert ledger.not_found_outside_note(store, cap, KEY) == (
+            "; not found outside (2 queries)"
+        )
+        assert ledger.not_found_outside_note(store, cap, "other") == ""
+        _outcome(dry=False, external=False, q="wrote again")
+        assert ledger.supply_history(store, cap, KEY).not_found_queries is None
+        assert ledger.not_found_outside_note(store, cap, KEY) == ""
 
 
 class TestCheckSupplyQuote:

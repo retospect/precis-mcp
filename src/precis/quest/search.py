@@ -153,6 +153,9 @@ class QueryReport:
     local: int = 0
     acquired: int = 0
     external_ran: bool = False
+    #: The external leg ran because the search was escalated
+    #: (``AcquiringSearch.force_external``), not because the graph was thin.
+    forced: bool = False
     external_error: str | None = None
     lexical_only: bool = False
     kinds: dict[int, str] = field(default_factory=dict)
@@ -162,11 +165,25 @@ class AcquiringSearch:
     """The ``search_fn`` :func:`make_acquiring_search` builds: callable with the
     plain 3-argument :data:`SearchFn` shape, plus a per-query
     :class:`QueryReport` side channel (``report_for``) that
-    :func:`run_search_step` reads for its logbook line."""
+    :func:`run_search_step` reads for its logbook line.
 
-    def __init__(self, quest_id: int, hub: Any, embedder: Any | None = None) -> None:
+    ``force_external`` (default False) makes the external leg run whatever the
+    local count — the roadmap supply role's escalation after a dry tick (see
+    ``roadmap_tick._run_supply``). Local hits are still returned first, same
+    ordering and dedup; only the "graph answered, skip outside" shortcut is
+    off. It is a plain attribute so a caller can flip it for one step."""
+
+    def __init__(
+        self,
+        quest_id: int,
+        hub: Any,
+        embedder: Any | None = None,
+        *,
+        force_external: bool = False,
+    ) -> None:
         self.quest_id = quest_id
         self.hub = hub
+        self.force_external = force_external
         self.embedder = (
             embedder if embedder is not None else getattr(hub, "embedder", None)
         )
@@ -198,8 +215,9 @@ class AcquiringSearch:
             report.kinds[rid] = kind
 
         acquired: list[int] = []
-        if len(local_ok) < LOCAL_ENOUGH:
+        if len(local_ok) < LOCAL_ENOUGH or self.force_external:
             report.external_ran = True
+            report.forced = len(local_ok) >= LOCAL_ENOUGH
             acquired, report.external_error = self._acquire(query)
             report.acquired = len(acquired)
             for rid in acquired:
@@ -420,7 +438,11 @@ def _hyde_corpus_hits(
 
 
 def make_acquiring_search(
-    quest_id: int, hub: Any, embedder: Any | None = None
+    quest_id: int,
+    hub: Any,
+    embedder: Any | None = None,
+    *,
+    force_external: bool = False,
 ) -> AcquiringSearch:
     """Build a ``search_fn`` that looks locally first, then acquires.
 
@@ -430,7 +452,11 @@ def make_acquiring_search(
     leg run: Semantic Scholar's top results for the query — anything carrying
     a DOI — are queued through ``PaperHandler.acquire`` (idempotent stub mint
     + ``fetch_oa`` pickup later, out of band). A query the graph already
-    answers acquires nothing and makes no S2 call.
+    answers acquires nothing and makes no S2 call — unless ``force_external``
+    is set, the roadmap supply role's escalation after a dry tick: then the
+    external leg runs for every query regardless of the local count (local
+    hits still come first, same dedup) and the logbook line says
+    "outside searched (escalated)". Default False; no other caller sets it.
 
     An S2 failure (rate limit, exception) is recorded on the query's
     :class:`QueryReport` and the local hits are still returned; a bad DOI or
@@ -449,7 +475,7 @@ def make_acquiring_search(
     Returns an :class:`AcquiringSearch` (a plain 3-argument ``SearchFn`` plus
     the per-query report).
     """
-    return AcquiringSearch(quest_id, hub, embedder)
+    return AcquiringSearch(quest_id, hub, embedder, force_external=force_external)
 
 
 def _sources_clause(report: QueryReport | None) -> str:
@@ -459,6 +485,8 @@ def _sources_clause(report: QueryReport | None) -> str:
         return ""
     if not report.external_ran:
         tail = "outside skipped, graph answered"
+    elif report.forced and not report.external_error:
+        tail = "graph answered, outside searched (escalated)"
     elif report.external_error:
         tail = f"outside search failed: {report.external_error}"
     else:

@@ -267,6 +267,7 @@ def _unmet_capabilities(store: Store, quest_id: int, live: list[Ref]) -> list[Ga
     if root is None or (root.meta or {}).get(QUEST_BODY_META_KEY) != QUEST_BODY_ROADMAP:
         return []
     checked = capabilities[: ledger.LEDGER_MAX_CAPABILITIES]
+    cap_ids = {_handle("quest", c.id): c.id for c in checked}
     out: list[Gap] = []
     for row in ledger.compute_ledger_for(store, checked):
         if row.state != ledger.STATE_UNMET or row.demanded is None:
@@ -285,6 +286,9 @@ def _unmet_capabilities(store: Store, quest_id: int, live: list[Ref]) -> list[Ga
                     f"{row.key}: demanded {row.demanded:g}{unit}, best supply "
                     f"{supply}{cite}, no rung in flight would close it — "
                     f"{row.capability_title}"
+                    + ledger.not_found_outside_note(
+                        store, cap_ids[row.capability], row.key
+                    )
                 ),
                 handle=row.capability,
             )

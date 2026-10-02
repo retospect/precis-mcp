@@ -356,6 +356,75 @@ def best_supply(
     return value, evidence
 
 
+# ── supply-outcome history ────────────────────────────────────────────
+
+#: ``extra_meta`` key of the one ``observation`` entry every supply tick
+#: appends on the capability's logbook: ``{"key", "dry", "external",
+#: "queries"}``.
+SUPPLY_OUTCOME_META = "supply_outcome"
+
+#: ``extra_meta`` key of the one-off entry logged when two escalated supply
+#: ticks on a key both came back dry: ``{"key", "queries"}``.
+SUPPLY_NOT_FOUND_META = "supply_not_found_outside"
+
+
+@dataclass(frozen=True)
+class SupplyHistory:
+    """What the capability logbook says about supply ticks on one key.
+
+    ``streak`` is the run of most-recent ``supply_outcome`` entries that are
+    dry (it restarts at every tick that wrote a supply); ``ext_dry`` counts
+    those in which the external leg ran; ``ext_queries`` is every query those
+    external-dry ticks ran. ``not_found_queries`` is ``None`` unless a
+    ``supply_not_found_outside`` entry is newer than the last non-dry tick,
+    else the number of queries it names."""
+
+    streak: int = 0
+    ext_dry: int = 0
+    ext_queries: tuple[str, ...] = ()
+    not_found_queries: int | None = None
+
+
+def supply_history(store: Store, capability_id: int, key: str) -> SupplyHistory:
+    """Read the capability's ``supply_outcome`` / ``supply_not_found_outside``
+    logbook entries for ``key`` (oldest to newest, append order) into a
+    :class:`SupplyHistory`."""
+    streak: list[dict[str, Any]] = []
+    not_found: int | None = None
+    for b in store.chunks.list_chunks_for_ref(capability_id):
+        if b.chunk_kind != _LOG_KIND:
+            continue
+        meta = b.meta or {}
+        outcome = meta.get(SUPPLY_OUTCOME_META)
+        if isinstance(outcome, dict) and outcome.get("key") == key:
+            if outcome.get("dry"):
+                streak.append(outcome)
+            else:
+                streak, not_found = [], None
+            continue
+        nf = meta.get(SUPPLY_NOT_FOUND_META)
+        if isinstance(nf, dict) and nf.get("key") == key:
+            qs = nf.get("queries")
+            not_found = len(qs) if isinstance(qs, list) else 0
+    ext = [o for o in streak if o.get("external")]
+    queries = tuple(
+        str(q) for o in ext for q in (o.get("queries") or []) if isinstance(q, str)
+    )
+    return SupplyHistory(
+        streak=len(streak),
+        ext_dry=len(ext),
+        ext_queries=queries,
+        not_found_queries=not_found,
+    )
+
+
+def not_found_outside_note(store: Store, capability_id: int, key: str) -> str:
+    """``"; not found outside (N queries)"`` for a gap line when the supply
+    role searched outside twice and found nothing — else ``""``."""
+    n = supply_history(store, capability_id, key).not_found_queries
+    return f"; not found outside ({n} queries)" if n is not None else ""
+
+
 # ── the ledger ────────────────────────────────────────────────────────
 
 

@@ -710,3 +710,79 @@ class TestRoadmapTickCliEmbedder:
         assert seen["embedder"] is sentinel
         assert seen["search_fn"].embedder is sentinel
         assert seen["search_fn"].hub.embedder is sentinel
+
+
+class TestForceExternal:
+    """``force_external`` — the roadmap supply role's escalation: the outside
+    leg runs even when the graph already answers."""
+
+    def _wire(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        s2_calls: list[str] = []
+
+        def _s2(query: str, limit: int) -> list[dict[str, Any]]:
+            s2_calls.append(query)
+            return [{"doi": "10.1/aaa", "title": "paper a"}]
+
+        monkeypatch.setattr(s2mod, "search_s2_papers", _s2)
+        monkeypatch.setattr(
+            "precis.handlers.paper.PaperHandler.acquire",
+            lambda self, **kw: _FakeResponse(body="acquire: minted stub paper id=901"),
+        )
+        return s2_calls
+
+    def test_default_skips_outside_when_graph_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2_calls = self._wire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        assert fn.force_external is False
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
+        assert s2_calls == []
+        rep = fn.report_for("q")
+        assert rep is not None and rep.external_ran is False and rep.forced is False
+        assert "outside skipped" in qsearch._sources_clause(rep)
+
+    def test_forced_runs_outside_with_three_local_hits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2_calls = self._wire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub(), force_external=True)
+        assert fn.force_external is True
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        # local hits first, then the acquired paper
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0), (901, None)]
+        assert s2_calls == ["q"]
+        rep = fn.report_for("q")
+        assert rep is not None
+        assert rep.external_ran is True and rep.forced is True
+        assert rep.local == 3 and rep.acquired == 1
+        assert (
+            "graph answered, outside searched (escalated)"
+            in qsearch._sources_clause(rep)
+        )
+
+    def test_forced_flag_is_a_live_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s2_calls = self._wire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub())
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        fn.force_external = True
+        fn(store, "a", [])
+        fn.force_external = False
+        fn(store, "b", [])
+        assert s2_calls == ["a"]
+
+    def test_thin_graph_is_not_labelled_escalated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._wire(monkeypatch)
+        fn = qsearch.make_acquiring_search(1, _fake_hub(), force_external=True)
+        store: Any = FakeStore(held_ids=[10])
+        fn(store, "q", [])
+        rep = fn.report_for("q")
+        assert rep is not None and rep.external_ran and not rep.forced
+        assert "graph thin, outside searched" in qsearch._sources_clause(rep)

@@ -880,7 +880,106 @@ def _run_supply(
     search_fn: Any,
     embedder: Any,
 ) -> dict[str, Any]:
-    from precis.quest.search import run_search_step
+    """One supply tick, with per-key escalation (measured in prod 2026-10-02:
+    every query got 10 local hits, so local-first never searched outside and
+    every tick came back dry). Each tick appends one ``supply_outcome``
+    observation on the capability's logbook, read back via
+    :func:`~precis.quest.roadmap_ledger.supply_history`. After a dry tick the
+    next one runs with ``search_fn.force_external`` set — the attribute is
+    flipped for this call only and restored in ``finally`` (the caller owns
+    ``search_fn`` and reuses it across ticks and keys; a constructed copy
+    would have to re-plumb hub and embedder; non-:class:`AcquiringSearch`
+    fakes are left alone). Once two ticks that searched outside have both come
+    back dry, escalation stops (local-first as usual) and ONE
+    ``supply_not_found_outside`` entry is logged per dry run, which the
+    ``unmet-capability`` gap line then shows."""
+    from precis.quest.search import AcquiringSearch
+
+    hist = ledger.supply_history(store, choice.capability_id, choice.key)
+    escalate = False
+    if hist.ext_dry >= 2:
+        if hist.not_found_queries is None:
+            append_entry(
+                store,
+                choice.capability_id,
+                text=(
+                    f"`{choice.key}`: not found outside after {hist.ext_dry} "
+                    f"escalated supply ticks; queries: "
+                    f"{'; '.join(hist.ext_queries) or 'none'}"
+                ),
+                entry_type="observation",
+                by="agent",
+                extra_meta={
+                    ledger.SUPPLY_NOT_FOUND_META: {
+                        "key": choice.key,
+                        "queries": list(hist.ext_queries),
+                    }
+                },
+            )
+    elif hist.streak >= 1 and isinstance(search_fn, AcquiringSearch):
+        escalate = True
+
+    queries: list[str] = []
+    prior = getattr(search_fn, "force_external", False)
+    if escalate:
+        search_fn.force_external = True
+    try:
+        result = _supply_tick(
+            store,
+            client,
+            choice,
+            prompt,
+            search_fn=search_fn,
+            embedder=embedder,
+            queries=queries,
+        )
+    finally:
+        if escalate:
+            search_fn.force_external = prior
+
+    external = False
+    for q in queries:
+        rep = getattr(search_fn, "report_for", lambda _q: None)(q)
+        external = external or bool(rep is not None and rep.external_ran)
+    written = result.get("supply_written")
+    unit = f" {choice.unit}" if choice.unit else ""
+    text = (
+        f"supply on `{choice.key}` wrote {written['value']:g}{unit}"
+        if written
+        else f"supply on `{choice.key}` dry (outside searched: "
+        f"{'yes' if external else 'no'})"
+    )
+    append_entry(
+        store,
+        choice.capability_id,
+        text=text,
+        entry_type="observation",
+        by="agent",
+        extra_meta={
+            ledger.SUPPLY_OUTCOME_META: {
+                "key": choice.key,
+                "dry": not written,
+                "external": external,
+                "queries": queries,
+            }
+        },
+    )
+    return result
+
+
+def _supply_tick(
+    store: Store,
+    client: Any,
+    choice: RoleChoice,
+    prompt: str,
+    *,
+    search_fn: Any,
+    embedder: Any,
+    queries: list[str],
+) -> dict[str, Any]:
+    """The supply tick proper; appends the query strings it runs to
+    ``queries`` for :func:`_run_supply`'s outcome entry."""
+    from precis.quest.search import MAX_QUERIES, _parse_search_entry, run_search_step
 
     reply = _ask(client, prompt)
     raw_searches = reply.get("searches")
@@ -891,6 +990,10 @@ def _run_supply(
     )
     searches_run = papers_linked = 0
     if searches:
+        for raw in searches[:MAX_QUERIES]:
+            parsed = _parse_search_entry(raw)
+            if parsed is not None:
+                queries.append(parsed.query)
         step = run_search_step(
             store,
             choice.capability_id,

@@ -46,9 +46,14 @@ the extraction-window fix deploys.
    `SEMANTIC_DISTANCE_FLOOR` (0.65) admits 10 hits for any query in this
    corpus, so `LOCAL_ENOUGH = 3` is never binding and outside search never
    runs. The `drift_per_cycle_nm` supply ticks at 08:36 and 09:57Z came back
-   dry this way. ACCEPTED (orchestrator 2026-10-02): wait for one supply
-   tick after the deploy; if it is still dry, build "escalate on a dry tick
-   for that key". After a supply tick on (capability, key) writes nothing,
+   dry this way. Post-deploy: 4 supply ticks after the 15:05Z round-1
+   deploy were all dry (jc4292690: 6 papers linked, 0 hubs), still
+   `outside skipped`. BUILT 2026-10-02 (round 2, awaiting deploy; state
+   in `supply_outcome` / `supply_not_found_outside` logbook meta, read by
+   `roadmap_ledger.supply_history`). Next: watch for the first
+   `(escalated)` query line. ACCEPTED (orchestrator 2026-10-02): wait for
+   one supply tick after the deploy; if it is still dry, build "escalate on
+   a dry tick for that key". After a supply tick on (capability, key) writes nothing,
    the next supply tick on that key runs the external leg whatever the
    local count. Bound: after two dry ticks with the external leg on, stop
    escalating that key and log it as "not found outside" with the queries
