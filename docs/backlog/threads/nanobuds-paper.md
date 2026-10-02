@@ -38,7 +38,7 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
 
 0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
    pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
-   verified; citekey still `wang22c`, no rename door on paper edit).
+   verified; citekey still `wang22c`, no rename door on paper edit). pa2615 (the Nasibulin SI) is still the ONLY support of fi189540 (junction-geometry transmission hub): re-ground it on the main paper pa2069 before signing.
    `nanobud-review-figs` regenerated with the placement fix (old
    structures retired): closest non-bonded pair 1.34–1.38 Å, none
    < 1.25 Å; only the two [9-6] necks carry geom.clash WARNs (1.49–1.72
@@ -47,6 +47,73 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    draft before Reto's ok. Still to do on the deploy:
    `precis enrich-rearm --refs <cited paper ids> --apply` on prod, then
    export with `bib_style='chem-rsc'`.
+   **Item 17 answered 21:21Z:** structures decent, perspective needs work →
+   persp + bud-up framing + fog rendered (`figs/render_persp.py`,
+   `persp-compare.png`), camera choice is look-at item 18; viz3d persp
+   scaling gripe gr462672. New ask: one composite hero figure on a single
+   sheet (front-left tiny bump, behind it a tube with C60 on top, to the
+   right a bud and a pill protrusion), built with the smooth-space/hexfold
+   tooling; feasibility asked of hexfold-toolkit; preview to Reto before
+   the draft.
+   hexfold-toolkit: one spec today (`hexfold-corner/hero2.hx`, copied to
+   `nanobud-fidelity/figs/specs-hero/`). Local build is clash-clean
+   (2850 atoms, min 1.26 Å) but mis-placed: the pillar's C60 sits inside
+   the (12,0) tube top (a peapod), the sheet bud hangs under the sheet,
+   and the cap-on-hole bump is flat. Sent back to hexfold-toolkit 21:55Z.
+   No Reto preview until the ball sits on top (`figs/render_hero.py`
+   re-renders).
+   **Hero figure:** hexfold-toolkit fixed the placement (now 15b943888, rebased from 3d17b6179; branch
+   only, awaits orchestrator design review C4); preview with it applied
+   uncommitted = look-at item 19 (`figs/render/hero-az-110.png`, spec
+   `figs/specs-hero/hero3.hx`). Mint on prod only after that sha deploys.
+   **Items 18/19 answered 22:35Z.** 18: camera c (az −75°, el 12°, fov 28°)
+   for tubes; no sheet camera yet → new options on a 55 Å render-only sheet
+   (`figs/render_sheet_opts.py`, `specs-sheet/`, `sheet-compare.png`) =
+   look-at item 23; picking one means regenerating the two minted sheet
+   structures at that size. 19: change it (rear-left pillar thinner + shorter,
+   diameter < C60; rear-right wider neck; gentler flanges; features closer)
+   → hexfold-toolkit sent `hero4.hx` (copied to `figs/specs-hero/`;
+   `render_hero.py hero4`, 3d17b6179 applied uncommitted then restored):
+   2748 atoms, min 1.05 Å at the pillar's fused neck (9 WARNs). Pillar is
+   now (6,0) with a fused-neck C60 ([9-6] impossible on a (6,0) lid); gentle
+   flange not producible (parked smooth collar). Look-at item 24.
+   **C4 approved (orchestrator, ~23:40Z):** 15b943888 qlanding. After
+   round 2 deploys: regenerate `hexa-nanobud-pillar` block `bud` (459564,
+   same spec; remove_block + generate), run
+   `nanobud-fidelity/pillar/ztable.py <new id> after`, and fill the "After
+   (prod)" table in `reviews/nanobuds-paper.md` (release item). Before
+   table recorded: ball 19.5–25.6 Å under a 26.1–27.3 Å lid; expected
+   after: ball 27.9–33.7 Å on the lid. Then mint the hero (item 24).
+   **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
+   (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
+   pa462694/pa462695 in the fetch queue → then re-ground fi449540.
+   Phosphorene: fi191297 reworded to Carbon 2021 body values, preprint
+   (ref 50777) edges removed. 16 is NOT a ruling: remove nothing; a
+   read-only analysis (`nanobud-fidelity/prune-analysis.md`, agent
+   running) feeds a re-filed item answering cost / reasons / recoverable /
+   pruning-on, with the four disputes edges. → DONE: re-filed as item 21
+   (fix 21 needed edges, prune 78 free, pruning stays off until the judge
+   checks the citing draft sentence; claims-and-evidence told).
+   **Item 21 answered 22:26Z: fix-then-prune approved**, plus the 4 disputes
+   edges; Reto wants pruning ON afterwards → answered (it needs
+   claims-and-evidence's draft-sentence check, `slice_refine_eval`, and an
+   orchestrator deploy of `PRECIS_TAPROOT_REGROUND_PRUNE=eval-passed`);
+   item 22 ruled 22:44Z (option 1): pruning stays off until the
+   draft-sentence check + `slice_refine_eval` are in, then the orchestrator
+   opens the interlock (round 3 est.); owned by claims-and-evidence (told,
+   with `prune-edges.tsv` as the test case: prune 78, keep 21). Apply plan
+   `nanobud-fidelity/fix-plan-21.md`, backups taken. **Applied 23:10Z**
+   after the read-only incident (gr462726): 11 split hubs minted
+   (fi462728, fi462732–fi462741), 7 draft chunks re-cited (dc2445859/96,
+   dc2445904, dc2445930, dc2445932/34, dc2445940; dc2445904 dropped
+   "and bias fields", no source carries it), 95 edges removed
+   (`apply_removals.py`, `removals.log`; the 3 review-finding disputes
+   edges had to be removed from the finding side). Read-back
+   (`readback_21.sql`) clean: every draft pin resolves; W48 (Canatu) kept
+   for the report-type reword; a pre-existing broken pin
+   `[fi190976>pc279174]` (pa2615 passage, edge lost earlier) re-attached. A `verify-edges` re-judge was
+   classifier-denied (LLM spend); stale `partial` labels are legacy-valid
+   for the preflight, so re-judging is optional.
 1. **Figures** (items 5/6): the five kept third-party figures are in
    (dc4291496–dc4291500, permission `requested`, Reto files RightsLink at
    submission; image door = `put(args={'image': b64, …})`, scripts in
