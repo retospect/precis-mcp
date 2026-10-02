@@ -92,9 +92,9 @@ and the script is ready (`scratch/pdh-pilot/`).
   the surface during the construction relax. Recommended: leave those
   sites empty and record them in `substrate_level.emptied_sites`.
 - Waiting on the §20b verdict and the round-1 deploy.
-- To file as a gripe once the precis MCP reconnects: preflight's
-  `domain_straddle` treats H as an organic element. Every hydride twin
-  gets a false "metal-organic, treat energies as qualitative" caveat.
+- Preflight's `domain_straddle` treats H, N and O as organic, so every
+  hydride twin and every metal slab carrying an adsorbate gets a false
+  "metal-organic, treat energies as qualitative" caveat: gr462730.
 
 Related (not this item): `frontier._candidate_from_structure` lifts every
 numeric top-level structure meta key into a ranking measure. Every
