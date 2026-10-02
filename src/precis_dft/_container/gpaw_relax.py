@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import traceback
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,31 @@ def relax(atoms: Any, params: dict[str, Any], out_dir: str) -> dict[str, Any]:
     return scalars
 
 
+def cpu_binding() -> dict[str, object]:
+    """The CPUs this run could use: the container cgroup's effective cpuset
+    and rank 0's own affinity. ``result.json`` records it beside ``ranks``,
+    so a run pinned to the fast cores (``PRECIS_DFT_CPUSET``) and one spread
+    over fast and slow cores are distinguishable after the fact."""
+    cgroup = None
+    try:
+        cgroup = (
+            Path("/sys/fs/cgroup/cpuset.cpus.effective")
+            .read_text(encoding="utf-8")
+            .strip()
+            or None
+        )
+    except OSError:
+        pass
+    getaffinity = getattr(os, "sched_getaffinity", None)  # Linux-only
+    try:
+        affinity: list[int] | None = (
+            sorted(getaffinity(0)) if getaffinity is not None else None
+        )
+    except OSError:
+        affinity = None
+    return {"cgroup_cpuset": cgroup, "rank0_affinity": affinity}
+
+
 def run_cli(in_dir: str, out_dir: str) -> int:
     """Read inputs, relax, write ``result.json``. Returns 0 on success,
     1 on any failure (with the failure recorded in ``result.json``)."""
@@ -170,6 +196,7 @@ def run_cli(in_dir: str, out_dir: str) -> int:
             # How much parallelism actually ran — a serial image and an
             # under-ranked mpirun look identical in the timings alone.
             "ranks": int(world.size),
+            "cpu_binding": cpu_binding(),
         }
         if world.rank == 0:
             (out / "result.json").write_text(
@@ -185,6 +212,7 @@ def run_cli(in_dir: str, out_dir: str) -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                         "traceback": traceback.format_exc(),
                         "ranks": int(world.size),
+                        "cpu_binding": cpu_binding(),
                     },
                     indent=2,
                 ),
@@ -193,4 +221,10 @@ def run_cli(in_dir: str, out_dir: str) -> int:
         return 1
 
 
-__all__ = ["DEFAULT_BASIS", "gpaw_kwargs_from_params", "relax", "run_cli"]
+__all__ = [
+    "DEFAULT_BASIS",
+    "cpu_binding",
+    "gpaw_kwargs_from_params",
+    "relax",
+    "run_cli",
+]

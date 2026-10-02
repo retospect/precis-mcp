@@ -152,6 +152,8 @@ _NFS_ROOT = os.environ.get("PRECIS_DFT_NFS_ROOT", "/shared")
 _CONTAINER_CMD = os.environ.get("PRECIS_DFT_CONTAINER_CMD", "docker")
 _CONTAINER_IN = "/work/in"
 _CONTAINER_OUT = "/work/out"
+#: Where the image's GPAW_SETUP_PATH points (docker/precis-dft/Dockerfile).
+_CONTAINER_PAW = "/opt/gpaw-setups"
 _RESULT_FILE = "result.json"
 #: Deterministic container-name prefix (see :func:`build_run_argv`) — the
 #: convention both the active reap (:func:`kill_container`, called from the
@@ -326,12 +328,29 @@ def build_run_argv(
     wraps the command in ``mpirun -np <n>``, which requires the MPI-enabled
     image (precis-dft) — hence off by default."""
     argv = [container_cmd, "run", "--rm", "--name", f"{_CONTAINER_PREFIX}{ref_id}"]
-    argv += container_limit_flags()
+    limits = container_limit_flags()
+    dft_cpuset = os.environ.get("PRECIS_DFT_CPUSET", "").strip()
+    if dft_cpuset:
+        # A DFT-only pin (e.g. the GB10's fast cores) replaces the fleet-wide
+        # PRECIS_JOB_CPUSET for this container: MPI ranks spread over fast and
+        # slow cores run at the slowest core's pace. result.json records the
+        # binding the run actually got (precis_dft gpaw_relax.cpu_binding).
+        if "--cpuset-cpus" in limits:
+            i = limits.index("--cpuset-cpus")
+            del limits[i : i + 2]
+        limits += ["--cpuset-cpus", dft_cpuset]
+    argv += limits
     threads = _omp_threads()
     if threads:
         argv += ["-e", f"OMP_NUM_THREADS={threads}"]
     if gpus:
         argv += _gpu_flags(container_cmd)
+    paw_dir = os.environ.get("PRECIS_DFT_PAW_DIR", "").strip()
+    if paw_dir:
+        # The image sets GPAW_SETUP_PATH=/opt/gpaw-setups but bakes no PAW
+        # datasets (docker/precis-dft/Dockerfile header); an image without
+        # them baked in needs the host's copy mounted here.
+        argv += ["-v", f"{paw_dir}:{_CONTAINER_PAW}:ro"]
     argv += [
         "-v",
         f"{in_dir}:{_CONTAINER_IN}:ro",
