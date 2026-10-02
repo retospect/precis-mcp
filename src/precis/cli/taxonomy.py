@@ -88,6 +88,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "at --pack 1, 120 s per hub above that.",
     )
     parser.add_argument(
+        "--placement",
+        choices=("local", "cloud"),
+        default=None,
+        help="Pin discovery to local or cloud model rungs. 'local' fails a "
+        "call instead of falling back to the cloud. Default: the tier's "
+        "own chain.",
+    )
+    parser.add_argument(
         "--freeze",
         action="store_true",
         help="Write the next list.vN.yaml. Refuses if A/B stability is below "
@@ -173,7 +181,7 @@ def run(args: argparse.Namespace) -> None:
     )
     result = pipeline.run_pipeline(
         config,
-        discovery.router_client(timeout_s=timeout_s),
+        discovery.router_client(timeout_s=timeout_s, placement=args.placement),
         salt=salt,
         limit=args.limit,
         join_sides=join_sides,

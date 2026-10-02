@@ -865,3 +865,20 @@ def test_call_timeout_scales_with_the_pack_and_reaches_the_router(
     monkeypatch.setattr(router, "route", fake_route)
     router_client(timeout_s=480.0).complete_json("p")
     assert seen[0].timeout_s == 480.0
+    assert seen[0].placement is None, "no pin unless asked"
+
+
+def test_placement_pin_reaches_the_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--placement local`` must reach :class:`LlmRequest` so a local
+    agreement test fails rather than silently bills a cloud fallback."""
+    from precis.utils.llm import router
+
+    seen: list[Any] = []
+
+    def fake_route(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(error=None, paused=False, text="[]")
+
+    monkeypatch.setattr(router, "route", fake_route)
+    router_client(placement="local").complete_json("p")
+    assert seen[0].placement == "local"

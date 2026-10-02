@@ -818,7 +818,10 @@ def call_timeout_s(pack: int) -> float | None:
 
 
 def router_client(
-    *, source: str = "taxonomy_discovery", timeout_s: float | None = None
+    *,
+    source: str = "taxonomy_discovery",
+    timeout_s: float | None = None,
+    placement: str | None = None,
 ) -> DiscoveryClient:
     """Build a production :class:`DiscoveryClient` on the repo's LLM router.
 
@@ -830,12 +833,20 @@ def router_client(
     that model — do not "optimise" this tier down.
 
     ``timeout_s`` is the per-call wall clock (:func:`call_timeout_s`);
-    ``None`` keeps the transport's default.
+    ``None`` keeps the transport's default. ``placement='local'`` pins the
+    run to a local rung and makes a call fail rather than fall back to the
+    cloud (the local big model's agreement test must not bill silently).
     """
     from precis.utils.llm.router import DispatchClient, Tier
 
     return _RouterDiscoveryClient(
-        DispatchClient(tier=Tier.BIG, source=source, log_call=True, timeout_s=timeout_s)
+        DispatchClient(
+            tier=Tier.BIG,
+            source=source,
+            log_call=True,
+            timeout_s=timeout_s,
+            placement=placement,
+        )
     )
 
 

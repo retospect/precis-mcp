@@ -2464,6 +2464,10 @@ class DispatchClient:
     #: Per-call wall clock (see :attr:`LlmRequest.timeout_s`); ``None`` leaves
     #: the transport's own default in force.
     timeout_s: float | None = None
+    #: Strict rung filter (see :attr:`LlmRequest.placement`): ``'local'``
+    #: refuses a cloud fallback with an error result instead of billing it.
+    #: ``None`` leaves the chain unfiltered.
+    placement: str | None = None
 
     def complete(
         self,
@@ -2497,6 +2501,7 @@ class DispatchClient:
                 log_call=self.log_call,
                 log_blobs=self.log_blobs,
                 timeout_s=self.timeout_s,
+                placement=self.placement,
             )
         )
         if res.error is not None:
