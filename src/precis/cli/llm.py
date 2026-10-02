@@ -445,26 +445,24 @@ def _print_number_rule_lines(
             for ts in res.per_task
             if ts.task_id in summary_tasks
         ]
-        if not rows:
+        errored = sum(1 for _, ts in rows if ts.error)
+        # Errored tasks never reached the model: out of both means (void).
+        ok = [(t, ts) for t, ts in rows if not ts.error]
+        if errored:
+            print(f"{name}: VOID — {errored}/{len(rows)} transport errors")
+        if not ok:
             continue
-        n = len(rows)
-        with_rule = sum(ts.score for _, ts in rows) / n
-        # An errored task scores 0 either way; rescore only real replies.
+        n = len(ok)
+        with_rule = sum(ts.score for _, ts in ok) / n
         without = (
             sum(
-                0.0
-                if ts.error
-                else score_summary(
-                    ts.response, None, {**t.expect, "number_rule": False}
-                )
-                for t, ts in rows
+                score_summary(ts.response, None, {**t.expect, "number_rule": False})
+                for t, ts in ok
             )
             / n
         )
         zeros = sum(
-            1
-            for t, ts in rows
-            if not ts.error and summary_number_rule_zero(ts.response, t.expect)
+            1 for t, ts in ok if summary_number_rule_zero(ts.response, t.expect)
         )
         print(
             f"{name}: mean with number rule {with_rule:.3f}, without "
@@ -512,9 +510,14 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
             cells = []
             for name in (args.model, args.compare):
                 res = next((r for r in reports[name].results if r.axis == axis), None)
-                cells.append(
-                    f"{res.ordinal} ({res.mean_score:.3f}/{res.n})" if res else "—"
-                )
+                if res is None:
+                    cells.append("—")
+                elif res.void:
+                    # A transport error means the run never reached the model;
+                    # a mean here would read as "the model is bad".
+                    cells.append(f"void ({res.errors}/{res.n + res.errors} err)")
+                else:
+                    cells.append(f"{res.ordinal} ({res.mean_score:.3f}/{res.n})")
             print(f"{axis:<24} {cells[0]:>22} {cells[1]:>22}")
         _print_number_rule_lines(reports, (args.model, args.compare), args.gold)
         skipped = reports[args.model].skipped
@@ -532,6 +535,12 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
     print(f"golden eval — {args.model} (tier {args.tier})")
     for res in report.results:
         mark = "recorded" if res.recorded else "not recorded"
+        if res.void:
+            print(
+                f"  {res.axis:<24} VOID — {res.errors}/{res.n + res.errors} "
+                f"transport errors [{mark}]"
+            )
+            continue
         print(
             f"  {res.axis:<24} ordinal {res.ordinal}  "
             f"(mean {res.mean_score:.2f} / {res.n} tasks) [{mark}]"

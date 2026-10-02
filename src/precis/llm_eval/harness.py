@@ -57,11 +57,19 @@ class AxisResult:
     """The outcome of evaluating one capability axis over its gold tasks."""
 
     axis: str
+    #: Tasks that got a reply and were scored; ``errors`` are the rest.
     n: int
     mean_score: float
     ordinal: int
     per_task: list[TaskScore] = field(default_factory=list)
     recorded: bool = False
+    #: Tasks with a transport/dispatch error — kept out of ``mean_score``. Any
+    #: error makes the axis **void**: it is shown as such and never recorded.
+    errors: int = 0
+
+    @property
+    def void(self) -> bool:
+        return self.errors > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,11 +96,12 @@ def run_axis(
     """Run one axis's gold tasks through ``model`` and bucket the mean score.
 
     Every task in ``tasks`` must share an axis and a **wired** scorer (the
-    caller filters). A dispatch error or a transport failure scores that task 0
-    (a model that can't answer fails the axis) with the error retained for the
-    report. With ``placement`` set the request carries the strict rung filter
-    and a result that landed elsewhere raises :class:`PlacementMismatch`
-    (not swallowed as a 0).
+    caller filters). A dispatch error or a transport failure is counted in
+    ``errors`` and kept out of the mean: a mean of 0 would read as "the model
+    is bad" when the run never reached it, so an axis with errors is void.
+    With ``placement`` set the request carries the strict rung filter and a
+    reply that landed elsewhere raises :class:`PlacementMismatch` (not
+    swallowed as a 0).
     """
     from precis.utils.llm.router import LlmRequest
 
@@ -120,27 +129,31 @@ def run_axis(
             log.warning("llm eval: task %s dispatch raised: %s", t.task_id, exc)
             scored.append(TaskScore(t.task_id, 0.0, error=str(exc)))
             continue
+        # Error first: an errored result carries no placement (no rung ran),
+        # so it is a void task, not a mismatch.
+        err = getattr(res, "error", None)
+        if err:
+            scored.append(TaskScore(t.task_id, 0.0, error=str(err)))
+            continue
         landed = getattr(res, "placement", None)
         if placement and landed != placement:
             raise PlacementMismatch(
                 f"llm eval: task {t.task_id} expected placement {placement!r} "
                 f"but ran on {landed!r} (model {model})"
             )
-        err = getattr(res, "error", None)
-        if err:
-            scored.append(TaskScore(t.task_id, 0.0, error=str(err)))
-            continue
         scorer = SCORERS[t.scorer]
         text = getattr(res, "text", "") or ""
         score = scorer(text, getattr(res, "data", None), t.expect)
         scored.append(TaskScore(t.task_id, score, response=text))
-    mean = sum(s.score for s in scored) / len(scored) if scored else 0.0
+    ok = [s for s in scored if s.error is None]
+    mean = sum(s.score for s in ok) / len(ok) if ok else 0.0
     return AxisResult(
         axis=axis,
-        n=len(scored),
+        n=len(ok),
         mean_score=mean,
         ordinal=bucket_to_ordinal(mean),
         per_task=scored,
+        errors=len(scored) - len(ok),
     )
 
 
@@ -202,7 +215,14 @@ def run_eval(
             placement=placement,
         )
         recorded = False
-        if record:
+        if record and res.void:
+            log.warning(
+                "llm eval: %s/%s void (%d transport errors) — not recorded",
+                model,
+                axis,
+                res.errors,
+            )
+        elif record:
             from precis.llm_catalog import record_eval
 
             try:
@@ -233,6 +253,7 @@ def run_eval(
                 ordinal=res.ordinal,
                 per_task=res.per_task,
                 recorded=recorded,
+                errors=res.errors,
             )
         )
 

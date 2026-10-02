@@ -133,7 +133,7 @@ def test_run_eval_wrong_model_scores_1(store: Any) -> None:
     assert report.results[0].recorded is False
 
 
-def test_dispatch_error_scores_zero(store: Any) -> None:
+def test_dispatch_error_voids_axis_not_scored(store: Any) -> None:
     from precis.utils.llm.router import Tier
 
     tasks = [GoldTask("n1", "long-context-recall", "needle", "?", {"needle": "AB-9"})]
@@ -147,10 +147,39 @@ def test_dispatch_error_scores_zero(store: Any) -> None:
         tier=Tier.MEDIUM,
         tasks=tasks,
         dispatch_fn=_err,
-        record=False,
+        record=True,
     )
-    assert report.results[0].mean_score == 0.0
-    assert report.results[0].per_task[0].error == "transport down"
+    res = report.results[0]
+    # Out of the mean, counted, and never written to the card.
+    assert res.void and res.errors == 1 and res.n == 0
+    assert res.recorded is False
+    assert res.per_task[0].error == "transport down"
+
+
+def test_errored_tasks_stay_out_of_the_mean() -> None:
+    from precis.llm_eval.harness import run_axis
+    from precis.utils.llm.router import Tier
+
+    tasks = [
+        GoldTask(f"n{i}", "long-context-recall", "needle", "?", {"needle": "AB-9"})
+        for i in range(3)
+    ]
+    replies = iter(
+        [
+            SimpleNamespace(text="AB-9", data=None, error=None, placement="local"),
+            SimpleNamespace(text="", data=None, error="timeout", placement=None),
+            SimpleNamespace(text="AB-9", data=None, error=None, placement="local"),
+        ]
+    )
+    # An errored reply carries placement None: void, not PlacementMismatch.
+    res = run_axis(
+        tasks,
+        model="m",
+        tier=Tier.SMALL,
+        dispatch_fn=lambda _r: next(replies),
+        placement="local",
+    )
+    assert res.mean_score == 1.0 and res.n == 2 and res.errors == 1 and res.void
 
 
 def test_unwired_scorer_is_skipped_not_scored(store: Any) -> None:
@@ -518,3 +547,37 @@ def test_cli_compare_prints_number_rule_line(
     args.endpoint_a = "{nope"
     with pytest.raises(BadInput):
         _cmd_eval(None, args)  # type: ignore[arg-type]
+
+
+def test_cli_compare_prints_void_side(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A side with transport errors prints void + the count, never a mean."""
+    import argparse
+
+    import precis.llm_eval as llm_eval_pkg
+    from precis.cli.llm import _cmd_eval
+    from precis.llm_eval.harness import AxisResult, EvalReport
+
+    def _rep(model: str, errors: int) -> EvalReport:
+        res = AxisResult(
+            axis="long-context-recall",
+            n=40 - errors,
+            mean_score=0.9,
+            ordinal=bucket_to_ordinal(0.9),
+            errors=errors,
+        )
+        return EvalReport(model=model, results=[res], skipped=[])
+
+    monkeypatch.setattr(
+        llm_eval_pkg,
+        "compare",
+        lambda store, **kw: {"a": _rep("a", 3), "b": _rep("b", 0)},
+    )
+    args = argparse.Namespace(
+        model="a", compare="b", tier="small", gold=None, no_record=True
+    )
+    _cmd_eval(None, args)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "void (3/40 err)" in out and "(0.900/40)" in out
+    assert "(0.900/37)" not in out
