@@ -18,13 +18,11 @@ defect and follow-on cluster below is owned here.
 
 1. **Confirmed small bugs** (each S, verified on the 10-02 tree) — wrong
    output today, cheapest first:
-   - `claim-publication-nanopub-ots` § latent bug: `nanopub/evidence.py`'s
-     source filter is `("paper", "patent")` while `attach_evidence` also
-     accepts `edgar`/`datasheet` — such evidence silently drops from a bundle.
-     Reto ruled 10-02 (`claims-and-evidence-1`): both publishable, edgar
-     cites its SEC accession. Edgar widening in flight; the datasheet
-     identifier waits on `claims-and-evidence-2` (a datasheet ref stores no
-     URL). The contradicts half was already fixed (D1 `live_contradicts`).
+   - Datasheet nanopub identifier — waits on Reto (`claims-and-evidence-2`:
+     a datasheet ref stores no URL; recommended `urn:sha256:` + the linked
+     part's URL when known). Then add a `datasheet` arm to
+     `nanopub/evidence.py::source_anchor` and lift the named refusal in
+     `gates._check_passage`. Edgar shipped 10-02 (SEC accession anchor).
 2. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
    `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) →
    `taproot-hub-scope-no-edit-door` (`edit(kind='finding')` takes no

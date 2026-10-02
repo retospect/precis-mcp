@@ -4,6 +4,8 @@ pinned separately)."""
 
 from __future__ import annotations
 
+import dataclasses
+import pathlib
 from typing import Any
 
 import pytest
@@ -12,7 +14,7 @@ from rdflib import XSD, Dataset, Literal, URIRef
 from precis.nanopub import assemble
 from precis.nanopub.aida import aida_uri, canonical_sentence
 from precis.nanopub.keys import MIN_KEY_BITS, fingerprint, generate_keypair
-from precis.nanopub.vocab import CC_BY, PRECIS
+from precis.nanopub.vocab import CC_BY, DCT, PRECIS, PROV, SEC_ACCESSION
 
 _SENTENCE = canonical_sentence(
     "Flexible metal-organic frameworks can exhibit elastic anisotropy "
@@ -354,6 +356,120 @@ def test_reword_changes_claim_identity_resign_does_not() -> None:
     # only by signature/timestamp — the AIDA URI is stable.
     np1 = _build_and_sign(a, p, [])
     assert a.aida_uri in np1.rdf.serialize(format="trig")
+
+
+def _legacy_paper_input() -> assemble.MintInput:
+    """The paper-only input behind the golden fixture: two passages of one
+    DOI (contiguity flag + context sentence) and one of another."""
+
+    def g(doi: str, quote: str, role: str = "corroborates") -> assemble.GroundingInput:
+        return assemble.GroundingInput(
+            doi=doi,
+            pdf_sha256="ab" * 32,
+            quote=quote,
+            snip=quote.lower(),
+            role=role,
+            source_title=f"T {doi}",
+            contiguous_group=True,
+            context_sentence="Simulation study.",
+        )
+
+    sentence = canonical_sentence(
+        "Flexible MOFs can exhibit anisotropy ratios up to 400:1"
+    )
+    return assemble.MintInput(
+        artifact_type="claim",
+        sentence=sentence,
+        aida_uri=aida_uri(sentence),
+        hub_ref_id=7,
+        grounding=[
+            g("10.1/a", "quote one"),
+            g("10.1/a", "quote two"),
+            g("10.2/b", "quote three", "establishes"),
+        ],
+        fields={"quantity": "400:1", "quantity_bound": "upper"},
+    )
+
+
+def _assertion_provenance_nt(inp: assemble.MintInput) -> list[str]:
+    assertion, prov, _ = assemble.build_graphs(inp, assemble.DRAFT_NS)
+    return [
+        line
+        for g in (assertion, prov)
+        for line in sorted(g.serialize(format="nt").splitlines())
+        if line.strip()
+    ]
+
+
+def test_paper_only_input_assembles_identically_to_the_pre_source_uri_graph() -> None:
+    """A payload frozen before ``source_uri`` existed (doi only) must
+    assemble byte-identically: the fixture is this input's assertion +
+    provenance N-Triples as produced by the assembler before the change."""
+    golden = (
+        (
+            pathlib.Path(__file__).parent
+            / "fixtures/nanopub/paper_only_graph_pre_source_uri.nt"
+        )
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert _assertion_provenance_nt(_legacy_paper_input()) == golden
+    # …and a payload that carries the derived source_uri explicitly is the same graph.
+    legacy = _legacy_paper_input()
+    explicit = dataclasses.replace(
+        legacy,
+        grounding=[
+            dataclasses.replace(p, source_uri=f"https://doi.org/{p.doi}")
+            for p in legacy.grounding
+        ],
+    )
+    assert _assertion_provenance_nt(explicit) == golden
+
+
+def test_edgar_source_node_is_the_sec_url_with_accession_and_no_sha() -> None:
+    url = "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/"
+    inp = _claim_input(
+        grounding=[
+            assemble.GroundingInput(
+                doi="",
+                pdf_sha256="",
+                quote="This anisotropy can reach a 400:1 ratio",
+                snip="anisotropy 400 1 ratio",
+                source_uri=url,
+                accession="0000320193-23-000106",
+                source_title="Apple Inc. 10-K FY2023",
+            )
+        ]
+    )
+    _, prov, _ = assemble.build_graphs(inp, assemble.DRAFT_NS)
+    src = URIRef(url)
+    assert (assemble.DRAFT_NS["assertion"], PROV.wasDerivedFrom, src) in prov
+    assert (src, SEC_ACCESSION, Literal("0000320193-23-000106")) in prov
+    assert (src, DCT.title, Literal("Apple Inc. 10-K FY2023")) in prov
+    text = prov.serialize(format="nt")
+    assert "doi.org" not in text
+    assert "sourcePdfSha256" not in text
+
+
+def test_two_edgar_passages_of_one_filing_share_one_contiguity_triple() -> None:
+    url = "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/"
+
+    def g(quote: str) -> assemble.GroundingInput:
+        return assemble.GroundingInput(
+            doi="",
+            pdf_sha256="",
+            quote=quote,
+            snip=quote,
+            source_uri=url,
+            accession="0000320193-23-000106",
+            contiguous_group=False,
+        )
+
+    _, prov, _ = assemble.build_graphs(
+        _claim_input(grounding=[g("one"), g("two")]), assemble.DRAFT_NS
+    )
+    flags = list(prov.triples((URIRef(url), PRECIS["excerptsContiguous"], None)))
+    assert len(flags) == 1 and flags[0][2] == Literal(False, datatype=XSD.boolean)
 
 
 def test_keygen_floor_and_fingerprint() -> None:

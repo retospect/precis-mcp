@@ -43,6 +43,11 @@ BOT_AGENT = AGENT["precis"]
 #: quotation); never assert CC-BY over the quote bytes.
 CC_BY = "https://creativecommons.org/licenses/by/4.0/"
 
+#: SEC accession number of an edgar source (``0000320193-23-000106``) — the
+#: filing's own identifier, carried on the source node beside its archive
+#: URL. The stand-in for a DOI on a source that has none.
+SEC_ACCESSION = PRECIS["secAccession"]
+
 #: Artifact types (rdf:type of the claim node in the assertion graph).
 ATOMIC_CLAIM = PRECIS["AtomicClaim"]
 COMPOUND_CLAIM = PRECIS["CompoundClaim"]

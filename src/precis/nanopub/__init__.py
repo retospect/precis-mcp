@@ -32,8 +32,8 @@ Slices 1-3 — local, reversible:
   built), any live ``disputes`` edge is a non-blocking open question,
   both regardless of counterpart ref kind or direction.
 - :mod:`.assemble` — the four named graphs (head/assertion/provenance/
-  pubinfo) as an rdflib Dataset; universal anchors only (DOI, sha,
-  quote, snip) — internal ids never leave the publish row.
+  pubinfo) as an rdflib Dataset; universal anchors only (source URI —
+  DOI or SEC accession — sha, quote, snip) — internal ids never leave the publish row.
 - :mod:`.gates` — Layer-A mechanical mint validators; full checklist in
   the module docstring.
 - :mod:`.mint` — freeze-at-review + mint+sign pipeline; signs the
@@ -84,7 +84,7 @@ Slices 4-5 — publish path (POST gated, nothing published yet):
     haystack). :func:`.mint.approve` freezes the per-source verdict onto
     the approved passages (NOT at prefill — that is the pre-edit
     candidate set); :mod:`.assemble` emits ``precis:excerptsContiguous``
-    on the source's DOI node for a >=2-grounding source only.
+    on the source node (DOI URL / SEC archive URL) for a >=2-grounding source only.
   - *Paper context* — :mod:`precis.workers.context_sentence` writes ONE
     neutral method/evidence sentence to ``refs.meta['context_sentence']``
     (code-enforced word cap + claim-strength blocklist + no attribution

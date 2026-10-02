@@ -716,7 +716,36 @@ def _check_passage(
     doi = passage.get("doi")
     sha = passage.get("pdf_sha256")
 
-    if not doi:
+    # The source's kind comes from the chunk's own ref, never from the
+    # reviewer-editable payload — it decides which identifier the passage
+    # must carry (a DOI, an SEC accession, or none yet).
+    chunk: ev.ChunkInfo | None = None
+    chunk_id = integral_chunk_id(raw_chunk_id)
+    if chunk_id is not None:
+        chunks = ev.fetch_chunks(store, [chunk_id])
+        chunk = chunks[0] if chunks else None
+    ref = store.fetch_refs_by_ids([chunk.ref_id]).get(chunk.ref_id) if chunk else None
+    kind = ref.kind if ref is not None else "paper"
+
+    if kind == "datasheet":
+        out.append(
+            GateViolation(
+                "grounding",
+                f"{label}: datasheet citation identifier undecided "
+                "(review claims-and-evidence-2) — not publishable yet",
+            )
+        )
+    elif kind == "edgar":
+        if ev.source_anchor(kind, ref.slug if ref else None, None).source_uri is None:
+            out.append(
+                GateViolation(
+                    "grounding",
+                    f"{label}: edgar source has no parseable SEC accession "
+                    f"(ref slug {ref.slug if ref else None!r}) — the "
+                    "accession number is its published identifier",
+                )
+            )
+    elif not doi:
         out.append(
             GateViolation(
                 "grounding",
@@ -726,8 +755,6 @@ def _check_passage(
             )
         )
 
-    chunk: ev.ChunkInfo | None = None
-    chunk_id = integral_chunk_id(raw_chunk_id)
     if raw_chunk_id is not None and chunk_id is None:
         out.append(
             GateViolation(
@@ -737,9 +764,6 @@ def _check_passage(
             )
         )
         return out
-    if chunk_id is not None:
-        chunks = ev.fetch_chunks(store, [chunk_id])
-        chunk = chunks[0] if chunks else None
     if chunk is None:
         out.append(
             GateViolation(
@@ -818,7 +842,29 @@ def _check_passage(
 
     # 8 — ingested-chunk / pdf_sha256 gate.
     shas = ev.pdf_sha_rows(store, chunk.ref_id)
-    if len(shas) != 1:
+    if kind == "edgar":
+        # An HTML filing has no PDF copy to pin: zero shas is the norm and
+        # the sha triple is simply omitted; a pinned value we cannot
+        # verify, or an ambiguous pair, still fails.
+        if len(shas) > 1 or (sha and not shas):
+            out.append(
+                GateViolation(
+                    "pdf-sha",
+                    f"{label}: edgar ref {chunk.ref_id} has {len(shas)} "
+                    "pdf_sha256 rows — a filing carries none (omit the "
+                    "passage's pdf_sha256) or exactly one that the passage "
+                    "pins",
+                )
+            )
+        elif sha and sha != shas[0]:
+            out.append(
+                GateViolation(
+                    "pdf-sha",
+                    f"{label}: passage pins sha {str(sha)[:12]}… but the "
+                    f"ref's identifier row says {shas[0][:12]}…",
+                )
+            )
+    elif len(shas) != 1:
         out.append(
             GateViolation(
                 "pdf-sha",

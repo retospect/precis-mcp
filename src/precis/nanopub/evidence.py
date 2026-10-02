@@ -16,8 +16,8 @@ of the graph):
   contributes a paper-level evidence row only.
 
 Grounding resolution stays **internal-coordinate** here (chunk ids,
-ords): the publish boundary strips them — only DOI + ``pdf_sha256`` +
-quote + snip enter a published graph (universal anchors rule).
+ords): the publish boundary strips them — only the source anchor (DOI URL
+or SEC accession) + ``pdf_sha256`` + quote + snip enter a published graph (universal anchors rule).
 
 :func:`live_contradicts` / :func:`open_disputes` are a separate pair of
 read helpers, deliberately outside :class:`HubBundle` — the
@@ -37,7 +37,11 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
+from precis.handlers._edgar_accession import parse_accession
+from precis.nanopub.assemble import doi_source_uri
 from precis.taproot import seniority
+from precis.taproot.hub import EVIDENCE_SRC_KINDS
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -243,6 +247,44 @@ class EvidenceSource:
     role: str
     #: 'inbound' (paper→hub taproot edge) | 'outbound' (hub→paper lineage)
     via: str
+    #: The published source node (see :func:`source_anchor`): the DOI URL
+    #: for a paper, the SEC archive URL for an edgar filing; ``None`` for a
+    #: source with no ruled citation identifier yet (patent, datasheet).
+    source_uri: str | None = None
+    #: Dashed SEC accession number — edgar only.
+    accession: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAnchor:
+    """The identifier a published nanopub cites a source by."""
+
+    source_uri: str | None
+    accession: str | None = None
+
+
+def source_anchor(kind: str, slug: str | None, doi: str | None) -> SourceAnchor:
+    """The citable identity of one evidence source, by ref kind.
+
+    ``paper`` → its DOI URL (``None`` when it has no DOI); ``edgar`` → the
+    SEC archive URL + dashed accession, parsed from the ref slug (a slug
+    that is not an accession yields an empty anchor — the mint gate names
+    it, a read path must not crash on it); ``patent`` and ``datasheet`` →
+    empty (patents stay DOI-gated; the datasheet identifier is not ruled
+    yet — docs/backlog/claim-publication-nanopub-ots.md).
+    """
+    if kind == "paper":
+        return SourceAnchor(doi_source_uri(doi) if doi else None)
+    if kind == "edgar":
+        try:
+            acc = parse_accession(slug or "")
+        except BadInput:
+            return SourceAnchor(None)
+        return SourceAnchor(
+            f"https://www.sec.gov/Archives/edgar/data/{acc.archive_subpath}/",
+            acc.dashed,
+        )
+    return SourceAnchor(None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,17 +477,21 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
 
     def _source(ref_id: int, role: str, via: str) -> EvidenceSource | None:
         ref = refs_by_id.get(ref_id)
-        if ref is None or ref.kind not in ("paper", "patent"):
+        if ref is None or ref.kind not in EVIDENCE_SRC_KINDS:
             return None
+        doi = ids_by_ref.get(ref.id, {}).get("doi") or (ref.meta or {}).get("doi")
+        anchor = source_anchor(ref.kind, ref.slug, doi)
         return EvidenceSource(
             ref_id=ref.id,
             kind=ref.kind,
             title=ref.title,
             year=ref.year,
-            doi=ids_by_ref.get(ref.id, {}).get("doi") or (ref.meta or {}).get("doi"),
+            doi=doi,
             pdf_sha256=ref.pdf_sha256,
             role=role,
             via=via,
+            source_uri=anchor.source_uri,
+            accession=anchor.accession,
         )
 
     sources: list[EvidenceSource] = []

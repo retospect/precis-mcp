@@ -332,6 +332,27 @@ def test_prefill_doi_falls_back_to_legacy_meta(
     assert "10.9999/legacy.7" in resp.text
 
 
+def test_prefill_carries_the_sec_anchor_for_an_edgar_source(
+    client: TestClient, runtime_with_store
+) -> None:
+    """An edgar-grounded hub's approve prefill names the filing's archive
+    URL + accession, so a hub approved through the form is anchored."""
+    from tests.test_nanopub_non_paper_sources import _seed_non_paper_source
+
+    store = _store(runtime_with_store)
+    ref_id, chunk = _seed_non_paper_source(store, "edgar", slug="0000320193-23-000106")
+    hub = _seed_hub(store, "A filing-grounded claim.", ref_id, chunk)
+    resp = client.get(f"/claim/fi{hub}")
+    assert resp.status_code == 200
+    payload_field = resp.text.split('<textarea name="payload"', 1)[1]
+    payload_field = payload_field.split("</textarea>", 1)[0]
+    assert (
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/"
+        in payload_field
+    )
+    assert "0000320193-23-000106" in payload_field
+
+
 def test_prefill_covers_derived_from_lineage_anchor(
     client: TestClient, runtime_with_store
 ) -> None:

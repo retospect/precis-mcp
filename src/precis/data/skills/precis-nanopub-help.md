@@ -21,7 +21,9 @@ kinds: [finding]
 A reviewed taproot claim can be **minted** as a nanopublication: a
 signed, content-addressed TriG artifact (trusty URI under
 `https://w3id.org/np/`) whose provenance carries only universal anchors
-— DOI, `pdf_sha256` of the exact quoted copy, a verbatim quote, and a
+— the source's DOI (or, for an SEC filing, its accession number and archive
+URL), `pdf_sha256` of the exact quoted copy (none for an HTML filing), a
+verbatim quote, and a
 normalized `searchSnip` that locates the passage in any copy. Taproot
 stays authoritative; the nanopub is the frozen published form.
 
@@ -185,10 +187,16 @@ failures an extraction agent can avoid up front:
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
   discriminating experiment).
-- **One DOI per passage** — provenance content is DOI + quote + snip.
-  A DOI-less source (textbook/ISBN, patent) keeps its evidence *edge*
-  (visible internally) but its passage stays OUT of the payload until
-  non-DOI grounding lands (`docs/backlog/nanopub-book-isbn-grounding.md`).
+- **One public identifier per passage** — provenance content is the
+  source's identifier + quote + snip. A paper is cited by its DOI; an
+  `edgar` filing by its SEC accession number (the ref slug; the source
+  node is its archive URL, with a `precis:secAccession` literal; no
+  `pdf_sha256` needed). A source with no ruled identifier — textbook/ISBN,
+  patent, `datasheet` (identifier undecided, review claims-and-evidence-2)
+  — keeps its evidence *edge* (visible internally) but its passage stays
+  OUT of the payload until its grounding lands
+  (`docs/backlog/nanopub-book-isbn-grounding.md`); a datasheet passage
+  left in is refused by name at the gates.
 - **The sha pin is `refs.pdf_sha256`** (the held file). TWO
   `pdf_sha256` identifier rows per ref is the metadata write-back's
   normal shape (canonical + as-downloaded alias for dedup probing) and
@@ -411,6 +419,12 @@ per class — do not mutate the hub, its edges, or its sources:
   propose the `meta.doi` backfill to a human.
 - `[grounding] no DOI` + genuinely DOI-less (book, patent) → note the
   edge-stays/passage-out policy on the hub; nothing to fix.
+- `[grounding] datasheet citation identifier undecided` → same policy:
+  the edge stays, the passage stays out; nothing to fix until the
+  datasheet identifier is ruled.
+- `[grounding] edgar source has no parseable SEC accession` → the ref's
+  slug is not a dashed accession; a re-ingest/slug-repair item for a
+  human, not a hub fix.
 - `[pdf-sha] 0 rows` → acquisition/backfill item
   (`docs/backlog/pdf-sha256-identifier-hygiene.md` class).
 - `[pdf-sha] >1 rows` → only ambiguous when `refs.pdf_sha256` is NULL;

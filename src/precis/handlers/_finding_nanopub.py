@@ -70,7 +70,7 @@ def render_nanopub_view(store: Store, ref: Ref) -> Response:
         inp = _input_from_live(store, bundle)
         state = row.state if row is not None else "no publish row"
         notes.append(f"publish state: {state} — draft from live hub state")
-        missing = [g.doi for g in inp.grounding if not g.quote]
+        missing = [g.source_node for g in inp.grounding if not g.quote]
         if inp.artifact_type == "claim" and (missing or not inp.grounding):
             notes.append(
                 "mint will require a re-grounded verbatim quote + unique "
@@ -109,6 +109,8 @@ def _input_from_payload(
             snip=str(p.get("snip") or ""),
             role=str(p.get("role") or "corroborates"),
             source_title=p.get("source_title"),
+            source_uri=str(p["source_uri"]) if p.get("source_uri") else None,
+            accession=str(p["accession"]) if p.get("accession") else None,
         )
         for p in payload.get("passages") or []
     ]
@@ -143,12 +145,14 @@ def _input_from_live(store: Store, bundle: evidence.HubBundle) -> assemble.MintI
 
     grounding = []
     for src in bundle.sources:
-        if not src.doi:
+        if not src.source_uri:
             continue
         shas = evidence.pdf_sha_rows(store, src.ref_id)
         grounding.append(
             assemble.GroundingInput(
-                doi=src.doi,
+                doi=src.doi or "",
+                source_uri=src.source_uri,
+                accession=src.accession,
                 pdf_sha256=shas[0] if len(shas) == 1 else "",
                 quote="",
                 snip="",

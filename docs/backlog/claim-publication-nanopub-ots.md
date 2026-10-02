@@ -280,68 +280,37 @@ whose evidence was never verified above MEDIUM.* Today that rule cannot be
 expressed because the data does not exist. Provenance is what turns a preference
 into an enforceable gate — that, not transparency, is the reason to build it.
 
-## Two evidence kinds can be attached but never published
+## Datasheet and patent evidence cannot be published yet
 
-_Grouped 2026-09-26; was `nanopub-bundle-drops-edgar-datasheet-evidence`, status draft._
+_Grouped 2026-09-26; was `nanopub-bundle-drops-edgar-datasheet-evidence`.
+Narrowed 2026-10-02 after Reto's ruling that edgar and datasheet ARE
+publishable sources._
 
-`taproot/hub.py::attach_evidence` accepts any source in
-`EVIDENCE_SRC_KINDS = {paper, patent, edgar, datasheet}`. The nanopub read
-path narrows further, without saying so: `nanopub/evidence.py::load_bundle`'s
-`_source` helper returns `None` for any ref whose kind is not `("paper",
-"patent")`, and a `None` source is skipped by both the supporter loop and the
-`contradicts` loop.
+Shipped: `nanopub/evidence.py::load_bundle` reads every kind in
+`EVIDENCE_SRC_KINDS` (a test pins the two equal), so a supporter of any
+attachable kind reaches the bundle and the gates; `gates.py::check_contradicts`
+reads `live_contradicts` (any kind, either direction). An `edgar` filing is
+cited by its SEC accession number: the provenance source node is its archive
+URL, with a `precis:secAccession` literal, and the `pdf_sha256` triple is
+omitted (an HTML filing has no PDF to pin). Passages freeze a `source_uri` at
+approve; contiguity grouping and the artifact graph key on it.
 
-So for an `edgar`- or `datasheet`-sourced edge:
+What is left:
 
-- **A supporter vanishes from the minted artifact.** A claim grounded solely
-  in a datasheet would mint a nanopub whose source list is empty, with no
-  error — the gate that checks for evidence reads the same emptied bundle.
-- **A `contradicts` edge does not block.** `gates.py::check_contradicts`
-  iterates `bundle.contradicts`, so a dispute filed from an SEC filing or a
-  datasheet is silently unenforced. (Hub- and finding-sourced disputes are
-  also absent, but *deliberately* — see
-  `disputes-edge-nonblocking-disagreement.md`. This one is not deliberate.)
+- **Datasheet citation identifier — undecided** (pending review item
+  `claims-and-evidence-2`). A datasheet has no DOI, accession or ISBN, so a
+  datasheet passage is refused by name at the grounding gate ("datasheet
+  citation identifier undecided … not publishable yet") rather than dropped.
+  Once ruled: give `evidence.source_anchor` a `datasheet` arm and lift the
+  refusal in `gates._check_passage`.
+- **Patent grounding stays DOI-gated.** A patent supporter reaches the bundle
+  but its passage still needs a `doi`; `source_anchor` returns no URI for it.
+  Same shape as the datasheet fix once a patent identifier (a publication-number
+  URI) is ruled; see also `nanopub-book-isbn-grounding.md`.
+- The `dois=` artifact index and `ots.py`'s per-DOI quad check stay DOI-only:
+  an edgar-only artifact indexes no DOI. Widen only if the registry needs to
+  look artifacts up by accession (that would need a migration).
 
-### Blast radius today: zero
-
-Measured read-only against prod 2026-08-20 — every evidence edge into a
-`TAPROOT:claim` hub, by source kind:
-
-| source kind | relation | rows |
-|---|---|---|
-| paper | corroborates | 1321 |
-| paper | establishes | 161 |
-| paper | contradicts | 1 |
-| finding | contradicts | 1 |
-
-No `edgar`, `datasheet` or `patent` evidence edges exist. The defect is purely
-latent — which is exactly why it should be fixed before someone attaches the
-first one and trusts the result. Note the corpus also has **zero patent
-evidence edges** despite the shipped patent-evidence-parity build; `patent` at least
-survives `_source`, so that is a separate, non-silent gap.
-
-### The fix, and the question inside it
-
-Mechanically: derive `_source`'s kind tuple from `EVIDENCE_SRC_KINDS` instead
-of restating it, so the write door and the read door cannot drift again. That
-is a one-line change plus a test asserting the two sets are equal.
-
-But it needs a decision first, because the narrowing may have been intentional
-and merely undocumented: **is an SEC filing or a datasheet an admissible
-citation in a published nanopub?** A datasheet has no DOI, no authors and no
-retraction channel, so the citation model the nanopub emits (`doi`, `year`,
-`pdf_sha256`) degrades. Two coherent answers:
-
-1. **Yes, publishable** — widen `_source`, and decide what identifier stands
-   in for a DOI in the emitted citation.
-2. **No, internal-only** — then `attach_evidence` should *refuse* these kinds
-   for hubs on a publication path, rather than accepting a write that is
-   silently discarded downstream. Narrow `EVIDENCE_SRC_KINDS`, or gate at
-   approve with an explicit violation naming the unpublishable source.
-
-Either way the two doors must agree. Today they disagree in the direction that
-loses evidence without telling anyone, which is the worst of the three
-options.
-
-Found 2026-08-20 while correcting the `contradicts` gate-scope claim in
-`precis-nanopub-help`; the double filter was the surprise.
+No `edgar`, `datasheet` or `patent` evidence edge existed in prod at the last
+census (2026-08-20: 1321 paper `corroborates`, 161 paper `establishes`, 1
+paper `contradicts`, 1 finding `contradicts`).

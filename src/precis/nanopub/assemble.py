@@ -22,10 +22,14 @@ applied:
 * **License scoped to the assertion graph** (gate #10): CC-BY over our
   triples; verbatim quotes remain © their publishers (a
   ``precis:licenseNote`` triple says so in the artifact itself).
-* **Universal anchors only**: provenance carries DOI + ``pdf_sha256`` +
-  verbatim quote + normalized snip. Chunk ids and ref ids never appear;
-  pubinfo's ``precis:mintedFromHub`` is opaque production metadata, not
-  evidence citation.
+* **Universal anchors only**: provenance carries the source's public
+  identifier — its DOI URL (paper) or its SEC archive URL plus a
+  ``precis:secAccession`` literal (edgar filing) — + ``pdf_sha256`` (when
+  the quoted copy is a pinned file; an HTML filing has none) + verbatim
+  quote + normalized snip. Chunk ids and ref ids never appear; pubinfo's
+  ``precis:mintedFromHub`` is opaque production metadata, not evidence
+  citation. A source with no ruled identifier (patent, datasheet) is
+  refused at the mint gates, never assembled.
 
 The builder is pure over :class:`MintInput` — no store access — so the
 draft view and the mint path assemble identically; only the input
@@ -49,12 +53,18 @@ from precis.nanopub.vocab import (
     HYPOTHESIS,
     PRECIS,
     PROV,
+    SEC_ACCESSION,
 )
 
 #: Placeholder namespace for the unsigned draft rendering (slice 1).
 #: Mint uses the nanopub library's dummy namespace instead, which the
 #: signing step rewrites to the final w3id trusty URI.
 DRAFT_NS = Namespace("https://w3id.org/np/DRAFT#")
+
+
+def doi_source_uri(doi: str) -> str:
+    """The published source node for a DOI-identified paper."""
+    return f"https://doi.org/{doi}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +95,20 @@ class GroundingInput:
     #: deliberate backfill + lazy enqueue, not a corpus-wide sweep) — the
     #: triple is simply omitted then; minting never blocks on it.
     context_sentence: str | None = None
+    #: The published source node. ``None`` on a payload frozen before this
+    #: field existed — :attr:`source_node` then derives it from ``doi``, so
+    #: an old paper-only payload assembles byte-identically.
+    source_uri: str | None = None
+    #: Dashed SEC accession number (edgar sources only) — emitted as
+    #: ``precis:secAccession`` on the source node.
+    accession: str | None = None
+
+    @property
+    def source_node(self) -> str | None:
+        """The URI the provenance graph cites this passage's source by."""
+        if self.source_uri:
+            return self.source_uri
+        return doi_source_uri(self.doi) if self.doi else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,8 +198,11 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
         return g
 
     for i, ground in enumerate(inp.grounding, start=1):
-        doi_uri = URIRef(f"https://doi.org/{ground.doi}")
-        g.add((assertion, PROV.wasDerivedFrom, doi_uri))
+        source_node = ground.source_node
+        if source_node is None:  # draft of a source with no identifier yet
+            continue
+        src_uri = URIRef(source_node)
+        g.add((assertion, PROV.wasDerivedFrom, src_uri))
         # One node per passage so multi-grounding never mixes quotes and
         # shas; with a single passage this collapses to the wargame's
         # flat shape on the assertion node itself.
@@ -183,30 +210,32 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
         if node is not assertion:
             g.add((node, RDF.type, PRECIS["Grounding"]))
             g.add((assertion, PRECIS["groundedBy"], node))
-            g.add((node, PRECIS["fromSource"], doi_uri))
+            g.add((node, PRECIS["fromSource"], src_uri))
         g.add((node, PRECIS["evidenceRole"], PRECIS[ground.role]))
         # Draft renderings may not have re-grounded quotes yet; an empty
         # value is omitted rather than serialized as "" (the mint gates
         # make absence fatal at sign time, not here).
         if ground.quote:
             g.add((node, PRECIS["sourceQuote"], Literal(ground.quote, lang="en")))
-            g.add((node, CITO["includesQuotationFrom"], doi_uri))
+            g.add((node, CITO["includesQuotationFrom"], src_uri))
         if ground.snip:
             g.add((node, PRECIS["searchSnip"], Literal(ground.snip)))
         if ground.pdf_sha256:
             g.add((node, PRECIS["sourcePdfSha256"], Literal(ground.pdf_sha256)))
+        if ground.accession:
+            g.add((src_uri, SEC_ACCESSION, Literal(ground.accession)))
         if ground.source_title:
-            g.add((doi_uri, DCT.title, Literal(ground.source_title)))
+            g.add((src_uri, DCT.title, Literal(ground.source_title)))
         # Paper-context sentence (paper-context-sentence.md): a neutral
         # method/evidence-type literal on the source node, same node
         # dct:title and excerptsContiguous use. Omitted entirely when the
         # source carries no frozen sentence — multiple passages of the
-        # same DOI emit the identical triple, which the Graph (a set)
+        # same source emit the identical triple, which the Graph (a set)
         # dedups for free.
         if ground.context_sentence:
             g.add(
                 (
-                    doi_uri,
+                    src_uri,
                     PRECIS["sourceContext"],
                     Literal(ground.context_sentence, lang="en"),
                 )
@@ -217,23 +246,22 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
     # not a per-node chain — emitted only for a source with >=2 grounding
     # passages that actually carries a frozen flag (a single-passage
     # source, or a legacy payload minted before this feature, gets no
-    # triple). Universal-anchors rule holds: only the DOI identifies the
-    # source here, never a chunk id.
-    by_doi: dict[str, list[GroundingInput]] = {}
+    # triple). Universal-anchors rule holds: only the source URI identifies
+    # the source here, never a chunk id.
+    by_source: dict[str, list[GroundingInput]] = {}
     for ground in inp.grounding:
-        if ground.doi:
-            by_doi.setdefault(ground.doi, []).append(ground)
-    for doi, group in by_doi.items():
+        if ground.source_node:
+            by_source.setdefault(ground.source_node, []).append(ground)
+    for source_node, group in by_source.items():
         if len(group) < 2:
             continue
         flags = {g_.contiguous_group for g_ in group if g_.contiguous_group is not None}
         if len(flags) != 1:
             continue
         (flag,) = flags
-        doi_uri = URIRef(f"https://doi.org/{doi}")
         g.add(
             (
-                doi_uri,
+                URIRef(source_node),
                 PRECIS["excerptsContiguous"],
                 Literal(flag, datatype=XSD.boolean),
             )

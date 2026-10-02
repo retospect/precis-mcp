@@ -709,6 +709,18 @@ def _lazy_enqueue_context_sentences(store: Any, sources: list[Any]) -> None:
             _enqueue_context_sentence(store, ref_id)
 
 
+def _anchor_fields(src: Any) -> dict[str, str]:
+    """``source_uri`` / ``accession`` for a prefill passage, present only
+    when the source has them — a paper's DOI stays the plain ``doi`` key;
+    an edgar filing's SEC identity travels with the passage."""
+    out: dict[str, str] = {}
+    if src.source_uri:
+        out["source_uri"] = src.source_uri
+    if src.accession:
+        out["accession"] = src.accession
+    return out
+
+
 def _suggested_payload(
     store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any]
 ) -> str:
@@ -742,6 +754,7 @@ def _suggested_payload(
         passages.append(
             {
                 "doi": src.doi or "",
+                **_anchor_fields(src),
                 "pdf_sha256": src.pdf_sha256 or "",
                 "quote": quote,
                 "snip": snip,
@@ -753,6 +766,7 @@ def _suggested_payload(
         passages = [
             {
                 "doi": s.doi or "",
+                **_anchor_fields(s),
                 "pdf_sha256": s.pdf_sha256 or "",
                 "quote": "",
                 "snip": "",

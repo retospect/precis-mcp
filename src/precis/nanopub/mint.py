@@ -203,9 +203,10 @@ def approve(
         artifact_type = gates.resolve_artifact_type(bundle, payload)
         row = store.nanopub_create_publish_row(hub_ref_id, artifact_type=artifact_type)
     frozen_payload = dict(payload)
-    frozen_payload["passages"] = _freeze_contiguity(
+    frozen_payload["passages"] = _freeze_source_anchor(
         store, list(payload.get("passages") or [])
     )
+    frozen_payload["passages"] = _freeze_contiguity(store, frozen_payload["passages"])
     frozen_payload["passages"] = _freeze_context_sentence(
         store, frozen_payload["passages"]
     )
@@ -223,6 +224,49 @@ def approve(
     return refreshed
 
 
+def _passage_source_key(p: dict[str, Any]) -> str:
+    """The grouping key for a passage's source: ``source_uri``, falling
+    back to the DOI URL for a payload that predates the field."""
+    uri = p.get("source_uri")
+    if uri:
+        return str(uri)
+    doi = p.get("doi")
+    return assemble.doi_source_uri(str(doi)) if doi else ""
+
+
+def _freeze_source_anchor(
+    store: Store, passages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Stamp each passage with ``source_uri`` (and ``accession`` for an
+    edgar source), derived NOW from the passage's own chunk → ref — the
+    reviewer-editable payload is never the authority on what a source is
+    called. A paper keeps the DOI URL of the DOI the passage carries (the
+    gate already required one); a passage whose chunk cannot resolve is
+    left as submitted (the gates refuse it before this runs)."""
+    chunk_ids = [
+        cid
+        for cid in (gates.integral_chunk_id(p.get("chunk_id")) for p in passages)
+        if cid is not None
+    ]
+    chunks = evidence.fetch_chunks(store, chunk_ids)
+    ref_by_chunk = {c.chunk_id: c.ref_id for c in chunks}
+    refs = store.fetch_refs_by_ids(set(ref_by_chunk.values())) if ref_by_chunk else {}
+    stamped: list[dict[str, Any]] = []
+    for p in passages:
+        p = dict(p)
+        cid = gates.integral_chunk_id(p.get("chunk_id"))
+        ref = refs.get(ref_by_chunk.get(cid)) if cid is not None else None  # type: ignore[arg-type]
+        if ref is not None and ref.kind == "edgar":
+            anchor = evidence.source_anchor(ref.kind, ref.slug, None)
+            if anchor.source_uri:
+                p["source_uri"] = anchor.source_uri
+                p["accession"] = anchor.accession
+        elif p.get("doi"):
+            p["source_uri"] = assemble.doi_source_uri(str(p["doi"]))
+        stamped.append(p)
+    return stamped
+
+
 def _freeze_contiguity(
     store: Store, passages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -233,10 +277,11 @@ def _freeze_contiguity(
     already passed :func:`precis.nanopub.gates._check_passage`, which
     requires a resolvable ``chunk_id``).
 
-    Grouped by DOI — the same key the assembled RDF groups grounding
-    nodes under (:mod:`precis.nanopub.assemble`) — since a paper's
-    passages can arrive with distinct dict identities but must share one
-    paper-level verdict. A group of one passage, or a group whose DOI is
+    Grouped by source URI (:func:`_passage_source_key`, the DOI URL for a
+    paper) — the same key the assembled RDF groups grounding nodes under
+    (:mod:`precis.nanopub.assemble`) — since a source's passages can
+    arrive with distinct dict identities but must share one source-level
+    verdict. A group of one passage, or a group whose source key is
     missing/blank, carries no flag at all (``assemble`` only emits the
     triple for a >=2-grounding source; no group-level fact exists for
     one). Frozen here rather than left to compute live at RDF-build time
@@ -246,11 +291,11 @@ def _freeze_contiguity(
     of this payload)."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for p in passages:
-        groups.setdefault(str(p.get("doi") or ""), []).append(p)
+        groups.setdefault(_passage_source_key(p), []).append(p)
 
     flags: dict[str, bool] = {}
-    for doi, group in groups.items():
-        if not doi or len(group) < 2:
+    for key, group in groups.items():
+        if not key or len(group) < 2:
             continue
         raw_chunk_ids = [p.get("chunk_id") for p in group]
         if any(cid is None for cid in raw_chunk_ids):
@@ -266,15 +311,15 @@ def _freeze_contiguity(
         if len(chunks) != len(set(chunk_ids)) or len(ref_ids) != 1:
             continue  # a vanished chunk, or (shouldn't happen) mixed refs
         (ref_id,) = ref_ids
-        flags[doi] = evidence.passages_contiguous(store, ref_id, chunk_ids)
+        flags[key] = evidence.passages_contiguous(store, ref_id, chunk_ids)
 
     if not flags:
         return list(passages)
     stamped: list[dict[str, Any]] = []
     for p in passages:
-        doi = str(p.get("doi") or "")
-        if doi in flags:
-            p = {**p, "contiguous_group": flags[doi]}
+        key = _passage_source_key(p)
+        if key in flags:
+            p = {**p, "contiguous_group": flags[key]}
         else:
             p = dict(p)
         stamped.append(p)
@@ -464,6 +509,8 @@ def _mint_input(
             snip=str(p.get("snip") or ""),
             role=str(p.get("role") or "corroborates"),
             source_title=p.get("source_title"),
+            source_uri=str(p["source_uri"]) if p.get("source_uri") else None,
+            accession=str(p["accession"]) if p.get("accession") else None,
             contiguous_group=(
                 p["contiguous_group"]
                 if isinstance(p.get("contiguous_group"), bool)

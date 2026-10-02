@@ -1,0 +1,36 @@
+<https://w3id.org/np/DRAFT#claim> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://precis.retostamm.com/vocab#AtomicClaim> .
+<https://w3id.org/np/DRAFT#claim> <http://www.w3.org/2000/01/rdf-schema#label> "Flexible MOFs can exhibit anisotropy ratios up to 400:1."@en .
+<https://w3id.org/np/DRAFT#claim> <https://precis.retostamm.com/vocab#aidaUri> <http://purl.org/aida/Flexible%20MOFs%20can%20exhibit%20anisotropy%20ratios%20up%20to%20400%3A1.> .
+<https://w3id.org/np/DRAFT#claim> <https://precis.retostamm.com/vocab#quantity> "400:1" .
+<https://w3id.org/np/DRAFT#claim> <https://precis.retostamm.com/vocab#quantityBound> "upper" .
+<https://doi.org/10.1/a> <http://purl.org/dc/terms/title> "T 10.1/a" .
+<https://doi.org/10.1/a> <https://precis.retostamm.com/vocab#excerptsContiguous> "true"^^<http://www.w3.org/2001/XMLSchema#boolean> .
+<https://doi.org/10.1/a> <https://precis.retostamm.com/vocab#sourceContext> "Simulation study."@en .
+<https://doi.org/10.2/b> <http://purl.org/dc/terms/title> "T 10.2/b" .
+<https://doi.org/10.2/b> <https://precis.retostamm.com/vocab#sourceContext> "Simulation study."@en .
+<https://w3id.org/np/DRAFT#assertion> <http://www.w3.org/ns/prov#wasDerivedFrom> <https://doi.org/10.1/a> .
+<https://w3id.org/np/DRAFT#assertion> <http://www.w3.org/ns/prov#wasDerivedFrom> <https://doi.org/10.2/b> .
+<https://w3id.org/np/DRAFT#assertion> <https://precis.retostamm.com/vocab#groundedBy> <https://w3id.org/np/DRAFT#grounding1> .
+<https://w3id.org/np/DRAFT#assertion> <https://precis.retostamm.com/vocab#groundedBy> <https://w3id.org/np/DRAFT#grounding2> .
+<https://w3id.org/np/DRAFT#assertion> <https://precis.retostamm.com/vocab#groundedBy> <https://w3id.org/np/DRAFT#grounding3> .
+<https://w3id.org/np/DRAFT#grounding1> <http://purl.org/spar/cito/includesQuotationFrom> <https://doi.org/10.1/a> .
+<https://w3id.org/np/DRAFT#grounding1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://precis.retostamm.com/vocab#Grounding> .
+<https://w3id.org/np/DRAFT#grounding1> <https://precis.retostamm.com/vocab#evidenceRole> <https://precis.retostamm.com/vocab#corroborates> .
+<https://w3id.org/np/DRAFT#grounding1> <https://precis.retostamm.com/vocab#fromSource> <https://doi.org/10.1/a> .
+<https://w3id.org/np/DRAFT#grounding1> <https://precis.retostamm.com/vocab#searchSnip> "quote one" .
+<https://w3id.org/np/DRAFT#grounding1> <https://precis.retostamm.com/vocab#sourcePdfSha256> "abababababababababababababababababababababababababababababababab" .
+<https://w3id.org/np/DRAFT#grounding1> <https://precis.retostamm.com/vocab#sourceQuote> "quote one"@en .
+<https://w3id.org/np/DRAFT#grounding2> <http://purl.org/spar/cito/includesQuotationFrom> <https://doi.org/10.1/a> .
+<https://w3id.org/np/DRAFT#grounding2> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://precis.retostamm.com/vocab#Grounding> .
+<https://w3id.org/np/DRAFT#grounding2> <https://precis.retostamm.com/vocab#evidenceRole> <https://precis.retostamm.com/vocab#corroborates> .
+<https://w3id.org/np/DRAFT#grounding2> <https://precis.retostamm.com/vocab#fromSource> <https://doi.org/10.1/a> .
+<https://w3id.org/np/DRAFT#grounding2> <https://precis.retostamm.com/vocab#searchSnip> "quote two" .
+<https://w3id.org/np/DRAFT#grounding2> <https://precis.retostamm.com/vocab#sourcePdfSha256> "abababababababababababababababababababababababababababababababab" .
+<https://w3id.org/np/DRAFT#grounding2> <https://precis.retostamm.com/vocab#sourceQuote> "quote two"@en .
+<https://w3id.org/np/DRAFT#grounding3> <http://purl.org/spar/cito/includesQuotationFrom> <https://doi.org/10.2/b> .
+<https://w3id.org/np/DRAFT#grounding3> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://precis.retostamm.com/vocab#Grounding> .
+<https://w3id.org/np/DRAFT#grounding3> <https://precis.retostamm.com/vocab#evidenceRole> <https://precis.retostamm.com/vocab#establishes> .
+<https://w3id.org/np/DRAFT#grounding3> <https://precis.retostamm.com/vocab#fromSource> <https://doi.org/10.2/b> .
+<https://w3id.org/np/DRAFT#grounding3> <https://precis.retostamm.com/vocab#searchSnip> "quote three" .
+<https://w3id.org/np/DRAFT#grounding3> <https://precis.retostamm.com/vocab#sourcePdfSha256> "abababababababababababababababababababababababababababababababab" .
+<https://w3id.org/np/DRAFT#grounding3> <https://precis.retostamm.com/vocab#sourceQuote> "quote three"@en .
