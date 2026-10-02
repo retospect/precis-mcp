@@ -84,6 +84,13 @@ the placer side specifically), the EasyEDA/KiCad importers (warn-on-drop).
 
 ## Open questions / decisions log
 
+- **Evidence correction (2026-10-02):** the "184 keepout records" on
+  Reto's imported board are 16 `RULE` + 168 `RULE_SELECTOR`, most likely
+  Pro's design-rule table and per-net assignments, not keepout areas
+  (unverified; the bodies went with the `.epro2`). The defect here stands
+  on the schema alone; the real-board motivation does not, until a rule
+  body shows an area.
+
 - Whether keepout enforcement is a hard placement/route refusal or a DRC
   finding a human can accept — leans DRC finding, matching the rest of the
   pcb DRC posture (report, don't silently refuse).

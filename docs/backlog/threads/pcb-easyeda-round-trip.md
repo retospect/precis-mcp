@@ -80,12 +80,20 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    `negotiate=N`). NEXT = the real-board number off vs on, which needs the
    `.epro2` back or Reto's OK to run on a prod-row dump
    (review-queue `pcb-easyeda-round-trip-1`).
-2. **backlog/pcb-keepout-does-not-bind.md** — this thread's own finding,
-   filed 2026-09-30; a keepout imported from a real board has no
-   enforcement path, so re-routing can silently violate an
-   area the source board actually respected. The import now WARNS about it
-   (the spike board carries 184 such records), which bounds the damage to
-   "the user was told" rather than fixing it.
+2. **The real board's design-rule table is dropped at import** — the 184
+   records once read as keepouts are 16 `RULE` + 168 `RULE_SELECTOR`,
+   which in Pro are most likely the design-rule table and its per-net
+   assignments (168 ≈ 2 × 89 nets), not keepout areas (re-read
+   2026-10-02; the bodies went with the `.epro2`, so this is unverified).
+   If so, re-routing loses the board's own per-net clearance/width, which
+   matters more for "re-route to a correct spec" than keepouts do. Needs
+   the `.epro2` back (review-queue `pcb-easyeda-round-trip-1`, option 2)
+   to read the bodies, then: map rules onto `net_class`/`width_mm`, and
+   any genuine rule AREA onto `ftype='keepout'`. The import warning now
+   says the rules are lost rather than calling them keepouts.
+   `backlog/pcb-keepout-does-not-bind.md` stays a real gap (the ftype
+   binds nothing) but no longer has evidence of a keepout on this board;
+   it moves to Horizon behind this.
 3. **backlog/pcb-missing-constraint-classes.md** §E-1 router half —
    realize/maze draw to per-net clearance and cannot express a pairwise
    term, so the router lays copper view='drc' only flags afterwards.
@@ -157,6 +165,12 @@ export/fab if this file outgrows itself.
     imported slot drills round at its long axis (Reto's SATA pads 23/24)
     and DRC flags a ring the real slot has. Waits on nothing; fab-correctness
     blocker before ordering that board.
+15. **backlog/pcb-keepout-does-not-bind.md** — `ftype='keepout'` binds
+    nothing in placer, router or DRC. Demoted from Do next 2026-10-02:
+    the real board's "keepout" records look like its rule table (Do next
+    2). The placer half belongs to ewod-pcb's obstacle-set item; this
+    thread would own router + DRC + import. Waits on Do next 2's reading
+    of the RULE bodies.
 
 ## No action needed
 
