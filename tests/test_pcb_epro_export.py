@@ -693,3 +693,24 @@ def test_handler_turns_an_unwritable_name_into_bad_input(pcb, tmp_path, monkeypa
     slug = _seed(pcb)
     with pytest.raises(BadInput, match="cannot write .epro2"):
         pcb.get(id=slug, view="epro", args={"dir": str(tmp_path)})
+
+
+def test_handler_epro_view_drops_gerber_only_notes(pcb, tmp_path, monkeypatch):
+    """Dogfood 2026-10-02 on heater-base-test: ~170 silk-placement notes
+    and the gerber "route first" hint pushed the response past the frame,
+    for artifacts the .epro2 does not carry. They are counted, not listed."""
+    real = PcbHandler._fab_model
+
+    def noisy(self, *a, **k):
+        built = real(self, *a, **k)
+        assert built is not None
+        model, warnings = built
+        extra = [f"silk: R{i}: refdes label moved" for i in range(50)]
+        return model, [*warnings, *extra, "no realized copper yet — run route"]
+
+    monkeypatch.setattr(PcbHandler, "_fab_model", noisy)
+    slug = _seed(pcb)
+    body = pcb.get(id=slug, view="epro", args={"dir": str(tmp_path)}).body
+    assert "refdes label moved" not in body
+    assert "no realized copper yet" not in body
+    assert "silk-placement note(s) not shown" in body

@@ -2758,7 +2758,22 @@ class PcbHandler(Handler):
             "Pro yet; check part positions (bottom side especially) before "
             "relying on it."
         )
-        notes = [*exported.warnings, *warnings]
+        # `_fab_model` speaks for the gerber bundle: its silk-placement notes
+        # (one per relocated label, ~170 on a 140-part board — they pushed
+        # this response past the frame) and its "route first" hint are about
+        # artifacts this file does not carry. Count the silk ones, drop both.
+        silk_notes = [w for w in warnings if w.startswith("silk: ")]
+        fab_notes = [
+            w
+            for w in warnings
+            if not w.startswith("silk: ") and not w.startswith("no realized copper yet")
+        ]
+        if silk_notes:
+            fab_notes.append(
+                f"{len(silk_notes)} silk-placement note(s) not shown: silk is not "
+                "in this file (view='gerber' lists them)"
+            )
+        notes = [*exported.warnings, *fab_notes]
         if notes:
             head += "\n" + "\n".join(f"⚠️  {w}" for w in notes)
         listing = "\n".join(sorted(exported.files))
