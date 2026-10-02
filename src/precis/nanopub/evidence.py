@@ -248,11 +248,15 @@ class EvidenceSource:
     #: 'inbound' (paper→hub taproot edge) | 'outbound' (hub→paper lineage)
     via: str
     #: The published source node (see :func:`source_anchor`): the DOI URL
-    #: for a paper, the SEC archive URL for an edgar filing; ``None`` for a
-    #: source with no ruled citation identifier yet (patent, datasheet).
+    #: for a paper, the SEC archive URL for an edgar filing, ``urn:sha256:``
+    #: of the PDF for a datasheet; ``None`` for a source with no ruled
+    #: citation identifier (patent).
     source_uri: str | None = None
     #: Dashed SEC accession number — edgar only.
     accession: str | None = None
+    #: Where a datasheet was fetched from, when known (:func:`datasheet_url`)
+    #: — a second triple beside the content-addressed source node.
+    source_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,17 +265,27 @@ class SourceAnchor:
 
     source_uri: str | None
     accession: str | None = None
+    source_url: str | None = None
 
 
-def source_anchor(kind: str, slug: str | None, doi: str | None) -> SourceAnchor:
+def source_anchor(
+    kind: str,
+    slug: str | None,
+    doi: str | None,
+    *,
+    pdf_sha256: str | None = None,
+    url: str | None = None,
+) -> SourceAnchor:
     """The citable identity of one evidence source, by ref kind.
 
     ``paper`` → its DOI URL (``None`` when it has no DOI); ``edgar`` → the
     SEC archive URL + dashed accession, parsed from the ref slug (a slug
     that is not an accession yields an empty anchor — the mint gate names
-    it, a read path must not crash on it); ``patent`` and ``datasheet`` →
-    empty (patents stay DOI-gated; the datasheet identifier is not ruled
-    yet — docs/backlog/claim-publication-nanopub-ots.md).
+    it, a read path must not crash on it); ``datasheet`` → ``urn:sha256:``
+    of its PDF, plus ``url`` as a second identifier when known (Reto
+    2026-10-02: a datasheet ref may carry no URL, so the content hash is
+    the identifier every datasheet has); ``patent`` → empty (still
+    DOI-gated — docs/backlog/claim-publication-nanopub-ots.md).
     """
     if kind == "paper":
         return SourceAnchor(doi_source_uri(doi) if doi else None)
@@ -284,7 +298,38 @@ def source_anchor(kind: str, slug: str | None, doi: str | None) -> SourceAnchor:
             f"https://www.sec.gov/Archives/edgar/data/{acc.archive_subpath}/",
             acc.dashed,
         )
+    if kind == "datasheet":
+        if not pdf_sha256:
+            return SourceAnchor(None)
+        return SourceAnchor(f"urn:sha256:{pdf_sha256}", source_url=url or None)
     return SourceAnchor(None)
+
+
+def datasheet_sha(store: Store, ref_id: int) -> str | None:
+    """The datasheet's PDF sha for its ``urn:sha256:`` identifier: its one
+    ``pdf_sha256`` identifier row — the same rows the mint gate's
+    pdf-sha check pins (:func:`pdf_sha_rows`), so the cited hash is the
+    pinned copy. ``None`` when there is not exactly one."""
+    shas = pdf_sha_rows(store, ref_id)
+    return shas[0] if len(shas) == 1 else None
+
+
+def datasheet_url(store: Store, ref: Any) -> str | None:
+    """Where a datasheet ref was fetched from: ``meta.source_url`` (written
+    by the part-placement auto-pull ingest), else the catalog
+    ``datasheet_url`` of the part named by ``meta.part_lcsc`` (a part is a
+    catalog-table kind, not a ref, so the ``datasheet-of`` relation cannot
+    point at it yet). ``None`` for an operator-dropped PDF with neither."""
+    meta = ref.meta or {}
+    url = meta.get("source_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    lcsc = meta.get("part_lcsc")
+    if isinstance(lcsc, str) and lcsc.strip():
+        row = store.part_row(lcsc.strip().upper())
+        if row is not None and row.get("datasheet_url"):
+            return str(row["datasheet_url"])
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +525,15 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
         if ref is None or ref.kind not in EVIDENCE_SRC_KINDS:
             return None
         doi = ids_by_ref.get(ref.id, {}).get("doi") or (ref.meta or {}).get("doi")
-        anchor = source_anchor(ref.kind, ref.slug, doi)
+        anchor = source_anchor(
+            ref.kind,
+            ref.slug,
+            doi,
+            pdf_sha256=datasheet_sha(store, ref.id)
+            if ref.kind == "datasheet"
+            else None,
+            url=datasheet_url(store, ref) if ref.kind == "datasheet" else None,
+        )
         return EvidenceSource(
             ref_id=ref.id,
             kind=ref.kind,
@@ -492,6 +545,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
             via=via,
             source_uri=anchor.source_uri,
             accession=anchor.accession,
+            source_url=anchor.source_url,
         )
 
     sources: list[EvidenceSource] = []

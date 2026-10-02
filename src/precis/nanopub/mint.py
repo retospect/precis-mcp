@@ -238,11 +238,13 @@ def _freeze_source_anchor(
     store: Store, passages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """Stamp each passage with ``source_uri`` (and ``accession`` for an
-    edgar source), derived NOW from the passage's own chunk → ref — the
-    reviewer-editable payload is never the authority on what a source is
-    called. A paper keeps the DOI URL of the DOI the passage carries (the
-    gate already required one); a passage whose chunk cannot resolve is
-    left as submitted (the gates refuse it before this runs)."""
+    edgar source, ``source_url`` for a datasheet whose URL is known),
+    derived NOW from the passage's own chunk → ref — the reviewer-editable
+    payload is never the authority on what a source is called, so a
+    submitted ``source_url`` is dropped and only a ref-derived one kept. A
+    paper keeps the DOI URL of the DOI the passage carries (the gate
+    already required one); a passage whose chunk cannot resolve is left as
+    submitted (the gates refuse it before this runs)."""
     chunk_ids = [
         cid
         for cid in (gates.integral_chunk_id(p.get("chunk_id")) for p in passages)
@@ -254,6 +256,7 @@ def _freeze_source_anchor(
     stamped: list[dict[str, Any]] = []
     for p in passages:
         p = dict(p)
+        p.pop("source_url", None)
         cid = gates.integral_chunk_id(p.get("chunk_id"))
         ref = refs.get(ref_by_chunk.get(cid)) if cid is not None else None  # type: ignore[arg-type]
         if ref is not None and ref.kind == "edgar":
@@ -261,6 +264,18 @@ def _freeze_source_anchor(
             if anchor.source_uri:
                 p["source_uri"] = anchor.source_uri
                 p["accession"] = anchor.accession
+        elif ref is not None and ref.kind == "datasheet":
+            anchor = evidence.source_anchor(
+                ref.kind,
+                ref.slug,
+                None,
+                pdf_sha256=evidence.datasheet_sha(store, ref.id),
+                url=evidence.datasheet_url(store, ref),
+            )
+            if anchor.source_uri:
+                p["source_uri"] = anchor.source_uri
+                if anchor.source_url:
+                    p["source_url"] = anchor.source_url
         elif p.get("doi"):
             p["source_uri"] = assemble.doi_source_uri(str(p["doi"]))
         stamped.append(p)
@@ -511,6 +526,7 @@ def _mint_input(
             source_title=p.get("source_title"),
             source_uri=str(p["source_uri"]) if p.get("source_uri") else None,
             accession=str(p["accession"]) if p.get("accession") else None,
+            source_url=str(p["source_url"]) if p.get("source_url") else None,
             contiguous_group=(
                 p["contiguous_group"]
                 if isinstance(p.get("contiguous_group"), bool)

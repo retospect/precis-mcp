@@ -500,7 +500,11 @@ def render_similar_view(
         for c in others
     ]
     table = render_agent_table(rows, schema=["hub", "distance", "claim"])
-    body = "\n\n".join(["\n".join(header), table])
+    hint = (
+        "a listed hub is a duplicate? preview collapsing it into this one "
+        "(read-only): view='merge-plan' on this hub with args={'loser': <hub>}"
+    )
+    body = "\n\n".join(["\n".join(header), table, hint])
     return Response(body=body)
 
 

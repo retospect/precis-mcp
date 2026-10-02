@@ -111,6 +111,7 @@ def _input_from_payload(
             source_title=p.get("source_title"),
             source_uri=str(p["source_uri"]) if p.get("source_uri") else None,
             accession=str(p["accession"]) if p.get("accession") else None,
+            source_url=str(p["source_url"]) if p.get("source_url") else None,
         )
         for p in payload.get("passages") or []
     ]
@@ -153,6 +154,7 @@ def _input_from_live(store: Store, bundle: evidence.HubBundle) -> assemble.MintI
                 doi=src.doi or "",
                 source_uri=src.source_uri,
                 accession=src.accession,
+                source_url=src.source_url,
                 pdf_sha256=shas[0] if len(shas) == 1 else "",
                 quote="",
                 snip="",

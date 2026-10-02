@@ -221,6 +221,14 @@ on a minted hub runs the same query read-only, without minting. None of
 this replaces the judgment call below — the cascade only auto-attaches
 on a confident match.
 
+Found two already-minted hubs that are the same claim? `get(kind='finding',
+id='fi<winner>', view='merge-plan', args={'loser': 'fi<loser>'})` shows
+the dry-run plan for collapsing the loser into the winner: edges
+repointed, edges dropped as redundant (and the winner edge each collides
+with), self-loops dropped, and `can_merge` with the refusal reason (a
+side past `candidate` cannot merge). It never writes. Applying is a human
+door — hand the reviewer the winner's claim page, `/nanopub/fi<winner>`.
+
 **A hard gate: never mint without searching first.** `pub_id` convergence
 is a *content hash* — it catches only byte-identical (post-NFKD)
 sentences. Two agents phrasing one claim two ways mint two hubs, each

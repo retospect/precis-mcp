@@ -23,13 +23,15 @@ applied:
   triples; verbatim quotes remain © their publishers (a
   ``precis:licenseNote`` triple says so in the artifact itself).
 * **Universal anchors only**: provenance carries the source's public
-  identifier — its DOI URL (paper) or its SEC archive URL plus a
-  ``precis:secAccession`` literal (edgar filing) — + ``pdf_sha256`` (when
+  identifier — its DOI URL (paper), its SEC archive URL plus a
+  ``precis:secAccession`` literal (edgar filing), or ``urn:sha256:`` of its
+  PDF plus an ``rdfs:seeAlso`` fetch URL when known (datasheet) — +
+  ``pdf_sha256`` (when
   the quoted copy is a pinned file; an HTML filing has none) + verbatim
   quote + normalized snip. Chunk ids and ref ids never appear; pubinfo's
   ``precis:mintedFromHub`` is opaque production metadata, not evidence
-  citation. A source with no ruled identifier (patent, datasheet) is
-  refused at the mint gates, never assembled.
+  citation. A source with no ruled identifier (patent) is refused at the
+  mint gates, never assembled.
 
 The builder is pure over :class:`MintInput` — no store access — so the
 draft view and the mint path assemble identically; only the input
@@ -102,6 +104,9 @@ class GroundingInput:
     #: Dashed SEC accession number (edgar sources only) — emitted as
     #: ``precis:secAccession`` on the source node.
     accession: str | None = None
+    #: Where a datasheet was fetched from, when known — emitted as
+    #: ``rdfs:seeAlso`` on its ``urn:sha256:`` source node.
+    source_url: str | None = None
 
     @property
     def source_node(self) -> str | None:
@@ -224,6 +229,8 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
             g.add((node, PRECIS["sourcePdfSha256"], Literal(ground.pdf_sha256)))
         if ground.accession:
             g.add((src_uri, SEC_ACCESSION, Literal(ground.accession)))
+        if ground.source_url:
+            g.add((src_uri, RDFS.seeAlso, URIRef(ground.source_url)))
         if ground.source_title:
             g.add((src_uri, DCT.title, Literal(ground.source_title)))
         # Paper-context sentence (paper-context-sentence.md): a neutral

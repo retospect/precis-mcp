@@ -718,6 +718,8 @@ def _anchor_fields(src: Any) -> dict[str, str]:
         out["source_uri"] = src.source_uri
     if src.accession:
         out["accession"] = src.accession
+    if src.source_url:
+        out["source_url"] = src.source_url
     return out
 
 

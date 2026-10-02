@@ -798,6 +798,9 @@ class FindingHandler(NumericRefHandler):
         # catch-alls, so an extras key absent from the signature is rejected
         # as a typo before it ever reaches the handler.
         payload: dict[str, Any] | None = None,
+        # ``view='merge-plan'``'s loser hub, same channel
+        # (``args={'loser': 'fi<N>' | <int> | '<pub_id>'}``).
+        loser: str | int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='evidence'`` renders a claim hub's evidence, split by
@@ -818,6 +821,12 @@ class FindingHandler(NumericRefHandler):
         the same ANN retrieval the hub-mint dedup cascade runs before
         minting — :mod:`precis.handlers._finding_hub_mint`), with
         distance and claim text; excludes this hub itself.
+        ``view='merge-plan'`` is the read-only dry run of collapsing a
+        duplicate hub into this one: ``id`` is the WINNER, the loser comes
+        via ``args={'loser': 'fi<N>' | <int> | '<pub_id>'}``
+        (:func:`precis.taproot.hub.merge_hubs` with ``dry_run=True``,
+        always — :mod:`precis.handlers._finding_merge`). Applying a merge
+        is a human door (the claim page's merge form), never an agent verb.
         ``view ∈ kwd|summary|verbatim|fisheye|fisheye+1hop`` (the
         :class:`~precis.workers.working_set.Extent` ladder) renders the
         finding as an eye (:func:`precis.utils.eye_render.render_eye`); at
@@ -830,7 +839,7 @@ class FindingHandler(NumericRefHandler):
         Every other view (bare get, ``links``/``log``/``raw``) falls
         through to the base
         :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        All five deliberately kept off ``_BASE_VIEWS`` — finding-specific,
+        All six deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -858,6 +867,12 @@ class FindingHandler(NumericRefHandler):
             return _finding_hub_mint.render_similar_view(
                 self.store, ref, embedder=getattr(self.hub, "embedder", None)
             )
+        if view == "merge-plan":
+            from precis.handlers import _finding_merge
+
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_merge.render_merge_plan_view(self.store, int(ref.id), loser)
         extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
         from precis.utils.eye_render import RECALL_SUFFIX
 

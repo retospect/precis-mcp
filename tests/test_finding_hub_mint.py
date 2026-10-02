@@ -480,6 +480,102 @@ class TestGetViewSimilar:
 
         assert f"fi{target}" not in body
         assert f"fi{neighbour}" in body
+        assert "view='merge-plan'" in body  # the apply-door pointer
+
+
+# ── view='merge-plan' — read-only dry run, apply is a human door ─────────
+
+
+def _row_counts(store) -> tuple[int, int, int]:
+    """(live+retired refs, links, nanopub_publish) — what a merge would touch."""
+    with store.pool.connection() as conn:
+        return tuple(
+            conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+            for t in ("refs", "links", "nanopub_publish")
+        )
+
+
+class TestGetViewMergePlan:
+    def test_renders_plan_and_writes_nothing(self, store) -> None:
+        from precis.taproot.hub import attach_evidence
+        from tests.workers._helpers import seed_ref
+
+        winner = mint_hub(store, CanonicalClaim(sentence="Winner hub claim.", scope={}))
+        loser = mint_hub(store, CanonicalClaim(sentence="Loser hub claim.", scope={}))
+        shared = seed_ref(store, title="Shared paper", kind="paper")
+        only_loser = seed_ref(store, title="Loser-only paper", kind="paper")
+        attach_evidence(
+            store, hub_ref_id=loser, paper_ref_id=shared, role="corroborates"
+        )
+        attach_evidence(
+            store, hub_ref_id=winner, paper_ref_id=shared, role="corroborates"
+        )
+        attach_evidence(
+            store, hub_ref_id=loser, paper_ref_id=only_loser, role="corroborates"
+        )
+        before = _row_counts(store)
+
+        h = _make_handler(store)
+        body = h.get(id=winner, view="merge-plan", loser=f"fi{loser}").body
+
+        assert f"fi{loser} -> fi{winner}" in body
+        assert "can_merge: true" in body
+        assert "## edges to repoint (1)" in body
+        assert "## edges dropped as redundant (1)" in body
+        assert "already holds it as link" in body
+        assert "## self-loops dropped (0)" in body
+        assert body.rstrip().endswith("This view never writes.")
+        assert f"/nanopub/fi{winner}" in body
+        assert _row_counts(store) == before
+        with store.pool.connection() as conn:
+            retired = conn.execute(
+                "SELECT retired_at FROM refs WHERE ref_id = %s", (loser,)
+            ).fetchone()[0]
+        assert retired is None
+
+    def test_loser_accepts_int_and_digit_string(self, store) -> None:
+        winner = mint_hub(store, CanonicalClaim(sentence="Winner hub claim.", scope={}))
+        loser = mint_hub(store, CanonicalClaim(sentence="Loser hub claim.", scope={}))
+        h = _make_handler(store)
+        assert (
+            "can_merge: true" in h.get(id=winner, view="merge-plan", loser=loser).body
+        )
+        assert (
+            "can_merge: true"
+            in h.get(id=winner, view="merge-plan", loser=str(loser)).body
+        )
+
+    def test_past_candidate_reports_can_merge_false_with_reason(self, store) -> None:
+        winner = mint_hub(store, CanonicalClaim(sentence="Winner hub claim.", scope={}))
+        loser = mint_hub(store, CanonicalClaim(sentence="Loser hub claim.", scope={}))
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, 'reviewed')",
+                (loser,),
+            )
+            conn.commit()
+        before = _row_counts(store)
+
+        body = (
+            _make_handler(store)
+            .get(id=winner, view="merge-plan", loser=f"fi{loser}")
+            .body
+        )
+
+        assert "can_merge: false" in body
+        assert "refused:" in body and "reviewed" in body
+        assert _row_counts(store) == before
+
+    def test_missing_loser_is_bad_input_with_call_shape(self, store) -> None:
+        winner = mint_hub(store, CanonicalClaim(sentence="Winner hub claim.", scope={}))
+        with pytest.raises(BadInput, match="loser") as ei:
+            _make_handler(store).get(id=winner, view="merge-plan")
+        assert "view='merge-plan'" in str(ei.value.next)
+
+    def test_same_hub_both_sides_is_bad_input(self, store) -> None:
+        hub = mint_hub(store, CanonicalClaim(sentence="Winner hub claim.", scope={}))
+        with pytest.raises(BadInput, match="itself"):
+            _make_handler(store).get(id=hub, view="merge-plan", loser=f"fi{hub}")
 
 
 # ── embedder outage: typed Upstream, fail closed (gr459918) ───────────────

@@ -1,63 +1,27 @@
 ---
 status: draft
-title: "expose taproot merge on the MCP surface — with a guard the CLI does not need"
+title: "corpus-wide duplicate-hub candidate scan (the all-pairs banded read)"
 pillar: memory-graph
 ---
 
-# Merge from the web
+# Corpus-wide candidate scan
 
-> **2026-09-19:** the web door shipped — the claim review page lists the 5
-> nearest hubs with dedup-judge verdicts and `POST /nanopub/fi{hub}/merge`
-> (dry-run plan, `confirm=1` applies, refuses past `candidate`,
-> `set_by='user'`). The product call below is therefore made: apply is a
-> human door. What remains open here is the **agent-side** dry-run verb and
-> the list-candidates read verb.
+Merge itself is settled: applying is a **human door** (the claim page's
+`POST /nanopub/fi{hub}/merge`, refuses past `candidate`, `set_by='user'`),
+and agents read the dry-run plan with `get(kind='finding', id='fi<winner>',
+view='merge-plan', args={'loser': ...})`. The per-hub reader-side need —
+"what is near *this* hub?" — is covered by `view='similar'`
+(`nearest_hubs`, the same ANN the mint dedup cascade runs), which now points
+at `view='merge-plan'`.
 
-`precis taproot merge --loser … --winner …` (shipped 2026-08-20) is CLI-only, so
-collapsing a duplicate pair means an operator with a prod DSN. The dedup sweep is
-a read-review-act loop over pairs a human judges one at a time, and that loop
-belongs where the claims are already being read — the web reader — not in a
-terminal. Reto's ask, 2026-08-20.
+What is left is the corpus-wide half the per-hub view does not cover: an
+**all-pairs cosine scan over `finding_body` embeddings, banded**, so a dedup
+sweep is discoverable without hand-written SQL or walking hubs one at a time.
+Read-only, so it carries none of merge's risk. Low priority: `view='similar'`
+per hub already serves the reader, and the sweep is a human-paced loop.
 
-## Why this is not just "wire the verb up"
-
-The CLI is reachable only by someone who already has a prod DSN in hand. The MCP
-surface is reachable by **every agent in the cluster**, and merge is the most
-destructive door taproot has:
-
-- It **hard-DELETEs** redundant `links` rows. `links` has no `retired_at`; there
-  is no undo.
-- It **soft-deletes a claim hub**, changing what the corpus asserts.
-- It is exactly the **over-merge** direction `eval_canon`'s live gate exists to
-  hold at zero — and an automated judge is most likely to over-merge on the very
-  bands (numeric near-misses, narrower-vs-broader restatements) where merging is
-  wrong. Two of the nine pairs in the first real cohort were do-not-merge, and
-  one of those looked like a duplicate until its sources were read.
-
-So the MCP verb must not be a thin passthrough.
-
-## Shape
-
-- **Dry-run is the default.** `put(kind='finding', mode='merge', …)` returns the
-  plan — edges to repoint, edges dropped as redundant and which existing edge each
-  collides with, publish-state check — and writes nothing. A separate explicit
-  confirmation applies it. The plan is the reviewable artifact; the CLI already
-  produces it.
-- **Refuse past `candidate`**, as the CLI does: merging changes `pub_id`, and a
-  reviewed or signed artifact cannot be retroactively re-identified.
-- **Decide whether apply is a human door.** `approve`/`sign`/`signoff`/
-  `publish --live` are human-only today. Merge is not obviously less consequential
-  than approve — it can silently delete a claim. Leaning toward: agents may
-  produce and read plans freely; applying one requires the same human door. That
-  is a product call, not a technical one.
-- **Record who applied it.** `set_by` already exists; make sure the web door
-  passes the acting identity rather than a generic `agent`.
-
-## Also worth having
-
-A **list-candidates** read verb — the all-pairs cosine scan over
-`finding_body` embeddings, banded — so the sweep is discoverable from the reader
-instead of requiring hand-written SQL. That is the half of the loop the CLI does
-not cover at all, and it is read-only, so it carries none of the above risk.
-Note the strict hub predicate (`claim_hub_predicate_sql`) or it will surface
-chase-tree findings as merge candidates.
+When built, apply the strict hub predicate (`claim_hub_predicate_sql`) or it
+will surface chase-tree findings as merge candidates. Expect the worst
+precision in the numeric-near-miss and narrower-vs-broader bands (two of the
+nine pairs in the first real cohort were do-not-merge), so band the output
+rather than ranking it flat.

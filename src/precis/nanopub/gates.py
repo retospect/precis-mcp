@@ -728,13 +728,15 @@ def _check_passage(
     kind = ref.kind if ref is not None else "paper"
 
     if kind == "datasheet":
-        out.append(
-            GateViolation(
-                "grounding",
-                f"{label}: datasheet citation identifier undecided "
-                "(review claims-and-evidence-2) — not publishable yet",
+        if ref is None or ev.datasheet_sha(store, ref.id) is None:
+            out.append(
+                GateViolation(
+                    "grounding",
+                    f"{label}: datasheet has no single pdf_sha256 — it is "
+                    "cited as urn:sha256 of its ingested PDF, so it needs "
+                    "exactly one",
+                )
             )
-        )
     elif kind == "edgar":
         if ev.source_anchor(kind, ref.slug if ref else None, None).source_uri is None:
             out.append(

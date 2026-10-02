@@ -1,7 +1,7 @@
 """Edgar / datasheet evidence on the nanopub path
 (docs/backlog/claim-publication-nanopub-ots.md): the read door accepts every
 kind the write door does, an edgar filing is cited by its SEC accession, and
-a datasheet is refused by name until its identifier is ruled. DB-backed;
+a datasheet by ``urn:sha256`` of its PDF (URL as a second triple). DB-backed;
 reuses the seed helpers of ``test_nanopub_gates_mint``."""
 
 from __future__ import annotations
@@ -145,22 +145,80 @@ def test_bad_edgar_slug_is_a_violation_not_a_crash(store: Any) -> None:
     assert "SEC accession" in v.message and "not-an-accession" in v.message
 
 
-def test_datasheet_supporter_is_bundled_but_refused_by_name(store: Any) -> None:
+def _give_datasheet_sha_and_url(
+    store: Any, ref_id: int, *, sha: str, url: str | None
+) -> None:
+    """A datasheet's ingested-PDF sha (``pdf_sha256`` identifier row) and,
+    when given, the auto-pull ingest's ``meta.source_url``."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('pdf_sha256', %s, %s, 'test')",
+            (sha, ref_id),
+        )
+        if url is not None:
+            conn.execute(
+                "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
+                "|| jsonb_build_object('source_url', %s::text) WHERE ref_id = %s",
+                (url, ref_id),
+            )
+
+
+def test_datasheet_is_cited_by_content_sha_with_its_url_as_a_second_triple(
+    store: Any,
+) -> None:
+    """Reto 2026-10-02 (claims-and-evidence-2): urn:sha256 of the PDF always;
+    the fetch URL rides as rdfs:seeAlso when known."""
+    from rdflib import RDFS
+
+    sha = "cd" * 32
+    url = "https://example.com/ds/esp32.pdf"
     ref_id, chunk = _seed_non_paper_source(store, "datasheet", slug="ds-1")
+    _give_datasheet_sha_and_url(store, ref_id, sha=sha, url=url)
+    hub = _seed_hub(store, _SENTENCE, ref_id, chunk)
+    (src,) = evidence.load_bundle(store, hub).sources
+    assert src.source_uri == f"urn:sha256:{sha}"
+    assert src.source_url == url
+
+    payload = _anchorless_payload(chunk)
+    payload["passages"][0]["pdf_sha256"] = sha
+    # A reviewer-supplied URL is never the authority — approve re-derives it.
+    payload["passages"][0]["source_url"] = "https://attacker.example/x.pdf"
+    assert _gate_slugs(store, hub, payload) == set()
+
+    row = mint.approve(store, hub, payload=payload, interactive=True)
+    (frozen,) = row.grounding["passages"]
+    assert frozen["source_uri"] == f"urn:sha256:{sha}"
+    assert frozen["source_url"] == url
+
+    inp, _deps = mint._mint_input(store, row, evidence.load_bundle(store, hub))
+    _, prov, _ = assemble.build_graphs(inp, assemble.DRAFT_NS)
+    node = URIRef(f"urn:sha256:{sha}")
+    assert (node, RDFS.seeAlso, URIRef(url)) in prov
+    assert "attacker.example" not in prov.serialize(format="nt")
+
+
+def test_datasheet_without_a_known_url_is_cited_by_sha_alone(store: Any) -> None:
+    sha = "ef" * 32
+    ref_id, chunk = _seed_non_paper_source(store, "datasheet", slug="ds-2")
+    _give_datasheet_sha_and_url(store, ref_id, sha=sha, url=None)
+    hub = _seed_hub(store, _SENTENCE, ref_id, chunk)
+    (src,) = evidence.load_bundle(store, hub).sources
+    assert src.source_uri == f"urn:sha256:{sha}" and src.source_url is None
+    payload = _anchorless_payload(chunk)
+    payload["passages"][0]["pdf_sha256"] = sha
+    assert _gate_slugs(store, hub, payload) == set()
+
+
+def test_datasheet_without_a_pdf_sha_is_refused_by_name(store: Any) -> None:
+    ref_id, chunk = _seed_non_paper_source(store, "datasheet", slug="ds-3")
     hub = _seed_hub(store, _SENTENCE, ref_id, chunk)
     bundle = evidence.load_bundle(store, hub)
     (src,) = bundle.sources
     assert src.kind == "datasheet" and src.source_uri is None
-    expected = (
-        "datasheet citation identifier undecided (review claims-and-evidence-2)"
-        " — not publishable yet"
-    )
     violations = gates.run_mint_gates(store, bundle, _anchorless_payload(chunk))
     (v,) = [x for x in violations if x.gate == "grounding"]
-    assert expected in v.message
-    # A payload that smuggles in a DOI cannot publish a datasheet either.
-    with_doi = gates.run_mint_gates(store, bundle, _payload(chunk))
-    assert any(expected in x.message for x in with_doi)
+    assert "datasheet has no single pdf_sha256" in v.message
 
 
 def test_paper_still_requires_a_doi(store: Any) -> None:

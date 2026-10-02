@@ -280,11 +280,11 @@ whose evidence was never verified above MEDIUM.* Today that rule cannot be
 expressed because the data does not exist. Provenance is what turns a preference
 into an enforceable gate — that, not transparency, is the reason to build it.
 
-## Datasheet and patent evidence cannot be published yet
+## Patent evidence cannot be published yet
 
 _Grouped 2026-09-26; was `nanopub-bundle-drops-edgar-datasheet-evidence`.
-Narrowed 2026-10-02 after Reto's ruling that edgar and datasheet ARE
-publishable sources._
+Narrowed 2026-10-02 after Reto's rulings that edgar and datasheet ARE
+publishable sources (review items `claims-and-evidence-1`/`-2`)._
 
 Shipped: `nanopub/evidence.py::load_bundle` reads every kind in
 `EVIDENCE_SRC_KINDS` (a test pins the two equal), so a supporter of any
@@ -292,21 +292,19 @@ attachable kind reaches the bundle and the gates; `gates.py::check_contradicts`
 reads `live_contradicts` (any kind, either direction). An `edgar` filing is
 cited by its SEC accession number: the provenance source node is its archive
 URL, with a `precis:secAccession` literal, and the `pdf_sha256` triple is
-omitted (an HTML filing has no PDF to pin). Passages freeze a `source_uri` at
-approve; contiguity grouping and the artifact graph key on it.
+omitted (an HTML filing has no PDF to pin). A `datasheet` is cited as
+`urn:sha256:<its single pdf_sha256>`, with its fetch URL as an `rdfs:seeAlso`
+triple when known (`evidence.datasheet_url`: `meta.source_url`, written by the
+part-placement auto-pull ingest, else the catalog `datasheet_url` of
+`meta.part_lcsc`). Passages freeze `source_uri` (and `source_url`) at approve
+from the chunk's ref; contiguity grouping and the artifact graph key on it.
 
 What is left:
 
-- **Datasheet citation identifier — undecided** (pending review item
-  `claims-and-evidence-2`). A datasheet has no DOI, accession or ISBN, so a
-  datasheet passage is refused by name at the grounding gate ("datasheet
-  citation identifier undecided … not publishable yet") rather than dropped.
-  Once ruled: give `evidence.source_anchor` a `datasheet` arm and lift the
-  refusal in `gates._check_passage`.
 - **Patent grounding stays DOI-gated.** A patent supporter reaches the bundle
   but its passage still needs a `doi`; `source_anchor` returns no URI for it.
-  Same shape as the datasheet fix once a patent identifier (a publication-number
-  URI) is ruled; see also `nanopub-book-isbn-grounding.md`.
+  Same shape as the edgar/datasheet arms once a patent identifier (a
+  publication-number URI) is ruled; see also `nanopub-book-isbn-grounding.md`.
 - The `dois=` artifact index and `ots.py`'s per-DOI quad check stay DOI-only:
   an edgar-only artifact indexes no DOI. Widen only if the registry needs to
   look artifacts up by accession (that would need a migration).

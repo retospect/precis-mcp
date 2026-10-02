@@ -16,29 +16,22 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-1. **Confirmed small bugs** (each S, verified on the 10-02 tree) — wrong
-   output today, cheapest first:
-   - Datasheet nanopub identifier — waits on Reto (`claims-and-evidence-2`:
-     a datasheet ref stores no URL; recommended `urn:sha256:` + the linked
-     part's URL when known). Then add a `datasheet` arm to
-     `nanopub/evidence.py::source_anchor` and lift the named refusal in
-     `gates._check_passage`. Edgar shipped 10-02 (SEC accession anchor).
-2. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
+1. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
    `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) →
    `taproot-hub-scope-no-edit-door` (`edit(kind='finding')` takes no
    `scope=`; open question: does a scope edit re-derive `pub_id`?) →
    `aida-uri-ignores-scope` (2 duplicate pairs, prod data) → the scope
    backfill inside `nanopub-corpus-remediation`.
-3. **Adjudication** — `disputes-adjudication-workflow`, which absorbs
+2. **Adjudication** — `disputes-adjudication-workflow`, which absorbs
    `taproot-adjudicate-reopened-claims` (premise half-stale: the widening arm
    now files non-blocking `disputes`, but a demotion still reopens reviewed
    hubs) · `contradicts-conflates-evidence-and-prose-misuse` (residue = the
    `misused-by` relation only) · `claim-conflict-search` items 4–5 (slice 1
    shipped dark; nothing reads its output at approve).
-4. **Doors** — `taproot-merge-mcp-surface` (web door shipped; no MCP verb) ·
+3. **Doors** — `taproot-merge-mcp-surface` (web door + agent `view='merge-plan'` shipped; open = corpus-wide banded candidate scan, low priority) ·
    `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
    `preprint-to-published-cite-upgrade`.
-5. **Evidence quality** — `evidence-edge-verification` (rubric labels +
+4. **Evidence quality** — `evidence-edge-verification` (rubric labels +
    approve gate; whether the verify/repair runs happened needs prod data) ·
    `pa-arm-locate-should-capture-a-verbatim-quote` ·
    `taproot-sole-supporter-coverage` (half shipped; open = name a candidate
@@ -50,14 +43,14 @@ defect and follow-on cluster below is owned here.
    `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
    claim-evidence` (open: magnitude re-check, re-dispatch of a `ready`
    pathway, nanopub visibility, web attach form).
-6. **Composite + publication, last** — `taproot-compound-migration` (L;
+5. **Composite + publication, last** — `taproot-compound-migration` (L;
    blocked on `reground.py`'s embedding-ranking TODO; blocks
    `claim-publication-nanopub-ots`) → `claim-publication-nanopub-ots` ·
    `retire-fi-go-nanopub` (open: `[np<id>]` grammar + migration sweep) ·
    `nanopub-corpus-remediation` (step 5: `identity.py` hashes the sentence
    without `_normalize_number_text`). Publishing before identity and
    evidence settle publishes the defects.
-7. `taproot-claim-model-v2` — persisted `claim_type`; design-heavy, no
+6. `taproot-claim-model-v2` — persisted `claim_type`; design-heavy, no
    dependents yet.
 
 ## Horizon
