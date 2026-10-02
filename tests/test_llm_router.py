@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import Message
 from types import SimpleNamespace
+from typing import Any
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -1222,7 +1223,6 @@ def test_openai_tools_threads_max_tokens_to_the_wire(
     took no such parameter, so the client's cap was always ``None``), which is
     why a verbose rung generated unbounded until the wall ceiling killed the
     whole turn."""
-    from typing import Any
 
     import precis.secrets as secrets
     from precis.utils.llm import openai_tools as ot
@@ -2748,7 +2748,6 @@ def test_failover_passes_the_rung_bare_flag_to_the_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end: the flag on the rung reaches call_claude_p."""
-    from typing import Any
 
     seen: list[bool] = []
 
@@ -4044,9 +4043,15 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
     recorded: dict[str, object] = {}
 
     def fake_record(
-        req: object, result: object, *, transport: object, duration_ms: object
+        req: object,
+        result: object,
+        *,
+        transport: object,
+        duration_ms: object,
+        routed: object = None,
     ) -> None:
         recorded["transport"] = transport
+        recorded["routed"] = routed
 
     monkeypatch.setattr(router, "_record_dispatch", fake_record)
 
@@ -4059,6 +4064,7 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
         )
     )
     assert recorded["transport"] is Transport.CLAUDE_AGENT
+    assert recorded["routed"] == "cloud"
 
 
 @pytest.mark.parametrize(
@@ -4478,6 +4484,144 @@ def test_dispatch_placement_local_blocks_saturated_slot_hosted_escape(
     assert out.paused is True
     assert out.error is not None and "busy" in out.error
     assert called.calls == 0
+
+
+# ── placement_routed (migration 0179): routed intent beside landed rung ──
+
+
+def _capture_route_log(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    from precis import route_log
+
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    recorded: list[route_log.LlmCallRecord] = []
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    return recorded
+
+
+def test_saturated_escape_on_local_labelled_rung_lands_cloud_routed_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator rung labelled ``placement: "local"`` whose slot is busy
+    retries at the hosted endpoint. That call is billed, so it must land as
+    ``cloud`` (the dollar caps exclude ``local``), while the routed intent
+    stays ``local`` — the fell-back-to-cloud case the share report counts."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "local",
+                "model": "qwen3-235b-a22b-2507",
+                "transport": "openai_tools",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("hosted"))
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+
+    assert out.error is None
+    assert out.placement == "cloud"
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("cloud", "local")]
+
+
+def test_reserved_local_slot_records_routed_and_landed_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "local",
+                "model": "qwen3-235b-a22b-2507",
+                "transport": "openai_tools",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h",
+            resource=f"llm:{model}",
+            reserved=True,
+            paused=False,
+            endpoint="http://local-node:8080/v1",
+        ),
+    )
+    monkeypatch.setattr(ls, "release", lambda slot: None)
+    monkeypatch.setitem(
+        router._PROVIDERS, Transport.OPENAI_TOOLS, _FakeProv(_ok("local"))
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+
+    assert out.error is None
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("local", "local")]
+
+
+def test_unserved_local_rung_skip_records_routed_local_landed_cloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The serving-aware prune drops a LOCAL rung 0 this host doesn't serve
+    before dispatch; the call still counts as routed local."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"placement": "local", "model": "summarizer", "transport": "local"},
+            {"placement": "cloud", "model": "claude-haiku", "transport": "claude_p"},
+        ],
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    monkeypatch.setattr(ls, "served_locally", lambda model: False)
+    monkeypatch.setattr(ls, "acquire", lambda model: None)
+    local = _FakeProv(_ok("should not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, local)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, _FakeProv(_ok("cloud")))
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x"))
+
+    assert out.error is None
+    assert local.calls == 0
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("cloud", "local")]
+
+
+def test_routed_placement_slot_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    hosted = Rung(Transport.OPENAI_TOOLS)
+    busy = ls.LocalSlot(host="h", resource="llm:m", reserved=False, paused=True)
+    held = ls.LocalSlot(
+        host="h", resource="llm:m", reserved=True, paused=False, endpoint="http://e"
+    )
+    slot_only = ls.LocalSlot(host="h", resource="llm:m", reserved=True, paused=False)
+    assert router._routed_placement(hosted, None) == "cloud"
+    assert router._routed_placement(hosted, busy) == "local"
+    assert router._routed_placement(hosted, held) == "local"
+    # A reserved slot with no endpoint dispatches on the rung's default wire,
+    # so it classifies like the rung — the same rule the landed stamp uses.
+    assert router._routed_placement(hosted, slot_only) == "cloud"
+    assert router._routed_placement(Rung(Transport.LOCAL), None) == "local"
 
 
 def test_rung_knobs_claude_transports_have_no_knobs() -> None:

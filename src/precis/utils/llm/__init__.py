@@ -91,6 +91,13 @@ local rung to the DGX-pair llama-server instead of the hosted fallback. A
 *saturated* slot (all capacity busy) retries rung 0 against the
 hosted OSS endpoint instead of the busy hardware — unless
 ``placement='local'`` pins the call, which takes the paused backoff.
+That retry logs as ``cloud`` whatever rung 0's label says.
+
+Route-log placement: ``llm_call_log.placement`` is the rung that ran
+(landed; the dollar caps exclude ``local``); ``placement_routed`` (0179) is
+rung 0 after the step-5 intent filters, before the serving skip, saturated
+retry and failover walk — ``local`` whenever a ``served_by`` slot exists.
+``routed='local' AND placement='cloud'`` = fell back to cloud.
 ``SMALL``'s local-only aliases remap to a hosted small model
 (``llm.model.small`` → ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → default
 ``z-ai/glm-4.7-flash``) whenever a call lands on a hosted OSS transport.

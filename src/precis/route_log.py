@@ -92,6 +92,11 @@ class LlmCallRecord:
     #: ``None`` is treated as cloud by the caps (fail-closed): an unclassified
     #: row is far more likely to be an old billed call than a free one.
     placement: str | None = None
+    #: ``'local'`` / ``'cloud'`` for the rung the router *chose*, before any
+    #: fallback (migration 0179). ``placement_routed='local'`` with
+    #: ``placement='cloud'`` is a local-intended call that landed on cloud.
+    #: ``None`` from a writer outside the router.
+    placement_routed: str | None = None
     #: Token telemetry mirroring :attr:`~precis.utils.llm.router.LlmResult`'s
     #: matching fields (migration 0121) — ``None`` where the transport reports
     #: none (``claude_p``) rather than a false zero.
@@ -193,13 +198,13 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
                 source, tier, transport, model, tools_needed,
                 request_hash, response_hash, request_chars, response_chars,
                 cost_usd, turns_used, duration_ms, errored, error, data_parsed,
-                ref_id, features, placement,
+                ref_id, features, placement, placement_routed,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
-                %s, %s, %s,
+                %s, %s, %s, %s,
                 %s, %s, %s, %s
             )
             """,
@@ -222,6 +227,7 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
                 rec.ref_id,
                 json.dumps(rec.features),
                 rec.placement,
+                rec.placement_routed,
                 rec.input_tokens,
                 rec.output_tokens,
                 rec.cache_read_tokens,

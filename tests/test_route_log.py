@@ -434,15 +434,17 @@ def test_dispatch_records_placement_and_token_counts(
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT transport, placement, input_tokens, output_tokens, "
-            "cache_read_tokens, cache_creation_tokens FROM llm_call_log "
-            "WHERE source=%s",
+            "cache_read_tokens, cache_creation_tokens, placement_routed "
+            "FROM llm_call_log WHERE source=%s",
             (src,),
         ).fetchone()
     assert row is not None
     assert row[0] == "claude_agent"
     # claude_agent always hits Anthropic's cloud — never excludable as 'local'.
     assert row[1] == "cloud"
-    assert row[2:] == (1000, 200, 10, 20)
+    assert row[2:6] == (1000, 200, 10, 20)
+    # Routed intent (0179) persists beside the landed placement.
+    assert row[6] == "cloud"
 
 
 def test_dispatch_local_records_openai_token_split(

@@ -35,7 +35,7 @@ this on the strength of the old note.
 A local model replaces cloud `glm-4.7-flash` for summarise only once it
 passes `model-qualification.md` against the incumbent on the fixed
 summarise eval set. Measured afterwards by `local-cloud-share-report.md`
-(its `placement_effective` column, Slice 1 there, is a precondition here).
+(its `placement_routed` column, Slice 1 there, is a precondition here).
 
 ## Carried over from the tier-ladder doc
 

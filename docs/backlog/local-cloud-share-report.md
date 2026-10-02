@@ -7,22 +7,22 @@ prio: high
 
 # Standing report — local vs. cloud share, routed vs. landed
 
-Mining pass, 2026-09-30; premise corrected 2026-10-01. `llm_call_log` has a
-`placement` column (what the router chose: `placement = "cloud" if
-_rung_is_cloud(rung0) else "local"` at selection time,
-`src/precis/utils/llm/router.py`; migration 0112) but **no
-`placement_effective` column**. The router computes `placement_effective`
-after `_apply_placement` resolves fallbacks, but only
-`router.py::resolve_selection` (the `/factory` picker preview) returns it;
-the call path never writes it. A saturated local slot silently retries against
-the hosted endpoint unless a caller pins `placement='local'`, so "routed
-local" and "landed local" can differ, and the landed number is not recorded
-anywhere — the report cannot be built on today's data.
+Mining pass, 2026-09-30. Both halves are now recorded per call:
 
-**Slice 1 (needs `/go`, migration):** add `llm_call_log.placement_effective`
-and have the router write it on every logged call (forward-only migration;
-leave old rows NULL, report them as routed-only). Slice 2 is the query/view
-below.
+- `llm_call_log.placement` (migration 0112) is the **landed** placement —
+  the rung that actually ran (`FailoverProvider.run` stamps it per rung).
+- `llm_call_log.placement_routed` (migration 0179) is the **routed**
+  placement — rung 0 after the strict `placement=` pin and the cloud throttle,
+  before the unserved-local skip, the saturated-slot hosted retry and the
+  failover walk; `local` whenever a `served_by` slot exists for it
+  (`router.py::_routed_placement`). NULL on pre-0179 rows and on writers
+  outside the router.
+
+Slice 1 shipped with this, plus a landed-side fix: the saturated-slot hosted
+retry used to stamp an operator rung labelled `placement: "local"` as local
+although it ran (and billed) at `PRECIS_LLM_BASE_URL`, hiding it from the
+dollar caps. Remaining work is **Slice 2**, the query/view below.
+`placement_routed = 'local' AND placement = 'cloud'` is the fell-back count.
 
 ## Motivation / why
 
@@ -35,10 +35,10 @@ much of what was *supposed* to land locally fell back to cloud."
 ## In scope
 
 - A standing report — a `view` on `kind='llm'` or a `precis-status` section
-  — of calls/tokens/cost, broken down by tier × `placement_effective`, per
+  — of calls/tokens/cost, broken down by tier × `placement` (landed), per
   day.
-- A routed-vs-landed split: for each cell, the count where `placement`
-  (intended) matches `placement_effective` (actual) vs. where it diverged
+- A routed-vs-landed split: for each cell, the count where
+  `placement_routed` (intended) matches `placement` (actual) vs. where it diverged
   (a local-intended call that fell back to cloud, or vice versa).
 
 ## Explicitly NOT in scope
@@ -54,16 +54,14 @@ much of what was *supposed* to land locally fell back to cloud."
 - The report answers "what fraction of calls landed local yesterday" and
   "what fraction of calls that were *supposed* to land local actually did"
   as two distinct numbers, per tier.
-- Slice 1 (the column + router write) lands first; until it does the
-  landed-share number is unmeasurable. Slice 2 is a query + a view.
+- Rows with `placement_routed IS NULL` (pre-0179) are reported as
+  landed-only, never folded into the routed-vs-landed split.
 
 ## Target + blast radius
 
 A new `view=` on the `llm` kind handler, or a `precis-status` section
 (`get(kind='skill', id='precis-status')`'s Runtime section is the existing
-pattern for this kind of standing report). Slice 2 is read-only;
-slice 1 adds one column to `llm_call_log` and a write in the router's log
-path (migration, `/go`).
+pattern for this kind of standing report). Slice 2 is read-only.
 
 ## Open questions / decisions log
 

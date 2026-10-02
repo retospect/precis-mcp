@@ -62,6 +62,7 @@ from precis.utils.claude_p import ClaudePResult, call_claude_p
 from precis.utils.llm.quota import is_quota_exhaustion_text
 
 if TYPE_CHECKING:
+    from precis.utils.llm.local_serving import LocalSlot
     from precis.utils.llm.openai_tools import AgentLoopResult
     from precis.utils.prompt.model import Profile
 
@@ -1723,6 +1724,25 @@ def _rung_is_cloud(rung: Rung) -> bool:
     return bool(os.environ.get("PRECIS_LLM_BASE_URL"))
 
 
+def _routed_placement(rung0: Rung, slot: LocalSlot | None) -> str:
+    """``'local'``/``'cloud'`` for where the router *meant* a call to run —
+    ``llm_call_log.placement_routed`` (migration 0179), the intent half of the
+    routed-vs-landed split; :attr:`LlmResult.placement` is the landed half.
+
+    ``rung0`` is rung 0 after the operator-intent filters (strict
+    ``placement=`` pin, cloud throttle) and before any mechanical fallback
+    (unserved-local skip, saturated-slot hosted retry, failover walk).
+    ``slot`` is the slot acquired for the call, if any: a busy slot still
+    means local capacity was the target (``served_by`` is declared, so this
+    holds even on a cloud-labelled rung), and a reserved slot with an
+    endpoint is local hardware whatever the rung's own label says (the same
+    rule the landed stamp uses).
+    """
+    if slot is not None and (slot.paused or (slot.reserved and slot.endpoint)):
+        return "local"
+    return _placement_of(rung0)
+
+
 def _fallback_placement(transport: Transport) -> str:
     """Transport-only local/cloud guess — :func:`_record_dispatch`'s
     belt-and-suspenders fallback for a call whose :attr:`LlmResult.placement`
@@ -1981,6 +2001,9 @@ def route(req: LlmRequest) -> LlmResult:
             ),
             paused=True,
         )
+    # The rung the operator's intent picked, before the mechanical fallbacks
+    # below can replace it — `placement_routed` is classified off this.
+    routed_rung = ladder[0]
     # Serving-aware prune: a loopback LOCAL rung 0 on a host that doesn't
     # serve the model would ECONNREFUSE on every call, then fail over
     # anyway — drop it up front (before the breaker/transport gates below,
@@ -2068,6 +2091,7 @@ def route(req: LlmRequest) -> LlmResult:
     # back to `model` when the rung pins nothing.
     serve_model = ladder[0].model or model
     slot = _local.acquire(serve_model)
+    routed = _routed_placement(routed_rung, slot)
     if slot is not None and slot.paused:
         # Local capacity is saturated, not down. Retrying `req` unmodified
         # (no `local_url` override) sends rung 0 to the *hosted* OSS endpoint
@@ -2099,13 +2123,24 @@ def route(req: LlmRequest) -> LlmResult:
             saturated_model = _hosted_small_remap(
                 model, transport, has_local_slot=False
             )
+            # Rung 0 now runs at `PRECIS_LLM_BASE_URL`, whatever its chain
+            # label says — an operator rung labelled `placement: "local"`
+            # would otherwise stamp a hosted (billed) call as local and hide
+            # it from the dollar caps. Relabel it by where it actually goes.
+            escape = FailoverProvider(
+                [
+                    _replace(ladder[0], label=_fallback_placement(transport)),
+                    *ladder[1:],
+                ]
+            )
             started = time.monotonic()
-            result = provider.run(req, model=saturated_model)
+            result = escape.run(req, model=saturated_model)
             _record_dispatch(
                 req,
                 result,
                 transport=transport,
                 duration_ms=int((time.monotonic() - started) * 1000),
+                routed=routed,
             )
             return result
         return LlmResult(
@@ -2156,6 +2191,7 @@ def route(req: LlmRequest) -> LlmResult:
         result,
         transport=transport,
         duration_ms=int((time.monotonic() - started) * 1000),
+        routed=routed,
     )
     return result
 
@@ -2339,6 +2375,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
         result,
         transport=transport,
         duration_ms=int((time.monotonic() - started) * 1000),
+        routed=_routed_placement(ladder[0], slot),
     )
     return result
 
@@ -2529,10 +2566,18 @@ def _serialize_request(req: LlmRequest) -> str:
 
 
 def _record_dispatch(
-    req: LlmRequest, result: LlmResult, *, transport: Transport, duration_ms: int
+    req: LlmRequest,
+    result: LlmResult,
+    *,
+    transport: Transport,
+    duration_ms: int,
+    routed: str | None = None,
 ) -> None:
     """Best-effort: record the full call to the route-log. Dark (no-op) unless a
-    store is bound at boot; any failure is swallowed so it can't break dispatch."""
+    store is bound at boot; any failure is swallowed so it can't break dispatch.
+
+    ``routed`` is :func:`_routed_placement` — where the router meant the call
+    to run, logged beside the landed ``result.placement``."""
     from precis import route_log
 
     if not req.log_call or not route_log.enabled():
@@ -2556,6 +2601,7 @@ def _record_dispatch(
                     if result.placement is not None
                     else _fallback_placement(transport)
                 ),
+                placement_routed=routed,
                 turns_used=result.turns_used,
                 duration_ms=duration_ms,
                 errored=result.error is not None,
