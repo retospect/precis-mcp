@@ -119,7 +119,7 @@ import math
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -132,7 +132,7 @@ from precis.cad.tessellate import apply_rigid, mesh_config
 from precis.cad.vec import LINEAR_REL_EPS
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
-from precis_web.blocktree_svg import EffectiveEnvelopeFn, VisiblePlan
+from precis_web.blocktree_svg import EffectiveEnvelopeFn, VisiblePlan, level_rungs
 
 #: Two triangles sharing an edge merge into the same reconstructed face
 #: when their flat normals agree within this angle (radians) — small
@@ -1119,6 +1119,29 @@ class TopoNode:
     #: use) — only what the tree actually carries; a block with nothing
     #: declared gets an empty list rather than invented filler.
     detail: list[str] = field(default_factory=list)
+    #: ``[envelope, interfaces, refined, realized]`` — which rungs render
+    #: this block's subtree differently from the next-shallower one
+    #: (:func:`precis_web.blocktree_svg.level_rungs`); the per-block level
+    #: chip's letter/dash datum.
+    level_rungs: list[bool] = field(default_factory=list)
+    #: The rung this block is drawn at RELATIVE TO ITSELF in this plan
+    #: (the ladder is measured from the root, so a depth-1 parent at
+    #: ambient ``interfaces`` is a box, i.e. ``envelope``): ``"envelope"``
+    #: if collapsed to a box, ``"interfaces"`` if it is a shape with a
+    #: collapsed child, else ``"refined"``. The chip underlines the
+    #: shallowest lettered rung at or above it.
+    level_active: str = "refined"
+
+
+def _level_active(
+    name: str, plan: VisiblePlan, kids: dict[str, list[str]]
+) -> Literal["envelope", "interfaces", "refined"]:
+    """The rung ``name`` is drawn at relative to itself in ``plan``."""
+    if plan.shown.get(name) == "box":
+        return "envelope"
+    if any(plan.shown.get(k) == "box" for k in kids.get(name, [])):
+        return "interfaces"
+    return "refined"
 
 
 def topology_nodes(
@@ -1167,6 +1190,8 @@ def topology_nodes(
                 parent=f"B{parent_uid}" if parent_uid is not None else None,
                 kind=plan.shown[name],
                 detail=detail,
+                level_rungs=level_rungs(name, kids),
+                level_active=_level_active(name, plan, kids),
             )
         )
     return out

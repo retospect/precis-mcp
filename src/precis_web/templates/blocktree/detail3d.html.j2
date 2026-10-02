@@ -46,7 +46,9 @@
       {% endfor %}
     </select>
   </div>
-  <div>
+  {# Hidden state carrier: the per-block level chips in the tree rows
+     (blocktree-3d.js) read and write it, then refetch via loadScene. #}
+  <div hidden>
     <label class="block text-xs text-slate-500 mb-1" for="bt3d-overrides" title="per-subtree level override: name:level, name2:level2">level overrides</label>
     <input type="text" id="bt3d-overrides" value="{{ overrides }}" placeholder="hub:realized, rest:envelope"
            class="border border-slate-300 rounded px-2 py-1 w-56" />

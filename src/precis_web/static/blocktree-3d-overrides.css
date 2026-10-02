@@ -192,3 +192,36 @@ body {
 #bt3d-viewer .bt3d-atom-tip[hidden] {
   display: none;
 }
+
+/* Per-block abstraction-level chip `[E·I·R·z]`, appended to each tree row
+ * by blocktree-3d.js. A lettered rung is a button; `—` is a rung that
+ * would draw the same picture. The underline marks the active rung. */
+#bt3d-viewer .bt3d-chip-group {
+  margin-left: 8px;
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+#bt3d-viewer .bt3d-chip {
+  background: none;
+  border: 0;
+  padding: 0 1px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+#bt3d-viewer .bt3d-chip:hover:not(:disabled) {
+  background: rgba(100, 116, 139, 0.25);
+}
+#bt3d-viewer .bt3d-chip:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+#bt3d-viewer .bt3d-chip-active {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 700;
+}
+#bt3d-viewer .bt3d-chip-dash {
+  opacity: 0.4;
+}

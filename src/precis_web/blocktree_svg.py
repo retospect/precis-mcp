@@ -318,6 +318,28 @@ def plan_visibility(
     return VisiblePlan(shown=shown, render_roots=roots)
 
 
+def level_rungs(name: str, kids: dict[str, list[str]]) -> list[bool]:
+    """Which of the four ladder rungs ``[envelope, interfaces, refined,
+    realized]`` render ``name``'s subtree differently from the next-
+    shallower rung when ``name`` ALONE is overridden (the ladder re-roots
+    at the override, so ``name`` sits at depth 0). The per-block chip
+    draws a letter where True and a dash where False (td458168: the
+    shallowest member of an identical run keeps its letter).
+
+    Closed form over :func:`plan_visibility`'s shape/box plan: envelope
+    is always lettered; interfaces differs iff ``name`` has children
+    (a childless node is a shape at any cutoff); refined differs from
+    interfaces iff some child has children of its own; realized never
+    differs in 3D (it only changes the 2D SVG's realization outline)."""
+    children = kids.get(name, [])
+    return [
+        True,
+        bool(children),
+        any(kids.get(k) for k in children),
+        False,
+    ]
+
+
 def _descendants(name: str, kids: dict[str, list[str]]) -> list[str]:
     out: list[str] = []
     seen: set[str] = {name}

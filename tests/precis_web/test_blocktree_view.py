@@ -785,6 +785,54 @@ def test_scene3d_carries_topology_nodes(blocktree_client, runtime_with_store) ->
     assert "envelope: cyl:r0.02h0.05" in nodes["hub"]["detail"]
 
 
+def test_scene3d_nodes_carry_level_rungs_and_override(
+    blocktree_client, runtime_with_store
+) -> None:
+    """The per-block level chip's datum: ``level_rungs`` per node, the
+    block's own override (or None), and the ambient level."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?overrides=fork:interfaces")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["level"] == "refined"
+    nodes = {n["name"]: n for n in body["nodes"]}
+    assert nodes["hub"]["level_rungs"] == [True, False, False, False]
+    assert nodes["fork_arm"]["level_rungs"] == [True, True, False, False]
+    assert nodes["fork"]["level_rungs"] == [True, True, True, False]
+    assert nodes["fork"]["level_override"] == "interfaces"
+    assert nodes["hub"]["level_override"] is None
+    # fork is a shape with a collapsed child under its own interfaces
+    # override; fork_arm is a box (envelope relative to itself).
+    assert nodes["fork"]["level_active"] == "interfaces"
+    assert nodes["fork_arm"]["level_active"] == "envelope"
+    assert nodes["hub"]["level_active"] == "refined"
+
+
+def test_scene3d_level_active_is_relative_to_the_plan(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web/scene3d.json?level=interfaces")
+    nodes = {n["name"]: n for n in r.json()["nodes"]}
+    assert nodes["fork"]["level_active"] == "interfaces"
+    assert nodes["fork_arm"]["level_active"] == "envelope"
+    r = blocktree_client.get(
+        "/se/unicycle_web/scene3d.json?level=interfaces&overrides=fork_arm:refined"
+    )
+    nodes = {n["name"]: n for n in r.json()["nodes"]}
+    assert nodes["fork_arm"]["level_active"] == "refined"
+    assert nodes["fork_arm"]["level_override"] == "refined"
+
+
+def test_se_view3d_keeps_hidden_overrides_input_as_chip_state_carrier(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert 'id="bt3d-overrides"' in r.text
+    assert "<div hidden>" in r.text
+
+
 def test_scene3d_nodes_follow_the_abstraction_ladder(
     blocktree_client, runtime_with_store
 ) -> None:

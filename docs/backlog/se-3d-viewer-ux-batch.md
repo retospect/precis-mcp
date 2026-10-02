@@ -20,52 +20,17 @@ Owner anchors: `src/precis_web/templates/blocktree/detail3d.html.j2`, `src/preci
 
 - [ ] **Stop full-page reloading for `level` / `isolate` / `overrides`.** These are query-string params today, so changing the abstraction level or isolating a subtree reloads the whole page and loses camera state. They should refetch the scene and re-render in place.
 
-- [x] **Per-block abstraction level gets an inline segmented chip.** DECIDED (Reto, 2026-09-29). Chosen over a per-row dropdown and a click-to-cycle column, because availability and the current level are both readable at a glance with no interaction. Costs horizontal tree space. Approved mockup:
-
-```
-shape edge  name                level
-
- ●    ○    unicycle            [E·I·R·z]
-                                     ▔▔
- ●    ○      fork               [E·I·R·z]
-                                 ▔▔
- ●    ○      crown              [E·I·—·—]
-                                   ▔▔
- ●    ○      flange_bolt_left   [—·—·R·z]
-                                     ▔▔
-
- E envelope  I interfaces  R refined  z realized
- —  level not available for this block
- ▔  currently active
-```
-
-RULING (Reto, 2026-09-29) on what `—` means, asked because the mockup
-admits two readings: a rung is `—` when it would render that block
-IDENTICALLY to its neighbour rung — clicking it changes nothing visible.
-NOT "the block is invisible at that level". So a childless leaf carrying
-no realization record shows `[E·I·R·—]`: R and z are the same picture for
-it. This is the per-block datum `scene3d.json` has to start carrying.
-
-RESOLVED (Reto, 2026-09-30, td458168) — the contradiction above is
-settled, both halves, and the item is buildable.
-
-The rule wins; the worked example is wrong. A childless leaf renders
-identically at `envelope` and at `interfaces` (`plan_visibility` gives any
-childless node "shape" whatever the cutoff), so it dashes one of them —
-`[E·I·R·—]` in the mockup above is NOT what such a leaf should show.
-
-When a run of rungs is one picture, the **shallowest** member keeps its
-letter and the rest dash: it is the cheapest rung that produces that
-picture, so the letter marks what you would actually click. The mockup's
-`flange_bolt_left [—·—·R·z]` (deepest kept) is the inconsistent one;
-`crown [E·I·—·—]` is right.
-
-Consequence for the payload: the per-block datum `scene3d.json` carries is
-which rungs DIFFER from the next-shallower one — not which rungs "exist".
-The chip renders a letter at the shallowest member of each identical run
-and a dash everywhere else, which falls straight out of that datum.
-
-Note this is largely a FRONT END for an existing capability: the `overrides` query param already applies per-block level overrides server-side (see `plan_visibility` in `src/precis_web/blocktree_svg.py`, called from `_build_scene3d`). The genuinely new data needed is, per block, WHICH levels actually exist — that must be added to the `scene3d.json` payload. The raw `overrides` text box is replaced by this chip.
+- [x] **Per-block abstraction level chip — BUILT 2026-10-02.** Rule and
+  payload in `blocktree_svg.level_rungs` / `blocktree_3d._level_active`
+  (td458168: a rung dashes when it draws the block like the next-shallower
+  one; the shallowest member of a run keeps its letter; the active mark is
+  the rung the block is drawn at relative to itself). The tree now opens
+  fully (`collapse: 2`) so every block row carries its chip; the overrides
+  text box is hidden and only carries state. Browser-checked by
+  `viewer_check.py probe` (`chip_*`). Open: z is a dash on every block in 3D
+  (realized draws like refined there) — Reto's call in review item
+  se-3d-viewer-2; and whether the 220 px tree is wide enough for chip plus
+  label (his look).
 
 - [ ] **A colour-channel selector.** Colour blocks by material, by process, by finding severity, or by change-vs-previous-revision, rather than one fixed scheme.
 

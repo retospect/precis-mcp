@@ -308,6 +308,95 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level)
         )
 
+        # Per-block level chip, ambient now `interfaces`. Two witnesses,
+        # because they fail independently (module docstring): the TREE for
+        # a collapsed block opened through its I chip — on the unicycle a
+        # crank, whose one ~5 mm bolt moves no canvas pixel (measured n=0)
+        # — and the CANVAS for the root collapsed through its E chip. Each
+        # active chip is then clicked again, which drops the override.
+        scene = page.evaluate(
+            "(u) => fetch(u).then(r => r.json())",
+            f"{base_url}/se/{slug}/scene3d.json?level=interfaces",
+        )
+        boxed = next(
+            (n for n in scene["nodes"] if n["kind"] == "box" and n["level_rungs"][1]),
+            None,
+        )
+        root = next(
+            (
+                n
+                for n in scene["nodes"]
+                if n["level_rungs"][1]
+                and n["level_active"] != "envelope"
+                and not any(m["id"] == n["parent"] for m in scene["nodes"])
+            ),
+            None,
+        )
+        row_count = "() => document.querySelectorAll('.tv-tree-node').length"
+
+        def click_chip(block: str, rung: str) -> None:
+            page.evaluate("() => { window.__busySeen = false; }")
+            page.locator(
+                f'.bt3d-chip[data-block="{block}"][data-rung="{rung}"]'
+            ).click()
+            page.wait_for_function(
+                "() => window.__busySeen"
+                " && document.getElementById('bt3d-busy').hidden",
+                timeout=int(WAIT_S * 1000),
+            )
+
+        if boxed is None or root is None:
+            checks.append(
+                Check(
+                    "chip_opens_block",
+                    False,
+                    {"error": "no collapsed I-lettered block or open root"},
+                )
+            )
+        else:
+            rows_before = page.evaluate(row_count)
+            click_chip(boxed["name"], "interfaces")
+            rows_after = page.evaluate(row_count)
+            checks.append(
+                Check(
+                    "chip_opens_block",
+                    rows_after > rows_before,
+                    {
+                        "block": boxed["name"],
+                        "rows_before": rows_before,
+                        "rows_after": rows_after,
+                    },
+                )
+            )
+            click_chip(boxed["name"], "interfaces")
+            rows_cleared = page.evaluate(row_count)
+            checks.append(
+                Check(
+                    "chip_clear_restores_rows",
+                    rows_cleared == rows_before,
+                    {"rows_before": rows_before, "rows_cleared": rows_cleared},
+                )
+            )
+            open_shot = settle("08b_root_open")
+            click_chip(root["name"], "envelope")
+            collapsed = _diff(open_shot, settle("08c_root_envelope"))
+            checks.append(
+                Check(
+                    "chip_collapse_redraws",
+                    collapsed["n"] >= CHANGED_MIN,
+                    {**collapsed, "block": root["name"]},
+                )
+            )
+            click_chip(root["name"], "envelope")
+            reopened = _diff(open_shot, settle("08d_root_reopened"))
+            checks.append(
+                Check(
+                    "chip_clear_restores_canvas",
+                    reopened["n"] <= RESTORED_MAX,
+                    reopened,
+                )
+            )
+
         # View export: the PNG is the canvas as on screen, scale bar
         # included (the vendored filter dropdown is page chrome, not in
         # it — hence a small tolerance, not zero); the SVG's scale-bar

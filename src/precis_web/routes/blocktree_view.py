@@ -1141,6 +1141,7 @@ async def _scene3d_response(
                 for c in scene.connections
             ],
             "explode": scene.explode,
+            "level": level,
             # The topology cloud's own input (slice 1): the visible blocks,
             # parent-linked, with whatever detail the tree declared.
             "nodes": [
@@ -1151,6 +1152,12 @@ async def _scene3d_response(
                     "parent": n.parent,
                     "kind": n.kind,
                     "detail": n.detail,
+                    # Per-block level chip: which rungs differ, and this
+                    # block's own override (None = follows the ambient
+                    # ``level`` below).
+                    "level_rungs": n.level_rungs,
+                    "level_override": level_overrides.get(n.name),
+                    "level_active": n.level_active,
                 }
                 for n in scene.nodes
             ],

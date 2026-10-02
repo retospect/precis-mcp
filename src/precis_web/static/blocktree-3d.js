@@ -1422,7 +1422,12 @@ export async function blocktreeViewer3D({
     defaultOpacity: 0.85,
     normalLen: 0,
   };
-  const viewerOptions = { up: "Z" };
+  // collapse: 2 (EXPANDED) renders every block row up front; the vendored
+  // default (COLLAPSED) shows only the root row, leaving the per-block
+  // level chips nothing to attach to. Not -1 (LEAVES): with the root chipped
+  // to `envelope` the whole design is one leaf, LEAVES folds its group, and
+  // the chip that would undo it disappears.
+  const viewerOptions = { up: "Z", collapse: 2 };
 
   let viewer;
   const highlighted = new Map(); // path -> original colour, for revert
@@ -2385,6 +2390,9 @@ export async function blocktreeViewer3D({
     for (const el of [levelSelect, overridesInput]) {
       if (el) el.disabled = busy;
     }
+    // The per-block chips start the same refetch, so they go dark with
+    // the two controls above.
+    for (const el of document.querySelectorAll(".bt3d-chip")) el.disabled = busy;
     if (!busy && busyFocus) {
       const { el, start, end } = busyFocus;
       busyFocus = null;
@@ -2400,6 +2408,110 @@ export async function blocktreeViewer3D({
       }
     }
   }
+
+  // ── per-block level chip ─────────────────────────────────────────────
+  //
+  // `[E·I·R·z]` appended to each vendored tree row (docs/backlog/
+  // se-3d-viewer-ux-batch.md, td458168). `node.level_rungs[i]` says rung i
+  // renders the block differently from the next-shallower one, so a
+  // lettered rung is one you can usefully click and a dash is a rung that
+  // would draw the same picture. The block's own override rides in the
+  // (hidden) `#bt3d-overrides` input, which stays the state carrier for
+  // `loadScene`.
+  const CHIP_RUNGS = [
+    ["envelope", "E"],
+    ["interfaces", "I"],
+    ["refined", "R"],
+    ["realized", "z"],
+  ];
+
+  //: The lettered rung that draws `level` for this block: the nearest
+  //: lettered rung at or above it (the shallowest member of its run).
+  function chipMarkRung(rungs, level) {
+    let i = CHIP_RUNGS.findIndex(([name]) => name === level);
+    if (i < 0) return -1;
+    for (; i >= 0; i--) if (rungs[i]) return i;
+    return -1;
+  }
+
+  function parseOverridesText(raw) {
+    const out = {};
+    for (const seg of raw.split(",")) {
+      const k = seg.lastIndexOf(":");
+      if (k <= 0) continue;
+      const name = seg.slice(0, k).trim();
+      const lvl = seg.slice(k + 1).trim();
+      if (name && lvl) out[name] = lvl;
+    }
+    return out;
+  }
+
+  function onChipClick(node, rungIdx) {
+    if (!overridesInput || reloading) return;
+    const map = parseOverridesText(overridesInput.value);
+    if (rungIdx === chipMarkRung(node.level_rungs, node.level_active)) {
+      // The active rung: drops the block's override; a no-op without one.
+      if (!(node.name in map)) return;
+      delete map[node.name];
+    } else {
+      map[node.name] = CHIP_RUNGS[rungIdx][0];
+    }
+    overridesInput.value = Object.entries(map)
+      .map(([n, l]) => `${n}:${l}`)
+      .join(", ");
+    loadScene();
+  }
+
+  function buildChip(node) {
+    const active = chipMarkRung(node.level_rungs, node.level_active);
+    const busy = busyEl ? !busyEl.hidden : false;
+    const chip = document.createElement("span");
+    chip.className = "bt3d-chip-group";
+    chip.dataset.block = node.name;
+    CHIP_RUNGS.forEach(([level, letter], i) => {
+      if (i > 0) chip.appendChild(document.createTextNode("·"));
+      if (!node.level_rungs[i]) {
+        const dash = document.createElement("span");
+        dash.className = "bt3d-chip-dash";
+        dash.textContent = "—";
+        chip.appendChild(dash);
+        return;
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "bt3d-chip" + (i === active ? " bt3d-chip-active" : "");
+      btn.dataset.block = node.name;
+      btn.dataset.rung = level;
+      btn.title = `${level}: show ${node.name} at this level`;
+      btn.textContent = letter;
+      btn.disabled = busy;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onChipClick(node, i);
+      });
+      chip.appendChild(btn);
+    });
+    return chip;
+  }
+
+  //: Idempotent: only rows without a chip get one, so the observer below
+  //: can call it on every tree mutation (including its own insertions).
+  function ensureChips() {
+    const byPath = new Map();
+    for (const n of data.nodes || []) {
+      if (Array.isArray(n.level_rungs)) byPath.set(n.path, n);
+    }
+    if (!byPath.size) return;
+    for (const row of viewerEl.querySelectorAll(".tv-tree-node[data-path]")) {
+      const node = byPath.get(row.getAttribute("data-path"));
+      const content = row.querySelector(":scope > .tv-node-content");
+      if (!node || !content || content.querySelector(".bt3d-chip-group")) continue;
+      content.appendChild(buildChip(node));
+    }
+  }
+
+  new MutationObserver(ensureChips).observe(viewerEl, { childList: true, subtree: true });
+  ensureChips();
 
   async function loadScene() {
     if (reloading) return;

@@ -24,13 +24,15 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-10-02 (strain layers built and verified on prod's
-`hexa-smooth-drum-v2` data; the nightly viewer check's first scheduled run
-went green, so its item shrank to the atomic-fixture residual)
+**Last reviewed:** 2026-10-02 (round 1 deployed 567f207f: strain layers,
+atomic nightly check and Reto's xyz/pdb export are live and agent-verified
+on prod data; only Reto's own look is left)
 **Worktree:** `se-3d-viewer`
 
-**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 2
-(level chips) is the next item an agent can start without anyone. The nightly viewer check covers the atomic overlay
+**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. The level chips shipped in round 2;
+of what is left, Do-next 1 needs a reproducer found first and 2
+(bidirectional hover) needs a design, so the next build is 3 (the
+fastener insertion DRC). The nightly viewer check covers the atomic overlay
 since 2026-10-02 (first dispatched run green, 11 + 16 checks); atom pick
 and hover are its remaining blind spot. Two traps for whoever picks this
 up:
@@ -65,17 +67,25 @@ up:
      design (prod `dogfood-fold-3` is bound, so it renders there).
    Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
    no opaque-while-tinted change.
-   Added 2026-10-02, once deployed: the strain layers on
+   Deployed 2026-10-02 (567f207f) and agent-verified on prod data the
+   same day — `viewer_check.py strain` 17/17 on `hexa-smooth-drum-v2`,
+   `atoms.pdb` of `dogfood-fold-3` carries DA/DC/DG residues (248 atoms,
+   = atomic3d.json): the strain layers on
    `hexa-smooth-drum-v2` — bond strain (green, on the bonds; a bond over
    threshold is drawn twice as thick, or it hides between its atoms),
    angle strain (orange, on the atoms, θp ↔ 120° switch), and the
    deviation threshold slider. Defaults colour the top 5% (measured
    457/9135 bonds, 302/6024 atoms), and all 60 pentagon atoms clear the
    default θp threshold of 4.03°.
-   Also once deployed (Reto's 2026-10-02 ask): `xyz` / `pdb` beside
+   And (Reto's 2026-10-02 ask): `xyz` / `pdb` beside
    `png` / `svg` on a structure-bound design (`/se/{slug}/atoms.{fmt}`,
    every bound block's atoms in the design frame, Å), and xyz · pdb
    (non-periodic) or xyz · cif (periodic) on `/structure/{slug}`.
+   Round 2 (once deployed): the per-block level chip `[E·I·R·z]` on every
+   tree row — click a letter to open or collapse that block alone, click
+   the underlined one again to undo. z is a dash everywhere in 3D; whether
+   to drop it is review item se-3d-viewer-2. The chips are small at the
+   tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
 1. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
@@ -84,25 +94,21 @@ up:
    No reproducer yet: gr458329 looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-2. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
-   server-side: scene3d.json must carry, per block, which rungs differ.
-   Rule settled (td458168): the literal rule wins over its worked example,
-   and the shallowest member of an identical run keeps its letter.
-3. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+2. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-4. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+3. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-5. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+4. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by 4 (ruling 2 intends the same per-tool-class
+   Blocked by 3 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon

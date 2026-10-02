@@ -17,6 +17,7 @@ from precis_web.blocktree_svg import (
     fill_fraction_line,
     force_colour,
     group_of,
+    level_rungs,
     part_colours,
     plan_visibility,
     render_svg,
@@ -364,3 +365,12 @@ def test_render_svg_contains_header_and_polygons_and_member_lines() -> None:
     assert "<title>hub</title>" in svg
     assert "hub.pin—rim.pin" in svg
     assert "#16a34a" in svg
+
+
+def test_level_rungs_leaf_parent_and_grandparent() -> None:
+    """td458168: a rung is lettered iff it renders the block's subtree
+    differently from the next-shallower rung (block alone overridden)."""
+    kids = {"gp": ["p"], "p": ["leaf"]}
+    assert level_rungs("leaf", kids) == [True, False, False, False]
+    assert level_rungs("p", kids) == [True, True, False, False]
+    assert level_rungs("gp", kids) == [True, True, True, False]
