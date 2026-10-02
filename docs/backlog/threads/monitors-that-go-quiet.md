@@ -19,7 +19,7 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
@@ -43,19 +43,7 @@ gr346534, soft-deleted)
    That is launchd for the python, ssh for the Remote Login setting, terminal
    for the `.app`, and container processes don't attest. Reto's open call on
    the reconcile-sweep design (gripe_180306) is td461151.
-2. **Finish closing the fix_gripe lane.** On 2026-10-02 the session precis
-   MCP disconnected about 22:05Z. `scripts/prod-precis` writes failed with
-   `ReadOnlySqlTransaction`, while `scripts/prod-psql` read
-   `default_transaction_read_only` as `on` at 22:08Z and `off` at 22:16Z,
-   so the two paths differ, cause unknown. The `backlog_groom` prio-0 write
-   had landed before that. Three handler writes are still owed: td461210 as `won't-do` (evidence in its comment draft and
-   reviews/monitors-that-go-quiet.md §2), the 33 open groomer todos under
-   td375465 as `won't-do`, and cancelling queued fix_gripe jobs
-   462123–462125. Then confirm no fix_gripe job is claimed. Also owed: a
-   gripe on the `guard-prod-psql` hook, which blocks a fleet pane on ruled
-   reversible config writes. Reto asked for it 2026-10-02, and its text is
-   in `~/.claude/projects/-Users-reto-precis-mcp/mtgq-pending-gripe-guard-prod-psql.md`.
-3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
+2. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
    `worktree-agent-a8ce270a39be79437` @ `2443c04d` adds `*Hung`
@@ -65,12 +53,12 @@ gr346534, soft-deleted)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-4. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
+3. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
    to the job meta and one `llm_call_log` row (`source='diagnose_gripe'`).
    Reto turned the automatic `diagnose_scan` off 2026-10-02, so rows now come
    only from hand-submitted jobs. fix_gripe has the same gap, but its lane is
    off.
-5. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+4. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
@@ -118,7 +106,12 @@ gr346534, soft-deleted)
   on Reto's say: `precis service prio melchior backlog_groom 5`. Code and the
   job type stay. `diagnose_scan` was switched off too (melchior prio 5 to 0, 2026-10-02 22:37Z, Reto via review item monitors-that-go-quiet-2; re-arm `precis service prio melchior diagnose_scan 5`). Threaded sessions now fix their
   own gripes. Any gripe from the 09-30 reset still needs "is the fix already
-  in main?" asked before it is ranked.
+  in main?" asked before it is ranked. Residue closed on prod 2026-10-02
+  about 23:10Z: td461210 `won't-do` (its 7 leaves' gripes were all fixed on main;
+  evidence in its body), the 35 open groomer todos under td375465
+  `won't-do`, jobs 462123–462125 already `cancelled`, and no fix_gripe job
+  queued or claimed. The guard-prod-psql hook that stopped the pane on the
+  ruled switch writes is gr462731.
 
 - **gr245505** — verified on prod 2026-10-02. After the 81154bc0 deploy
   (cut 2026-10-01 23:14Z), the 2 structural reviews took 4 and 11 turns
