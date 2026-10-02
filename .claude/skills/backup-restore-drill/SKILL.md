@@ -90,22 +90,46 @@ Every few drills, restore the B2 copy instead.
    -v <scratch>/dump:/dump:ro pgvector/pgvector:pg17` (must be PG 17 and a
    pgvector ≥ prod's version). Bind no host port — use `docker exec`.
 4. **Restore:** `createdb precis_restore`; `pg_restore -j 8 --no-owner
-   --no-privileges -d precis_restore /dump/<dumpdir>`, under `time`. Errors
-   other than missing roles are findings; keep the full log.
+   --no-privileges -d precis_restore /dump`, under `time` (`/dump` is the dump
+   directory itself when mounted as in step 3 — no subdirectory). Authenticate
+   with `docker exec -u postgres`. Errors other than missing roles are
+   findings; keep the full log. **Budget ~110 min** (measured 2026-10-01) and
+   expect one `CREATE INDEX` to dominate: the HNSW build on ~3.8 M vectors
+   took 1h55m of it at the default 64 MB `maintenance_work_mem`. Raising
+   `maintenance_work_mem` to several GB and `max_parallel_maintenance_workers`
+   for the restore session is the obvious lever — untested, so measure it
+   rather than assuming.
 5. **Verify:** extensions and versions match prod; the counts from step 1
-   (restore ≤ prod, within a day's growth); the newest migration equals the one
-   prod had at dump time; a vector query runs — `select id from
-   chunk_embeddings order by embedding <-> (select embedding from
-   chunk_embeddings limit 1) limit 5`; `vacuum analyze` completes.
+   (restore ≤ prod, within a day's growth); the newest migration **per plugin**
+   matches what prod had *at dump time*, not now — a dump taken 03:30Z predates
+   migrations applied later that day, so check `_migrations` on prod with
+   `applied_at` before calling a difference a fault; `vacuum analyze`
+   completes; and a vector query uses the index:
+   `select chunk_id from chunk_embeddings order by vector <=> (select vector
+   from chunk_embeddings where status='ok' and vector is not null limit 1)
+   limit 5`. The columns are `chunk_id, embedder, vector, status` — there is no
+   `id` or `embedding`. The HNSW index is **cosine** (`vector_cosine_ops`,
+   partial on `status='ok' AND vector IS NOT NULL`), so `<=>` hits the index
+   (~4 ms) while `<->` sequential-scans (~8 s) and proves nothing about it.
 6. **Record** in `docs/runbooks/backup-restore-drill.md` §Drill log: date,
    copy used, dump timestamp, transfer time, restore time, verify result,
    anything that broke. A failure is a gripe at `prio=1`.
-7. **Tear down:** `docker rm -f restore-drill`, `rm -rf` the scratch dir, and
+7. **Tear down:** `docker rm -f restore-drill`, then delete the pgdata dir and
    confirm the space is back (`df -h`). The restored DB holds prod data; it
-   must not outlive the drill.
+   must not outlive the drill. **A plain `rm -rf` fails**: pgdata ends up owned
+   by uid 999 mode 700, so even `du` is denied to `deploy`. Delete it from
+   inside the image instead —
+   `docker run --rm --entrypoint find -v <pgdata>:/p pgvector/pgvector:pg17 /p
+   -mindepth 1 -delete`, then `rmdir` — or use `sudo` where available. Keep a
+   pre-staged *dump* directory if one exists: it is read-only throughout and
+   costs an hour to re-copy.
 
 ## What counts as a pass
 
 Restore exits clean (role-ownership noise aside), every check in step 5
 holds, and the total time from "start copy" to "verified" is written down.
 That time is the recovery time objective we actually have.
+
+**Last drill: 2026-10-01, PASS.** ~65 min to stage the dump plus 110 min to
+restore — about 3 h end to end, with the HNSW build the single biggest term.
+Numbers and the standing blockers: `docs/runbooks/backup-restore-drill.md`.
