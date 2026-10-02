@@ -53,6 +53,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # in-text \cite{...} mark (render_body's library_links). Default
         # on. Independent of doi_links.
         "library_links": {"type": "boolean"},
+        # biblatex bibliography style (precis.export.latex._BIB_STYLES:
+        # numeric-comp | chem-rsc/rsc | chem-acs/acs | nature). Absent →
+        # the draft's meta.workspace.style, else numeric-comp.
+        "bib_style": {"type": "string"},
     },
     "required": ["draft"],
     "additionalProperties": False,
@@ -259,6 +263,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             retraction_override=retraction_override,
             doi_links=bool(params.get("doi_links", True)),
             library_links=bool(params.get("library_links", True)),
+            bib_style=str(params.get("bib_style") or "").strip() or None,
         )
     except Exception as exc:
         log.warning("draft_export: render failed for %s", slug, exc_info=True)

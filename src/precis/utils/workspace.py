@@ -25,7 +25,7 @@ column storage)::
         path="projects/nanotrans_auto",   # relative to PRECIS_ROOT
         format="tex",                     # "tex" or "md"
         entrypoint="main.tex",            # root document name
-        style="ieee-numeric",             # citation style (informational)
+        style="chem-rsc",                 # biblatex style (draft export reads it)
     )
 
 The :func:`ensure_initialized` helper does **lazy** init: when the MCP
@@ -66,7 +66,7 @@ class Workspace:
     path: str  # relative to PRECIS_ROOT
     format: str  # "tex" | "md"
     entrypoint: str  # e.g. "main.tex" or "main.md"
-    style: str = ""  # citation style; informational
+    style: str = ""  # biblatex style; draft export reads it (latex.resolve_bib_style)
     # Project-level standing guidance ("project thoughts"): voice,
     # scope, constraints, what NOT to do. Set once on the project root;
     # cascades to every descendant via the put-time inheritance, and the

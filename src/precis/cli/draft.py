@@ -84,6 +84,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "Independent of --no-doi-links.",
     )
     ex.add_argument(
+        "--bib-style",
+        default=None,
+        help="biblatex bibliography style: numeric-comp (default), "
+        "chem-rsc (alias rsc), chem-acs (alias acs) or nature. Overrides "
+        "the draft's meta.workspace.style.",
+    )
+    ex.add_argument(
         "--database-url",
         default=None,
         help="Override PRECIS_DATABASE_URL.",
@@ -291,6 +298,7 @@ def _run_export(args: argparse.Namespace) -> None:
             include_sources=args.include_sources,
             doi_links=not args.no_doi_links,
             library_links=not args.no_library_links,
+            bib_style=args.bib_style,
         )
     finally:
         store.close()

@@ -32,10 +32,14 @@ What lands where:
   Meta-tab correction is never clobbered (and needs no ``verified``
   special case — there is nothing to protect in a blank).
 * **``meta.entry_type`` / ``meta.journal`` / ``meta.issn`` /
-  ``meta.abstract``** — filled only when the ref doesn't already carry
-  one (never clobbers a better existing value, or a human edit made via
-  the web Meta tab's entry_type form on a paper this pass hasn't
-  visited yet).
+  ``meta.abstract`` / ``meta.volume`` / ``meta.number`` / ``meta.pages``**
+  — filled only when the ref doesn't already carry one (never clobbers a
+  better existing value, or a human edit made via the web Meta tab's
+  entry_type form on a paper this pass hasn't visited yet). ``number`` is
+  Crossref's ``issue``; ``pages`` is Crossref's ``page`` verbatim. These
+  three are what the LaTeX ``.bib`` / EndNote exporters read. Papers
+  visited before these fields existed get them via ``precis
+  enrich-rearm`` (clears the visited stamp).
 * **``ref_identifiers``** — OpenAlex's id cluster (``openalex``,
   ``pubmed``, ``mag``) is pulled *only* when a DOI resolved via Crossref
   (an OpenAlex-only fetch adds identifiers, nothing else in scope here)
@@ -452,6 +456,16 @@ def enrich_paper(
             meta_patch["issn"] = norm["issn"]
         if norm.get("abstract") and not current_meta.get("abstract"):
             meta_patch["abstract"] = norm["abstract"]
+        # Bibliographic locators for the exporters' bib entries (the keys
+        # ``export/latex.py::build_bib`` reads): Crossref ``issue`` lands as
+        # ``meta.number``. Fill-blanks-only, like journal/issn above.
+        for meta_key, norm_key in (
+            ("volume", "volume"),
+            ("number", "issue"),
+            ("pages", "pages"),
+        ):
+            if norm.get(norm_key) and not current_meta.get(meta_key):
+                meta_patch[meta_key] = norm[norm_key]
 
         retraction = _extract_retraction(msg)
         if retraction is not None:

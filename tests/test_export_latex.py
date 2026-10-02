@@ -1514,6 +1514,65 @@ def test_assemble_document_injects_remarkable_geometry() -> None:
     assert "paperwidth=157.6mm" not in plain
 
 
+def test_assemble_document_default_bib_style_is_byte_identical() -> None:
+    """No ``bib_style`` → the checked-in preamble verbatim (numeric-comp)."""
+    out = latex.assemble_document(
+        title="T", author_block=r"\author{x}", body="hi", acronyms=""
+    )
+    assert latex._template_text("preamble.tex").rstrip() in out
+    assert "style=numeric-comp,sorting=none" in out
+
+
+def test_assemble_document_bib_style_substitutes_only_the_style_token() -> None:
+    out = latex.assemble_document(
+        title="T",
+        author_block=r"\author{x}",
+        body="hi",
+        acronyms="",
+        bib_style="chem-rsc",
+    )
+    assert r"\usepackage[backend=biber,style=chem-rsc,sorting=none]{biblatex}" in out
+    assert "numeric-comp" not in out
+
+
+def test_assemble_document_unvetted_bib_style_never_reaches_latex() -> None:
+    out = latex.assemble_document(
+        title="T",
+        author_block=r"\author{x}",
+        body="hi",
+        acronyms="",
+        bib_style="x]{evil}\\input{/etc/passwd}",
+    )
+    assert "evil" not in out and "style=numeric-comp" in out
+
+
+@pytest.mark.parametrize(
+    ("asked", "canonical"),
+    [
+        (None, "numeric-comp"),
+        ("", "numeric-comp"),
+        ("  ", "numeric-comp"),
+        ("numeric-comp", "numeric-comp"),
+        ("chem-rsc", "chem-rsc"),
+        ("rsc", "chem-rsc"),
+        ("RSC", "chem-rsc"),
+        ("chem-acs", "chem-acs"),
+        ("acs", "chem-acs"),
+        ("nature", "nature"),
+    ],
+)
+def test_resolve_bib_style_allowlist(asked, canonical) -> None:
+    assert latex.resolve_bib_style(asked) == (canonical, None)
+
+
+def test_resolve_bib_style_unknown_warns_and_keeps_default() -> None:
+    style, warning = latex.resolve_bib_style("ieee")
+    assert style == "numeric-comp"
+    assert warning is not None
+    assert "'ieee'" in warning and "not supported" in warning
+    assert "chem-rsc" in warning  # lists what is supported
+
+
 class _BibStore:
     """Minimal store for :func:`latex.build_bib`: resolves a slug to a
     paper / patent / datasheet ref and carries no DOI/arXiv aliases."""
@@ -1785,6 +1844,83 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
     assert r"\printglossaries" in main and r"\printbibliography" in main
     # the Glossary heading + term chunk are NOT rendered as body sections
     assert r"\section{Glossary}" not in main
+
+
+def _bib_style_draft(hub):
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="bs", title="Style Test", project=proj)
+    return store, store.get_ref(kind="draft", id="bs")
+
+
+def test_export_draft_default_bib_style_unchanged(hub, tmp_path) -> None:
+    store, ref = _bib_style_draft(hub)
+    result = latex.export_draft(store, ref, target_dir=tmp_path / "out")
+    main = result.main_tex.read_text(encoding="utf-8")
+    pre = result.preamble.read_text(encoding="utf-8")
+    assert pre == latex._template_text("preamble.tex")
+    assert "style=numeric-comp,sorting=none" in main
+    assert not any("bib style" in w for w in result.warnings)
+
+
+def test_export_draft_explicit_bib_style_lands_in_main_and_preamble(
+    hub, tmp_path
+) -> None:
+    store, ref = _bib_style_draft(hub)
+    result = latex.export_draft(
+        store, ref, target_dir=tmp_path / "out", bib_style="chem-rsc"
+    )
+    main = result.main_tex.read_text(encoding="utf-8")
+    pre = result.preamble.read_text(encoding="utf-8")
+    for text in (main, pre):
+        assert "backend=biber,style=chem-rsc,sorting=none" in text
+        assert "numeric-comp" not in text
+    assert not any("bib style" in w for w in result.warnings)
+
+
+def test_export_draft_bib_style_alias(hub, tmp_path) -> None:
+    store, ref = _bib_style_draft(hub)
+    result = latex.export_draft(
+        store, ref, target_dir=tmp_path / "out", bib_style="rsc"
+    )
+    assert "style=chem-rsc," in result.main_tex.read_text(encoding="utf-8")
+
+
+def test_export_draft_bib_style_falls_back_to_workspace_style(hub, tmp_path) -> None:
+    import dataclasses
+
+    store, ref = _bib_style_draft(hub)
+    ref = dataclasses.replace(
+        ref,
+        meta={
+            **(ref.meta or {}),
+            "workspace": {
+                "path": "p",
+                "format": "tex",
+                "entrypoint": "main.tex",
+                "style": "nature",
+            },
+        },
+    )
+    result = latex.export_draft(store, ref, target_dir=tmp_path / "ws")
+    assert "style=nature," in result.main_tex.read_text(encoding="utf-8")
+    # explicit argument beats the workspace
+    result = latex.export_draft(
+        store, ref, target_dir=tmp_path / "ws2", bib_style="chem-acs"
+    )
+    assert "style=chem-acs," in result.main_tex.read_text(encoding="utf-8")
+
+
+def test_export_draft_unknown_bib_style_warns_and_keeps_default(hub, tmp_path) -> None:
+    store, ref = _bib_style_draft(hub)
+    result = latex.export_draft(
+        store, ref, target_dir=tmp_path / "out", bib_style="ieee"
+    )
+    assert "style=numeric-comp," in result.main_tex.read_text(encoding="utf-8")
+    assert any("bib style 'ieee' not supported" in w for w in result.warnings)
 
 
 def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:

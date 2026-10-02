@@ -125,3 +125,28 @@ class TestCrossrefLookup:
 
         lookup_crossref("10.1038/test", mailto="test@example.com")
         mock_cr_cls.assert_called_once_with(mailto="test@example.com")
+
+
+class TestCrossrefNormalizeLocators:
+    def test_volume_issue_pages_extracted_stripped(self):
+        msg = {
+            "title": ["A Paper"],
+            "volume": " 15 ",
+            "issue": "7",
+            "page": "1234-1240",
+        }
+        result = _normalize(msg, "10.1039/test")
+        assert result["volume"] == "15"
+        assert result["issue"] == "7"
+        # kept verbatim as Crossref gives it - no rewriting of the range
+        assert result["pages"] == "1234-1240"
+
+    def test_article_number_page_kept_verbatim(self):
+        result = _normalize({"title": ["A"], "page": "e1234"}, "10.1039/test")
+        assert result["pages"] == "e1234"
+
+    def test_absent_or_blank_locators_are_omitted(self):
+        result = _normalize({"title": ["A"], "volume": "  ", "issue": ""}, "10.1/x")
+        assert "volume" not in result
+        assert "issue" not in result
+        assert "pages" not in result

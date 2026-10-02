@@ -27,42 +27,47 @@ both STATUS:done)
 
 ## Do next
 
-**HELD for Reto's demo (2026-10-02 ~11:55Z)** — no new prod compute until
-the orchestrator lifts it. Open review items nanobuds-paper-7..11
-(citation style + Sharma/source audit, Canatu hubs, scope cite, two
-paragraph eyeballs, pa2615 identifier delete). The per-source citation
-audit needs the draft's rendered refs.bib; the classifier refused a local
-`scripts/prod-precis draft export` (production read), so it waits for
-permission. Resume in this order:
+State 2026-10-02 14:00Z (hold lifted 13:00Z). Review items answered:
+5–13 (13: `report` + `definition` artifact types approved, web sources
+cited by URL + content sha; claims-and-evidence builds them, then this
+thread signs the Canatu hubs fi191169/fi191260, grounded on Canatu's own
+DOI'd SID papers pa689/pa1771). Open: 14 (source audit: remove 20 weak
+edges + pin every hub cite; claims-and-evidence also offered a fallback
+fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
+4cf8b684e (round 1). In this order:
 
-0. **Figures** (Reto, review items nanobuds-paper-5/-6): redraw five as our
-   own, keep five as third-party.
-   - Kept five DONE 2026-10-02 13:10Z: new third-party chunks dc4291497
-     (TEM, was dc3015718), dc4291498 (STM/STS, was dc3015724; the three
-     prose cross-refs repointed), dc4291496 (Raman/ED, was dc3015719),
-     dc4291499 (band structures, Wu Figs 5+6, was dc3015725), dc4291500
-     (transmission, was dc3015728); placeholders retired, hygiene clean.
-     Permission `status: requested`; Reto files RightsLink at submission,
-     and the export keeps refusing them until each is `granted`. Image
-     route: the tool `put` has no `image=`, but
-     `args={'image': b64, 'mime':…, 'origin':…, 'permission':…}` reaches
-     the draft handler; crops + uploader in `nanobud-fidelity/figs/`
-     (crop.py, upload.py).
-   - Redraw: dc3015722 as an `own_graph` replot of the paper's Tables 1–2
-     (pc388398, pc388407: cap1–7 binding −0.158 to −0.476 eV vs sidewall
-     +0.736/+0.685; spin-polarised DFT-D3 formation/dissociation barriers
-     1.92/0.77 sidewall, 1.52/1.46 cap4). A graph figure needs
-     `plots=[dc<table>]`, so it needs a table chunk too. dc3015729 as a 2D
-     sublattice schematic (cases A–D). dc3015720, dc3015723, dc3015730
-     need 3D structures: the C60s in se design `nanobud-review-figs`
-     interpenetrate their hosts (gr459567 gap 3, owned by hexfold-toolkit;
-     measured 0.63–1.16 Å). Do not relax them; wait for the placement fix.
-     Structure → figure has no product path (gr461790); local route =
-     viz3d `stick_scene` → `render_svg` → base64 `image=`.
-   - Reground batches: 461608 done, 461803 was running at the hold; batches
-     3–8 not submitted. Resubmit one at a time with
-     `nanobud-fidelity/chain-batches.sh 461803` (pack under
-     `~/.claude/projects/-Users-reto-precis-mcp/`) once the hold lifts.
+0. **After the round-1 deploy** (two things wait on it):
+   - pa2615: `edit(kind='paper', id='pa2615', year=2007,
+     journal='Nature Nanotechnology')`, then verify `view='bibtex'`. Its
+     wrong doi/paper_id rows are deleted (Reto-approved); citekey `wang22c`
+     and an `openalex` row (likely Wang 2022's) remain — ask before
+     touching them. Nature SI has no DOI of its own; main paper is pa2069.
+   - Regenerate se design `nanobud-review-figs` (hexfold placement fix
+     3aec1f3c2, gr459567 gap 3; old structures 461785–461789), re-measure
+     geom.clash (hexfold measured 0/0/0 on bud22/bud87/gsheet22, 12–16 neck
+     pairs ≥1.49 Å on bud96/gsheet96), render, and file a look-at for Reto
+     BEFORE anything goes into dr173020.
+1. **Figures** (items 5/6): the five kept third-party figures are in
+   (dc4291496–dc4291500, permission `requested`, Reto files RightsLink at
+   submission; image door = `put(args={'image': b64, …})`, scripts in
+   `nanobud-fidelity/figs/`). Own redraws left: dc3015722 as `own_graph`
+   from pc388398/pc388407 (cap1–7 binding −0.158 to −0.476 eV vs sidewall
+   +0.736/+0.685; DFT-D3 barriers 1.92/0.77 sidewall, 1.52/1.46 cap4; needs
+   a table chunk for `plots=`), dc3015729 as a 2D sublattice schematic,
+   and dc3015720/23/30 from the regenerated structures (no
+   structure→figure door, gr461790; local route viz3d `stick_scene` →
+   `render_svg` → `image=`).
+2. **Citations** (item 7): Sharma cut, ASE/pymatgen cited (pa4423,
+   pa1944). Style + volume/pages: per-export `bib_style` (`chem-rsc`) and
+   Crossref volume/issue/pages into paper meta + an `enrich-rearm` CLI
+   (coder branch, to land); then re-arm the ~120 cited papers and export
+   with `bib_style='chem-rsc'`. Source-fit list: audit of the 121-entry
+   refs.bib (`nanobud-fidelity/source-fit.md`) → one review item. Known
+   already: entry `a98` is a reference-list line ("Reichlin … xenon")
+   filed as a paper.
+3. **Reground batches**: 461608, 461803 done; 462063 (batch 3) running;
+   `nanobud-fidelity/chain-batches.sh` feeds 4–8 one at a time (log
+   `chain.log`). After the last: td351821 NEXT (a)–(c).
 
 The items below are all Reto's; each is a `waiting-for:reto` todo under
 td173019.
@@ -80,8 +85,8 @@ td173019.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
    2026-10-01; the auto-mode classifier still blocks the session's direct
    prod-DB script (re-tried 2026-10-01 after Reto's "prod is authorized"),
-   so Reto runs it: script staged at
-   `/tmp/nanobuds-merge-1181-claude.py` on melchior (rehearsal rolls back,
+   so Reto runs it: the script staged at
+   `/tmp/nanobuds-merge-1181-claude.py` on melchior was LOST in the 2026-10-02 11:31Z reboot and needs restaging (rehearsal rolls back,
    `--apply` commits; runs `merge_duplicate`, adds a correct cite_key
    alias beside humphreys99a, sets journal Nature).
 4. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped

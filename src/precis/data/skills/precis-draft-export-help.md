@@ -72,6 +72,11 @@ block under `\maketitle` (ROR hyperlinked). You never write `\cite{}`
 with held originator papers; legacy `[pc<id>]` → a chunk of a held
 paper) or the export marks a stub + warns.
 
+Bibliography style: `bib_style` (job param) / `--bib-style` (CLI) picks the
+biblatex style — `numeric-comp` (default), `chem-rsc` (alias `rsc`),
+`chem-acs` (alias `acs`), `nature`; absent → the draft's
+`meta.workspace.style`; an unsupported value keeps the default and warns.
+
 - **PDF** — deterministic but slow, so it runs as a **job**
   (`put(kind='job', ...)` above), landing the path in
   `job_summary`/`meta.pdf`; no TeX toolchain → a friendly error instead.

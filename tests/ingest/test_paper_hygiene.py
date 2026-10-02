@@ -10,6 +10,7 @@ from precis.ingest.paper_hygiene import (
     heal_drifted_cards,
     is_filename_like_title,
     migrate_dangling_paper_links,
+    requeue_papers_for_enrich,
     requeue_placeholder_title_papers,
 )
 from precis.store import Store
@@ -592,3 +593,106 @@ class TestRequeuePlaceholderTitlePapers:
         self._stub(store, slug="t6", title=PLACEHOLDER_TITLE)
         assert len(requeue_placeholder_title_papers(store, dry_run=False)) == 1
         assert requeue_placeholder_title_papers(store, dry_run=False) == []
+
+
+class TestRequeuePapersForEnrich:
+    """``precis enrich-rearm``: clear the stamp on the NAMED papers only."""
+
+    def _paper(
+        self,
+        store: Store,
+        *,
+        slug: str,
+        doi: str | None = "10.1234/a",
+        stamped: bool = True,
+        kind: str = "paper",
+    ) -> int:
+        meta: dict[str, Any] = (
+            {"authors_resolved_at": "2026-09-01T00:00:00+00:00", "volume": "3"}
+            if stamped
+            else {}
+        )
+        ref = store.insert_ref(kind=kind, slug=slug, title="T", meta=meta)
+        if doi:
+            store.set_ref_identifier(ref.id, "doi", doi, source="manual")
+        return ref.id
+
+    def test_dry_run_selects_without_writing(self, store: Store) -> None:
+        rid = self._paper(store, slug="e1")
+        assert requeue_papers_for_enrich(store, [rid], dry_run=True) == [rid]
+        assert "authors_resolved_at" in (store.fetch_refs_by_ids([rid])[rid].meta or {})
+
+    def test_apply_clears_only_the_stamp_for_named_refs(self, store: Store) -> None:
+        a = self._paper(store, slug="e2a", doi="10.1234/2a")
+        b = self._paper(store, slug="e2b", doi="10.1234/2b")  # not named
+        assert requeue_papers_for_enrich(store, [a, a], dry_run=False) == [a]
+        meta_a = store.fetch_refs_by_ids([a])[a].meta or {}
+        meta_b = store.fetch_refs_by_ids([b])[b].meta or {}
+        assert "authors_resolved_at" not in meta_a
+        assert meta_a["volume"] == "3"  # nothing else touched
+        assert "authors_resolved_at" in meta_b
+
+    def test_skips_doi_less_unstamped_and_non_papers(self, store: Store) -> None:
+        no_doi = self._paper(store, slug="e3a", doi=None)
+        unstamped = self._paper(store, slug="e3b", doi="10.1234/3b", stamped=False)
+        other = self._paper(store, slug="e3c", doi="10.1234/3c", kind="patent")
+        named = [no_doi, unstamped, other, 999999999]
+        assert requeue_papers_for_enrich(store, named, dry_run=True) == []
+
+    def test_empty_and_second_run(self, store: Store) -> None:
+        assert requeue_papers_for_enrich(store, [], dry_run=False) == []
+        rid = self._paper(store, slug="e4")
+        assert requeue_papers_for_enrich(store, [rid], dry_run=False) == [rid]
+        assert requeue_papers_for_enrich(store, [rid], dry_run=False) == []
+
+
+class TestEnrichRearmCli:
+    def _run(self, store: Store, monkeypatch: Any, argv: list[str]) -> None:
+        import argparse
+        from types import SimpleNamespace
+
+        from precis.cli import enrich_rearm
+
+        monkeypatch.setattr(
+            "precis.runtime.build_runtime", lambda cfg: SimpleNamespace(store=store)
+        )
+        parser = argparse.ArgumentParser()
+        enrich_rearm.add_parser(parser.add_subparsers())
+        args = parser.parse_args(["enrich-rearm", *argv, "--database-url", "x://y"])
+        enrich_rearm.run(args)
+
+    def _stamped(self, store: Store, slug: str) -> int:
+        ref = store.insert_ref(
+            kind="paper",
+            slug=slug,
+            title="T",
+            meta={"authors_resolved_at": "2026-09-01T00:00:00+00:00"},
+        )
+        store.set_ref_identifier(ref.id, "doi", f"10.1234/{slug}", source="manual")
+        return ref.id
+
+    def test_dry_run_prints_and_does_not_write(
+        self, store: Store, monkeypatch: Any, capsys: Any
+    ) -> None:
+        rid = self._stamped(store, "cli1")
+        self._run(store, monkeypatch, ["--refs", f"{rid}, 999999999"])
+        out = capsys.readouterr()
+        assert f"ref_id={rid}" in out.out
+        assert "DRY-RUN" in out.err and "would re-arm 1" in out.err
+        assert "authors_resolved_at" in (store.fetch_refs_by_ids([rid])[rid].meta or {})
+
+    def test_apply_clears_the_stamp(
+        self, store: Store, monkeypatch: Any, capsys: Any
+    ) -> None:
+        rid = self._stamped(store, "cli2")
+        self._run(store, monkeypatch, ["--refs", str(rid), "--apply"])
+        assert f"ref_id={rid}" in capsys.readouterr().out
+        meta = store.fetch_refs_by_ids([rid])[rid].meta or {}
+        assert "authors_resolved_at" not in meta
+
+    def test_bad_refs_exits_2(self, store: Store, monkeypatch: Any) -> None:
+        import pytest
+
+        with pytest.raises(SystemExit) as exc:
+            self._run(store, monkeypatch, ["--refs", "12,abc"])
+        assert exc.value.code == 2

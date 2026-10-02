@@ -122,6 +122,11 @@ COMMANDS: tuple[Command, ...] = (
         "Re-arm metadata enrichment for papers stuck at '(no title)'.",
     ),
     _c(
+        "enrich-rearm",
+        "enrich_rearm",
+        "Re-arm metadata enrichment for named papers (refills new fields).",
+    ),
+    _c(
         "taxonomy-bootstrap",
         "taxonomy",
         "Generate a campaign's measurand list from corpus usage.",

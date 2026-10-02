@@ -89,6 +89,25 @@ if TYPE_CHECKING:
 #: mode: prior-art rendered in-text, no ``\cite`` / no bibliography.
 _PATENT_DOC_TYPE = "patent"
 
+#: Closed allowlist of biblatex styles an export may select (``bib_style=`` /
+#: ``meta.workspace.style``). Keys are what callers may pass (canonical names
+#: plus short aliases, matched case-insensitively); values are the canonical
+#: biblatex style substituted for the ``style=numeric-comp`` token in
+#: ``preamble.tex``. The values are the only strings ever written into LaTeX
+#: — an unlisted request keeps the default, so an unvetted string is never
+#: interpolated. ``chem-rsc`` / ``chem-acs`` (biblatex-chem) and ``nature``
+#: (biblatex-nature) are installed on the export host alongside the default.
+_BIB_STYLE_DEFAULT = "numeric-comp"
+_BIB_STYLES: dict[str, str] = {
+    "numeric-comp": "numeric-comp",
+    "chem-rsc": "chem-rsc",
+    "rsc": "chem-rsc",
+    "chem-acs": "chem-acs",
+    "acs": "chem-acs",
+    "nature": "nature",
+}
+_BIB_STYLE_TOKEN = "style=numeric-comp"
+
 #: reMarkable-2 page profile injected after the preamble in send-to-tablet
 #: mode: a page geometry matching the device screen (1404×1872 px @226 dpi ≈
 #: 157.6×209.6 mm) with a wide outer margin for pen annotation, and a touch
@@ -2177,6 +2196,35 @@ def _template_text(name: str) -> str:
     )
 
 
+def resolve_bib_style(requested: str | None) -> tuple[str, str | None]:
+    """Map a requested biblatex style onto :data:`_BIB_STYLES`.
+
+    Returns ``(canonical_style, warning)``. ``None`` / blank → the default,
+    no warning. An unknown value → the default plus a warning naming the
+    supported set."""
+    want = (requested or "").strip()
+    if not want:
+        return _BIB_STYLE_DEFAULT, None
+    hit = _BIB_STYLES.get(want.lower())
+    if hit is not None:
+        return hit, None
+    return _BIB_STYLE_DEFAULT, (
+        f"bib style {want!r} not supported; using {_BIB_STYLE_DEFAULT}; "
+        f"supported: {', '.join(_BIB_STYLES)}"
+    )
+
+
+def _preamble_text(bib_style: str = _BIB_STYLE_DEFAULT) -> str:
+    """The checked-in preamble with the biblatex ``style=`` token swapped for
+    ``bib_style`` (only ever a canonical :data:`_BIB_STYLES` value — anything
+    else falls back to the default). The default leaves the text byte-identical."""
+    text = _template_text("preamble.tex")
+    style = bib_style if bib_style in _BIB_STYLES.values() else _BIB_STYLE_DEFAULT
+    if style == _BIB_STYLE_DEFAULT:
+        return text
+    return text.replace(_BIB_STYLE_TOKEN, f"style={style}", 1)
+
+
 def _tex(text: str) -> str:
     """Escape + unicode-encode a run of plain prose for LaTeX."""
     return _encode_unicode(_latex_escape(text))
@@ -2380,8 +2428,13 @@ def assemble_document(
     published_section: str = "",
     data_package_section: str = "",
     extra_preamble: str = "",
+    bib_style: str = _BIB_STYLE_DEFAULT,
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
+
+    ``bib_style`` is a canonical biblatex style from :data:`_BIB_STYLES`
+    (resolve a caller's request with :func:`resolve_bib_style`); it replaces
+    the preamble's ``style=numeric-comp``.
 
     ``author_block`` is the pre-rendered ``\\author{}``/``\\affil{}``
     lines from :func:`build_author_block` (already escaped).
@@ -2409,7 +2462,7 @@ def assemble_document(
     """
     patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
-        _template_text("preamble.tex").rstrip(),
+        _preamble_text(bib_style).rstrip(),
         "",
     ]
     if extra_preamble:
@@ -2459,6 +2512,7 @@ def export_draft(
     retraction_override: list[Any] | None = None,
     doi_links: bool = True,
     library_links: bool = True,
+    bib_style: str | None = None,
 ) -> ExportResult:
     """Render a draft into a compilable LaTeX project under
     ``target_dir``: ``main.tex`` + ``refs.bib`` + a copy of the
@@ -2476,7 +2530,12 @@ def export_draft(
 
     ``doi_links=False`` / ``library_links=False`` independently turn off the
     inline ``doi`` / library-search runs (:func:`render_body`) — default
-    both on."""
+    both on.
+
+    ``bib_style`` picks the biblatex bibliography style (see
+    :data:`_BIB_STYLES`): the explicit argument wins, else the draft's own
+    ``meta.workspace.style``, else ``numeric-comp``. An unsupported value
+    keeps the default and adds a warning to ``ExportResult.warnings``."""
     from precis.export import guard_exportable
 
     guard_exportable(ref)
@@ -2490,6 +2549,10 @@ def export_draft(
         ws = Workspace.from_meta(getattr(ref, "meta", None))
         doc_type = ws.doc_type if ws else ""
     patent_mode = doc_type == _PATENT_DOC_TYPE
+    if not (bib_style or "").strip():
+        ws_style = Workspace.from_meta(getattr(ref, "meta", None))
+        bib_style = ws_style.style if ws_style else ""
+    resolved_style, style_warning = resolve_bib_style(bib_style)
     # reMarkable footnote mode is orthogonal to genre but meaningless without a
     # bibliography, so it yields to patent-spec mode (in-text cites, no bib).
     remarkable = remarkable and not patent_mode
@@ -2502,6 +2565,8 @@ def export_draft(
         doi_links=doi_links,
         library_links=library_links,
     )
+    if style_warning and not patent_mode:
+        rendered.warnings.append(style_warning)
     acronyms_tex = build_acronyms(rendered.acronyms, rendered.acronym_keys)
     # A patent specification has no bibliography — everything is cited
     # in-text, so ``cited_slugs`` stays empty and refs.bib is a stub.
@@ -2547,6 +2612,7 @@ def export_draft(
         published_section=published_tex,
         data_package_section=data_package_tex,
         extra_preamble="\\usepackage{embedfile}" if data_package_tex else "",
+        bib_style=resolved_style,
     )
     # ``ref_events`` export record (the trust-surfaces override audit) — one row
     # naming every finding this export rendered clean only via an author's
@@ -2577,7 +2643,7 @@ def export_draft(
     latexmkrc_path = target_dir / ".latexmkrc"
     main_path.write_text(main_tex, encoding="utf-8")
     bib_path.write_text(bib_text, encoding="utf-8")
-    preamble_path.write_text(_template_text("preamble.tex"), encoding="utf-8")
+    preamble_path.write_text(_preamble_text(resolved_style), encoding="utf-8")
     # The .latexmkrc makes a bare `latexmk -pdf main.tex` run biber +
     # makeglossaries, so the project is self-contained / reproducible.
     latexmkrc_path.write_text(_template_text("latexmkrc"), encoding="utf-8")
@@ -2608,4 +2674,5 @@ __all__ = [
     "build_unverified_claims_section",
     "export_draft",
     "render_body",
+    "resolve_bib_style",
 ]

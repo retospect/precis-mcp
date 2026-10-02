@@ -97,7 +97,7 @@ _NOTE_MAX_CHARS = 4000
 def build_record(source: dict[str, Any], notes: str | None = None) -> str:
     """One EndNote ``<record>…</record>`` from a resolved source dict
     (``kind``, ``tag``, ``rec_number``, ``authors``, ``title``, ``year``,
-    ``journal``, ``volume``, ``doi``, ``url``). Absent fields are omitted.
+    ``journal``, ``volume``, ``number``, ``pages``, ``doi``, ``url``). Absent fields are omitted.
 
     ``notes`` (the cited passage from a ``pc<id>`` chunk citation) is embedded
     as ``<research-notes>`` — EndNote's *Research Notes* field — so the author
@@ -126,8 +126,12 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
             f"<periodical><full-title>{_esc(source['journal'])}"
             "</full-title></periodical>"
         )
+    if source.get("pages"):
+        parts.append(f"<pages>{_esc(source['pages'])}</pages>")
     if source.get("volume"):
         parts.append(f"<volume>{_esc(source['volume'])}</volume>")
+    if source.get("number"):
+        parts.append(f"<number>{_esc(source['number'])}</number>")
     if source.get("year"):
         parts.append(f"<dates><year>{_esc(source['year'])}</year></dates>")
     if source.get("doi"):

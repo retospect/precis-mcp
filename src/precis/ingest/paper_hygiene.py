@@ -861,6 +861,68 @@ def requeue_placeholder_title_papers(
     return candidates
 
 
+def requeue_papers_for_enrich(
+    store: Store, ref_ids: list[int], *, dry_run: bool = True
+) -> list[int]:
+    """Re-arm ``paper_meta_enrich`` over the named papers (``precis enrich-rearm``).
+
+    The enrich pass visits each paper once and stamps
+    ``meta.authors_resolved_at``; a paper visited before the pass learned a
+    new field (volume/number/pages, say) never gets it. This clears that
+    stamp on the given ``ref_ids`` so the pass re-claims them on its next
+    cycle. Nothing is fetched or written beyond the stamp and a
+    ``paper_reconcile``/``enrich_rearmed`` breadcrumb.
+
+    Selected: live papers that carry a DOI (nothing for Crossref to resolve
+    otherwise) and currently have the stamp (an unstamped one is claimable
+    already). A re-visit is safe: the pass never overwrites
+    human-verified authors or any meta field the ref already carries
+    (fill-blanks-only).
+
+    Returns the selected ref_ids, in the order given, de-duplicated; a dry
+    run returns what it *would* act on without writing.
+    """
+    wanted = list(dict.fromkeys(int(i) for i in ref_ids))
+    if not wanted:
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+             WHERE r.ref_id = ANY(%s)
+               AND r.kind = 'paper'
+               AND r.retired_at IS NULL
+               AND r.meta ? 'authors_resolved_at'
+               AND EXISTS (
+                     SELECT 1 FROM ref_identifiers ri
+                      WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'doi'
+                   )
+            """,
+            (wanted,),
+        ).fetchall()
+    eligible = {int(r[0]) for r in rows}
+    selected = [i for i in wanted if i in eligible]
+
+    if not dry_run:
+        for ref_id in selected:
+            with store.tx() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = meta - 'authors_resolved_at' "
+                    "WHERE ref_id = %s",
+                    (ref_id,),
+                )
+                store.append_event(
+                    ref_id,
+                    source="paper_reconcile",
+                    event="enrich_rearmed",
+                    payload={"reason": "operator re-arm (enrich-rearm)"},
+                    conn=conn,
+                )
+        log.info("requeue_papers_for_enrich: re-armed %d paper(s)", len(selected))
+    return selected
+
+
 __all__ = [
     "MetadataHygieneStats",
     "collapse_superseded_chains",
@@ -869,6 +931,7 @@ __all__ = [
     "metadata_hygiene_stats",
     "migrate_dangling_paper_links",
     "requeue_front_matter_only_papers",
+    "requeue_papers_for_enrich",
     "requeue_placeholder_title_papers",
     "requeue_stranded_fetches",
 ]

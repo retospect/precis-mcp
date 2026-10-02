@@ -1091,6 +1091,8 @@ def _resolve_source(
         or meta.get("journal")
         or meta.get("container_title"),
         "volume": meta.get("volume"),
+        "number": meta.get("number"),
+        "pages": meta.get("pages"),
         "doi": doi,
         "url": url,
     }

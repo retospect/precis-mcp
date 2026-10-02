@@ -146,7 +146,7 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
     issn_list = msg.get("ISSN") or []
     issn = str(issn_list[0]).strip() if issn_list else ""
 
-    return {
+    out: dict[str, Any] = {
         "title": title,
         "authors": authors,
         "year": year,
@@ -159,3 +159,17 @@ def _normalize(msg: dict[str, Any], doi: str) -> dict[str, Any]:
         "entry_type": msg.get("type", "article"),
         "source": "crossref",
     }
+    # Bibliographic locators — Crossref's ``volume`` / ``issue`` / ``page``
+    # as stripped strings, omitted when absent. ``pages`` is kept verbatim
+    # (Crossref gives a hyphen range like ``"123-130"``, or a single
+    # article number like ``"e1234"``): biblatex turns a hyphen range into
+    # an en-dash itself, so no rewriting here.
+    for key, raw in (
+        ("volume", msg.get("volume")),
+        ("issue", msg.get("issue")),
+        ("pages", msg.get("page")),
+    ):
+        text = str(raw).strip() if raw is not None else ""
+        if text:
+            out[key] = text
+    return out

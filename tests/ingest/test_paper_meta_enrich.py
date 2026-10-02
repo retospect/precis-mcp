@@ -55,6 +55,9 @@ def _crossref_msg(
     issn: str = "1234-5678",
     abstract: str = "An abstract.",
     update_to: list[dict[str, Any]] | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    page: str | None = None,
 ) -> dict[str, Any]:
     author: dict[str, Any] = {"given": given, "family": family}
     if orcid:
@@ -71,6 +74,9 @@ def _crossref_msg(
     }
     if update_to is not None:
         msg["update-to"] = update_to
+    for key, val in (("volume", volume), ("issue", issue), ("page", page)):
+        if val is not None:
+            msg[key] = val
     return msg
 
 
@@ -546,6 +552,59 @@ class TestMissingBlanksOnly:
         assert outcome.entry_type is None
         ref = _ref(store, rid)
         assert (ref.meta or {}).get("entry_type") == "book-chapter"
+
+
+class TestLocatorFill:
+    """Crossref volume / issue / page land as meta.volume / number / pages,
+    fill-blanks-only like journal/issn."""
+
+    def test_fills_volume_number_pages_when_absent(self, store: Store) -> None:
+        rid = _paper(store, slug="loc1", doi="10.1234/loc1")
+        msg = _crossref_msg(doi="10.1234/loc1", volume="15", issue="7", page="12-19")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/loc1",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        meta = _ref(store, rid).meta or {}
+        assert meta["volume"] == "15"
+        assert meta["number"] == "7"
+        assert meta["pages"] == "12-19"
+
+    def test_existing_values_are_not_overwritten(self, store: Store) -> None:
+        rid = _paper(
+            store,
+            slug="loc2",
+            doi="10.1234/loc2",
+            meta={"volume": "99", "pages": "1-2"},
+        )
+        msg = _crossref_msg(doi="10.1234/loc2", volume="15", issue="7", page="12-19")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/loc2",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        meta = _ref(store, rid).meta or {}
+        assert meta["volume"] == "99"  # kept
+        assert meta["pages"] == "1-2"  # kept
+        assert meta["number"] == "7"  # the one blank is still filled
+
+    def test_absent_in_crossref_writes_nothing(self, store: Store) -> None:
+        rid = _paper(store, slug="loc3", doi="10.1234/loc3")
+        msg = _crossref_msg(doi="10.1234/loc3")
+        enrich_paper(
+            store,
+            rid,
+            doi="10.1234/loc3",
+            crossref_fn=lambda doi, mailto: msg,
+            openalex_fn=lambda doi, **k: None,
+        )
+        meta = _ref(store, rid).meta or {}
+        assert not {"volume", "number", "pages"} & set(meta)
 
 
 class TestMissingRef:
