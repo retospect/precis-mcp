@@ -329,8 +329,8 @@ Newest first; one line per pass (`/pillar-review` writes it).
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,
   roadmap-quest and monitors assignments made; code-debt, db-schema and
   docs-audit left unthreaded; housekeeping deletions and the
-  kind-taxonomy-audit and dark-factory-arming rulings still open with Reto
-  (td461205).
+  kind-taxonomy-audit ruling still open with Reto (td461205); the
+  dark-factory-arming ruling came 2026-10-02: the fix_gripe lane is dropped.
 
 - 2026-10-01 — Reto's rulings, not a full pass: vocabulary tiers 2 and 3
   throughout code (td459590 done); December paper becomes a

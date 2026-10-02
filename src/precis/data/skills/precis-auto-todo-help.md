@@ -173,11 +173,11 @@ the dispatch worker auto-injects this:
 ```python
 put(
     kind="todo",
-    text="Fix gripe:42",
+    text="Diagnose gripe:42",
     parent_id=engineering_hygiene_strategic,
     meta={
         "executor": "claude_inproc",
-        "job_type": "fix_gripe",
+        "job_type": "diagnose_gripe",
         # auto_check auto-injected by dispatch worker:
         # 'auto_check': {'type': 'child_job_succeeded'}
     },
@@ -190,7 +190,7 @@ You can write it explicitly to make the wait visible:
 meta = {
     "auto_check": {"type": "child_job_succeeded"},
     "executor": "claude_inproc",
-    "job_type": "fix_gripe",
+    "job_type": "diagnose_gripe",
 }
 ```
 

@@ -94,8 +94,8 @@ Don't use a job for work that fits inside the current conversation.
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
-| `fix_gripe`         | `claude_inproc` | Prepare a candidate fix branch for a gripe    |
-| `diagnose_gripe`    | `claude_inproc` | Read-only root-cause diagnosis of a gripe — clones the repo (never branches/commits/pushes), asks claude for a structured `DIAGNOSIS:` block (root cause + evidence + a proposed-fix sketch + `Confidence: 0.NN`), and appends it as one `DIAGNOSIS (auto, job <id>):` `gripe_comment`. Never flips the gripe's `STATUS`. Params: `gripe_id`. **Dark by default** — the minter pass (`diagnose_scan`) is gated on `PRECIS_DIAGNOSE_SCAN_ENABLED`; a hand-`put` diagnose job runs regardless. `PRECIS_DIAGNOSE_CLAUDE_MODEL` overrides the model (default: `Tier.BIG`, cheaper than `fix_gripe`'s FRONTIER). With `PRECIS_DIAGNOSE_AUTOPROMOTE=1` and confidence ≥ 0.8, the gripe is tagged `auto-fix` (the key `backlog_groom`'s selection filter reads) — default off. |
+| `fix_gripe`         | `claude_inproc` | Fix a gripe and land it. **Lane OFF since 2026-10-02**: nothing auto-mints it; a hand-submit skips at the push preflight without a credential |
+| `diagnose_gripe`    | `claude_inproc` | Read-only root-cause diagnosis of a gripe — clones the repo (never branches/commits/pushes), asks claude for a structured `DIAGNOSIS:` block (root cause + evidence + a proposed-fix sketch + `Confidence: 0.NN`), and appends it as one `DIAGNOSIS (auto, job <id>):` `gripe_comment`. Never flips the gripe's `STATUS`. Params: `gripe_id`. **Dark by default** — the minter pass (`diagnose_scan`) is gated on `PRECIS_DIAGNOSE_SCAN_ENABLED`; a hand-`put` diagnose job runs regardless. `PRECIS_DIAGNOSE_CLAUDE_MODEL` overrides the model (default: `Tier.BIG`, cheaper than `fix_gripe`'s FRONTIER). With `PRECIS_DIAGNOSE_AUTOPROMOTE=1` and confidence ≥ 0.8, the gripe is tagged `auto-fix`, now inert (the `fix_gripe` lane is off) — default off. The `DIAGNOSIS (auto…)` comments stay useful to the session that fixes the gripe. |
 | `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
@@ -112,7 +112,8 @@ the per-type recipe skills for invocation details.)
 ## Kick off an agent task
 
 **Recommended: write the intent as a todo; the dispatch
-worker mints the job.**
+worker mints the job.** (The `fix_gripe` examples below are
+shape illustrations; that lane is OFF, so submit it only by hand.)
 
 ```python
 # 1) Write the intent under whichever strategic it belongs to.

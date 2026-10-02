@@ -38,10 +38,19 @@ can read ``/opt/nas`` — another venv's python (web, MCP serve) can lose its
 grant while ``meta.nas_ok`` stays true. A subprocess inherits its parent's
 TCC attribution, so spawning other interpreters attests nothing: each
 long-running process attests itself into ``meta.nas_ok_by_process[<process>]``
-(``{ok, path, errno|err, exe, pid, ts}``) — the worker via its heartbeat
-beat, web/serve via :func:`start_nas_attest_thread` (UPDATE-only, never bumps
-``ts``). Nursery's ``nas-denied`` detector alerts on any fresh ``ok=false``
-entry and names the ``exe`` to re-grant. Known gaps: (i) one-shot
+(``{ok, path, errno|err, exe, pid, ts, launched_by, grant_target}``) — the
+worker via its heartbeat beat, web/serve via :func:`start_nas_attest_thread`
+(UPDATE-only, never bumps ``ts``). Nursery's ``nas-denied`` detector alerts on
+any fresh ``ok=false`` entry. Which grant fixes a denial depends on who
+launched the process, because TCC charges access to the *responsible*
+process, not to the interpreter: :func:`tcc_launch_class` reads that from
+macOS's ``responsibility_get_pid_responsible_for_pid``. ``launchd`` (the
+process is its own responsible process) → grant the python binary; ``ssh``
+(sshd-session responsible — fleet tmux sessions started over SSH) → the
+Remote Login "allow full disk access for remote users" setting; ``terminal``
+→ grant the ``.app`` that launched the session. A container process does not
+attest at all: the NAS reaches it through the VM's mount, and no grant on the
+host binary applies. Known gaps: (i) one-shot
 cron/launchd-timer interpreters are not long-running and do not attest; (ii)
 a host with no ``host_heartbeat`` row (caspar, daemon-free by design) cannot
 receive attestations — logged once per process; (iii) several stdio
@@ -348,17 +357,94 @@ def _probe_nas() -> dict[str, Any]:
     return result
 
 
+def _in_container() -> bool:
+    """True inside a Docker/Podman container — no host TCC grant applies there."""
+    return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+
+def _responsible_process() -> tuple[int, str] | None:
+    """``(pid, exe)`` of the process macOS TCC holds responsible for this one,
+    via libSystem's (private, long-stable) ``responsibility_get_pid_responsible_for_pid``
+    and ``proc_pidpath``. ``None`` off macOS or on any lookup failure."""
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+
+    try:
+        lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        resp = lib.responsibility_get_pid_responsible_for_pid
+        resp.restype = ctypes.c_int
+        resp.argtypes = [ctypes.c_int]
+        pidpath = lib.proc_pidpath
+        pidpath.restype = ctypes.c_int
+        pidpath.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        rpid = int(resp(os.getpid()))
+        if rpid <= 0:
+            return None
+        buf = ctypes.create_string_buffer(4096)
+        if pidpath(rpid, buf, 4096) <= 0:
+            return None
+        return rpid, buf.value.decode("utf-8", "replace")
+    except (OSError, AttributeError):
+        return None
+
+
+_launch_class: dict[str, Any] | None = None
+
+
+def tcc_launch_class() -> dict[str, Any]:
+    """Who macOS charges this process's file access to, and so what to grant
+    when it is denied — ``{'launched_by': ..., 'grant_target': ...}``.
+
+    - ``launchd`` — its own responsible process (a launchd daemon); grant
+      the interpreter, ``grant_target`` = the resolved ``sys.executable``.
+    - ``ssh`` — sshd-session is responsible; the fix is the Remote Login
+      "allow full disk access for remote users" setting, no per-binary grant.
+    - ``terminal`` — a ``.app`` is responsible; ``grant_target`` = that app.
+    - ``other`` — some other binary is responsible; ``grant_target`` = it.
+    - ``unknown`` — not macOS, or the lookup failed.
+
+    Computed once per process (the responsible process never changes).
+    """
+    global _launch_class
+    if _launch_class is not None:
+        return _launch_class
+    resp = _responsible_process()
+    if resp is None:
+        out: dict[str, Any] = {"launched_by": "unknown", "grant_target": None}
+    else:
+        rpid, rexe = resp
+        if rpid == os.getpid():
+            out = {
+                "launched_by": "launchd",
+                "grant_target": os.path.realpath(sys.executable),
+            }
+        elif os.path.basename(rexe).startswith("sshd"):
+            out = {"launched_by": "ssh", "grant_target": None}
+        elif ".app/" in rexe:
+            out = {
+                "launched_by": "terminal",
+                "grant_target": rexe[: rexe.index(".app/") + len(".app")],
+            }
+        else:
+            out = {"launched_by": "other", "grant_target": rexe}
+    _launch_class = out
+    return out
+
+
 def nas_attestation_entry(probe: dict[str, Any]) -> dict[str, Any] | None:
     """Turn a :func:`_probe_nas` result into this process's
     ``nas_ok_by_process`` entry, or ``None`` when the probe returned ``{}``
-    (path absent: host doesn't mount the NAS, so no signal).
+    (path absent: host doesn't mount the NAS, so no signal) or when running
+    in a container (the NAS comes through the VM's mount; no host grant
+    applies, so a denial there has no TCC remedy to name).
 
     ``ok`` is ``True`` (readable), ``False`` (EPERM; carries ``errno``) or
     ``None`` (transient probe error/timeout; carries ``err``, recorded but
     never alerted). ``exe`` is the real interpreter path — FDA is granted
     per binary, so the alert must name what to re-grant.
     """
-    if not probe:
+    if not probe or _in_container():
         return None
     ok: bool | None = bool(probe["nas_ok"]) if "nas_ok" in probe else None
     entry: dict[str, Any] = {"ok": ok, "path": probe.get("nas_path")}
@@ -368,6 +454,7 @@ def nas_attestation_entry(probe: dict[str, Any]) -> dict[str, Any] | None:
         entry["err"] = probe.get("nas_probe_err", "unknown")
     entry["exe"] = os.path.realpath(sys.executable)
     entry["pid"] = os.getpid()
+    entry.update(tcc_launch_class())
     entry["ts"] = datetime.now(UTC).isoformat()
     return entry
 

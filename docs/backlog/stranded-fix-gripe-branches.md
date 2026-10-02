@@ -6,9 +6,9 @@ prio: high
 
 # Stranded fix_gripe branches — what is left after the 2026-10-01 landing
 
-The auto-fix lane pushed 43 branches into the agent-lane worker's own checkout
-instead of the shared remote and reported success (gr458326, fixed
-2026-09-30). All 43 were bundled off the node, test-merged against main and
+The fix_gripe lane (now OFF, 2026-10-02) pushed 43 branches into the agent-lane
+worker's own checkout instead of the shared remote and reported success
+(gr458326, fixed 2026-09-30). All 43 were bundled off the node, test-merged against main and
 reviewed on 2026-10-01; Reto: "land them". **Done:** 18 keepers landed on
 main as one squash, and `gripe_182230`'s chase-coverage ledger (rewritten,
 migration 0175) went through the gate and is deployed; six gripes closed against the squash, six left open with a

@@ -1,5 +1,15 @@
 # fix_gripe worker deployment + trust model
 
+**Status: lane OFF since 2026-10-02** (Reto, td460703: "Drop the lane, we run
+locally session here"). It never delivered: every job skipped at the dry-run
+preflight because melchior's fix checkout has no push credential. The
+groomer's prod `service_config` row melchior/`backlog_groom` is prio 0, so
+nothing mints `fix_gripe` todos; a hand-`put` job still runs the code and
+skips at the preflight. Re-arm only on Reto's say:
+`precis service prio melchior backlog_groom 5` (plus the push credential
+below). `diagnose_scan` stays on. Gripes are fixed by thread sessions. What
+follows is reference for the trust model and the deployment contract.
+
 **When.** You're standing up or auditing the `job_type='fix_gripe'`
 runner on a host — deciding whether the §13 container is required, or
 explaining to a reviewer why an unsandboxed run is (or isn't) safe.

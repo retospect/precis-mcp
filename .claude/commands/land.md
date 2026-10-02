@@ -163,9 +163,9 @@ Optional ship message from the user: `$ARGUMENTS`
      (ship-only here — `/go` if you also want it deployed). Each residual is
      its own cycle so history stays legible.
    - **File the rest.** Anything that needs investigation before a fix, or is
-     out of reach this session, becomes a `kind='todo'` (with `meta.executor`
-     where a `fix_gripe` job fits) or a `gripe` — the factory's backlog-groomer
-     lane — and you note it; you do not spin on it.
+     out of reach this session, becomes a `gripe` (filed against the owning thread, whose
+   session fixes it) or a `kind='todo'` — the fix_gripe lane is off — and
+   you note it; you do not spin on it.
    - **Stop-and-report guard.** If a residual's fix balloons in scope, or goes
      red and isn't quickly greenable, stop, file it, and surface it — never
      chain unbounded ships.

@@ -149,13 +149,19 @@ is closed-prefix and replaces atomically.
 tag(kind="gripe", id=42, add=["STATUS:ready_for_fix"])
 ```
 
-The signal that flips it from "thinking about it" to "available
-for a fix_gripe job". You can submit a job directly instead —
-it auto-tags ready_for_fix; see below.
+The signal that flips it from "thinking about it" to "ready for the
+owning thread's session to fix". Nothing auto-mints a `fix_gripe` job
+from it (lane OFF since 2026-10-02).
 
-## Ask an agent to prepare a fix
-## Hand a gripe off to an LLM to fix
-## Auto-fix this bug
+## Who fixes a gripe?
+## Can I hand a gripe off to an LLM to fix?
+
+The repo session that owns the gripe's work thread fixes it in
+its own worktree;
+`/pillar-review` relinks unthreaded gripes to a thread. The
+auto-fix lane is OFF by ruling: the groomer mints no `fix_gripe`
+todos, and a hand-submitted job skips at the push preflight unless
+the worker node holds a credential. A hand-submit, for reference:
 
 ```python
 put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
@@ -163,8 +169,8 @@ put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 # gripe auto-tagged STATUS:ready_for_fix as a side effect.
 ```
 
-One call — no need to set `STATUS:ready_for_fix` first. The
-worker clones the repo, runs claude on a `gripe_42` branch,
+One call — no need to set `STATUS:ready_for_fix` first. If a
+credential is present the worker clones the repo, runs claude on a `gripe_42` branch,
 publishes the branch to the repo's upstream — confirmed there
 with `git ls-remote` before it says so — and posts a comment on
 the gripe when it's ready for review (or explains why it
@@ -334,12 +340,12 @@ and want it findable, use `memory`.
 
 A gripe reports something wrong with the **precis tool / MCP surface /
 repo** — a verb that errors, a misleading message, a missing affordance,
-a handler bug. It routes to a `fix_gripe` job that edits *this codebase*.
+a handler bug. It is fixed by the session owning the relevant thread, in *this codebase*.
 
 A defect in **content you are authoring or auditing** — a draft chunk
 with a missing `\citep{}`, an empty section stub, an unsupported claim, a
 table with no backing data — is **not** a gripe. Filing it as one dumps
-manuscript work into the code bug-tracker, where no `fix_gripe` job can
+manuscript work into the code bug-tracker, where no one will
 act on it. Route it to the content substrate instead:
 
 | You found…                                              | File as |
@@ -359,7 +365,7 @@ citation audit emits findings and todos, not gripes.
 |------------------------|-----------------------------------------|
 | `STATUS:open`          | Just filed, untriaged                   |
 | `STATUS:triaged`       | Human reviewed; real; not yet ready     |
-| `STATUS:ready_for_fix` | Ready for a `fix_gripe` job to claim    |
+| `STATUS:ready_for_fix` | Ready for its thread's session to fix   |
 | `STATUS:in_review`     | A fix landed on a branch; awaits merge  |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
@@ -367,7 +373,7 @@ citation audit emits findings and todos, not gripes.
 
 ## See also
 
-- [[precis-fix-gripe-help]] — the agent-fix recipe
+- [[precis-fix-gripe-help]] — the fix_gripe job recipe (lane OFF)
 - [[precis-job-help]] — monitor/cancel fix attempts
 - [[precis-search-help]] — search across kinds
 - [[precis-todo-help]] — promote a gripe to a todo

@@ -231,6 +231,8 @@ every rung: reproduce-first (red test), the `scripts/ship` gate, reviewer
 sign-off, post-deploy re-check. Runs on §H's substrate. **Injection safety
 (`gr179498`) is a Rung-1 prerequisite:** the `fix_gripe` rail must treat
 gripe/finding text as data — sandboxed, no ambient prod credentials.
+**2026-10-02:** the `fix_gripe` rail is dropped (Reto, td460703) — gripes are
+fixed by the owning thread session; the ladder above has no live rail.
 
 ## Files & artifacts — git-first (decided 2026-08-02)
 

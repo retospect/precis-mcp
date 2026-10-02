@@ -27,7 +27,7 @@
 ## Coined terms
 
 - **dark** ("ships / merges dark") — landed on `main` but disabled by default, behind a **dark switch** (the canonical noun: an off-by-default `PRECIS_*` env flag); distinct from **dark factory** (below). → `docs/conventions/dark-switches.md` · `src/precis/cli/worker.py`
-- **dark factory** — the lights-out autonomous repo-dev loop (gripe → diagnose → fix → gate → land, no human at the keyboard); unrelated to a slice shipping **dark**. → `src/precis/fixer/__init__.py` · `docs/backlog/dark-factory-arming.md`
+- **dark factory** — the lights-out autonomous repo-dev loop (gripe → diagnose → fix → gate → land, no human at the keyboard); **fix lane dropped 2026-10-02** (diagnose stays on; thread sessions fix gripes); unrelated to a slice shipping **dark**. → `src/precis/fixer/__init__.py` · `docs/runbooks/fix-gripe-ops.md`
 - **fixer** — the laptop repo-dev CI scheduler that closes the dark-factory loop; deliberately not riding precis dispatch. → `src/precis/fixer/__init__.py`
 - **watch** — a `level:recurring` todo whose `meta.schedule` (cron / `every:`) drives a per-minute spawner. → `src/precis/workers/schedule/worker.py` · skill `precis-recurring-help`
 - **doable** — the view of todos available to be picked (open, unblocked, not bubbled); the repo-dev lane's analogue is `pickable` (`fixer/intake.py`). → `src/precis/handlers/_todo_views.py`

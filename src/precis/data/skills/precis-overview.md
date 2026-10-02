@@ -194,7 +194,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-recurring-help` | `meta.schedule` format + the **Watches** umbrella |
 | `precis-minter-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
-| `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
+| `precis-fix-gripe-help` | `fix_gripe` job recipe (lane OFF since 2026-10-02; hand-submit only) |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
 | `precis-nursery-help` | Per-minute SQL-only review tier — incoherence + worker-health, `critical` pages |
 | `precis-health-digest-help` | Hourly slow-rot liveness digest — curated/derived checks, daily/on-degradation push |

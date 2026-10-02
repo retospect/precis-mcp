@@ -318,7 +318,7 @@
       ) if inventory_hostname in groups['gateway'] else {} }}
     # ── dark-factory fix lane (diagnose_gripe / fix_gripe clone plumbing):
     # gateway-only, gated on `precis_fix_lane_enabled` host_var (arming
-    # rung 2's env prerequisite — docs/backlog/dark-factory-arming.md).
+    # rung 2's env prerequisite; fix lane OFF since 2026-10-02 — docs/runbooks/fix-gripe-ops.md).
     # WORK_DIR is the clone scratch root (must live under the run-as user's
     # home so the colima VM's default $HOME mount covers the container's
     # ro bind of each clone); REPO_DIR is the host-local clone the jobs

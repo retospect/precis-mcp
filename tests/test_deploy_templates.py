@@ -374,7 +374,7 @@ def test_collapsed_worker_fix_lane_env_is_gated() -> None:
     host with ``precis_fix_lane_enabled`` set — everywhere else the block
     must be empty, so an unarmed host neither advertises the ``clones_dir``
     capability, nor lets a soft-fallback-routed diagnose job half-run, nor
-    auto-promotes diagnoses (docs/backlog/dark-factory-arming.md, gripe
+    auto-promotes diagnoses (docs/runbooks/fix-gripe-ops.md, gripe
     210007)."""
     armed = _render_collapsed_worker_fix_env(gateway=True, enabled=True)
     # 367779ca armed diagnose auto-promote here; the groomer is NOT an env

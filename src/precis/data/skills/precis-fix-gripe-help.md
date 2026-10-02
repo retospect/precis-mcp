@@ -1,9 +1,10 @@
 ---
 id: precis-fix-gripe-help
 title: precis — drive a gripe to a fix landed on main
-summary: end-to-end bug fix recipe — gripe to job to a squash commit on main, iteration, review
+summary: fix_gripe job recipe (lane OFF since 2026-10-02, hand-submit only) — gripe to job to a squash commit on main, iteration, review
 answers:
-  - how do I get an agent to prepare a fix branch for a bug I filed?
+  - who fixes a gripe now that the fix lane is off?
+  - how do I hand-submit a fix_gripe job (reference only)?
   - how do I check whether my gripe-fix job is done?
   - how do I review the candidate fix's diff before merging?
   - how do I reject a fix and ask for another pass?
@@ -16,13 +17,26 @@ status: active
 
 # precis-fix-gripe-help — get a gripe fixed end-to-end
 
+**The fix lane is OFF (Reto, 2026-10-02).** Nothing mints `fix_gripe`
+jobs any more, and a hand-submitted one skips at the preflight unless
+the worker node holds a push credential. Gripes are fixed by the
+owning thread's session in its own worktree; do not queue a job to
+get a gripe fixed. The job type and this recipe stay as reference for
+a deliberate hand-submit.
+
 Recipe for handing a gripe to an agent, getting its fix landed
 on `main`, and iterating until the fix holds. Joins `precis-gripe-help` (the bug tracker) and
 `precis-job-help` (the offline-work substrate).
 
-## I want this gripe fixed
-## Auto-fix this bug
-## Get an agent to prepare a fix branch for me
+## Who fixes a gripe now that the lane is off?
+
+The repo session that owns the gripe's work thread, in its own
+worktree. Unthreaded
+gripes are relinked to a thread by `/pillar-review`. The
+`diagnose_gripe` pass still writes `DIAGNOSIS (auto…)` comments that
+help that session; its `auto-fix` tag is inert.
+
+## How do I hand-submit a fix_gripe job (reference only)?
 
 **Slice-5 canonical pattern — write the intent as a todo; the
 dispatch worker mints the job under it.**

@@ -7,8 +7,11 @@ model: opus
 
 # Self-healing spine
 
-**The single plan for cluster self-healing, health reporting, and the
-fix-it agent.** Folded in and superseded (files deleted, this is the
+**The single plan for cluster self-healing, health reporting.**
+(The fix-it agent / `fix_gripe` auto-fix layer was dropped 2026-10-02 by Reto's
+ruling: gripes are fixed by thread sessions. Below, fix-lane rungs and
+`backlog_groom` prerequisites are struck; detector, registry and doctor
+layers stand.) Folded in and superseded (files deleted, this is the
 umbrella; decision 2026-08-12):
 
 - `HANDOFF-claim-liveness.md` (repo root, 2026-08-12) → Layer 1.
@@ -34,7 +37,7 @@ of lease-steal reclaim entirely — their only rescuer is the
 `quest_loop_reconcile` pass on melchior),
 **two** detector passes declaring checks in two shapes, a dozen
 hand-rolled backoff idioms, several disjoint report surfaces, and an
-escalation ladder (alert → page → gripe → fix_gripe todo → agent) that
+escalation ladder (alert → page → gripe → session) that
 exists as three disconnected half-ladders. Recovery from a worker SIGKILL
 during deploy ranges from seconds (job lease, epoch arm) to 1 hour (slot
 hold TTL) to never (zombie agentlog) depending only on which claim type
@@ -61,7 +64,7 @@ maintenance engineer doing rounds; the escalation ladder is the andon
 cord, pulled only when the factory truly can't fix itself. Crucially the
 spine is built *from the factory's own machinery* — the doctor is a
 plain agent-lane job type, and its fixes flow through the same
-gripe→groom→fix_gripe rails as ordinary work — so self-repair is a
+gripe rails as ordinary work, fixed by thread sessions — so self-repair is a
 product workload, not a parallel bespoke system. The autonomy dial
 (report→heal→draft→ship) is the same trust-earning progression that
 turns the lights further off.
@@ -217,11 +220,9 @@ Per tick:
      against open ones, propose threshold/slot changes as gripes.
    - `heal`: execute Layer-2 whitelisted actions only (via the vetted
      action catalog — never raw Bash), each through `bounded_heal`.
-   - `draft`: the doctor still only files gripes; `backlog_groom` turns
-     them into `fix_gripe` todos → dispatch → `claude -p` branch rail
-     (= Rung 1 below). Enabling `backlog_groom` (default-OFF,
-     `PRECIS_BACKLOG_GROOM_ENABLED`) for doctor-filed gripes is an
-     explicit prerequisite of this dial.
+   - `draft`: ~~`backlog_groom` → `fix_gripe` todo → `claude -p` branch
+     rail~~ — struck 2026-10-02 (lane dropped). The doctor only files
+     gripes; a thread session fixes them.
 5. **Envelope**: target posture is read-mostly + gripe-only writes — a
    combination `workers/envelope.py` cannot express today (`agent_ro`
    comes only with `write:none`, which also tool-denies `put`;
@@ -465,7 +466,7 @@ this doc stays the cross-slice record and is trimmed as slices ship.
 - **`alert` write path: machinery-only.** Alerts stay probe-backed
   facts (fingerprinted, auto-open/auto-close when the probe flips);
   the doctor writes gripes — the judgment channel that tolerates
-  uncertainty and rides the groom→fix_gripe rail. A recurring doctor
+  uncertainty (a thread session fixes them). A recurring doctor
   finding graduates by *adding a condition-registry row*, never by the
   doctor raising alerts itself.
 - **Rung 2 (auto-ship): deferred, ramp up eventually.** No class is
@@ -524,8 +525,8 @@ code in this worktree, not vibes)
   named in Layer 3: a `scheduler.py` `Cadence` row, same idiom as
   `health_digest`/`dream_agent`.
 - ~~advisory~~ **resolved 2026-08-12** — `draft` dial clarified in Layer 3:
-  the doctor only ever files gripes; `backlog_groom` (default-OFF) minting
-  the `fix_gripe` todos is an explicit prerequisite of that dial.
+  the doctor only ever files gripes. (The `backlog_groom` prerequisite was
+  struck 2026-10-02 with the fix lane.)
 
 ## Layer-2 check queued 2026-09-29 — local-serving KV thrash
 

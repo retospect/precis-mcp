@@ -20,7 +20,86 @@ import pytest
 
 from precis.store import Store
 from precis.workers import heartbeat as hb
-from precis.workers.nursery import _detect_nas_denied
+from precis.workers.nursery import _detect_nas_denied, _nas_denied_remedy
+
+
+@pytest.fixture(autouse=True)
+def _not_in_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suite itself runs in a container; pin the host case so entries
+    are built (the container case has its own test)."""
+    monkeypatch.setattr(hb, "_in_container", lambda: False)
+    monkeypatch.setattr(hb, "_launch_class", None)
+
+
+# ── who macOS holds responsible (launched_by) ───────────────────────
+
+
+@pytest.mark.parametrize(
+    ("resp", "launched_by", "grant_target"),
+    [
+        (None, "unknown", None),
+        ("self", "launchd", os.path.realpath(sys.executable)),
+        ((684, "/usr/libexec/sshd-session"), "ssh", None),
+        (
+            (
+                500,
+                "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+            ),
+            "terminal",
+            "/System/Applications/Utilities/Terminal.app",
+        ),
+        ((501, "/opt/homebrew/bin/tmux"), "other", "/opt/homebrew/bin/tmux"),
+    ],
+)
+def test_tcc_launch_class(
+    monkeypatch: pytest.MonkeyPatch,
+    resp: Any,
+    launched_by: str,
+    grant_target: str | None,
+) -> None:
+    value = (os.getpid(), sys.executable) if resp == "self" else resp
+    monkeypatch.setattr(hb, "_responsible_process", lambda: value)
+    assert hb.tcc_launch_class() == {
+        "launched_by": launched_by,
+        "grant_target": grant_target,
+    }
+
+
+def test_entry_carries_launch_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        hb, "_responsible_process", lambda: (684, "/usr/libexec/sshd-session")
+    )
+    e = hb.nas_attestation_entry({"nas_ok": False, "nas_path": "/opt/nas/x"})
+    assert e is not None
+    assert e["launched_by"] == "ssh"
+    assert e["grant_target"] is None
+
+
+def test_entry_in_container_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A container's NAS comes through the VM's mount — no host grant to name."""
+    monkeypatch.setattr(hb, "_in_container", lambda: True)
+    assert hb.nas_attestation_entry({"nas_ok": False, "nas_path": "/x"}) is None
+
+
+@pytest.mark.parametrize(
+    ("entry", "needle"),
+    [
+        ({"launched_by": "ssh"}, "Allow full disk access for remote users"),
+        (
+            {"launched_by": "terminal", "grant_target": "/Applications/iTerm.app"},
+            "/Applications/iTerm.app, the app that launched",
+        ),
+        ({"launched_by": "other", "grant_target": "/opt/x/bin/y"}, "to /opt/x/bin/y:"),
+        (
+            {"launched_by": "launchd", "grant_target": "/opt/py/bin/python3.14"},
+            "Re-grant FDA to /opt/py/bin/python3.14",
+        ),
+        ({"exe": "/opt/py/bin/python3.12"}, "Re-grant FDA to /opt/py/bin/python3.12"),
+    ],
+)
+def test_nas_denied_remedy_by_launch_class(entry: dict[str, Any], needle: str) -> None:
+    assert needle in _nas_denied_remedy(entry)
+
 
 # ── entry builder ───────────────────────────────────────────────────
 

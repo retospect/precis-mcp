@@ -7,7 +7,7 @@ twenty filed items cover the starvation, halt, budget and crash gaps
 (six added by the 2026-10-02 platform pass); the order is silent loss first (starved lanes and rescue passes,
 terminal-silent halts), then bounded spend, then the quality-of-life and
 container items.
-**Last reviewed:** 2026-10-01
+**Last reviewed:** 2026-10-02 (fix lane dropped)
 **Worktree:** `factory`
 **Active:** no — opens at the next session restart if Reto names it.
 
@@ -51,26 +51,31 @@ container items.
 9. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
    baseline first (8).
-10. **backlog/fix-gripe-oauth-instead-of-api-key.md** — fix_gripe burns
-    metered API dollars; an OAuth path exists. Spend bound, so near 4.
-    Platform pass 2026-10-02.
-11. **backlog/llm-quota-failure-classification.md** — router-owned LLM failure
+10. **backlog/llm-quota-failure-classification.md** — router-owned LLM failure
     classification and deferred retry; the quota half of 3's outage class.
-12. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
+11. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
     branches instead of discarding them.
-13. **backlog/prioritization-auto-scoring.md** — severity x frequency
+12. **backlog/prioritization-auto-scoring.md** — severity x frequency
     auto-score plus a human triage loop.
-14. **backlog/backlog-groomer-items-half.md** — groomer for work items;
+13. **backlog/backlog-groomer-items-half.md** — groomer for work items;
     blocked on two prereqs.
 
 ## Parked
 
-- **backlog/dark-factory-arming.md** — arming the gripe-fix loop dials;
-  unparks on Reto's ruling (td461205).
+- (none)
 
 ## No action needed
 
-- (none yet)
+- **The fix_gripe lane and the gripe-loop arming ladder** — closed by Reto
+  2026-10-02 (td460703, "Drop the lane, we run locally session here"). Lane
+  OFF: prod `service_config` melchior/`backlog_groom` prio 5 to 0 at
+  2026-10-02 22:04Z; re-arm only on Reto's say with
+  `precis service prio melchior backlog_groom 5`. Code stays;
+  `diagnose_scan` stays on; owning thread sessions fix gripes. Deleted
+  `backlog/fix-gripe-oauth-instead-of-api-key.md` and
+  `backlog/dark-factory-arming.md` as moot. `fixer-salvage-failed-builds`,
+  `prioritization-auto-scoring` and `backlog-groomer-items-half` presume the
+  lane and need a keep-or-drop pass.
 
 ## Seam
 

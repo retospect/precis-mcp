@@ -16,7 +16,7 @@ Three risky small bits flagged at design time live here:
   Postgres URL) gates a second source: *promoted* open gripes — tag
   ``auto-fix`` + a ``DIAGNOSIS``-prefixed timeline comment (minted by
   :mod:`precis.workers.job_types.diagnose_gripe`, see
-  ``docs/backlog/dark-factory-arming.md``) — normalized into the same
+  ``docs/runbooks/fix-gripe-ops.md``; fix lane OFF) — normalized into the same
   :class:`WorkItem`
   shape as a proposal and merged into one priority-ordered queue via
   :func:`all_items`. Unset (the plist default) means the lane is

@@ -1043,7 +1043,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # backlog_groom (no default_profiles, `enable_env` check), a separate
         # flip from it: an operator can run the cheap read-only diagnosis
         # without also arming the FRONTIER-tier autonomous fixer. Arming
-        # sequence: docs/backlog/dark-factory-arming.md.
+        # history: docs/runbooks/fix-gripe-ops.md (fix lane OFF since 2026-10-02).
         name="diagnose_scan",
         label="Diagnose scanner",
         category="jobs",

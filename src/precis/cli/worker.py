@@ -1696,7 +1696,7 @@ def run(args: argparse.Namespace) -> None:
         # for open, undiagnosed gripes so the (separately dark) diagnosis
         # pass upgrades them with a pinned root cause before the expensive
         # fix_gripe / human sweep touches them. See
-        # precis.workers.diagnose_scan and docs/backlog/dark-factory-arming.md.
+        # precis.workers.diagnose_scan and docs/runbooks/fix-gripe-ops.md (fix lane OFF).
         if _register("diagnose_scan"):
             from precis.workers.runner import BatchResult as _DiagBatchResult
 

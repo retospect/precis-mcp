@@ -8,8 +8,9 @@ that raw state. This pass upgrades the gripe *in place* with a pinned root
 cause + evidence anchors + a proposed-fix sketch, so whichever rail picks
 it up next starts from a one-line cause instead of a blank slate. It is
 the per-gripe sibling of the self-healing spine's Layer-3 doctor
-(``docs/backlog/self-healing-spine.md`` §doctor), at its report rung. Arming
-the whole dark-factory gripe loop this feeds is ``docs/backlog/dark-factory-arming.md``.
+(``docs/backlog/self-healing-spine.md`` §doctor), at its report rung. The
+fix_gripe lane its ``auto-fix`` tag once fed was dropped 2026-10-02 (Reto,
+td460703); the diagnosis now serves the session that fixes the gripe.
 
 **Read-only by construction, unlike ``fix_gripe``.** The repo clone is a
 throwaway scratch copy (reusing ``fix_gripe.load_config_from_env`` /
@@ -308,6 +309,56 @@ def _spawn_claude(
     )
 
 
+def _record_agent_cost(
+    ctx: Any, result: Any, *, model: str, prompt: str, gripe_id: int
+) -> None:
+    """Keep one agent run's spend: ``cost_usd``/``turns_used``/``duration_s``
+    on the job meta, plus one ``llm_call_log`` row (``source='diagnose_gripe'``).
+
+    ``call_claude_agent`` bypasses the router, so nothing else ledgers this
+    run — before this, ~30 runs/day spent OAuth quota no table could see
+    (monitors-that-go-quiet, 2026-10-02). Best-effort: a ledger hiccup must
+    never fail a diagnosis whose comment is about to land.
+    """
+    from precis import route_log
+    from precis.utils.llm.router import Transport
+
+    text = (result.final_text or "").strip()
+    try:
+        ctx.set_meta(
+            cost_usd=result.cost_usd,
+            turns_used=result.turns_used,
+            duration_s=round(result.duration_s, 1),
+        )
+    except Exception:
+        log.debug("diagnose_gripe: cost meta write failed", exc_info=True)
+    route_log.record_call(
+        route_log.LlmCallRecord(
+            source="diagnose_gripe",
+            tier=Tier.BIG.value,
+            transport=Transport.CLAUDE_AGENT.value,
+            model=model,
+            tools_needed=True,
+            request_text=prompt,
+            response_text=text,
+            cost_usd=result.cost_usd,
+            turns_used=result.turns_used,
+            duration_ms=int(result.duration_s * 1000),
+            errored=not text,
+            error=None if text else "empty diagnosis",
+            data_parsed=None,
+            ref_id=gripe_id,
+            placement="cloud",
+            features={"job_id": ctx.ref_id},
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_creation_tokens=result.cache_creation_tokens,
+        ),
+        store=ctx.store,
+    )
+
+
 # ── Dispatch (plugin protocol, claude_inproc) ───────────────────────
 
 
@@ -430,6 +481,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         shutil.rmtree(clone_dir, ignore_errors=True)
 
     text = (result.final_text or "").strip()
+    _record_agent_cost(ctx, result, model=model, prompt=prompt, gripe_id=gripe_id)
     if not text:
         ctx.record_failure("diagnose_gripe: empty diagnosis")
         return

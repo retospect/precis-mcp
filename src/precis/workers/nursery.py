@@ -1550,6 +1550,42 @@ def _nas_attest_fresh(ts: Any) -> bool:
     return (datetime.now(UTC) - dt).total_seconds() <= NAS_ATTEST_FRESH_MIN * 60
 
 
+def _nas_denied_remedy(entry: dict[str, Any]) -> str:
+    """The fix for one attested denial, by who macOS holds responsible
+    (``launched_by``, see :func:`precis.workers.heartbeat.tcc_launch_class`)
+    — TCC charges access to the responsible process, so the grant that
+    fixes a launchd daemon is the wrong one for an SSH-started session."""
+    exe = entry.get("exe") or "its python interpreter"
+    target = entry.get("grant_target") or exe
+    launched_by = entry.get("launched_by")
+    if launched_by == "ssh":
+        return (
+            "macOS charges this process's file access to its SSH session, not "
+            "a binary: enable System Settings > General > Sharing > Remote "
+            "Login > 'Allow full disk access for remote users', then restart "
+            "the session that runs it."
+        )
+    if launched_by == "terminal":
+        return (
+            f"macOS charges this process's file access to {target}, the app "
+            "that launched its session: grant that app Full Disk Access "
+            "(System Settings > Privacy & Security), then restart the session."
+        )
+    if launched_by == "other":
+        return (
+            f"macOS charges this process's file access to {target}: grant it "
+            "Full Disk Access (System Settings > Privacy & Security), then "
+            "restart the process."
+        )
+    return (
+        f"Full Disk Access is granted per binary and this process's "
+        f"interpreter lost it. Re-grant FDA to {target} in System Settings > "
+        f"Privacy & Security > Full Disk Access, then `launchctl kickstart -k` "
+        f"the daemon (kickstart keeps the old env, irrelevant here since FDA "
+        f"is not env)."
+    )
+
+
 def _detect_nas_denied(store: Store) -> list[Symptom]:
     """Processes (or, for not-yet-redeployed hosts, whole hosts) locked out
     of /opt/nas.
@@ -1595,7 +1631,6 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
             if not _nas_attest_fresh(entry.get("ts")):
                 continue
             path = entry.get("path") or "/opt/nas/botshome"
-            exe = entry.get("exe") or "its python interpreter"
             out.append(
                 Symptom(
                     category="nas-denied",
@@ -1604,12 +1639,7 @@ def _detect_nas_denied(store: Store) -> list[Symptom]:
                     title=f"{process} on {host} locked out of the NAS",
                     detail=(
                         f"{process} on {host}: denied reading {path} (errno "
-                        f"{entry.get('errno')}) — Full Disk Access is granted "
-                        f"per binary and this process's interpreter lost it. "
-                        f"Re-grant FDA to {exe} in System Settings > Full Disk "
-                        f"Access, then `launchctl kickstart -k` the {process} "
-                        "daemon (kickstart keeps the old env, irrelevant here "
-                        "since FDA is not env)."
+                        f"{entry.get('errno')}). " + _nas_denied_remedy(entry)
                     ),
                 )
             )

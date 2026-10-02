@@ -41,9 +41,9 @@ recurring intent.
 # 1) Mint the intent under whichever strategic owns the work.
 todo = put(
     kind="todo",
-    text="Fix gripe:42 — rate-limit edge case",
+    text="Diagnose gripe:42 — rate-limit edge case",
     parent_id=engineering_hygiene_strategic_id,
-    meta={"executor": "claude_inproc", "job_type": "fix_gripe"},
+    meta={"executor": "claude_inproc", "job_type": "diagnose_gripe"},
 )
 # 2) Link to whatever the job operates on, if anything.
 link(kind="todo", id=todo.id, target="gripe:42", rel="fixes")
@@ -124,6 +124,6 @@ rejected at mint time (above), not silently coerced.
 ## See also
 
 - [[precis-job-help]] — the kind='job' surface
-- [[precis-fix-gripe-help]] — the first concrete job_type
+- [[precis-fix-gripe-help]] — the `fix_gripe` job_type (lane OFF)
 - [[precis-auto-todo-help]] — the child_job_succeeded evaluator
 - [[precis-todo-tree-help]] — the todo tree shape

@@ -19,7 +19,7 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
@@ -38,9 +38,34 @@ gr346534, soft-deleted)
    `ts` and `ok=true`. Three known gaps are recorded on the gripe (comment 7)
    and in `precis.workers.heartbeat`'s docstring: one-shot timer
    interpreters never attest, caspar has no row to land on, and stdio serves
-   share one key. Reto's open call on the reconcile-sweep design
-   (gripe_180306) is td461151.
-2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+   share one key. The remedy text follows `launched_by`: the macOS
+   responsible process, read via `responsibility_get_pid_responsible_for_pid`.
+   That is launchd for the python, ssh for the Remote Login setting, terminal
+   for the `.app`, and container processes don't attest. Reto's open call on
+   the reconcile-sweep design (gripe_180306) is td461151.
+2. **Finish closing the fix_gripe lane once prod writes reopen.**
+   `agent_rw` went `default_transaction_read_only=on` at about 22:05Z on
+   2026-10-02, after the `backlog_groom` prio-0 write landed. Three writes
+   wait on it: td461210 as `won't-do` (evidence in its comment draft and
+   reviews/monitors-that-go-quiet.md §2), the 33 open groomer todos under
+   td375465 as `won't-do`, and cancelling queued fix_gripe jobs
+   462123–462125. Then confirm no fix_gripe job is claimed.
+3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
+   share has hung on every client since 2026-09-30, and the only rule
+   (`avail_bytes == 0`) cannot fire on a hang. Branch
+   `worktree-agent-a8ce270a39be79437` @ `2443c04d` adds `*Hung`
+   (`node_filesystem_device_error == 1`) and `*Absent` (an up node with no
+   avail series) rules for /mnt/cluster and the NAS. It is with the
+   orchestrator to land in round 2. Expect it to page at once on the known
+   hang until local-compute-6's recovery. The NAS absence rule renders only
+   once a `nas_mount_hosts` group exists, because autofs makes an idle node's
+   missing series normal.
+4. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
+   to the job meta and one `llm_call_log` row (`source='diagnose_gripe'`).
+   Whether it keeps running is Reto's call in review item
+   monitors-that-go-quiet-2. Check after deploy: rows appear and give the
+   per-day number. fix_gripe has the same gap, but its lane is off.
+5. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
@@ -56,13 +81,13 @@ gr346534, soft-deleted)
    the container claimed 53 nursery jobs and failed all 53, plus 16 axis jobs
    likewise, under an identity nobody can contact, alert on, or trace once
    `worker_logs` prunes (around 2026-10-09, after which the evidence is gone).
-   Left on the Horizon only as a pointer — Do-next 2 is the narrow read-only
+   Left on the Horizon only as a pointer — Do-next 5 is the narrow read-only
    slice of it and is still this thread's.
 2. **backlog/alert-failure-id-registry.md** — status ready; stable failure
    ids make "did host-dark fire, for which host" addressable instead of SQL
-   archaeology. Leverage over Do-next 2 and shippable now.
+   archaeology. Leverage over Do-next 5 and shippable now.
 3. **backlog/self-healing-spine.md** — Layer 1 owns worker identity, Layer 2
-   the condition registry; Do-next 2 exists because a host has no
+   the condition registry; Do-next 5 exists because a host has no
    durable identity separating "ephemeral by design" from "vanished", so
    attributability-by-container is a slice here. Last: largest, no
    independently shippable piece touching this thread.
@@ -75,30 +100,20 @@ gr346534, soft-deleted)
 
 ## Parked
 
-- **the fix_gripe self-repair lane** (**gr458326**, **gr452384**,
-  **gr456240**) — failing at every stage: a clean exit with
-  no commits counted as a failure (gr454480, fixed 2026-10-02 — see No
-  action needed), "pushed to origin" claimed and never
-  verified (43 branches stranded on the worker node, never reaching
-  origin), a hard `max_turns=20` ceiling with no escalation on complex
-  fixes, and infra-class failures (API rate limits, container
-  unavailability) consuming the same unpark-attempt budget as a real
-  failed fix. Reto ruled 2026-09-30 (Do-next 1 above): **leave it not
-  doing anything.** Superseded 2026-10-01 (td459082): **the lane pushes
-  straight to main; downstream is the publish system** (check.yml on main,
-  `origin/gated`). The code side is in: a successful run fetches the
-  agent's branch into the host checkout and squash-lands it on current main
-  with a non-force (fast-forward CAS) push, the `scripts/ship` protocol. Still
-  inert until melchior's fix checkout holds a push credential — operator
-  steps are on gr458326; until then every job skips at the dry run as before. gr456240's infra-failure classification landed 2026-10-01 from its stranded
-  branch. Side effect to watch: the reset of the 39 parked gripes to
-  `open` re-surfaced at least one already-fixed gripe as current
-  (gr458087 — the STRtree fix it proposed is in `check_via_pad_keepout`
-  and cites it; ewod-pcb re-measured 2026-09-30 and queued the close for
-  Reto). Any gripe from that reset needs "is the fix already in main?"
-  asked before it is ranked.
+- (none)
 
 ## No action needed
+
+- **the fix_gripe self-repair lane** (gr458326, gr452384, gr456240) — closed
+  by Reto's ruling 2026-10-02 (td460703, "Drop the lane, we run locally
+  session here"): lane OFF. It never delivered; every job skipped at the dry
+  run because melchior's fix checkout holds no push credential. Switch: prod
+  `service_config` row melchior/`backlog_groom` set prio 5 to 0 at
+  2026-10-02 22:04Z, so the groomer mints no `fix_gripe` todos. Re-arm only
+  on Reto's say: `precis service prio melchior backlog_groom 5`. Code and the
+  job type stay; `diagnose_scan` stays on. Threaded sessions now fix their
+  own gripes. Any gripe from the 09-30 reset still needs "is the fix already
+  in main?" asked before it is ranked.
 
 - **gr245505** — verified on prod 2026-10-02. After the 81154bc0 deploy
   (cut 2026-10-01 23:14Z), the 2 structural reviews took 4 and 11 turns

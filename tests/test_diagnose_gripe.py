@@ -164,6 +164,50 @@ def test_dispatch_writes_diagnosis_comment_and_parses_confidence(
     assert not (work_dir / "diagnose_clones" / f"gripe_{gid}").exists()
 
 
+def _ledger_rows(store: Store, gid: int) -> list[tuple]:
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT cost_usd, turns_used, errored, transport, placement "
+            "FROM llm_call_log WHERE source = 'diagnose_gripe' AND ref_id = %s",
+            (gid,),
+        ).fetchall()
+
+
+@pytest.mark.parametrize(
+    ("reply", "errored"), [(_diagnosis_reply("0.5"), False), ("   ", True)]
+)
+def test_dispatch_ledgers_the_agent_run(
+    store: Store,
+    work_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str,
+    errored: bool,
+) -> None:
+    """call_claude_agent bypasses the router, so diagnose_gripe ledgers its own
+    spend: cost on the job meta and one llm_call_log row — an empty reply
+    included, since it spent quota too."""
+    gid = _open_gripe(store, "a bug whose diagnosis costs money")
+    monkeypatch.setattr(
+        dg,
+        "_spawn_claude",
+        lambda **_kw: AgentResult(
+            final_text=reply, cost_usd=0.42, duration_s=12.34, turns_used=7
+        ),
+    )
+    ctx = _FakeCtx(store, 3, {"gripe_id": gid})
+    dg._dispatch(ctx, dg.SPEC)
+
+    assert ctx.meta_sets["cost_usd"] == 0.42
+    assert ctx.meta_sets["turns_used"] == 7
+    assert ctx.meta_sets["duration_s"] == 12.3
+    rows = _ledger_rows(store, gid)
+    assert len(rows) == 1
+    cost, turns, row_errored, transport, placement = rows[0]
+    assert float(cost) == 0.42 and turns == 7
+    assert row_errored is errored
+    assert transport == "claude_agent" and placement == "cloud"
+
+
 # ── failure paths ────────────────────────────────────────────────
 
 
