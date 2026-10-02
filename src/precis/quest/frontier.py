@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -1211,6 +1212,12 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "barrier_wrong_site",
         "adsorption_barrier",
         "barrier_screen",
+        # dicts stamped at harvest (:func:`precis.quest.compute._network_basis`
+        # / ``_network_basis_by_key``) — already dropped by ``_numeric``;
+        # listed for clarity. Ride as flags
+        # (:func:`apply_network_demotion`), never measures.
+        "network_basis",
+        "network_basis_by_key",
     }
 )
 
@@ -1412,6 +1419,18 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     # ``measures`` — ``_META_NON_MEASURE``/``_numeric`` filter the string).
     if "tier" in meta:
         flags["tier"] = meta.get("tier")
+    # The reaction network the candidate's network-dependent measures were
+    # taken on (:func:`precis.quest.compute._network_basis`): the latest
+    # harvest's basis (display) + the per-measure map the demotion reads
+    # (:func:`apply_network_demotion`, called by every ranking entry point).
+    if isinstance(meta.get("network_basis"), dict):
+        flags["network_basis"] = dict(meta["network_basis"])
+    if isinstance(meta.get("network_basis_by_key"), dict):
+        flags["network_basis_by_key"] = {
+            k: dict(b)
+            for k, b in meta["network_basis_by_key"].items()
+            if isinstance(b, dict)
+        }
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
@@ -1517,6 +1536,114 @@ def _merge_provisional_measures(
     return merged, frozenset(untrusted_keys)
 
 
+#: Competitor-set measures: each ranks the main route against OTHER species
+#: the reaction network contains, so its value depends on WHICH network was
+#: built (a ``parked`` network has fewer competitors than ``coadsorbed``, so
+#: its margins read optimistic). A margin from an older network must never
+#: rank against one from the current network —
+#: :func:`apply_network_demotion` moves them out of ``measures``.
+#: ``barrier``/``span``/``U_L``/kinetics are main-route quantities and stay
+#: (the harvest stamps their basis too, for provenance only): a newer network
+#: can only add steps, which can only LOWER a main-route span, so an older
+#: value is an upper bound — bias, not corruption. The competitor-set margins
+#: have no such bound (more competitors can flip their sign).
+NETWORK_DEPENDENT_KEYS: tuple[str, ...] = (
+    "selectivity_margin",
+    "trap_margin",
+    "P_side",
+)
+
+#: The template the neb and verify tiers build
+#: (:func:`precis.quest.compute._apply_tier_config`) — the reference network
+#: whenever any candidate carries it. Screening stays on ``parked`` by
+#: decision (R2, ``docs/backlog/pathway-nh3-network-completeness.md``), so a
+#: catpath bump must not make parked margins the reference until the neb
+#: re-runs land.
+_CURRENT_DISPATCH_TEMPLATE = "coadsorbed"
+
+
+def _version_key(v: Any) -> tuple[int, ...]:
+    """Sortable form of a dotted version string; unparseable/``None`` → ``()``,
+    which sorts below every real version."""
+    if not isinstance(v, str):
+        return ()
+    m = re.match(r"\d+(?:\.\d+)*", v.strip())
+    return tuple(int(p) for p in m.group().split(".")) if m else ()
+
+
+def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two ``network_basis`` stamps name the same reaction network:
+    equal digests when both carry one, else equal ``(template, version)``."""
+    da, db = a.get("digest"), b.get("digest")
+    if da and db:
+        return bool(da == db)
+    return (a.get("template"), a.get("version")) == (
+        b.get("template"),
+        b.get("version"),
+    )
+
+
+def _key_bases(c: Candidate) -> dict[str, dict[str, Any]]:
+    """The candidate's stamped basis for each :data:`NETWORK_DEPENDENT_KEYS`
+    key it carries (``flags['network_basis_by_key']``); empty for a legacy
+    candidate."""
+    by_key = c.flags.get("network_basis_by_key")
+    if not isinstance(by_key, dict):
+        return {}
+    return {
+        k: b
+        for k in NETWORK_DEPENDENT_KEYS
+        if isinstance(b := by_key.get(k), dict) and b
+    }
+
+
+def current_network_basis(cands: Sequence[Candidate]) -> dict[str, Any] | None:
+    """The newest network basis among the per-key bases of
+    :data:`NETWORK_DEPENDENT_KEYS` across ``cands`` (``None`` when none
+    carries one): the reference template (:data:`_CURRENT_DISPATCH_TEMPLATE`)
+    first, then the highest engine version, then one that has a digest."""
+    bases = [b for c in cands for b in _key_bases(c).values()]
+    if not bases:
+        return None
+    return max(
+        bases,
+        key=lambda b: (
+            b.get("template") == _CURRENT_DISPATCH_TEMPLATE,
+            _version_key(b.get("version")),
+            bool(b.get("digest")),
+        ),
+    )
+
+
+def apply_network_demotion(
+    cands: Sequence[Candidate], current: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Like-with-like ranking, per measure: each :data:`NETWORK_DEPENDENT_KEYS`
+    key whose stamped basis (``network_basis_by_key[key]``) differs from the
+    current one (``current``, else derived from ``cands``) is dropped from
+    ``measures`` — the raw value moves to ``flags['<key>_untrusted_value']``
+    (kept if already there), exactly like an untrusted measure, so it shows
+    in the provisional band instead of ranking. The candidate then gets
+    ``flags['network_stale'] = True`` and ``flags['network_stale_basis']`` (the
+    older basis, for the reason text). A key with no stamped basis (legacy,
+    pre-stamp candidate) is left alone. Mutates ``cands``; returns the current
+    basis used."""
+    if current is None:
+        current = current_network_basis(cands)
+    if current is None:
+        return None
+    for c in cands:
+        for k, basis in _key_bases(c).items():
+            if same_network_basis(basis, current):
+                continue
+            v = c.measures.pop(k, None)
+            if v is not None:
+                c.flags.setdefault(f"{k}{_UNTRUSTED_VALUE_SUFFIX}", v)
+            c.flags["network_stale"] = True
+            c.flags.setdefault("network_stale_basis", basis)
+    return current
+
+
 def _provisional_reasons(
     c: Candidate, objective_keys: Sequence[str], merged: dict[str, float]
 ) -> list[str]:
@@ -1552,6 +1679,13 @@ def _provisional_reasons(
             )
         if not named:
             reasons.append("selectivity unavailable")
+    if c.flags.get("network_stale"):
+        basis = c.flags.get("network_stale_basis")
+        basis = basis if isinstance(basis, dict) else {}
+        reasons.append(
+            "measured on an older reaction network "
+            f"({basis.get('template') or '?'}@{basis.get('version') or '?'})"
+        )
     if not c.converged:
         reasons.append("no converged relax")
     missing = [k for k in objective_keys if k not in merged]
@@ -1966,6 +2100,7 @@ def render_frontier_tree(store: Store, quest_id: int) -> str:
         return "_(No candidates yet.)_\n"
 
     candidates = {s.id: _candidate_from_structure(store, s) for s in structures}
+    apply_network_demotion(list(candidates.values()))
     _flag_geom_duplicates(store, list(candidates.values()), structures)
     _flag_energy_twins(list(candidates.values()), structures)
     _apply_rubric_composite(
@@ -2035,6 +2170,7 @@ def quest_frontier(
     objs = objectives or _objectives_for(store, quest_id)
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     candidates = [_candidate_from_structure(store, s) for s in structures]
+    apply_network_demotion(candidates)
     _flag_geom_duplicates(store, candidates, structures)
     _flag_energy_twins(candidates, structures)
     _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
@@ -2051,6 +2187,7 @@ def quest_frontier(
 
 __all__ = [
     "DEFAULT_OBJECTIVES",
+    "NETWORK_DEPENDENT_KEYS",
     "PARETO_X_LABEL",
     "PARETO_X_MEASURE",
     "PARETO_Y_LABEL",
@@ -2060,13 +2197,16 @@ __all__ = [
     "FrontierResult",
     "FrontierScatter",
     "ProvisionalCandidate",
+    "apply_network_demotion",
     "axis_label_for",
     "better_arrow_for",
     "build_frontier_scatter",
+    "current_network_basis",
     "leaderboard",
     "pareto_split",
     "plot_axes_for",
     "quest_frontier",
     "render_frontier_tree",
+    "same_network_basis",
     "viridis_color",
 ]

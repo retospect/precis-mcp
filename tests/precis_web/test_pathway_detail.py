@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -937,12 +939,13 @@ def test_pathway_diagram_template_uses_pixel_space_half_not_index_space() -> Non
     assert "xScale(xOf[id] + half)" not in tpl
     assert "xScale(xOf[e.source] + half)" not in tpl
     assert "xScale(xOf[e.target] - half)" not in tpl
+    assert "xScale(xOf[s.src] + half)" not in tpl
+    assert "xScale(xOf[s.tgt] - half)" not in tpl
     # The fixed pixel-space forms — half applied to the already-scaled x.
     assert "const cx = xScale(xOf[id]);" in tpl
     assert "const x0 = cx - half, x1 = cx + half;" in tpl
     assert (
-        "const x0 = xScale(xOf[e.source]) + half, x1 = xScale(xOf[e.target]) - half;"
-        in tpl
+        "const x0 = xScale(xOf[s.src]) + half, x1 = xScale(xOf[s.tgt]) - half;" in tpl
     )
 
 
@@ -1811,3 +1814,373 @@ def test_pathway_detail_kinetics_error_shows_reason(client, runtime) -> None:
     assert "kinetics did not run" in resp.text
     assert "engine 0.4.1 lacks kinetics" in resp.text
     assert "kinetics-data" not in resp.text
+
+
+# ── step folding + annotations (pathway-diagram-step-annotations.md) ────
+
+_TEMPLATE = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "precis_web"
+    / "templates"
+    / "refs"
+    / "pathway_detail.html.j2"
+)
+
+_needs_node = pytest.mark.skipif(
+    shutil.which("node") is None, reason="node is not on PATH"
+)
+
+#: (id, n_H, rel_energy) — the parked-template NO -> NH3 / H2O network the
+#: backlog item's acceptance reads: the N+O dissociation, one supply edge per
+#: hydrogenation (X -> X+H), N+O parked into N+H / O+H, NH3 and H2O leaves.
+_PARKED_NODES: tuple[tuple[str, int, float], ...] = (
+    ("NO@N", 0, 0.0),
+    ("N+O", 0, -0.2),
+    ("N+H", 1, -0.1),
+    ("NH", 1, -0.5),
+    ("NH+H", 2, -0.4),
+    ("NH2", 2, -0.6),
+    ("NH2+H", 3, -0.5),
+    ("NH3", 3, -0.9),
+    ("O+H", 1, -0.3),
+    ("OH", 1, -0.4),
+    ("OH+H", 2, -0.3),
+    ("H2O", 2, -0.7),
+)
+_PARKED_LINKS: tuple[tuple[str, str, str, float | None], ...] = (
+    ("NO@N", "N+O", "reaction", 0.6),
+    ("N+O", "N+H", "supply", None),
+    ("N+H", "NH", "reaction", 0.5),
+    ("NH", "NH+H", "supply", None),
+    ("NH+H", "NH2", "reaction", 0.4),
+    ("NH2", "NH2+H", "supply", None),
+    ("NH2+H", "NH3", "reaction", 0.3),
+    ("N+O", "O+H", "supply", None),
+    ("O+H", "OH", "reaction", 0.45),
+    ("OH", "OH+H", "supply", None),
+    ("OH+H", "H2O", "reaction", 0.35),
+)
+
+
+def _parked_graph(**link_extra: Any) -> dict[str, Any]:
+    """``_PARKED_*`` as a node_link_data graph; ``link_extra`` is merged into
+    every link (e.g. catpath's ``added``/``removed``)."""
+    return {
+        "nodes": [
+            {
+                "id": nid,
+                "energy": -1.0,
+                "energy_std": 0.0,
+                "rel_energy": e,
+                "low_confidence": False,
+                "n_H": nh,
+            }
+            for nid, nh, e in _PARKED_NODES
+        ],
+        "links": [
+            {
+                "source": s,
+                "target": t,
+                "kind": k,
+                "barrier": b,
+                "barrier_std": 0.0,
+                "delta_e": 0.0,
+                "delta_e_std": 0.0,
+                "low_confidence": False,
+                **link_extra,
+            }
+            for s, t, k, b in _PARKED_LINKS
+        ],
+    }
+
+
+def _annot_block() -> str:
+    tpl = _TEMPLATE.read_text(encoding="utf-8")
+    start = tpl.index("// pw-annot:begin")
+    end = tpl.index("// pw-annot:end")
+    return tpl[start:end]
+
+
+def _node_json(tmp_path: Path, js: str) -> Any:
+    script = tmp_path / "probe.js"
+    script.write_text(js, encoding="utf-8")
+    out = subprocess.run(
+        ["node", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    )
+    return json.loads(out.stdout)
+
+
+#: Loads the pure fold/annotation block and, for every root->leaf path of a
+#: graph, prints ``[[src, tgt, shoulder, "text"], ...]`` per path.
+_NODE_STEPS_JS = """
+const api = new Function(%(block)s + '; return {pwFoldPath, pwStepAnnotations,'
+  + ' pwFormatAnnotations, pwLinkAnnotations};')();
+const g = %(graph)s, paths = %(paths)s;
+const byPair = {};
+g.links.forEach((e) => { byPair[e.source + '\\u0001' + e.target] = e; });
+const hasOut = new Set(g.links.map((e) => e.source));
+const isLeaf = (id) => !hasOut.has(id);
+console.log(JSON.stringify(paths.map((p) => api.pwFoldPath(p, byPair).map((s) => [
+  s.src, s.tgt, s.shoulder,
+  api.pwFormatAnnotations(api.pwStepAnnotations(s, isLeaf))]))));
+"""
+
+_PROTON_DOWN = "+H⁺+e⁻ ↓"
+_NH3_ROUTE = [
+    ["NO@N", "N+O", None, "O*"],
+    ["N+O", "NH", "N+H", _PROTON_DOWN],
+    ["NH", "NH2", "NH+H", _PROTON_DOWN],
+    ["NH2", "NH3", "NH2+H", _PROTON_DOWN + " · −NH₃ ↑"],
+]
+_H2O_ROUTE_TAIL = [
+    ["N+O", "OH", "O+H", _PROTON_DOWN],
+    ["OH", "H2O", "OH+H", _PROTON_DOWN + " · −H₂O ↑"],
+]
+
+
+def _graph_paths(graph: dict[str, Any]) -> list[list[str]]:
+    from precis_web.routes.refs import _pathway_paths
+
+    ids = [n["id"] for n in graph["nodes"]]
+    return _pathway_paths(ids, graph["links"], "NH3")
+
+
+@_needs_node
+def test_pathway_fold_and_annotations_infer_from_labels_on_parked_graph(
+    tmp_path: Path,
+) -> None:
+    """Item 4 (label inference, graph with NO ``added``/``removed``): the
+    NH3 route folds to NO@N -> N+O -> NH -> NH2 -> NH3 (shoulders N+H, NH+H,
+    NH2+H), carries ``+H+e ↓`` on each hydrogenation and ``O*`` on the
+    dissociation; the O route ends ``-H2O ↑``."""
+    graph = _parked_graph()
+    paths = _graph_paths(graph)
+    assert paths[0][-1] == "NH3" and paths[1][-1] == "H2O"
+    js = _NODE_STEPS_JS % {
+        "block": json.dumps(_annot_block()),
+        "graph": json.dumps(graph),
+        "paths": json.dumps(paths),
+    }
+    got = _node_json(tmp_path, js)
+    assert got[0] == _NH3_ROUTE
+    # the O route's step 0 is the shared prefix (drawn once, by path 0); its
+    # own context would call N the spectator instead
+    assert got[1][1:] == _H2O_ROUTE_TAIL
+
+
+@_needs_node
+def test_pathway_annotations_coadsorbed_and_landing_states(tmp_path: Path) -> None:
+    """Label inference over the coadsorbed / landing-state vocabulary:
+    ``* -> NO@N`` is ``+NO ↓``, a landing state's ``~tag`` gas leaves
+    (``-NH3`` / ``-N2O`` / ``-NH2OH``), a second NO arriving is ``+NO ↓``,
+    and an explicit ``added``/``removed`` on the link wins over labels
+    (parked species in ``removed`` are not molecules leaving)."""
+    js = """
+const api = new Function(%(block)s + '; return {pwLinkAnnotations,'
+  + ' pwFormatAnnotations};')();
+const f = (a, b, l, c) => api.pwFormatAnnotations(api.pwLinkAnnotations(a, b, l || {}, c));
+console.log(JSON.stringify({
+  adsorb: f('*', 'NO@N', {kind: 'reaction'}),
+  second_no: f('N', 'N+NO', {kind: 'reaction'}),
+  nh3_gas: f('NH2+O+H', 'O~nh3', {kind: 'reaction'}),
+  n2o_gas: f('N+NO', '*~n2o', {kind: 'reaction'}),
+  nh2oh_gas: f('NH2OH', '*~nh2oh', {kind: 'desorption'}),
+  n2_gas: f('N+N+O', 'O~n2', {kind: 'reaction'}),
+  supply: f('NH+O', 'NH+O+H', {kind: 'supply'}),
+  isomer_stripped: f('NO@N', 'N+O@top', {kind: 'reaction'}, {after: [
+    {from: 'N+O@top', to: 'N+H', kind: 'supply'},
+    {from: 'N+H', to: 'NH', kind: 'reaction'}]}),
+  no_lookahead: f('NO@N', 'N+O', {kind: 'reaction'}),
+  explicit_h: f('NH', 'NH+H', {kind: 'supply', added: {H: 2}}),
+  explicit_gas: f('NH2+H', 'NH3', {kind: 'reaction', removed: {NH3: 1}}),
+  explicit_parked: f('N+O', 'N+H', {kind: 'supply', added: {H: 1}, removed: {O: 1}}),
+}));
+""".replace("%(block)s", json.dumps(_annot_block()))
+    got = _node_json(tmp_path, js)
+    up, down = "↑", "↓"
+    assert got == {
+        "adsorb": f"+NO {down}",
+        "second_no": f"+NO {down}",
+        "nh3_gas": f"−NH₃ {up}",
+        "n2o_gas": f"−N₂O {up}",
+        "nh2oh_gas": f"−NH₂OH {up}",
+        "n2_gas": f"−N₂ {up}",
+        "supply": _PROTON_DOWN,
+        "isomer_stripped": "O*",
+        "no_lookahead": "",
+        "explicit_h": f"+2H⁺+2e⁻ {down}",
+        "explicit_gas": f"−NH₃ {up}",
+        "explicit_parked": _PROTON_DOWN,
+    }
+
+
+#: Stubs just enough DOM to run the page's diagram script headlessly and
+#: dump the SVG string ``renderDiagram`` writes into #pw-diagram.
+_NODE_PAGE_JS = """
+const fs = require('fs');
+const script = fs.readFileSync(process.argv[2], 'utf-8');
+const els = {};
+const mk = () => ({
+  innerHTML: '', style: {}, dataset: {}, childElementCount: 0, value: '0',
+  classList: { toggle() {}, contains() { return false; }, add() {} },
+  setAttribute() {}, getAttribute() { return null; }, addEventListener() {},
+  appendChild() {}, querySelectorAll() { return []; }, closest() { return null; },
+});
+global.document = {
+  getElementById: (id) => els[id] || (els[id] = mk()),
+  querySelectorAll: () => [], addEventListener() {}, createElement: mk,
+  readyState: 'complete',
+};
+global.window = { location: { search: '' } };
+global.setTimeout = () => 0;
+global.CSS = { escape: (s) => s };
+(0, eval)(script);
+console.log(JSON.stringify(els['pw-diagram'].innerHTML));
+"""
+
+
+def _render_diagram_svg(tmp_path: Path, html: str) -> str:
+    """Run the page's own diagram script under node with a stub DOM and
+    return the SVG markup ``renderDiagram`` produced (no browser)."""
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.DOTALL)
+    (script,) = [s for s in scripts if "function renderDiagram" in s]
+    (tmp_path / "page.js").write_text(script, encoding="utf-8")
+    driver = tmp_path / "driver.js"
+    driver.write_text(_NODE_PAGE_JS, encoding="utf-8")
+    out = subprocess.run(
+        ["node", str(driver), str(tmp_path / "page.js")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=60,
+    )
+    svg = json.loads(out.stdout)
+    assert isinstance(svg, str) and svg.startswith("<svg")
+    return svg
+
+
+def _seed_parked(runtime: Any, graph: dict[str, Any]) -> None:
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {"substrate": "NO", "target": "NH3"},
+        },
+        body_text=None,
+    )
+
+
+@_needs_node
+def test_pathway_diagram_renders_folded_steps_with_annotations(
+    client, runtime, tmp_path: Path
+) -> None:
+    """The rendered SVG (page script run under node, stub DOM): one solid
+    hump per chemical step — 4 on the NH3 route + 2 new on the O route — no
+    dashed supply segment, 5 shoulder ticks (the X+H levels, clickable by
+    state id), 7 level columns (chemical steps only: viewBox width
+    130*5+60 = 710), and the annotation texts in step order."""
+    _seed_parked(runtime, _parked_graph())
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    svg = _render_diagram_svg(tmp_path, resp.text)
+
+    assert 'viewBox="0 0 710 300"' in svg
+    segs = re.findall(
+        r'<polyline class="pw-seg"[^>]*data-from="([^"]*)" data-to="([^"]*)"', svg
+    )
+    assert segs == [
+        ("NO@N", "N+O"),
+        ("N+O", "NH"),
+        ("NH", "NH2"),
+        ("NH2", "NH3"),
+        ("N+O", "OH"),
+        ("OH", "H2O"),
+    ]
+    assert 'stroke-dasharray="4 3"' not in svg
+    shoulders = re.findall(r'<line class="pw-shoulder"[^>]*data-state="([^"]*)"', svg)
+    assert sorted(shoulders) == ["N+H", "NH+H", "NH2+H", "O+H", "OH+H"]
+    # level labels: one per chemical node, none for the shoulder states
+    labels = re.findall(r'font-weight="bold"[^>]*>([^<(]*?)(?: \(|<)', svg)
+    assert sorted(labels) == sorted(["NO@N", "N+O", "NH", "NH2", "NH3", "OH", "H2O"])
+
+    annots = re.findall(
+        r'<text class="pw-annot" data-paths="([^"]*)"[^>]*>([^<]*)', svg
+    )
+    assert [a[1] for a in annots] == [
+        "O*",
+        _PROTON_DOWN,
+        _PROTON_DOWN,
+        _PROTON_DOWN + " · −NH₃ ↑",
+        _PROTON_DOWN,
+        _PROTON_DOWN + " · −H₂O ↑",
+    ]
+    # fade hook: the shared first step belongs to both paths, the NH3-route
+    # hydrogenations to path 0 only, the O-route ones to path 1 only
+    assert [a[0] for a in annots] == ["|0|1|", "|0|", "|0|", "|0|", "|1|", "|1|"]
+
+
+@_needs_node
+def test_pathway_diagram_annotations_survive_explicit_link_fields(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Graphs carrying catpath's own ``added``/``removed`` render the same
+    annotations as label inference (the template consumes them when
+    present): H on the supply links, the leaving molecule on the leaf link."""
+    graph = _parked_graph()
+    for e in graph["links"]:
+        if e["kind"] == "supply":
+            e["added"] = {"H": 1}
+        elif e["target"] == "NH3":
+            e["removed"] = {"NH3": 1}
+        elif e["target"] == "H2O":
+            e["removed"] = {"H2O": 1}
+    _seed_parked(runtime, graph)
+    resp = client.get("/refs/pathway/171696")
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    adds = [link["added"] for link in diagram["links"]]
+    assert adds.count({"H": 1}) == 5 and adds.count(None) == 6
+    svg = _render_diagram_svg(tmp_path, resp.text)
+    texts = re.findall(r'<text class="pw-annot"[^>]*>([^<]*)', svg)
+    assert texts[3] == _PROTON_DOWN + " · −NH₃ ↑"
+    assert texts[5] == _PROTON_DOWN + " · −H₂O ↑"
+
+
+def test_pathway_graph_payload_passes_link_added_removed_through() -> None:
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [{"id": "X"}, {"id": "Y"}, {"id": "Z"}],
+        "links": [
+            {"source": "X", "target": "Y", "kind": "supply", "added": {"H": 1}},
+            {
+                "source": "Y",
+                "target": "Z",
+                "kind": "desorption",
+                "removed": {"NH3": 1, "bad": "x", "zero": 0},
+            },
+        ],
+    }
+    payload = _pathway_graph_payload(graph)
+    assert payload is not None
+    first, second = payload["links"]
+    assert first["added"] == {"H": 1} and first["removed"] is None
+    assert second["kind"] == "desorption"
+    assert second["removed"] == {"NH3": 1} and second["added"] is None
+
+
+def test_pathway_diagram_template_has_no_dashed_supply_branch() -> None:
+    """Static guard (runs without node): the dashed supply segment is gone,
+    the fold + inference block markers are present, and the fork-probability
+    guard still skips supply links."""
+    tpl = _TEMPLATE.read_text(encoding="utf-8")
+    assert 'stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"' not in tpl
+    assert "// pw-annot:begin" in tpl and "// pw-annot:end" in tpl
+    assert "function pwFoldPath(" in tpl and "function pwLinkAnnotations(" in tpl
+    assert "if (e.kind === 'supply') { return; }" in tpl  # fork guard

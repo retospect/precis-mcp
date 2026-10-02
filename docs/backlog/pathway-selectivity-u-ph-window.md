@@ -81,3 +81,26 @@ same scalars in `results`; precis computes them if absent.
 
 - HER needs a defined H₂ desorption reference per slab; confirm the
   network's H* energy is the one CHE uses before relying on it.
+- **Measured 2026-10-02 (R2, catalysis-selectivity design note §11):**
+  replaying catpath's `viz.score_report` on 213 neb-tier candidates with
+  barriers stripped, the thermo-only branch-point margin ranks unlike the
+  barrier-based one (Spearman 0.139, top-10 overlap 0/10, 99/213 exactly
+  0). Method: rebuild each stored `meta.graph`, check that
+  `branch_points[0].margin` reproduces the stored margin (299/322 rows do;
+  the misses are all 0.13.0-era), delete `barrier`/`barrier_std` from
+  non-supply edges, rerun. Two separate statements: (i) running screening
+  on coadsorbed buys no ranking (shown); (ii) the barrier-based margin is
+  a good ranking (NOT shown — see the next point). The span-based
+  `_selectivity_section` margin reached ρ = 0.50: an unexamined lead, not
+  a result. Screening needs a criterion of its own (BEP estimate, or the
+  span form); this item owns that choice. Also: in the
+  barrier-based margin the worst branch point is a +H supply edge for
+  112/213 candidates (`HNOH -> HNOH+H`, `H2NO -> H2NO+H`), so today's
+  criterion mostly compares an H-adsorption energy against a barrier. The
+  window criterion must not inherit that. Repeatable with
+  `~/.claude/projects/-Users-reto-precis-mcp/scratch/catsel-r2/replay.py`.
+- **Decided, Reto 2026-10-02 (review-queue `catalysis-selectivity-3`):**
+  qu164903's current selectivity rankings are read as unreliable until
+  this item drops +H supply edges as branch-point competitors. No
+  ranking change ships before this item; `selectivity_margin` stays in
+  the rubric meanwhile.

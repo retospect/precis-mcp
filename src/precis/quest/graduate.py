@@ -116,7 +116,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
             continue
         # Tier-ladder quests: an in-silico barrier still owes a coadsorbed
         # (verify-tier) re-run before it earns the real-world-experiment
-        # deed — the parked/neb tier is a fragment-parking approximation.
+        # deed — the neb tier's barrier is best_first-pruned, screening has none.
         # `barrier_fidelity` (:func:`precis.quest.compute._canonicalize_barrier`)
         # tracks which tier the candidate's CURRENT canonical `barrier` came
         # from; a ladder-off quest (no `meta.fidelity_ladder`) is exempt —

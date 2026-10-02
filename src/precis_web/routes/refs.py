@@ -979,6 +979,23 @@ def _pathway_paths(
     return paths
 
 
+def _pathway_link_counts(raw: Any) -> dict[str, int] | None:
+    """A link's ``added``/``removed`` (``{species: count}``) trimmed to
+    positive-int counts, or ``None`` when absent / not a mapping — the
+    diagram's step annotations then fall back to label inference."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            out[str(k)] = n
+    return out or None
+
+
 def _pathway_graph_payload(
     graph: dict[str, Any] | None, target: str | None = None
 ) -> dict[str, Any] | None:
@@ -1017,6 +1034,12 @@ def _pathway_graph_payload(
             "delta_e": e.get("delta_e"),
             "delta_e_std": e.get("delta_e_std"),
             "low_confidence": bool(e.get("low_confidence")),
+            # catpath's per-link stoichiometry (``added`` elements,
+            # ``removed`` species) when it emits them; null on an older
+            # graph, where the diagram infers the step annotations from the
+            # state labels instead.
+            "added": _pathway_link_counts(e.get("added")),
+            "removed": _pathway_link_counts(e.get("removed")),
         }
         for e in graph.get("links", [])
         if e.get("source") is not None and e.get("target") is not None

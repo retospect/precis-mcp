@@ -586,6 +586,194 @@
     return !!(warns && warns.some((w) => w.severity === 'bad'));
   }
 
+  // ── step folding + annotation inference (docs/backlog/pathway-diagram-
+  // step-annotations.md items 1/2/4). PURE — no DOM, no closure state — so
+  // the test suite can lift this exact block (between the pw-annot markers)
+  // out of the page and run it under node. A ``supply`` edge X -> X+H
+  // followed by a reaction X+H -> XH folds into ONE step X -> XH; the X+H
+  // node becomes that step's ``shoulder`` (a tick at the hump's foot, not an
+  // x-column). Each step then carries what entered/left: read off the
+  // link's own ``added``/``removed`` when catpath emitted them, else
+  // inferred from the state ids (fragment multiset difference). State ids:
+  // ``NO@N`` (``@x`` = isomer suffix, stripped), ``N+O`` (coadsorbed
+  // fragments), ``*`` (clean slab), ``*~n2o`` / ``O~n2`` (landing state:
+  // ``~tag`` names the gas released). ──
+  // pw-annot:begin
+  const PW_MOLECULES = ['H2O', 'NH3', 'NH2OH', 'N2O', 'N2'];
+  const PW_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
+  const PW_PROTON = '+H⁺+e⁻';
+  const pwSub = (s) => String(s).replace(/\d/g, (d) => PW_DIGITS[+d]);
+
+  function pwParseState(id) {
+    const base = String(id).replace(/@[^+~]*/g, '');
+    const cut = base.indexOf('~');
+    const surfPart = cut < 0 ? base : base.slice(0, cut);
+    const tag = cut < 0 ? '' : base.slice(cut + 1).toUpperCase();
+    return {
+      surf: surfPart.split('+').filter((f) => f !== '' && f !== '*'),
+      gas: tag || null,
+    };
+  }
+
+  function pwAtoms(frags) {
+    const out = {};
+    (Array.isArray(frags) ? frags : [frags]).forEach((f) => {
+      String(f).replace(/([A-Z][a-z]?)(\d*)/g, (m, el, n) => {
+        out[el] = (out[el] || 0) + (n === '' ? 1 : +n);
+        return m;
+      });
+    });
+    return out;
+  }
+
+  // a - b over fragment arrays, as multisets
+  function pwMinus(a, b) {
+    const rest = b.slice();
+    const out = [];
+    a.forEach((f) => {
+      const i = rest.indexOf(f);
+      if (i >= 0) { rest.splice(i, 1); } else { out.push(f); }
+    });
+    return out;
+  }
+  const pwFits = (need, have) => Object.keys(need).every((el) => (have[el] || 0) >= need[el]);
+  const pwTake = (have, need) => { Object.keys(need).forEach((el) => { have[el] -= need[el]; }); };
+  function pwSameAtoms(a, b) {
+    const ks = new Set([...Object.keys(a), ...Object.keys(b)]);
+    return [...ks].every((k) => (a[k] || 0) === (b[k] || 0));
+  }
+
+  // Fold a raw root->leaf node path into chemical steps. Link ``kind`` is
+  // 'supply' | 'reaction' | 'desorption' (anything not 'supply' is chemical).
+  // ``after`` lists the raw edges beyond the step — the spectator inference
+  // looks ahead along them.
+  function pwFoldPath(path, linkByPair) {
+    const kindOf = (a, b) => {
+      const l = linkByPair[a + '\u0001' + b];
+      return (l && l.kind) || 'reaction';
+    };
+    const out = [];
+    let i = 0;
+    while (i < path.length - 1) {
+      const e = linkByPair[path[i] + '\u0001' + path[i + 1]];
+      if (!e) { i += 1; continue; }
+      let supply = null, react = null, shoulder = null, end = i + 1;
+      if (e.kind === 'supply') {
+        supply = e;
+        const e2 = i + 2 < path.length ? linkByPair[path[i + 1] + '\u0001' + path[i + 2]] : null;
+        if (e2 && e2.kind !== 'supply') { react = e2; shoulder = path[i + 1]; end = i + 2; }
+      } else {
+        react = e;
+      }
+      const after = [];
+      for (let k = end; k < path.length - 1; k++) {
+        after.push({ from: path[k], to: path[k + 1], kind: kindOf(path[k], path[k + 1]) });
+      }
+      out.push({
+        src: path[i], tgt: path[end], shoulder, supply, react, after,
+        key: path[i] + '\u0001' + (shoulder == null ? '' : shoulder) + '\u0001' + path[end],
+      });
+      i = end;
+    }
+    return out;
+  }
+
+  // What entered/left across ONE link src -> tgt: [{text, arrow}], arrow
+  // 'down' (enters), 'up' (leaves), '' (stays: spectator).
+  function pwLinkAnnotations(srcId, tgtId, link, ctx) {
+    ctx = ctx || {};
+    const kind = (link && link.kind) || 'reaction';
+    const s = pwParseState(srcId), t = pwParseState(tgtId);
+    const added = pwMinus(t.surf, s.surf), removed = pwMinus(s.surf, t.surf);
+    let nProt = 0;
+    const arrivals = [];
+    let leaving = [];
+    let spectators = [];
+    if (kind === 'supply') {
+      // reservoir feed: the H (or other bridge species) that arrives; a
+      // fragment the target dropped is parked, shown on its own branch
+      added.forEach((f) => { if (f === 'H') { nProt += 1; } else { arrivals.push(f); } });
+    } else {
+      const gasNew = t.gas && t.gas !== s.gas ? t.gas : null;
+      const gasAtoms = gasNew ? pwAtoms(gasNew) : {};
+      const aS = pwAtoms(s.surf), aT = pwAtoms(t.surf);
+      const pos = {}, neg = {};
+      new Set([...Object.keys(aS), ...Object.keys(aT), ...Object.keys(gasAtoms)]).forEach((el) => {
+        const d = (aT[el] || 0) + (gasAtoms[el] || 0) - (aS[el] || 0);
+        if (d > 0) { pos[el] = d; } else if (d < 0) { neg[el] = -d; }
+      });
+      added.forEach((f) => {
+        const need = pwAtoms(f);
+        if (!pwFits(need, pos)) { return; }
+        pwTake(pos, need);
+        if (f === 'H') { nProt += 1; } else { arrivals.push(f); }
+      });
+      if (gasNew) {
+        leaving.push(gasNew);
+      } else {
+        const bare = String(tgtId).replace(/@[^+~]*/g, '');
+        const srcBare = String(srcId).replace(/@[^+~]*/g, '');
+        if (PW_MOLECULES.includes(bare)
+            && (kind === 'desorption' || (ctx.tgtIsLeaf && bare !== srcBare))) {
+          leaving.push(bare);
+        }
+      }
+      removed.forEach((f) => {
+        const need = pwAtoms(f);
+        if (PW_MOLECULES.includes(f) && pwFits(need, neg)) { pwTake(neg, need); leaving.push(f); }
+      });
+      // dissociation: ONE fragment splits into >= 2; the pieces the route
+      // never reacts again stay behind as spectators (parked off by a later
+      // supply edge, or never consumed). Needs lookahead; none -> no label.
+      if (removed.length === 1 && added.length >= 2
+          && pwSameAtoms(pwAtoms(removed), pwAtoms(added)) && ctx.after) {
+        const consumed = (f) => ctx.after.some((ed) => ed.kind !== 'supply'
+          && pwParseState(ed.from).surf.includes(f) && !pwParseState(ed.to).surf.includes(f));
+        const stay = added.filter((f) => !consumed(f));
+        if (stay.length && stay.length < added.length) { spectators = stay; }
+      }
+    }
+    const counts = {};
+    // explicit link fields (catpath contract) win over inference
+    if (link && link.added && typeof link.added === 'object') { nProt = +(link.added.H || 0); }
+    if (link && link.removed && typeof link.removed === 'object') {
+      leaving = Object.keys(link.removed).filter((k) => PW_MOLECULES.includes(k)
+        || (t.gas != null && k.toUpperCase() === t.gas));
+      leaving.forEach((k) => { counts[k] = +link.removed[k] || 1; });
+    }
+    const out = [];
+    arrivals.forEach((f) => { out.push({ text: '+' + pwSub(f), arrow: 'down' }); });
+    if (nProt > 0) {
+      out.push({ text: nProt === 1 ? PW_PROTON : `+${nProt}H⁺+${nProt}e⁻`, arrow: 'down' });
+    }
+    spectators.forEach((f) => { out.push({ text: pwSub(f) + '*', arrow: '' }); });
+    leaving.forEach((f) => {
+      const n = counts[f] || 1;
+      out.push({ text: '−' + (n > 1 ? n : '') + pwSub(f), arrow: 'up' });
+    });
+    return out;
+  }
+
+  // Annotations for a folded step: its supply link, then its reaction link.
+  function pwStepAnnotations(step, isLeaf) {
+    const out = [];
+    if (step.supply) {
+      out.push(...pwLinkAnnotations(step.supply.source, step.supply.target, step.supply,
+        { after: step.after, tgtIsLeaf: false }));
+    }
+    if (step.react) {
+      out.push(...pwLinkAnnotations(step.react.source, step.react.target, step.react,
+        { after: step.after, tgtIsLeaf: !!(isLeaf && isLeaf(step.tgt)) }));
+    }
+    const seen = new Set();
+    return out.filter((a) => { const k = a.text + a.arrow; if (seen.has(k)) { return false; } seen.add(k); return true; });
+  }
+
+  function pwFormatAnnotations(anns) {
+    return anns.map((a) => a.text + (a.arrow === 'down' ? ' ↓' : a.arrow === 'up' ? ' ↑' : '')).join(' · ');
+  }
+  // pw-annot:end
+
   // ── fork-probability guard (slice 3 item 4) — at every state with >=2
   // outgoing CHEMICAL edges (equal n_H on both endpoints, not a supply/
   // dashed edge), branch fraction ∝ exp(-Ea/kT). Chemical steps don't
@@ -744,6 +932,50 @@
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
 
+    // ── fold supply into the reaction step — X -> X+H (supply) -> XH
+    // (reaction) is ONE chemical step X -> XH; X+H is its shoulder, not an
+    // x-column. ``chemPaths`` are the paths with shoulder nodes removed
+    // (the x-layout counts chemical steps only); ``steps`` are the unique
+    // folded steps, a shared prefix drawn once for the first path owning it;
+    // ``edgePaths[step.key]`` lists every path through a step (the fade
+    // hook, ``data-paths``). ──
+    const linkByPair = {};
+    g.links.forEach((e) => { linkByPair[e.source + '\u0001' + e.target] = e; });
+    const hasOut = new Set(g.links.map((e) => e.source));
+    const isLeaf = (id) => !hasOut.has(id);
+    const foldedPaths = paths.map((path) => pwFoldPath(path, linkByPair));
+    const shoulderIds = new Set();
+    const chemPaths = paths.map((path, pi) => {
+      const sh = new Set();
+      foldedPaths[pi].forEach((s) => {
+        if (s.shoulder != null) { sh.add(s.shoulder); shoulderIds.add(s.shoulder); }
+      });
+      return path.filter((id) => !sh.has(id));
+    });
+    const steps = [];
+    const edgePaths = {};
+    foldedPaths.forEach((fp, pi) => {
+      fp.forEach((s) => {
+        (edgePaths[s.key] = edgePaths[s.key] || []).push(pi);
+        if (edgePaths[s.key].length === 1) { s.pi = pi; steps.push(s); }
+      });
+    });
+    // A step's drawn geometry, off the lever-shifted ``rel_energy``. The
+    // hump's TS level is the reaction link's barrier above ITS source (the
+    // shoulder X+H when folded, X otherwise) — energies are exactly the
+    // stored ones; a folded hump whose TS would sit below X or XH is lifted
+    // to the higher endpoint so it still draws as a hump, not a valley.
+    function stepGeom(s) {
+      const src = byId[s.src], tgt = byId[s.tgt];
+      if (!src || !tgt || src.rel_energy == null || tgt.rel_energy == null) { return null; }
+      const sh = s.shoulder != null ? byId[s.shoulder] : null;
+      const shE = (sh && sh.rel_energy != null) ? sh.rel_energy : null;
+      const barrier = s.react ? Math.max(s.react.barrier || 0, 0) : 0;
+      let peak = (shE != null ? shE : src.rel_energy) + barrier;
+      if (shE != null) { peak = Math.max(peak, src.rel_energy, tgt.rel_energy); }
+      return { src, tgt, shE, barrier, bsd: s.react ? (s.react.barrier_std || 0) : 0, peak };
+    }
+
     // ── potential lever
     // — CHE: G_node(U) = G_node(0) + n_H(node)·U. Snapshot each node's
     // originally-stored rel_energy ONCE (repeated re-renders on every
@@ -783,12 +1015,12 @@
     // drawn, same as catpath's own ``draw_profile``. ──
     const xOf = {};
     const ownerPath = {};
-    paths.forEach((path, pi) => {
+    chemPaths.forEach((path, pi) => {
       path.forEach((id, i) => {
         if (xOf[id] == null) { xOf[id] = i; ownerPath[id] = pi; }
       });
     });
-    const maxLen = Math.max(1, ...paths.map((p) => p.length));
+    const maxLen = Math.max(1, ...chemPaths.map((p) => p.length));
 
     const W = Math.max(360, 130 * maxLen + 60);
     const H = 300;
@@ -804,17 +1036,16 @@
     // null to 0 (which would misleadingly plot it at the origin).
     let yMin = Infinity, yMax = -Infinity;
     g.nodes.forEach((nd) => {
-      if (xOf[nd.id] == null || nd.rel_energy == null) { return; }
+      // shoulder nodes (X+H) have no column but still draw a tick — in scale
+      if ((xOf[nd.id] == null && !shoulderIds.has(nd.id)) || nd.rel_energy == null) { return; }
       const sd = nd.energy_std || 0;
       yMin = Math.min(yMin, nd.rel_energy - sd);
       yMax = Math.max(yMax, nd.rel_energy + sd);
     });
-    g.links.forEach((e) => {
-      if (e.kind === 'supply' || xOf[e.source] == null || xOf[e.target] == null) { return; }
-      const src = byId[e.source];
-      if (!src || src.rel_energy == null) { return; }
-      const peak = src.rel_energy + Math.max(e.barrier || 0, 0);
-      yMax = Math.max(yMax, peak + (e.barrier_std || 0));
+    steps.forEach((s) => {
+      if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
+      const geo = stepGeom(s);
+      if (geo) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
     });
     // Ghost overlay (tier-ladder item 3) — the parked sibling's own energy,
     // re-levered by ITS OWN n_H, folds into the y-scale too so the ghost
@@ -888,77 +1119,79 @@
     // fades against when the legend selects/hovers a path. A shared prefix
     // belongs to every path through it, so it stays lit whichever of them
     // is picked. ──
-    const nodePaths = {}, edgePaths = {};
+    const nodePaths = {};
     paths.forEach((path, pi) => {
-      path.forEach((id, i) => {
-        (nodePaths[id] = nodePaths[id] || []).push(pi);
-        if (i < path.length - 1) {
-          const k = path[i] + '\u0001' + path[i + 1];
-          (edgePaths[k] = edgePaths[k] || []).push(pi);
-        }
-      });
+      path.forEach((id) => { (nodePaths[id] = nodePaths[id] || []).push(pi); });
     });
     const pAttr = (list) => ` data-paths="|${(list || []).join('|')}|"`;
 
-    // edges — walked per path, in server order (target path first); an
-    // edge already drawn by an earlier (higher-priority) path is skipped so
-    // a shared prefix draws once, not once per overlapping branch. Reaction
-    // (solid hump + Ea label) vs supply/branch (dashed, secondary), in the
-    // owning path's colour.
-    const linkByPair = {};
-    g.links.forEach((e) => { linkByPair[e.source + '\u0001' + e.target] = e; });
-    const drawnEdges = new Set();
-    paths.forEach((path, pi) => {
-      const color = PATH_COLORS[pi % PATH_COLORS.length];
-      for (let i = 0; i < path.length - 1; i++) {
-        const key = path[i] + '\u0001' + path[i + 1];
-        if (drawnEdges.has(key)) { continue; }
-        const e = linkByPair[key];
-        if (!e) { continue; }
-        drawnEdges.add(key);
-        const src = byId[e.source], tgt = byId[e.target];
-        if (!src || !tgt || xOf[e.source] == null || xOf[e.target] == null) { continue; }
-        // No energy on one end — nothing to plot a hump/line between.
-        if (src.rel_energy == null || tgt.rel_energy == null) { continue; }
-        // ``half`` is a PIXEL margin (see its definition above) — apply it
-        // AFTER scaling the step index to pixel space, not before. Mixing
-        // the two (index-space +/- a pixel count, then scaling the sum)
-        // put humps/edges thousands of px off-canvas.
-        const x0 = xScale(xOf[e.source]) + half, x1 = xScale(xOf[e.target]) - half;
-        if (e.kind === 'supply') {
-          parts.push(`<line${pAttr(edgePaths[key])} x1="${x0}" y1="${py(src.rel_energy)}" x2="${x1}" y2="${py(tgt.rel_energy)}" `
-            + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
-          continue;
+    // steps — folded chemical steps (``steps`` above: path order, target
+    // path first, a shared prefix drawn once for the first path owning it).
+    // Every step is a solid hump in its owning path's colour — there are no
+    // dashed supply segments any more: the supply drop is the step's
+    // shoulder tick, and what entered/left is its annotation.
+    steps.forEach((s) => {
+      const color = PATH_COLORS[s.pi % PATH_COLORS.length];
+      if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
+      // No energy on one end — nothing to plot a hump between.
+      const geo = stepGeom(s);
+      if (!geo) { return; }
+      const pa = pAttr(edgePaths[s.key]);
+      // ``half`` is a PIXEL margin (see its definition above) — apply it
+      // AFTER scaling the step index to pixel space, not before. Mixing
+      // the two (index-space +/- a pixel count, then scaling the sum)
+      // put humps/edges thousands of px off-canvas.
+      const x0 = xScale(xOf[s.src]) + half, x1 = xScale(xOf[s.tgt]) - half;
+      const xm = (x0 + x1) / 2;
+      const peakY = geo.peak, bsd = geo.bsd;
+      // humpPoints runs entirely in pixel-x/energy-y space (x0/x1 are
+      // already scaled above) — map ONLY y through py() when emitting
+      // points; re-scaling x here would double-apply xScale.
+      const curvePts = humpPoints(x0, geo.src.rel_energy, x1, geo.tgt.rel_energy, peakY);
+      const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
+      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"/>`);
+      // shoulder — the X+H level (its energy is real) as a small tick at
+      // the hump's foot, joined to X by a thin solid drop; clickable like a
+      // level, and it moves with U like any other n_H-carrying node.
+      if (s.shoulder != null && geo.shE != null) {
+        const ys = py(geo.shE);
+        const tx1 = x0 + Math.min(10, (x1 - x0) * 0.25);
+        const shNode = byId[s.shoulder];
+        const shTip = `${s.shoulder} (${geo.shE >= 0 ? '+' : ''}${geo.shE.toFixed(2)})${shNode && shNode.n_H != null ? ` n_H=${shNode.n_H}` : ''}`;
+        parts.push(`<line class="pw-shoulder-drop"${pa} x1="${x0}" y1="${py(geo.src.rel_energy)}" x2="${x0}" y2="${ys}" stroke="${color}" stroke-width="1" opacity="0.5"/>`);
+        parts.push(`<line class="pw-shoulder"${pa} data-state="${esc(s.shoulder)}" x1="${x0}" y1="${ys}" x2="${tx1}" y2="${ys}" stroke="${color}" stroke-width="3" stroke-linecap="round"><title>${esc(shTip)}</title></line>`);
+        parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
+          + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+      }
+      const hasEa = geo.barrier > 1e-3;
+      if (hasEa) {
+        if (bsd > 1e-6) {
+          parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
         }
-        const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
-        // humpPoints now runs entirely in pixel-x/energy-y space (x0/x1 are
-        // already scaled above) — map ONLY y through py() when emitting
-        // points; re-scaling x here would double-apply xScale. Keep the raw
-        // (pre-join) points array around too, so the obstacle sampling below
-        // can walk it segment-by-segment instead of re-parsing the string.
-        const curvePts = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY);
-        const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
-        parts.push(`<polyline class="pw-seg"${pAttr(edgePaths[key])} points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"/>`);
-        if ((e.barrier || 0) > 1e-3) {
-          const xm = (x0 + x1) / 2;
-          const bsd = e.barrier_std || 0;
-          if (bsd > 1e-6) {
-            parts.push(`<line${pAttr(edgePaths[key])} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
-          }
-          let lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
-          // Fork-probability annotation (slice 3 item 4) — only present
-          // when this edge's source cleared the guard in
-          // computeForkProbabilities (numeric barriers, no low_confidence/
-          // warned-bad endpoint); a fork with a hole in the data carries no
-          // percentage at all rather than a fabricated one.
-          const forkPct = forkProbs[e.source + '\u0001' + e.target];
-          if (forkPct != null) { lab += ` (${Math.round(forkPct * 100)}%)`; }
-          labelQueue.push({
-            x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
-            text: lab, fontSize: 7.5, color, bold: false, title: null,
-            paths: edgePaths[key],
-          });
-        }
+        let lab = bsd > 1e-6 ? `Ea=${geo.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${geo.barrier.toFixed(2)}`;
+        // Fork-probability annotation (slice 3 item 4) — only present
+        // when this edge's source cleared the guard in
+        // computeForkProbabilities (numeric barriers, no low_confidence/
+        // warned-bad endpoint); a fork with a hole in the data carries no
+        // percentage at all rather than a fabricated one.
+        const forkPct = s.react ? forkProbs[s.react.source + '\u0001' + s.react.target] : null;
+        if (forkPct != null) { lab += ` (${Math.round(forkPct * 100)}%)`; }
+        labelQueue.push({
+          x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
+          text: lab, fontSize: 7.5, color, bold: false, title: null,
+          paths: edgePaths[s.key],
+        });
+      }
+      // step annotation — what entered/left, above the hump (and above its
+      // Ea label: both share the gap column, so the order-preserving stack
+      // keeps this one on top). Fades with the path like every element.
+      const anns = pwStepAnnotations(s, isLeaf);
+      if (anns.length) {
+        labelQueue.push({
+          x: xm, y: py(peakY + bsd) - 4 - (hasEa ? 10 : 0), anchorX: xm, anchorY: py(peakY),
+          text: pwFormatAnnotations(anns), fontSize: 8, color, bold: false, title: null,
+          paths: edgePaths[s.key], cls: 'pw-annot',
+        });
       }
     });
 
@@ -1043,7 +1276,8 @@
         const ly = lab.y + (lab.y < lab.anchorY ? 3 : -3);
         parts.push(`<line${pAttr(lab.paths)} x1="${lab.x}" y1="${ly}" x2="${lab.anchorX}" y2="${lab.anchorY}" stroke="#94a3b8" stroke-width="0.5"/>`);
       }
-      parts.push(`<text${pAttr(lab.paths)} x="${lab.x}" y="${lab.y}" font-size="${lab.fontSize}"${weightAttr} fill="${lab.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(lab.text)}${titleEl}</text>`);
+      const clsAttr = lab.cls ? ` class="${lab.cls}"` : '';
+      parts.push(`<text${clsAttr}${pAttr(lab.paths)} x="${lab.x}" y="${lab.y}" font-size="${lab.fontSize}"${weightAttr} fill="${lab.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(lab.text)}${titleEl}</text>`);
     });
 
     // measure traces — a value/twin scale per measure, dashed when its
