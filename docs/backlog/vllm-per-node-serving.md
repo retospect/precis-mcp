@@ -111,10 +111,9 @@ where preemption rate is high enough that aggregate throughput drops.
   `cluster-scheduling.md` §F.
 * Retiring llama.cpp. The two coexist; llama.cpp keeps whatever it still
   serves.
-* Re-adding the retired third box (`spark`) to **cluster duty**. It stays out
-  of every service group and capability list — Reto's call of 2026-08-29,
-  unchanged. Using it as a **bench** is a different thing and is in scope:
-  see below.
+* Bringing `spark` back on cluster duty is its own change (review item
+  local-compute-5, the role split), not part of this item. The 2026-08-29
+  paper-box rule was reversed on 2026-10-02 (decisions log).
 * Choosing the model on paper. Slice 0 measures; `scripts/llm_eval/`
   (15 models × 17 tasks through the router) scores.
 
@@ -153,6 +152,19 @@ local placement).
   must be operator-registered.
 
 ## Open questions / decisions log
+
+**Decided 2026-10-02 (Reto, review item local-compute-4), supersedes the
+spark-as-bench-only framing below where they conflict.**
+- spark is back on cluster duty. The three Sparks (castor, pollux, spark;
+  all GB10 Blackwell, so NVFP4 runs on any of them) split into one
+  exclusive big model, one local embeddings and one GPU science-lanes box.
+  Which host takes which role: review item local-compute-5.
+- Slice 0 is first and decides **model and server**. Candidates: gpt-oss
+  120B (MXFP4) and Nemotron 3 Super 120B-A12B (NVFP4). Servers: vLLM and
+  SGLang. Measure each pair at **1, 8 and 32 concurrent streams** on one
+  box; report single-stream tok/s, aggregate tok/s, p95 time-to-first-token,
+  and peak KV use at each level. The 32-stream target and the feedback
+  controller that holds it: `llm-dispatch-feedback-controller.md`.
 
 **Decided 2026-09-29 (Reto):** castor first, pollux later for throughput if
 needed; replication over sharding; one model fully resident per box.

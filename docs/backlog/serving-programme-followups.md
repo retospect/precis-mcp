@@ -40,8 +40,9 @@ Re-run: `scripts/mcp-loadtest --ramp 1,8,32,64 --duration 15`.
    load ~1.4), install `uv`, remove the `/opt/precis` orphan. Inspected
    2026-09-29: idle, no precis units, `/etc/precis` gone, 2.8 TB free, driver
    580.159.03 / CUDA 13.0. Docker Hub egress is confirmed blocked (20 s
-   timeout); ghcr.io works. **A bench role is not cluster duty** — do not add
-   spark to any service group or capability list. Verified 2026-09-30: spark runs
+   timeout); ghcr.io works. spark rejoins cluster duty (Reto 2026-10-02,
+   review item local-compute-4); its service groups follow the role split in
+   local-compute-5. Verified 2026-09-30: spark runs
    Postgres 16.15 with pgvector 0.5.1 installed; still confirm prod's major
    version matches before planning the frozen world as a restore
    (`eval-run-spine.md`'s decisions log, "Check the Postgres major version

@@ -7,8 +7,8 @@ LLM traffic is local: 406,527 calls in the 7 days to 2026-10-01 all went
 cloud (~$298); the castor/pollux/spark LLM servers have been stopped, GPUs
 idle, DeepSeek-V4-Flash and Qwen3 weights staged on castor, last local call
 2026-09-10. Order: make the share measurable, bring the summariser back,
-then the big model on one spark, then the rungs that consume it.
-**Last reviewed:** 2026-10-01
+then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2026-10-02), then the rungs that consume them.
+**Last reviewed:** 2026-10-02
 **Worktree:** `local-compute`
 **Active:** yes (2026-10-01, Reto: "Bring it back we will").
 
@@ -26,7 +26,7 @@ then the big model on one spark, then the rungs that consume it.
    work and the planned external-HPC row (Reto 2026-10-02,
    `reto-llm-capacity-1`). Ranked above 3-5 because each of them picks a
    placement this table is the input for: the summariser slice (3), the
-   big-model slot (4), embedder ownership (5). First rows already read
+   big-model slot (4), embedder load (7), and the Spark role split (4). First rows already read
    (decisions log in the item).
 3. **backlog/local-summarizer.md** — the first workload to go local again
    (~1.8M-chunk backlog, bulk and content-light); gated on
@@ -43,9 +43,11 @@ then the big model on one spark, then the rungs that consume it.
    `resource_slots` holds `melchior|llm:glm-4.7-flash` cap 4. The `small`
    chain buys `z-ai/glm-4.7-flash` from OpenRouter, so the first
    qualification is the local quantisation against its own cloud original.
-   castor/pollux serve nothing. **Next, after the round deploy carries
-   d2abcbc7 to melchior** (the local endpoint is loopback-only there): on
-   melchior, build the set (`--n 40`), then `precis llm eval glm-4.7-flash
+   castor/pollux serve nothing. Gold set BUILT 2026-10-02 on melchior's
+   prod checkout (40 tasks, 10 non-prose; gitignored
+   `scripts/llm_eval/gold_set/local/summarize_v1.json`). **Next, after the
+   round-2 deploy carries the placement guard (fcf5b1c1, 85c79e02)** (the
+   local endpoint is loopback-only on melchior): `precis llm eval glm-4.7-flash
    --compare z-ai/glm-4.7-flash --tier small --gold <set> --placement-a
    local --placement-b cloud`. The placement flags are strict: a local-arm
    reply that ran on the cloud raises `PlacementMismatch`, and a chain with
@@ -61,23 +63,41 @@ then the big model on one spark, then the rungs that consume it.
    result): candidate mean ≥ incumbent mean − 0.05 and no transport errors.
    No absolute mean goes on a model card until the false-zero share is
    known.
-4. **Single-spark big model** — **backlog/vllm-per-node-serving.md Slice 0**
-   (Nemotron NVFP4 vs gpt-oss control; go/no-go for the oversubscription
-   design), after its two spark prerequisites,
-   **backlog/serving-programme-followups.md item 1** (spark `/mnt/cluster`
-   NFS hang) and **item 2** (spark host prep), moved here from
-   serving-programme 2026-10-01; plus **backlog/local-serving-eval.md**
-   (moved with them). No session is running that evaluation (verified
-   2026-10-01). Unblocks 6, and picks the model 3 may run on.
-5. **backlog/embedder-capacity-ownership.md** — the current bottleneck,
-   under pre-search, dedup and minting all at once; two Reto decisions
-   inside. Reto 2026-10-02 (td461158): **session-mcp-shared-server files
-   the review item** (owner, fleet capacity number, host-level admission
-   gr450123 (a), shared vector cache), so this thread does not file a
-   second one. This thread supplies the embedder rows and the fleet
-   capacity number from 2, then builds what Reto rules.
-6. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4); wires
+4. **Three Sparks back on duty; Slice 0 picks model + server.** Reto
+   2026-10-02 (review item local-compute-4, ruled 21:03Z) reversed the
+   2026-08-29 paper-box rule: castor, pollux and spark (all GB10) split
+   into one exclusive big model, one local embeddings and one GPU science
+   lanes. Which host takes which role is review item **local-compute-5**
+   (recommended: castor big model, pollux science, spark embeddings); the
+   inventory overlay change follows that answer, as a branch for the
+   orchestrator. In order:
+   a. **backlog/serving-programme-followups.md items 1-2** — spark
+      `/mnt/cluster` NFS hang, spark host prep. Now duty prerequisites,
+      not bench prep.
+   b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
+      Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
+      one box (spec in its decisions log). Runs on spark as the bench while
+      it holds no traffic. It picks the model 3 may run on, and unblocks 5
+      and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
+   c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
+      plus scheduled OS/driver updates for all three Sparks inside the round
+      deploy window (Reto's ruling 4).
+5. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4b); wires
    the model Slice 0 picks into the tier ladder.
+6. **backlog/llm-dispatch-feedback-controller.md** — ~32 running sequences
+   per serving box, held by a feedback loop on the server's
+   running/waiting/KV metrics; card `max_parallel`, slot capacity and the
+   server limit set from one number; overflow to the cloud rung;
+   `graph-maintenance-queue.md` (Horizon 1) as the deferrable feed. After
+   Slice 0 (4b) and Slice 1 serving.
+7. **backlog/embedder-capacity-ownership.md** — decided (Reto 20:47Z
+   2026-10-02, td461158, §Decided in the item): this thread holds aggregate
+   embedder capacity; owner is the embedder service; provisional capacity
+   12.7–13.6 texts/s mixed, query p50 ~2 s / p95 ~5 s (gr459844 rig, a
+   floor); host-level admission and a shared vector cache declined. Left:
+   the N-client load test once local LLM rungs share the box with the
+   embedder, so after 5; then delete the item. The capacity plan (2) carries
+   the embedder rows meanwhile.
 
 ## Horizon
 
@@ -95,9 +115,8 @@ then the big model on one spark, then the rungs that consume it.
 6. **backlog/vllm-per-node-serving.md beyond Slice 0**,
    **backlog/llamacpp-fleet-ops.md** — wait on 4's plateau; per-node model
    choice against a measured ceiling.
-7. **backlog/spark-provisioning.md**, **backlog/torch-extras-conflict.md**
-   — spark host and venv hygiene the single-spark model (Do next 4)
-   stands on.
+7. **backlog/torch-extras-conflict.md** — venv hygiene on the Sparks
+   (spark-provisioning moved up into Do-next 4c).
 8. **backlog/slullama-hpc-placement.md** — the HPC chain rung; leg 2 is
    blocked on external cluster access, so it stays last. Reto registers the
    melchior tunnel key with Meluxina himself (ruled 2026-10-02, review item
@@ -116,7 +135,7 @@ then the big model on one spark, then the rungs that consume it.
 
 - **embed drain** — **gr456034**, **gr454865**: the `embed_batch` backlog is
   not draining, by a different mechanism than the closed gr347576, and
-  `chase_trigger` carries a dead batch-size knob. Unparks when Do-next 5
+  `chase_trigger` carries a dead batch-size knob. Unparks when Do-next 7
   (embedder capacity ownership) picks this up — it is the same bottleneck seen
   from the queue end. The **ingest-fidelity** half of what was parked here as
   one cluster left on 2026-10-01: Reto ruled it its own thread,

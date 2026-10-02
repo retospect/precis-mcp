@@ -26,3 +26,23 @@ the pull-if-missing guard checks the wrong image. Unblock path (not
 executed): pre-seed python:3.12-slim-bookworm from melchior
 (`docker save | ssh | docker load`), then 45-tts.yml. Only the 1.5 s
 inter-article pause needs this; blocked, polish.
+
+## Scheduled OS and driver updates for the three Sparks
+
+_Added 2026-10-02; Reto's ruling 4 in review item local-compute-4._
+
+castor, pollux and spark get OS package update+upgrade and NVIDIA driver
+updates on a schedule, applied **inside the round deploy window**, one box
+at a time so the big-model, embedding and science roles never all go down
+together. The current state, read 2026-09-29: spark runs driver
+580.159.03 / CUDA 13.0, and the twins are unread. Deliverables:
+- An ansible play (`deploy/playbooks/`) that drains the host's lanes, runs
+  `apt update && apt full-upgrade`, applies the pinned driver version,
+  reboots if the kernel or driver changed, and waits for its heartbeat
+  and served models to come back before moving to the next host.
+- A pinned driver/CUDA version in the inventory, so an upgrade never pulls
+  a driver the serving stack (Slice 0's vLLM/SGLang image) was not tested
+  on.
+- The cadence (monthly in the first round window of the month, proposed)
+  recorded in `deploy/README.md`.
+Deploy-role change: goes to the orchestrator as a branch, not a qland.
