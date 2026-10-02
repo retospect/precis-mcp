@@ -141,6 +141,27 @@ def test_fill_refuses_to_overwrite_and_the_bulk_form_needs_something_to_fill() -
     assert _seq(tree, "st3") == _revcomp(SCAFFOLD[0:8])
 
 
+def test_a_refused_second_target_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bulk fill vets every target before writing any: a refusal on
+    st1 (after st0 vetted fine) leaves st0 unsequenced too."""
+    from precis_se.chain import vocab as chain_vocab
+
+    real = chain_vocab.vet_sequence
+
+    def vet(sequence: Any, nucleic: str, where: str) -> str | None:
+        if where.endswith(" st1"):
+            raise chain_vocab.ChainError(f"{where}: refused for the test")
+        return real(sequence, nucleic, where)
+
+    monkeypatch.setattr(chain_vocab, "vet_sequence", vet)
+    tree = _tree()
+    with pytest.raises(OpError, match="fill_complement st1: refused for the test"):
+        apply_ops(tree, [{"op": "fill_complement"}])
+    assert [s for s in ("st0", "st1", "st2", "st3", "st4") if _seq(tree, s)] == []
+
+
 def test_a_loop_with_no_letters_is_refused_by_name_and_loops_supplies_it() -> None:
     # st3 grows a second domain across to h1 through a 4-nt loop — on a
     # stretch st1 would otherwise hold, so take st1 off that stretch first.
