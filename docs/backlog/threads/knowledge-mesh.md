@@ -35,26 +35,34 @@ graph-health-metrics, five parked gripes, and the seam with
    (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
    the answer to "a viewer for the memory" once 5 lands.
-3. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
+3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
+   (td461151): file the cheap duplicate-hub reconcile (gr180306), in
+   order: re-check on embed, text-version watermark, a distance cutoff
+   calibrated on hand-merged twins, one backfill, a pre-publish check.
+   It reuses stranded branch `gripe_180306`. Ranked above the measures
+   chain because duplicate hubs split the evidence that the monthly
+   papers (qu459585) cite. Sibling gr462136 (an errored dedup judgment
+   is read as "different") is owned by claims-and-evidence.
+4. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
    taxon + reference + convention, and it unblocks
    knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
    (Reto: `component_spec_values` joins `measures` in the same
    migration).
-4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
-   the pillar review). Right after 3 because it builds on the same taxon
+   the pillar review). Right after 4 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-5. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+6. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
    after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 4 only
+   blockers folded into the item, re-vet before build. Below 5 only
    because its recall AC is cheap to run at any time.
-6. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+7. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
