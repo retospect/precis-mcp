@@ -17,7 +17,10 @@ then the big model on one spark, then the rungs that consume it.
 1. **Local share is measurable**: `get(kind='llm', id='/placement')`
    (routed vs landed, per tier and day). `placement_routed` (migration 0179)
    fills only from the round-1 deploy on. Read the number before and after
-   each item below.
+   each item below. **Baseline, read in prod 2026-10-02 after the round-1
+   deploy (567f207f):** 7 days, 0/366,218 calls landed local (0.0%), $338
+   billed — small 354,373 calls / $28, medium 11,301 / $96, big 537 /
+   $210, frontier 7 / $3.
 2. **backlog/llm-capacity-plan.md** — what model runs where, on what
    memory and slots, against what demand, with the competing GPU/container
    work and the planned external-HPC row (Reto 2026-10-02,
@@ -68,7 +71,11 @@ then the big model on one spark, then the rungs that consume it.
    2026-10-01). Unblocks 6, and picks the model 3 may run on.
 5. **backlog/embedder-capacity-ownership.md** — the current bottleneck,
    under pre-search, dedup and minting all at once; two Reto decisions
-   inside.
+   inside. Reto 2026-10-02 (td461158): **session-mcp-shared-server files
+   the review item** (owner, fleet capacity number, host-level admission
+   gr450123 (a), shared vector cache), so this thread does not file a
+   second one. This thread supplies the embedder rows and the fleet
+   capacity number from 2, then builds what Reto rules.
 6. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4); wires
    the model Slice 0 picks into the tier ladder.
 
