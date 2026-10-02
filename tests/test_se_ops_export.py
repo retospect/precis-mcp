@@ -42,6 +42,7 @@ from precis_se.ops_export import (
     render_ops,
 )
 from precis_se.persist import tree_to_json
+from precis_se.pockets import PocketSpec
 
 
 def _tree(ops: list[dict[str, Any]]) -> SeTree:
@@ -517,6 +518,8 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "pending_state_poses": "derived",
         "pending_states": "derived",
         "pending_transitions": "derived",
+        # add_pocket, emitted per pocket after the measures
+        "pockets": "op",
         "ports": "op",
         "posed_by_state": "derived",
         # the COMPOSED world placement; local_pose/local_rot above are the
@@ -559,6 +562,11 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "block": "op",
         "datum": "op",
         "max_value": "op",
+        # emitted as the slug; replay re-resolves it (and re-derives unit)
+        "measurand": "op",
+        # re-resolved from the slug on replay — the same node in the same
+        # database; NOT_CARRIED names the cross-database caveat
+        "measurand_ref": "op",
         "min_value": "op",
         "name": "op",
         "origin": "op",
@@ -589,6 +597,7 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "origin": "op",
         "re": "op",
     },
+    "PocketSpec": {"name": "op", "regions": "op", "shape": "op"},
     "ThreadingSpec": {"a": "op", "b": "op"},
     "DomainSpec": {
         "end": "op",
@@ -615,6 +624,7 @@ _RECORDS = {
     "MeasureSpec": MeasureSpec,
     "BomLine": BomLine,
     "NoteSpec": NoteSpec,
+    "PocketSpec": PocketSpec,
     "ThreadingSpec": ThreadingSpec,
     "DomainSpec": DomainSpec,
 }

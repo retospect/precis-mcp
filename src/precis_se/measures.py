@@ -22,6 +22,14 @@ coexist when a point has been chosen inside a declared band. ``origin``
 (``user | proposed``) records who owns the number: a propose job revises
 its own freely and treats the user's as contract.
 
+**Measurands** (docs/backlog/se-region-property-layer.md slice A): a
+measure may name a ``measurand`` taxon node instead of a closed-registry
+unit; the write snapshots its slug, ref id and se unit onto the row
+(:mod:`precis_se.properties.measurand`), so ``unit`` may then hold any
+node's unit (``C/m^2``, ``e``, ``''`` for a categorical node) and unit
+agreement below compares those snapshots unchanged. The four registry
+units map onto seeded nodes (:data:`LEGACY_MEASURANDS`).
+
 **Stack-up** (:func:`stackup`) follows each measure's relation chain to
 an anchor (a measure with a declared ``value`` — or, new, a declared
 band — and no usable relation past it), accumulating a running
@@ -50,6 +58,17 @@ _RELATION_KEYS = frozenset({"source", "offset", "tol", "scale", "feature"})
 #: counts (gear teeth), dimensionless ratios, degrees. Relations require
 #: unit agreement; ``scale`` is dimensionless so it never converts.
 UNITS = ("m", "count", "ratio", "deg")
+
+#: The legacy enum's four units as ``measurand`` taxon slugs (seeded by
+#: core migration 0180 where missing). ``unit='m'`` and
+#: ``measurand='length'`` are the same claim; a legacy ``unit=`` write
+#: still stores no measurand, so pre-measurand rows stay byte-identical.
+LEGACY_MEASURANDS: dict[str, str] = {
+    "m": "length",
+    "count": "count",
+    "ratio": "ratio",
+    "deg": "angle",
+}
 
 #: Who owns a number (se-kind.md slice 4, the RFdiffusion
 #: fixed-motif/free-scaffold split): ``user`` is contract, ``proposed``
@@ -86,6 +105,24 @@ class MeasureSpec:
     #: the pose frame. A column on ``se_measures``, not a JSON key: it
     #: is addressable (the datums view, stale-datum findings).
     datum: str | None = None
+    #: The measurand's taxon slug, snapshotted at write
+    #: (:mod:`precis_se.properties.measurand`); ``None`` = a legacy
+    #: ``unit=``-only measure. With a measurand, ``unit`` above is the
+    #: snapshot of the node's se unit (``''`` for a categorical node).
+    measurand: str | None = None
+    #: The measurand's taxon ref id — identity; ``measurand`` is the
+    #: portable name the ops export re-resolves.
+    measurand_ref: int | None = None
+
+
+def is_geometric(m: MeasureSpec) -> bool:
+    """Is this a measure the datum evaluator computes — a length off the
+    cad envelope? A legacy measure (no measurand) in metres is; with a
+    measurand, only the legacy length node is (an absorption wavelength
+    is in metres too, but is not a distance between features)."""
+    if m.unit != "m":
+        return False
+    return m.measurand is None or m.measurand == LEGACY_MEASURANDS["m"]
 
 
 def validate_relation(raw: dict[str, Any]) -> dict[str, Any]:
@@ -317,9 +354,9 @@ def stackup(measures: list[MeasureSpec]) -> list[StackupResult]:
                 # scale is dimensionless, so a relation never converts —
                 # its endpoints must agree (module docstring).
                 res.problem = (
-                    f"unit mismatch: {cur_key} is in {cur.unit!r} but its "
-                    f"relation source {src_key} is in {src.unit!r} — "
-                    "relations require unit agreement (scale is a "
+                    f"unit mismatch: {cur_key} is in {_unit_label(cur)} but "
+                    f"its relation source {src_key} is in {_unit_label(src)} "
+                    "— relations require unit agreement (scale is a "
                     "dimensionless factor, not a converter)"
                 )
                 res.problem_kind = "unit_mismatch"
@@ -419,10 +456,18 @@ def _agreement_problem(
     return (None, None)
 
 
+def _unit_label(m: MeasureSpec) -> str:
+    """``'m'``, or ``'C/m^2' (measurand surface-charge-density)`` — the
+    unit a stack-up message compares, naming the measurand it came from."""
+    if m.measurand is None:
+        return repr(m.unit)
+    return f"{m.unit!r} (measurand {m.measurand})"
+
+
 def _quantity(v: float, unit: str) -> str:
     """``2.46 nm`` for metre values (the shared neat formatter), a bare
     ``:g`` plus the unit word for the rest of the closed registry — the
     one formatter every measure-facing string uses."""
     if unit == "m":
         return format_quantity(v, "length")
-    return f"{v:g} {unit}"
+    return f"{v:g} {unit}".rstrip()

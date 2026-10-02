@@ -26,9 +26,29 @@ malformed body) and lenient on **existence** — ``face:body.side9``
 parses fine and fails only at resolve, returning ``value=None`` plus a
 naming note.
 
-v1 vocabulary, exactly: ``frame`` · ``port:<name>`` ·
+Vocabulary (:data:`VOCABULARY`), exactly: ``frame`` · ``port:<name>`` ·
 ``face:<instance>.<tag>`` · ``axis:<instance>`` · ``face:largest`` ·
-``face:normal=<±x|±y|±z>`` · ``face:perp=assembly``. Tags are the cad
+``face:normal=<±x|±y|±z>`` · ``face:perp=assembly`` — plus the region
+selectors (docs/backlog/se-region-property-layer.md slice A):
+
+- ``patch:<instance>.<tag>@<u>,<v>+<w>x<h>`` — a ``w``×``h`` rectangle on
+  face ``tag``, centred ``(u, v)`` from the face centre (metres). ``u``
+  runs along the face's first in-plane axis — block-local ``+x``
+  projected onto the face plane (``+y`` when the face is ⊥ x) — and
+  ``v = n × u``; so a ``set_pose`` carries the patch with the block.
+  Resolves to the patch centre with the face normal.
+- ``ring:<instance>.<tag>`` — the boundary loop of face ``tag`` (a rim,
+  an edge loop). Resolves to the loop's face-plane centre with the face
+  normal as the loop axis.
+- ``sites:<block>/<seam>/s<i>..s<j>`` — hexfold's seam-site addressing,
+  sites ``i`` to ``j`` inclusive.
+- ``atoms:<block>[<indices>]`` — atom ordinals in the block's bound
+  structure, ``0,3,5-9`` (ranges inclusive).
+
+``sites:``/``atoms:`` parse strictly but never resolve here: their
+coordinates live in the bound ``structure`` design, which this pure
+module does not load — :func:`resolve` checks the block exists and is
+bound, then returns the lenient unresolvable note. Tags are the cad
 kernel's own (``bottom``, ``top``, ``side<N>``, ``cut``). Compound
 predicates live in :func:`rank_datums`, not the grammar — ranking
 picks the default, the grammar only names an override.
@@ -47,7 +67,8 @@ a ranking heuristic, never a measurement.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -56,7 +77,7 @@ from precis.cad import dsl as cad_dsl
 from precis.cad.primitives import CircularFrustum, Placed, PolyFrustum
 from precis.cad.vec import aabb_corners, as_vec3
 from precis.cad.vec import pose as cad_pose
-from precis_se.measures import MeasureError, MeasureSpec, declared_band
+from precis_se.measures import MeasureError, MeasureSpec, declared_band, is_geometric
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
 #: Default assembly/insertion direction when a caller supplies none —
@@ -64,12 +85,32 @@ from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 #: direction.
 _DEFAULT_ASSEMBLY_DIR = np.array([0.0, 0.0, 1.0])
 
+#: The whole selector grammar, one line — every shape error names it.
+VOCABULARY = (
+    "frame | port:<name> | face:<instance>.<tag> | axis:<instance> | "
+    "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly | "
+    "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
+    "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>]"
+)
+
+_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+_PATCH_RE = re.compile(rf"^(?P<u>{_NUM}),(?P<v>{_NUM})\+(?P<w>{_NUM})x(?P<h>{_NUM})$")
+_SITES_RE = re.compile(r"^s(?P<lo>\d+)\.\.s(?P<hi>\d+)$")
+_ATOMS_RE = re.compile(r"^(?P<block>[^\[\]]+)\[(?P<idx>[^\[\]]*)\]$")
+_INDEX_ITEM_RE = re.compile(r"^(?P<lo>\d+)(?:-(?P<hi>\d+))?$")
+#: Ceiling on the atoms one ``atoms:`` selector expands to.
+_MAX_ATOMS = 100_000
+
 
 @dataclass(frozen=True)
 class Selector:
     """A parsed ``datum``/``feature`` selector. ``kind`` is one of
-    ``frame | port | face | axis``; a ``face`` with ``instance=None``
-    is a predicate (``pred`` ∈ ``largest | normal | perp_assembly``)."""
+    ``frame | port | face | axis | patch | ring | sites | atoms``; a
+    ``face`` with ``instance=None`` is a predicate (``pred`` ∈ ``largest |
+    normal | perp_assembly``). ``patch`` carries its centre ``(u, v)`` and
+    extent ``(w, h)`` in metres; ``sites``/``atoms`` name their block in
+    ``instance``, ``sites`` its ``seam`` and inclusive ``lo..hi``,
+    ``atoms`` its sorted, de-duplicated ``indices``."""
 
     kind: str
     instance: str | None = None
@@ -77,6 +118,14 @@ class Selector:
     name: str | None = None  # port name
     pred: str | None = None
     arg: str | None = None  # e.g. '+x' for pred='normal'
+    u: float | None = None
+    v: float | None = None
+    w: float | None = None
+    h: float | None = None
+    seam: str | None = None
+    lo: int | None = None
+    hi: int | None = None
+    indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -125,24 +174,32 @@ class MeasureValue:
 def parse_selector(text: Any) -> Selector:
     """Parse one selector string — strict on shape, silent on existence
     (module docstring). Raises :class:`MeasureError` on anything outside
-    the v1 vocabulary."""
+    :data:`VOCABULARY`."""
     if not isinstance(text, str) or not text.strip():
         raise MeasureError(
             f"datum selector must be a non-empty string, got {text!r} — "
-            "vocabulary: frame | port:<name> | face:<instance>.<tag> | "
-            "axis:<instance> | face:largest | face:normal=<±x|±y|±z> | "
-            "face:perp=assembly"
+            f"vocabulary: {VOCABULARY}"
         )
     s = text.strip()
     if s == "frame":
         return Selector(kind="frame")
     head, sep, body = s.partition(":")
     if not sep or not body:
-        raise MeasureError(
-            f"unknown datum selector {s!r} — vocabulary: frame | "
-            "port:<name> | face:<instance>.<tag> | axis:<instance> | "
-            "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly"
-        )
+        raise MeasureError(f"unknown datum selector {s!r} — vocabulary: {VOCABULARY}")
+    if head == "patch":
+        return _parse_patch(s, body)
+    if head == "ring":
+        inst, dot, tag = body.rpartition(".")
+        if not dot or not inst.strip() or not tag.strip() or "@" in body:
+            raise MeasureError(
+                f"ring selector is 'ring:<instance>.<tag>' (the boundary loop "
+                f"of that face), got {s!r} — vocabulary: {VOCABULARY}"
+            )
+        return Selector(kind="ring", instance=inst.strip(), tag=tag.strip())
+    if head == "sites":
+        return _parse_sites(s, body)
+    if head == "atoms":
+        return _parse_atoms(s, body)
     if head == "port":
         if "." in body or not body.strip():
             raise MeasureError(f"port selector needs a plain name, got {s!r}")
@@ -169,9 +226,84 @@ def parse_selector(text: Any) -> Selector:
             )
         return Selector(kind="face", instance=inst.strip(), tag=tag.strip())
     raise MeasureError(
-        f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: "
-        "frame | port:<name> | face:<instance>.<tag> | axis:<instance> | "
-        "face:largest | face:normal=<±x|±y|±z> | face:perp=assembly"
+        f"unknown datum selector prefix {head!r} in {s!r} — vocabulary: {VOCABULARY}"
+    )
+
+
+def _parse_patch(s: str, body: str) -> Selector:
+    """``patch:<instance>.<tag>@<u>,<v>+<w>x<h>`` — finite numbers, a
+    positive extent."""
+    shape = (
+        f"patch selector is 'patch:<instance>.<tag>@<u>,<v>+<w>x<h>' (centre "
+        f"u,v from the face centre, extent w×h, metres), got {s!r} — "
+        f"vocabulary: {VOCABULARY}"
+    )
+    face, at, rect = body.partition("@")
+    inst, dot, tag = face.rpartition(".")
+    if not at or not dot or not inst.strip() or not tag.strip():
+        raise MeasureError(shape)
+    m = _PATCH_RE.match(rect.strip())
+    if m is None:
+        raise MeasureError(shape)
+    u, v, w, h = (float(m[k]) for k in ("u", "v", "w", "h"))
+    if not all(math.isfinite(x) for x in (u, v, w, h)):
+        raise MeasureError(f"patch numbers must be finite, got {s!r}")
+    if w <= 0.0 or h <= 0.0:
+        raise MeasureError(f"patch extent w×h must be positive, got {s!r}")
+    return Selector(
+        kind="patch", instance=inst.strip(), tag=tag.strip(), u=u, v=v, w=w, h=h
+    )
+
+
+def _parse_sites(s: str, body: str) -> Selector:
+    """``sites:<block>/<seam>/s<i>..s<j>`` — ``i ≤ j``."""
+    parts = body.split("/")
+    shape = (
+        f"sites selector is 'sites:<block>/<seam>/s<i>..s<j>' (hexfold seam "
+        f"sites i..j inclusive), got {s!r} — vocabulary: {VOCABULARY}"
+    )
+    if len(parts) != 3 or not all(p.strip() for p in parts):
+        raise MeasureError(shape)
+    block, seam, span = (p.strip() for p in parts)
+    m = _SITES_RE.match(span)
+    if m is None:
+        raise MeasureError(shape)
+    lo, hi = int(m["lo"]), int(m["hi"])
+    if lo > hi:
+        raise MeasureError(f"sites range s{lo}..s{hi} runs backwards in {s!r}")
+    return Selector(kind="sites", instance=block, seam=seam, lo=lo, hi=hi)
+
+
+def _parse_atoms(s: str, body: str) -> Selector:
+    """``atoms:<block>[<indices>]`` — comma-separated ordinals and
+    inclusive ``a-b`` ranges, at least one."""
+    shape = (
+        f"atoms selector is 'atoms:<block>[<indices>]' (atom ordinals, e.g. "
+        f"[0,3,5-9]), got {s!r} — vocabulary: {VOCABULARY}"
+    )
+    m = _ATOMS_RE.match(body)
+    if m is None or not m["block"].strip():
+        raise MeasureError(shape)
+    items = [i.strip() for i in m["idx"].split(",")]
+    if not items or any(not i for i in items):
+        raise MeasureError(shape)
+    out: set[int] = set()
+    for item in items:
+        im = _INDEX_ITEM_RE.match(item)
+        if im is None:
+            raise MeasureError(shape)
+        lo = int(im["lo"])
+        hi = int(im["hi"]) if im["hi"] is not None else lo
+        if lo > hi:
+            raise MeasureError(f"atoms range {item!r} runs backwards in {s!r}")
+        if hi - lo >= _MAX_ATOMS or len(out) + (hi - lo + 1) > _MAX_ATOMS:
+            raise MeasureError(
+                f"atoms selector names more than {_MAX_ATOMS} atoms in {s!r} — "
+                "address a region that large with a patch or a sites span"
+            )
+        out.update(range(lo, hi + 1))
+    return Selector(
+        kind="atoms", instance=m["block"].strip(), indices=tuple(sorted(out))
     )
 
 
@@ -392,6 +524,45 @@ def resolve(
             point=np.asarray(placed.xform.t, dtype=float),
             normal=placed.xform.apply_dir(np.array([0.0, 0.0, 1.0])),
         )
+    if sel.kind in ("sites", "atoms"):
+        return err(_atomic_region_note(tree, sel))
+    if sel.kind in ("patch", "ring"):
+        target = sel.instance or node.name
+        placed = _placed(tree, target, env_override)
+        if placed is None:
+            return err(f"block {target!r} has no parseable envelope")
+        frame = _face_frame(placed, sel.tag or "")
+        if frame is None:
+            tags = ", ".join(sorted(_face_geometry(placed))) or "none"
+            return err(f"no face tagged {sel.tag!r} on block {target!r} (has: {tags})")
+        p_l, n_l, u_l, v_l, (u_lo, u_hi), (v_lo, v_hi) = frame
+        if sel.kind == "ring":
+            return ResolvedDatum(
+                selector=text,
+                kind="ring",
+                resolved=f"ring:{target}.{sel.tag}",
+                point=placed.xform.R @ p_l + placed.xform.t,
+                normal=placed.xform.apply_dir(n_l),
+            )
+        u = float(sel.u or 0.0)
+        v = float(sel.v or 0.0)
+        slack = 1e-9 * max(u_hi - u_lo, v_hi - v_lo, 1e-30)
+        if not (
+            u_lo - slack <= u <= u_hi + slack and v_lo - slack <= v <= v_hi + slack
+        ):
+            return err(
+                f"patch centre ({u:g}, {v:g}) lies off face {target}.{sel.tag}, "
+                f"which spans u∈[{u_lo:g}, {u_hi:g}], v∈[{v_lo:g}, {v_hi:g}] m "
+                "(the face's bounding extent)"
+            )
+        centre_l = p_l + u * u_l + v * v_l
+        return ResolvedDatum(
+            selector=text,
+            kind="patch",
+            resolved=_selector_text(replace(sel, instance=target)),
+            point=placed.xform.R @ centre_l + placed.xform.t,
+            normal=placed.xform.apply_dir(n_l),
+        )
     # face
     target = sel.instance or node.name
     placed = _placed(tree, target, env_override)
@@ -443,6 +614,99 @@ def resolve(
     )
 
 
+def _face_frame(
+    placed: Placed, tag: str
+) -> tuple[Any, Any, Any, Any, tuple[float, float], tuple[float, float]] | None:
+    """Face ``tag``'s block-LOCAL frame: plane point (the ray exit along
+    the normal from the AABB centre — :func:`_face_geometry`'s point),
+    unit normal, the in-plane ``u``/``v`` axes (module docstring's
+    convention), and the face's bounding extent along each, measured from
+    the plane point over the local AABB corners. ``None`` when no planar
+    face carries the tag."""
+    prim = placed.prim
+    lo, hi = prim.aabb_local()
+    centre = (as_vec3(lo) + as_vec3(hi)) / 2.0
+    for f in prim.faces_local():
+        if f.tag != tag:
+            continue
+        n = as_vec3(f.normal)
+        n = n / float(np.linalg.norm(n))
+        hits = prim.ray_hits_local(centre, n)
+        if not hits:
+            return None
+        p = centre + max(b for _a, b in hits) * n
+        u = np.array([1.0, 0.0, 0.0]) - float(n[0]) * n
+        if float(np.linalg.norm(u)) < 1e-9:
+            u = np.array([0.0, 1.0, 0.0]) - float(n[1]) * n
+        u = u / float(np.linalg.norm(u))
+        v = np.cross(n, u)
+        corners = np.array(aabb_corners(lo, hi)) - p
+        us, vs = corners @ u, corners @ v
+        return (
+            p,
+            n,
+            u,
+            v,
+            (float(us.min()), float(us.max())),
+            (float(vs.min()), float(vs.max())),
+        )
+    return None
+
+
+def _index_text(indices: tuple[int, ...]) -> str:
+    """Sorted ordinals back to ``0,3,5-9`` — runs of three or more
+    collapse to a range."""
+    out: list[str] = []
+    i = 0
+    while i < len(indices):
+        j = i
+        while j + 1 < len(indices) and indices[j + 1] == indices[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append(f"{indices[i]}-{indices[j]}")
+        else:
+            out.extend(str(x) for x in indices[i : j + 1])
+        i = j + 1
+    return ",".join(out)
+
+
+def same_region(a: str | None, b: str | None) -> bool:
+    """Do two selector strings name the same region? Compared parsed,
+    so ``patch:b.top@0,0+1e-3x1e-3`` and ``…@0.0,0.0+0.001x0.001`` agree;
+    an unparseable string compares as text."""
+    if a is None or b is None:
+        return a == b
+    try:
+        return parse_selector(a) == parse_selector(b)
+    except MeasureError:
+        return a.strip() == b.strip()
+
+
+def _atomic_region_note(tree: SeTree, sel: Selector) -> str:
+    """Why a ``sites:``/``atoms:`` selector does not resolve here — the
+    lenient-existence note (module docstring): the block is missing, it
+    binds no structure, or (the normal case) its atom coordinates live in
+    the bound structure design this pure resolver does not load."""
+    name = sel.instance or ""
+    node = tree.blocks.get(name)
+    if node is None:
+        return f"no block {name!r} — {sel.kind}: names the block that owns the atoms"
+    owner = tree.blocks.get(node.template) if node.template else node
+    owner = owner or node
+    if owner.bound_kind != "structure" or not owner.bound:
+        return (
+            f"block {name!r} binds no structure design — {sel.kind}: "
+            "addresses atoms of a bound structure (bind_structure or "
+            "generate first)"
+        )
+    return (
+        f"{sel.kind}: on {name!r} addresses atoms of structure "
+        f"{owner.bound!r}, whose coordinates this resolver does not load — "
+        "the region is declared; its geometry resolves when a property "
+        "computer reads the structure"
+    )
+
+
 def _selector_text(sel: Selector) -> str:
     if sel.kind == "frame":
         return "frame"
@@ -450,6 +714,15 @@ def _selector_text(sel: Selector) -> str:
         return f"port:{sel.name}"
     if sel.kind == "axis":
         return f"axis:{sel.instance}"
+    if sel.kind == "patch":
+        u, v, w, h = (repr(float(x or 0.0)) for x in (sel.u, sel.v, sel.w, sel.h))
+        return f"patch:{sel.instance}.{sel.tag}@{u},{v}+{w}x{h}"
+    if sel.kind == "ring":
+        return f"ring:{sel.instance}.{sel.tag}"
+    if sel.kind == "sites":
+        return f"sites:{sel.instance}/{sel.seam}/s{sel.lo}..s{sel.hi}"
+    if sel.kind == "atoms":
+        return f"atoms:{sel.instance}[{_index_text(sel.indices)}]"
     if sel.pred == "largest":
         return "face:largest"
     if sel.pred == "normal":
@@ -548,6 +821,18 @@ def evaluate_measure(
             notes=(
                 f"measure unit is {spec.unit!r}; a feature measurement is a "
                 "length in m — nothing to derive",
+            ),
+        )
+    if not is_geometric(spec):
+        # A metre-valued measurand that is not a feature distance (an
+        # absorption wavelength): the region is its datum, not a ruler.
+        return MeasureValue(
+            None,
+            spec.unit,
+            None,
+            notes=(
+                f"measurand {spec.measurand!r} is not a feature distance — "
+                "nothing to derive from geometry",
             ),
         )
     sel_text = spec.datum or "frame"

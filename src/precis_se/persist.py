@@ -9,7 +9,8 @@ from ``0005``, ``se_topology`` — the atomic mode's L2 threading, and from
 ``0015`` the nucleic-acid domain's ``kind='domain'`` route rows beside it
 (one table, two kinds, one retire pass) — from
 ``0007``, ``se_optics`` — the design's FRET medium/pump context, ONE live
-row per design rather than a ledger — from ``0010``)
+row per design rather than a ledger — from ``0010``, and ``se_pockets``
+— block-row keyed like ``se_ports`` — from ``0018``)
 reached over the store's public connection surface (``store.tx()`` /
 ``store.pool.connection()``) — a plugin never joins core's mixin list.
 
@@ -109,6 +110,8 @@ from precis_se.chain.vocab import DomainSpec
 from precis_se.measures import MeasureSpec
 from precis_se.notes import NoteSpec
 from precis_se.ops import ConnectSpec, PortSpec, SeBlock, SeTree, compose_world_pose
+from precis_se.pockets import PocketSpec
+from precis_se.properties.measurand import measurand_resolver
 
 log = logging.getLogger(__name__)
 
@@ -138,8 +141,11 @@ _CONNECT_COLS = (
 )
 _MEASURE_COLS = (
     "block, block_uid, name, value, relation, strength, reason, min_value, "
-    "max_value, origin, unit, datum"
+    "max_value, origin, unit, datum, measurand, measurand_ref_id"
 )
+#: ``se_pockets`` (migration ``0018_se_regions.sql``) — block-row keyed
+#: like ``se_ports``, written in lockstep with the fresh block ids.
+_POCKET_COLS = "block_id, name, shape, regions"
 _BOM_COLS = (
     "block, block_uid, a_block, a_block_uid, a_port, b_block, b_block_uid, "
     "b_port, item_kind, item, qty, uom, reason"
@@ -244,6 +250,15 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                     (block_ids,),
                 )
                 port_rows = cur.fetchall()
+            pocket_rows: list[dict[str, Any]] = []
+            if block_ids:
+                cur.execute(
+                    f"SELECT {_POCKET_COLS} FROM se_pockets "
+                    "WHERE retired_at IS NULL AND block_id = ANY(%s) "
+                    "ORDER BY id ASC",
+                    (block_ids,),
+                )
+                pocket_rows = cur.fetchall()
             cur.execute(
                 f"SELECT {_CONNECT_COLS} FROM se_connects "
                 "WHERE ref_id = %s AND retired_at IS NULL "
@@ -357,6 +372,13 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
             pose_source=p["pose_source"],
             rot_source=p["rot_source"],
         )
+    for k in pocket_rows:
+        block_row = by_id.get(k["block_id"])
+        if block_row is None:  # pragma: no cover — defensive only
+            continue
+        tree.blocks[block_row["name"]].pockets[k["name"]] = PocketSpec(
+            name=k["name"], shape=k["shape"], regions=list(k["regions"] or [])
+        )
     for c in connect_rows:
         tree.connects.append(
             ConnectSpec(
@@ -384,6 +406,12 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 origin=m["origin"],
                 unit=m["unit"],
                 datum=m["datum"],
+                measurand=m["measurand"],
+                measurand_ref=(
+                    int(m["measurand_ref_id"])
+                    if m["measurand_ref_id"] is not None
+                    else None
+                ),
             )
         )
     for b in bom_rows:
@@ -476,6 +504,9 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     # (handler, web reader, jobs) then resolves a cross-design template the
     # same way, and a new reader cannot forget to (:func:`foreign_resolver`).
     tree.foreign = foreign_resolver(store)
+    # Same reasoning for ``measurand=`` on a later measure op (the web
+    # workbench's dry run applies pure ops to a loaded tree).
+    tree.measurands = measurand_resolver(store)
     return tree
 
 
@@ -566,7 +597,11 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
             name: PortSpec(**_known(PortSpec, p))
             for name, p in (d.get("ports") or {}).items()
         }
-        node = SeBlock(**{**_known(SeBlock, d), "ports": ports})
+        pockets = {
+            name: PocketSpec(**_known(PocketSpec, k))
+            for name, k in (d.get("pockets") or {}).items()
+        }
+        node = SeBlock(**{**_known(SeBlock, d), "ports": ports, "pockets": pockets})
         tree.blocks[node.name] = node
     # "equals load_tree's for the same rows" (docstring) includes pose:
     # a payload from BEFORE this engine fix has no local_pose/local_rot,
@@ -599,6 +634,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
     if store is not None:
         attach_catalog(store, tree)
         tree.foreign = foreign_resolver(store)
+        tree.measurands = measurand_resolver(store)
     return tree
 
 
@@ -920,6 +956,12 @@ def save_tree(
             (ref_id,),
         )
         c.execute(
+            "UPDATE se_pockets SET retired_at = now() "
+            "WHERE retired_at IS NULL AND block_id IN "
+            "(SELECT id FROM se_blocks WHERE ref_id = %s)",
+            (ref_id,),
+        )
+        c.execute(
             "UPDATE se_connects SET retired_at = now() "
             "WHERE ref_id = %s AND retired_at IS NULL",
             (ref_id,),
@@ -1033,6 +1075,12 @@ def save_tree(
                         port.rot_source,
                     ),
                 )
+            for pocket in node.pockets.values():
+                c.execute(
+                    "INSERT INTO se_pockets (block_id, name, shape, regions) "
+                    "VALUES (%s,%s,%s,%s)",
+                    (name_to_id[name], pocket.name, pocket.shape, list(pocket.regions)),
+                )
         for conn_spec in tree.connects:
             # Canonicalize the endpoint order so the unordered-pair
             # uniqueness ops.py promises is exactly what the stored tuple
@@ -1066,8 +1114,9 @@ def save_tree(
             c.execute(
                 "INSERT INTO se_measures "
                 "(ref_id, block, block_uid, name, value, relation, strength, "
-                " reason, min_value, max_value, origin, unit, datum) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " reason, min_value, max_value, origin, unit, datum, "
+                " measurand, measurand_ref_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     m.block,
@@ -1082,6 +1131,8 @@ def save_tree(
                     m.origin,
                     m.unit,
                     m.datum,
+                    m.measurand,
+                    m.measurand_ref,
                 ),
             )
         for note in tree.notes:
@@ -1208,6 +1259,12 @@ def retire_design(store: Any, ref_id: int) -> int:
         store.retire_ref(ref_id, conn=conn)
         conn.execute(
             "UPDATE se_ports SET retired_at = now() "
+            "WHERE retired_at IS NULL AND block_id IN "
+            "(SELECT id FROM se_blocks WHERE ref_id = %s)",
+            (ref_id,),
+        )
+        conn.execute(
+            "UPDATE se_pockets SET retired_at = now() "
             "WHERE retired_at IS NULL AND block_id IN "
             "(SELECT id FROM se_blocks WHERE ref_id = %s)",
             (ref_id,),

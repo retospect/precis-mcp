@@ -36,6 +36,11 @@ pure ``chain_*`` rules the same way ``fasten`` does — computed by
 :func:`precis_se.chain.drc.findings`, folded into the one findings list
 here, detailed in that module's docstring.
 
+**Declared-but-unchecked measurands** (``measurand_unchecked``, warn):
+a measure naming a taxon measurand that no computer in
+:data:`precis_se.properties.COMPUTERS` evaluates — every non-geometric
+measurand until the region property layer's slice B lands its first.
+
 **Connect geometric plausibility** (:mod:`precis_se.geometry_plausibility`,
 gr337040 + gr338426) closes the gap the DOF probe and the mechanism-demand
 checks (§3/3b above) both leave open: neither ever looks at whether the
@@ -63,8 +68,9 @@ from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import stability as se_stability
 from precis_se.chain import drc as se_chain_drc
-from precis_se.measures import StackupResult, stackup
+from precis_se.measures import StackupResult, declared_band, is_geometric, stackup
 from precis_se.ops import SeBlock, SeTree, effective_envelope
+from precis_se.properties import is_checked
 from precis_se.validate import (
     _KERNEL_BAND,
     _KERNEL_TARGET,
@@ -527,15 +533,48 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
 
+    # 5a. declared-but-unchecked measurands (se-kind.md's rule; the
+    # region property layer's slice A): a measure naming a measurand no
+    # registered computer evaluates is stored intent nothing checks —
+    # say so on every read rather than let a band look enforced.
+    for m in tree.measures:
+        if is_checked(m.measurand):
+            continue
+        band = declared_band(m)
+        declared = (
+            f"band [{band[0]:g}, {band[1]:g}] {m.unit}".rstrip()
+            if band is not None
+            else (
+                f"value {m.value:g} {m.unit}".rstrip()
+                if m.value is not None
+                else "declaration"
+            )
+        )
+        findings.append(
+            ValidationIssue(
+                rule="measurand_unchecked",
+                subject=f"{m.block}.{m.name}",
+                detail=(
+                    f"measurand {m.measurand!r} (tn{m.measurand_ref}) has no "
+                    f"registered computer — its {declared} on "
+                    f"{m.datum or 'frame'} is stored but nothing computes a "
+                    "realised value to check it against"
+                ),
+                severity="warn",
+            )
+        )
+
     # 5b. unit-slip advisory: a declared value dwarfing the whole posed
     # design is millimetres-as-metres until proven otherwise. Honest skip
     # (no finding either way) when nothing has an envelope to scale by.
     extent = _design_extent(tree)
     if extent > 0.0:
         for m in tree.measures:
-            if m.unit != "m":
+            if not is_geometric(m):
                 # counts/ratios/degrees have no business being compared
-                # to a spatial extent (slice 4's unit registry).
+                # to a spatial extent (slice 4's unit registry), and
+                # neither has a metre-valued measurand that is not a
+                # feature distance (an absorption wavelength).
                 continue
             if m.value is not None and abs(m.value) > _MAGNITUDE_FACTOR * extent:
                 findings.append(

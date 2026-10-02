@@ -37,6 +37,7 @@ from precis_se.chain.protocol import op_make_steps
 from precis_se.chain.relax import op_relax_chain
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
+from precis_se.properties.measurand import measurand_resolver
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
 from precis_se.simp_bridge import SimpRequest, prepare_simp
 from precis_se.state_arg import resolve_state_arg
@@ -164,6 +165,11 @@ def apply_ops_with_atomic(
     Returns a compact echo of every atomic store-aware op (for the caller's
     response), or ``None`` when there were none."""
     roster = all_op_names()
+    if tree.measurands is None:
+        # ``measurand=`` on add_measure/set_measure/add_pocket resolves
+        # through the taxonomy — the one store read the pure measure ops
+        # need, wired the ``tree.foreign`` way.
+        tree.measurands = measurand_resolver(store)
     echoes: list[str] = []
     pending_generates: list[PendingGenerate] = []
     pending_joins: list[PendingJoin] = []

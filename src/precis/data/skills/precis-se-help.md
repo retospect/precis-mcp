@@ -165,6 +165,9 @@ written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
   when declared, else beyond `tol` of `value`, else not exactly `value`.
 - `set_measure` / `remove_measure` — `block`, `name` (set needs ≥1
   field; no explicit nulls — remove then re-add)
+- `measurand=` (charge, contact angle, field…), region selectors
+  (`patch:`/`ring:`/`sites:`/`atoms:`) and `add_pocket`/`set_pocket`/
+  `remove_pocket` + `view='pockets'` — see `precis-se-regions-help`.
 
 ## Ops — modes, binding, fabrication
 
