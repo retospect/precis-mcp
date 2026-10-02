@@ -33,33 +33,40 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
    ranking has shipped. Left: catpath 0.23.0 (NO+NO coupling, NH₂OH
    scission, template-level `network_digest`) → `uv lock -P autocatpath`
    → the neb-tier re-run of pw455722's candidate (steps 5–6).
-2. **backlog/pathway-diagram-step-annotations.md** +
+2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
+   operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
+   Pd(111). Plan (stage-0 potential validation, levels from computed x(U)
+   steps, β re-run of the top 10) awaits approval in review-queue
+   `catalysis-selectivity-16`; no compute before it. Precis-side fixes
+   (struct_relax lattice write-back, preflight on H-loaded slabs) can
+   start.
+3. **backlog/pathway-diagram-step-annotations.md** +
    **backlog/catpath-desorption-link-kind.md** (its first slice, moved
    here from chemistry Horizon 2) — independent of 1, parallel. The web
    half (fold + label inference) has shipped; left: the catpath
    `added`/`removed`/`kind` link fields, then Reto's look at pw455722
    (the shoulder question).
-3. **backlog/pourbaix-bulk-verdict-job.md** →
+4. **backlog/pourbaix-bulk-verdict-job.md** →
    **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
-   network (2026-10-02); independent of 1 and 2. A candidate whose bulk
+   network (2026-10-02); independent of 1–3. A candidate whose bulk
    dissolves across the operating window cannot be the catalyst, so it is
    ruled out before selectivity is spent on it (qu202468). The job (A)
    builds now; the gate (B) waits on A and on Reto's operating point.
-4. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
-   named; blocked by 1 because a window over an incomplete network is
-   the wrong window. Post-processing only, so cheap once 1 lands. Also
+5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
+   named; blocked by 1 and 2 because a window over an incomplete network
+   or the wrong substrate is the wrong window. Post-processing only, so cheap once 1 lands. Also
    owns a screening criterion that ranks: R2 (2026-10-02) measured that
    thermo-only margins do not.
-5. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
-   spent; needs 4's `U_sel` to pick the decisive edges.
+6. **backlog/pathway-kinetics-promotion-gate.md** — where barriers are
+   spent; needs 5's `U_sel` to pick the decisive edges.
 
 ## Horizon
 
 1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — owned by
-   chemistry (its Horizon 1); Do-next 5 decides where NEB runs, this
+   chemistry (its Horizon 1); Do-next 6 decides where NEB runs, this
    item makes NEB run at all. Kinetic margins wait on it.
 2. **backlog/pathway-conditions-effects-report.md** — chemistry's report
-   for qu164903; consumes the window scalars from Do-next 4 instead of
+   for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
 
 ## Parked
@@ -77,9 +84,9 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
   edits here bump the catpath version through chemistry's
   `catpath-wheel-version-reuse.md` path, never a second wheel.
 - **plugin-split** owns `pathway-presentation-shared-module.md`; if it
-  lands before Do-next 2, the diagram change goes into it.
+  lands before Do-next 3, the diagram change goes into it.
 - `pathway-viewer-ux-batch.md` item 3 (where H₂O leaves) is subsumed by
-  Do-next 2; the rest of that item stays with chemistry.
-- **roadmap-quest** owns promotion dispatch; Do-next 5 changes the
+  Do-next 3; the rest of that item stays with chemistry.
+- **roadmap-quest** owns promotion dispatch; Do-next 6 changes the
   promotion rule; re-dispatch and infra retries now keep each candidate's
   own rung (`quest/compute.py::_redispatch_tier`, `_retry_tier`).

@@ -299,7 +299,23 @@ precis quest tick 7 --dry-run  # print the assembled context, no LLM call
 precis quest tick 7 --compute  # ALSO simulate proposed candidates (GPU relax)
 precis quest dossier 7         # print the dossier
 precis quest frontier 7        # the Pareto frontier of candidate materials
+precis quest redispatch 7      # re-score every candidate on the deployed engine
+precis quest backfill-network-basis 7          # dry run: count stampable measures
+precis quest backfill-network-basis 7 --apply  # write the stamps
 ```
+
+`redispatch` re-runs each candidate at its **own highest completed rung**,
+not a blanket neb. So a verify-tier candidate costs a full verify pass
+(3+ seeds, about 2 h each on one GPU), and a quest with many verified
+candidates is an expensive call. It is meant for manual use after an engine
+deploy, not for a loop. It collapses onto existing jobs when the engine
+token is unchanged.
+
+A margin measured on an older reaction network (another catpath template or
+version) does not rank. It shows as provisional with the reason "measured on
+an older reaction network (template@version)" until that candidate is
+re-measured. `backfill-network-basis` stamps the network on pre-stamp
+candidates, but only where a completed pathway reproduces the stored value.
 
 **Searches go local first.** A tick's `searches` hit our own graph (papers,
 findings, drafts, concepts, memories) before anything outside. Semantic

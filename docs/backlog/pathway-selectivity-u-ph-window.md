@@ -104,3 +104,10 @@ same scalars in `results`; precis computes them if absent.
   this item drops +H supply edges as branch-point competitors. No
   ranking change ships before this item; `selectivity_margin` stays in
   the rubric meanwhile.
+- **Input from the Pd-hydride plan (2026-10-02, design note §15.7):**
+  under CHE a +H supply step's ΔG at U is set by U whether the H comes
+  from solution or from bulk β-PdH (bulk H at equilibrium has the same
+  chemical potential). The reservoir changes kinetics (subsurface H → surface,
+  no proton transfer) and H* coverage, not the thermodynamic supply. So on a
+  hydride substrate the criterion takes the β-equilibrium H* coverage, and
+  supply edges are still not branch-point competitors.
