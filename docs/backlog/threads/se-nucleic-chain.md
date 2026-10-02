@@ -26,8 +26,8 @@ blocked.
 **Resume (handoff 2026-10-02):** nothing in flight; every slice is landed
 and deployed (fleet on the 2026-10-02 deploy 38, which carries the last
 fix: view='chain' counting a deleted offset as deleted). Do-next 1 is
-blocked on hexfold-integration, so the first unblocked work is Horizon 5
-(staple sequences). Traps: a chain design laid out before the
+blocked on hexfold-integration; staple-sequence fill shipped 2026-10-02
+(dogfood it on prod once deployed). Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
@@ -57,8 +57,10 @@ worktree's code against the prod DB (not the deployed code).
    stretched step across a deleted base).
 4. **caDNAno round trip** (unfiled) — settle the handedness reflection
    against a real file; waits on a file to compare.
-5. **backlog/se-chain-staple-sequences.md** — staple assignment beyond the
-   scaffold; orderable strand lists.
+5. **orderable strand list** (unfiled) — `fill_complement` now writes every
+   staple's sequence; what's left is the order-form output (one row per
+   strand, 5'→3', name + sequence, as a view or export format). File it
+   when a design is headed for an order.
 6. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
    waits on a protein-bearing design being wanted.
 7. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
@@ -76,6 +78,17 @@ worktree's code against the prod DB (not the deployed code).
 
 ## No action needed
 
+- **staple sequences** — shipped 2026-10-02 in the commit that added this
+  line (backlog item deleted): `fill_complement` (pure op; `strand=` or
+  every unsequenced routed strand) writes the Watson–Crick complement of
+  the derived partner per base, in the strand's own alphabet, across
+  deletions and insertions (an inserted offset's bases take the partner's
+  complemented in reverse, caDNAno's convention). A loop nt, a
+  single-stranded or unpaired offset, or an unsequenced partner refuses
+  by name; `loops={ord: letters}` supplies loops, `unknown='N'` writes N.
+  `chain_sequence_length` (error) checks every sequenced routed strand
+  against `strand_length_nt`. Not dogfooded on prod yet. The chain skill
+  is 79 bytes under its 32 KiB hard cap — the next addition needs a split.
 - **insertions/deletions, atoms** — shipped 2026-10-01 in the commit that
   added this line (backlog item deleted): `realize_chain` builds a region
   holding either — a deleted offset has no residue and its neighbours

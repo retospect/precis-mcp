@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: seven pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + nineteen chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
+summary: pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, fill staple sequences from the scaffold (fill_complement), then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + twenty chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -11,12 +11,13 @@ answers:
   - what Leontis-Westhof geometries can geometry=/overrides= take and which bases do they accept?
   - which offsets admit a 0-nt crossover on a honeycomb/square lattice (the register rule)?
   - how do I move one crossover by a base pair without rebuilding the strand (set_domain)?
+  - how do I get staple sequences from a sequenced scaffold (fill_complement)?
   - how do I settle a chain design's geometry, and what does relax_chain NOT do (relax_chain)?
   - how do I turn a sequence's ViennaRNA fold into helices/strands/domains (fold_layout)?
   - why does view='drc' say chain_fold_unavailable, and what is chain_offtarget telling me?
   - why does declare_helix/add_domain reject a bare number?
   - how do I export a chain design to scadnano/caDNAno/oxDNA/PDB (view='export')?
-applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
+applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|fill_complement|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
 status: active
 tags: verbs, design
 kinds: se
@@ -34,9 +35,9 @@ route two strands over the same helix offsets running opposite directions
 and the pair falls out of that; see "Pairing is derived" below, the single
 most important idea here.
 
-All ten ops sit on an ordinary se block — `declare_helix`/`declare_strand`
+All twelve ops sit on an ordinary se block — `declare_helix`/`declare_strand`
 mark a block `add_block` already minted, the same way `set_mode`/`declare_dof`
-do (`fold_layout` is the exception: it mints the blocks its fold needs). Seven
+do (`fold_layout` is the exception: it mints the blocks its fold needs). Nine
 are pure and auto-apply; `relax_chain`, `fold_layout` and `realize_chain` are
 handler-level and arrive as proposals. For the rest of the `se` call surface
 (blocks, ports, connects, measures, BOM, states) see [[precis-se-help]].
@@ -150,6 +151,16 @@ edit(kind='se', id='design', ops=[
 ])
 ```
 
+`remove_domain` — `strand=` + `ord=`. **Destructive** by the `remove_`
+prefix rule (a human-Apply proposal in the web turn, like `remove_block`).
+The rest of the route re-indexes to close the gap, and the domain that
+becomes the new 5' end loses its own `loop_before_nt` (nothing left to
+reach from). Removing the strand or helix block itself (`remove_block`)
+takes every domain that names it along too, and closes up whatever
+survives.
+
+## Per-offset marks and sequence fill — `unpair` / `fill_complement`
+
 `unpair` — `at='<helix>@<offset>'` marks one offset NOT a base pair (an
 `overrides[offset]='unpaired'` on both occupying domains; the domain list is
 untouched; `clear=true` undoes it). Needs exactly two antiparallel occupants.
@@ -159,13 +170,13 @@ says to use `fold_layout`'s ViennaRNA fold or oxDNA, no new geometry is made.
 `chain_unpaired_stray` (warn): the mark sits on an offset that is no longer a
 two-strand pair; `unpair(clear=true)` it. View `chain` counts them.
 
-`remove_domain` — `strand=` + `ord=`. **Destructive** by the `remove_`
-prefix rule (a human-Apply proposal in the web turn, like `remove_block`).
-The rest of the route re-indexes to close the gap, and the domain that
-becomes the new 5' end loses its own `loop_before_nt` (nothing left to
-reach from). Removing the strand or helix block itself (`remove_block`)
-takes every domain that names it along too, and closes up whatever
-survives.
+`fill_complement` — writes a strand's `sequence` as the Watson–Crick
+complement of its derived partners: `strand=` for one, none for every routed
+strand without a sequence (scaffold in, staples out; read before any write).
+Never invents a base: a loop nt, a single-stranded or `unpaired` offset, or an
+unsequenced partner refuses the op by name — pass `loops={'<ord>': 'TTTT'}`
+(keyed by the domain the loop precedes), or `unknown='N'` to write `N`. An
+authored sequence is replaced only with `strand=` + `overwrite=true`. Pure.
 
 ## The register rule — which offsets admit a 0-nt crossover
 
@@ -319,7 +330,7 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 
 ## DRC — geometry and register findings
 
-Nineteen `chain_*` findings in all: these seven, the route/pairing/sequence
+Twenty `chain_*` findings in all: these seven, the route/pairing/sequence
 table below, and the three `chain_unpaired*` codes under `unpair` above.
 
 | rule | tier | fires when | fix |
@@ -337,6 +348,7 @@ table below, and the three `chain_unpaired*` codes under `unpair` above.
 | rule | tier | fires when | fix |
 |---|---|---|---|
 | `chain_dangling_domain` | **error** | a domain names a gone/wrong-role block, an offset past the helix's `n_units`, or a route whose `ord`s have a hole/repeat | `declare_strand`/`declare_helix` it, extend the helix, or `remove_domain` the row |
+| `chain_sequence_length` | **error** | a sequence's length ≠ its route's nt (domains less deletions plus insertions, plus loops) — letters would sit on no base, or bases get none | fix the sequence or route; `fill_complement` writes the right length |
 | `chain_occupancy` | **error** | two parallel occupants, or 3+, at one offset | reverse a domain's `forward`, or move it |
 | `chain_pairing_mismatch` | **error** | an offset with no declared geometry is co-occupied by two letters that aren't Watson–Crick complements (A·G, G·T, …; `N`/unsequenced never flags) | change one sequence, or declare the geometry (a wobble is a `W-W-cis`) |
 | `chain_pairing_geometry` | **error** | declared family doesn't accommodate the two paired letters (per the curated table) | change the bases, or the declared geometry |

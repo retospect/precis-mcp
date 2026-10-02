@@ -277,6 +277,10 @@ handler-level and are not in this table.
 - ``unpair``             — mark one helix offset (``at='<helix>@<offset>'``)
   as not a base pair, on both occupying domains' ``overrides``;
   ``clear=true`` takes it off. Pure.
+- ``fill_complement``    — write a strand's sequence (``strand=``, or every
+  routed strand with none) as the Watson–Crick complement of its derived
+  partners; loop letters come in ``loops=``, an underivable base refuses
+  the op unless ``unknown='N'``. Pure.
 - ``clear_chain``        — un-declare a block's chain record, cascading
   to whatever it gave meaning (a helix's segments and the domains along
   it; a strand's whole route).
@@ -345,7 +349,9 @@ from precis_se.atomic.vocab import (
 )
 from precis_se.bom import BomError, BomLine, vet_bom_fields
 from precis_se.chain import layout as chain_layout
+from precis_se.chain import nucleic
 from precis_se.chain import occupancy as chain_occupancy
+from precis_se.chain import pairing as chain_pairing
 from precis_se.chain import vocab as chain_vocab
 from precis_se.chain.vocab import UNPAIRED, ChainError, DomainSpec
 from precis_se.fret import (
@@ -3150,6 +3156,275 @@ def _op_unpair(tree: SeTree, op: dict[str, Any]) -> None:
         )
 
 
+_FILL_COMPLEMENT_KEYS = frozenset({"op", "strand", "overwrite", "loops", "unknown"})
+
+
+def _op_fill_complement(tree: SeTree, op: dict[str, Any]) -> None:
+    """Write a strand's sequence as the Watson–Crick complement of whatever
+    it is paired with — ``strand=`` for one strand, or no ``strand`` for
+    every routed strand that has no sequence yet (a scaffold in, its
+    staples out).
+
+    Each base comes from the derived pairing
+    (:func:`precis_se.chain.pairing.derive_pairing`) read **before** the
+    op writes anything, so in the all-strands form a staple paired only
+    with another unsequenced staple gets nothing to complement. The
+    complement is in the strand's own alphabet (``T`` for DNA, ``U`` for
+    RNA) whatever its partner's is. An inserted offset's ``1 + k`` bases
+    take the partner's ``1 + k`` complemented in reverse, caDNAno's
+    convention; a deleted offset holds no base and gets none.
+
+    A base with no partner letter is never invented: a loop nucleotide
+    (``loop_before_nt``), a single-stranded offset, one marked ``unpaired``
+    and one whose partner is unsequenced all refuse the op by name. Loop
+    letters are supplied with ``loops={'<ord>': '<letters>'}``, keyed by
+    the domain the loop precedes; ``unknown='N'`` writes ``N`` — the
+    sequence-designer's don't-know, which every check reads as
+    unverifiable — at whatever is still underivable (in the all-strands
+    form that can write an all-``N`` strand, which then counts as
+    sequenced; re-fill it with ``strand=`` + ``overwrite``). An authored sequence
+    is replaced only with ``strand=`` and ``overwrite=true``.
+
+    Pure: it writes one field on strand records, so it runs in
+    ``design_turn``'s dry run like ``set_domain``."""
+    strays = sorted(set(op) - _FILL_COMPLEMENT_KEYS)
+    if strays:
+        raise OpError(
+            f"fill_complement: unknown key(s) {', '.join(repr(s) for s in strays)}; "
+            "accepted: strand, overwrite, loops, unknown"
+        )
+    unknown = op.get("unknown")
+    if unknown is not None and str(unknown).strip().upper() != "N":
+        raise OpError(
+            f"fill_complement 'unknown' may only be 'N' (got {unknown!r}) — any "
+            "real letter there would be an invented base"
+        )
+    overwrite = op.get("overwrite", False)
+    if not isinstance(overwrite, bool):
+        raise OpError(
+            f"fill_complement 'overwrite' must be true or false, got {overwrite!r}"
+        )
+    raw_loops = op.get("loops")
+    if op.get("strand") is not None:
+        name = _require_block(tree, op, "strand", "fill_complement", what="strand")
+        node = _template_owned(tree, name, opname="fill_complement", what="chain")
+        if chain_vocab.chain_role(node) != chain_vocab.STRAND_ROLE:
+            raise OpError(
+                f"fill_complement: {name!r} is not a strand — declare_strand it"
+            )
+        existing = (node.chain or {}).get("sequence")
+        if existing and not overwrite:
+            raise OpError(
+                f"fill_complement: strand {name!r} already has a "
+                f"{len(existing)}-nt sequence — pass overwrite=true to replace it"
+            )
+        if not _domains_of(tree, name):
+            raise OpError(
+                f"fill_complement: strand {name!r} has no route — add_domain first"
+            )
+        targets = [name]
+    else:
+        if overwrite or raw_loops is not None:
+            raise OpError(
+                "fill_complement: 'overwrite' and 'loops' need strand= — the "
+                "all-strands form fills only strands with no sequence"
+            )
+        targets = sorted(
+            name
+            for name, node in tree.blocks.items()
+            if chain_vocab.chain_role(node) == chain_vocab.STRAND_ROLE
+            and not (node.chain or {}).get("sequence")
+            and _domains_of(tree, name)
+        )
+        if not targets:
+            raise OpError(
+                "fill_complement: every routed strand already has a sequence — "
+                "name one with strand= and overwrite=true to replace it"
+            )
+    pairing = chain_pairing.derive_pairing(tree)
+    filled: dict[str, str] = {}
+    refusals: list[str] = []
+    for name in targets:
+        sequence, missing = _complement_of(tree, pairing, name, raw_loops)
+        if missing and unknown is None:
+            shown = "; ".join(missing[:8])
+            more = f"; and {len(missing) - 8} more" if len(missing) > 8 else ""
+            refusals.append(f"{name}: {shown}{more}")
+        filled[name] = sequence
+    if refusals:
+        raise OpError(
+            "fill_complement: no partner letter to complement — "
+            + " | ".join(refusals)
+            + ". Supply loop letters with loops={'<ord>': '<letters>'} (strand= "
+            "form), author the strand's sequence with declare_strand, or pass "
+            "unknown='N' to write N at these bases"
+        )
+    # Vet every target before writing any, so a refusal leaves the tree as it was.
+    records: dict[str, dict[str, Any]] = {}
+    for name, sequence in filled.items():
+        record = dict(tree.blocks[name].chain or {})
+        nucleic_name = str(record.get("nucleic") or "DNA")
+        try:
+            record["sequence"] = chain_vocab.vet_sequence(
+                sequence, nucleic_name, f"fill_complement {name}"
+            )
+        except ChainError as exc:
+            raise OpError(str(exc)) from exc
+        records[name] = record
+    for name, record in records.items():
+        tree.blocks[name].chain = record
+
+
+def _complement_of(
+    tree: SeTree,
+    pairing: chain_pairing.Pairing,
+    name: str,
+    raw_loops: Any,
+) -> tuple[str, list[str]]:
+    """``(sequence, missing)`` for one strand — the complement fill with
+    ``N`` at every underivable base, and one phrase per underivable stretch
+    (empty when every base was derived or supplied)."""
+    route = _domains_of(tree, name)
+    nucleic_name = str((tree.blocks[name].chain or {}).get("nucleic") or "DNA")
+    # RNA-lettered complement (A→U …) → this strand's alphabet.
+    u_letter = "U" if nucleic_name == "RNA" else "T"
+    alphabet = {"A": "A", "C": "C", "G": "G", "U": u_letter}
+    loops = _vet_fill_loops(raw_loops, route, nucleic_name, name)
+    partner_inserts: dict[str, dict[tuple[int, int], tuple[str | None, ...]]] = {}
+    out: list[str] = []
+    #: ``[ord, helix, first, last, reason]`` runs, merged while consecutive.
+    gaps: list[list[Any]] = []
+    loop_gaps: list[str] = []
+
+    def gap(domain: DomainSpec, offset: int, reason: str) -> None:
+        last = gaps[-1] if gaps else None
+        if (
+            last is not None
+            and last[0] == domain.ord
+            and last[4] == reason
+            and abs(offset - last[3]) == 1
+        ):
+            last[3] = offset
+        else:
+            gaps.append([domain.ord, domain.helix, offset, offset, reason])
+
+    for domain in route:
+        n_loop = domain.loop_before_nt or 0
+        if n_loop:
+            supplied = loops.get(domain.ord)
+            if supplied is None:
+                loop_gaps.append(f"the {n_loop}-nt loop before #{domain.ord}")
+                out.append("N" * n_loop)
+            else:
+                out.append(supplied)
+        indel = pairing.indels.get(domain.helix, chain_pairing.HelixIndel())
+        for offset in domain.offsets():
+            if offset in indel.deletions:
+                continue
+            n_bases = 1 + indel.insertions.get(offset, 0)
+            occ = pairing.at(domain.helix, offset)
+            partner = None
+            if occ is not None and occ.status == chain_pairing.PAIRED:
+                partner = next(
+                    (
+                        o
+                        for o in occ.occupants
+                        if (o.strand, o.ord) != (domain.strand, domain.ord)
+                    ),
+                    None,
+                )
+            if partner is None:
+                status = occ.status if occ is not None else chain_pairing.SINGLE
+                reason = {
+                    chain_pairing.SINGLE: "single-stranded",
+                    chain_pairing.UNPAIRED: "marked unpaired",
+                }.get(status, f"{status}, not a two-strand pair")
+                gap(domain, offset, reason)
+                out.append("N" * n_bases)
+                continue
+            if n_bases == 1:
+                letters: tuple[str | None, ...] = (partner.letter,)
+            else:
+                if partner.strand not in partner_inserts:
+                    node = tree.blocks.get(partner.strand)
+                    partner_inserts[partner.strand] = chain_pairing.inserted_letters(
+                        (node.chain or {}).get("sequence") if node else None,
+                        _domains_of(tree, partner.strand),
+                        pairing.indels,
+                    )
+                letters = partner_inserts[partner.strand].get(
+                    (partner.ord, offset), (None,) * n_bases
+                )
+            bases = [nucleic.canonical_base(x) for x in letters if x]
+            if len(bases) != n_bases or None in bases:
+                gap(domain, offset, f"partner {partner.strand} has no letter")
+                out.append("N" * n_bases)
+                continue
+            # canonical_base folds T onto U: complement in RNA lettering,
+            # then write it in this strand's own alphabet.
+            out.append(
+                "".join(
+                    alphabet[nucleic.COMPLEMENT_RNA[b]]
+                    for b in reversed(bases)
+                    if b is not None
+                )
+            )
+    missing = loop_gaps + [
+        f"{helix}@{first}" + (f"–{last}" if last != first else "") + f" ({reason})"
+        for _ord, helix, first, last, reason in gaps
+    ]
+    return "".join(out), missing
+
+
+def _vet_fill_loops(
+    raw: Any, route: list[DomainSpec], nucleic_name: str, strand: str
+) -> dict[int, str]:
+    """``loops={'<ord>': '<letters>'}`` vetted against the route — every key
+    a domain with a loop before it, every value exactly that loop's length.
+    A key naming no loop is refused, not ignored: a silently dropped facet
+    would leave the loop the caller thought they had supplied as ``N``."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise OpError(
+            "fill_complement 'loops' must be a map {'<ord>': '<letters>'}, keyed "
+            "by the domain the loop precedes"
+        )
+    by_ord = {d.ord: d for d in route}
+    out: dict[int, str] = {}
+    for key, value in raw.items():
+        try:
+            ord_ = int(key)
+        except (TypeError, ValueError) as exc:
+            raise OpError(
+                f"fill_complement loops key {key!r} is not a domain ord"
+            ) from exc
+        domain = by_ord.get(ord_)
+        n_loop = (domain.loop_before_nt or 0) if domain is not None else 0
+        if not n_loop:
+            have = ", ".join(
+                f"#{d.ord} ({d.loop_before_nt} nt)" for d in route if d.loop_before_nt
+            )
+            raise OpError(
+                f"fill_complement loops: strand {strand!r} has no loop before "
+                f"#{ord_}. Loops on this route: {have or '(none)'}"
+            )
+        try:
+            letters = chain_vocab.vet_sequence(
+                value, nucleic_name, f"fill_complement loops #{ord_}"
+            )
+        except ChainError as exc:
+            raise OpError(str(exc)) from exc
+        if letters is None or len(letters) != n_loop:
+            got = len(letters) if letters else 0
+            raise OpError(
+                f"fill_complement loops #{ord_}: the loop is {n_loop} nt, got "
+                f"{got} letter(s)"
+            )
+        out[ord_] = letters
+    return out
+
+
 def _replace_domain(tree: SeTree, old: DomainSpec, **changes: Any) -> None:
     """Swap one domain row for an edited copy, by identity (``DomainSpec`` is
     a dataclass, so ``index`` would match the first field-equal row)."""
@@ -3378,6 +3653,7 @@ _OPS = {
     "add_domain": _op_add_domain,
     "set_domain": _op_set_domain,
     "unpair": _op_unpair,
+    "fill_complement": _op_fill_complement,
     "remove_domain": _op_remove_domain,
     "clear_chain": _op_clear_chain,
     "layout_chain": _op_layout_chain,

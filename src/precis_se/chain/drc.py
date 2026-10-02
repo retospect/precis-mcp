@@ -57,6 +57,12 @@ What each rule is, and why it is at the tier it is:
 - ``chain_dangling_domain`` (error) — a domain naming a block that is not
   there (or is not a strand/helix), an offset past the helix's end, or a
   route whose ``ord`` sequence has a hole or a repeat.
+- ``chain_sequence_length`` (error) — a strand's sequence is not as long
+  as its route: every domain's bases (less deleted offsets, plus inserted
+  ones) and every loop's nucleotides
+  (:func:`precis_se.chain.pairing.strand_length_nt`). Letters are assigned
+  5'→3' from the first domain, so a wrong length leaves letters on no base
+  or bases with no letter; an unsequenced strand is not checked.
 - ``chain_occupancy`` (error) — two parallel occupants of one offset, or
   three or more (:mod:`precis_se.chain.pairing`; triplexes are reported,
   not modelled).
@@ -112,6 +118,8 @@ from precis_se.chain.pairing import (
     OffsetOccupancy,
     Pairing,
     derive_pairing,
+    helix_indels,
+    strand_length_nt,
     watson_crick,
 )
 from precis_se.chain.vocab import (
@@ -400,6 +408,52 @@ def _route_findings(
                         severity="error",
                     )
                 )
+
+
+def _sequence_length_findings(
+    tree: Any, tables: Any, findings: list[ValidationIssue]
+) -> None:
+    """``chain_sequence_length`` — a sequenced strand whose letters do not
+    number its route's nucleotides. A strand with a sequence and no route
+    yet is work in progress and is not checked."""
+    indels = helix_indels(tree)
+    for strand in sorted(tables.by_strand):
+        node = tree.blocks.get(strand)
+        if node is None or chain_role(node) != STRAND_ROLE:
+            continue  # chain_dangling_domain's to report
+        record = node.chain or {}
+        sequence = record.get("sequence")
+        if not isinstance(sequence, str) or not sequence:
+            continue
+        route = tables.by_strand[strand]
+        route_nt = strand_length_nt(route, indels)
+        if len(sequence) == route_nt:
+            continue
+        loops = sum(d.loop_before_nt or 0 for d in route)
+        if len(sequence) > route_nt:
+            effect = f"the last {len(sequence) - route_nt} letter(s) sit on no base"
+        else:
+            effect = f"the last {route_nt - len(sequence)} base(s) get no letter"
+        tether = ""
+        anchor = record.get("anchor")
+        if isinstance(anchor, dict) and anchor.get("nt"):
+            tether = (
+                f"; the {anchor['nt']}-nt tether is not part of the sequence accounting"
+            )
+        findings.append(
+            ValidationIssue(
+                rule="chain_sequence_length",
+                subject=strand,
+                detail=(
+                    f"sequence is {len(sequence)} nt but the route holds "
+                    f"{route_nt} ({len(route)} domain(s), {loops} loop nt"
+                    f"{tether}) — {effect}. Fix the sequence (declare_strand) "
+                    "or the route; fill_complement writes one of the right "
+                    "length"
+                ),
+                severity="error",
+            )
+        )
 
 
 def _segment_table(
@@ -1007,6 +1061,7 @@ def findings(tree: Any) -> list[ValidationIssue]:
     _register_findings(geoms, tables, out)
     _global_twist_findings(geoms, tables, out)
     _route_findings(tree, tables, geoms, out)
+    _sequence_length_findings(tree, tables, out)
     loops = _loops(tables, geoms)
     _loop_findings(tables, geoms, loops, out)
     _tether_findings(tree, tables, geoms, out)
