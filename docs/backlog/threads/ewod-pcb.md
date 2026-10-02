@@ -9,7 +9,7 @@ make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
 **Last reviewed:** 2026-10-02 (route-job post-route DRC gate landed; silk shared label spot shipped; dogfood-6
-valid: 30/55 routed, 0 geometric DRC errors; resume at Do-next 3). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
+valid: 30/55 routed, 0 geometric DRC errors; resume at Do-next 1-2). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
 sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and
 pre-place-route-blocks items deleted as shipped; placer-sees-authored-vias, the gerber DRC
@@ -43,7 +43,16 @@ Do-next renumbered)
    progressive and an unplaced design has no geometry to violate. Folds in
    backlog/pcb-placement-must-be-valid-before-routing.md (same defect,
    narrower): implement one, not both.
-2. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
+2. **backlog/pcb-datasheet-autopull.md** — Reto's ask (2026-10-02): a
+   part a board uses gets its datasheet pulled, ingested and linked
+   `datasheet-of`, in a worker lane through `safe_fetch`. Prod has 0
+   `parts` rows and 0 datasheets, so the pull resolves the URL from the
+   C-number itself. Ranked above the escape items because three other
+   threads wait on it (claims-and-evidence citations, knowledge-mesh's
+   datasheet nodes, gr458878 pin provenance) and nothing here blocks it.
+   The mesh half is knowledge-mesh's; its shape is in review item
+   ewod-pcb-2.
+3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
    **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a
    $0.046 term overruled courtyard_overlap). With legality moved out of the
@@ -51,7 +60,7 @@ Do-next renumbered)
    what survives is tuning clarity for the next person adding a term — and
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
-3. **dogfood-6's 25 failed escapes are not corridor starvation.**
+4. **dogfood-6's 25 failed escapes are not corridor starvation.**
    Measured 2026-10-02: `view='congestion'` reports 0 over-capacity gaps;
    the failures split 8 `congestion` / 17 `no_path`. So
    backlog/pcb-placer-starves-the-escape-corridor.md lost its only
@@ -62,12 +71,12 @@ Do-next renumbered)
    What is left is a router question, and the router half belongs to
    pcb-easyeda-round-trip: hand them dogfood-6 as the fixture rather than
    diagnosing it here.
-4. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
+5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
-   only registered generator is `ewod_pad_array`). Sits beside 3: both are
+   only registered generator is `ewod_pad_array`). Sits beside 4: both are
    the escape corridor, this one is where the primitive lives. Reto
    2026-09-26/27: board = data, engine = general.
-5. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
+6. **backlog/pcb-escape-layers-leak-fcu-between-net-class-and-realization.md**
    — **demoted 2026-09-30, its key evidence was contaminated.** The
    fresh-fixture failure it was ranked on came from the then-unlanded
    routing_area term. That term landed 2026-10-01 (Reto's call) and on that
@@ -152,7 +161,7 @@ Do-next renumbered)
    (a bottom-layer retrace that buys nothing, one plaza escape that
    crosses the whole field and comes back, a pin swap that lengthens
    instead of shortens); none violates DRC, so nothing has ever measured
-   it but a human looking at the render. Same root gap as Do-next 3's
+   it but a human looking at the render. Same root gap as Do-next 4's
    escape corridor — no signal scores total copper length against the
    achievable minimum.
 8. **backlog/ewod-controller-and-hv-supply.md** — Reto-side, procurement
@@ -223,7 +232,7 @@ Do-next renumbered)
   connectivity) + 1 `silk_missing` (ARR1_SINK_0's bottom refdes has no
   spot clear of the 55 plaza vias: a real board finding). **Zero geometric
   errors.** 160 warnings, all copper at JLC minimums. Its 25 failures are
-  Do-next 3's fixture. Earlier history (the 116-error placement; jobs
+  Do-next 4's fixture. Earlier history (the 116-error placement; jobs
   460181/460302 accepting 0 of 3000 moves for lack of an outline) is in
   git log.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
