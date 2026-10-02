@@ -497,6 +497,11 @@ class OccupancyGrid:
         #: (:meth:`register_via`): the via search keeps a new via off these
         #: as it keeps off pads, net-blind (two holes, same net or not).
         self._vias: list[tuple[float, float, float]] = []
+        #: Bumped by :meth:`register_via`, which mutates cached keep-out
+        #: masks in place; :meth:`route` asserts it did not move during a
+        #: search, so a mid-search registration fails loudly instead of
+        #: silently changing the mask the search is reading.
+        self._via_generation = 0
         #: ``(via_radius_mm, len(_pads)) -> mask`` for
         #: :meth:`_pad_keepout_mask`. ``_pads`` is append-only and
         #: ``clearance_mm`` is fixed at construction, so the pad count is a
@@ -863,6 +868,7 @@ class OccupancyGrid:
         as a pad (:meth:`via_clears_pads`). Cached keep-out masks take the
         new disk in place rather than being rebuilt."""
         self._vias.append((x, y, radius_mm))
+        self._via_generation += 1
         for (via_r, _n), mask in self._pad_keepout_cache.items():
             self._or_keepout_disk(mask, x, y, via_r + radius_mm + self.clearance_mm)
 
@@ -1079,10 +1085,16 @@ class OccupancyGrid:
             "extra_goal_terminals": extra_goal_terminals,
             "negotiation": negotiation,
         }
+        generation = self._via_generation
         path = self._route_in(window, net_id, start, goal, **kwargs)
-        if path is not None or window == full or self.last_route_exhausted:
-            return path
-        return self._route_in(full, net_id, start, goal, **kwargs)
+        if path is None and window != full and not self.last_route_exhausted:
+            path = self._route_in(full, net_id, start, goal, **kwargs)
+        if self._via_generation != generation:
+            raise RuntimeError(
+                "OccupancyGrid.register_via ran during a search; it mutates "
+                "the via keep-out mask the search was reading"
+            )
+        return path
 
     def _route_in(
         self,

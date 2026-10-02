@@ -2943,6 +2943,25 @@ def test_a_committed_via_keeps_the_next_via_off_it_whatever_the_net():
     assert mask_before[iy, ix], "the cached mask did not take the via"
 
 
+def test_registering_a_via_mid_search_fails_loudly(monkeypatch):
+    """register_via mutates cached keep-out masks in place; a search that
+    saw one registered under it would read a changed mask silently."""
+    from precis.pcb import maze as pcb_maze
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=2)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    assert grid.route(1, (1.0, 1.0), (4.0, 1.0), layers=[0], width_mm=0.1)
+    real = pcb_maze.OccupancyGrid._route_in
+
+    def meddling(self, *a, **k):
+        self.register_via(5.0, 5.0, 0.3)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pcb_maze.OccupancyGrid, "_route_in", meddling)
+    with pytest.raises(RuntimeError, match="register_via ran during a search"):
+        grid.route(2, (1.0, 3.0), (4.0, 3.0), layers=[0], width_mm=0.1)
+
+
 def test_claim_fiducial_keepouts_owns_cells_on_every_layer():
     """A render-time fiducial is now a whole-stack copper feature
     (:func:`precis.pcb.silk.build_fiducials`), so the router's pre-claim
