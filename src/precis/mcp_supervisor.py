@@ -30,10 +30,18 @@ container uses it to re-copy ``/src`` into ``/app``, so the child imports
 the code the watchdog saw move).
 
 Exit-code policy: a child exiting 0 is a deliberate restart (the
-watchdog) and is replaced at once; a non-zero exit is a crash, replaced
-after an exponential backoff that resets once a child has stayed up for
-a while. SIGTERM/SIGINT are forwarded to the child, and the supervisor
-exits with the child's status — ``docker stop`` keeps working.
+watchdog, a drain request) and is replaced at once, as is a child killed
+by SIGTERM or SIGHUP — someone asked it to go (uvicorn re-raises SIGTERM
+after its shutdown, and a child without the drain handler dies of
+SIGHUP). Any other exit is a crash, replaced after an exponential backoff
+that resets once a child has stayed up for a while.
+
+Stopping: SIGTERM (``docker stop``) is forwarded to the child as
+:data:`DRAIN_SIGNAL`, so it finishes its in-flight calls before exiting
+— forwarded as SIGTERM, uvicorn's shutdown would cancel them (gr460711).
+The listening socket stays open meanwhile, so new connections queue
+rather than being refused. ``docker stop -t`` bounds the drain. SIGINT is
+forwarded as is. The supervisor exits with the child's status.
 
 **Standard library plus the sibling ``mcp_liveness`` (which itself imports
 only the venv's ``mcp``), no ``precis.*`` imports, all imports at the top.**
@@ -88,6 +96,14 @@ MAX_BACKOFF_S = 30.0
 
 #: Placeholder in the child command replaced by the listening fd number.
 FD_PLACEHOLDER = "{fd}"
+
+#: What the child gets when the supervisor is asked to stop with SIGTERM:
+#: drain in-flight calls, then exit. Mirrors
+#: ``precis.install_watchdog.DRAIN_SIGNAL``, which this file cannot import.
+DRAIN_SIGNAL = signal.SIGHUP
+
+#: Child deaths by these signals were requested, not crashes.
+REQUESTED_DEATHS = frozenset({-signal.SIGTERM, -signal.SIGHUP})
 
 
 def _mcp_token() -> str | None:
@@ -174,8 +190,9 @@ class Supervisor:
         # reap the child behind _wait_child's back. Until _wait_child reaps
         # it, the pid is ours (at worst a zombie), so signalling it is safe.
         if child is not None and child.returncode is None:
+            forward = DRAIN_SIGNAL if signum == signal.SIGTERM else signum
             try:
-                os.kill(child.pid, signum)
+                os.kill(child.pid, forward)
             except ProcessLookupError:
                 pass
 
@@ -230,11 +247,10 @@ class Supervisor:
                     f"generation {generation} killed as wedged after {uptime:.0f}s; respawning"
                 )
                 continue
-            if code == 0:
+            if code == 0 or code in REQUESTED_DEATHS:
                 crashes = 0
-                _log(
-                    f"generation {generation} exited cleanly after {uptime:.0f}s; respawning"
-                )
+                how = "exited cleanly" if code == 0 else f"was killed by signal {-code}"
+                _log(f"generation {generation} {how} after {uptime:.0f}s; respawning")
                 continue
             crashes = 1 if uptime >= STABLE_AFTER_S else crashes + 1
             delay = crash_backoff_s(crashes)

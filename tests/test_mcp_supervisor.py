@@ -33,7 +33,25 @@ CHILD = textwrap.dedent(
     conn.sendall(f"{marker} {os.getpid()}\\n".encode())
     conn.close()
     sock.detach()
+    if exit_code < 0:  # die of a signal, the way uvicorn re-raises SIGTERM
+        os.kill(os.getpid(), -exit_code)
     sys.exit(exit_code)
+    """
+)
+
+# A stand-in for a child with the drain handler: SIGHUP finishes the "call in
+# flight" (writes the marker file), then exits 0.
+DRAIN_CHILD = textwrap.dedent(
+    """
+    import signal, sys, time
+    marker = sys.argv[2]
+    def drain(signum, frame):
+        time.sleep(0.3)
+        with open(marker, "w", encoding="utf-8") as fh:
+            fh.write(f"drained on {signum}")
+        sys.exit(0)
+    signal.signal(signal.SIGHUP, drain)
+    time.sleep(60)
     """
 )
 
@@ -45,10 +63,14 @@ def _free_port() -> int:
 
 
 def _start(
-    tmp_path: Path, port: int, *child_args: str, prepare: str | None = None
+    tmp_path: Path,
+    port: int,
+    *child_args: str,
+    prepare: str | None = None,
+    child_source: str = CHILD,
 ) -> subprocess.Popen[str]:
     child = tmp_path / "child.py"
-    child.write_text(CHILD, encoding="utf-8")
+    child.write_text(child_source, encoding="utf-8")
     # Run it the way the container does: the two files alone in a directory.
     # From src/precis directly, that directory heads sys.path and precis's own
     # modules (secrets.py, ...) shadow the standard library.
@@ -160,7 +182,36 @@ def test_sigterm_is_forwarded_and_the_supervisor_exits(tmp_path: Path) -> None:
     err = _stop(proc)
     assert time.monotonic() - start < 5
     assert "stopped by signal 15" in err
-    assert proc.returncode == 128 + signal.SIGTERM
+    # This child has no drain handler, so the forwarded SIGHUP kills it.
+    assert proc.returncode == 128 + signal.SIGHUP
+
+
+def test_sigterm_reaches_the_child_as_a_drain_request(tmp_path: Path) -> None:
+    """gr460711: `docker stop` must let in-flight calls finish. Forwarded as
+    SIGTERM, uvicorn's shutdown cancels them; as SIGHUP the child drains."""
+    port = _free_port()
+    marker = tmp_path / "drained"
+    proc = _start(tmp_path, port, str(marker), child_source=DRAIN_CHILD)
+    assert _wait_bound(port)
+    time.sleep(0.5)
+    err = _stop(proc)
+    assert marker.read_text(encoding="utf-8") == f"drained on {int(signal.SIGHUP)}"
+    assert "stopped by signal 15" in err
+    assert proc.returncode == 0
+
+
+def test_a_child_killed_by_sigterm_is_a_restart_not_a_crash(tmp_path: Path) -> None:
+    """uvicorn re-raises SIGTERM after its shutdown, so a child someone
+    SIGTERMed dies of the signal. That was asked for: no crash backoff."""
+    port = _free_port()
+    proc = _start(tmp_path, port, "0", str(-signal.SIGTERM), "gen")
+    try:
+        _connect_and_read(port)
+        _connect_and_read(port)
+    finally:
+        err = _stop(proc)
+    assert "was killed by signal 15" in err
+    assert "crashed" not in err
 
 
 def test_a_crashing_child_is_restarted_after_a_backoff(tmp_path: Path) -> None:

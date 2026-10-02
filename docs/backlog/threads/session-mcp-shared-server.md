@@ -72,6 +72,25 @@ capacity and isolation gaps.
    optionally (d) a holder container owns the port's network namespace.
    Proving the hypothesis needs two interactive windows on the rig (a
    human, or `claude` driven through tmux).
+   **Progress 2026-10-02 (melchior):** the rig showed SIGTERM cannot drain
+   — uvicorn's shutdown cancels the session manager's task group, so the
+   in-flight call returned an empty body. Landed in the repo: SIGHUP on a
+   supervised serve child runs the watchdog's high-water drain and exits 0
+   (`install_watchdog.install_drain_signal`), the supervisor forwards
+   `docker stop`'s SIGTERM as SIGHUP, and a child killed by SIGTERM/SIGHUP
+   is a restart, not a crash. Rig, on the worktree code: an in-flight 10 s
+   search survived both a SIGHUP respawn and a `docker stop` recreate.
+   The ensure-script half — (a) secrets hashed apart and respawned via
+   SIGHUP, (b) create-then-stop recreate, (c) the pyproject stamp, plus
+   the label hashing the container spec instead of the script file — is
+   staged at `~/.claude/projects/-Users-reto-precis-mcp/scratch/gr460711/ensure.sh`
+   on melchior and rig-verified; install it after the deploy that carries
+   the supervisor change, in one recreate.
+   **Second gap, same day:** `scripts/deploy` moves the prod clone only on
+   the machine that runs it, so melchior's clone (made 10:01Z) never moved
+   while deploys ran elsewhere — the server served 06e3f3d7 under a
+   0dc5e6a0 prod. Moved by hand 10:54Z; the ensure script must follow
+   origin/prod itself.
 1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
    capacity number and shared cache left — Reto's call, td461158.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache

@@ -32,7 +32,9 @@ sha, *not* mtimes — mtime churn is exactly why :func:`_fingerprint_for`
 refuses source trees, and a sha fires on ship/sync/qland while staying
 silent on editor saves. See :class:`CheckoutWatchdog`; unlike the install
 arm it quiesces in-flight tool calls before exiting, because its process
-serves every session on the machine rather than one.
+serves every session on the machine rather than one. The same drained
+exit is available on demand: under the supervisor, :data:`DRAIN_SIGNAL`
+(SIGHUP) triggers it — see :func:`install_drain_signal` (gr460711).
 
 gr341515: the exit itself was invisible — the warning above only reaches
 stderr, which no MCP client surfaces, so an operator found the server
@@ -51,6 +53,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -509,6 +512,90 @@ def watched_checkout_root() -> Path | None:
     return Path(raw) if raw else None
 
 
+def drain_then_exit(
+    *, reason: str, detail: str, why: str, drain_timeout_s: float
+) -> None:
+    """Quiesce in-flight tool calls, leave a breadcrumb, ``os._exit(0)``.
+
+    The one exit path for a supervised shared server that wants to be
+    replaced (checkout moved, restart requested). Exit 0 tells the
+    supervisor to respawn at once rather than back off. Never returns.
+    """
+    from precis import inflight
+
+    # Latch the high-water ticket first and drain against *that* set. On
+    # a server shared by a dozen sessions, waiting for the process to go
+    # idle can never settle — a new call arrives before the last one
+    # returns — so the bound would expire and the exit would kill
+    # whatever happened to be running (gr457887). Calls that arrive after
+    # this mark belong to the next process: their clients re-initialize
+    # against it and retry.
+    mark = inflight.high_water()
+    pending = inflight.pending_at(mark)
+    drained = inflight.wait_for_drain(drain_timeout_s, mark=mark)
+    stuck = inflight.pending_at(mark)
+    _write_exit_breadcrumb(
+        reason,
+        detail=detail + ("" if drained else f"; {stuck} call(s) still in flight"),
+    )
+    log.warning(
+        "%s (%s)",
+        why,
+        f"drained {pending} in-flight call(s)"
+        if drained
+        else (
+            f"drain timed out after {drain_timeout_s:.0f}s with "
+            f"{stuck} of {pending} call(s) still running"
+        ),
+    )
+    sys.stderr.flush()
+    os._exit(0)
+
+
+#: Asks a supervised server to drain and exit 0 (gr460711). The supervisor
+#: turns ``docker stop``'s SIGTERM into this, and the ensure script sends it
+#: to respawn the child in place. SIGTERM itself cannot carry the drain:
+#: uvicorn owns it, and its graceful shutdown cancels the session manager's
+#: task group, so an in-flight call returns an empty body.
+DRAIN_SIGNAL = signal.SIGHUP
+
+
+def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
+    """Make :data:`DRAIN_SIGNAL` a drained restart; ``False`` if not installable.
+
+    Only for a child of :mod:`precis.mcp_supervisor`: exit 0 is a restart
+    only when something respawns the process. The handler runs on the main
+    thread, which is the event loop the in-flight calls need to finish, so
+    the drain runs on its own thread. A repeat signal mid-drain is ignored.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return False
+    timeout = resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
+    draining = threading.Event()
+
+    def _on_drain_signal(_signum: int, _frame: object) -> None:
+        if draining.is_set():
+            return
+        draining.set()
+        threading.Thread(
+            target=drain_then_exit,
+            kwargs={
+                "reason": "restart-requested",
+                "detail": f"signal {DRAIN_SIGNAL.name}",
+                "why": (
+                    f"{DRAIN_SIGNAL.name}: restart requested — exiting cleanly "
+                    "so the supervisor starts a fresh server"
+                ),
+                "drain_timeout_s": timeout,
+            },
+            name="drain-restart",
+            daemon=True,
+        ).start()
+
+    signal.signal(DRAIN_SIGNAL, _on_drain_signal)
+    return True
+
+
 class CheckoutWatchdog(threading.Thread):
     """Exit when the watched source checkout's HEAD moves.
 
@@ -557,42 +644,18 @@ class CheckoutWatchdog(threading.Thread):
 
     def _bounce(self, current: str | None) -> None:
         """Quiesce, record why, and exit. Never returns."""
-        from precis import inflight
-
-        # Latch the high-water ticket first and drain against *that* set. On
-        # a server shared by a dozen sessions, waiting for the process to go
-        # idle can never settle — a new call arrives before the last one
-        # returns — so the bound would expire and the exit would kill
-        # whatever happened to be running (gr457887). Calls that arrive after
-        # this mark belong to the next process: their clients re-initialize
-        # against it and retry.
-        mark = inflight.high_water()
-        pending = inflight.pending_at(mark)
-        drained = inflight.wait_for_drain(self._drain_timeout_s, mark=mark)
-        stuck = inflight.pending_at(mark)
-        _write_exit_breadcrumb(
-            "checkout-changed",
+        drain_then_exit(
+            reason="checkout-changed",
             detail=(
-                f"{self._root} HEAD {self._baseline[:12]}→"
-                f"{(current or 'unknown')[:12]}"
-                + ("" if drained else f"; {stuck} call(s) still in flight")
+                f"{self._root} HEAD {self._baseline[:12]}→{(current or 'unknown')[:12]}"
             ),
-        )
-        log.warning(
-            "checkout watchdog: %s moved %s→%s — exiting cleanly so the "
-            "supervisor starts a server on the new code (%s)",
-            self._root,
-            self._baseline[:12],
-            (current or "unknown")[:12],
-            f"drained {pending} in-flight call(s)"
-            if drained
-            else (
-                f"drain timed out after {self._drain_timeout_s:.0f}s with "
-                f"{stuck} of {pending} call(s) still running"
+            why=(
+                f"checkout watchdog: {self._root} moved {self._baseline[:12]}→"
+                f"{(current or 'unknown')[:12]} — exiting cleanly so the "
+                "supervisor starts a server on the new code"
             ),
+            drain_timeout_s=self._drain_timeout_s,
         )
-        sys.stderr.flush()
-        os._exit(0)
 
     def run(self) -> None:
         while not self._stop_event.wait(self._interval_s):

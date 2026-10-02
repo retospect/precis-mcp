@@ -2201,6 +2201,8 @@ def _render_last_exit_note() -> str | None:
         what = f"install swapped {old}→{new}"
     elif reason == "checkout-changed":
         what = f"source checkout moved ({crumb.get('detail') or 'no detail'})"
+    elif reason == "restart-requested":
+        what = f"restarted on request ({crumb.get('detail') or 'no detail'})"
     elif reason == "crash":
         what = f"crashed ({crumb.get('detail') or 'no detail'})"
     elif reason == "wedged":

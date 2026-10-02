@@ -1452,6 +1452,12 @@ def main(
             "PRECIS_MCP_TOKEN — a network transport with no token check "
             "would expose the corpus to anything that can reach the port"
         )
+    if fd is not None:
+        # Supervised (the fd is the supervisor's socket): SIGHUP drains
+        # in-flight calls and exits 0 so the supervisor respawns (gr460711).
+        from precis.install_watchdog import install_drain_signal
+
+        install_drain_signal()
     _run_network_transport(
         transport=transport, host=host, port=port, token=resolved_token, fd=fd
     )

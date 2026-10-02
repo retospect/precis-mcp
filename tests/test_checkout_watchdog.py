@@ -305,6 +305,56 @@ def test_bounce_breadcrumb_names_both_shas(
     assert SHA_B[:12] in str(crumb["detail"])
 
 
+def test_drain_signal_drains_in_flight_calls_then_exits_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr460711: SIGHUP is the on-demand drained restart — the ensure script's
+    respawn and the supervisor's translation of `docker stop` both send it.
+    The exit must wait for the call in flight and leave a breadcrumb."""
+    import os
+    import signal
+
+    codes: list[int] = []
+    fired = threading.Event()
+
+    def _fake_exit(code: int) -> None:
+        codes.append(code)
+        fired.set()
+        raise SystemExit  # end the drain thread in place of the process
+
+    monkeypatch.setattr(install_watchdog.os, "_exit", _fake_exit)
+    previous = signal.getsignal(install_watchdog.DRAIN_SIGNAL)
+    slow = None
+    try:
+        assert install_watchdog.install_drain_signal(drain_timeout_s=30.0)
+        slow = inflight.enter()
+        os.kill(os.getpid(), install_watchdog.DRAIN_SIGNAL)
+        assert not fired.wait(0.6), "exited while a tool call was still in flight"
+        inflight.leave(slow)
+        slow = None
+        assert fired.wait(10.0), "never exited after the call finished"
+    finally:
+        if slow is not None:
+            inflight.leave(slow)
+        for t in threading.enumerate():
+            if t.name == "drain-restart":
+                t.join(10.0)
+        signal.signal(install_watchdog.DRAIN_SIGNAL, previous)
+    assert codes == [0]  # clean exit — the supervisor respawns at once
+    crumb = json.loads(install_watchdog._breadcrumb_path().read_text(encoding="utf-8"))
+    assert crumb["reason"] == "restart-requested"
+
+
+def test_drain_signal_is_wired_for_supervised_serves_only() -> None:
+    """Exit 0 is a restart only when something respawns the process, so the
+    handler is installed only when serving on the supervisor's fd."""
+    from precis import server
+
+    source = Path(server.__file__).read_text(encoding="utf-8")
+    assert "if fd is not None:" in source
+    assert "install_drain_signal()" in source
+
+
 def test_precis_status_renders_the_checkout_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
