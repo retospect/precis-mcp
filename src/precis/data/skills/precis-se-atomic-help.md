@@ -9,6 +9,7 @@ answers:
   - how do I find literature for a block before filling it with real chemistry?
   - how do I check whether a bound block's atoms actually fit its declared envelope?
   - how do I build a nanotube, fullerene, or cyclodextrin block without hand-placing every atom?
+  - where are the nm molecular blocks (the old kind='nm')? — merged into se atomic mode; there is no separate nm kind or precis-nm-help
   - what does view='mechanics' actually check, and why is it never a gate?
   - why did my atomic design's `envelope_fit` check fail even though the atoms look fine?
 applies-to: get/edit (kind='se'); read precis-se-help first for the op grammar

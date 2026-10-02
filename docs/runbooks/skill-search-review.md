@@ -117,6 +117,8 @@ fraction of the catalogue.
 
 Newest first. One line per pass: date, corpus size, headline, what shipped.
 
+- **2026-10-02** — Third audit (`mine-sessions --since 40d --prod`; 177 skills). 166 skill searches: 141 executed (111 prod job, 30 local; 84 unique queries, 45 of them the health-digest agent's `health digest`, top-1 every time), 0 blocked or rejected, 25 local calls hung >120s (`still running after 120s`, ~45% of local skill searches; filed gr461598). Next action after an executed menu: 72 selects (top-1 34 = 47%, top-3 61 = 85%), 20 off-menu opens, 18 re-searches, 31 abandons. Misses: `child-failed-parked` (job-help 5th; 10 prod reformulations), `cad units mm primitives…` (cad-help 5th), `nm molecular blocks` (kind merged into se, no skill said so), OTS / `pass-dead` / `lane-skipping` (no skill mentions them). Shipped: job-help H2 + answers line for child-failed-parked, se-atomic-help answers line for the merged nm kind. Filed: backlog `skill-search-compound-token-and-family-prefix.md` (matcher), gr461598. gr259665 confirmed fixed; gr259666 (bare section column) no longer reproduces.
+
 - **2026-08-26** — Second audit. 49 searches over 32d (21 local incl.
   subagent sidechains — a path the first pass's glob missed — plus 28 prod);
   zero blocked/rejected (the 07-20 permission noise is gone). Top-1 ~41%,

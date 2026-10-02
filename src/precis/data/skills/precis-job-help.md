@@ -9,6 +9,7 @@ answers:
   - how do I cancel a job that's taking too long?
   - how do I submit a job idempotently so a retry doesn't double-run it?
   - how do I read worker_logs / what is the cluster doing right now?
+  - why is my todo parked child-failed (child-failed-parked, child-failed-final) and how do I unpark it?
 applies-to: get/search/put/tag (kind='job')
 tags: workflow, verbs, troubleshooting
 kinds: job, todo
@@ -60,6 +61,16 @@ Not cron. Not celery. Not a subprocess you wait on.
   last open `child-failed:<job_id>` tag; clearing them takes the
   retry verb or a single two-tag `tag(remove=…)` (see below) —
   removing `child-failed-final` on its own does not stick.
+
+## Why is my todo parked child-failed (child-failed-parked / child-failed-final)?
+
+A content-class job failure tags the parent todo `child-failed:<job_id>`
+(the "child-failed-parked" state). The sweeper's `unpark` phase retries it
+on a 12 h / 24 h / 48 h cool-down, cap 3; only `child-failed-final` means
+the substrate gave up. The full rules are the "A failed job tags its
+parent" bullet above; the manual retry verb is under "Retry a failed job"
+below. Infra-class failures (`swept:claim-orphaned`, `infra:child-killed`)
+never park the parent — a fresh attempt is minted instead.
 
 ## What is a job in precis
 ## How do jobs differ from regular tool calls?
