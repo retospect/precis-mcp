@@ -12,7 +12,7 @@ stopped reporting deliveries it had not made — a fix branch counts as delivere
 only once `git ls-remote` finds it on the repo's real upstream, which the lane
 had never once reached. What remains is one signal that lies by omission (a
 worker host no detector can see) and the tail of the stranded fix branches
-(19 landed 2026-10-01; eight salvage items and a delete call left). The last held decision closed 2026-09-30: `ship --quick`
+(19 landed 2026-10-01; eight salvage items left, each owned by a thread). The last held decision closed 2026-09-30: `ship --quick`
 warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 "a day or two", and never refuses on an age it could not look up. The container host's forensics were
 answered before the 30-day prune took them; what they turned up — an
@@ -31,8 +31,8 @@ gr346534, soft-deleted)
    named; the 14 drops are deleted on the node
    and its 67 scratch clones (18G) are gone; `gripe_182230`'s rewritten
    chase-coverage ledger (migration 0175) is deployed. Left: the 8 salvage
-   items, each named to its owning thread; and the node's remaining 29
-   branches, whose deletion waits on Reto. All in
+   items, each named to its owning thread (the node's other 29 branches were
+   deleted 2026-10-02; the bundle keeps them). All in
    **backlog/stranded-fix-gripe-branches.md**.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts

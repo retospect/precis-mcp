@@ -13,8 +13,10 @@ reviewed on 2026-10-01; Reto: "land them". **Done:** 18 keepers landed on
 main as one squash, and `gripe_182230`'s chase-coverage ledger (rewritten,
 migration 0175) went through the gate and is deployed; six gripes closed against the squash, six left open with a
 comment naming the unlanded part, the rest were already closed; the 14 drops are
-deleted on the node; the node's 67 scratch clones (18G) are removed. The
-bundle of all 43 is archived off-node, so nothing below depends on the node.
+deleted on the node, and the other 29 followed on 2026-10-02 (Reto) — the
+node's fix checkout holds only `main`; its 67 scratch clones (18G) are
+removed. The bundle of all 43 (`~/work/archive/stranded-gripes-2026-10-01.bundle`
+on Reto's Mac) is the only copy now and the source for every branch below.
 
 ## Left
 
@@ -38,9 +40,5 @@ bundle of all 43 is archived off-node, so nothing below depends on the node.
    call per candidate pair; the reported pair is already merged; a cheaper
    design is waiting on Reto under knowledge-mesh), `gripe_451269` (one docs
    paragraph).
-3. **The node's remaining 29 branches** (the 18 landed, the one rewritten and
-   deployed, 8 salvage and 2 optional) — **deleting them waits on Reto.** The archive
-   bundle holds them all, so deletion loses nothing.
-
 Residual filed while landing: **gr460408** (pathway barriers come back NaN;
 only `barriers_ranked` handles it).
