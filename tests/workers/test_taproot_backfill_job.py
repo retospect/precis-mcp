@@ -203,7 +203,7 @@ def _claim(sentence: str) -> CanonicalClaim:
 
 def _extract_const(sentence: str) -> Any:
     return lambda span: ClaimExtraction(
-        atoms=(_claim(sentence),), compound=None, not_claims=()
+        atoms=(_claim(sentence),), composite=None, not_claims=()
     )
 
 

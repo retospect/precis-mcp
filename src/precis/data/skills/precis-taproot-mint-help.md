@@ -135,7 +135,7 @@ source paragraph. The bar is therefore stricter than for an inline citation.
     underlying fact (the specific properties or values being compared),
     not the practice. If the passage states only the practice, don't mint.
 - **One atomic claim per hub — don't hand-bundle.** `conjunct-of` (atom →
-  compound) is written only by the automated decomposition pass, run
+  composite) is written only by the automated decomposition pass, run
   through `taproot_backfill` — not hand-authored. Hand-minting from a
   passage that bundles several atomic
   claims? Mint each as its own hub with its own grounded supporter,

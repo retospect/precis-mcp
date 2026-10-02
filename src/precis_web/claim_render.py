@@ -939,7 +939,7 @@ def render_claims_evidence(store: Store, heads: Iterable[str]) -> list[dict[str,
     # once (mirrors cite_key_map) so claim_trust never re-fetches per hub.
     paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
     # Conjunct atoms batched once (mirrors cite_key_map) so claim_trust's
-    # compound check issues no per-hub derive_conjuncts queries.
+    # composite check issues no per-hub derive_conjuncts queries.
     atoms_by_hub = conjunct_atoms_bulk(store, hub_ref_ids)
     # Nanopub publish states batched once (mirrors cite_key_map) — the
     # Claims-rail chip colour/tooltip source.

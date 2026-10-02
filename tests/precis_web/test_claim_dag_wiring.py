@@ -1,8 +1,8 @@
-"""The claim page's provenance DAG — the compound papers row.
+"""The claim page's provenance DAG — the composite papers row.
 
-Regression pin for the fi211522 report (2026-08-28): a compound hub's DAG
+Regression pin for the fi211522 report (2026-08-28): a composite hub's DAG
 rendered zero papers — grounding lives on its conjunct atoms by the
-compound-shape gate, but ``_graph`` only read the hub's own evidence.
+composite-shape gate, but ``_graph`` only read the hub's own evidence.
 (The report's other half — dead clicks after the workbench's innerHTML
 swap — is pinned by test_nanopub_routes.py's swapped-fragment-scripts test.)
 """
@@ -31,7 +31,7 @@ def _src(ref_id: int, role: str = "corroborates") -> SimpleNamespace:
 def _bundle(**kw: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "hub_ref_id": 99,
-        "sentence": "compound sentence",
+        "sentence": "composite sentence",
         "sources": [],
         "contradicts": [],
         "conjunct_atoms": [],
@@ -45,7 +45,7 @@ class _Store:
         return None
 
 
-class TestCompoundPapersRow:
+class TestCompositePapersRow:
     def test_atom_evidence_populates_papers_row(self, monkeypatch) -> None:
         # fi211522's shape: hub has no evidence of its own; each atom is
         # corroborated by the same paper. The papers row must show that

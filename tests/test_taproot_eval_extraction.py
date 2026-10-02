@@ -3,7 +3,7 @@
 Runs :func:`~precis.taproot.canon.extract_claim` (a real SMALL-tier LLM
 dispatch) over every row in the packaged
 ``precis/data/taproot/extraction_passages.jsonl`` fixture and asserts the
-two hard gates: **zero compound-without-atoms** and **zero residual-
+two hard gates: **zero composite-without-atoms** and **zero residual-
 conjunction atoms** (see ``eval_canon.ExtractionReport`` for the rationale
 — atom-count agreement is a soft metric, not gated here).
 
@@ -39,10 +39,10 @@ FIXTURE = EXTRACTION_PASSAGES_FIXTURE
 
 def test_extract_claim_hard_gates_are_zero_on_the_fixture() -> None:
     report = eval_extraction(FIXTURE)
-    assert report.compound_without_atoms_violations == [], (
-        f"{len(report.compound_without_atoms_violations)} "
-        "compound-without-atoms violation(s) (bar is 0): "
-        f"{[r.passage_id for r in report.compound_without_atoms_violations]}"
+    assert report.composite_without_atoms_violations == [], (
+        f"{len(report.composite_without_atoms_violations)} "
+        "composite-without-atoms violation(s) (bar is 0): "
+        f"{[r.passage_id for r in report.composite_without_atoms_violations]}"
     )
     assert report.conjunction_violations == [], (
         f"{len(report.conjunction_violations)} residual-conjunction "

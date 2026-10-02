@@ -89,13 +89,13 @@ row: `id`, `passage`, `expected_atom_count` (0 for NO-CLAIM),
 graded as a hard gate in v1), `note` (provenance / rationale). Eleven rows,
 hand-authored (2026-08-13/14) to cover: the carbon-nanomaterials worked
 example (`docs/backlog/taproot-atomic-claims.md` §Worked example) —
-multi-atom + not_claims + surviving compound; an already-atomic claim (no
-compound); two NO-CLAIM shapes (pure pointer, meta-prose); a
+multi-atom + not_claims + surviving composite; an already-atomic claim (no
+composite); two NO-CLAIM shapes (pure pointer, meta-prose); a
 not-claims-only row (zero atoms survive but rejects are still recorded); a
 clean 2-atom split; a legitimate bare-`and` condition list that must
 *not* be treated as an un-split atom (regression guard for
 `eval_extraction`'s lexical conjunction heuristic); the one-atom+
-reject edge case that keeps a compound despite a single surviving atom; and
+reject edge case that keeps a composite despite a single surviving atom; and
 a P1-6 modality regression (fi176422, `docs/backlog/
 taproot-migration-extraction-quality-gates.md`) — a counterfactual
 `whereas ... would` foil that a prior prompt version promoted into a false

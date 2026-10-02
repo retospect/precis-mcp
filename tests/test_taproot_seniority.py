@@ -1086,24 +1086,24 @@ def test_derive_refines_drops_a_soft_deleted_neighbour(store: Any) -> None:
 
 
 def test_derive_conjuncts_reads_both_directions(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+    composite = mint_hub(store, _CLAIM)
     atom_a = _sharper_hub(store, "Atom A: Pd/C alone catalyzes the coupling.")
     atom_b = _sharper_hub(store, "Atom B: a mild base is required.")
     link_claims(
-        store, from_hub_ref_id=atom_a, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom_a, to_hub_ref_id=composite, relation="conjunct-of"
     )
     link_claims(
-        store, from_hub_ref_id=atom_b, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom_b, to_hub_ref_id=composite, relation="conjunct-of"
     )
 
-    # From the COMPOUND's view: its atoms are inbound.
-    compound_links = derive_conjuncts(store, compound)
-    assert {cr.hub_ref_id for cr in compound_links.refined_by} == {atom_a, atom_b}
-    assert compound_links.refines == []
+    # From the COMPOSITE's view: its atoms are inbound.
+    composite_links = derive_conjuncts(store, composite)
+    assert {cr.hub_ref_id for cr in composite_links.refined_by} == {atom_a, atom_b}
+    assert composite_links.refines == []
 
-    # From an ATOM's view: the compound it belongs to is outbound.
+    # From an ATOM's view: the composite it belongs to is outbound.
     atom_links = derive_conjuncts(store, atom_a)
-    assert [cr.hub_ref_id for cr in atom_links.refines] == [compound]
+    assert [cr.hub_ref_id for cr in atom_links.refines] == [composite]
     assert atom_links.refined_by == []
     assert atom_links.refines[0].sentence == _CLAIM.sentence
 
@@ -1116,35 +1116,35 @@ def test_derive_conjuncts_empty_for_a_plain_atomic_hub(store: Any) -> None:
 
 
 def test_derive_conjuncts_drops_a_soft_deleted_atom(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+    composite = mint_hub(store, _CLAIM)
     atom = _sharper_hub(store, "Atom: a mild base is required.")
     link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
 
     with store.pool.connection() as conn:
         conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (atom,))
         conn.commit()
 
-    # A deleted atom no longer surfaces as one of the compound's conjuncts.
-    assert derive_conjuncts(store, compound).refined_by == []
+    # A deleted atom no longer surfaces as one of the composite's conjuncts.
+    assert derive_conjuncts(store, composite).refined_by == []
 
 
-def test_conjunct_atoms_bulk_maps_compounds_to_their_atoms(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+def test_conjunct_atoms_bulk_maps_composites_to_their_atoms(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
     atom_a = _sharper_hub(store, "Atom A: Pd/C alone catalyzes the coupling.")
     atom_b = _sharper_hub(store, "Atom B: a mild base is required.")
     link_claims(
-        store, from_hub_ref_id=atom_a, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom_a, to_hub_ref_id=composite, relation="conjunct-of"
     )
     link_claims(
-        store, from_hub_ref_id=atom_b, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom_b, to_hub_ref_id=composite, relation="conjunct-of"
     )
     plain_hub = _sharper_hub(store, "A plain atomic hub with no conjuncts.")
 
-    result = conjunct_atoms_bulk(store, [compound, plain_hub])
+    result = conjunct_atoms_bulk(store, [composite, plain_hub])
 
-    assert result[compound] == sorted([atom_a, atom_b])
+    assert result[composite] == sorted([atom_a, atom_b])
     assert result[plain_hub] == []
 
 
@@ -1152,28 +1152,28 @@ def test_conjunct_atoms_bulk_empty_input_returns_empty_map(store: Any) -> None:
     assert conjunct_atoms_bulk(store, []) == {}
 
 
-# ── regression: a compound hub derives NO originators/corroborators ────
+# ── regression: a composite hub derives NO originators/corroborators ────
 #
-# A compound's only inbound edges are `conjunct-of` from its atom findings.
+# A composite's only inbound edges are `conjunct-of` from its atom findings.
 # `_fetch_evidence_rows` only matches `_ALL_ROLES` (establishes/corroborates/
 # contradicts) from an `_EVIDENCE_SRC_KINDS` (paper/patent/edgar) source —
 # `conjunct-of` isn't a matched role AND a finding isn't a matched source
-# kind, so a compound is doubly excluded even though its atoms individually
-# carry real evidence. Pins step 5's "compounds derive no originators" flag
+# kind, so a composite is doubly excluded even though its atoms individually
+# carry real evidence. Pins step 5's "composites derive no originators" flag
 # (docs/backlog/taproot-atomic-claims.md) — no code change was needed for
 # this, the existing guard already does it; this test just proves it.
 
 
-def test_derive_evidence_on_compound_hub_yields_no_evidence(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+def test_derive_evidence_on_composite_hub_yields_no_evidence(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
     atom = _sharper_hub(store, "Atom: a mild base is required.")
     link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
-    supporter = _paper(store, title="Supports the atom, not the compound", year=2001)
+    supporter = _paper(store, title="Supports the atom, not the composite", year=2001)
     attach_evidence(store, hub_ref_id=atom, paper_ref_id=supporter, role="corroborates")
 
-    evidence = derive_evidence(store, compound)
+    evidence = derive_evidence(store, composite)
 
     assert evidence.originators == []
     assert evidence.corroborators == []

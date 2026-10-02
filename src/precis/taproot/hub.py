@@ -64,7 +64,7 @@ HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradic
 #: taproot-atomic-claims; migration 0151, disputes/contradicts split).
 #: ``refines`` = "source hub is a sharper/reworded version of the target
 #: hub"; ``conjunct-of`` = "source hub is one atomic conjunct of the target
-#: compound hub" (docs/backlog/taproot-atomic-claims.md); ``disputes`` =
+#: composite hub" (docs/backlog/taproot-atomic-claims.md); ``disputes`` =
 #: "source hub appears to conflict with the target hub — non-blocking open
 #: question, free to file" (docs/backlog/disputes-edge-nonblocking-disagreement.md
 #: D3/D4); ``contradicts`` is adjudication-derived (Part 2) and NOT fileable
@@ -285,9 +285,9 @@ def _is_claim_hub(ref_id: int, *, conn: Any) -> bool:
     return row is not None
 
 
-def _is_compound_hub(ref_id: int, *, conn: Any) -> bool:
+def _is_composite_hub(ref_id: int, *, conn: Any) -> bool:
     """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
-    live ``finding`` — i.e. it is a **compound** claim hub, not an atom or a
+    live ``finding`` — i.e. it is a **composite** claim hub, not an atom or a
     plain undecomposed hub (docs/backlog/taproot-atomic-claims.md).
 
     Deliberately no ``TAPROOT:claim`` tag join on the source:
@@ -314,7 +314,7 @@ def _is_compound_hub(ref_id: int, *, conn: Any) -> bool:
     return row is not None
 
 
-#: The compound hub's not-a-claim audit memo key (step 8,
+#: The composite hub's not-a-claim audit memo key (step 8,
 #: docs/backlog/taproot-atomic-claims.md) — mirrors ``hub_refine``'s
 #: ``taproot_rejected`` memo *shape* (deduped by key, never re-litigated)
 #: but keyed by ``claim_sha(text)`` of the rejected fragment, **not** a ref
@@ -358,7 +358,7 @@ def mint_hub(
     gets back a real hub ref_id, never a dropped edge.
 
     ``extra_meta`` merges additional ``meta`` keys at insert time (used by
-    :func:`apply_extraction` to seed a compound hub's not-claims memo);
+    :func:`apply_extraction` to seed a composite hub's not-claims memo);
     applied only on an actual insert — a converge-to-existing branch returns
     the existing hub untouched (:func:`_merge_not_claims_memo` handles the
     non-destructive merge case on the ``attach`` side).
@@ -733,7 +733,7 @@ def attach_evidence(
 
     ``role`` must be one of :data:`HUB_ROLES` and a registered relation
     (:func:`validate_relation`). ``hub_ref_id`` must be a ``TAPROOT:claim``
-    finding, NOT a **compound** hub (raises otherwise); the source must be
+    finding, NOT a **composite** hub (raises otherwise); the source must be
     an evidence-source ref (:data:`EVIDENCE_SRC_KINDS`) OR a computed
     ``pathway`` (:data:`PATHWAY_EVIDENCE_KINDS`; docs/backlog/computed-
     pathways-cannot-be-cited-as-claim-evidence.md — see
@@ -790,12 +790,12 @@ def attach_evidence(
         # behind authoring.resolve_paper_ref_id's authoritative check.
         # apply_extraction's own ordering (atoms attach before the
         # conjunct-of link is ever written) never trips this.
-        if _is_compound_hub(hub_ref_id, conn=c):
+        if _is_composite_hub(hub_ref_id, conn=c):
             raise BadInput(
-                "evidence attaches to atom hubs; this hub is a compound — "
+                "evidence attaches to atom hubs; this hub is a composite — "
                 "attach to its conjunct atoms",
                 next=(
-                    "resolve the compound's conjunct atom hubs "
+                    "resolve the composite's conjunct atom hubs "
                     "(taproot.seniority.derive_conjuncts) and attach evidence "
                     "to the specific atom this source supports"
                 ),
@@ -1896,14 +1896,14 @@ def _mint_for_placement(
 ) -> int:
     """Shared ``new``/``new_contradicts`` mint-or-converge, for both
     :func:`apply_placement` (atoms, ``attach_paper=True``) and
-    :func:`apply_extraction`'s compound handling (``attach_paper=False`` —
-    a compound never gets a direct evidence edge, step 3). One mint-logic
+    :func:`apply_extraction`'s composite handling (``attach_paper=False`` —
+    a composite never gets a direct evidence edge, step 3). One mint-logic
     path rather than a fork: :func:`mint_hub` (+ the hub<->hub ``disputes``
     link for ``new_contradicts``), optionally followed by
     :func:`attach_evidence`.
 
     ``extra_meta`` passes through to :func:`mint_hub` — the not-a-claim
-    memo (step 8) for a freshly-minted compound.
+    memo (step 8) for a freshly-minted composite.
     """
     owned_checks: list[int] = []
     sink = pending_checks if conn is not None else owned_checks
@@ -1977,15 +1977,15 @@ def apply_placement(
     * ``needs_review`` — file a ``kind='todo'`` via ``todo_fn`` and attach
       **nothing** (open #16: a risky merge is never auto-applied).
 
-    **Compound downgrade**: an ``attach`` placement whose hub is a
-    **compound** (:func:`_is_compound_hub`) downgrades to ``needs_review``
-    instead of attaching — evidence must never land on a compound
+    **Composite downgrade**: an ``attach`` placement whose hub is a
+    **composite** (:func:`_is_composite_hub`) downgrades to ``needs_review``
+    instead of attaching — evidence must never land on a composite
     (:func:`attach_evidence`'s own guard would raise), and letting that
     raise inside a caller's savepoint would drop the evidence with only a
     log line instead of filing a todo a human can act on.
 
     Returns the hub ref_id attached to/minted, or ``None`` for
-    ``needs_review`` (including the compound downgrade). ``role`` is the
+    ``needs_review`` (including the composite downgrade). ``role`` is the
     evidence role for the paper edge; originator promotion is derived
     later.
 
@@ -2014,13 +2014,13 @@ def apply_placement(
             raise BadInput("attach placement has no hub_ref_id")
 
         if conn is not None:
-            is_compound = _is_compound_hub(hub_ref_id, conn=conn)
+            is_composite = _is_composite_hub(hub_ref_id, conn=conn)
         else:
             with store.pool.connection() as c:
-                is_compound = _is_compound_hub(hub_ref_id, conn=c)
-        if is_compound:
+                is_composite = _is_composite_hub(hub_ref_id, conn=c)
+        if is_composite:
             log.info(
-                "taproot: attach placement on compound hub_ref_id=%s downgraded "
+                "taproot: attach placement on composite hub_ref_id=%s downgraded "
                 "to needs_review (evidence attaches to atom hubs only)",
                 hub_ref_id,
             )
@@ -2063,7 +2063,7 @@ def apply_placement(
 
 
 def _not_claims_memo(not_claims: tuple[NotClaim, ...]) -> dict[str, dict[str, Any]]:
-    """Build the sha-keyed memo dict step 8 stores on the compound hub —
+    """Build the sha-keyed memo dict step 8 stores on the composite hub —
     ``{claim_sha(text): {"text", "reason", "at"}}``. ``{}`` for an empty
     ``not_claims`` (the caller should treat that as "nothing to write")."""
     now = datetime.now(UTC).isoformat()
@@ -2076,7 +2076,7 @@ def _not_claims_memo(not_claims: tuple[NotClaim, ...]) -> dict[str, dict[str, An
 def _merge_not_claims_memo(
     store: Store, hub_ref_id: int, memo: dict[str, dict[str, Any]], *, conn: Any
 ) -> None:
-    """Merge ``memo`` into an existing compound hub's
+    """Merge ``memo`` into an existing composite hub's
     ``meta[_NOT_CLAIMS_META_KEY]``, existing keys winning — the
     ``attach`` counterpart to :func:`mint_hub`'s ``extra_meta`` (a fresh
     hub has no existing entries to protect, so that path just writes).
@@ -2101,7 +2101,7 @@ def _merge_not_claims_memo(
             _do(c)
 
 
-def _apply_compound_placement(
+def _apply_composite_placement(
     store: Store,
     claim: CanonicalClaim,
     placement: Placement,
@@ -2111,8 +2111,8 @@ def _apply_compound_placement(
     set_by: ActorSlug,
     conn: Any,
 ) -> int | None:
-    """Mint-or-converge the compound hub for one :func:`extract_claim`
-    result, **without** any evidence edge (step 3: compounds hold no
+    """Mint-or-converge the composite hub for one :func:`extract_claim`
+    result, **without** any evidence edge (step 3: composites hold no
     direct evidence). ``attach`` resolves the existing hub id and merges
     the not-a-claim memo non-destructively; ``new``/``new_contradicts``
     mint via :func:`_mint_for_placement` (``attach_paper=False``) with the
@@ -2150,7 +2150,7 @@ def _apply_compound_placement(
             todo_fn(claim, placement)
         else:
             log.warning(
-                "taproot: compound needs_review placement dropped (no todo_fn): %s",
+                "taproot: composite needs_review placement dropped (no todo_fn): %s",
                 placement.reason,
             )
         return None
@@ -2162,19 +2162,19 @@ def _apply_compound_placement(
 class ExtractionOutcome:
     """The hub ids :func:`apply_extraction` wrote — ``atom_hub_ids`` in
     the same order as the ``atoms`` list passed in (a ``needs_review``
-    atom contributes no id), and ``compound_hub_id`` (``None`` when there
-    was no compound, or the compound placement itself was
+    atom contributes no id), and ``composite_hub_id`` (``None`` when there
+    was no composite, or the composite placement itself was
     ``needs_review``)."""
 
     atom_hub_ids: list[int]
-    compound_hub_id: int | None
+    composite_hub_id: int | None
 
 
 def apply_extraction(
     store: Store,
     *,
     atoms: list[tuple[CanonicalClaim, Placement]],
-    compound: tuple[CanonicalClaim, Placement] | None,
+    composite: tuple[CanonicalClaim, Placement] | None,
     not_claims: tuple[NotClaim, ...] = (),
     paper_ref_id: int,
     role: str = _DEFAULT_ROLE,
@@ -2193,10 +2193,10 @@ def apply_extraction(
     1. Each ``atoms`` pair -> :func:`apply_placement` as for a single claim
        (``needs_review`` contributes no id to
        :attr:`ExtractionOutcome.atom_hub_ids`).
-    2. ``compound`` (if given) -> mint-or-converge with **no** evidence edge
-       via :func:`_apply_compound_placement`, which also writes/merges the
-       ``not_claims`` audit memo onto the compound hub.
-    3. Every placed atom hub gets ``link_claims(atom, compound,
+    2. ``composite`` (if given) -> mint-or-converge with **no** evidence edge
+       via :func:`_apply_composite_placement`, which also writes/merges the
+       ``not_claims`` audit memo onto the composite hub.
+    3. Every placed atom hub gets ``link_claims(atom, composite,
        relation="conjunct-of")``.
 
     Idempotency falls out of the primitives: :func:`mint_hub`'s pub_id
@@ -2220,31 +2220,33 @@ def apply_extraction(
         if hub_id is not None:
             atom_hub_ids.append(hub_id)
 
-    compound_hub_id: int | None = None
-    if compound is not None:
-        compound_claim, compound_placement = compound
-        compound_hub_id = _apply_compound_placement(
+    composite_hub_id: int | None = None
+    if composite is not None:
+        composite_claim, composite_placement = composite
+        composite_hub_id = _apply_composite_placement(
             store,
-            compound_claim,
-            compound_placement,
+            composite_claim,
+            composite_placement,
             not_claims=not_claims,
             todo_fn=todo_fn,
             set_by=set_by,
             conn=conn,
         )
 
-    if compound_hub_id is not None:
+    if composite_hub_id is not None:
         for atom_hub_id in atom_hub_ids:
             link_claims(
                 store,
                 from_hub_ref_id=atom_hub_id,
-                to_hub_ref_id=compound_hub_id,
+                to_hub_ref_id=composite_hub_id,
                 relation="conjunct-of",
                 set_by=set_by,
                 conn=conn,
             )
 
-    return ExtractionOutcome(atom_hub_ids=atom_hub_ids, compound_hub_id=compound_hub_id)
+    return ExtractionOutcome(
+        atom_hub_ids=atom_hub_ids, composite_hub_id=composite_hub_id
+    )
 
 
 __all__ = [

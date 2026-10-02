@@ -44,17 +44,17 @@ without having been matched):
     corroborator (the trimmed-A recall gap; plan transient-napping-parrot
     Phase 1b).
 
-**Compound exclusion** (docs/backlog/taproot-atomic-claims.md): both (a)'s
-hub query and (c)'s probe query exclude compound claim hubs (a live inbound
+**Composite exclusion** (docs/backlog/taproot-atomic-claims.md): both (a)'s
+hub query and (c)'s probe query exclude composite claim hubs (a live inbound
 ``conjunct-of`` edge from a live finding) — same predicate
-``hub_refine._is_compound_hub``/``_claim_hubs_due_for_refine`` apply,
+``hub_refine._is_composite_hub``/``_claim_hubs_due_for_refine`` apply,
 deliberately re-derived rather than shared (the "cross-task seam"
 precedent: ``seniority._is_claim_hub`` mirrors ``hub._is_claim_hub``). A
-compound excluded from ``hub_refine``'s own due-set query must never be
+composite excluded from ``hub_refine``'s own due-set query must never be
 embedded/probed/marked ``TAPROOT_DUE`` here either — a due-mark that
 ``hub_refine`` would never claim (it's excluded there too) would just
 accumulate on the hub forever, an unpopped tag with no consumer. Existing
-``claim_embeddings`` rows for a hub that later becomes compound are left in
+``claim_embeddings`` rows for a hub that later becomes composite are left in
 place (no deletion pass) — harmless once (a) stops refreshing them and (c)
 stops probing against them.
 
@@ -172,8 +172,8 @@ def _refresh_claim_embeddings(
     :func:`taproot.canon.claim_sha`), and migration 0101's own comment
     already sizes this table (~1.2k rows) as trivial to scan whole.
 
-    Excludes **compound** claim hubs (docs/backlog/taproot-atomic-claims.md
-    -- see the module docstring's "Compound exclusion" note): a compound's
+    Excludes **composite** claim hubs (docs/backlog/taproot-atomic-claims.md
+    -- see the module docstring's "Composite exclusion" note): a composite's
     ``claim_embeddings`` row is never refreshed, so it never becomes a probe
     target for :func:`_near_claims` either.
     """
@@ -307,11 +307,11 @@ def _near_claims(
     Phase-1b pass closes). One chunk can put several hubs near, and one hub
     can be near several chunks -- both are kept.
 
-    Excludes **compound** claim hubs the same way :func:`_refresh_claim_
+    Excludes **composite** claim hubs the same way :func:`_refresh_claim_
     embeddings` does upstream (docs/backlog/taproot-atomic-claims.md) --
-    belt-and-suspenders: (a) already stops refreshing a compound's row, so
+    belt-and-suspenders: (a) already stops refreshing a composite's row, so
     this is normally a no-op filter, but a hub already carrying a stale row
-    when it *becomes* compound (a decomposition landing between passes)
+    when it *becomes* composite (a decomposition landing between passes)
     must still never surface here, since ``hub_refine`` would never claim
     it to pop the due-mark this function would otherwise write.
     """

@@ -7,7 +7,7 @@ Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 * Pure scoring (``score_sentence`` / ``cohort_for_score``) — no DB, no model.
 * DB-backed ``score_hubs`` / ``dry_run`` over real ``refs``/``chunks``/
   ``links`` via the ``store`` fixture, hubs seeded through the real write
-  door (``mint_hub`` / ``link_claims``) so the compound/stamp exclusions
+  door (``mint_hub`` / ``link_claims``) so the composite/stamp exclusions
   exercise the actual predicate. ``dry_run``'s ``extract_fn`` is always
   injected (a deterministic fake) — no live LLM call anywhere in this file.
 """
@@ -104,9 +104,9 @@ def test_cohort_for_score_zero_is_atomic() -> None:
     assert cohort_for_score(0) == "likely-atomic"
 
 
-def test_cohort_for_score_high_is_compound() -> None:
-    assert cohort_for_score(4) == "likely-compound"
-    assert cohort_for_score(6) == "likely-compound"
+def test_cohort_for_score_high_is_composite() -> None:
+    assert cohort_for_score(4) == "likely-composite"
+    assert cohort_for_score(6) == "likely-composite"
 
 
 def test_cohort_for_score_mid_is_uncertain() -> None:
@@ -115,7 +115,7 @@ def test_cohort_for_score_mid_is_uncertain() -> None:
 
 
 def test_cohorts_constant_matches_literal_set() -> None:
-    assert set(COHORTS) == {"likely-compound", "uncertain", "likely-atomic"}
+    assert set(COHORTS) == {"likely-composite", "uncertain", "likely-atomic"}
 
 
 # ── score_hubs — DB-backed ───────────────────────────────────────────────
@@ -127,7 +127,7 @@ def _claim(sentence: str, scope: dict[str, str] | None = None) -> CanonicalClaim
 
 def test_score_hubs_scores_and_sorts_live_claim_hubs(store: Store) -> None:
     atomic = mint_hub(store, _claim("Pd/C catalyzes Suzuki coupling at RT"))
-    compoundish = mint_hub(
+    compositeish = mint_hub(
         store,
         _claim(
             "Graphene shows high strength and high conductivity; also great "
@@ -138,31 +138,31 @@ def test_score_hubs_scores_and_sorts_live_claim_hubs(store: Store) -> None:
     scores = score_hubs(store)
     by_id = {s.ref_id: s for s in scores}
     assert atomic in by_id
-    assert compoundish in by_id
+    assert compositeish in by_id
     assert by_id[atomic].cohort == "likely-atomic"
     assert by_id[atomic].score == 0
-    assert by_id[compoundish].cohort == "likely-compound"
-    assert by_id[compoundish].score > by_id[atomic].score
+    assert by_id[compositeish].cohort == "likely-composite"
+    assert by_id[compositeish].score > by_id[atomic].score
 
     # Sorted score descending (ties broken by ref_id ascending).
     assert scores == sorted(scores, key=lambda s: (-s.score, s.ref_id))
 
 
-def test_score_hubs_excludes_compound_hubs(store: Store) -> None:
-    """A hub with a live inbound ``conjunct-of`` edge (i.e. IS a compound)
+def test_score_hubs_excludes_composite_hubs(store: Store) -> None:
+    """A hub with a live inbound ``conjunct-of`` edge (i.e. IS a composite)
     is never a migration candidate — nothing left to decompose."""
-    atom = mint_hub(store, _claim("Atom claim one for compound exclusion test"))
-    compound = mint_hub(
-        store, _claim("Compound claim bundling atom one and atom two together")
+    atom = mint_hub(store, _claim("Atom claim one for composite exclusion test"))
+    composite = mint_hub(
+        store, _claim("Composite claim bundling atom one and atom two together")
     )
     link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
 
     scores = score_hubs(store)
     ids = {s.ref_id for s in scores}
     assert atom in ids  # the atom itself is still a plain, scoreable hub
-    assert compound not in ids  # the compound is excluded
+    assert composite not in ids  # the composite is excluded
 
 
 def test_score_hubs_scores_full_claim_sentence(store: Store) -> None:
@@ -179,7 +179,7 @@ def test_score_hubs_scores_full_claim_sentence(store: Store) -> None:
     assert by_id[hub_id].sentence == sentence
     assert by_id[hub_id].title == sentence  # full, never truncated
     assert "conjunction" in by_id[hub_id].signals
-    assert by_id[hub_id].cohort == "likely-compound"
+    assert by_id[hub_id].cohort == "likely-composite"
 
 
 def test_score_hubs_excludes_already_stamped_hubs(store: Store) -> None:
@@ -199,15 +199,15 @@ def _extraction_for(title: str) -> ClaimExtraction:
     """Deterministic fake ``extract_fn``: a title containing "SPLIT" splits
     into two atoms (a genuine word-halves partition of the title, so the
     P0-2/P0-3 gates see a realistic, fully-covered, non-nested split — not
-    two atoms that each restate the whole compound plus a suffix, which
-    would itself look nested/lossy) + a compound; "NOCLAIM" yields the
+    two atoms that each restate the whole composite plus a suffix, which
+    would itself look nested/lossy) + a composite; "NOCLAIM" yields the
     empty extraction; anything else is treated as already-atomic
     (pass-through). The rejected conjunct's text is drawn from the title
     itself — a real not-claim quotes the sentence it rejects, and the
     round-2 precision gate correctly flags invented not-claim wording as
     added material (`lossy`)."""
     if "NOCLAIM" in title:
-        return ClaimExtraction(atoms=(), compound=None, not_claims=())
+        return ClaimExtraction(atoms=(), composite=None, not_claims=())
     if "SPLIT" in title:
         words = title.split()
         not_claims: tuple[NotClaim, ...] = (
@@ -216,10 +216,10 @@ def _extraction_for(title: str) -> ClaimExtraction:
         mid = max(1, len(words) // 2)
         return ClaimExtraction(
             atoms=(_claim(" ".join(words[:mid])), _claim(" ".join(words[mid:]))),
-            compound=_claim(title),
+            composite=_claim(title),
             not_claims=not_claims,
         )
-    return ClaimExtraction(atoms=(_claim(title),), compound=None, not_claims=())
+    return ClaimExtraction(atoms=(_claim(title),), composite=None, not_claims=())
 
 
 def _fake_extract(chunk_text: str) -> ClaimExtraction:
@@ -232,7 +232,7 @@ def _fake_extract(chunk_text: str) -> ClaimExtraction:
 
 def test_classify_extraction_no_claim_skips_gates() -> None:
     verdict, gate_meta = classify_extraction(
-        "Some sentence.", ClaimExtraction(atoms=(), compound=None, not_claims=())
+        "Some sentence.", ClaimExtraction(atoms=(), composite=None, not_claims=())
     )
     assert verdict == "no-claim"
     assert gate_meta == {}
@@ -241,7 +241,7 @@ def test_classify_extraction_no_claim_skips_gates() -> None:
 def test_classify_extraction_pass_through_with_full_recall() -> None:
     sentence = "Palladium on carbon catalyzes Suzuki coupling at room temperature."
     extraction = ClaimExtraction(
-        atoms=(_claim(sentence),), compound=None, not_claims=()
+        atoms=(_claim(sentence),), composite=None, not_claims=()
     )
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "pass-through"
@@ -250,7 +250,7 @@ def test_classify_extraction_pass_through_with_full_recall() -> None:
 
 
 def test_classify_extraction_pass_through_dropping_content_is_lossy() -> None:
-    """A single atom that keeps only a fragment of a long compound sentence
+    """A single atom that keeps only a fragment of a long composite sentence
     (P0-2's headline pilot defect — 6 of 11 pass-throughs did exactly
     this) must gate to `lossy`, never `pass-through`."""
     sentence = (
@@ -260,7 +260,7 @@ def test_classify_extraction_pass_through_dropping_content_is_lossy() -> None:
         "species produces multiple distinct grain boundary types with high yield."
     )
     kept = "Defect clustering in mixtures of dopant species produces multiple distinct grain boundary types with high yield."
-    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    extraction = ClaimExtraction(atoms=(_claim(kept),), composite=None, not_claims=())
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "lossy"
     assert gate_meta["recall"] < 0.73
@@ -275,7 +275,7 @@ def test_classify_extraction_dropped_number_is_hard_lossy() -> None:
         "409 uA/um for n-type applications, exceeding prior results."
     )
     kept = "The device achieves on-state currents of 800 uA/um for p-type applications."
-    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    extraction = ClaimExtraction(atoms=(_claim(kept),), composite=None, not_claims=())
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "lossy"
     assert "409" in gate_meta["missing_numbers"]
@@ -291,7 +291,7 @@ def test_classify_extraction_dropped_number_never_hides_in_larger_number() -> No
         "on-state currents of 409 uA/um at room temperature."
     )
     kept = "The sample reaches on-state currents of 409 uA/um at room temperature."
-    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    extraction = ClaimExtraction(atoms=(_claim(kept),), composite=None, not_claims=())
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "lossy"
     assert "9" in gate_meta["missing_numbers"]
@@ -314,7 +314,7 @@ def test_classify_extraction_catalog_name_digit_is_not_a_number_token() -> None:
         scope={"quantity": "400:1"},
     )
     extraction = ClaimExtraction(
-        atoms=(atom1, atom2), compound=_claim(sentence), not_claims=()
+        atoms=(atom1, atom2), composite=_claim(sentence), not_claims=()
     )
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "split"
@@ -329,12 +329,12 @@ def test_classify_extraction_nested_atoms_is_nested() -> None:
         "Conductive frameworks exhibit strong electronic coupling enabled by "
         "mixed valency."
     )
-    compound = _claim(
+    composite = _claim(
         "Conductive frameworks exhibit strong electronic coupling enabled by "
         "mixed valency, supporting charge transport."
     )
-    extraction = ClaimExtraction(atoms=(a1, a2), compound=compound, not_claims=())
-    verdict, gate_meta = classify_extraction(compound.sentence, extraction)
+    extraction = ClaimExtraction(atoms=(a1, a2), composite=composite, not_claims=())
+    verdict, gate_meta = classify_extraction(composite.sentence, extraction)
     assert verdict == "nested"
     assert gate_meta["containment"]
 
@@ -347,7 +347,7 @@ def test_classify_extraction_nested_checked_before_lossy() -> None:
     a1 = _claim("Conductive frameworks couple strongly.")
     a2 = _claim("Conductive frameworks couple strongly indeed.")
     extraction = ClaimExtraction(
-        atoms=(a1, a2), compound=_claim(a2.sentence), not_claims=()
+        atoms=(a1, a2), composite=_claim(a2.sentence), not_claims=()
     )
     verdict, _ = classify_extraction(original, extraction)
     assert verdict == "nested"
@@ -372,7 +372,7 @@ def test_classify_extraction_pass_through_missing_word_cap() -> None:
         atoms=(
             _claim(kept, scope={"material": "Conductive 2D metal-organic frameworks"}),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
     verdict, gate_meta = classify_extraction(sentence, extraction)
@@ -385,7 +385,7 @@ def test_classify_extraction_pass_through_missing_word_cap() -> None:
 def test_classify_extraction_split_is_exempt_from_missing_word_cap() -> None:
     """The missing-content-word cap applies to pass-throughs only: a sound
     split legitimately drops 4+ connective/summarizing words when the
-    compound's framing is redistributed across atoms (fi176427/fi176435)."""
+    composite's framing is redistributed across atoms (fi176427/fi176435)."""
     sentence = (
         "Perovskite films crystallize rapidly under thermal annealing, and "
         "remarkably, the resulting devices thereby achieve collectively "
@@ -394,7 +394,7 @@ def test_classify_extraction_split_is_exempt_from_missing_word_cap() -> None:
     atom1 = _claim("Perovskite films crystallize rapidly under thermal annealing.")
     atom2 = _claim("The resulting devices achieve efficiencies above twenty percent.")
     extraction = ClaimExtraction(
-        atoms=(atom1, atom2), compound=_claim(sentence), not_claims=()
+        atoms=(atom1, atom2), composite=_claim(sentence), not_claims=()
     )
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "split"
@@ -414,7 +414,7 @@ def test_classify_extraction_invented_number_is_hard_lossy() -> None:
         "The layered cathode material retains structural stability across "
         "92% of repeated charge cycles under ambient operating conditions."
     )
-    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    extraction = ClaimExtraction(atoms=(_claim(kept),), composite=None, not_claims=())
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "lossy"
     assert gate_meta["recall"] == 1.0
@@ -431,7 +431,7 @@ def test_classify_extraction_low_precision_added_content_is_lossy() -> None:
         "Zeolite catalysts convert methanol into gasoline-range hydrocarbons, "
         "revolutionizing sustainable industrial commodity chemistry worldwide."
     )
-    extraction = ClaimExtraction(atoms=(_claim(kept),), compound=None, not_claims=())
+    extraction = ClaimExtraction(atoms=(_claim(kept),), composite=None, not_claims=())
     verdict, gate_meta = classify_extraction(sentence, extraction)
     assert verdict == "lossy"
     assert gate_meta["recall"] == 1.0
@@ -461,7 +461,7 @@ def test_dry_run_classifies_split_pass_through_and_no_claim(store: Store) -> Non
     extraction = by_id[split_hub].extraction
     assert extraction is not None
     assert len(extraction.atoms) == 2
-    assert extraction.compound is not None
+    assert extraction.composite is not None
     assert extraction.not_claims
 
     assert by_id[pass_hub].verdict == "pass-through"
@@ -469,16 +469,18 @@ def test_dry_run_classifies_split_pass_through_and_no_claim(store: Store) -> Non
 
 
 def test_dry_run_respects_limit_and_cohort_filter(store: Store) -> None:
-    compound_titles = [
+    composite_titles = [
         f"SPLIT claim {i} with and or but; also, comma, comma" for i in range(3)
     ]
-    for t in compound_titles:
+    for t in composite_titles:
         mint_hub(store, _claim(t))
 
-    report = dry_run(store, limit=1, cohort="likely-compound", extract_fn=_fake_extract)
+    report = dry_run(
+        store, limit=1, cohort="likely-composite", extract_fn=_fake_extract
+    )
     assert len(report.outcomes) == 1
-    assert report.outcomes[0].hub.cohort == "likely-compound"
-    assert report.cohort_filter == "likely-compound"
+    assert report.outcomes[0].hub.cohort == "likely-composite"
+    assert report.cohort_filter == "likely-composite"
 
 
 def test_dry_run_samples_controls_from_atomic_cohort(store: Store) -> None:
@@ -488,7 +490,7 @@ def test_dry_run_samples_controls_from_atomic_cohort(store: Store) -> None:
     report = dry_run(
         store,
         limit=1,
-        cohort="likely-compound",
+        cohort="likely-composite",
         controls=1,
         extract_fn=_fake_extract,
     )
@@ -545,7 +547,7 @@ def test_dry_run_does_not_flag_junk_candidate_on_control_no_claim(store: Store) 
     report = dry_run(
         store,
         limit=1,
-        cohort="likely-compound",
+        cohort="likely-composite",
         controls=1,
         control_seed=0,
         extract_fn=_fake_extract,
@@ -573,20 +575,20 @@ def test_dry_run_escalates_lossy_nested_and_junk_candidate_outcomes(
     fine_hub = mint_hub(store, _claim("A single atomic claim that is fine"))
 
     def _first_extract(sentence: str) -> ClaimExtraction:
-        # The primary pass keeps only the trailing clause of the compound
+        # The primary pass keeps only the trailing clause of the composite
         # sentence — the recurring pilot defect (P0-2) — everything else
         # falls straight through unchanged (already-atomic, full recall).
         if sentence == lossy_sentence:
             return ClaimExtraction(
                 atoms=(_claim("Defect clustering produces distinct grain types."),),
-                compound=None,
+                composite=None,
                 not_claims=(),
             )
         return _fake_extract(sentence)
 
     def _escalate(sentence: str) -> ClaimExtraction:
         # A better extractor: full coverage this time.
-        return ClaimExtraction(atoms=(_claim(sentence),), compound=None, not_claims=())
+        return ClaimExtraction(atoms=(_claim(sentence),), composite=None, not_claims=())
 
     report = dry_run(store, limit=100, extract_fn=_first_extract, escalate_fn=_escalate)
     by_id = {o.hub.ref_id: o for o in report.outcomes}
@@ -713,15 +715,15 @@ def test_render_report_is_readable_markdown(store: Store) -> None:
     for outcome in report.outcomes:
         assert f"fi{outcome.hub.ref_id}" in rendered
         assert outcome.verdict.upper() in rendered
-    # Split hub renders its atoms + compound + not-claims.
+    # Split hub renders its atoms + composite + not-claims.
     split_outcomes = [o for o in report.outcomes if o.verdict == "split"]
     assert split_outcomes
     for o in split_outcomes:
         assert o.extraction is not None
         for atom in o.extraction.atoms:
             assert atom.sentence in rendered
-        assert o.extraction.compound is not None
-        assert o.extraction.compound.sentence in rendered
+        assert o.extraction.composite is not None
+        assert o.extraction.composite.sentence in rendered
 
 
 def test_render_report_empty_report_still_renders(store: Store) -> None:

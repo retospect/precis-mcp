@@ -59,7 +59,7 @@ def test_extract_claim_returns_single_atom_on_a_real_assertion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A model that emits exactly one claim in the ``claims[]`` list, no
-    compound, no rejects -> one atom, no compound (already-atomic)."""
+    composite, no rejects -> one atom, no composite (already-atomic)."""
     monkeypatch.setattr(
         canon,
         "route",
@@ -72,7 +72,7 @@ def test_extract_claim_returns_single_atom_on_a_real_assertion(
                         "regime": "RT",
                     }
                 ],
-                "compound": None,
+                "composite": None,
                 "not_claims": [],
             }
         ),
@@ -85,7 +85,7 @@ def test_extract_claim_returns_single_atom_on_a_real_assertion(
                 scope={"method": "Suzuki coupling", "regime": "RT"},
             ),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
     assert not result.is_empty
@@ -96,7 +96,7 @@ def test_extract_claim_splits_a_bundled_passage_into_multiple_atoms(
 ) -> None:
     """The carbon-nanomaterials worked example
     (docs/backlog/taproot-atomic-claims.md §Worked example): several
-    groundable atoms + rejected conjuncts + a surviving compound."""
+    groundable atoms + rejected conjuncts + a surviving composite."""
     monkeypatch.setattr(
         canon,
         "route",
@@ -110,7 +110,7 @@ def test_extract_claim_splits_a_bundled_passage_into_multiple_atoms(
                         "claim": "Carbon nanomaterials exhibit tunable optoelectronic characteristics."
                     },
                 ],
-                "compound": (
+                "composite": (
                     "Carbon nanomaterials have exceptional mechanical, "
                     "optoelectronic, and physicochemical characteristics and "
                     "tunability that enable next-generation technologies, "
@@ -131,8 +131,8 @@ def test_extract_claim_splits_a_bundled_passage_into_multiple_atoms(
     )
     result = extract_claim("Carbon nanomaterials have exceptional mechanical...")
     assert len(result.atoms) == 2
-    assert result.compound is not None
-    assert result.compound.sentence.startswith("Carbon nanomaterials have")
+    assert result.composite is not None
+    assert result.composite.sentence.startswith("Carbon nanomaterials have")
     assert result.not_claims == (
         NotClaim(text="enable next-generation technologies", reason="forward-looking"),
         NotClaim(text="exceptional", reason="comparative with no stated comparator"),
@@ -140,10 +140,10 @@ def test_extract_claim_splits_a_bundled_passage_into_multiple_atoms(
     assert not result.is_empty
 
 
-def test_extract_claim_folds_a_degenerate_single_atom_compound(
+def test_extract_claim_folds_a_degenerate_single_atom_composite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A model that returns a compound bundling a LONE atom with nothing
+    """A model that returns a composite bundling a LONE atom with nothing
     rejected is folded to just the atom — never mint a degenerate
     1-conjunct bundle (the invariant's second bullet)."""
     monkeypatch.setattr(
@@ -154,21 +154,21 @@ def test_extract_claim_folds_a_degenerate_single_atom_compound(
                 "claims": [
                     {"claim": "Graphene exhibits a tensile strength of ~130 GPa."}
                 ],
-                "compound": "Graphene exhibits a tensile strength of ~130 GPa.",
+                "composite": "Graphene exhibits a tensile strength of ~130 GPa.",
                 "not_claims": [],
             }
         ),
     )
     result = extract_claim("Graphene has extraordinary tensile strength...")
-    assert result.compound is None
+    assert result.composite is None
     assert len(result.atoms) == 1
 
 
-def test_extract_claim_keeps_compound_for_a_lone_atom_with_a_reject(
+def test_extract_claim_keeps_composite_for_a_lone_atom_with_a_reject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A lone surviving atom PLUS a rejected conjunct still keeps the
-    compound — decomposition did something real (something was dropped
+    composite — decomposition did something real (something was dropped
     from the bundle), even though only one atom survived."""
     monkeypatch.setattr(
         canon,
@@ -178,7 +178,7 @@ def test_extract_claim_keeps_compound_for_a_lone_atom_with_a_reject(
                 "claims": [
                     {"claim": "The catalyst achieves a TOF of 450 h⁻¹ at 80°C."}
                 ],
-                "compound": "The catalyst shows superior activity and a TOF of 450 h⁻¹ at 80°C.",
+                "composite": "The catalyst shows superior activity and a TOF of 450 h⁻¹ at 80°C.",
                 "not_claims": [
                     {
                         "text": "shows superior activity",
@@ -190,7 +190,7 @@ def test_extract_claim_keeps_compound_for_a_lone_atom_with_a_reject(
     )
     result = extract_claim("The catalyst shows superior activity...")
     assert len(result.atoms) == 1
-    assert result.compound is not None
+    assert result.composite is not None
     assert len(result.not_claims) == 1
 
 
@@ -203,25 +203,25 @@ def test_extract_claim_returns_empty_extraction_on_pure_pointer_chunk(
     monkeypatch.setattr(
         canon,
         "route",
-        lambda req: _result(data={"claims": [], "compound": None, "not_claims": []}),
+        lambda req: _result(data={"claims": [], "composite": None, "not_claims": []}),
     )
     result = extract_claim("As shown in prior work [12], ...")
     assert result.is_empty
-    assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
+    assert result == ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 
 def test_extract_claim_no_claim_still_records_not_claims_for_audit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Every conjunct rejected -> zero atoms (still NO-CLAIM/empty) but the
-    rejects are kept for the compound hub's audit memo (step 8)."""
+    rejects are kept for the composite hub's audit memo (step 8)."""
     monkeypatch.setattr(
         canon,
         "route",
         lambda req: _result(
             data={
                 "claims": [],
-                "compound": None,
+                "composite": None,
                 "not_claims": [
                     {
                         "text": "will likely enable superior performance",
@@ -232,7 +232,7 @@ def test_extract_claim_no_claim_still_records_not_claims_for_audit(
         ),
     )
     result = extract_claim("This approach will likely enable superior performance...")
-    assert result.is_empty  # atoms=(), compound=None per the NO-CLAIM invariant
+    assert result.is_empty  # atoms=(), composite=None per the NO-CLAIM invariant
     assert result.not_claims == (
         NotClaim(
             text="will likely enable superior performance", reason="forward-looking"
@@ -244,7 +244,7 @@ def test_extract_claim_tolerates_legacy_single_object_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A SMALL-tier model regressing to the old ``{"claim": ...}``
-    single-object shape degrades to one atom, no compound/not_claims —
+    single-object shape degrades to one atom, no composite/not_claims —
     same fail-safe posture, never a dropped claim on a format regression."""
     monkeypatch.setattr(
         canon,
@@ -264,7 +264,7 @@ def test_extract_claim_tolerates_legacy_single_object_shape(
                 scope={"method": "Suzuki coupling"},
             ),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
 
@@ -283,7 +283,7 @@ def test_extract_claim_returns_empty_extraction_on_dispatch_error(
     monkeypatch.setattr(canon, "route", lambda req: _result(error="transport down"))
     result = extract_claim("some passage")
     assert result.is_empty
-    assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
+    assert result == ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 
 def test_extract_claim_strict_raises_on_dispatch_error(
@@ -319,7 +319,7 @@ def test_extract_claim_strict_returns_same_extraction_as_extract_claim_on_succes
                 "claims": [
                     {"claim": "Pd/C catalyzes Suzuki coupling at RT with mild base"}
                 ],
-                "compound": None,
+                "composite": None,
                 "not_claims": [],
             }
         ),
@@ -362,7 +362,7 @@ def test_extract_claim_strict_big_dispatches_at_big_tier(
                 "claims": [
                     {"claim": "Pd/C catalyzes Suzuki coupling at RT with mild base"}
                 ],
-                "compound": None,
+                "composite": None,
                 "not_claims": [],
             }
         )
@@ -378,7 +378,7 @@ def test_extract_claim_strict_big_dispatches_at_big_tier(
                 scope={},
             ),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
 
@@ -441,7 +441,7 @@ def test_extract_claim_drops_junk_scope_values_from_the_model(
                         "quantity": "rectangular outline",
                     }
                 ],
-                "compound": None,
+                "composite": None,
                 "not_claims": [],
             }
         ),
@@ -464,53 +464,53 @@ def test_extract_claim_returns_empty_extraction_on_unparseable_output(
 
 
 def test_claim_extraction_is_empty_property() -> None:
-    assert ClaimExtraction(atoms=(), compound=None, not_claims=()).is_empty
+    assert ClaimExtraction(atoms=(), composite=None, not_claims=()).is_empty
     atom = CanonicalClaim(sentence="x", scope={})
-    assert not ClaimExtraction(atoms=(atom,), compound=None, not_claims=()).is_empty
+    assert not ClaimExtraction(atoms=(atom,), composite=None, not_claims=()).is_empty
 
 
-def test_coerce_extraction_no_atoms_drops_any_compound() -> None:
-    """NO-CLAIM invariant: zero atoms always yields compound=None, even if
+def test_coerce_extraction_no_atoms_drops_any_composite() -> None:
+    """NO-CLAIM invariant: zero atoms always yields composite=None, even if
     the model still emitted one."""
     result = canon._coerce_extraction(
         [], CanonicalClaim(sentence="bundle", scope={}), []
     )
-    assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
+    assert result == ClaimExtraction(atoms=(), composite=None, not_claims=())
     assert result.is_empty
 
 
-def test_coerce_extraction_lone_atom_no_rejects_folds_compound_away() -> None:
+def test_coerce_extraction_lone_atom_no_rejects_folds_composite_away() -> None:
     atom = CanonicalClaim(sentence="x", scope={})
     result = canon._coerce_extraction(
         [atom], CanonicalClaim(sentence="x", scope={}), []
     )
-    assert result.compound is None
+    assert result.composite is None
     assert result.atoms == (atom,)
 
 
-def test_coerce_extraction_lone_atom_with_reject_keeps_compound() -> None:
+def test_coerce_extraction_lone_atom_with_reject_keeps_composite() -> None:
     atom = CanonicalClaim(sentence="x", scope={})
-    compound = CanonicalClaim(sentence="bundle", scope={})
+    composite = CanonicalClaim(sentence="bundle", scope={})
     nc = NotClaim(text="y", reason="vague")
-    result = canon._coerce_extraction([atom], compound, [nc])
-    assert result.compound is compound
+    result = canon._coerce_extraction([atom], composite, [nc])
+    assert result.composite is composite
     assert result.not_claims == (nc,)
 
 
-def test_coerce_extraction_multi_atom_keeps_compound() -> None:
+def test_coerce_extraction_multi_atom_keeps_composite() -> None:
     a1 = CanonicalClaim(sentence="x", scope={})
     a2 = CanonicalClaim(sentence="y", scope={})
-    compound = CanonicalClaim(sentence="bundle", scope={})
-    result = canon._coerce_extraction([a1, a2], compound, [])
-    assert result.compound is compound
+    composite = CanonicalClaim(sentence="bundle", scope={})
+    result = canon._coerce_extraction([a1, a2], composite, [])
+    assert result.composite is composite
     assert result.atoms == (a1, a2)
 
 
-def test_coerce_extraction_multi_atom_without_compound_synthesizes_from_source() -> (
+def test_coerce_extraction_multi_atom_without_composite_synthesizes_from_source() -> (
     None
 ):
-    """P1-8: 2+ atoms with no compound no longer discards the whole
-    extraction — the compound is synthesized from the source sentence (the
+    """P1-8: 2+ atoms with no composite no longer discards the whole
+    extraction — the composite is synthesized from the source sentence (the
     source *is* the bundle, by construction) instead of degrading to
     NO-CLAIM. fi177585 lost a good 2-atom split to exactly this formatting
     miss."""
@@ -521,12 +521,12 @@ def test_coerce_extraction_multi_atom_without_compound_synthesizes_from_source()
     )
     assert not result.is_empty
     assert result.atoms == (a1, a2)
-    assert result.compound == CanonicalClaim(
+    assert result.composite == CanonicalClaim(
         sentence="X does one thing and Y does another.", scope={}
     )
 
 
-def test_coerce_extraction_multi_atom_without_compound_or_source_degrades_to_empty() -> (
+def test_coerce_extraction_multi_atom_without_composite_or_source_degrades_to_empty() -> (
     None
 ):
     """The synthesis fallback still needs *something* to synthesize from —
@@ -537,7 +537,7 @@ def test_coerce_extraction_multi_atom_without_compound_or_source_degrades_to_emp
     a2 = CanonicalClaim(sentence="y", scope={})
     result = canon._coerce_extraction([a1, a2], None, [], source_sentence="")
     assert result.is_empty
-    assert result == ClaimExtraction(atoms=(), compound=None, not_claims=())
+    assert result == ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 
 # ── dedup_judge / merge_confirm — bias-safe degrade ─────────────────────
@@ -853,8 +853,8 @@ def test_eval_extraction_scores_a_perfect_extractor(tmp_path: Any) -> None:
         encoding="utf-8",
     )
     answers: dict[int, ClaimExtraction] = {
-        1: ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=()),
-        2: ClaimExtraction(atoms=(), compound=None, not_claims=()),
+        1: ClaimExtraction(atoms=(_ATOM_A,), composite=None, not_claims=()),
+        2: ClaimExtraction(atoms=(), composite=None, not_claims=()),
     }
     calls: list[str] = []
 
@@ -867,12 +867,12 @@ def test_eval_extraction_scores_a_perfect_extractor(tmp_path: Any) -> None:
     assert report.total == 2
     assert report.atom_count_matches == 2
     assert report.atom_count_agreement_rate == 1.0
-    assert report.compound_without_atoms_violations == []
+    assert report.composite_without_atoms_violations == []
     assert report.conjunction_violations == []
     assert calls == ["p1", "p2"]
 
 
-def test_eval_extraction_flags_a_compound_without_atoms_violation(
+def test_eval_extraction_flags_a_composite_without_atoms_violation(
     tmp_path: Any,
 ) -> None:
     fixture = tmp_path / "passages.jsonl"
@@ -883,11 +883,11 @@ def test_eval_extraction_flags_a_compound_without_atoms_violation(
     # A misbehaving stub that bypasses _coerce_extraction's invariant —
     # eval_extraction's hard gate should still catch it.
     bad = ClaimExtraction(
-        atoms=(), compound=CanonicalClaim(sentence="bundle", scope={}), not_claims=()
+        atoms=(), composite=CanonicalClaim(sentence="bundle", scope={}), not_claims=()
     )
     report = eval_extraction(fixture, extract_fn=lambda t: bad, progress=False)
-    assert len(report.compound_without_atoms_violations) == 1
-    assert report.compound_without_atoms_violations[0].passage_id == 1
+    assert len(report.composite_without_atoms_violations) == 1
+    assert report.composite_without_atoms_violations[0].passage_id == 1
 
 
 def test_eval_extraction_flags_a_residual_conjunction_atom(tmp_path: Any) -> None:
@@ -903,7 +903,7 @@ def test_eval_extraction_flags_a_residual_conjunction_atom(tmp_path: Any) -> Non
                 scope={},
             ),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
     report = eval_extraction(fixture, extract_fn=lambda t: unsplit, progress=False)
@@ -928,7 +928,7 @@ def test_eval_extraction_bare_and_condition_list_is_not_flagged(tmp_path: Any) -
                 scope={},
             ),
         ),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
     report = eval_extraction(fixture, extract_fn=lambda t: clean, progress=False)
@@ -943,11 +943,11 @@ def test_eval_extraction_disagreement_is_soft_not_a_violation(tmp_path: Any) -> 
         '{"id": 1, "passage": "p1", "expected_atom_count": 2, "expected_not_claims": []}\n',
         encoding="utf-8",
     )
-    one_atom = ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=())
+    one_atom = ClaimExtraction(atoms=(_ATOM_A,), composite=None, not_claims=())
     report = eval_extraction(fixture, extract_fn=lambda t: one_atom, progress=False)
     assert report.atom_count_matches == 0
     assert report.atom_count_agreement_rate == 0.0
-    assert report.compound_without_atoms_violations == []
+    assert report.composite_without_atoms_violations == []
     assert report.conjunction_violations == []
 
 
@@ -957,11 +957,11 @@ def test_extraction_report_format_renders_gates_and_metric(tmp_path: Any) -> Non
         '{"id": 1, "passage": "p1", "expected_atom_count": 1, "expected_not_claims": []}\n',
         encoding="utf-8",
     )
-    one_atom = ClaimExtraction(atoms=(_ATOM_A,), compound=None, not_claims=())
+    one_atom = ClaimExtraction(atoms=(_ATOM_A,), composite=None, not_claims=())
     report = eval_extraction(fixture, extract_fn=lambda t: one_atom, progress=False)
     text = report.format()
     assert "atom-count agreement" in text
-    assert "compound-without-atoms" in text
+    assert "composite-without-atoms" in text
     assert "residual conjunction" in text
     assert "1 passages" in text
 

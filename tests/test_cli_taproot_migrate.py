@@ -26,14 +26,14 @@ def _split_row(hub: int, atoms: list[str]) -> dict[str, Any]:
     return {
         "hub": hub,
         "score": 0,
-        "cohort": "likely-compound",
+        "cohort": "likely-composite",
         "control": False,
         "sentence": "irrelevant original sentence",
         "verdict": "split",
         "gate_meta": {},
         "extraction": {
             "atoms": [{"sentence": s, "scope": {}} for s in atoms],
-            "compound": None,
+            "composite": None,
             "not_claims": [],
         },
         "error": None,
@@ -106,7 +106,7 @@ def test_malformed_row_writes_error_sentinel_and_never_raises() -> None:
     row = {
         "hub": "not-an-int",
         "verdict": "split",
-        "extraction": {"atoms": [], "compound": None, "not_claims": []},
+        "extraction": {"atoms": [], "composite": None, "not_claims": []},
     }
     out = _reground_row(
         _FAKE_STORE, row, top_k=6, verify_atoms_fn=lambda *a, **kw: None

@@ -11,7 +11,7 @@
     {
       "anchor": "np-tree",
       "heading": "The claim forest",
-      "text": "Compound claims nest the atoms they're built from; evidence hangs off as leaves. Click a claim to review it in the middle pane, a paper to read it on the right — the same tree /claim/<id> opens into on its own.",
+      "text": "Composite claims nest the atoms they're built from; evidence hangs off as leaves. Click a claim to review it in the middle pane, a paper to read it on the right — the same tree /claim/<id> opens into on its own.",
       "placement": "right"
     },
     {

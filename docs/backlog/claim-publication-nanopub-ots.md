@@ -13,7 +13,7 @@ package docstring — present-state home, not this file. This file is the
 open-work residue.
 
 Blocked on `taproot-compound-migration`, but per hub, not globally: a decomposed,
-reviewed hub can publish while the rest of the graph is still compound.
+reviewed hub can publish while the rest of the graph is still composite.
 
 ## Patent / book (ISBN) grounding
 

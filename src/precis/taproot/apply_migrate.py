@@ -12,8 +12,8 @@ reboot) before ``precis taproot-migrate apply``
 :func:`apply_dry_run` has no opinion on *when*; it only assumes nothing
 else mutates the same hubs concurrently.
 
-**Split verdict: the original hub becomes the compound** (minting a *new*
-compound would never converge with the legacy hub's own ``pub_id``,
+**Split verdict: the original hub becomes the composite** (minting a *new*
+composite would never converge with the legacy hub's own ``pub_id``,
 duplicating it forever). Each atom runs the same ``block -> dedup_judge ->
 place`` cascade :mod:`precis.taproot.backfill` uses, mints/converges with
 **no** evidence edge at placement time, and links
@@ -227,7 +227,7 @@ class ApplyReport:
 #
 # Each of these duplicates a query shape that already exists, privately, in
 # hub.py/seniority.py. Deliberate, not an oversight: hub.py's own
-# ``_is_compound_hub`` docstring documents this exact seam (each caller
+# ``_is_composite_hub`` docstring documents this exact seam (each caller
 # keeps a connection-agnostic copy of a small predicate rather than the
 # modules sharing one) as the established precedent this module follows.
 
@@ -243,8 +243,8 @@ def _hub_meta(store: Store, hub_ref_id: int) -> dict[str, Any] | None:
     return dict(row[0] or {}) if row is not None else None
 
 
-def _is_compound(store: Store, ref_id: int, *, conn: Any) -> bool:
-    """Module-local copy of :func:`precis.taproot.hub._is_compound_hub`
+def _is_composite(store: Store, ref_id: int, *, conn: Any) -> bool:
+    """Module-local copy of :func:`precis.taproot.hub._is_composite_hub`
     (private there) — true iff ``ref_id`` carries a live inbound
     ``conjunct-of`` edge from a live ``finding``."""
     row = conn.execute(
@@ -610,15 +610,15 @@ def _place_atom(
     conn: Any,
 ) -> int | None:
     """Mint-or-converge one atom hub with **no** evidence edge — the atom
-    counterpart of :func:`precis.taproot.hub._apply_compound_placement`'s
+    counterpart of :func:`precis.taproot.hub._apply_composite_placement`'s
     mint-without-evidence shape. Evidence is attached entirely by the
     separate re-point step in :func:`apply_dry_run`, never at placement
     time.
 
-    * ``"attach"`` onto a hub that turns out to be a **compound**
+    * ``"attach"`` onto a hub that turns out to be a **composite**
       downgrades to needs_review (mirrors
-      :func:`~precis.taproot.hub.apply_placement`'s own compound
-      downgrade) — an atom must never become one of a compound's evidence
+      :func:`~precis.taproot.hub.apply_placement`'s own composite
+      downgrade) — an atom must never become one of a composite's evidence
       holders without first being one of its ``conjunct-of`` atoms.
     * ``"new"``/``"new_contradicts"`` mints via
       :func:`~precis.taproot.hub.mint_hub` (no ``paper_ref_id``);
@@ -637,11 +637,11 @@ def _place_atom(
         hub_ref_id = placement.hub_ref_id
         if hub_ref_id is None:
             raise BadInput("attach placement has no hub_ref_id")
-        if _is_compound(store, hub_ref_id, conn=conn):
+        if _is_composite(store, hub_ref_id, conn=conn):
             file_review(
-                f"atom {claim.sentence!r} placed 'attach' onto compound "
+                f"atom {claim.sentence!r} placed 'attach' onto composite "
                 f"hub_ref_id={hub_ref_id} — downgraded to needs_review "
-                "(an atom never attaches onto another compound)"
+                "(an atom never attaches onto another composite)"
             )
             return None
         return hub_ref_id
@@ -803,7 +803,7 @@ def apply_dry_run(
 
         if verdict != "split":
             # "lossy" / "nested" / "error" / anything this build doesn't
-            # recognize — never stamp a still-possibly-compound hub
+            # recognize — never stamp a still-possibly-composite hub
             # (docs/backlog/taproot-atomic-claims.md P2-12 invariant).
             skipped_verdict += 1
             hub_rows.append(

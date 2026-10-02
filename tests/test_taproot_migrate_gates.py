@@ -20,7 +20,7 @@ the recall ratio; fi176361 (round 2) clears the ratio but drops exactly
 content words — the absolute cap that catches the fi176441 truncation
 class flags it too. Per the backlog's own sequencing note, the gate is
 calibrated to catch every truly-lossy row (the dangerous class — a
-silent, permanent stamp on a still-compound hub) rather than to be
+silent, permanent stamp on a still-composite hub) rather than to be
 precise about the safe ones (a false ``lossy`` only costs an extra P2-10
 escalation call). These four rows are marked ``xfail`` below, not
 skipped — a future gate improvement that fixes one should surprise this
@@ -65,16 +65,16 @@ def _build_extraction(row: dict[str, Any]) -> ClaimExtraction:
         CanonicalClaim(sentence=atom["sentence"], scope=atom.get("scope", {}))
         for atom in row["atoms"]
     )
-    compound = (
-        CanonicalClaim(sentence=row["compound"], scope={})
-        if row.get("compound")
+    composite = (
+        CanonicalClaim(sentence=row["composite"], scope={})
+        if row.get("composite")
         else None
     )
     not_claims = tuple(
         NotClaim(text=nc["text"], reason=nc["reason"])
         for nc in row.get("not_claims", [])
     )
-    return ClaimExtraction(atoms=atoms, compound=compound, not_claims=not_claims)
+    return ClaimExtraction(atoms=atoms, composite=composite, not_claims=not_claims)
 
 
 def _params() -> list[Any]:
@@ -200,9 +200,9 @@ def test_inline_citation_spans_are_not_required_content() -> None:
             scope={},
         ),
     )
-    compound = CanonicalClaim(sentence=sentence, scope={})
+    composite = CanonicalClaim(sentence=sentence, scope={})
     _verdict, meta = classify_extraction(
-        sentence, ClaimExtraction(atoms=atoms, compound=compound, not_claims=())
+        sentence, ClaimExtraction(atoms=atoms, composite=composite, not_claims=())
     )
     # Only the number gate is pinned: the citation *words* ("Phys. Rev.
     # Lett.") still count toward content recall — a separate, accepted
@@ -218,8 +218,8 @@ def test_kept_citation_numbers_are_not_invented() -> None:
         CanonicalClaim(sentence="The effect was first measured in 2008.", scope={}),
         CanonicalClaim(sentence="The measurement appeared in PRL.", scope={}),
     )
-    compound = CanonicalClaim(sentence=sentence, scope={})
+    composite = CanonicalClaim(sentence=sentence, scope={})
     _verdict, meta = classify_extraction(
-        sentence, ClaimExtraction(atoms=atoms, compound=compound, not_claims=())
+        sentence, ClaimExtraction(atoms=atoms, composite=composite, not_claims=())
     )
     assert meta["invented_numbers"] == ()

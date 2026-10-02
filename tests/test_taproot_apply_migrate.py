@@ -120,13 +120,13 @@ def _row(
     if atoms is not None:
         extraction = {
             "atoms": [{"sentence": s, "scope": {}} for s in atoms],
-            "compound": None,
+            "composite": None,
             "not_claims": [],
         }
     return {
         "hub": hub_ref_id,
         "score": 0,
-        "cohort": "likely-compound",
+        "cohort": "likely-composite",
         "control": False,
         "sentence": "irrelevant original sentence",
         "verdict": verdict,
@@ -302,7 +302,7 @@ def test_lossy_nested_error_verdicts_are_skipped_and_never_stamped(store: Any) -
 
 
 def test_split_with_no_evidence_mints_atoms_links_and_stamps(store: Any) -> None:
-    compound = mint_hub(
+    composite = mint_hub(
         store,
         _claim(
             "Carbon nanomaterials have exceptional mechanical characteristics "
@@ -314,7 +314,7 @@ def test_split_with_no_evidence_mints_atoms_links_and_stamps(store: Any) -> None
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -326,16 +326,16 @@ def test_split_with_no_evidence_mints_atoms_links_and_stamps(store: Any) -> None
     assert report.atoms_placed == 2
     assert report.atoms_needs_review == 0
     assert report.edges_repointed == 0
-    assert _meta(store, compound)["taproot_decomposed_at"] == _FIXED_NOW.isoformat()
+    assert _meta(store, composite)["taproot_decomposed_at"] == _FIXED_NOW.isoformat()
 
-    # Two fresh atom hubs, each conjunct-of the (now-compound) original.
+    # Two fresh atom hubs, each conjunct-of the (now-composite) original.
     with store.pool.connection() as conn:
         atom_hub_ids = [
             int(r[0])
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     assert len(atom_hub_ids) == 2
@@ -354,14 +354,14 @@ def test_split_repoints_evidence_only_to_the_verified_atom(store: Any) -> None:
     """The core add-first behaviour: one paper edge on the original hub,
     two atoms, only one verifies — the edge moves to that atom alone
     (never a blanket copy to both)."""
-    compound = mint_hub(
+    composite = mint_hub(
         store,
         _claim("X shows high strength and X shows high conductivity."),
     )
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
@@ -371,7 +371,7 @@ def test_split_repoints_evidence_only_to_the_verified_atom(store: Any) -> None:
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -393,13 +393,13 @@ def test_split_repoints_evidence_only_to_the_verified_atom(store: Any) -> None:
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         }
     assert set(atom_hubs) == {atom_a, atom_b}
 
     # Original hub's edge is gone; atom_a's hub carries it; atom_b's does not.
-    assert not _edge_exists(store, paper, compound, "corroborates")
+    assert not _edge_exists(store, paper, composite, "corroborates")
     assert _edge_exists(store, paper, atom_hubs[atom_a], "corroborates")
     assert not _edge_exists(store, paper, atom_hubs[atom_b], "corroborates")
 
@@ -407,11 +407,11 @@ def test_split_repoints_evidence_only_to_the_verified_atom(store: Any) -> None:
 def test_split_keeps_edge_and_files_needs_review_when_no_atom_verifies(
     store: Any,
 ) -> None:
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
@@ -420,7 +420,7 @@ def test_split_keeps_edge_and_files_needs_review_when_no_atom_verifies(
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        [_row(composite, "split", atoms=["X shows A.", "X shows B."])],
         now_fn=_now_fn,
         todo_fn=todo,
         block_fn=_block_none,
@@ -432,24 +432,24 @@ def test_split_keeps_edge_and_files_needs_review_when_no_atom_verifies(
     assert report.edges_repointed == 0
     assert report.edges_kept_needs_review == 1
     # The original edge survives -- never pruned with zero replacement.
-    assert _edge_exists(store, paper, compound, "corroborates")
+    assert _edge_exists(store, paper, composite, "corroborates")
     assert any("no atom verified" in c[1] for c in todo.calls)
     # Still stamped -- the split itself succeeded, only the repoint needed
     # a human (an un-repointed edge is a filed review, not an abort).
-    assert "taproot_decomposed_at" in _meta(store, compound)
+    assert "taproot_decomposed_at" in _meta(store, composite)
 
 
 def test_split_real_grounding_passage_reaches_verify_fn(store: Any) -> None:
     """Proves the grounding-passage resolution path (real chunk text, not
     a stubbed lookup) actually feeds extract_verify_fn."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     chunk_id = seed_chunk(
         store, ref_id=paper, text="X shows a UNIQUE-MARKER property.", ord=0
     )
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         meta={"source_handle": f"pc{chunk_id}"},
@@ -458,7 +458,7 @@ def test_split_real_grounding_passage_reaches_verify_fn(store: Any) -> None:
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        [_row(composite, "split", atoms=["X shows A.", "X shows B."])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -475,12 +475,12 @@ def test_split_confirms_add_even_when_it_degrades_to_ref_level(store: Any) -> No
     ``attach_evidence`` re-derives grounding at write time and lands
     ref-level (``src_chunk_id`` NULL) rather than matching the original
     edge's chunk exactly -- the over-strict-confirm regression."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     chunk_id = seed_chunk(store, ref_id=paper, text="grounding passage", ord=0)
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         meta={"source_handle": f"pc{chunk_id}"},
@@ -498,7 +498,7 @@ def test_split_confirms_add_even_when_it_degrades_to_ref_level(store: Any) -> No
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, "X shows B."])],
+        [_row(composite, "split", atoms=[atom_a, "X shows B."])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -509,36 +509,36 @@ def test_split_confirms_add_even_when_it_degrades_to_ref_level(store: Any) -> No
     assert report.edges_repointed == 1
     assert report.edges_kept_needs_review == 0
     assert report.partial_failures == 0
-    assert not _edge_exists(store, paper, compound, "corroborates")
+    assert not _edge_exists(store, paper, composite, "corroborates")
 
 
-# ── split — atom placement onto a compound downgrades to needs_review ────
+# ── split — atom placement onto a composite downgrades to needs_review ────
 
 
-def test_split_atom_attach_onto_compound_hub_downgrades_to_needs_review(
+def test_split_atom_attach_onto_composite_hub_downgrades_to_needs_review(
     store: Any,
 ) -> None:
-    other_compound = mint_hub(store, _claim("other compound sentence"))
+    other_composite = mint_hub(store, _claim("other composite sentence"))
     other_atom = mint_hub(store, _claim("other atom sentence"))
     link_claims(
         store,
         from_hub_ref_id=other_atom,
-        to_hub_ref_id=other_compound,
+        to_hub_ref_id=other_composite,
         relation="conjunct-of",
     )
 
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     atom_a = "X shows A."
     atom_b = "X shows B."
     todo = _TodoCollector()
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         todo_fn=todo,
-        # atom_a "converges" onto the existing compound hub; atom_b mints fresh.
-        block_fn=_block_map({atom_a: (other_compound, "other compound sentence")}),
+        # atom_a "converges" onto the existing composite hub; atom_b mints fresh.
+        block_fn=_block_map({atom_a: (other_composite, "other composite sentence")}),
         judge_fn=_judge_same_high,
         merge_confirm_fn=_never_called,  # high confidence -> no escalation
         extract_verify_fn=_never_called,  # no evidence edges on this hub
@@ -546,9 +546,9 @@ def test_split_atom_attach_onto_compound_hub_downgrades_to_needs_review(
 
     assert report.atoms_placed == 1
     assert report.atoms_needs_review == 1
-    assert any("compound" in c[1] for c in todo.calls)
-    # atom_a never linked onto the compound target it collided with.
-    assert not _edge_exists(store, other_compound, compound)
+    assert any("composite" in c[1] for c in todo.calls)
+    # atom_a never linked onto the composite target it collided with.
+    assert not _edge_exists(store, other_composite, composite)
     with store.pool.connection() as conn:
         linked_titles = [
             str(
@@ -559,7 +559,7 @@ def test_split_atom_attach_onto_compound_hub_downgrades_to_needs_review(
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     assert linked_titles == [atom_b]
@@ -609,22 +609,22 @@ def test_split_aborts_and_rolls_back_when_a_write_fails_mid_hub(store: Any) -> N
     the OTHER (never-reached) atom, no conjunct-of links, the pre-existing
     evidence edge untouched, and — pinning fix #1 — no todo filed."""
     original_sentence = "X shows A and X shows B."
-    compound = mint_hub(store, _claim(original_sentence))
+    composite = mint_hub(store, _claim(original_sentence))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     todo = _TodoCollector()
-    atom_a = original_sentence  # identical to the compound's own mint sentence
+    atom_a = original_sentence  # identical to the composite's own mint sentence
     atom_b = "X shows B."
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         todo_fn=todo,
         block_fn=_block_none,
@@ -636,13 +636,13 @@ def test_split_aborts_and_rolls_back_when_a_write_fails_mid_hub(store: Any) -> N
     assert report.split_applied == 0
     assert report.partial_failures == 1
     assert report.hubs[0].action == "error"
-    assert "taproot_decomposed_at" not in _meta(store, compound)
+    assert "taproot_decomposed_at" not in _meta(store, composite)
     # atom_b was never reached (atom_a raised first) -- no ref for it exists.
     with store.pool.connection() as conn:
         row = conn.execute("SELECT 1 FROM refs WHERE title = %s", (atom_b,)).fetchone()
     assert row is None
-    assert _conjunct_of_count(store, compound) == 0
-    assert _edge_exists(store, paper, compound, "corroborates")
+    assert _conjunct_of_count(store, composite) == 0
+    assert _edge_exists(store, paper, composite, "corroborates")
     assert todo.calls == []
 
 
@@ -664,17 +664,17 @@ def test_split_copies_outbound_lineage_to_every_atom(store: Any) -> None:
     """Outbound `derived-from` lineage on the original hub is a blanket
     copy onto every placed atom -- unlike the evidence re-point, no
     per-atom verification gates it."""
-    compound = mint_hub(
+    composite = mint_hub(
         store, _claim("X shows high strength and X shows high conductivity.")
     )
     paper = seed_ref(store, kind="paper")
-    store.add_link(src_ref_id=compound, dst_ref_id=paper, relation="derived-from")
+    store.add_link(src_ref_id=composite, dst_ref_id=paper, relation="derived-from")
     atom_a = "X shows high strength."
     atom_b = "X shows high conductivity."
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -686,8 +686,8 @@ def test_split_copies_outbound_lineage_to_every_atom(store: Any) -> None:
     assert report.lineage_copied == 2  # 1 lineage link x 2 atoms
     assert report.atoms_unreferenced == 0
     # The original hub keeps its own lineage link too (it stays alive as
-    # the compound).
-    assert _edge_exists(store, compound, paper, "derived-from")
+    # the composite).
+    assert _edge_exists(store, composite, paper, "derived-from")
 
     with store.pool.connection() as conn:
         atom_hub_ids = [
@@ -695,7 +695,7 @@ def test_split_copies_outbound_lineage_to_every_atom(store: Any) -> None:
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     assert len(atom_hub_ids) == 2
@@ -708,12 +708,12 @@ def test_split_lineage_copy_idempotent_on_rerun(store: Any) -> None:
     deterministic atom content -> mint_hub reconverges onto the SAME atom
     ref_ids) must not create duplicate `derived-from` rows -- add_link's
     idempotent-on-the-unique-tuple insert (module docstring)."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
-    store.add_link(src_ref_id=compound, dst_ref_id=paper, relation="derived-from")
+    store.add_link(src_ref_id=composite, dst_ref_id=paper, relation="derived-from")
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
 
     report1 = apply_dry_run(
         store,
@@ -733,7 +733,7 @@ def test_split_lineage_copy_idempotent_on_rerun(store: Any) -> None:
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     assert len(atom_hub_ids) == 2
@@ -742,7 +742,7 @@ def test_split_lineage_copy_idempotent_on_rerun(store: Any) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET meta = meta - 'taproot_decomposed_at' WHERE ref_id = %s",
-            (compound,),
+            (composite,),
         )
         conn.commit()
 
@@ -764,7 +764,7 @@ def test_split_lineage_copy_idempotent_on_rerun(store: Any) -> None:
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     assert set(atom_hub_ids_2) == set(atom_hub_ids)
@@ -778,27 +778,27 @@ def test_split_with_both_evidence_and_lineage_verifies_and_copies_both(
     """A hub carrying both provenance shapes: evidence is still
     verified-re-pointed to the verifying atom only, while lineage is
     copied blanket to both atoms."""
-    compound = mint_hub(
+    composite = mint_hub(
         store, _claim("X shows high strength and X shows high conductivity.")
     )
     evidence_paper = seed_ref(store, kind="paper")
     lineage_paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=evidence_paper,
         role="corroborates",
         check_retraction=False,
     )
     store.add_link(
-        src_ref_id=compound, dst_ref_id=lineage_paper, relation="derived-from"
+        src_ref_id=composite, dst_ref_id=lineage_paper, relation="derived-from"
     )
     atom_a = "X shows high strength."
     atom_b = "X shows high conductivity."
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -821,7 +821,7 @@ def test_split_with_both_evidence_and_lineage_verifies_and_copies_both(
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         }
     # Evidence: only the verifying atom gets it.
@@ -838,11 +838,11 @@ def test_split_counts_atoms_unreferenced_when_evidence_unverified_and_no_lineage
     """A hub with evidence but no lineage, where NO atom verifies against
     any edge: the edge is kept+needs_review on the original hub (existing
     behaviour) and every placed atom is counted unreferenced (new)."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
@@ -850,7 +850,7 @@ def test_split_counts_atoms_unreferenced_when_evidence_unverified_and_no_lineage
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        [_row(composite, "split", atoms=["X shows A.", "X shows B."])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -868,11 +868,11 @@ def test_split_counts_atoms_unreferenced_when_evidence_unverified_and_no_lineage
 def test_split_with_neither_provenance_shape_leaves_new_counters_at_zero(
     store: Any,
 ) -> None:
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=["X shows A.", "X shows B."])],
+        [_row(composite, "split", atoms=["X shows A.", "X shows B."])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -898,14 +898,14 @@ def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
     as a todo once the transaction it was queued inside gets discarded."""
     import precis.taproot.apply_migrate as apply_migrate_mod
 
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     other_paper = seed_ref(store, kind="paper")
     chunk1 = seed_chunk(store, ref_id=paper, text="passage with MARKER1", ord=0)
     chunk2 = seed_chunk(store, ref_id=other_paper, text="passage with MARKER2", ord=0)
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         meta={"source_handle": f"pc{chunk1}"},
@@ -913,7 +913,7 @@ def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
     )
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=other_paper,
         role="corroborates",
         meta={"source_handle": f"pc{chunk2}"},
@@ -936,7 +936,7 @@ def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         todo_fn=todo,
         block_fn=_block_none,
@@ -947,12 +947,12 @@ def test_split_aborts_via_add_first_backstop_and_discards_pending_reviews(
 
     assert report.split_applied == 0
     assert report.partial_failures == 1
-    assert "taproot_decomposed_at" not in _meta(store, compound)
+    assert "taproot_decomposed_at" not in _meta(store, composite)
     # Both original edges intact -- the prune that would have happened for
     # the MARKER1 edge was rolled back along with everything else.
-    assert _edge_exists(store, paper, compound, "corroborates")
-    assert _edge_exists(store, other_paper, compound, "corroborates")
-    assert _conjunct_of_count(store, compound) == 0
+    assert _edge_exists(store, paper, composite, "corroborates")
+    assert _edge_exists(store, other_paper, composite, "corroborates")
+    assert _conjunct_of_count(store, composite) == 0
     # The MARKER2 edge's "no atom verified" review was queued before the
     # backstop fired -- it must be discarded, not filed.
     assert todo.calls == []
@@ -991,18 +991,18 @@ def _ungrounded_atom_entry(sentence: str, reason: str) -> dict[str, Any]:
 
 
 def test_split_withholds_ungrounded_atom_on_papered_hub(store: Any) -> None:
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [
@@ -1039,7 +1039,7 @@ def test_split_withholds_ungrounded_atom_on_papered_hub(store: Any) -> None:
             for r in conn.execute(
                 "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
                 "AND relation = 'conjunct-of'",
-                (compound,),
+                (composite,),
             ).fetchall()
         ]
     # Only the grounded atom minted a hub + conjunct-of link.
@@ -1055,10 +1055,10 @@ def test_split_hanging_hub_ignores_ungrounded_reasons(store: Any) -> None:
     """A grounding row with paper_ref_ids=[] (nothing to re-ground
     against) must never withhold -- atoms place hanging exactly as they
     did before re-grounding existed."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [],
         "atoms": [
@@ -1085,13 +1085,13 @@ def test_split_hanging_hub_ignores_ungrounded_reasons(store: Any) -> None:
 def test_split_row_without_grounding_key_behaves_exactly_as_before(store: Any) -> None:
     """No 'grounding' key at all (a plain, un-regrounded dry-run row) must
     be indistinguishable from today's pre-regrounding behaviour."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     atom_a = "X shows A."
     atom_b = "X shows B."
 
     report = apply_dry_run(
         store,
-        [_row(compound, "split", atoms=[atom_a, atom_b])],
+        [_row(composite, "split", atoms=[atom_a, atom_b])],
         now_fn=_now_fn,
         block_fn=_block_none,
         judge_fn=_never_called,
@@ -1109,7 +1109,7 @@ def test_split_grounded_atom_evidence_edge_uses_chunk_anchor(store: Any) -> None
     """The grounded record's chunk anchor wins over the original edge's
     own (ref-level) meta -- proves the chunk-anchor upgrade, not just that
     the existing repoint still runs."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     grounded_chunk = seed_chunk(
         store, ref_id=paper, text="X shows A with a specific marker.", ord=0
@@ -1117,14 +1117,14 @@ def test_split_grounded_atom_evidence_edge_uses_chunk_anchor(store: Any) -> None
     # Ref-level: no source_handle at all on the original edge.
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [
@@ -1153,7 +1153,7 @@ def test_split_grounded_atom_evidence_edge_uses_chunk_anchor(store: Any) -> None
         atom_a_hub = conn.execute(
             "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
             "AND relation = 'conjunct-of'",
-            (compound,),
+            (composite,),
         ).fetchone()[0]
         link_chunk = conn.execute(
             "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
@@ -1169,19 +1169,19 @@ def test_split_grounded_atom_without_matching_paper_falls_back_to_edge_meta(
 ) -> None:
     """A grounding record for a DIFFERENT paper than the edge being
     re-pointed must never override that edge's own meta."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     other_paper_id = 999_999_999  # arbitrary, never a real ref -- never dereferenced
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [
@@ -1208,7 +1208,7 @@ def test_split_grounded_atom_without_matching_paper_falls_back_to_edge_meta(
         atom_a_hub = conn.execute(
             "SELECT src_ref_id FROM links WHERE dst_ref_id = %s "
             "AND relation = 'conjunct-of'",
-            (compound,),
+            (composite,),
         ).fetchone()[0]
         link_chunk = conn.execute(
             "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
@@ -1232,18 +1232,18 @@ def test_split_error_sentinel_withholds_every_atom_and_files_needs_review(
     ({"error": "..."}) -- re-grounding itself raised for this hub -- must
     withhold EVERY atom (never a silent pass-through), never mint a hub,
     never stamp, and file a needs_review."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {"error": "dispatch unavailable"}
     todo = _TodoCollector()
 
@@ -1262,7 +1262,7 @@ def test_split_error_sentinel_withholds_every_atom_and_files_needs_review(
     assert report.atoms_placed == 0
     assert report.partial_failures == 1
     assert report.hubs[0].action == "error"
-    assert "taproot_decomposed_at" not in _meta(store, compound)
+    assert "taproot_decomposed_at" not in _meta(store, composite)
     with store.pool.connection() as conn:
         row_a = conn.execute(
             "SELECT 1 FROM refs WHERE title = %s", (atom_a,)
@@ -1275,7 +1275,7 @@ def test_split_error_sentinel_withholds_every_atom_and_files_needs_review(
     assert any("every atom withheld" in c[1] for c in todo.calls)
     # The original evidence edge is untouched -- nothing was ever
     # re-pointed for a hub whose re-grounding check never completed.
-    assert _edge_exists(store, paper, compound, "corroborates")
+    assert _edge_exists(store, paper, composite, "corroborates")
 
 
 def test_split_error_sentinel_withholds_regardless_of_paper_presence(
@@ -1284,10 +1284,10 @@ def test_split_error_sentinel_withholds_regardless_of_paper_presence(
     """Unlike a normal ungrounded reason (gated on paper_ref_ids), the
     error sentinel withholds unconditionally -- we don't know whether this
     hub is papered or hanging, the check that would tell us never ran."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {"error": "dispatch unavailable"}
 
     report = apply_dry_run(
@@ -1303,7 +1303,7 @@ def test_split_error_sentinel_withholds_regardless_of_paper_presence(
     assert report.split_applied == 0
     assert report.atoms_placed == 0
     assert report.partial_failures == 1
-    assert "taproot_decomposed_at" not in _meta(store, compound)
+    assert "taproot_decomposed_at" not in _meta(store, composite)
 
 
 def test_split_all_atoms_withheld_no_stamp_and_retryable(store: Any) -> None:
@@ -1311,18 +1311,18 @@ def test_split_all_atoms_withheld_no_stamp_and_retryable(store: Any) -> None:
     a papered hub must ALSO withhold+not-stamp -- a zero-child split is a
     partial failure, never a silent no-op split_applied. A second apply
     run over the SAME row (unchanged meta) must pick the hub back up."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [
@@ -1344,14 +1344,14 @@ def test_split_all_atoms_withheld_no_stamp_and_retryable(store: Any) -> None:
     assert report1.split_applied == 0
     assert report1.atoms_placed == 0
     assert report1.partial_failures == 1
-    assert "taproot_decomposed_at" not in _meta(store, compound)
+    assert "taproot_decomposed_at" not in _meta(store, composite)
     # Critically: skipped_already_stamped is 0 -- nothing locked the hub
     # out of a retry (the bug the review flagged).
     assert report1.skipped_already_stamped == 0
 
     # Re-grounding is re-run and this time atom_a grounds -- the retry
     # must actually be able to succeed, proving the hub was never stamped.
-    row2 = _row(compound, "split", atoms=[atom_a, atom_b])
+    row2 = _row(composite, "split", atoms=[atom_a, atom_b])
     row2["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [
@@ -1371,7 +1371,7 @@ def test_split_all_atoms_withheld_no_stamp_and_retryable(store: Any) -> None:
     assert report2.split_applied == 1
     assert report2.atoms_placed == 1
     assert report2.atoms_withheld_ungrounded == 1
-    assert "taproot_decomposed_at" in _meta(store, compound)
+    assert "taproot_decomposed_at" in _meta(store, composite)
 
 
 def test_split_edge_review_message_distinguishes_withheld_from_unverified(
@@ -1380,18 +1380,18 @@ def test_split_edge_review_message_distinguishes_withheld_from_unverified(
     """The only atom extract_verify_fn says verifies against this edge was
     WITHHELD (ungrounded) -- the review message must say so, not the
     generic 'no atom verified' (pre-ship review finding #4)."""
-    compound = mint_hub(store, _claim("X shows A and X shows B."))
+    composite = mint_hub(store, _claim("X shows A and X shows B."))
     paper = seed_ref(store, kind="paper")
     attach_evidence(
         store,
-        hub_ref_id=compound,
+        hub_ref_id=composite,
         paper_ref_id=paper,
         role="corroborates",
         check_retraction=False,
     )
     atom_a = "X shows A."
     atom_b = "X shows B."
-    row = _row(compound, "split", atoms=[atom_a, atom_b])
+    row = _row(composite, "split", atoms=[atom_a, atom_b])
     row["grounding"] = {
         "paper_ref_ids": [paper],
         "atoms": [

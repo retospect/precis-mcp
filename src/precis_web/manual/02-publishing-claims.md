@@ -14,7 +14,7 @@ the path there is deliberately full of doors.
 ## Where
 
 **`/nanopub`** is the workbench. Three panes with draggable dividers:
-the claim forest on the left (compounds nest the atoms they are built
+the claim forest on the left (composites nest the atoms they are built
 from; evidence hangs off as leaves), the review pane in the middle, the
 source paper on the right.
 
@@ -95,7 +95,7 @@ source (a related-work section, a passage that itself cites `[12]`, or a
 source whose full text isn't in the corpus); the quote isn't verbatim in
 the stored text; the locator isn't unique within the paper; a claim
 carries no quote, or a hypothesis carries one; a quantity has no stated
-bound; the source PDF is a duplicate. Compound claims cannot publish
+bound; the source PDF is a duplicate. Composite claims cannot publish
 before the atoms they are built from.
 
 A **hanging claim** — one with no live source in the corpus — can be

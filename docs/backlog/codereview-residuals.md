@@ -215,7 +215,7 @@ per-executor copies) remains open.
 Documented in docstrings as "each module keeps its own copy" — causes real drift.
 
 Examples:
-- Taproot claim predicates: `_is_claim_hub` (byte-identical in `taproot/hub.py` + `taproot/seniority.py`); `_is_compound_hub` (`taproot/hub.py` + `workers/hub_refine.py`); conjunct-of relation string ×5 modules; no test pins copies together.
+- Taproot claim predicates: `_is_claim_hub` (byte-identical in `taproot/hub.py` + `taproot/seniority.py`); `_is_composite_hub` (`taproot/hub.py` + `workers/hub_refine.py`); conjunct-of relation string ×5 modules; no test pins copies together.
 - `_cosine` ×5: `skill_index/index.py` · `utils/segmentation.py::zip(strict=True)` raises · `quest/gaps.py` silently truncates · `quest/placement.py` + `quest/tick.py` numpy
 
 Re-decision needed: retire the convention or make it enforceable (e.g., via a code-sync test asserting copy parity).

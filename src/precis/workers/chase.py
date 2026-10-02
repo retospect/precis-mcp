@@ -1609,7 +1609,7 @@ def _taproot_bridge(
     ``finding.title`` and routes it through the single-claim
     ``block``/``dedup_judge``/``place`` → :func:`~precis.taproot.hub.apply_placement`
     path exactly as before. A chase-minted hub can therefore still be a
-    compound (bundling multiple conjuncts) until a human migration pass
+    composite (bundling multiple conjuncts) until a human migration pass
     revisits it; :func:`precis.taproot.backfill.apply_chunk` is the only
     caller currently wired to the decomposition-aware
     :func:`~precis.taproot.hub.apply_extraction` write door. Deliberate scope

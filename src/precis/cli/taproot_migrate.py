@@ -43,7 +43,7 @@ of a burned bulk run.
     precis taproot-migrate score --format json
     precis taproot-migrate canary
     precis taproot-migrate dry-run --limit 50
-    precis taproot-migrate dry-run --limit 50 --cohort likely-compound --controls 10
+    precis taproot-migrate dry-run --limit 50 --cohort likely-composite --controls 10
     precis taproot-migrate dry-run --limit 50 --out /tmp/report.md
     precis taproot-migrate dry-run --limit 50 --json /tmp/report.jsonl \\
         --tier small --escalate
@@ -83,7 +83,7 @@ def add_parser(subparsers: Any) -> None:
     s = tsub.add_parser(
         "score",
         help="Phase 0: score+cohort every live, not-yet-migrated claim hub "
-        "by title compoundness heuristics (conjunctions/length/punctuation). "
+        "by title compositeness heuristics (conjunctions/length/punctuation). "
         "No model call, read-only.",
     )
     s.add_argument(
@@ -129,7 +129,7 @@ def add_parser(subparsers: Any) -> None:
     )
     d.add_argument(
         "--cohort",
-        choices=("likely-compound", "uncertain", "likely-atomic"),
+        choices=("likely-composite", "uncertain", "likely-atomic"),
         default=None,
         help="Restrict the top-scored set to one cohort (default: all cohorts).",
     )

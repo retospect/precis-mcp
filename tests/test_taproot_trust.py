@@ -508,9 +508,9 @@ def test_hub_inflight_ignores_grounding_unacquirable_path(store: Any) -> None:
     assert result.overridden is False
 
 
-# ── compound = worst-of-its-atoms (taproot-atomic-claims.md, step 4) ──
+# ── composite = worst-of-its-atoms (taproot-atomic-claims.md, step 4) ──
 #
-# A compound hub carries no evidence of its own (attach_evidence forbids a
+# A composite hub carries no evidence of its own (attach_evidence forbids a
 # direct edge onto one) — its trust is instead the worst-of its `conjunct-of`
 # atoms' own full claim_trust derivation, with the same rule-3 (here: rule 4)
 # claim-level softener composing AFTER the rollup.
@@ -520,64 +520,64 @@ def _atom_hub(store: Any, sentence: str) -> int:
     return mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
 
 
-def _conjunct(store: Any, *, atom: int, compound: int) -> None:
+def _conjunct(store: Any, *, atom: int, composite: int) -> None:
     link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
 
 
-def test_compound_worst_of_two_atoms_one_clean_one_evidence_less(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+def test_composite_worst_of_two_atoms_one_clean_one_evidence_less(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
     clean_atom = _atom_hub(store, "Atom: Pd/C alone catalyzes the coupling.")
     bare_atom = _atom_hub(store, "Atom: a mild base is required.")
     origin = _paper(store, cite_key="cpd01a")
     attach_evidence(
         store, hub_ref_id=clean_atom, paper_ref_id=origin, role="corroborates"
     )
-    _conjunct(store, atom=clean_atom, compound=compound)
-    _conjunct(store, atom=bare_atom, compound=compound)
+    _conjunct(store, atom=clean_atom, composite=composite)
+    _conjunct(store, atom=bare_atom, composite=composite)
 
-    result = claim_trust(store, compound)
+    result = claim_trust(store, composite)
 
     assert result.label == "unverified"
-    assert result.status == "hub-compound"
+    assert result.status == "hub-composite"
     assert result.note is not None
     assert "weakest conjunct" in result.note
     assert "mild base is required" in result.note
     assert result.overridden is False
 
 
-def test_compound_all_atoms_clean_is_clean(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+def test_composite_all_atoms_clean_is_clean(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
     atom_a = _atom_hub(store, "Atom A sentence.")
     atom_b = _atom_hub(store, "Atom B sentence.")
     paper_a = _paper(store, cite_key="cpa01a")
     paper_b = _paper(store, cite_key="cpb01a")
     attach_evidence(store, hub_ref_id=atom_a, paper_ref_id=paper_a, role="corroborates")
     attach_evidence(store, hub_ref_id=atom_b, paper_ref_id=paper_b, role="corroborates")
-    _conjunct(store, atom=atom_a, compound=compound)
-    _conjunct(store, atom=atom_b, compound=compound)
+    _conjunct(store, atom=atom_a, composite=composite)
+    _conjunct(store, atom=atom_b, composite=composite)
 
-    result = claim_trust(store, compound)
+    result = claim_trust(store, composite)
 
     assert result.label == "clean"
-    assert result.status == "hub-compound"
+    assert result.status == "hub-composite"
     assert result.overridden is False
 
 
-def test_compound_level_vouch_softens_a_rolled_up_unverified(store: Any) -> None:
-    """A rule-4 claim-level override made ON THE COMPOUND HUB ITSELF softens
+def test_composite_level_vouch_softens_a_rolled_up_unverified(store: Any) -> None:
+    """A rule-4 claim-level override made ON THE COMPOSITE HUB ITSELF softens
     its rolled-up label, exactly as it would a plain hub's — a human can
     vouch for the whole bundle even though one conjunct is unsupported."""
-    compound = mint_hub(store, _CLAIM)
+    composite = mint_hub(store, _CLAIM)
     bare_atom = _atom_hub(store, "Atom: no evidence yet.")
-    _conjunct(store, atom=bare_atom, compound=compound)
+    _conjunct(store, atom=bare_atom, composite=composite)
 
-    rolled_up = claim_trust(store, compound)
+    rolled_up = claim_trust(store, composite)
     assert rolled_up.label == "unverified"
 
     store.update_ref(
-        compound,
+        composite,
         meta_patch={
             "unacquirable_override": {
                 "mode": "abstract",
@@ -588,41 +588,41 @@ def test_compound_level_vouch_softens_a_rolled_up_unverified(store: Any) -> None
         },
     )
 
-    result = claim_trust(store, compound)
+    result = claim_trust(store, composite)
 
     assert result.label == "abstract"
     assert result.overridden is True
     assert result.note == "abstract backs the whole bundle"
 
 
-def test_claim_trust_bulk_agrees_with_per_hub_for_a_compound(store: Any) -> None:
-    compound = mint_hub(store, _CLAIM)
+def test_claim_trust_bulk_agrees_with_per_hub_for_a_composite(store: Any) -> None:
+    composite = mint_hub(store, _CLAIM)
     clean_atom = _atom_hub(store, "Atom: Pd/C alone catalyzes the coupling.")
     bare_atom = _atom_hub(store, "Atom: a mild base is required.")
     origin = _paper(store, cite_key="cbulk1a")
     attach_evidence(
         store, hub_ref_id=clean_atom, paper_ref_id=origin, role="corroborates"
     )
-    _conjunct(store, atom=clean_atom, compound=compound)
-    _conjunct(store, atom=bare_atom, compound=compound)
+    _conjunct(store, atom=clean_atom, composite=composite)
+    _conjunct(store, atom=bare_atom, composite=composite)
     plain_hub = mint_hub(
         store, CanonicalClaim(sentence="A plain atomic hub, no conjuncts.", scope={})
     )
 
-    per_hub = {rid: claim_trust(store, rid) for rid in (compound, plain_hub)}
-    bulk = claim_trust_bulk(store, [compound, plain_hub])
+    per_hub = {rid: claim_trust(store, rid) for rid in (composite, plain_hub)}
+    bulk = claim_trust_bulk(store, [composite, plain_hub])
 
-    assert bulk[compound].label == per_hub[compound].label == "unverified"
-    assert bulk[compound].note == per_hub[compound].note
-    assert bulk[compound].status == per_hub[compound].status == "hub-compound"
+    assert bulk[composite].label == per_hub[composite].label == "unverified"
+    assert bulk[composite].note == per_hub[composite].note
+    assert bulk[composite].status == per_hub[composite].status == "hub-composite"
     assert bulk[plain_hub].label == per_hub[plain_hub].label == "unverified"
     assert bulk[plain_hub].status == per_hub[plain_hub].status == "hub"
 
 
 def test_plain_hub_without_conjuncts_status_stays_hub(store: Any) -> None:
     """A hub with no ``conjunct-of`` atoms takes the ordinary ``_hub_trust``
-    path unchanged — status stays ``'hub'``, not ``'hub-compound'`` — the
-    atomic-claims compound rollup is additive, never touching a plain hub's
+    path unchanged — status stays ``'hub'``, not ``'hub-composite'`` — the
+    atomic-claims composite rollup is additive, never touching a plain hub's
     own derivation."""
     hub = mint_hub(store, _CLAIM)
     origin = _paper(store, cite_key="plain01a")

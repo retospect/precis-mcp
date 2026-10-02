@@ -18,13 +18,13 @@ Claimed off a **due-set**, never a blind periodic rescan
    never-refined, an edit reopening it, a :data:`REFINE_VERSION` bump on an
    unsigned hub, or the long backstop),
    never-refined first then oldest ``last_refined_at``, ``SKIP LOCKED``,
-   capped at :func:`_hubs_per_pass`. A **compound** claim hub (a live
+   capped at :func:`_hubs_per_pass`. A **composite** claim hub (a live
    inbound ``conjunct-of`` edge — it decomposed into atoms,
    docs/backlog/taproot-atomic-claims.md) is excluded entirely: its only
    possible write is a direct evidence attach, which
    ``taproot.hub.attach_evidence`` refuses (``BadInput``), so claiming it
    would just raise every pass and never converge.
-   :func:`_is_compound_hub` re-checks the same predicate defensively
+   :func:`_is_composite_hub` re-checks the same predicate defensively
    inside :func:`_refine_one_hub` for the claim/process race window.
 2. **Discover** — two sources merged into one candidate list, citation
    candidates first (win the shared per-source dedup slot):
@@ -96,10 +96,10 @@ skip there would leave a KEEP-judged pinned edge withheld forever, since
 the audit's own memo is exactly what would otherwise block this re-verify
 from ever reaching it.
 
-**Reopen gate vs. decomposition.** A compound hub never reaches step 6
+**Reopen gate vs. decomposition.** A composite hub never reaches step 6
 (excluded at step 1), so retitling it costs nothing here and does NOT
-re-run decomposition — atoms-vs-compound is decided once, at extraction
-(``taproot.canon.extract_claim``). A reworded compound just sits with a
+re-run decomposition — atoms-vs-composite is decided once, at extraction
+(``taproot.canon.extract_claim``). A reworded composite just sits with a
 stale ``conjunct-of`` set until a separate human-run migration revisits
 it. An atom is an ordinary hub — its own sha-reopen still clears its own
 memo at the atom grain.
@@ -544,9 +544,9 @@ def _claim_hubs_due_for_refine(
     :func:`_is_hub_due`) that outlives the popped tag if discovery never
     reaches it.
 
-    Excludes **compound** claim hubs (module docstring step 1) via a
+    Excludes **composite** claim hubs (module docstring step 1) via a
     ``NOT EXISTS`` over an inbound live ``conjunct-of`` edge — the same
-    predicate :func:`_is_compound_hub` checks per-hub, deliberately
+    predicate :func:`_is_composite_hub` checks per-hub, deliberately
     re-derived rather than shared (module docstring's "cross-task seam"
     note).
     """
@@ -670,10 +670,10 @@ def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _is_compound_hub(conn: Connection, ref_id: int) -> bool:
+def _is_composite_hub(conn: Connection, ref_id: int) -> bool:
     """True iff ``ref_id`` carries a live inbound ``conjunct-of`` edge from a
     live ``finding`` (docs/backlog/taproot-atomic-claims.md) — i.e. it is a
-    compound claim hub with atomic conjuncts linked to it, rather than an
+    composite claim hub with atomic conjuncts linked to it, rather than an
     atom or a plain (undecomposed) claim hub.
 
     Deliberately re-derives the same predicate :func:`_claim_hubs_due_for_refine`
@@ -683,7 +683,7 @@ def _is_compound_hub(conn: Connection, ref_id: int) -> bool:
     opens its own connection and keeps its own copy). Used only as a
     defensive per-hub check inside :func:`_refine_one_hub`, for the narrow
     race window between :func:`_claim_hubs_due_for_refine`'s claim and this
-    function's processing — the due-set query above already keeps compounds
+    function's processing — the due-set query above already keeps composites
     from being claimed in the first place.
     """
     row = conn.execute(
@@ -2891,13 +2891,13 @@ def _refine_one_hub(
     **Vanished ref** — ``info is None`` (ref deleted between claim and
     processing): clears the attempt lease and returns; nothing to stamp.
 
-    **Defensive compound skip** — :func:`_claim_hubs_due_for_refine` already
-    excludes compound hubs from the due-set, but a concurrent decomposition
+    **Defensive composite skip** — :func:`_claim_hubs_due_for_refine` already
+    excludes composite hubs from the due-set, but a concurrent decomposition
     can mint the ``conjunct-of`` edge in the claim→process window.
-    :func:`_is_compound_hub` re-checks here: if true, stamps
+    :func:`_is_composite_hub` re-checks here: if true, stamps
     ``last_refined_at``/``last_refined_sha`` and clears the attempt lease,
     then returns before discovery/verify — ``attach_evidence``'s own
-    compound guard is never reached.
+    composite guard is never reached.
 
     **Reground integration** (``reground`` non-``None``) — stages 1/2
     (fisheye + strict audit) run before discovery; stage 3 adds same-paper
@@ -2917,8 +2917,8 @@ def _refine_one_hub(
         store.remove_tag(hub_ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
         return
     title, meta = info
-    if _is_compound_hub(conn, hub_ref_id):
-        # Became compound between claim and processing — stamp-and-drain
+    if _is_composite_hub(conn, hub_ref_id):
+        # Became composite between claim and processing — stamp-and-drain
         # (see the docstring above): no discovery/verify, no evidence
         # attach attempt.
         store.update_ref(
@@ -3481,7 +3481,7 @@ def reground_one_hub(
     run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
     run_demotions(store, pending_demotions)
     if not plans:
-        # The hub drained without a plan (vanished, or became compound
+        # The hub drained without a plan (vanished, or became composite
         # between claim and processing) — nothing was judged, nothing to
         # apply.
         return RegroundApplyResult(hub_ref_id=hub_ref_id)

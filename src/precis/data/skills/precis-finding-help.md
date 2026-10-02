@@ -319,7 +319,7 @@ hub as a note (title → gist → claim text); `fisheye+1hop` adds its
 **claim-graph neighborhood** one edge out, both directions, each line
 labelled with its relation: `establishes` / `corroborates` /
 `contradicts` evidence papers, the `refines` chain, `conjunct-of`
-atoms-or-compound, and `motivated-by`. Groups are capped — an overflow
+atoms-or-composite, and `motivated-by`. Groups are capped — an overflow
 line names what it withheld rather than silently truncating.
 
 Every rung is prefixed with the hub's trust posture:

@@ -2758,7 +2758,7 @@ def convert_client(runtime_with_store, tmp_path) -> TestClient:
 
 
 def _extract_const(sentence: str):
-    """Fake ``ExtractFn``: a single atomic claim, no compound — mirrors a
+    """Fake ``ExtractFn``: a single atomic claim, no composite — mirrors a
     real :func:`~precis.taproot.canon.extract_claim` result for a chunk
     that decomposes to exactly one atom (``ClaimExtraction`` is the
     real-world return shape; these routes never see decomposition)."""
@@ -2766,7 +2766,7 @@ def _extract_const(sentence: str):
 
     return lambda span: ClaimExtraction(
         atoms=(CanonicalClaim(sentence=sentence, scope={}),),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
 

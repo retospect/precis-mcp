@@ -72,7 +72,7 @@ are mint jobs" plan does not hold; mode grounding stays advisory.
 **Those counts are raw query output; the sections below revise what they
 mean.** Investigation on the same day found the 4 `contradicts` edges
 contain no evidence conflict at all, and 1 of the 2 "no evidence" hubs is
-a compound whose atoms *are* corroborated. Read the tallies as "rows the
+a composite whose atoms *are* corroborated. Read the tallies as "rows the
 query flagged", not "claims that are wrong".
 
 Zero refuted. All 3 `signed` hubs in the whole corpus are nanobud hubs
@@ -143,7 +143,7 @@ the disputed cohort, so `reword-sweep` will then accept it.
 
 ## Phase 3 — the two "no evidence" hubs, resolved
 
-**fi211522 is not an evidence gap.** It is a *compound* hub; all three
+**fi211522 is not an evidence gap.** It is a *composite* hub; all three
 conjunct atoms (fi211519/20/21) are corroborated by pc42017 (Lee et al.
 2008). Posture did not roll up atom evidence; it does now
 (`HubOverviewRow.conjunct_count`/`conjuncts_supported`). Its
@@ -196,7 +196,7 @@ Still genuinely open in the prose:
   transform an attached fullerene into a tube-like intermediate before it
   collapses, indicating nanobud geometry is not fixed after synthesis" —
   drops "engineered", names the mechanism, keeps the finding.
-- dc2445957 — the fi191329 compound sentence. The uncovered clause is
+- dc2445957 — the fi191329 composite sentence. The uncovered clause is
   **supported** by pc209495 (same paper, uncited). Preferred fix is to
   mint/attach a hub for it and cite alongside, not to cut the clause.
 
@@ -350,7 +350,7 @@ Fixed by naming the method from each hub's OWN evidence, written by hand,
 | hub | what changed |
 |---|---|
 | fi189536 | SCC-DFTB named (pc2412082). **Narrowed** — the old sentence asserted bilayer-film deposition and physical blending, which its adsorption evidence never supported. |
-| fi211522 | compound: unclosed paren + missing period fixed, method (nanoindentation/AFM) pulled from its own conjunct atoms; `~` → `≈` on a notation advisory. |
+| fi211522 | composite: unclosed paren + missing period fixed, method (nanoindentation/AFM) pulled from its own conjunct atoms; `~` → `≈` on a notation advisory. |
 | fi269443 | mass spectroscopy / infrared spectroscopy / X-ray diffraction named (pc3119725). |
 | fi269510 | HR-TEM named, C₂₀ hedge preserved. |
 | fi269548 | applied verbatim from the sweep (the one faithful proposal). |

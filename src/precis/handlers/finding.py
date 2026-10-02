@@ -1796,13 +1796,13 @@ def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
         # it answer "verified", the exact inversion of the question.
         # Verified *and* unopposed: a hub with a live contradicts edge is
         # exactly what the ratchet hides, so it never answers "settled".
-        # A compound hub carries no evidence edges of its own (they hang
+        # A composite hub carries no evidence edges of its own (they hang
         # off its ``conjunct-of`` atoms), so ``supported_count`` is 0 by
         # construction — it answers "verified" when every live atom is
         # supported and none is contradicted (``atoms_all_supported``).
         # Posture only: ``gates.check_mint_order`` stays stricter (a signed
         # artifact per atom), so corroborated-but-unsigned atoms read as
-        # verified here yet still block the compound's mint.
+        # verified here yet still block the composite's mint.
         return (row.supported_count > 0 or row.atoms_all_supported) and not row.disputed
     if trust == _TRUST_DISPUTED:
         return row.disputed
@@ -1852,7 +1852,7 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
             support += f" {negative}✗"
         if row.withheld_count:
             support += f" {row.withheld_count}?"
-    # A compound's evidence hangs off its atoms: roll them up so it never
+    # A composite's evidence hangs off its atoms: roll them up so it never
     # reads as "no verdicts" while every atom is supported.
     if row.conjunct_count:
         atoms = f"atoms {row.conjuncts_supported}/{row.conjunct_count}✓"
@@ -1897,7 +1897,7 @@ def _search_hit_posture(row: HubOverviewRow) -> str:
     RRF lever leaves it at its unpenalised rank), then verified-and-
     unopposed (the dense positive signal — reuses :func:`_passes_trust`'s
     own ``trust='verified'`` definition: ``supported_count > 0`` — or, for
-    a compound, every conjunct atom supported — and not disputed), else
+    a composite, every conjunct atom supported — and not disputed), else
     unverified (unminted-with-nothing or withheld-only —
     the bulk of the corpus per the backlog item's prod snapshot).
     """

@@ -9,8 +9,8 @@ Phase 0: :func:`score_hubs`/:func:`score_sentence`. Phase 1:
 :func:`dry_run`/:func:`classify_extraction` — each function's own
 docstring carries its contract.
 
-Both phases exclude a hub that is already a **compound**
-(:func:`~precis.taproot.hub._is_compound_hub`) or already stamped
+Both phases exclude a hub that is already a **composite**
+(:func:`~precis.taproot.hub._is_composite_hub`) or already stamped
 ``meta.taproot_decomposed_at`` (the Phase-2 idempotency marker) — nothing
 left to migrate on either shape.
 """
@@ -50,12 +50,12 @@ __all__ = [
     "score_sentence",
 ]
 
-Cohort = Literal["likely-compound", "uncertain", "likely-atomic"]
+Cohort = Literal["likely-composite", "uncertain", "likely-atomic"]
 
 #: Every cohort, in display/priority order — the single source other
 #: modules (CLI, tests) iterate over rather than re-listing the three
 #: string literals.
-COHORTS: tuple[Cohort, ...] = ("likely-compound", "uncertain", "likely-atomic")
+COHORTS: tuple[Cohort, ...] = ("likely-composite", "uncertain", "likely-atomic")
 
 Verdict = Literal["pass-through", "split", "lossy", "nested", "no-claim", "error"]
 
@@ -95,11 +95,11 @@ _COMMA_WEIGHT = 1
 
 #: A score at/above this needs at least two of the weight-2 signals (or
 #: their equivalent) to fire — the "confidently looks bundled" band.
-_COMPOUND_THRESHOLD = 4
+_COMPOSITE_THRESHOLD = 4
 
 
 def score_sentence(sentence: str) -> tuple[int, tuple[str, ...]]:
-    """The compoundness score for one claim hub's claim sentence — pure
+    """The compositeness score for one claim hub's claim sentence — pure
     function, no model/DB. Returns ``(score, signals)``; ``signals`` names
     every heuristic that fired (empty when none did), for the report/CLI to
     show its work.
@@ -133,15 +133,15 @@ def cohort_for_score(score: int) -> Cohort:
     """Bucket a :func:`score_sentence` score into a :data:`Cohort`.
 
     ``0`` -> ``likely-atomic`` (no signal fired at all); at/above
-    :data:`_COMPOUND_THRESHOLD` -> ``likely-compound`` (at least two
+    :data:`_COMPOSITE_THRESHOLD` -> ``likely-composite`` (at least two
     signals, or one length/semicolon signal alongside another); everything
     in between -> ``uncertain`` (exactly one weak signal — not enough on
-    its own to call it either atomic or compound).
+    its own to call it either atomic or composite).
     """
     if score <= 0:
         return "likely-atomic"
-    if score >= _COMPOUND_THRESHOLD:
-        return "likely-compound"
+    if score >= _COMPOSITE_THRESHOLD:
+        return "likely-composite"
     return "uncertain"
 
 
@@ -160,16 +160,16 @@ class HubScore:
     signals: tuple[str, ...]
 
 
-#: Mirrors :func:`precis.taproot.hub._is_compound_hub` / :mod:`precis.
+#: Mirrors :func:`precis.taproot.hub._is_composite_hub` / :mod:`precis.
 #: workers.hub_refine`'s ``_claim_hubs_due_for_refine`` ``NOT EXISTS``
 #: filter — the "cross-task seam" precedent this build follows throughout
-#: (each module keeps its own copy of the compound predicate rather than
+#: (each module keeps its own copy of the composite predicate rather than
 #: sharing a connection-agnostic helper).
 #:
 #: The LEFT JOIN reads the same ``finding_body`` chunk
 #: :func:`~precis.taproot.hub.mint_hub` writes (``ord=0``) — P0-1: scoring
 #: ``refs.title`` alone missed ~19% of the population that has a short
-#: "topic" title but a compound body. ``COALESCE(NULLIF(btrim(...), ''), …)``
+#: "topic" title but a composite body. ``COALESCE(NULLIF(btrim(...), ''), …)``
 #: falls back to the title when the chunk is missing, retired, or blank.
 _CANDIDATE_HUBS_SQL = """
     SELECT r.ref_id, r.title,
@@ -197,7 +197,7 @@ def score_hubs(store: Store) -> list[HubScore]:
     """Score+cohort every live claim hub eligible for migration — Phase 0.
 
     Reads (never writes) every live ``TAPROOT:claim`` finding that is
-    **not** already a compound (no live inbound ``conjunct-of`` edge) and
+    **not** already a composite (no live inbound ``conjunct-of`` edge) and
     not already stamped ``meta.taproot_decomposed_at``. Scores the hub's
     claim sentence (``finding_body`` ord=0, falling back to ``title`` — see
     :data:`_CANDIDATE_HUBS_SQL`), not the title alone (P0-1). Sorted by
@@ -252,7 +252,7 @@ ExtractFn = Callable[[str], ClaimExtraction]
 # fixture test, with the reasoning) per the sequencing note in
 # docs/backlog/taproot-migration-extraction-quality-gates.md: the coverage
 # gate's job is to catch every truly-lossy hub (the dangerous class — a
-# silent, permanent stamp on a still-compound hub), not to be precise about
+# silent, permanent stamp on a still-composite hub), not to be precise about
 # the safe ones (a false "lossy" just costs an extra escalation call).
 
 _WORD_RE = re.compile(r"[A-Za-z0-9μ]+")
@@ -474,7 +474,7 @@ def _strip_citation_tail(text: str) -> str:
 
 #: Below this recall (fraction of the original's :func:`_content_words`
 #: found in the extraction union), a **pass-through**
-#: (single atom, no compound — extraction claims the sentence was already
+#: (single atom, no composite — extraction claims the sentence was already
 #: atomic) is `lossy`. Set just above fi176360's 13/18≈0.722 recall (a real
 #: dropped scope-qualifier clause) and just below fi176361's 11/15≈0.733
 #: (a dropped illustrative example + summary clause — judged acceptable) —
@@ -482,9 +482,9 @@ def _strip_citation_tail(text: str) -> str:
 #: pass-throughs still fall below it (see the fixture test's xfails).
 _LOSSY_RECALL_THRESHOLD_PASS_THROUGH = 0.73
 
-#: Below this recall, a **split** (compound present, ≥2 atoms) is `lossy`.
+#: Below this recall, a **split** (composite present, ≥2 atoms) is `lossy`.
 #: Legitimate splits naturally lose more raw token overlap than a
-#: pass-through does — the compound's connective/summarizing words get
+#: pass-through does — the composite's connective/summarizing words get
 #: redistributed or dropped across atoms even when nothing is *lost* — so
 #: this floor sits lower. Set between fi177406's ≈0.619 recall (real
 #: dropped provenance clause) and fi176427's ≈0.75 (sound 3-way split), with
@@ -494,7 +494,7 @@ _LOSSY_RECALL_THRESHOLD_SPLIT = 0.65
 #: Above this containment ratio (fraction of one atom's — or the bundle's —
 #: tokens found in another), P0-3 calls the split `nested`: fi176441's
 #: three "atoms" are a strictly nested A1⊂A2⊂A3, with A3 ratio 0.90 against
-#: the compound — a fake split, not three facts. The next-highest ratio on
+#: the composite — a fake split, not three facts. The next-highest ratio on
 #: any *sound* split in the fixture is ~0.5, so this has a wide margin.
 _NESTED_CONTAINMENT_THRESHOLD = 0.9
 
@@ -507,7 +507,7 @@ _NESTED_CONTAINMENT_THRESHOLD = 0.9
 #: gone). The absolute count is the complementary signal: the fixture's
 #: correct pass-throughs drop at most 3 (fi176448) — except fi176361 at
 #: exactly 4, accepted as a fourth known false positive (see the gates
-#: test's xfails). **Splits are exempt**: redistributing a compound across
+#: test's xfails). **Splits are exempt**: redistributing a composite across
 #: atoms legitimately drops 4–5 connective/summarizing words (fi176427,
 #: fi176435 — both sound splits).
 _LOSSY_MISSING_CONTENT_CAP_PASS_THROUGH = 4
@@ -605,7 +605,7 @@ def _invented_number_tokens(original: str, union_text: str) -> tuple[str, ...]:
 def _extraction_union_text(extraction: ClaimExtraction) -> str:
     """Everything the extraction *kept*: every atom sentence, every atom
     scope value, every not-claim's text — a deliberately-rejected conjunct
-    is accounted for, not lost. The compound sentence deliberately does
+    is accounted for, not lost. The composite sentence deliberately does
     **not** count: it IS the original (or a close paraphrase of it), so
     including it would make the coverage gate trivially pass on the exact
     lossy pattern it exists to catch (P0-2)."""
@@ -622,13 +622,13 @@ def _containment_findings(
     atoms: tuple[CanonicalClaim, ...], reference_sentence: str
 ) -> list[dict[str, Any]]:
     """P0-3's containment check: every atom-pair or atom-vs-reference
-    (compound, or the original sentence when there's no compound) whose
+    (composite, or the original sentence when there's no composite) whose
     containment ratio exceeds :data:`_NESTED_CONTAINMENT_THRESHOLD`. Empty
     when nothing is nested — the caller treats a non-empty result as
     `nested`. ``reference_sentence`` is checked as "how much of the
     reference is covered by this one atom" (fi176441: A3 alone covers 90%
-    of the compound), not the other direction — every sound atom covers
-    *some* of the compound by construction, so that direction would fire on
+    of the composite), not the other direction — every sound atom covers
+    *some* of the composite by construction, so that direction would fire on
     every split.
     """
     token_sets = [_token_set(atom.sentence) for atom in atoms]
@@ -647,7 +647,7 @@ def _containment_findings(
             continue
         ratio = len(reference_tokens & atom_tokens) / len(reference_tokens)
         if ratio > _NESTED_CONTAINMENT_THRESHOLD:
-            findings.append({"atom": i, "vs": "compound", "ratio": round(ratio, 3)})
+            findings.append({"atom": i, "vs": "composite", "ratio": round(ratio, 3)})
     return findings
 
 
@@ -677,8 +677,8 @@ def classify_extraction(
 
     if len(extraction.atoms) >= 2:
         reference = (
-            extraction.compound.sentence
-            if extraction.compound is not None
+            extraction.composite.sentence
+            if extraction.composite is not None
             else sentence
         )
         containment = _containment_findings(extraction.atoms, reference)
@@ -709,7 +709,7 @@ def classify_extraction(
         "precision": round(precision, 3),
         "invented_numbers": invented_numbers,
     }
-    is_split = extraction.compound is not None
+    is_split = extraction.composite is not None
     threshold = (
         _LOSSY_RECALL_THRESHOLD_SPLIT
         if is_split
@@ -737,7 +737,7 @@ class DryRunOutcome:
     **Phase-2 invariant** (P2-12): a hub whose ``verdict`` is
     ``lossy``/``nested``, or whose ``junk_candidate`` is ``True``, must
     never be stamped ``meta.taproot_decomposed_at`` by the (not-yet-built)
-    apply pass — ``lossy``/``nested`` are still-compound hubs a gate
+    apply pass — ``lossy``/``nested`` are still-composite hubs a gate
     rejected; ``junk_candidate`` isn't a claim at all.
     """
 
@@ -755,7 +755,7 @@ class DryRunOutcome:
     is_control: bool = False
     #: True on a `no-claim` verdict for a **non-control** hub (P2-12): the
     #: hub isn't a claim at all (a research note, a task-prose title, …),
-    #: not a compound that simply didn't decompose — route to junk-triage,
+    #: not a composite that simply didn't decompose — route to junk-triage,
     #: never treat as "nothing to do".
     junk_candidate: bool = False
     #: P2-10 selective escalation: set only when ``escalate_fn`` was passed
@@ -809,7 +809,7 @@ def dry_run(
     (:class:`random.Random`, seeded by ``control_seed``, deterministic by
     default) from the whole likely-atomic cohort, excluding any hub
     already selected (a pass-through sanity check — an already-atomic hub
-    should extract to one atom, no compound); a uniform draw avoids the
+    should extract to one atom, no composite); a uniform draw avoids the
     score-sorted tail's bias toward short "topic"-title non-claims (P2-11).
 
     **Zero writes through ``store`` itself.** The default ``extract_fn``
@@ -931,9 +931,9 @@ def _render_extraction(extraction: ClaimExtraction) -> list[str]:
         )
         lines.append("")
     lines.append(
-        f"**Compound**: {extraction.compound.sentence}"
-        if extraction.compound is not None
-        else "**Compound**: (none)"
+        f"**Composite**: {extraction.composite.sentence}"
+        if extraction.composite is not None
+        else "**Composite**: (none)"
     )
     if extraction.not_claims:
         lines.append("")
@@ -986,7 +986,7 @@ def _render_outcome(outcome: DryRunOutcome) -> list[str]:
 def render_report(report: DryRunReport) -> str:
     """Render a :class:`DryRunReport` as markdown for a human reviewer:
     summary counts up top, then one section per hub (id, cohort+score,
-    original sentence, proposed atoms/compound/not_claims, gate metadata,
+    original sentence, proposed atoms/composite/not_claims, gate metadata,
     verdict, and — when ``escalate_fn`` was used — the escalated result
     alongside it)."""
     counts = report.counts
@@ -1027,9 +1027,9 @@ def _extraction_to_dict(extraction: ClaimExtraction | None) -> dict[str, Any] | 
         return None
     return {
         "atoms": [_claim_to_dict(atom) for atom in extraction.atoms],
-        "compound": (
-            _claim_to_dict(extraction.compound)
-            if extraction.compound is not None
+        "composite": (
+            _claim_to_dict(extraction.composite)
+            if extraction.composite is not None
             else None
         ),
         "not_claims": [dict(nc) for nc in extraction.not_claims],

@@ -46,35 +46,35 @@ def _verdict(v: str, c: float) -> Verdict:
     return {"verdict": v, "confidence": c, "rationale": "test"}  # type: ignore[typeddict-item]
 
 
-_EMPTY_EXTRACTION = ClaimExtraction(atoms=(), compound=None, not_claims=())
+_EMPTY_EXTRACTION = ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 
 def _extract_const(sentence: str | None):
     """Fake ``ExtractFn``: NO-CLAIM (``sentence is None``) or a single atom,
-    no compound — mirrors an already-atomic real extraction (step-1
-    invariant: a lone atom never carries a compound)."""
+    no composite — mirrors an already-atomic real extraction (step-1
+    invariant: a lone atom never carries a composite)."""
 
     def _fn(span: str) -> ClaimExtraction:
         if sentence is None:
             return _EMPTY_EXTRACTION
-        return ClaimExtraction(atoms=(_claim(sentence),), compound=None, not_claims=())
+        return ClaimExtraction(atoms=(_claim(sentence),), composite=None, not_claims=())
 
     return _fn
 
 
 def _extract_multi(
-    atoms: list[str], compound: str | None, not_claims: list[NotClaim] | None = None
+    atoms: list[str], composite: str | None, not_claims: list[NotClaim] | None = None
 ):
     """Fake ``ExtractFn``: a decomposed extraction — ``atoms`` sentences plus
-    an optional bundling ``compound`` sentence and ``not_claims``. Mirrors
+    an optional bundling ``composite`` sentence and ``not_claims``. Mirrors
     the real decomposed shape (:func:`precis.taproot.canon._coerce_extraction`'s
-    invariant) so backfill's per-atom + per-compound cascade fan-out is
+    invariant) so backfill's per-atom + per-composite cascade fan-out is
     exercised the same way a real ``extract_claim`` result would drive it."""
 
     def _fn(span: str) -> ClaimExtraction:
         return ClaimExtraction(
             atoms=tuple(_claim(s) for s in atoms),
-            compound=_claim(compound) if compound is not None else None,
+            composite=_claim(composite) if composite is not None else None,
             not_claims=tuple(not_claims or ()),
         )
 
@@ -1604,15 +1604,15 @@ def test_reground_then_promote_yields_chunk_grounded_hub(
     )
 
 
-# ── decomposition: multi-atom + compound (docs/backlog/taproot-atomic-claims.md) ─
+# ── decomposition: multi-atom + composite (docs/backlog/taproot-atomic-claims.md) ─
 
 
-def _conjunct_atom_ids(store: Store, compound_hub_id: int) -> set[int]:
-    """Atom hub ids linked ``conjunct-of`` onto ``compound_hub_id``."""
+def _conjunct_atom_ids(store: Store, composite_hub_id: int) -> set[int]:
+    """Atom hub ids linked ``conjunct-of`` onto ``composite_hub_id``."""
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT src_ref_id FROM links WHERE dst_ref_id = %s AND relation = 'conjunct-of'",
-            (compound_hub_id,),
+            (composite_hub_id,),
         ).fetchall()
     return {int(r[0]) for r in rows}
 
@@ -1645,10 +1645,10 @@ def _taproot_links_count(store: Store) -> int:
 def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    # A bundled [pc] group decomposes to 2 atoms + a surviving compound:
-    # 3 hubs minted, 2 conjunct-of links (atom -> compound), and the
+    # A bundled [pc] group decomposes to 2 atoms + a surviving composite:
+    # 3 hubs minted, 2 conjunct-of links (atom -> composite), and the
     # supporter paper's evidence edge lands on the atoms only, never the
-    # compound (step 3).
+    # composite (step 3).
     paper, pc = _pc_of(hub.live_store)
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
     before = _finding_count(hub.live_store)
@@ -1665,24 +1665,24 @@ def test_apply_decomposes_multi_atom_mints_hubs_links_and_evidence_on_atoms_only
     )
 
     plan = result.plans[0]
-    assert plan.action == "new"  # the compound's own placement action
+    assert plan.action == "new"  # the composite's own placement action
     assert len(plan.atom_plans) == 2
-    compound_hub = plan.hub_ref_id
-    assert compound_hub is not None
-    assert _finding_count(hub.live_store) == before + 3  # 2 atoms + 1 compound
+    composite_hub = plan.hub_ref_id
+    assert composite_hub is not None
+    assert _finding_count(hub.live_store) == before + 3  # 2 atoms + 1 composite
 
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, compound_hub)
+    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
     assert len(atom_hub_ids) == 2
-    assert compound_hub not in atom_hub_ids
+    assert composite_hub not in atom_hub_ids
 
-    # The paper's evidence edge lands on both atoms, never the compound.
+    # The paper's evidence edge lands on both atoms, never the composite.
     paper_edges = _edges_from(hub.live_store, paper)
     assert paper_edges == atom_hub_ids
-    assert compound_hub not in paper_edges
+    assert composite_hub not in paper_edges
 
-    # Prose collapses to the ONE compound cite.
+    # Prose collapses to the ONE composite cite.
     assert result.rewritten_text is not None
-    assert f"[fi{compound_hub}]" in result.rewritten_text
+    assert f"[fi{composite_hub}]" in result.rewritten_text
     assert "[pc" not in result.rewritten_text
 
 
@@ -1691,7 +1691,7 @@ def test_apply_needs_review_atom_contributes_no_conjunct_link(
 ) -> None:
     # Regression: an atom that resolves to needs_review must NOT get a
     # conjunct-of link (nothing to link — apply_placement returned no hub for
-    # it) while its sibling atom and the compound still land normally.
+    # it) while its sibling atom and the composite still land normally.
     from precis.taproot.authoring import seed_claim_hub
 
     paper_a = seed_ref(hub.live_store, title="paper A", kind="paper")
@@ -1725,11 +1725,11 @@ def test_apply_needs_review_atom_contributes_no_conjunct_link(
     )
 
     plan = result.plans[0]
-    compound_hub = plan.hub_ref_id
-    assert compound_hub is not None
+    composite_hub = plan.hub_ref_id
+    assert composite_hub is not None
     assert _todos(hub.live_store) == before_todos + 1  # atom 1's needs_review
 
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, compound_hub)
+    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
     assert len(atom_hub_ids) == 1  # only atom 2 linked; atom 1 contributed nothing
     assert existing_hub not in atom_hub_ids
 
@@ -1748,7 +1748,7 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
     # Two [pc] cites grounding ONE bundled span: the primary supporter
     # attaches via apply_extraction's atom loop, and the remaining
     # supporter(s) (plan.supporters[1:]) fan out corroborates to EVERY atom
-    # hub — never the compound.
+    # hub — never the composite.
     paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
     paper2, pc2 = _pc_of(hub.live_store, paper_title="p2")
     dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc1}][{pc2}].")
@@ -1765,24 +1765,24 @@ def test_apply_multi_atom_fanout_supporters_attach_to_every_atom(
     )
 
     plan = result.plans[0]
-    compound_hub = plan.hub_ref_id
-    assert compound_hub is not None
-    atom_hub_ids = _conjunct_atom_ids(hub.live_store, compound_hub)
+    composite_hub = plan.hub_ref_id
+    assert composite_hub is not None
+    atom_hub_ids = _conjunct_atom_ids(hub.live_store, composite_hub)
     assert len(atom_hub_ids) == 2
 
     p1_edges = _edges_from(hub.live_store, paper1)
     p2_edges = _edges_from(hub.live_store, paper2)
     assert p1_edges == atom_hub_ids
     assert p2_edges == atom_hub_ids
-    assert compound_hub not in p1_edges
-    assert compound_hub not in p2_edges
+    assert composite_hub not in p1_edges
+    assert composite_hub not in p2_edges
 
 
 def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
     draft: DraftHandler, hub: Hub
 ) -> None:
     # A second draft, citing a different paper for the SAME bundled claim,
-    # converges onto the atom + compound hubs the first run minted — no
+    # converges onto the atom + composite hubs the first run minted — no
     # duplicate hub, no duplicate conjunct-of link, and the new supporter's
     # evidence lands on the (pre-existing) atom hubs.
     paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
@@ -1798,9 +1798,9 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
     )
-    compound_hub = first.plans[0].hub_ref_id
-    assert compound_hub is not None
-    atom_hub_ids = sorted(_conjunct_atom_ids(hub.live_store, compound_hub))
+    composite_hub = first.plans[0].hub_ref_id
+    assert composite_hub is not None
+    atom_hub_ids = sorted(_conjunct_atom_ids(hub.live_store, composite_hub))
     assert len(atom_hub_ids) == 2
 
     findings_before = _finding_count(hub.live_store)
@@ -1812,7 +1812,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
     mapping = {
         "Atom one.": (atom_hub_ids[0], "Atom one."),
         "Atom two.": (atom_hub_ids[1], "Atom two."),
-        "Bundle claim.": (compound_hub, "Bundle claim."),
+        "Bundle claim.": (composite_hub, "Bundle claim."),
     }
 
     second = apply_chunk(
@@ -1828,7 +1828,7 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
 
     plan2 = second.plans[0]
     assert plan2.action == "attach"
-    assert plan2.hub_ref_id == compound_hub
+    assert plan2.hub_ref_id == composite_hub
     assert _finding_count(hub.live_store) == findings_before  # no new hub minted
 
     # No duplicate conjunct-of edges — link_claims no-oped on the existing pair,
@@ -1837,13 +1837,13 @@ def test_apply_multi_atom_reconverges_onto_existing_hubs_idempotently(
     # excluded — scoped to the taproot vocabulary).
     assert _taproot_links_count(hub.live_store) == conjuncts_before + 2
     assert set(_edges_from(hub.live_store, paper2)) == set(atom_hub_ids)
-    assert compound_hub not in _edges_from(hub.live_store, paper2)
+    assert composite_hub not in _edges_from(hub.live_store, paper2)
 
     assert second.rewritten_text is not None
-    assert f"[fi{compound_hub}]" in second.rewritten_text
+    assert f"[fi{composite_hub}]" in second.rewritten_text
 
 
-def test_apply_not_claims_memo_lands_on_compound_hub_meta(
+def test_apply_not_claims_memo_lands_on_composite_hub_meta(
     draft: DraftHandler, hub: Hub
 ) -> None:
     _, pc = _pc_of(hub.live_store)
@@ -1865,11 +1865,11 @@ def test_apply_not_claims_memo_lands_on_compound_hub_meta(
         merge_confirm_fn=_never_called,
     )
 
-    compound_hub = result.plans[0].hub_ref_id
-    assert compound_hub is not None
+    composite_hub = result.plans[0].hub_ref_id
+    assert composite_hub is not None
     with hub.live_store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT meta FROM refs WHERE ref_id = %s", (compound_hub,)
+            "SELECT meta FROM refs WHERE ref_id = %s", (composite_hub,)
         ).fetchone()
     assert row is not None
     memo = dict(row[0].get("taproot_not_claims") or {})

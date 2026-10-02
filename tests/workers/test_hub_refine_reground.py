@@ -581,7 +581,7 @@ def test_cross_paper_swap_consumes_a_leftover_add(store: Any) -> None:
 def test_applier_refuses_a_plan_that_would_strand_the_hub(store: Any) -> None:
     embedder = make_mock_bge_m3()
     hub = _seed_hub(
-        store, sentence="A vacuous compound capability claim about 3 things."
+        store, sentence="A vacuous composite capability claim about 3 things."
     )
     paper, chunks = _seed_paper(store, embedder, cite_key="sole", texts=["proxy"])
     _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
@@ -858,7 +858,7 @@ def test_zero_supporters_needs_no_schema_change(store: Any) -> None:
     trust/questionable state — the removal door allows it only under an
     explicit ``allow_last``, and nothing else is written."""
     embedder = make_mock_bge_m3()
-    hub = _seed_hub(store, sentence="An unsupportable compound claim about 3 things.")
+    hub = _seed_hub(store, sentence="An unsupportable composite claim about 3 things.")
     paper, chunks = _seed_paper(store, embedder, cite_key="pa1", texts=["proxy"])
     _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
 
@@ -883,7 +883,7 @@ def test_retire_needs_both_gates(store: Any) -> None:
     fires it, and even when it does fire it only *flags* — no prose edit,
     no deletion (the deliberately stubbed half)."""
     embedder = make_mock_bge_m3()
-    hub = _seed_hub(store, sentence="A vacuous compound capability claim, 3 ways.")
+    hub = _seed_hub(store, sentence="A vacuous composite capability claim, 3 ways.")
     paper, chunks = _seed_paper(store, embedder, cite_key="pa1", texts=["PROXY only"])
     _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
     judge = _ScriptedJudge([("PROXY", "PRUNE")])
@@ -912,7 +912,7 @@ def test_retire_needs_both_gates(store: Any) -> None:
 
     # 2. authorize_retire set but the hub carries no opt-in tag -> still
     #    not authorized.
-    store.update_ref(hub, title="A vacuous compound capability claim, 4 ways.")
+    store.update_ref(hub, title="A vacuous composite capability claim, 4 ways.")
     cfg2 = RegroundConfig(
         prune=True,
         external=True,
@@ -935,7 +935,7 @@ def test_retire_needs_both_gates(store: Any) -> None:
     from precis.store.types import Tag
 
     store.add_tag(hub, Tag.closed("TAPROOT_REGROUND_OK", "1"), set_by="system")
-    store.update_ref(hub, title="A vacuous compound capability claim, 5 ways.")
+    store.update_ref(hub, title="A vacuous composite capability claim, 5 ways.")
     res3 = reground_one_hub(store, hub, embedder=embedder, cfg=cfg2)
     assert "retire-flagged" in res3.flags
     verdict = _hub_meta(store, hub)["reground_verdict"]

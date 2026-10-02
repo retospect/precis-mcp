@@ -1,18 +1,18 @@
 ---
 status: draft
-title: Taproot compound→atomic migration — corpus-wide apply, blocked on regrounding
+title: Taproot composite→atomic migration — corpus-wide apply, blocked on regrounding
 pillar: memory-graph
 model: opus
 ---
 
-# Taproot compound→atomic migration
+# Taproot composite→atomic migration
 
 Decomposition machinery shipped 2026-08-13: `extract_claim` returns a
-`ClaimExtraction` (atoms + optional compound + not_claims), `conjunct-of`
+`ClaimExtraction` (atoms + optional composite + not_claims), `conjunct-of`
 relation (migration 0126) through `link_claims`, `hub.apply_extraction`
-orchestrator, compound hubs hold no direct evidence, compound trust =
-worst-of its atoms, workers exclude compounds from refine/re-embed, backfill
-runs the cascade per atom + compound. Present-state truth:
+orchestrator, composite hubs hold no direct evidence, composite trust =
+worst-of its atoms, workers exclude composites from refine/re-embed, backfill
+runs the cascade per atom + composite. Present-state truth:
 `src/precis/taproot/__init__.py`. What remains: migrate the **existing**
 1,346-hub corpus, run as a quiet-window operation — blocked on the atom
 regrounding prerequisite below.
@@ -26,9 +26,9 @@ a different denominator).
   1,065); 281 have none — re-pointing is mostly a one-edge decision per hub.
 - Inbound cites: 81% cited from prose, mostly exactly 1 (max 6). **Cites do
   NOT need re-pointing** — prose cites the bundling sentence, which stays
-  the compound hub.
-- Compoundness proxy on titles: 30% contain " and ", 39% are >160 chars,
-  18% both, 3% contain ";". Likely-compound band ≈ 250–530 hubs.
+  the composite hub.
+- Compositeness proxy on titles: 30% contain " and ", 39% are >160 chars,
+  18% both, 3% contain ";". Likely-composite band ≈ 250–530 hubs.
 - Claim-links: zero `refines`, zero `conjunct-of` — clean slate.
 - Minting rate ~175/month (July spike: 942) — the population grows while
   the migration runs; the process must be resumable, not a one-shot
@@ -40,21 +40,21 @@ a different denominator).
 backfill-minted claims arrive already decomposed; `chase.py`'s bridge
 deliberately does not decompose, per its docstring). (2)
 `fisheye-conjunct-of-surfacing.md` — the human review surface can't show
-atom↔compound structure yet, blocking for phase 3.
+atom↔composite structure yet, blocking for phase 3.
 
-- **Phase 0 — score and cohort** (read-only). Rank hubs by compoundness:
+- **Phase 0 — score and cohort** (read-only). Rank hubs by compositeness:
   title heuristics (conjunctions, length, semicolons) + source-chunk section
-  (intro/abstract/conclusion ranks high, results low). Emit likely-compound
+  (intro/abstract/conclusion ranks high, results low). Emit likely-composite
   / uncertain / likely-atomic cohorts. **Score the body claim sentence
   (`finding_body` ord=0 chunk), never `refs.title`** — they differ on
-  572/1,346 hubs, 259 (19%) score atomic by title but compound by body.
+  572/1,346 hubs, 259 (19%) score atomic by title but composite by body.
 - **Phase 1 — dry-run decomposition** (read-only, LLM spend only). Run
   extraction over every hub's claim sentence, gated verdicts
   (`split`/`pass-through`/`lossy`/`nested`/`no-claim`/`error`; `lossy`/
   `nested` held for review, never applied). ~1.3k calls.
 - **Phase 2 — apply, atomically per hub** (the quiet window). Per hub in one
   transaction: mint atom hubs (converge via the normal block→judge→place
-  cascade), link `conjunct-of`, re-point evidence edges compound→atom, stamp
+  cascade), link `conjunct-of`, re-point evidence edges composite→atom, stamp
   `meta.taproot_decomposed_at` so re-runs skip it. Idempotent by
   construction. Evidence re-point is the one judgment call per hub — never
   blanket-copy an edge to every atom; verify per-atom (hub_refine-style),
@@ -88,7 +88,7 @@ currently uncorrectable through the product surface.
 `taproot/migrate.py` (P0/P2: `lossy`/`nested` verdicts, body-sentence
 scoring, `--json` persist, seeded random controls, `junk_candidate`,
 `escalate_fn`) + `taproot/canon.py` (P1/P2-13: enumerate-then-emit, modality
-+ mechanism rules, compound synthesis, scope validation,
++ mechanism rules, composite synthesis, scope validation,
 `extract_claim_strict_big`/`_strict_haiku`). Calibration fixture:
 `tests/fixtures/taproot/migration_pilot_25.jsonl` (22/25 exact, 3 documented
 xfail). haiku is the primary extractor (`extract_claim_strict_haiku`,
@@ -161,7 +161,7 @@ passage-candidate count per atom (top-k) and batch per hub before scaling.
 
 - A second decomposition mechanism — every line lands in the existing
   `hub_refine`/`migrate`/`reground`/`apply_migrate` spine.
-- Re-pointing inbound prose cites — they stay on the compound hub.
+- Re-pointing inbound prose cites — they stay on the composite hub.
 - Resolving whether `chase.py::_taproot_bridge` should decompose
   post-migration, or chase-minted hubs simply queue for a standing version
   of phase 0 (monthly re-score) — open, not decided.
@@ -174,7 +174,7 @@ passage-candidate count per atom (top-k) and batch per hub before scaling.
   snip) or withheld `needs_review`/hanging before phase 2 touches it.
 - Phase 2 apply is idempotent (`meta.taproot_decomposed_at` stamp) and its
   evidence re-point never leaves a hub at zero live edges.
-- Phase 3 review surface (fisheye) shows atom↔compound structure before any
+- Phase 3 review surface (fisheye) shows atom↔composite structure before any
   human sign-off pass runs.
 
 ## Target + blast radius

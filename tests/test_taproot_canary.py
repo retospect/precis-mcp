@@ -30,7 +30,7 @@ from precis.taproot.eval_canon import (
     canary_extraction,
 )
 
-_EMPTY = ClaimExtraction(atoms=(), compound=None, not_claims=())
+_EMPTY = ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 _NO_CLAIM_PASSAGES = frozenset(
     str(row["passage"])
@@ -42,7 +42,7 @@ _NO_CLAIM_PASSAGES = frozenset(
 def _atom(sentence: str) -> ClaimExtraction:
     return ClaimExtraction(
         atoms=(CanonicalClaim(sentence=sentence, scope={}),),
-        compound=None,
+        composite=None,
         not_claims=(),
     )
 

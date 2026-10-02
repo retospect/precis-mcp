@@ -224,8 +224,8 @@ Relation = Literal[
     "refines",
     # Taproot claim→claim advisory link, second relation — migration 0126
     # (docs/backlog/taproot-atomic-claims.md). `conjunct-of` (atom claim hub
-    # → compound claim hub) — a compound claim decomposes into atomic claim
-    # hubs, each linked back to the compound it is one conjunct of. Same
+    # → composite claim hub) — a composite claim decomposes into atomic claim
+    # hubs, each linked back to the composite it is one conjunct of. Same
     # link-don't-merge / no-evidence-flow shape as `refines`; same direction
     # convention (derived/finer node → coarser node). No inverse: read both
     # directions via `links_for(direction='in'|'out', relation='conjunct-

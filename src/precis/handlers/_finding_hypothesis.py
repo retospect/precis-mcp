@@ -12,7 +12,7 @@ discriminating experiment is what separates a conjecture from vibes"*) plus
 That shape is exactly what a dream cycle produces when it lands on something
 solid, and until now there was no way to write one down. The canonical worked
 example is `docs/reference/nanopub-example/qi-hypothesis-scaled-switching.trig`,
-minted from a compound that *failed* its commensurability gate: the transfer
+minted from a composite that *failed* its commensurability gate: the transfer
 was unproven but well-motivated, so it was restated as a typed Hypothesis. Its
 own comment names the payoff — *"a signed, timestamped hypothesis is a priority
 claim on an idea."*

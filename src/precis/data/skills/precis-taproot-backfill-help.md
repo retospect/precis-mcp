@@ -66,9 +66,9 @@ grounding one span collapse to **one** written cite. Each span runs the
 full canonicalizer cascade (`extract_claim → block → dedup_judge →
 place → apply_extraction`): a span bundling more than one atomic claim
 splits into several atom hubs (each with its own evidence edge) plus a
-non-evidence **compound** hub `conjunct-of`-linked to them (see
+non-evidence **composite** hub `conjunct-of`-linked to them (see
 [[precis-taproot-help]]'s "The evidence model" section) — either way
-the rewrite target is **one** `[fi<hub>]` (the compound when one
+the rewrite target is **one** `[fi<hub>]` (the composite when one
 landed, else the lone atom), so a citer sees no change. A risky merge
 files a review `todo` and leaves the `[pc…]` untouched; a
 pointer-only span (no groundable claim) is left as-is. It is

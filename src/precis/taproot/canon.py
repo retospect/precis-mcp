@@ -5,7 +5,7 @@ claim dedup". Acceptance bar: the fixture eval scores **zero over-merges**
 (``tests/test_taproot_eval_canon.py``). Four functions, one cascade:
 
 1. :func:`extract_claim` (SMALL) — a chunk -> :class:`ClaimExtraction`:
-   zero or more AIDA-atomic claims, an optional ``compound`` bundling
+   zero or more AIDA-atomic claims, an optional ``composite`` bundling
    sentence, and rejected conjuncts (:class:`NotClaim`); NO-CLAIM is an
    *empty* extraction, never ``None``. :func:`extract_claim_strict_big` is
    the same contract at BIG tier (selective escalation, not a blanket
@@ -198,7 +198,7 @@ class NotClaim(TypedDict):
     forward-looking, vague, or a comparative with no comparator (the
     carbon-nanomaterials worked example in
     ``docs/backlog/taproot-atomic-claims.md``). Step 8's memo payload: these
-    get folded into the surviving compound hub's meta, never minted as a
+    get folded into the surviving composite hub's meta, never minted as a
     hub nobody can ever ground."""
 
     text: str  # the rejected conjunct, verbatim-normalized
@@ -211,52 +211,52 @@ class ClaimExtraction:
 
     * ``atoms`` — each AIDA-atomic (one subject-predicate fact), evidence-
       bearing. Empty on NO-CLAIM.
-    * ``compound`` — the surviving bundling sentence, or ``None``. Kept
+    * ``composite`` — the surviving bundling sentence, or ``None``. Kept
       only when decomposition genuinely split something (see
       :func:`_coerce_extraction`) — an already-atomic claim has no
-      compound and mints no ``conjunct-of`` links.
-    * ``not_claims`` — rejected conjuncts, kept for the compound hub's
+      composite and mints no ``conjunct-of`` links.
+    * ``not_claims`` — rejected conjuncts, kept for the composite hub's
       audit memo (step 8), never minted.
 
     Construct via :func:`extract_claim`, not directly — the three-way
-    invariant between ``atoms``/``compound``/``not_claims`` is enforced at
+    invariant between ``atoms``/``composite``/``not_claims`` is enforced at
     parse time by :func:`_coerce_extraction`, mirroring :func:`_coerce_verdict`'s
     bias-safe degrade philosophy (fail toward the smaller, safer claim set,
     never mint a bad or degenerate hub).
     """
 
     atoms: tuple[CanonicalClaim, ...]
-    compound: CanonicalClaim | None
+    composite: CanonicalClaim | None
     not_claims: tuple[NotClaim, ...]
 
     @property
     def is_empty(self) -> bool:
         """NO-CLAIM: nothing groundable survived (today's ``None``)."""
-        return not self.atoms and self.compound is None
+        return not self.atoms and self.composite is None
 
 
 #: The NO-CLAIM outcome — dispatch error, empty input, or unparseable/
 #: all-rejected model output. A single frozen instance (all fields are
 #: immutable) so every degrade path returns the identical sentinel.
-_EMPTY_EXTRACTION = ClaimExtraction(atoms=(), compound=None, not_claims=())
+_EMPTY_EXTRACTION = ClaimExtraction(atoms=(), composite=None, not_claims=())
 
 
 def _coerce_extraction(
     atoms: list[CanonicalClaim],
-    compound: CanonicalClaim | None,
+    composite: CanonicalClaim | None,
     not_claims: list[NotClaim],
     source_sentence: str = "",
 ) -> ClaimExtraction:
-    """Enforce the atoms/compound/not_claims invariants on parsed model
+    """Enforce the atoms/composite/not_claims invariants on parsed model
     output — the ``ClaimExtraction`` analogue of :func:`_coerce_verdict`.
 
-    - Zero atoms -> NO-CLAIM: any compound the model still emitted is
+    - Zero atoms -> NO-CLAIM: any composite the model still emitted is
       dropped.
-    - A lone atom with nothing rejected -> compound folded away (never
+    - A lone atom with nothing rejected -> composite folded away (never
       mint a degenerate 1-conjunct bundle).
-    - A compound is kept only when decomposition did something real:
+    - A composite is kept only when decomposition did something real:
       ``len(atoms) >= 2`` or ``not_claims`` non-empty.
-    - Two-plus atoms with **no** compound -> **synthesize** it from
+    - Two-plus atoms with **no** composite -> **synthesize** it from
       ``source_sentence`` rather than discard (P1-8,
       ``docs/backlog/taproot-migration-extraction-quality-gates.md``): a
       missing bundling-sentence field is a formatting miss, not evidence
@@ -268,25 +268,25 @@ def _coerce_extraction(
     atoms_t = tuple(atoms)
     not_claims_t = tuple(not_claims)
     if not atoms_t or (len(atoms_t) == 1 and not not_claims_t):
-        compound = None
-    elif len(atoms_t) >= 2 and compound is None:
+        composite = None
+    elif len(atoms_t) >= 2 and composite is None:
         synthesized = source_sentence.strip()
         if synthesized:
             log.info(
-                "taproot: extract_claim returned %d atoms with no compound; "
-                "synthesizing compound from the source sentence",
+                "taproot: extract_claim returned %d atoms with no composite; "
+                "synthesizing composite from the source sentence",
                 len(atoms_t),
             )
-            compound = CanonicalClaim(sentence=synthesized, scope={})
+            composite = CanonicalClaim(sentence=synthesized, scope={})
         else:
             log.warning(
-                "taproot: extract_claim returned %d atoms with no compound "
+                "taproot: extract_claim returned %d atoms with no composite "
                 "and no source sentence to synthesize from; degrading to "
                 "NO-CLAIM (partial-citation guard)",
                 len(atoms_t),
             )
             return _EMPTY_EXTRACTION
-    return ClaimExtraction(atoms=atoms_t, compound=compound, not_claims=not_claims_t)
+    return ClaimExtraction(atoms=atoms_t, composite=composite, not_claims=not_claims_t)
 
 
 @dataclass(frozen=True)
@@ -422,9 +422,9 @@ don't add a second one. Fold a mechanism clause into the atom it explains
 (inline in the sentence, or into that atom's method/regime scope); never
 enumerate it, split it into its own atom, or file it under "not_claims".
 
-Only return the original sentence as "compound" when it genuinely bundles
+Only return the original sentence as "composite" when it genuinely bundles
 two or more groundable-or-rejected parts — an already-atomic passage has no
-compound.
+composite.
 (*Absolute* is already handled by the material/method/quantity/regime
 scope fields; *Declarative* is implied by normalizing to sentences — this
 rule adds *Atomic*, the one AIDA criterion not yet enforced.)
@@ -458,7 +458,7 @@ Examples:
   characteristics.", ...); "enable next-generation technologies"
   (forward-looking) and "exceptional"/"particularly in advanced
   electronics" (comparative/vague, no comparator) go to not_claims; the
-  original sentence is the compound.
+  original sentence is the composite.
 - "The tandem catalyst's two sites operate independently on the shared
   support, whereas in homogeneous solution the same sites would
   immediately neutralize each other."  -> assertions = [the sites operate
@@ -493,7 +493,7 @@ Respond with EXACTLY ONE JSON object, nothing else:
       "regime": "<optional>"
     }}
   ],
-  "compound": "<original bundling sentence>" | null,
+  "composite": "<original bundling sentence>" | null,
   "not_claims": [
     {{
       "text": "<rejected conjunct, verbatim-normalized>",
@@ -578,7 +578,7 @@ class ExtractionUnavailable(RuntimeError):
 
 
 def extract_claim(chunk_text: str) -> ClaimExtraction:
-    """Extract the atomic claims (+ optional compound + rejected conjuncts)
+    """Extract the atomic claims (+ optional composite + rejected conjuncts)
     from ``chunk_text`` — a :class:`ClaimExtraction`.
 
     SMALL/local tier. Returns the empty extraction
@@ -587,7 +587,7 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     rather than a bad one). A caller needing to tell a real NO-CLAIM apart
     from a dead dispatch should use :func:`extract_claim_strict`.
 
-    Parses ``{"claims": [...], "compound": ..., "not_claims": [...]}``;
+    Parses ``{"claims": [...], "composite": ..., "not_claims": [...]}``;
     tolerates the legacy ``{"claim": ..., "material": ...}`` single-object
     shape a SMALL-tier model may regress to (degrades to one atom).
     :func:`_coerce_extraction` enforces the invariants either way.
@@ -768,18 +768,18 @@ def _extraction_from_payload(data: dict[str, Any], excerpt: str) -> ClaimExtract
                 parsed_nc = _parse_not_claim(item)
                 if parsed_nc is not None:
                     not_claims.append(parsed_nc)
-        compound = None
-        raw_compound = data.get("compound")
-        if isinstance(raw_compound, str) and raw_compound.strip():
-            compound = CanonicalClaim(sentence=raw_compound.strip(), scope={})
+        composite = None
+        raw_composite = data.get("composite")
+        if isinstance(raw_composite, str) and raw_composite.strip():
+            composite = CanonicalClaim(sentence=raw_composite.strip(), scope={})
         _log_assertion_arity_drift(data.get("assertions"), atoms, not_claims)
-        return _coerce_extraction(atoms, compound, not_claims, source_sentence=excerpt)
+        return _coerce_extraction(atoms, composite, not_claims, source_sentence=excerpt)
 
     # Legacy single-object degrade: {"claim": ..., "material": ...}.
     single = _parse_claim_item(data)
     if single is None:
         return _EMPTY_EXTRACTION
-    return ClaimExtraction(atoms=(single,), compound=None, not_claims=())
+    return ClaimExtraction(atoms=(single,), composite=None, not_claims=())
 
 
 def _log_assertion_arity_drift(

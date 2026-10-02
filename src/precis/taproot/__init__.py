@@ -6,7 +6,7 @@ finding is never mistaken for a hub). Papers attach as evidence edges. An
 overlay on ``finding``/``ref_tags``/``links`` — own schema is
 ``claim_embeddings`` (migration 0101) plus link relations ``establishes``
 (0094, no inverse — hubs read evidence via ``links_for(direction='in')``),
-``refines`` (0100), ``conjunct-of`` (0126, atom -> compound, asymmetric, no
+``refines`` (0100), ``conjunct-of`` (0126, atom -> composite, asymmetric, no
 inverse), ``motivated-by`` (0135, hypothesis -> the provoking artifact, same
 no-evidence-flow contract), ``disputes`` (0151, hub<->hub or paper->hub —
 "appears to conflict", free to file, never blocks, no evidence flow;
@@ -15,7 +15,7 @@ no-evidence-flow contract), ``disputes`` (0151, hub<->hub or paper->hub —
 disambiguate — ``contradicts`` is adjudication-derived only (Part 2 of
 that same item, not built) and not itself fileable through
 :func:`.hub.link_claims`. A hub is **atomic** (evidence-bearing),
-**compound** (an un-decomposable bundling sentence, no direct evidence —
+**composite** (an un-decomposable bundling sentence, no direct evidence —
 :mod:`.hub`), or **hypothesis** (evidence-free by type — carries motivation +
 a discriminating experiment instead, ``refs.meta.artifact_type``, minted via
 ``handlers/_finding_hypothesis.py``; the widening pass excludes hypotheses,
@@ -108,7 +108,7 @@ Module map (detail lives in each module's own docstring):
 - :mod:`.authoring` / :mod:`.backfill` / :mod:`.lookup` — cite-seeded hub
   mint, legacy ``[pc]``/``[pa]`` draft-cite conversion, and read-only
   "what hubs does this paper ground".
-- :mod:`.migrate` — the compound->atomic migration runner (``precis taproot
+- :mod:`.migrate` — the composite->atomic migration runner (``precis taproot
   migrate``): dry-run extraction with gated verdicts, JSONL persistence for
   A/B runs. Phase-2 apply mode not built; dry-run writes nothing.
 - :mod:`.reground` / :mod:`.repair_evidence` — "no source, no atom": rank a
@@ -142,7 +142,7 @@ them into ``service prio``. Enable a service producer on **one host** —
   transaction as the ``STATUS:established`` flip (savepoint-isolated).
 - **hub_refine** (``workers/hub_refine.py``, stage 5 *Widen*) — revisits
   existing hubs off a due-set (``TAPROOT_DUE`` tag / sha-reopen / 90d
-  backstop); excludes compound hubs (evidence attaches to atoms only);
+  backstop); excludes composite hubs (evidence attaches to atoms only);
   discovers via corpus semantic ANN + citation-following; re-verifies each
   hub's own unverified edges per pass. Grown into **reground**
   (``docs/backlog/taproot-reground.md``) — a strict per-edge KEEP/PRUNE/

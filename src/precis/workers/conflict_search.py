@@ -5,7 +5,7 @@ budgeted verify, coverage ledger; items 4-5, the approve-time advisory
 panel and the counter-claim mint, are later slices). A standing,
 watermarked ref-pass — mirrors ``hub_tagline``'s claim-and-lease shape,
 not ``hub_refine``'s single-transaction discover→verify→write spine
-(this pass is simpler: no compound-hub handling, no rejection memo, no
+(this pass is simpler: no composite-hub handling, no rejection memo, no
 reground extension).
 
 **One mechanism, two populations.** The cohort is every live claim hub

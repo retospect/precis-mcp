@@ -25,7 +25,7 @@ fixture, but graded through the migration gates
 (:func:`~precis.taproot.migrate.classify_extraction`) instead of the
 AIDA heuristics. The labelled-25 A/B re-run showed the SMALL tier
 collapsing every multi-clause sentence to a single truncated atom — a
-failure ``eval_extraction``'s conjunction/compound gates are blind to but
+failure ``eval_extraction``'s conjunction/composite gates are blind to but
 the coverage gate flags as ``lossy`` on sight. Run the canary (CLI:
 ``precis taproot-migrate canary``) before any bulk dry-run: if the
 extractor can't cleanly handle 11 hand-authored passages, it has no
@@ -287,7 +287,7 @@ class ExtractionResult:
     passage_id: int
     expected_atom_count: int
     actual_atom_count: int
-    compound_without_atoms: bool
+    composite_without_atoms: bool
     conjunction_atoms: list[str] = field(default_factory=list)
     not_claim_texts: list[str] = field(default_factory=list)
 
@@ -319,12 +319,12 @@ class ExtractionReport:
         return self.atom_count_matches / self.total if self.total else 0.0
 
     @property
-    def compound_without_atoms_violations(self) -> list[ExtractionResult]:
-        """Hard gate — bar is 0. A compound with no surviving atoms means
+    def composite_without_atoms_violations(self) -> list[ExtractionResult]:
+        """Hard gate — bar is 0. A composite with no surviving atoms means
         nothing groundable backs the bundle; :func:`~precis.taproot.canon
         ._coerce_extraction` should have folded it to ``None``. Checked
         here too as a backstop against a caller bypassing that helper."""
-        return [r for r in self.results if r.compound_without_atoms]
+        return [r for r in self.results if r.composite_without_atoms]
 
     @property
     def conjunction_violations(self) -> list[ExtractionResult]:
@@ -338,15 +338,15 @@ class ExtractionReport:
             "",
             f"atom-count agreement: {self.atom_count_matches}/{self.total} "
             f"({self.atom_count_agreement_rate:.1%}) — soft metric",
-            f"compound-without-atoms: {len(self.compound_without_atoms_violations)} "
+            f"composite-without-atoms: {len(self.composite_without_atoms_violations)} "
             "— hard gate, bar is 0",
             f"atoms with a residual conjunction: "
             f"{len(self.conjunction_violations)} — hard gate, bar is 0",
         ]
-        if self.compound_without_atoms_violations:
+        if self.composite_without_atoms_violations:
             lines.append("")
-            lines.append("Compound-without-atoms (investigate individually):")
-            for r in self.compound_without_atoms_violations:
+            lines.append("Composite-without-atoms (investigate individually):")
+            for r in self.composite_without_atoms_violations:
                 lines.append(f"  passage {r.passage_id}")
         if self.conjunction_violations:
             lines.append("")
@@ -387,22 +387,22 @@ def eval_extraction(
             for atom in extraction.atoms
             if _has_predicate_conjunction(atom.sentence)
         ]
-        compound_without_atoms = (
-            extraction.compound is not None and not extraction.atoms
+        composite_without_atoms = (
+            extraction.composite is not None and not extraction.atoms
         )
         result = ExtractionResult(
             passage_id=int(row["id"]),
             expected_atom_count=int(row["expected_atom_count"]),
             actual_atom_count=len(extraction.atoms),
-            compound_without_atoms=compound_without_atoms,
+            composite_without_atoms=composite_without_atoms,
             conjunction_atoms=conjunction_atoms,
             not_claim_texts=[nc["text"] for nc in extraction.not_claims],
         )
         results.append(result)
         if progress:
             flags = ""
-            if compound_without_atoms:
-                flags += "  ⚠ COMPOUND-WITHOUT-ATOMS"
+            if composite_without_atoms:
+                flags += "  ⚠ COMPOSITE-WITHOUT-ATOMS"
             if conjunction_atoms:
                 flags += "  ⚠ RESIDUAL-CONJUNCTION"
             print(

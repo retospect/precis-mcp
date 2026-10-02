@@ -76,16 +76,16 @@ disputes_filed}` is the coverage ledger — "no known conflict as of
 missing or stale-version ledger means the hub was never swept by the
 current method.
 
-**A compound hub holds no direct evidence.** When a claim decomposes into
+**A composite hub holds no direct evidence.** When a claim decomposes into
 several atomic sub-claims, the bundling sentence gets its own hub — cite-able,
 but attach-only-through-atoms: `link(...,
-rel='establishes'|'corroborates'|'contradicts')` onto a compound
+rel='establishes'|'corroborates'|'contradicts')` onto a composite
 hub raises. Attach evidence to the atom hub the passage actually supports
-instead — `get(id='fi<id>', view='links')` lists a compound's `conjunct-of`
+instead — `get(id='fi<id>', view='links')` lists a composite's `conjunct-of`
 atoms.
 
-A compound's **trust** is derived, not absent: worst-of its atoms' own
-trust states (`taproot/trust.py::_compound_trust`, status `hub-compound`)
+A composite's **trust** is derived, not absent: worst-of its atoms' own
+trust states (`taproot/trust.py::_composite_trust`, status `hub-composite`)
 — `get(id='fi<id>', view='evidence')` shows a trust label with no direct
 edges underneath, the expected depth-1 rollup, not missing data.
 
@@ -153,11 +153,11 @@ asserts two distinct claims can supply evidence to two different hubs
 the hub for the specific claim your sentence makes, not just "the hub
 near this chunk."
 
-**Atom vs compound — same rule, one level up.** When a claim decomposed
-into a bundling **compound** hub over several atomic hubs (`conjunct-of`,
+**Atom vs composite — same rule, one level up.** When a claim decomposed
+into a bundling **composite** hub over several atomic hubs (`conjunct-of`,
 above), cite the atom when your sentence asserts just that one conjunct;
-cite the compound only when your sentence genuinely restates the bundled
-claim as a whole. `get(id='fi<id>', view='links')` lists a compound's
+cite the composite only when your sentence genuinely restates the bundled
+claim as a whole. `get(id='fi<id>', view='links')` lists a composite's
 `conjunct-of` atoms if you need to pick among them.
 
 **If a cited `[fi<id>]` errors "not a TAPROOT:claim finding":** the

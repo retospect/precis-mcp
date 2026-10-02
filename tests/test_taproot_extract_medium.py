@@ -50,7 +50,7 @@ _GOOD_PAYLOAD = {
             "regime": "on glass",
         },
     ],
-    "compound": _SENTENCE,
+    "composite": _SENTENCE,
     "not_claims": [],
 }
 
@@ -113,7 +113,7 @@ def test_good_payload_parses_on_first_try(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls[0].tier is canon.Tier.MEDIUM
     assert calls[0].source == "taproot:extract-medium"
     assert len(extraction.atoms) == 2
-    assert extraction.compound is not None
+    assert extraction.composite is not None
 
 
 def test_timeout_raises_immediately_without_retry(

@@ -17,7 +17,7 @@ is the better one: signed, content-addressed, timestamped, publicly
 verifiable. Retiring `[fi<id>]` in favor of `[np<id>]` also forces
 every claim through freeze-at-review — the choke point where wording
 gets made concise and crisp (today's hub titles are often bloated,
-compound, or carry attribution in the sentence).
+composite, or carry attribution in the sentence).
 
 **What retires is fi as the *surface*** (citation syntax, browse/read
 affordance for world-claims), not the engine: evidence edges, refine,
@@ -70,7 +70,7 @@ closer to gripes).
   equivalent `[fi<id>]` (same bibliography entries, same trust marks)
   plus appendix entry when minted.
 - Mint gate rejects: >~200-char sentences, attribution-in-assertion,
-  compound claims; existing crisp claims (e.g. fi191001) pass.
+  composite claims; existing crisp claims (e.g. fi191001) pass.
 - The two counters are visible somewhere cheap (overview page or CLI)
   and a migration pass demonstrably moves both toward zero on the
   nanobuds draft (dr173020) as the pilot.

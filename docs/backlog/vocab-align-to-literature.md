@@ -142,3 +142,34 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
   "envelope" for capability/performance and working-motion senses too. So
   `bounding volume` is wrong as a gloss; this is tier 2 plus a type change,
   and a glossary entry (overloaded section) is the first step.
+- **[scoped 2026-10-02, tier 2]** No tier-2 row is a docs-only rename: each
+  reaches prod rows, so each ships as its own migration-bearing branch
+  through the orchestrator's gate (a migration cannot qland), one row per
+  branch to keep the conflict surface small.
+  - `compound` → `composite`: the `nanopub_publish.artifact_type` CHECK
+    (0128), the nanopub class IRI `precis:CompoundClaim` (`nanopub/vocab.py`),
+    the extraction prompt's `"compound"` JSON key (`taproot/canon.py`), plus
+    `taproot/hub.py`, `nanopub/{assemble,gates,evidence}.py`. Prod on
+    2026-10-02: 0 published or anchored compound nanopubs, 1 candidate. The
+    IRI rename is free now and forks published vocabulary once one
+    publishes, so this row goes first. Split in two by the
+    claims-and-evidence overlap (agreed with that session 2026-10-02):
+    the **taproot half** (`taproot/{hub,canon,migrate}.py`,
+    `workers/{hub_refine,chase_trigger}.py`, `store/types.py`, docs,
+    skills, prompts) stores nothing in prod (0 tags or finding meta keys
+    carry "compound"), so it qlands without a migration; the **nanopub
+    half** (migration, IRI, `nanopub/{evidence,assemble,gates}.py`) waits
+    for claims-and-evidence's edgar/datasheet evidence widening. Taproot
+    half shipped 2026-10-02 (extraction JSON key, `ClaimExtraction.composite`,
+    cohort `likely-composite`, trust status `hub-composite`, glossary).
+    Left for the nanopub half: `artifact_type='compound'` and the strings
+    that name it (`precis-taproot-mint-help.md`, `precis-nanopub-help.md`,
+    `nanopub_render`, `docs/reference/nanopub-example/`).
+  - `fidelity ladder` → `fidelity levels`: `meta.fidelity_ladder` is a prod
+    quest meta key (itself renamed from `tier_ladder` by 0145), read in
+    `quest/{compute,graduate,catalyst_seed,frontier}.py`, code the
+    catalysis-selectivity and roadmap-quest trees edit daily.
+  - `rung` (se abstraction levels): in `precis_se` migrations 0003/0011/0016
+    and six `precis_se` modules; overlaps se-machine-design. Distinct from
+    the todo `meta.rung` (a roadmap rung, `check_rung_meta`), which is not
+    this term and stays.

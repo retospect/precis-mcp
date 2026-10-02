@@ -84,7 +84,7 @@ Threads are optional — a cycle with no thread worth capturing writes none. Thi
 
 Step 6d — propose a nanopub hypothesis, when there is genuinely something to say. RARE: at most ONE per cycle, and most cycles none. A memory is a note; a hypothesis is a signed, timestamped artifact that goes into a review queue a human works through, so the bar is much higher.
 
-Reach for this when a Step-6 connection is a **cross-binding you cannot close**: two findings whose junction nobody has demonstrated, where you can name the experiment that would settle it. That is exactly what the `hypothesis` artifact type is for — its worked example was minted from a compound claim that failed its commensurability gate, restated honestly as a conjecture. A hypothesis has NO evidence by definition: it carries motivation instead, and states the discriminating experiment. A signed, timestamped hypothesis is a priority claim on an idea.
+Reach for this when a Step-6 connection is a **cross-binding you cannot close**: two findings whose junction nobody has demonstrated, where you can name the experiment that would settle it. That is exactly what the `hypothesis` artifact type is for — its worked example was minted from a composite claim that failed its commensurability gate, restated honestly as a conjecture. A hypothesis has NO evidence by definition: it carries motivation instead, and states the discriminating experiment. A signed, timestamped hypothesis is a priority claim on an idea.
 
   precis put(
       kind="finding",

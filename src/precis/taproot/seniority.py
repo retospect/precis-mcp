@@ -469,7 +469,7 @@ def _sort_group(edges: list[EvidenceEdge]) -> list[EvidenceEdge]:
 
 _REFINES_RELATION = "refines"
 #: The atomic-claims decomposition's other claim-link relation (migration
-#: 0126) — ``link_claims`` writes it atom->compound (src=atom, dst=compound).
+#: 0126) — ``link_claims`` writes it atom->composite (src=atom, dst=composite).
 #: See :func:`derive_conjuncts`.
 _CONJUNCT_RELATION = "conjunct-of"
 
@@ -496,11 +496,11 @@ class ClaimLinks:
     * ``refines``: :attr:`refines` (outbound, src=hub) = coarser hubs this
       hub sharpens; :attr:`refined_by` (inbound, dst=hub) = sharper hubs
       that refine this one; "a sharper version of this claim exists."
-    * ``conjunct-of``: :attr:`refines` (outbound, src=hub) = the compound
+    * ``conjunct-of``: :attr:`refines` (outbound, src=hub) = the composite
       hub this atom belongs to (0 or 1 entries — ``link_claims`` writes one
-      atom->compound edge per placed atom); :attr:`refined_by` (inbound,
-      dst=hub) = this compound's own atoms, non-empty iff ``hub_ref_id`` IS
-      a compound.
+      atom->composite edge per placed atom); :attr:`refined_by` (inbound,
+      dst=hub) = this composite's own atoms, non-empty iff ``hub_ref_id`` IS
+      a composite.
 
     Both directions of the directed, no-inverse edge, read via explicit
     ``src``/``dst`` filtering (never :func:`store.links_for`, whose inverse
@@ -580,12 +580,12 @@ def derive_refines(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
 def derive_conjuncts(store: PoolStore, hub_ref_id: int) -> ClaimLinks:
     """Read a claim hub's ``conjunct-of`` neighbours in both directions —
     see :func:`_derive_claim_links` for the shared query and live-endpoint
-    guard. :attr:`ClaimLinks.refines` (outbound, src=hub) = the compound hub
+    guard. :attr:`ClaimLinks.refines` (outbound, src=hub) = the composite hub
     this atom belongs to (0 or 1 entries); :attr:`ClaimLinks.refined_by`
-    (inbound, dst=hub) = this compound's atoms — non-empty iff ``hub_ref_id``
-    IS a compound. The read-side twin of :func:`~precis.taproot.hub.
-    link_claims`'s atom->compound write; :mod:`precis.taproot.trust`'s
-    compound = worst-of-its-atoms rollup (docs/backlog/
+    (inbound, dst=hub) = this composite's atoms — non-empty iff ``hub_ref_id``
+    IS a composite. The read-side twin of :func:`~precis.taproot.hub.
+    link_claims`'s atom->composite write; :mod:`precis.taproot.trust`'s
+    composite = worst-of-its-atoms rollup (docs/backlog/
     taproot-atomic-claims.md) is the motivating caller for the
     :attr:`~ClaimLinks.refined_by` side."""
     return _derive_claim_links(store, hub_ref_id, _CONJUNCT_RELATION)
@@ -596,16 +596,16 @@ def conjunct_atoms_bulk(
 ) -> dict[int, list[int]]:
     """Bulk twin of :func:`derive_conjuncts`'s inbound side: for every id in
     ``hub_ref_ids``, the ref_ids of its ``conjunct-of`` atoms (``[]`` when
-    the hub isn't a compound) — ONE query instead of one
+    the hub isn't a composite) — ONE query instead of one
     :func:`derive_conjuncts` call per hub. :mod:`precis.taproot.trust`'s
     ``claim_trust_bulk`` is the motivating caller: it needs every
-    candidate compound's atom set up front before it can batch-derive each
+    candidate composite's atom set up front before it can batch-derive each
     atom's own trust and reduce.
 
-    The compound-hub predicate here (inbound live ``conjunct-of`` edge from
+    The composite-hub predicate here (inbound live ``conjunct-of`` edge from
     a live ``TAPROOT:claim`` finding source) is deliberately re-derived
     rather than shared: it also appears, each module opening its own
-    connection, as :mod:`precis.taproot.hub`'s ``_is_compound_hub`` and
+    connection, as :mod:`precis.taproot.hub`'s ``_is_composite_hub`` and
     :mod:`precis.workers.hub_refine``'s due-set ``NOT EXISTS`` exclusion —
     three copies by design (the atomic-claims build's cross-task seam),
     same precedent as :func:`_is_claim_hub` mirroring ``hub._is_claim_hub``.

@@ -52,7 +52,7 @@ defect and follow-on cluster below is owned here.
    `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
    claim-evidence` (open: magnitude re-check, re-dispatch of a `ready`
    pathway, nanopub visibility, web attach form).
-6. **Compound + publication, last** — `taproot-compound-migration` (L;
+6. **Composite + publication, last** — `taproot-compound-migration` (L;
    blocked on `reground.py`'s embedding-ranking TODO; blocks
    `claim-publication-nanopub-ots`) → `claim-publication-nanopub-ots` ·
    `retire-fi-go-nanopub` (open: `[np<id>]` grammar + migration sweep) ·

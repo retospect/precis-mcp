@@ -60,7 +60,7 @@ Judge each near hit precisely:
   `link(kind='finding', id='fi<id>', rel='corroborates', target='pc<id>')`.
 - **Coarser, narrower, or a different regime** than your sentence →
   not a match. Mint yours (step 2), then `link(rel='refines')` to it.
-- **Compound hub** (bundles several atoms) → cite the atom your
+- **Composite hub** (bundles several atoms) → cite the atom your
   sentence asserts; `get(id='fi<id>', view='links')` lists its
   `conjunct-of` atoms.
 - **`refuted` or `disputed` flag** → not a supporting cite. Step 3

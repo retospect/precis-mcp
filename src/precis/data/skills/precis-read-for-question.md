@@ -169,7 +169,7 @@ Every minted hub is an approve click for a human later. The rule:
 ## A from one paper plus B from another suggests C
 
 That is not a claim; it has no grounding passage, and hand-bundling
-atoms into a compound is forbidden. It is a hypothesis:
+atoms into a composite is forbidden. It is a hypothesis:
 
 ```python
 put(kind="finding", hypothesis=True, title="<declarative sentence>",
