@@ -41,12 +41,15 @@ with main's code: DRC has no `courtyard_hole` errors and
 a `last_route` digest STALE after `op='rip'`.
 **Trap:** `op='route'` runs the place anneal first and MOVES every
 unfrozen part; it re-placed 103 parts on this board once (restored with
-`import-epro --update` + `op='rip'` per net). Reto ruled 2026-10-02
-(review-queue `pcb-easyeda-round-trip-3`): import now locks every part
-(`fixed='both'`, `--unfrozen` opts out). heater-base-test predates that:
-its 103 unlocked parts need the one-statement freeze handed to Reto in
-review-queue `pcb-easyeda-round-trip-4`. Until he has run it, still
-never `op='route'` on his board.
+`import-epro --update` + `op='rip'` per net). On heater-base-test Reto
+lifted this 2026-10-02 (review-queue `pcb-easyeda-round-trip-4`): it is a
+test piece, the anneal may move its 103 unlocked parts, and it gets
+routed on prod as is. Import locks only the parts the source locked
+(`--freeze` locks all). A same-day freeze-all default was reverted: it
+contradicted his 09-30 "only freeze when needed"
+(`pcb-freeze-mechanicals-and-parts.md`). Which parts are alignment-critical
+needs author annotations; the proposal is review-queue
+`pcb-easyeda-round-trip-5`.
 Collides with ewod-pcb on generator/DRC/realizer files:
 sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/

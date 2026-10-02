@@ -50,21 +50,21 @@ def imported(store):
     return pcb_epro.import_epro(store, _zip(), slug="epro-import-1", title="Tiny")
 
 
-def test_every_imported_part_is_locked_by_default(store, imported) -> None:
-    """Reto, 2026-10-02: import freezes placement, so op='route' routes the
-    board as placed instead of annealing it first."""
+def test_by_default_only_source_locked_parts_are_locked(store, imported) -> None:
+    """Reto, 2026-09-30: "only actually freeze when needed" -- an import
+    locks what the source locked and nothing else."""
     instances = store.pcb_graph(imported.ref_id)["instances"]
-    assert instances and all(i["fixed"] == "both" for i in instances)
-    assert any("imported LOCKED" in w for w in imported.warnings)
+    assert any(i["fixed"] is None for i in instances)
+    assert not any("imported LOCKED" in w for w in imported.warnings)
 
 
-def test_unfrozen_import_leaves_unlocked_source_parts_free(store) -> None:
+def test_freeze_import_locks_every_part(store) -> None:
     result = pcb_epro.import_epro(
-        store, _zip(), slug="epro-import-unfrozen", title="Tiny", freeze=False
+        store, _zip(), slug="epro-import-frozen", title="Tiny", freeze=True
     )
     instances = store.pcb_graph(result.ref_id)["instances"]
-    assert any(i["fixed"] is None for i in instances)
-    assert not any("imported LOCKED" in w for w in result.warnings)
+    assert instances and all(i["fixed"] == "both" for i in instances)
+    assert any("imported LOCKED" in w for w in result.warnings)
 
 
 # ── the rows arrived ─────────────────────────────────────────────────────

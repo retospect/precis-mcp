@@ -118,11 +118,11 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "write nothing. Reports identical counts and warnings.",
     )
     ie.add_argument(
-        "--unfrozen",
+        "--freeze",
         action="store_true",
-        help="Import parts unlocked. By default every part is imported "
-        "locked (fixed='both'), so op='route' routes the board as placed "
-        "instead of re-placing it first.",
+        help="Import EVERY part locked (fixed='both'), so op='route' routes "
+        "the board as placed. By default only the parts the source locked "
+        "are locked; op='route' re-places the rest first.",
     )
     ie.add_argument(
         "--database-url",
@@ -227,7 +227,7 @@ def _import_epro(args: argparse.Namespace) -> None:
             source_name=path.name,
             dry_run=args.dry_run,
             update=getattr(args, "update", False),
-            freeze=not getattr(args, "unfrozen", False),
+            freeze=getattr(args, "freeze", False),
         )
     except EproError as exc:
         # The file is not readable as .epro2, or is missing something

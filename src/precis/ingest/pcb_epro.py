@@ -422,7 +422,7 @@ def import_epro(
     source_name: str | None = None,
     dry_run: bool = False,
     update: bool = False,
-    freeze: bool = True,
+    freeze: bool = False,
 ) -> ImportResult:
     """Import one ``.epro2`` board into the ``pcb`` kind under ``slug``.
 
@@ -433,13 +433,14 @@ def import_epro(
     ``update`` re-imports onto an existing import of the SAME board (see
     :class:`UpdatePlan` for what is applied and what is only reported).
 
-    ``freeze`` (default, Reto 2026-10-02) imports every part locked
-    (``fixed='both'``): a board is imported to keep its placement and fix
-    its routing, and ``op='route'`` anneals every unlocked part first (it
-    once re-placed 103 parts of heater-base-test). One part unlocks with
-    ``op='move'`` ``fixed=None``. A part the source already locked keeps
-    that lock either way. ``--update`` still applies the source's moves to
-    locked parts, as before.
+    A part the source locked is imported locked (``fixed='both'``);
+    nothing else is (Reto 2026-09-30, "only actually freeze when needed";
+    ``docs/backlog/pcb-freeze-mechanicals-and-parts.md``). ``freeze``
+    (``--freeze``) locks every part instead, for a board whose whole
+    placement must survive a route. A 2026-10-02 freeze-by-default was
+    reverted the same day: which parts are alignment-critical needs the
+    author's annotations, not a blanket lock. ``--update`` still applies
+    the source's moves to locked parts, as before.
     """
     project = epro.read_archive(data)
     board = project.pcb(board_uuid)
@@ -457,13 +458,12 @@ def import_epro(
             # whatever lock they have on the board.
             warnings.append(
                 "parts this update adds are imported LOCKED (fixed='both'); "
-                "unlock one with op='move' fixed=None, or pass --unfrozen"
+                "unlock one with op='move' fixed=None"
             )
         elif newly:
             warnings.append(
                 f"{newly} part(s) imported LOCKED (fixed='both') so op='route' "
-                f"cannot re-place them; unlock one with op='move' fixed=None, "
-                f"or import with --unfrozen"
+                f"cannot re-place them; unlock one with op='move' fixed=None"
             )
 
     if len(stackup) not in _SUPPORTED_LAYER_COUNTS:
