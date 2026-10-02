@@ -8,21 +8,39 @@ on the fleet; the first live tick ran 2026-09-30 22:01 UTC on Reto's word
 `placement_error_nm = 0.15` with a stated reason, minted no rung and no
 deed, and neither fail signal fired. Four watched ticks ran; qu453863 was
 tagged `STATUS:active` 2026-10-02 ~02:00Z (no ask, thresholds.md) and now
-ticks unattended. Next evidence: the first unattended `supply` tick.
-**Last reviewed:** 2026-10-02 (tick 4 + activation; quest-loop items ranked
-10-01)
+ticks unattended. The unattended ticks (04:24–09:57Z 10-02) proved the
+embedder fix live but exposed a supply defect: both cited supply numbers
+are one misread value (see Do next 1). Next evidence: a supply tick after
+the extraction-window fix deploys.
+**Last reviewed:** 2026-10-02 (hold lifted; fix + Do-next residual 5 landing)
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **Watch qu453863's first unattended ticks** — activated 2026-10-02
-   ~02:00Z (the tag call returned `tagged quest id=453863`; a follow-up
-   SQL read of its tags was refused by the session's permission check, so
-   confirm `STATUS:active` on resume). Check: the first `supply` tick logs
-   `local N>0` on queries the graph answers (proves ecefede3's embedder
-   fix live; the `lexical-only` clause must be absent); no rung without a
-   number; deeds do not climb on a flat ledger. If either fail signal
-   fires, tag it back to `STATUS:dormant` and file. History: the first live
+1. **Watch the first supply tick after the round deploys the extraction
+   fix** (3b032a98d: `_paper_servers` newest-first, plus a prompt clause
+   rejecting a method's own measurement uncertainty). Before it, both
+   qu453869 supply numbers were pa459574's SAXS uncertainty (1.2 nm), read
+   through an oldest-first 8-of-33 paper window. The repair is DONE
+   2026-10-02 ~12:15Z (Reto approved review item roadmap-quest-1):
+   `meta.supply = {}`, rungs td460713 + td460923 `STATUS:won't-do`. If a
+   tick re-cites pa459574's 1.2 nm before the deploy, clear `meta.supply`
+   again after it.
+2. **Local-first never yields to S2.** Every unattended supply query logged
+   `[local 10, acquired 0; outside skipped, graph answered]`:
+   `relevance_floor()` defaults to 0.0 and the semantic leg's
+   `SEMANTIC_DISTANCE_FLOOR` (0.65) admits 10 hits for any query in this
+   corpus, so `LOCAL_ENOUGH = 3` is never binding and outside search never
+   runs. The `drift_per_cycle_nm` supply ticks at 08:36 and 09:57Z came back
+   dry this way. Re-judge after 1's fix ships: if supply stays dry once
+   extraction can see the newly linked papers, escalate to S2 after a dry
+   supply tick on a key, rather than guessing a floor.
+3. **Watch qu453863 ticks after the fix deploys** — `STATUS:active`
+   confirmed 10:38Z 10-02. ecefede3's embedder fix is LIVE (every query
+   since 04:24Z logs `local 10`, no lexical-only clause). Check: no rung
+   without a number; deeds do not climb on a flat ledger; a supply number
+   cites a paper linked by its own tick. If either fail signal fires, tag
+   it back to `STATUS:dormant` and file. History: the first live
    tick (2026-09-30 22:01 UTC, `scripts/prod-precis quest tick 453863`,
    exit 0) took the `demand` role at tier big on the `no-demand` gap and
    wrote `meta.demand.placement_error_nm = 0.15` on qu453869, reason "one
@@ -49,11 +67,7 @@ ticks unattended. Next evidence: the first unattended `supply` tick.
    no search, so local-first is still unproven live. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
-2. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`
-   from the ledger so roadmap_tick stops re-deriving rung status with its
-   own SQL; a drift between the two queries is invisible (no finding), so it
-   outranks the cosmetic residuals.
-3. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
+4. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
    capability" is the builder's reading not a ruling; supply-absent rows
    route to supply not bridge; first-tick deed baseline seeds silently. All
    three become decidable only after 1 shows real ticks.
@@ -61,12 +75,12 @@ ticks unattended. Next evidence: the first unattended `supply` tick.
 ## Horizon
 
 1. **qu453863 ticking cadence** — ticking unattended since 2026-10-02;
-   waits on Do next 1's watch; rungs that carry numbers, driving PRIO down
+   waits on Do next 3's watch; rungs that carry numbers, driving PRIO down
    through qu161906 to the pathway quests.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 2-4 ruled** — waits on
    real ticks showing which capability the root picks; rulings replace the
    builder's readings.
-3. **backlog/bootstrap-roadmap-quest.md §Residuals 6** (capped framing chunk
+3. **backlog/bootstrap-roadmap-quest.md §Residuals 5** (capped framing chunk
    + web hub ledger panel) — waits on three clean ticks.
 4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
    measures) — waits on measures-substrate (knowledge-mesh thread); supply

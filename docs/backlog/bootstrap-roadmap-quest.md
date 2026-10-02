@@ -296,11 +296,7 @@ Items 1, 2, 3, 4, 5, 6 are BUILT (four commits; blame carries them). Item 7 (ski
    tick diffs it. On the very first tick the baseline is that tick's own
    starting ledger, so pre-existing supplies seed silently while a supply the
    first tick itself writes does get stamped.
-5. **Duplicated rung-status query.** `roadmap_tick` re-derives rung statuses
-   with its own SQL because `roadmap_ledger._rungs_for` / `_DONE_STATUSES` are
-   private. Exporting `rungs_for(store, capabilities)` from the ledger module
-   removes the duplication.
-6. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
+5. Not built, by scope: the capped *framing* chunk from the §Dossier-shape
    ruling, and the web hub ledger panel (spec already says it can trail).
 
 ## Resume (2026-09-29)

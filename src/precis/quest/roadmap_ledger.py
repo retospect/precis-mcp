@@ -56,7 +56,7 @@ LEDGER_MAX_CAPABILITIES = 40
 LEDGER_MAX_RUNGS_PER_CAPABILITY = 200
 
 #: ``STATUS`` values under which a rung has delivered its ``produces``.
-_DONE_STATUSES: frozenset[str] = frozenset({"done"})
+DONE_STATUSES: frozenset[str] = frozenset({"done"})
 
 #: ``STATUS`` values under which a rung is neither delivered nor in flight —
 #: it closes nothing and promises nothing.
@@ -207,15 +207,16 @@ def capability_axes(ref: Ref) -> list[tuple[str, str, str | None]]:
 
 
 @dataclass(frozen=True)
-class _Rung:
+class Rung:
     ref: Ref
     status: str  # resolved STATUS tag value, "open" when untagged
 
 
-def _rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[_Rung]]:
+def rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[Rung]]:
     """Live ``meta.rung`` todos that ``serves`` each capability, with their
     resolved ``STATUS``. One ``links_for`` per capability, then ONE batched
-    ref fetch + ONE batched tag query across all of them."""
+    ref fetch + ONE batched tag query across all of them. The single reader
+    of rung status — ``roadmap_tick`` calls this rather than re-deriving it."""
     per_cap: dict[int, list[int]] = {}
     all_ids: list[int] = []
     for cid in capability_ids:
@@ -257,7 +258,7 @@ def _rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[_Rung]
     rung_set = set(rung_ids)
     return {
         cid: [
-            _Rung(ref=refs[i], status=status.get(i, "open"))
+            Rung(ref=refs[i], status=status.get(i, "open"))
             for i in ids
             if i in rung_set
         ]
@@ -266,7 +267,7 @@ def _rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[_Rung]
 
 
 def _produced(
-    rung: _Rung, capability: str, key: str
+    rung: Rung, capability: str, key: str
 ) -> tuple[float, tuple[str, ...]] | None:
     """``(value, evidence)`` this rung's ``produces`` claims for
     ``(capability, key)``, or ``None``. Several entries for the same key on
@@ -290,15 +291,15 @@ def _produced(
 
 
 def _best_supply_from(
-    capability_ref: Ref, rungs: list[_Rung], key: str, sense: str
-) -> tuple[float | None, tuple[str, ...], _Rung | None]:
+    capability_ref: Ref, rungs: list[Rung], key: str, sense: str
+) -> tuple[float | None, tuple[str, ...], Rung | None]:
     """The better of ``meta.supply[key]`` and every done rung's ``produces``
     for ``key``. Returns ``(value, evidence, source_rung)`` — ``source_rung``
     is the done rung that supplied the winner, ``None`` when ``meta.supply``
     did (a rung must be *strictly* better to displace the stored value)."""
     best: float | None = None
     evidence: tuple[str, ...] = ()
-    source: _Rung | None = None
+    source: Rung | None = None
 
     supply = (capability_ref.meta or {}).get("supply")
     entry = supply.get(key) if isinstance(supply, dict) else None
@@ -309,7 +310,7 @@ def _best_supply_from(
 
     cap_handle = _handle("quest", capability_ref.id)
     for rung in rungs:
-        if rung.status not in _DONE_STATUSES:
+        if rung.status not in DONE_STATUSES:
             continue
         got = _produced(rung, cap_handle, key)
         if got is None:
@@ -335,7 +336,7 @@ def best_supply(
     ref = store.get_ref(kind="quest", id=capability_id)
     if ref is None:
         return None, ()
-    rungs = _rungs_for(store, [ref.id]).get(ref.id, [])
+    rungs = rungs_for(store, [ref.id]).get(ref.id, [])
     value, evidence, _src = _best_supply_from(ref, rungs, key, norm)
     return value, evidence
 
@@ -359,7 +360,7 @@ def _has_dead_end_for(store: Store, capability_id: int, key: str) -> bool:
 def _row_for(
     store: Store,
     cap: Ref,
-    rungs: list[_Rung],
+    rungs: list[Rung],
     key: str,
     sense: str,
     unit: str | None,
@@ -373,9 +374,9 @@ def _row_for(
 
     # In-flight rungs promising this axis — the best promised value first,
     # ties to the older rung (links_for returns insertion order; stable sort).
-    in_flight: list[tuple[float, _Rung]] = []
+    in_flight: list[tuple[float, Rung]] = []
     for rung in rungs:
-        if rung.status in _DONE_STATUSES or rung.status in _DEAD_STATUSES:
+        if rung.status in DONE_STATUSES or rung.status in _DEAD_STATUSES:
             continue
         got = _produced(rung, cap_handle, key)
         if got is not None:
@@ -430,7 +431,7 @@ def compute_ledger_for(store: Store, capabilities: list[Ref]) -> list[LedgerRow]
     capability order, axes in ``rubric_objectives`` order."""
     if not capabilities:
         return []
-    rungs = _rungs_for(store, [c.id for c in capabilities])
+    rungs = rungs_for(store, [c.id for c in capabilities])
     rows: list[LedgerRow] = []
     for cap in capabilities:
         for key, sense, unit in capability_axes(cap):

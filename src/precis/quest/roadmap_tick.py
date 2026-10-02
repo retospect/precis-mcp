@@ -199,28 +199,19 @@ def _parse_quest_handle(raw: Any) -> int | None:
     return parsed[2]
 
 
-def _rungs_under(store: Store, capabilities: list[Ref]) -> list[Ref]:
-    """Live ``meta.rung`` todos serving any of ``capabilities`` (deduped,
-    link order). One ``links_for`` per capability + one batched fetch."""
-    ids: list[int] = []
+def _rungs_under(store: Store, capabilities: list[Ref]) -> list[ledger.Rung]:
+    """Live ``meta.rung`` todos serving any of ``capabilities`` with their
+    resolved ``STATUS`` (deduped across capabilities, link order) — read
+    through :func:`roadmap_ledger.rungs_for`, the ledger's own rung reader."""
+    by_cap = ledger.rungs_for(store, [c.id for c in capabilities])
+    out: list[ledger.Rung] = []
     seen: set[int] = set()
     for cap in capabilities:
-        for ln in store.links_for(cap.id, direction="in", relation="serves"):
-            src = int(ln.src_ref_id)
-            if src not in seen:
-                seen.add(src)
-                ids.append(src)
-    if not ids:
-        return []
-    refs = store.fetch_refs_by_ids(set(ids))
-    return [
-        r
-        for i in ids
-        if (r := refs.get(i)) is not None
-        and r.retired_at is None
-        and r.kind == "todo"
-        and isinstance((r.meta or {}).get("rung"), dict)
-    ]
+        for rung in by_cap.get(cap.id, []):
+            if rung.ref.id not in seen:
+                seen.add(rung.ref.id)
+                out.append(rung)
+    return out
 
 
 def _rung_entries(rung: Ref, where: str) -> list[dict[str, Any]]:
@@ -240,22 +231,6 @@ def _consumer_counts(rungs: list[Ref]) -> dict[str, int]:
             if isinstance(cap, str):
                 counts[cap] = counts.get(cap, 0) + 1
     return counts
-
-
-def _rung_statuses(store: Store, rung_ids: list[int]) -> dict[int, str]:
-    if not rung_ids:
-        return {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT rt.ref_id, t.value FROM ref_tags rt "
-            "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE rt.ref_id = ANY(%s) AND t.namespace = 'STATUS'",
-            (rung_ids,),
-        ).fetchall()
-    out: dict[int, str] = {}
-    for rid, val in rows:
-        out.setdefault(int(rid), str(val))
-    return out
 
 
 def _pathways(servers: list[Ref]) -> list[Ref]:
@@ -298,7 +273,7 @@ def roadmap_role(store: Store, quest_id: int) -> RoleChoice | None:
     if not capabilities:
         return None
     rows = ledger.compute_ledger_for(store, capabilities)
-    consumers = _consumer_counts(_rungs_under(store, capabilities))
+    consumers = _consumer_counts([r.ref for r in _rungs_under(store, capabilities)])
     order = {
         _handle("quest", c.id): i for i, c in enumerate(capabilities)
     }  # serves link order
@@ -461,7 +436,15 @@ def _demand_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
 
 
 def _paper_servers(store: Store, capability_id: int) -> list[Ref]:
-    return [r for r in _live_servers(store, capability_id) if r.kind == "paper"]
+    """Paper servers, NEWEST link first. ``_live_servers`` is oldest-first, and
+    both supply prompts cap at :data:`_SUPPLY_MAX_PAPERS` — oldest-first meant
+    the papers this tick's own searches just linked never reached the
+    extraction call once a capability held more than the cap, so every later
+    supply tick re-read the same first papers (qu453869, 2026-10-02: 33
+    servers, both supply numbers from the first-linked paper)."""
+    papers = [r for r in _live_servers(store, capability_id) if r.kind == "paper"]
+    papers.reverse()
+    return papers
 
 
 def _supply_search_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
@@ -512,7 +495,10 @@ def _supply_findings_prompt(store: Store, choice: RoleChoice, papers: list[Ref])
         "## Task\n"
         f"From these papers only, extract every quantified claim that reports "
         f"a value of `{choice.key}`{unit}. Each claim is ONE sentence carrying "
-        "the number and the paper handle it comes from. Return STRICT JSON:\n"
+        "the number and the paper handle it comes from. Count a value only "
+        "when the paper reports it as a measurement of this quantity; a "
+        "measurement method's own uncertainty, resolution or error bar is not "
+        "a value of the axis. Return STRICT JSON:\n"
         '{"findings": [{"claim": "<one sentence with the number>", '
         '"value": <number>, "paper": "pa<id>"}]}\n'
         "An empty list is a valid answer when no paper reports the axis."
@@ -606,8 +592,9 @@ def _bridge_context(
     capabilities = [r for r in servers if ledger.is_capability_quest(r)]
     pathways = _pathways(servers)
     cap = store.get_ref(kind="quest", id=choice.capability_id)
-    rungs = _rungs_under(store, [cap]) if cap is not None else []
-    statuses = _rung_statuses(store, [r.id for r in rungs])
+    under = _rungs_under(store, [cap]) if cap is not None else []
+    rungs = [r.ref for r in under]
+    statuses = {r.ref.id: r.status for r in under}
     return pathways, rungs, statuses, _benign_capability(capabilities), capabilities
 
 
@@ -831,7 +818,7 @@ def rung_is_terminal(store: Store, rung_id: int, root_id: int) -> bool:
     if ((rung.meta or {}).get("rung") or {}).get("benign") == "required":
         return True
     capabilities = ledger.capability_servers(store, root_id)
-    others = [r for r in _rungs_under(store, capabilities) if r.id != rung_id]
+    others = [r.ref for r in _rungs_under(store, capabilities) if r.ref.id != rung_id]
     return _produces_unconsumed(rung, others)
 
 
@@ -1028,7 +1015,7 @@ def _run_bridge(
         "consumes": consumes,
         "produces": produces,
     }
-    all_rungs = _rungs_under(store, capabilities)
+    all_rungs = [r.ref for r in _rungs_under(store, capabilities)]
     terminal = _produces_unconsumed(rung_meta, all_rungs) or (
         str(spec.get("benign") or "").strip().lower() == "required"
     )

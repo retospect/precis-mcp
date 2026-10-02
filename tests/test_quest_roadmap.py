@@ -409,6 +409,29 @@ class TestSupplyRole:
         (row,) = ledger.compute_ledger(store, root)
         assert (row.best_supply, row.state) == (2.1, "unmet")
 
+    def test_extraction_sees_this_ticks_paper_past_the_cap(self, store: Any) -> None:
+        # qu453869 2026-10-02: with more paper servers than the cap, the
+        # oldest-first window hid every paper the tick's own search linked.
+        root, cap = make_root(store, demand=2.0, supply=None)
+        for i in range(rt._SUPPLY_MAX_PAPERS + 1):
+            old = seed_paper(
+                store, cite_key=f"old{i}", body="Unrelated origami review."
+            )
+            store.add_link(src_ref_id=old, dst_ref_id=cap, relation="serves")
+        new = seed_paper(
+            store, cite_key="fresh24", body="Probe drift measured at 0.2 nm per cycle."
+        )
+        client = ScriptedClient(
+            {"searches": ["probe drift per cycle"]}, {"findings": []}
+        )
+        result = rt.roadmap_tick(
+            store, client, root, search_fn=lambda s, q, ex: [(new, 1.0)]
+        )
+        assert result["papers_linked"] == 1
+        extraction_prompt = client.prompts[1]
+        assert f"pa{new}" in extraction_prompt
+        assert "0.2 nm per cycle" in extraction_prompt
+
     def test_supply_without_papers_writes_nothing(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=None)
         client = ScriptedClient({"searches": ["nothing held"]})
@@ -583,6 +606,46 @@ class TestBridgeRole:
         assert result["ok"] and "rung_id" in result
         assert result["terminal"] is False
         assert rt.rung_is_terminal(store, result["rung_id"], root) is False
+
+
+class TestRungReadingIsTheLedgers:
+    """``roadmap_tick`` reads rungs (and their STATUS) through
+    ``roadmap_ledger.rungs_for`` — one reader, so the two cannot drift."""
+
+    def test_bridge_prompt_status_comes_from_ledger_rungs_for(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root, cap = make_root(store, demand=2.0, supply=6.0)
+        make_rung(store, cap, value=9.0, status="done", title="rung: place one tile")
+        choice = rt.roadmap_role(store, root)
+        assert choice is not None and choice.role == "bridge"
+        root_ref = store.get_ref(kind="quest", id=root)
+
+        assert "[done] rung: place one tile" in rt.build_role_prompt(
+            store, root_ref, choice
+        )
+
+        real = ledger.rungs_for
+
+        def patched(s: Any, ids: list[int]) -> Any:
+            return {
+                cid: [ledger.Rung(ref=r.ref, status="sentinel-status") for r in rungs]
+                for cid, rungs in real(s, ids).items()
+            }
+
+        monkeypatch.setattr(ledger, "rungs_for", patched)
+        prompt = rt.build_role_prompt(store, root_ref, choice)
+        assert "[sentinel-status] rung: place one tile" in prompt
+
+    def test_rungs_under_dedups_across_capabilities(self, store: Any) -> None:
+        root, cap_a = make_root(store, demand=2.0, supply=6.0)
+        cap_b = _qid(_quests(store).put(text="Capability: cycle time"))
+        store.add_link(src_ref_id=cap_b, dst_ref_id=root, relation="serves")
+        rid = make_rung(store, cap_a, value=9.0, status="done")
+        store.add_link(src_ref_id=rid, dst_ref_id=cap_b, relation="serves")
+        caps = [store.get_ref(kind="quest", id=i) for i in (cap_a, cap_b)]
+        got = rt._rungs_under(store, caps)
+        assert [(r.ref.id, r.status) for r in got] == [(rid, "done")]
 
 
 # ── AC5: the code-stamped deed ────────────────────────────────────────
