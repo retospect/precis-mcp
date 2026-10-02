@@ -1,11 +1,29 @@
 ---
-status: draft
-title: The placer leaves a 0.093mm gap where 55 nets need 16.5mm, and the failure reports as a routing problem
-prio: normal
+status: idea
+title: The placer has no notion of corridor capacity — no legal board has shown it costing anything yet
+prio: low
 pillar: 3d-design
 ---
 
 # The placer starves the escape corridor
+
+## 2026-10-02: no evidence on a legal placement
+
+`ewod-dogfood-6` is the first validly placed EWOD board (0 geometric DRC
+errors). Its last route, 30 realized / 25 failed, has **0 over-capacity
+gaps**: `view='congestion'` says "no over-capacity gaps — the failures
+have another cause". The 25 failures split 8 `congestion`, 17 `no_path`
+(`view='route-status'`). So the one case this item was built on was the
+invalid placement described below, and nothing has replaced it.
+
+What survives is the hypothesis in "In scope": the placer has no term for
+"this corridor must carry N strands", so a legal placement could still
+starve one. It stays filed so the gap-capacity warning has somewhere to
+point when one appears on a legal board. Unpark on the first legal board
+whose `view='congestion'` lists an over-capacity gap; that board is the
+fixture, and the acceptance below is rewritten against its numbers.
+dogfood-6's failures are a router question (the router half belongs to
+pcb-easyeda-round-trip).
 
 ## Motivation / why
 
@@ -116,8 +134,10 @@ item itself) all took their evidence from one invalid board.
 - A board whose placement leaves a corridor too narrow for its assigned
   strand count surfaces that at placement time, naming the instances and
   the required width.
-- The EWOD dogfood's 0.093 mm / 55-net / 16.5 mm case is the regression
-  fixture, asserted on the numbers above rather than on a yield.
+- The regression fixture is a LEGAL board with an over-capacity gap (none
+  exists yet, see the 2026-10-02 section), asserted on its gap numbers
+  rather than on a yield. The 0.093 mm / 55-net / 16.5 mm case is void: it
+  came from the sink placed on top of the array.
 - Escape yield is NOT an acceptance criterion here. Whether opening the
   corridor raises 50/54 is a separate measurement — claiming it in
   advance is what item 3's redirection warns against.

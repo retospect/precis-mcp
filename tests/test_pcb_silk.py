@@ -1122,6 +1122,9 @@ def test_a_below_label_hangs_below_the_part_on_the_board_at_any_rotation(rot):
     ys = [p[1] for s in _refdes_segments(result) for p in (s["start"], s["end"])]
     assert ys
     assert max(ys) < 5.0
+
+
+def test_bottom_side_text_still_mirrors():
     """ "Read from one side" means one orientation PER SIDE, not that
     bottom silk should read from the top: B.Silkscreen is viewed through
     the board, so its text is still mirrored in the file (unlike the
@@ -1148,6 +1151,143 @@ def test_a_below_label_hangs_below_the_part_on_the_board_at_any_rotation(rot):
     assert bottom_segs
     bottom_xs = sorted(p[0] for seg in bottom_segs for p in (seg["start"], seg["end"]))
     assert bottom_xs == pytest.approx([-x for x in reversed(top_xs)], abs=1e-6)
+
+
+# heater-base-test's R0402 (prod pcb_local_footprints, 2026-10-02).
+_R0402_PAD_X, _R0402_PAD_W, _R0402_PAD_H = 0.4328, 0.5657, 0.54
+
+
+def _r0402_column(
+    names: list[str], *, x: float, y0: float, pitch: float, rot: float
+) -> tuple[Any, list[dict]]:
+    """A column of real-geometry 0402s and the pads build_silk must avoid."""
+    ir = from_graph(
+        _multi(
+            *[_graph(n, 2, x=x, y=y0 + i * pitch, rot=rot) for i, n in enumerate(names)]
+        ),
+        stackup=DEFAULT_STACKUP,
+    )
+    pads = []
+    for pid in range(ir.n_pins):
+        inst = int(ir.pin_instance[pid])
+        sign = 1.0 if pid % 2 == 0 else -1.0
+        ir.set_pin_offset(pid, sign * _R0402_PAD_X, 0.0)
+        ir.pin_w[pid] = _R0402_PAD_W
+        ir.pin_h[pid] = _R0402_PAD_H
+        th = math.radians(rot)
+        pads.append(
+            {
+                "shape": "rect",
+                "x": float(ir.inst_x[inst]) + sign * _R0402_PAD_X * math.cos(th),
+                "y": float(ir.inst_y[inst]) + sign * _R0402_PAD_X * math.sin(th),
+                "w": _R0402_PAD_W,
+                "h": _R0402_PAD_H,
+            }
+        )
+    return ir, pads
+
+
+def _label_offsets(result, ir) -> dict[str, tuple[float, float]]:
+    """Each refdes label's bbox lower-left corner relative to its part."""
+    origin = {
+        str(ir.instance_refdes[i]): (float(ir.inst_x[i]), float(ir.inst_y[i]))
+        for i in range(ir.n_instances)
+    }
+    out = {}
+    for refdes, (ox, oy) in origin.items():
+        pts = [
+            p
+            for d in result.draws["top"]
+            if d["role"] == "refdes" and d["refdes"] == refdes
+            for s in d["segments"]
+            for p in (s["start"], s["end"])
+        ]
+        assert pts, f"{refdes} has no label"
+        out[refdes] = (
+            round(min(p[0] for p in pts) - ox, 4),
+            round(min(p[1] for p in pts) - oy, 4),
+        )
+    return out
+
+
+@pytest.mark.parametrize("rot", [0.0, 180.0])
+def test_an_aligned_column_of_identical_parts_shares_one_label_spot(rot):
+    """heater-base-test (2026-10-02): R20-R22 labelled to the right and R23,
+    the end of the column, labelled below itself, because its below spot was
+    the only one no neighbour blocked. A column of identical parts gets one
+    spot, and no label lands across a neighbour's courtyard."""
+    names = ["R20", "R21", "R22", "R23"]
+    ir, pads = _r0402_column(names, x=37.719, y0=10.0, pitch=1.383, rot=rot)
+    result = build_silk(ir, pads=pads)
+
+    offsets = _label_offsets(result, ir)
+    assert len(set(offsets.values())) == 1, offsets
+    spots = {
+        row.refdes: (re.search(r"drawn at ([^,)]+)", row.reason or "") or [None, None])[
+            1
+        ]
+        for row in result.census
+        if row.kind == "refdes"
+    }
+    assert len(set(spots.values())) == 1, spots
+
+    rings = silk.world_courtyard_rings(ir)
+    for refdes in names:
+        segs = [
+            s
+            for d in result.draws["top"]
+            if d["role"] == "refdes" and d["refdes"] == refdes
+            for s in d["segments"]
+        ]
+        xs = [p[0] for s in segs for p in (s["start"], s["end"])]
+        ys = [p[1] for s in segs for p in (s["start"], s["end"])]
+        box = [
+            (min(xs), min(ys)),
+            (max(xs), min(ys)),
+            (max(xs), max(ys)),
+            (min(xs), max(ys)),
+        ]
+        own = names.index(refdes)
+        for k, ring in enumerate(rings):
+            if k != own:
+                assert not convex_polygons_overlap(box, ring), (refdes, names[k])
+    assert not any(
+        row.kind == "courtyard" and row.outcome != "placed" for row in result.census
+    ), result.relocated
+
+
+def test_identical_parts_far_apart_on_one_axis_are_not_one_group():
+    """Sharing a coordinate is not a row: a part more than two courtyard
+    lengths from its neighbour keeps its own best spot."""
+    box = [(-0.7, -0.5), (0.7, -0.5), (0.7, 0.5), (-0.7, 0.5)]
+    shapes = {
+        0: ("top", (10.0, 0.0), box),
+        1: ("top", (10.0, 1.4), box),
+        2: ("top", (10.0, 2.8), box),
+        3: ("top", (10.0, 9.0), box),
+        4: ("bottom", (10.0, 4.2), box),
+    }
+    assert silk._aligned_label_groups(shapes) == [(0, 1, 2)]
+
+
+def test_a_row_crossing_a_larger_column_keeps_its_remaining_pieces():
+    """A grid part joins the larger run; the row it leaves is cut there,
+    and each side of the cut that still holds two parts is its own group."""
+    box = [(-0.7, -0.5), (0.7, -0.5), (0.7, 0.5), (-0.7, 0.5)]
+    shapes = {
+        # column at x=0: instances 0..5, longer than the row
+        **{i: ("top", (0.0, 1.4 * i), box) for i in range(6)},
+        # row at y=0 through instance 0: 6, 7 to its left, 8, 9 to its right
+        6: ("top", (-3.6, 0.0), box),
+        7: ("top", (-1.8, 0.0), box),
+        8: ("top", (1.8, 0.0), box),
+        9: ("top", (3.6, 0.0), box),
+    }
+    assert sorted(silk._aligned_label_groups(shapes)) == [
+        (0, 1, 2, 3, 4, 5),
+        (6, 7),
+        (8, 9),
+    ]
 
 
 def test_empty_silk_still_produces_a_valid_legend_file():

@@ -1,31 +1,36 @@
-# pcb refdes labels: an aligned row of identical parts gets no shared side
+---
+status: idea
+prio: low
+pillar: 3d-design
+---
+
+# pcb refdes labels: what is left after the shared-side fix
 
 Reto on heater-base-test (2026-10-02): "the labels on R19, 14, 12, 11 seem
 on the wrong side (some rotation thing) given R51. R23 is different yet
 again."
 
-Fixed, in the same commit that rewrote this item: label spots are now
-picked in the board frame (`silk.py::build_silk`, module docstring "Read
-from one side"), so a rot-180 part no longer puts its "below" label above
-itself, over its own body. A 2-pad part now labels identically at rot 0
-and at rot 180.
+Both halves of that are fixed. Label spots are picked in the board frame
+(`silk.py` module docstring, "Read from one side"), and an aligned row or
+column of identical parts now shares one spot (`_aligned_label_groups`,
+module docstring "A row of identical parts shares one label spot"). On the
+board's real geometry (prod ref 460559: R51, R1, R7, R8, R11–R14, R19 at
+x=37.719, R0402 pads from `pcb_local_footprints`) all nine take
+`ring 1 at 0deg`. R3, further down the same x, keeps `below-center`: C15
+sits between it and R51, so it is not part of the run.
 
 Still open:
-- R20/R21/R22 (rot 0) land at `ring 1 at 0deg`. R23, the last part in
-  that column, lands at `below-center` because R22's label already took
-  its spot on the right. Placement is greedy per part, so nothing keeps a
-  row or column of identical parts on one side.
-- In a 1.38 mm-pitch column of 0402s (R7/R8/R11–R14/R19 at x=37.719),
-  each label still breaks the next part's courtyard outline ("courtyard
-  outline broken around R8 refdes silk").
+- "Courtyard outline broken around R8 refdes silk" did NOT reproduce on
+  the real pads after the board-frame fix (no courtyard relocated in the
+  column, same probe). Re-check on the next render of the board before
+  spending anything on it. The one silk loss the board's DRC still reports
+  in that area is R51's courtyard dropped against C15's, and DRC also
+  reports C15 and R51 courtyards overlapping. That is placement, not silk.
+- R20–R23's courtyards overlap each other by 0.112 mm (DRC
+  `courtyard_overlap`). That is the placement too, and the column fix
+  cannot help it.
 - EasyEDA's own designator poses (the ATTR records) are not imported, so
   there is no authored label position to fall back on.
 
-Fix direction: before the greedy pass, group instances that share a
-footprint, rotation mod 180 and an aligned axis. Pick one spot that is
-free for the whole group, and only then fall back per part.
-
-test: four identical 0402s in a 1.38 mm-pitch column all get the same
-spot name, and no label crosses a neighbour's courtyard.
 Thread: threads/ewod-pcb.md (silk was handed over from
 pcb-easyeda-round-trip).

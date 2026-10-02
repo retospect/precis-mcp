@@ -172,6 +172,17 @@ a dot has 8 directions and 3 distances still to try. Measured on the 40mm
 fixture when the dot became the primary marker: without this, R3 and U3
 each lost their entire courtyard to a neighbour's mark.
 
+**A row of identical parts shares one label spot.** Greedy per-part
+placement gives the end of a column the one spot its neighbours block for
+everyone else (nothing sits below the last part, so it labels below while
+the rest label to the right): heater-base-test, 2026-10-02, a column of
+0402s at 1.38 mm pitch. Before the loop, :func:`_aligned_label_groups`
+finds rows and columns of parts with the same board-frame courtyard, and
+the first spot that clears every member (against the pre-silk obstacles,
+every courtyard, and each other) becomes that group's first choice. A
+member whose shared spot was taken by silk committed earlier falls back on
+its own; nothing else about the order changes.
+
 **A pin-1 tick never survives alone (2026-08-29 decision).** The tick is
 a corner-cut of the courtyard outline — it has no meaning except as an
 annotation ON that outline. When the courtyard itself is dropped (global
@@ -248,9 +259,11 @@ above — see :func:`build_fiducials` and :func:`build_title_block`.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -2316,6 +2329,231 @@ def _box_inside_outline(
     return True
 
 
+#: One refdes label candidate, resolved to the board: ``(spot, anchor,
+#: corners, h_align, v_align, is_ladder)``. ``corners`` is the text bbox
+#: the acceptance checks and the committed obstacle both use, so the two
+#: can never disagree about where the label is.
+_LabelCandidate = tuple[str, Point, list[Point], str, str, bool]
+
+
+def _label_candidates(
+    refdes: str,
+    cx: float,
+    cy: float,
+    box_board: list[Point],
+    *,
+    mirror: bool,
+    height_mm: float,
+    stroke_width_mm: float,
+) -> list[_LabelCandidate]:
+    """Every refdes spot for one placed part, in try order, resolved to a
+    world anchor and bbox ONCE (an acceptance test and a reorder test built
+    from two independently computed boxes is this module's own named
+    recurring defect). Order (user spec, round-5 review; the below-box
+    fallback order is the user's own choice): the bottom-edge convention's
+    three spots (:func:`_bottom_edge_candidates`), then the below-box
+    fallback's three (:func:`_below_box_candidates`), then the radial
+    ladder (:data:`_CANDIDATES`) as the last resort; ``is_ladder`` tags the
+    ladder entries, the only group the tile-bleed reorder in
+    :func:`build_silk` touches.
+
+    ``box_board`` is the courtyard as it sits ON THE BOARD (rotated and
+    mirrored, still relative to the part origin), not the part's own
+    frame: glyphs are laid out in the board frame, so a part-frame anchor
+    put a rot-180 0402's "below" label above it, its v_align growing the
+    text back over the part (heater-base-test, 2026-10-02). Two parts with
+    the same ``box_board`` therefore get the same offsets, which is what
+    lets an aligned group share a spot (:func:`_aligned_label_groups`)."""
+    gap = height_mm * 0.3
+    raw: list[tuple[Point, str, str, str, bool]] = [
+        (*cand, False)
+        for cand in (
+            *_bottom_edge_candidates(box_board, stroke_width_mm),
+            *_below_box_candidates(box_board, stroke_width_mm),
+        )
+    ]
+    for du, dv, h_align, v_align, spot in _CANDIDATES:
+        # Directional, not one scalar radius: an elongated part reaches
+        # much further along its own long axis than across it, and the
+        # square courtyard this replaced pushed every label out by the
+        # larger of the two (see `_courtyard_support_mm`).
+        off = (
+            _courtyard_support_mm(box_board, du, dv) + gap
+            if (du, dv) != (0.0, 0.0)
+            else 0.0
+        )
+        raw.append(((du * off, dv * off), h_align, v_align, spot, True))
+
+    out: list[_LabelCandidate] = []
+    for board_offset, h_align, v_align, spot, is_ladder in raw:
+        ax, ay = cx + board_offset[0], cy + board_offset[1]
+        if mirror:
+            # Bottom-side glyphs mirror about the anchor, which flips which
+            # way a left/right-aligned label grows; swap so the text still
+            # extends the way the spot intends.
+            h_align = {"left": "right", "right": "left"}.get(h_align, h_align)
+        corners = stroke_font.text_bbox_corners(
+            refdes,
+            anchor=(ax, ay),
+            height_mm=height_mm,
+            rotation_deg=0.0,
+            mirror=mirror,
+            h_align=h_align,
+            v_align=v_align,
+        )
+        out.append((spot, (ax, ay), corners, h_align, v_align, is_ladder))
+    return out
+
+
+def _label_strokes(
+    refdes: str, cand: _LabelCandidate, *, mirror: bool, height_mm: float
+) -> list[list[Point]]:
+    _spot, anchor, _corners, h_align, v_align, _ladder = cand
+    return stroke_font.layout_text(
+        refdes,
+        anchor=anchor,
+        height_mm=height_mm,
+        rotation_deg=0.0,
+        mirror=mirror,
+        h_align=h_align,
+        v_align=v_align,
+    )
+
+
+def _label_blocked(
+    corners: list[Point],
+    strokes_of: Callable[[], list[list[Point]]],
+    *,
+    inst: int,
+    side_name: str,
+    obstacles: list[dict[str, Any]],
+    own_box_pts: list[Point] | None,
+    courtyard_ring: dict[int, tuple[str, list[Point]]],
+    outline_ring: list[Point] | None,
+    edge_margin_mm: float,
+    stroke_width_mm: float,
+) -> bool:
+    """The ONE refdes acceptance test, shared by the per-part placement and
+    the aligned-group spot choice so the two can never disagree about
+    whether a spot is clear. ``strokes_of`` lays the text out only once the
+    cheap bbox tests have passed."""
+    if any(_box_overlaps_pad(corners, pad) for pad in obstacles):
+        return True
+    if outline_ring is not None and not _box_inside_outline(
+        corners, outline_ring, edge_margin_mm
+    ):
+        return True
+    strokes = strokes_of()
+    # bbox cleared but a real stroke may not have
+    if any(
+        _stroke_overlaps_any_pad(pts, obstacles, stroke_width_mm) for pts in strokes
+    ):
+        return True
+    # The courtyard's hollow interior is legal (the bottom-edge default sits
+    # over it on purpose), but a glyph still can't cross its own courtyard's
+    # border line -- see _stroke_crosses_stroke.
+    if own_box_pts and any(
+        _stroke_crosses_stroke(pts, own_box_pts, stroke_width_mm) for pts in strokes
+    ):
+        return True
+    # Yield to every OTHER part's body outline on this side, placed or not
+    # yet (`courtyard_ring`) -- the same precedence the pin-1 dot follows,
+    # and for the same reason: a label committed early was otherwise free
+    # to sit across a later part's outline and take the whole outline down
+    # with it. Measured on the 40mm fixture: C14's label alone cost R3 its
+    # courtyard AND its pin-1 mark.
+    return any(
+        other != inst
+        and other_side == side_name
+        and any(_stroke_crosses_stroke(pts, ring, stroke_width_mm) for pts in strokes)
+        for other, (other_side, ring) in courtyard_ring.items()
+    )
+
+
+#: Two parts sit on one row (or column) when their origins agree to this
+#: tolerance across the row. Placements imported from an EDA tool or snapped
+#: to a grid agree exactly; this only absorbs float noise.
+_LABEL_GROUP_ALIGN_MM = 0.01
+
+#: Neighbouring members of an aligned row stay one group while their
+#: pitch is at most this many courtyard lengths along the row, i.e. at most
+#: one empty part-slot between them. Further apart, the two are separate
+#: parts that happen to share a coordinate, and forcing them onto one spot
+#: would cost an isolated part its best spot for a tidiness nobody can see.
+_LABEL_GROUP_MAX_PITCH_EXTENTS = 2.0
+
+
+def _aligned_label_groups(
+    shapes: dict[int, tuple[str, Point, list[Point]]],
+) -> list[tuple[int, ...]]:
+    """Rows and columns of identical parts whose labels should share one
+    spot (heater-base-test, 2026-10-02: in a column of nine 0402s the last
+    one labelled below itself, because only its below spot was not blocked
+    by a neighbour, while the other eight labelled to the right).
+
+    ``shapes`` maps an instance to ``(side, origin, box_board)``. Two parts
+    are identical here when their board-frame courtyards are the same
+    point set (:func:`_label_candidates` then gives them the same offsets),
+    which already folds in footprint, rotation mod 180 for a symmetric
+    part, and mirroring. A run is aligned when every origin agrees on one
+    axis to :data:`_LABEL_GROUP_ALIGN_MM` and contiguous per
+    :data:`_LABEL_GROUP_MAX_PITCH_EXTENTS`.
+
+    A part in both a row and a column (a grid) joins the larger run; ties
+    go to the column, then to the run whose first member sorts first.
+    Members are returned in instance order within each run."""
+    by_key: dict[tuple[Any, ...], list[int]] = {}
+    for inst, (side, (x, y), box_board) in shapes.items():
+        if not box_board:
+            continue
+        shape_key = tuple(sorted((round(px, 3), round(py, 3)) for px, py in box_board))
+        by_key.setdefault(
+            (0, side, shape_key, round(x / _LABEL_GROUP_ALIGN_MM)), []
+        ).append(inst)
+        by_key.setdefault(
+            (1, side, shape_key, round(y / _LABEL_GROUP_ALIGN_MM)), []
+        ).append(inst)
+
+    runs: list[tuple[int, tuple[int, ...]]] = []
+    for (axis, *_), members in by_key.items():
+        if len(members) < 2:
+            continue
+        # A column (axis 0, shared x) runs along y; a row along x.
+        along = 1 - axis
+        box = shapes[members[0]][2]
+        extent = max(p[along] for p in box) - min(p[along] for p in box)
+        limit = _LABEL_GROUP_MAX_PITCH_EXTENTS * extent
+        members.sort(key=lambda i: shapes[i][1][along])
+        run = [members[0]]
+        for prev, cur in itertools.pairwise(members):
+            if shapes[cur][1][along] - shapes[prev][1][along] > limit:
+                if len(run) > 1:
+                    runs.append((axis, tuple(run)))
+                run = []
+            run.append(cur)
+        if len(run) > 1:
+            runs.append((axis, tuple(run)))
+
+    runs.sort(key=lambda r: (-len(r[1]), r[0], min(r[1])))
+    taken: set[int] = set()
+    groups: list[tuple[int, ...]] = []
+    for _axis, members_run in runs:
+        # A member already claimed by a larger run breaks this one into the
+        # pieces on either side of it; each piece of two or more is still a
+        # contiguous row of its own.
+        piece: list[int] = []
+        # `members_run` is in order along the row, so a piece stays contiguous.
+        for member in (*members_run, None):
+            if member is not None and member not in taken:
+                piece.append(member)
+                continue
+            if len(piece) > 1:
+                groups.append(tuple(sorted(piece)))
+            piece = []
+        taken.update(members_run)
+    return groups
+
+
 def build_silk(
     ir: PcbIR,
     pads: list[dict[str, Any]],
@@ -2493,6 +2731,86 @@ def build_silk(
                 mirror=other_side == "bottom",
             ),
         )
+
+    # One label spot per aligned row/column of identical parts, chosen
+    # BEFORE the loop. Placement is greedy per part, so without this the
+    # one member whose preferred spot happens to be free (the end of a
+    # column, nothing below it) labels differently from all the others.
+    # The spot must clear every member against the pre-silk obstacles,
+    # every courtyard, each other, and must not sit over any other part's
+    # body. In the loop each member tries it first; if silk committed
+    # before its turn took it, that member alone falls back.
+    group_spot: dict[int, tuple[int, str, int]] = {}
+    label_shapes: dict[int, tuple[str, Point, list[Point]]] = {}
+    for inst in placed:
+        if inst not in courtyard_ring:
+            continue
+        rot = float(ir.inst_rot[inst])
+        side_name = courtyard_ring[inst][0]
+        label_shapes[inst] = (
+            side_name,
+            (float(ir.inst_x[inst]), float(ir.inst_y[inst])),
+            _place(
+                instance_courtyard_polygon(
+                    ir, inst, clearance_mm=clearance_mm, pins=pins_of_inst.get(inst, [])
+                ),
+                cx=0.0,
+                cy=0.0,
+                rot=0.0 if math.isnan(rot) else rot,
+                mirror=side_name == "bottom",
+            ),
+        )
+    seed_obstacles = {side: list(obs) for side, obs in obstacles_by_side.items()}
+    for group in _aligned_label_groups(label_shapes):
+        group_side = label_shapes[group[0]][0]
+        cands = {
+            m: _label_candidates(
+                str(ir.instance_refdes[m]),
+                *label_shapes[m][1],
+                label_shapes[m][2],
+                mirror=group_side == "bottom",
+                height_mm=height_mm,
+                stroke_width_mm=stroke_width_mm,
+            )
+            for m in group
+        }
+        for k, (spot, *_rest) in enumerate(cands[group[0]]):
+            boxes: list[list[Point]] = []
+            for m in group:
+                cand = cands[m][k]
+                corners = cand[2]
+                if any(
+                    other != m
+                    and other_side == group_side
+                    and convex_polygons_overlap(corners, ring)
+                    for other, (other_side, ring) in courtyard_ring.items()
+                ) or any(convex_polygons_overlap(corners, b) for b in boxes):
+                    break
+                if _label_blocked(
+                    corners,
+                    functools.partial(
+                        _label_strokes,
+                        str(ir.instance_refdes[m]),
+                        cand,
+                        mirror=group_side == "bottom",
+                        height_mm=height_mm,
+                    ),
+                    inst=m,
+                    side_name=group_side,
+                    obstacles=seed_obstacles[
+                        "bottom" if group_side == "bottom" else "top"
+                    ],
+                    own_box_pts=courtyard_ring[m][1],
+                    courtyard_ring=courtyard_ring,
+                    outline_ring=outline_ring,
+                    edge_margin_mm=edge_margin_mm,
+                    stroke_width_mm=stroke_width_mm,
+                ):
+                    break
+                boxes.append(corners)
+            else:
+                group_spot.update((m, (k, spot, len(group))) for m in group)
+                break
 
     for inst in order:
         cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
@@ -2830,73 +3148,26 @@ def build_silk(
         # `_bottom_edge_candidates`). Folded in right after this loop, once
         # this instance's own label search is done, so every later
         # instance still treats it as solid.
-        text_rot = 0.0
-        gap = height_mm * 0.3
-
-        # Candidate order (user spec, round-5 review; below-box fallback
-        # order is the user's own explicit choice): the bottom-edge
-        # convention's three fixed spots first (`_bottom_edge_candidates`
-        # -- bottom-center, bottom-left-flush, bottom-right-flush), THEN
-        # the below-box fallback's three (`_below_box_candidates` --
-        # below-center, below-left-flush, below-right-flush, hanging
-        # under the courtyard instead of over it), THEN the existing
-        # radial ladder (`_CANDIDATES`) unchanged as the last resort.
-        # Every candidate is resolved to a world anchor/bbox HERE, once,
-        # rather than twice (an acceptance test and a reorder test
-        # computed from two independently-built boxes is exactly this
-        # module's own named recurring defect) -- `is_ladder` tags the
-        # radial-ladder entries, the only group the tile-bleed reorder
-        # below ever touches (both the over-box and below-box groups key
-        # off this instance's OWN hull, never a neighbour's).
-        # Every spot is keyed off the courtyard as it sits ON THE BOARD
-        # (rotated and mirrored, but still relative to the part origin),
-        # not the part's own frame: the glyphs are laid out in the board
-        # frame (text_rot 0), so an anchor in the part frame put a rot-180
-        # 0402's "below" label above it, its v_align growing the text back
-        # over the part (heater-base-test, 2026-10-02). "Below" now means
-        # below on the board at every rotation, and a 180-symmetric part
-        # labels the same way at rot 0 and rot 180.
         box_board = (
             _place(box_local, cx=0.0, cy=0.0, rot=rot, mirror=mirror)
             if box_local
             else []
         )
-        raw_candidates: list[tuple[Point, str, str, str, bool]] = [
-            (*cand, False)
-            for cand in (
-                *_bottom_edge_candidates(box_board, stroke_width_mm),
-                *_below_box_candidates(box_board, stroke_width_mm),
-            )
-        ]
-        for du, dv, h_align, v_align, spot in _CANDIDATES:
-            # Directional, not one scalar radius: an elongated part reaches
-            # much further along its own long axis than across it, and the
-            # square courtyard this replaced pushed every label out by the
-            # larger of the two (see `_courtyard_support_mm`).
-            off = (
-                _courtyard_support_mm(box_board, du, dv) + gap
-                if (du, dv) != (0.0, 0.0)
-                else 0.0
-            )
-            raw_candidates.append(((du * off, dv * off), h_align, v_align, spot, True))
+        candidates = _label_candidates(
+            refdes,
+            cx,
+            cy,
+            box_board,
+            mirror=mirror,
+            height_mm=height_mm,
+            stroke_width_mm=stroke_width_mm,
+        )
+        default_spot = candidates[0][0]
+        shared_k, shared_spot, group_size = group_spot.get(inst, (-1, "", 0))
 
-        scored: list[tuple[bool, Point, list[Point], str, str, str]] = []
-        for board_offset, h_align, v_align, spot, is_ladder in raw_candidates:
-            ax, ay = cx + board_offset[0], cy + board_offset[1]
-            if mirror:
-                # Bottom-side glyphs mirror about the anchor, which flips
-                # which way a left/right-aligned label grows; swap so the
-                # text still extends the way the spot intends.
-                h_align = {"left": "right", "right": "left"}.get(h_align, h_align)
-            corners = stroke_font.text_bbox_corners(
-                refdes,
-                anchor=(ax, ay),
-                height_mm=height_mm,
-                rotation_deg=text_rot,
-                mirror=mirror,
-                h_align=h_align,
-                v_align=v_align,
-            )
+        scored: list[tuple[int, _LabelCandidate]] = []
+        for k, cand in enumerate(candidates):
+            spot, _anchor, corners, _h, _v, is_ladder = cand
             # Tile-neighbour bleed (round-5 review item 3): a candidate
             # whose bbox overlaps ANY OTHER instance's courtyard is tried
             # LAST among the radial ladder, never hard-rejected -- a dense
@@ -2912,65 +3183,45 @@ def build_silk(
                 and convex_polygons_overlap(corners, ring)
                 for other, (other_side, ring) in courtyard_ring.items()
             )
-            scored.append((bleeds, (ax, ay), corners, h_align, v_align, spot))
-        scored.sort(key=lambda item: item[0])  # stable: non-bleeding group first
+            # The aligned group's shared spot goes first, ahead of even the
+            # default; the rest keep their order, non-bleeding first. Matched
+            # by index: group members share one candidate list.
+            scored.append((0 if k == shared_k else 1 + bleeds, cand))
+        scored.sort(key=lambda item: item[0])  # stable within each rank
 
         placed_text = False
-        for idx, (_bleeds, (ax, ay), corners, h_align, v_align, spot) in enumerate(
-            scored
-        ):
-            if any(_box_overlaps_pad(corners, pad) for pad in side_obstacles):
-                continue
-            if outline_ring is not None and not _box_inside_outline(
-                corners, outline_ring, edge_margin_mm
+        for _rank, cand in scored:
+            spot, _anchor, corners, _h, _v, _ladder = cand
+            if _label_blocked(
+                corners,
+                functools.partial(
+                    _label_strokes, refdes, cand, mirror=mirror, height_mm=height_mm
+                ),
+                inst=inst,
+                side_name=side_name,
+                obstacles=side_obstacles,
+                own_box_pts=box_pts if courtyard_kept else None,
+                courtyard_ring=courtyard_ring,
+                outline_ring=outline_ring,
+                edge_margin_mm=edge_margin_mm,
+                stroke_width_mm=stroke_width_mm,
             ):
                 continue
-            strokes = stroke_font.layout_text(
-                refdes,
-                anchor=(ax, ay),
-                height_mm=height_mm,
-                rotation_deg=text_rot,
-                mirror=mirror,
-                h_align=h_align,
-                v_align=v_align,
-            )
-            if any(
-                _stroke_overlaps_any_pad(pts, side_obstacles, stroke_width_mm)
-                for pts in strokes
-            ):
-                continue  # bbox cleared but a real stroke didn't -- try the next spot
-            if courtyard_kept and any(
-                _stroke_crosses_stroke(pts, box_pts, stroke_width_mm) for pts in strokes
-            ):
-                # the courtyard's hollow interior is legal (the bottom-edge
-                # default sits over it on purpose), but a glyph still can't
-                # cross its own courtyard's border line -- see
-                # _stroke_crosses_stroke.
-                continue
-            # Yield to every OTHER part's body outline on this side, placed
-            # or not yet (`courtyard_ring`) -- the same precedence the pin-1
-            # dot follows, and for the same reason: a label committed early
-            # was otherwise free to sit across a later part's outline and
-            # take the whole outline down with it. Measured on the 40mm
-            # fixture: C14's label alone cost R3 its courtyard AND its
-            # pin-1 mark.
-            if any(
-                other != inst
-                and other_side == side_name
-                and any(
-                    _stroke_crosses_stroke(pts, ring, stroke_width_mm)
-                    for pts in strokes
-                )
-                for other, (other_side, ring) in courtyard_ring.items()
-            ):
-                continue
-            for pts in strokes:
+            for pts in _label_strokes(refdes, cand, mirror=mirror, height_mm=height_mm):
                 bucket.append(_draw(pts, stroke_width_mm, role="refdes", refdes=refdes))
             side_obstacles.append(
                 obstacle_from_bbox(corners, label=f"{refdes} refdes silk")
             )
             placed_text = True
-            if idx > 0:
+            if spot != default_spot:
+                shared = (
+                    f", the spot its aligned row of {group_size} identical parts shares"
+                    if spot == shared_spot
+                    else f"; its aligned row's shared spot {shared_spot} was "
+                    "taken by silk committed earlier"
+                    if group_size
+                    else ""
+                )
                 census.append(
                     SilkPlacement(
                         refdes=refdes,
@@ -2980,7 +3231,7 @@ def build_silk(
                         reason=(
                             "refdes label moved off the default bottom-edge spot "
                             "to clear a pad, a via, or silk already committed "
-                            f"(drawn at {spot})"
+                            f"(drawn at {spot}{shared})"
                         ),
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,

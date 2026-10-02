@@ -8,8 +8,8 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-02 (dogfood-6 valid: 30/55 routed, 0 geometric
-DRC errors; resume at Do-next 3). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
+**Last reviewed:** 2026-10-02 (silk shared label spot shipped; dogfood-6
+valid: 30/55 routed, 0 geometric DRC errors; resume at Do-next 3). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
 sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and
 pre-place-route-blocks items deleted as shipped; placer-sees-authored-vias, the gerber DRC
@@ -21,11 +21,11 @@ Do-next renumbered)
 ## Do next
 
 0. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
-   board (heater-base-test, 2026-10-02). The rotation half is fixed: label
-   spots are now chosen in the board frame. Still open: a row or column of
-   identical parts gets no shared label side (R23), and in tight columns
-   the labels break the neighbouring courtyard outlines. Both are in
-   `silk.py`, which this thread owns.
+   board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
+   are chosen in the board frame, and an aligned row or column of
+   identical parts shares one spot. What is left is small: a courtyard
+   break that did not reproduce on the real pads (re-check on the next
+   render), and EasyEDA designator poses not imported.
 1. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
    canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid
@@ -44,20 +44,17 @@ Do-next renumbered)
    what survives is tuning clarity for the next person adding a term — and
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
-3. **backlog/pcb-placer-starves-the-escape-corridor.md** — its acceptance
-   criteria came off an invalid placement and are void; now a
-   rewrite-against-a-new-fixture job over the sink's real pad geometry
-   (its pin names join the cached footprint since 2026-10-01, and a put
-   now names any pin that does not).
-   Ruled out as its cause (2026-10-01): the escape layer lock.
-   `view='feasibility'` now counts pins on a layer their class forbids, and
-   on the dogfood fixture all 54 reach B.Cu through the authored plaza vias.
-   The "true via floor of 55" was wrong, because those vias already exist.
-   Do not re-open the estimate to explain the 40 failures.
-   **Fixture now exists (2026-10-02):** dogfood-6, validly placed, routes
-   30 of 55 with 25 failed escapes and 0 geometric DRC errors (Boards on
-   prod). Rewrite the acceptance against that; the router half belongs to
-   pcb-easyeda-round-trip.
+3. **dogfood-6's 25 failed escapes are not corridor starvation.**
+   Measured 2026-10-02: `view='congestion'` reports 0 over-capacity gaps;
+   the failures split 8 `congestion` / 17 `no_path`. So
+   backlog/pcb-placer-starves-the-escape-corridor.md lost its only
+   evidence (it came from the invalid placement) and is demoted to
+   idea/low until a legal board shows an over-capacity gap. Also ruled out
+   (2026-10-01): the escape layer lock. All 54 pins reach B.Cu through the
+   authored plaza vias, so do not re-open the via-floor estimate either.
+   What is left is a router question, and the router half belongs to
+   pcb-easyeda-round-trip: hand them dogfood-6 as the fixture rather than
+   diagnosing it here.
 4. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 3: both are
