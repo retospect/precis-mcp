@@ -60,7 +60,12 @@ on the drive face and asks whether it clears the assembly. The answer is
 *which* tool, not whether — "long-arm hex key only" is an instruction.
 
 Deferred, named so they are not re-derived:
-assembly-order existence — including whether a nut trap can be *reached*;
+assembly-order existence (install order, declared subassembly boundaries) —
+the *final-state* half of "can a nut trap be reached" is now answered by
+``fastener_insertion_path`` (:func:`precis_se.toolaccess.insertion_path`),
+and what stays deferred is the holes a MATERIAL PARENT of the screw would
+need (reported as ``material_parent_not_walked``, never an error) and
+install order itself;
 edge distance (needs hole positions in a member's outline, which arrives
 with the profile tier); washers as load-spreaders in the stack-up
 (they are members here, which is geometrically right and mechanically
@@ -671,6 +676,58 @@ def _tool_access(
         res.findings.append(issue)
 
 
+def _insertion_path(
+    res: FastenResult,
+    tree: SeTree,
+    *,
+    subject: str,
+    specs: dict[str, Any],
+    origin: list[float],
+    axis: list[float],
+) -> None:
+    """Can the screw reach its seat, and its tool operate there, in the
+    fully assembled state (``fastener_insertion_path``,
+    :func:`precis_se.toolaccess.insertion_path`). Runs after :func:`_stamp`
+    because the holes it stamped are subtracted from their members. A
+    blocked body drops this screw's ``no_tool_access``."""
+    head_d = _num(specs, "head_diameter") or _num(specs, "outer_diameter")
+    if head_d is None or res.length_m is None:
+        return
+    # The body's radius is the head's plus the same shank-clearance slack a
+    # counterbore gets (`_head_feature`): the head has to drop in, not
+    # press in.
+    slack_m = (
+        (res.fit.hole_mm - res.fit.nominal_mm) / 1000.0 if res.fit is not None else 0.0
+    )
+    nominal = _num(specs, "outer_diameter")
+    if res.thread is not None and res.thread.engagement_m is not None:
+        engagement_m = res.thread.engagement_m
+    else:
+        engagement_m = _engagement_d(res) * nominal if nominal is not None else 0.0
+    outcome = se_toolaccess.insertion_path(
+        tree,
+        fastener=res.fastener or "",
+        subject=subject,
+        origin=origin,
+        axis=axis,
+        length_m=res.length_m,
+        head_radius_m=(head_d + slack_m) / 2.0,
+        head_height_m=se_catalog.head_height(specs) or 0.0,
+        countersunk=str(specs.get("head_form") or "") == "countersunk",
+        engagement_m=engagement_m,
+        drive_type=(
+            str(specs["drive_type"]) if specs.get("drive_type") is not None else None
+        ),
+        drive_size_mm=_mm_spec(specs, "drive_size"),
+        holes=res.holes,
+    )
+    if outcome is None:
+        return
+    if outcome.body_blocked:
+        res.findings = [f for f in res.findings if f.rule != "no_tool_access"]
+    res.findings.extend(outcome.findings)
+
+
 def _mm_spec(specs: dict[str, Any], key: str) -> float | None:
     """A spec that arrives in metres, back in the millimetres the tool
     tables are keyed by. The round-trip is deliberate and narrow: the
@@ -709,7 +766,9 @@ def _drive_findings(res: FastenResult, *, subject: str, specs: dict[str, Any]) -
     )
 
 
-def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
+def _one(
+    tree: SeTree, connect: Any, joint: dict[str, Any], *, reach: bool = True
+) -> FastenResult:
     subject = f"{connect.a_block}.{connect.a_port}—{connect.b_block}.{connect.b_port}"
     params = joint.get("params") or {}
     res = FastenResult(
@@ -886,6 +945,10 @@ def _one(tree: SeTree, connect: Any, joint: dict[str, Any]) -> FastenResult:
             )
 
     _stamp(res, subject=subject, origin=origin, axis=axis, specs=specs, params=params)
+    if reach:
+        _insertion_path(
+            res, tree, subject=subject, specs=specs, origin=origin, axis=axis
+        )
     return res
 
 
@@ -1407,7 +1470,7 @@ def _pattern_findings(results: list[FastenResult]) -> None:
         )
 
 
-def fasten(tree: SeTree) -> list[FastenResult]:
+def fasten(tree: SeTree, *, reach: bool = True) -> list[FastenResult]:
     """Every screw joint in ``tree``, propagated. Pure — reads the loaded
     tree (including its catalog-derived facets) and nothing else.
 
@@ -1417,6 +1480,10 @@ def fasten(tree: SeTree) -> list[FastenResult]:
     limits). A joint that declares either is analysed; one that declares
     both gets both, and the declared lead is checked against the
     fastener's actual pitch.
+
+    ``reach=False`` skips the insertion-path check (the costly SDF pass
+    :func:`_insertion_path`) for callers that only want members and holes —
+    :func:`features_for` and the manufacture fuse.
 
     Total: a malformed stored joint is skipped here (it is already
     :mod:`precis_se.drc`'s ``malformed_joint`` finding) and every other
@@ -1431,7 +1498,7 @@ def fasten(tree: SeTree) -> list[FastenResult]:
             continue
         if joint.get("mechanism") != "screw" and joint["class"] != "screw":
             continue
-        results.append(_one(tree, connect, joint))
+        results.append(_one(tree, connect, joint, reach=reach))
     results.sort(key=lambda r: r.subject)
     _pattern_findings(results)
     return results
@@ -1462,7 +1529,7 @@ def features_for(
     same list they always did."""
     return [
         hole
-        for res in fasten(tree)
+        for res in fasten(tree, reach=False)
         if res.fastener not in exclude
         for hole in res.holes
         if hole.block == block

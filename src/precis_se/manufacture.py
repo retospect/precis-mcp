@@ -1343,7 +1343,7 @@ def _elisions(tree: SeTree, geo: GroupGeometry) -> dict[str, dict[str, Any]]:
     if not stand_ins:
         return out
     plan = geo.plan
-    for res in se_fasten.fasten(tree):
+    for res in se_fasten.fasten(tree, reach=False):
         if res.fastener is None or res.fastener not in stand_ins or res.why_not:
             continue
         printed_stack = [m.block for m in res.members if not m.bought]

@@ -223,7 +223,7 @@ class _Adapter:
 
 
 def _se_is_realized(node: Any) -> bool:
-    return bool(getattr(node, "mode", None)) or bool(getattr(node, "bound_kind", None))
+    return se_validate.is_realized(node)
 
 
 def _se_connect_label(c: Any) -> str:

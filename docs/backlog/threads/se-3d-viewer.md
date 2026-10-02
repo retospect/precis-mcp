@@ -36,9 +36,10 @@ due. After those the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02; `strain` checks atom hover since instancing, so atom
 click-pick is its remaining blind spot. The atom overlay's InstancedMeshes
-are r160 objects drawn by three-cad-viewer's newer bundled renderer, which
+are r160 objects drawn by three-cad-viewer's bundled r184 renderer, which
 needs `morphTexture`/`previousInstanceMatrix` set to null
-(`_forBundledRenderer`); a bump of either three.js copy re-checks that. Two traps for whoever picks this
+(`_forBundledRenderer`). A three.js bump re-checks this, on either copy:
+  the nightly `strain` check fails on it (console_clean plus every redraw). Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
   credential: `scripts/guide-web --db prod --port 9110` (local
@@ -74,7 +75,9 @@ up:
    Round 2 (once deployed): the per-block level chip `[E·I·R·z]` on every
    tree row — click a letter to open or collapse that block alone, click
    the underlined one again to undo. z is a dash everywhere in 3D; whether
-   to drop it is review item se-3d-viewer-2. The chips are small at the
+   to drop it is review item se-3d-viewer-2; Reto asked whether that is
+   only because realized has no 3D drawing yet (answered: yes, the viewer
+   draws envelopes at every rung; recommended keeping the dash column). The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
 1. **gr462702** — "3D viewer failed to start: Error creating WebGL context"
@@ -84,7 +87,7 @@ up:
    asks for WebGL2 only (three r163+ has no WebGL1 path), and the bare
    message means no WebGL2 context at all, so a retry with relaxed
    attributes cannot help. Cause still open: which browsers fail is review
-   item se-3d-viewer-3. If other se pages work there, it is Chrome blocking
+   item se-3d-viewer-3, on Reto's hands-on list ("Later"). If other se pages work there, it is Chrome blocking
    WebGL for the site after GPU crashes; instancing (item 2, now in round 2)
    cut the drum from ~15,000 meshes and materials to two per block, which
    is the fix for that cause.
@@ -105,8 +108,8 @@ up:
    - start the `scene3d`/`atomic3d` fetches from an inline script before
      the module bundle parses: ~0.5 s of page and module load comes before
      the first request today (verdict 1c: note it, not now).
-   Reto's own timing (review item se-3d-viewer-4) now only says whether
-   prod is slower than local; both client levers it ordered have shipped.
+   Reto's own timing (review item se-3d-viewer-4, "Later") now only says
+   whether prod is slower than local; both levers it ordered have shipped.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
@@ -122,8 +125,19 @@ up:
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
-   self-contained. Independent validator pass and the largest piece of
-   work, hence last.
+   self-contained. IN BUILD: design note `reviews/se-3d-viewer.md` §2,
+   ACCEPTED with one change (verdict §2): a material-ancestor blocker is
+   the `material_parent_not_walked` warning, not an error, until
+   `_walk_axis` stamps holes in material parents. The validator half
+   SHIPPED in round 2 (`toolaccess.insertion_path`, run by `fasten`, so in
+   `view='drc'`/`view='fasten'`, not `validate`; findings carry
+   `geometry`). On unicycle-c1: flange_bolt_right gets the warning;
+   flange_bolt_left gets the ERROR, its body sweep crossing
+   seatpost_clamp_bolt (a real hit as drawn: the pinch bolt runs through
+   its path). Error findings gate nothing (order, bom, realize never read
+   them). Next: the render, from an on-demand endpoint fetched when a
+   finding badge is clicked. Scene3d must not run `fasten` per page load
+   (~1.4 s on unicycle-c1).
 6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the

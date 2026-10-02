@@ -29,10 +29,22 @@ are tried in the shop's preference order and the first that clears wins;
 the finding fires only when **none** do, and names the block that blocked
 the best one.
 
-Deliberately not modelled: the hand holding the tool; approach at an angle
-(every tool here is coaxial with the screw); ratchet arc, i.e. a handle
-that only needs a *sector* rather than a full circle — a real escape for a
-tight joint, and the reason this check warns rather than refuses.
+The hand holding the tool is modelled for **screwdrivers only**, and only
+by the insertion-path check below (:func:`insertion_path`, rule
+``fastener_insertion_path``, docs/backlog/se-mechanical-drc.md ruling 3): a
+``hand`` record on a ``bit_tools`` row adds one provisional cylinder behind
+the handle end. :func:`access` itself, and every tool without a ``hand``
+record (hex keys, ratchet, T-handle), still treat the tool as a bare
+object. Still deliberately not modelled: approach at an angle (every tool
+here is coaxial with the screw); ratchet arc, i.e. a handle that only needs
+a *sector* rather than a full circle — a real escape for a tight joint, and
+the reason this check warns rather than refuses.
+
+**Can it get there?** (:func:`insertion_path`.) :func:`access` asks whether
+a driver can TURN an already-seated screw; the insertion-path check asks
+whether the screw can REACH its seat and its tool operate there, against
+the FULLY ASSEMBLED design (ruling 1) — straight along the screw axis only
+(ruling 4). Body first, tools only if the body clears.
 """
 
 from __future__ import annotations
@@ -56,6 +68,7 @@ from precis_se.validate import (
     _aabb_clear,
     _is_ancestor,
     _posed_component,
+    is_realized,
 )
 
 _PACKAGED_DATA = "precis.data"
@@ -88,6 +101,12 @@ class Tool:
     swing_height_m: float
     arm_thickness_m: float
     note: str = ""
+    #: Provisional gripping-hand cylinder behind the handle end (screwdrivers
+    #: only; 0 = no hand modelled). ``hand_source`` is the data file's own
+    #: provenance sentence for the numbers.
+    hand_radius_m: float = 0.0
+    hand_length_m: float = 0.0
+    hand_source: str = ""
 
 
 @dataclass
@@ -186,6 +205,11 @@ def tools_for(drive_type: str | None, drive_size_mm: float | None) -> list[Tool]
                 swing_height_m=float(spec["swing_height_mm"]) / 1000.0,
                 arm_thickness_m=float(spec["arm_thickness_mm"]) / 1000.0,
                 note=str(spec.get("note") or ""),
+                hand_radius_m=float((spec.get("hand") or {}).get("radius_mm", 0.0))
+                / 1000.0,
+                hand_length_m=float((spec.get("hand") or {}).get("length_mm", 0.0))
+                / 1000.0,
+                hand_source=str((spec.get("hand") or {}).get("source") or ""),
             )
         )
     return out
@@ -349,4 +373,399 @@ def finding(result: AccessResult) -> ValidationIssue | None:
             "so a tight joint may still be buildable in practice.)"
         ),
         severity="warn",
+    )
+
+
+# ── insertion path (rule ``fastener_insertion_path``) ────────────────────
+
+
+@dataclass
+class InsertionOutcome:
+    """What :func:`insertion_path` found for one screw. ``findings`` is
+    empty when the path is clear; ``body_blocked`` is true when the screw
+    itself cannot reach its seat (by a hard or an ancestor blocker), which
+    is the caller's cue to drop the ``no_tool_access`` finding — turning a
+    screw that cannot get there is not the useful message."""
+
+    findings: list[ValidationIssue]
+    body_blocked: bool
+
+
+class _BudgetExhausted(Exception):
+    """The narrow-phase budget ran out: report nothing, not a guess."""
+
+
+@dataclass
+class _Hit:
+    blocker: str
+    #: True when the blocker is a material ancestor of the screw — a block
+    #: whose hole the fasten pass does not stamp, so the verdict is "path
+    #: unverified" rather than "path blocked".
+    soft: bool
+
+
+def _swept_cyl(
+    design: CadDesign,
+    name: str,
+    radius_m: float,
+    height_m: float,
+    base: list[float],
+    direction: list[float],
+) -> tuple[Any, dict[str, Any]] | None:
+    """One swept cylinder (base on ``base``, rising along ``direction``)
+    as a design component plus its world-frame render record."""
+    envelope = f"cyl:r{radius_m:.9f}h{height_m:.9f}"
+    try:
+        prim = cad_dsl.build(cad_dsl.parse(envelope))
+    except (cad_dsl.DslError, ValueError):  # pragma: no cover — generated
+        return None
+    rot = _rot_to(direction)
+    design.add_component(
+        name, design.prim(name, prim, cad_pose(cad_as_vec3(base), rot))
+    )
+    record = {
+        "envelope": envelope,
+        "pose": [float(v) for v in base],
+        "rot": [float(v) for v in rot],
+    }
+    return design.components[name], record
+
+
+def _hole_cutter(design: CadDesign, index: int, hole: Any) -> Any:
+    """The stamped hole as a subtractive primitive in world frame — the
+    same ``cyl:``/``cone:`` shapes :mod:`precis_se.printsolid` cuts. A hex
+    nut pocket is cut as its inscribed circle (under-subtracting: the
+    conservative direction for an obstacle test)."""
+    if hole.diameter_m <= 0.0 or hole.depth_m <= 0.0:
+        return None
+    radius = hole.diameter_m / 2.0
+    if hole.kind == "nut-pocket" and hole.across_flats_m:
+        radius = hole.across_flats_m / 2.0
+    alias = "cone" if hole.kind == "countersink" else "cyl"
+    try:
+        prim = cad_dsl.build(cad_dsl.parse(f"{alias}:r{radius:.9f}h{hole.depth_m:.9f}"))
+    except (cad_dsl.DslError, ValueError):  # pragma: no cover — generated
+        return None
+    xform = cad_pose(cad_as_vec3(hole.origin), _rot_to([float(v) for v in hole.axis]))
+    return design.prim(f"__hole{index}__", prim, xform)
+
+
+def _insertion_obstacles(
+    design: CadDesign, tree: SeTree, fastener: str, holes: list[Any]
+) -> list[tuple[str, tuple[Any, Any], bool]]:
+    """Final-state obstacles, ``(name, aabb, is_material_ancestor)``,
+    non-ancestors first (sorted) then material ancestors (sorted) — so a
+    real blocker is always preferred over a gap in our own hole stamping.
+
+    Every block except the screw and its PURE-GROUPING ancestors: an
+    ancestor is material when it has a mode or a binding
+    (:func:`precis_se.validate.is_realized`). The holes the fasten pass
+    stamped for this joint are subtracted from their member."""
+    cutters: dict[str, list[Any]] = {}
+    for i, hole in enumerate(holes):
+        cutter = _hole_cutter(design, i, hole)
+        if cutter is not None:
+            cutters.setdefault(hole.block, []).append(cutter)
+    found: list[tuple[str, tuple[Any, Any], bool]] = []
+    for name, node in sorted(tree.blocks.items()):
+        if name == fastener:
+            continue
+        ancestor = _is_ancestor(tree, name, fastener)
+        if ancestor and not is_realized(node):
+            continue
+        env = effective_envelope(tree, node)
+        if not env:
+            continue
+        expr = _posed_component(design, name, env, node)
+        if expr is None:
+            continue
+        if name in cutters:
+            design.add_component(name, design.subtract(expr, *cutters[name]))
+            expr = design.components[name]
+        found.append((name, cad_bulk.expr_aabb(design, expr), ancestor))
+    found.sort(key=lambda row: (row[2], row[0]))
+    return found
+
+
+def _first_hit(
+    design: CadDesign,
+    solid: str,
+    obstacles: list[tuple[str, tuple[Any, Any], bool]],
+    *,
+    plane_origin: list[float],
+    plane_dir: list[float],
+    budget: list[int],
+) -> _Hit | None:
+    """The first obstacle the swept solid ``solid`` interpenetrates, or
+    ``None``. Same three phases as :func:`access` — a half-space cull
+    behind ``plane_origin``, the AABB broad phase, then exact SDF clearance
+    — and the same per-screw narrow-phase ``budget`` (shared across every
+    solid of one screw's check; a one-element list so it is spent in
+    place)."""
+    box_solid = cad_bulk.expr_aabb(design, design.components[solid])
+    for name, box, ancestor in obstacles:
+        if _behind_the_drive_face(box, plane_origin, plane_dir):
+            continue
+        if _aabb_clear(box_solid, box, _TOUCH_M):
+            continue
+        if budget[0] <= 0:
+            raise _BudgetExhausted
+        budget[0] -= 1
+        if cad_relate.clearance(design, solid, name).gap < -_TOUCH_M:
+            return _Hit(blocker=name, soft=ancestor)
+    return None
+
+
+def _geometry(
+    role: str, pieces: list[dict[str, Any]], blocker: str | None
+) -> list[dict[str, Any]]:
+    return [{"role": role, **piece, "blocker": blocker} for piece in pieces]
+
+
+def insertion_path(
+    tree: SeTree,
+    *,
+    fastener: str,
+    subject: str,
+    origin: list[float],
+    axis: list[float],
+    length_m: float,
+    head_radius_m: float,
+    head_height_m: float,
+    countersunk: bool,
+    engagement_m: float,
+    drive_type: str | None,
+    drive_size_mm: float | None,
+    holes: list[Any],
+) -> InsertionOutcome | None:
+    """Can the screw reach its seat, and can a tool operate it there, with
+    every other block present (rule ``fastener_insertion_path``)?
+
+    ``origin``/``axis`` are the screw's head bearing face (the SEATED head
+    plane) and its head→thread direction. Three straight axial sweeps
+    (ruling 4), each a ``cyl:`` so the existing SDF clearance is reused:
+
+    - **body** — head radius (plus the shank clearance allowance, folded
+      into ``head_radius_m`` by the caller) from the seated head plane back
+      along ``−axis`` by the screw length plus the head height (catalog
+      length is under the head; a countersunk head's includes it). The
+      start of insertion is "tip at the seat plane", so the length is a
+      *minimum*, not a generous
+      allowance; the shank's own travel inside the members lies in the
+      stamped ``holes``, which are subtracted from them.
+    - **tool** — each candidate's shaft and swing disc (as in
+      :func:`access`), lengthened axially by ``engagement_m``. ASSUMPTION:
+      the screw is finger-started and the tool drives only the engaged
+      part of the thread, so the tool rides the head in by the thread
+      engagement and no further. A captive or recessed screw that cannot
+      be finger-started — the tool has to carry it the whole way — is the
+      case this misses.
+    - **hand** — screwdriver tools only (a ``hand`` record in the data):
+      a cylinder behind the tool's handle end, same lengthening.
+
+    Body first; tools only if the body clears. A blocker that is a
+    non-ancestor block is an ``error``; a blocker that is a MATERIAL
+    ancestor (mode or binding) yields only ``material_parent_not_walked``
+    (``warn``): the fasten pass stamps no hole in a parent, so the path
+    through it is unverified, not wrong.
+
+    ``None`` when there is nothing to check (no length/radius) or the
+    narrow-phase budget (:data:`_MAX_NARROW_PHASE`, per screw) ran out —
+    an unchecked screw and a blocked one must not read the same."""
+    if length_m <= 0.0 or head_radius_m <= 0.0:
+        return None
+    back = [-a for a in axis]  # the tool's side: away from the work
+    seat = [float(v) for v in origin]
+    design = CadDesign()
+    obstacles = _insertion_obstacles(design, tree, fastener, holes)
+    budget = [_MAX_NARROW_PHASE]
+    try:
+        return _insertion_outcome(
+            design,
+            obstacles,
+            budget,
+            fastener=fastener,
+            subject=subject,
+            seat=seat,
+            axis=axis,
+            back=back,
+            length_m=length_m,
+            head_radius_m=head_radius_m,
+            head_height_m=head_height_m,
+            countersunk=countersunk,
+            engagement_m=engagement_m,
+            drive_type=drive_type,
+            drive_size_mm=drive_size_mm,
+        )
+    except _BudgetExhausted:
+        return None
+
+
+def _insertion_outcome(
+    design: CadDesign,
+    obstacles: list[tuple[str, tuple[Any, Any], bool]],
+    budget: list[int],
+    *,
+    fastener: str,
+    subject: str,
+    seat: list[float],
+    axis: list[float],
+    back: list[float],
+    length_m: float,
+    head_radius_m: float,
+    head_height_m: float,
+    countersunk: bool,
+    engagement_m: float,
+    drive_type: str | None,
+    drive_size_mm: float | None,
+) -> InsertionOutcome | None:
+    # Tip at the seat plane puts the head's top one screw length plus one
+    # head height back: catalog length is measured under the head, except
+    # for a countersunk head, whose length already includes it.
+    body_len = length_m + (0.0 if countersunk else head_height_m)
+    body_base = [s + body_len * b for s, b in zip(seat, back, strict=True)]
+    body = _swept_cyl(design, "__body__", head_radius_m, body_len, body_base, axis)
+    if body is None:  # pragma: no cover — generated source always parses
+        return None
+    hit = _first_hit(
+        design, "__body__", obstacles, plane_origin=seat, plane_dir=back, budget=budget
+    )
+    if hit is not None:
+        geometry = _geometry("body", [body[1]], hit.blocker)
+        what = (
+            f"the screw body ({head_radius_m * 2000:.1f} mm Ø swept "
+            f"{body_len * 1000:.1f} mm straight back along the screw axis from "
+            "the seat plane)"
+        )
+        return InsertionOutcome(
+            [_insertion_issue(subject, fastener, what, hit, geometry)], True
+        )
+
+    candidates = tools_for(drive_type, drive_size_mm)
+    if not candidates:
+        return InsertionOutcome([], False)
+    drive_offset = 0.0 if countersunk else -head_height_m
+    face = [s + drive_offset * a for s, a in zip(seat, axis, strict=True)]
+    records: list[tuple[Tool, str, _Hit, list[dict[str, Any]]]] = []
+    for i, tool in enumerate(candidates):
+        pieces: list[dict[str, Any]] = []
+        parts: list[Any] = []
+        for j, (radius, height, offset) in enumerate(
+            (
+                (tool.shaft_radius_m, tool.axial_m + engagement_m, 0.0),
+                (
+                    tool.swing_radius_m,
+                    tool.arm_thickness_m + engagement_m,
+                    tool.swing_height_m,
+                ),
+            )
+        ):
+            base = [f + offset * b for f, b in zip(face, back, strict=True)]
+            made = _swept_cyl(design, f"__tool{i}_{j}__", radius, height, base, back)
+            if made is None:  # pragma: no cover — generated
+                return InsertionOutcome([], False)
+            parts.append(made[0])
+            pieces.append(made[1])
+        design.add_component(f"__tool{i}__", design.merge(*parts))
+        hit = _first_hit(
+            design,
+            f"__tool{i}__",
+            obstacles,
+            plane_origin=face,
+            plane_dir=back,
+            budget=budget,
+        )
+        if hit is not None:
+            records.append((tool, "tool", hit, pieces))
+            continue
+        if tool.hand_radius_m <= 0.0 or tool.hand_length_m <= 0.0:
+            return InsertionOutcome([], False)  # a bare tool clears: fine
+        top = max(tool.axial_m, tool.swing_height_m + tool.arm_thickness_m)
+        hand_base = [f + top * b for f, b in zip(face, back, strict=True)]
+        hand = _swept_cyl(
+            design,
+            f"__hand{i}__",
+            tool.hand_radius_m,
+            tool.hand_length_m + engagement_m,
+            hand_base,
+            back,
+        )
+        if hand is None:  # pragma: no cover — generated
+            return InsertionOutcome([], False)
+        hit = _first_hit(
+            design,
+            f"__hand{i}__",
+            obstacles,
+            plane_origin=face,
+            plane_dir=back,
+            budget=budget,
+        )
+        if hit is None:
+            return InsertionOutcome([], False)
+        records.append((tool, "hand", hit, [*pieces, hand[1]]))
+    # Every tool (+hand) is blocked. The focus is what the finding is
+    # about: a soft (ancestor-only) record decides a warning, else the
+    # tool whose own solid clears and only the hand hits, else the
+    # shop's preferred tool.
+    focus = next(
+        (r for r in records if r[2].soft),
+        next((r for r in records if r[1] == "hand"), records[0]),
+    )
+    tool, part, hit, pieces = focus
+    geometry = _geometry("tool", pieces[:2], hit.blocker if part == "tool" else None)
+    if part == "hand":
+        geometry += _geometry("hand", pieces[2:], hit.blocker)
+    others = "; ".join(
+        f"{t.tool_id}: the {p} hits {h.blocker!r}" for t, p, h, _ in records
+    )
+    what = (
+        f"every tool for the {drive_type} drive ({others}); closest is "
+        f"{tool.title} — its {part} hits the blocker"
+    )
+    return InsertionOutcome(
+        [_insertion_issue(subject, fastener, what, hit, geometry, reached=True)],
+        False,
+    )
+
+
+def _insertion_issue(
+    subject: str,
+    fastener: str,
+    what: str,
+    hit: _Hit,
+    geometry: list[dict[str, Any]],
+    *,
+    reached: bool = False,
+) -> ValidationIssue:
+    if hit.soft:
+        return ValidationIssue(
+            rule="material_parent_not_walked",
+            subject=subject,
+            detail=(
+                f"the insertion path of {fastener!r} — {what} — crosses "
+                f"{hit.blocker!r}, the screw's own parent, which is made or "
+                "bought (it has a mode or a binding). The fasten pass stamps "
+                "no hole in a parent block, so whether the screw can pass "
+                "is UNVERIFIED, not failed; not reported as an error until "
+                "parent holes are stamped (se-container-block-is-not-first-"
+                "class)"
+            ),
+            severity="warn",
+            geometry=geometry,
+        )
+    verb = (
+        f"{fastener!r} reaches its seat but no tool can drive it there"
+        if reached
+        else f"{fastener!r} cannot reach its seat"
+    )
+    return ValidationIssue(
+        rule="fastener_insertion_path",
+        subject=subject,
+        detail=(
+            f"{verb}: {what} is blocked by {hit.blocker!r} with every other "
+            "block in place (the fully assembled state). Move the screw, "
+            "move that block, or change the head/drive so the path is clear"
+        ),
+        severity="error",
+        geometry=geometry,
     )

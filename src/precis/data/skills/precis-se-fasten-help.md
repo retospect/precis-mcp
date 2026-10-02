@@ -182,7 +182,27 @@ diameter. Findings worth knowing by name:
   way. A hex key sweeps its long arm in a circle, which is usually what
   runs out first; a bit driver needs a straight run instead. (A ratchet
   needing only part of its swing is not modelled, so a tight joint may
-  still be buildable.)
+  still be buildable.) Dropped for a screw whose body cannot reach its
+  seat (the next two), since turning a screw that cannot get there is not
+  the useful message.
+- `fastener_insertion_path` (error) — in the fully assembled state the
+  screw cannot reach its seat, or no tool can drive it there. Three straight
+  sweeps along the screw axis against every other block: the screw body
+  (head Ø plus clearance, screw length, back from the seat plane), each
+  candidate tool (as `no_tool_access`, lengthened by the thread engagement
+  — assumes the screw is finger-started, so a captive or recessed screw is
+  not covered), and for the bit screwdriver a provisional hand cylinder
+  behind the handle (r 45 × 110 mm, a number in `driver_envelopes.json`
+  that can be changed). The detail says body vs tool vs hand, names the
+  blocker and the tool that came closest. The holes this joint stamps are
+  subtracted from their members. Final-state access is a property of the
+  design, not a false positive: the way out is a clear path, and only
+  failing that a declared install order (not modelled yet).
+- `material_parent_not_walked` (warn) — the sweep above was blocked by the
+  screw's own parent block, which is made or bought (has a mode or a
+  binding). The fasten pass stamps no hole in a parent, so the path through
+  it is unverified, not failed; no `fastener_insertion_path` error is
+  raised for it.
 - `fastener_axis` — the joint's declared axis and the screw's own pose
   disagree by more than 2.5°. The pose wins; fix one of them.
 - `drive_not_preferred` — you specified something that is not hex or Torx.

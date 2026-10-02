@@ -1,5 +1,5 @@
 {
-  "_note": "DRIVER ENVELOPES — versioned DATA for docs/backlog/se-off-the-shelf-fabrication.md rung 3b (tool access). A screw you cannot reach is not fastened, and the geometry that decides it is the TOOL's, not the screw's: a hex key needs a swept circle for its long arm, a bit driver needs a straight cylinder, a ratchet needs both. Each tool is modelled as two solids above the head — a SHAFT (a cylinder of `shaft_radius_mm` standing `axial_mm` tall on the drive face) and an ARM (a disc of `swing_radius_mm`, `arm_thickness_mm` thick, at `swing_height_mm`), which is the whole swept volume of one turn. Millimetres throughout. CONFIDENCE, and it differs sharply by section: `hex_keys` is ISO 2936 (short arm l2 and the standard long arm), transcribed and exact. `bit_tools` is NOT a standard and never will be — it is the nominal geometry of ordinary bench tools (a 1/4-inch bit screwdriver, a stubby ratchet, a T-handle), rounded, and a shop whose tools differ should edit this file rather than argue with the finding. A tool that fits here fits in the model of it; whether it fits your hand is not modelled at all.",
+  "_note": "DRIVER ENVELOPES — versioned DATA for docs/backlog/se-off-the-shelf-fabrication.md rung 3b (tool access). A screw you cannot reach is not fastened, and the geometry that decides it is the TOOL's, not the screw's: a hex key needs a swept circle for its long arm, a bit driver needs a straight cylinder, a ratchet needs both. Each tool is modelled as two solids above the head — a SHAFT (a cylinder of `shaft_radius_mm` standing `axial_mm` tall on the drive face) and an ARM (a disc of `swing_radius_mm`, `arm_thickness_mm` thick, at `swing_height_mm`), which is the whole swept volume of one turn. Millimetres throughout. CONFIDENCE, and it differs sharply by section: `hex_keys` is ISO 2936 (short arm l2 and the standard long arm), transcribed and exact. `bit_tools` is NOT a standard and never will be — it is the nominal geometry of ordinary bench tools (a 1/4-inch bit screwdriver, a stubby ratchet, a T-handle), rounded, and a shop whose tools differ should edit this file rather than argue with the finding. A tool that fits here fits in the model of it; whether it fits your hand is modelled only where a row carries a `hand` record (today the bit screwdriver, for the fastener_insertion_path check; provisional numbers, see its `source`) — hex keys and the other tools keep the no-hand treatment.",
   "hex_keys": {
     "source": "ISO 2936 (hexagon key sizes): `short_arm` is l2, `long_arm` is the standard-length arm.",
     "sizes": [
@@ -36,7 +36,12 @@
       "swing_radius_mm": 13.0,
       "swing_height_mm": 45.0,
       "arm_thickness_mm": 65.0,
-      "note": "Needs a straight run to the head and almost no sweep — the tool for a screw down a hole."
+      "note": "Needs a straight run to the head and almost no sweep — the tool for a screw down a hole.",
+      "hand": {
+        "radius_mm": 45.0,
+        "length_mm": 110.0,
+        "source": "PROVISIONAL (fastener_insertion_path, docs/backlog/se-mechanical-drc.md ruling 2): one cylinder behind the handle end standing in for the gripping hand, r 45 mm x 110 mm long, from 95th-percentile adult hand breadth (~90 mm) and hand length (~110 mm of grip). Reto may change these two numbers here without a ruling; no anthropometric table was consulted."
+      }
     },
     {
       "id": "t-handle",

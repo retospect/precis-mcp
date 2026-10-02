@@ -85,6 +85,21 @@ class ValidationIssue:
     #: v1 = plain text (a later rung may promote this to a process-skill
     #: reference); ``None`` outside Engine 3.
     suggested_fix: str | None = None
+    #: Render hook for a finding that can be *seen* — the swept solids of
+    #: ``fastener_insertion_path`` (docs/backlog/se-mechanical-drc.md rulings
+    #: 5/6): ``[{role: 'body'|'tool'|'hand', envelope, pose, rot, blocker}]``
+    #: in the world frame. ``None`` for every other finding, and a consumer
+    #: must omit the key when it is ``None`` so existing serialisations are
+    #: byte-identical.
+    geometry: list[dict[str, Any]] | None = None
+
+
+def is_realized(node: Any) -> bool:
+    """A block that will be made or bought: it has a manufacturing mode or
+    a binding. The one test ``precis_web``'s realized-colouring and the
+    insertion-path rule's "material parent" both use, so they cannot
+    disagree about what gets built; a block with neither is a pure group."""
+    return bool(getattr(node, "mode", None)) or bool(getattr(node, "bound_kind", None))
 
 
 def _is_ancestor(tree: SeTree, a: str, b: str) -> bool:

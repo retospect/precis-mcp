@@ -995,7 +995,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
   }
 
   //: These InstancedMeshes come from the overlay's r160 three.js but are
-  //: drawn by three-cad-viewer's newer bundled renderer (module comment
+  //: drawn by three-cad-viewer's bundled r184 renderer (module comment
   //: above `_ATOMIC_CPK`). That renderer reads fields r160 never sets and
   //: treats `undefined` as present: `morphTexture !== null` turns on
   //: USE_INSTANCING_MORPH and the shader fails to compile, so nothing
