@@ -942,7 +942,10 @@ class Tag:
 # hosts several workflows (todo, gripe, finding, ...); a kind listed here
 # only accepts its own values (``refuted`` is a finding status, not a
 # gripe one). Kinds not listed accept the full union. Gripe is also
-# enforced at commit by the 0176 deferred triggers — keep in sync.
+# enforced at commit by the 0176 deferred triggers — keep in sync. The
+# ref_tags trigger fires on every kind's tag writes (a WHEN clause cannot
+# see refs.kind): measured ~4 µs/row, i.e. a 100k-row insert 1.6 s → 2.2 s
+# incl. commit. Revisit only if a bulk tag sweep shows it.
 _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     "gripe": frozenset(
         {"open", "triaged", "ready_for_fix", "in_review", "done", "wontfix"}
