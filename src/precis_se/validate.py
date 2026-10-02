@@ -35,6 +35,7 @@ checked at its own pose — a later increment poses members).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -249,7 +250,10 @@ def _aabb_diag(box: tuple[Vec3, Vec3]) -> float:
 
 
 def envelope_overlaps(
-    tree: SeTree, *, budget_s: float | None = _OVERLAP_BUDGET_S
+    tree: SeTree,
+    *,
+    budget_s: float | None = _OVERLAP_BUDGET_S,
+    pair_filter: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[tuple[str, str, float]], list[tuple[str, str]], list[tuple[str, str]]]:
     """``(overlaps, cross_scale, unchecked_budget)`` over every unordered
     pair of blocks — excluding ancestor/descendant pairs (a child inside
@@ -265,7 +269,13 @@ def envelope_overlaps(
     AABB broad phase could not clear cheaply and the ``budget_s`` wall-clock
     cap (``None`` = unbounded — tests only) ran out before reaching —
     reported the same honest way, never silently dropped either
-    (gr337045)."""
+    (gr337045).
+
+    ``pair_filter`` (``None`` = every pair) narrows the scan to the pairs
+    a caller actually asks about — the joint sweep
+    (:mod:`precis_se.kinematics_drc`) passes "one side moves, the other
+    does not, no connect between them", so static pairs it re-poses
+    nothing for never reach the SDF narrow phase on every sample."""
     posed: list[tuple[str, SeBlock, str]] = []
     for name in sorted(tree.blocks):
         node = tree.blocks[name]
@@ -295,6 +305,8 @@ def envelope_overlaps(
             # entirely to chain-vs-non-chain pairs. Read off the chain
             # ROLE, not the ``<helix>.s<k>`` name — a name is a label.
             if a_name in segments and b_name in segments:
+                continue
+            if pair_filter is not None and not pair_filter(a_name, b_name):
                 continue
             scale = kernel_scale((a_env, a_node), (b_env, b_node))
             if scale is None:

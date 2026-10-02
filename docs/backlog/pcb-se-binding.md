@@ -3,6 +3,7 @@ status: draft
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
 prio: high
 pillar: 3d-design
+model: opus
 ---
 
 # pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
@@ -31,7 +32,13 @@ JLC CPL/BOM, EasyEDA, IPC footprints — is mm/mil-native and
 fabrication-facing; converting pcb internals to metres would relocate
 one conversion into seven-plus exporter/ingester sites where a scale
 error costs real boards. Instead: `mechanical_profile` is pcb's **sole
-geometry crossing**, and the ×1e-3 lives there, once.
+geometry crossing**. It stays mm (self-declared `"units": "mm"`; the
+flexboard item grows it in mm). The se-side derivation converts it
+through the two existing unit tables, never a new literal: numeric
+values via `precis_se.catalog.to_metres(v, "mm")`, the envelope as a
+unit-tagged cad DSL string (`box:w100mmd80mmh1.6mm`) that the DSL
+parser converts. The crossing adds no ×1e-3 site anywhere (vet round 3
+resolved the Motivation/In-scope contradiction this way).
 
 ## In scope
 
@@ -46,8 +53,8 @@ geometry crossing**, and the ×1e-3 lives there, once.
   dict is the wrong cardinality for a board. The new module returns its
   own multi-item shape, and that shape is **a list of segments** (each:
   slab from outline × thickness + per-instance keep-out prisms +
-  mounting-hole markers + connector ports), all ×1e-3 at this seam and
-  nowhere else. v1 always emits exactly ONE segment — a rigid board is
+  mounting-hole markers + connector ports), converted at this seam
+  through `catalog.to_metres` and DSL unit tokens only. v1 always emits exactly ONE segment — a rigid board is
   the one-segment special case — but the list shape is load-bearing:
   flexboards (Reto 2026-09-14) decompose into segments joined by fold
   lines, and a scalar "the slab" contract would force a re-shape later
@@ -62,9 +69,61 @@ geometry crossing**, and the ×1e-3 lives there, once.
   failure mode that already exists for `bound_kind=='nm'`), `drc.py`'s
   demand check, and `fasten.py`'s clearance gate each get an explicit
   `'pcb'` decision, even where it is "not applicable".
+- **Derived type and what clearance consumes** (vet round 3). se
+  clearance, DRC, datums, compose and freedom read ONE envelope string
+  per block (`ops.effective_envelope` → `node.derived.envelope`), and
+  `effective_ports` reads `node.derived.ports`. The new type
+  (`BoardDerived`) exposes exactly those two attributes, duck-typed like
+  `catalog.Derived`, plus `segments` (the itemised list) and `why_not`.
+  - `envelope` (v1) = one conservative `box` enclosing the slab and
+    every prism: outline bounding box (w × d) × (thickness + tallest
+    top-side prism + tallest bottom-side prism). Exact for a rectangular
+    board with no parts, a superset otherwise. Per-prism clearance needs
+    compound envelopes, which se does not have — a later item.
+  - `segments[0]` carries the exact items: slab (outline polygon,
+    thickness), prisms (refdes, x/y extent, height, side,
+    `origin: user|proposed`), hole markers, connector ports. The
+    proposed-height DRC finding and the views read these.
+  - Holes are markers only, never subtracted: no v1 check consumes a
+    hole, and subtraction would add kernel cost for nothing.
+- **Frame mapping** (vet round 3). In the board block's frame, x/y are
+  pcb board coordinates in metres; z = 0 at the bottom copper face, +z
+  toward the top layer; bottom-side prisms extend to −z. The builder
+  reads pcb's y convention and the cad `box` primitive's anchor from the
+  code, maps both with a fixed in-frame offset, and pins the mapping
+  with a test (a part at board (10 mm, 20 mm) on top resolves to the
+  expected se point).
+- **Store access** (vet round 3). The derivation stays pure. A new
+  load pass in `persist.py`, mirroring `attach_catalog`, fetches the
+  board (`store.pcb_load`, the `pcb_graph` board dict, the features
+  list; the builder confirms the exact names), calls the derivation and
+  assigns `node.derived`. It is guarded by `hasattr(store, "pcb_load")`
+  for fake stores and is total: a missing slug assigns a `BoardDerived`
+  with `why_not` set and never raises.
+- **`mechanical_profile` gains additive keys** (vet round 3: today each
+  block carries only refdes, x, y, layer, height_mm). Each block gains
+  `w_mm`/`d_mm` (courtyard extent, falling back to the footprint pad
+  bounding box), `rot_deg` and `roles`. Existing keys and values are
+  unchanged.
 - **Thickness becomes board data**: promote `DEFAULT_THICKNESS_MM`
-  from an export-time constant to a per-board field (default 1.6 mm),
-  used by `mechanical_profile` and the derivation.
+  from an export-time constant to a per-board column
+  `pcb_boards.thickness_mm double precision NOT NULL DEFAULT 1.6 CHECK
+  (thickness_mm > 0)` (new core migration, next free number at land),
+  set through the existing pcb `stackup` op as a `thickness_mm=`
+  argument, carried in the `pcb_graph` board dict, and used by
+  `mechanical_profile` (its `handlers/pcb.py` caller passes it) and the
+  derivation.
+- **se migration widening `se_blocks_bound_kind_check`** (vet round 3:
+  the CHECK in `precis_se/migrations/0008_se_drop_nm_tables.sql` allows
+  only `cad|structure|component|part`, and NOT VALID still rejects new
+  rows, so editing the tuple alone fails at persist). Next free se
+  number at land; `se-region-property-layer` slice A takes 0018.
+- **Every `bound_kind` reader gets a `'pcb'` decision**, not only the
+  three below: `handler.py` status render, `printsolid.py`,
+  `printgroup.py`, `ops_export.py` (already generic), `drc.py`
+  `mode_binding_mismatch` (silent unless a mode family lists
+  `realization_kinds` without `pcb`), and the web routes keyed on
+  `structure` (confirm untouched).
 - **Height honesty**: instances with `height_mm` absent (JLC
   parametrics often lack it) project as 1 mm prisms carrying
   `origin=proposed`; se validate/DRC enumerates which prisms are
@@ -114,19 +173,24 @@ geometry crossing**, and the ×1e-3 lives there, once.
   against the world. Two-way *negotiation* (se-authored outline
   linked to the board; place/route failure emits an area demand; se
   grows the proposed envelope) is the designed path and is NOT sync —
-  it's message-passing over owned data → `pcb-se-negotiation.md`.
+  it's message-passing over owned data → the "Absorbed 2026-09-26"
+  section at the end of this file.
 
 ## Acceptance criteria
 
 - `set_binding(kind='pcb', design=<slug>)` accepted; unknown slug is a
-  DRC finding, not an op error.
-- se clearance/validate sees the board at metre scale: a 100 mm-wide
-  dogfood board reads 0.1 m (test pins the exact factor; the "2000 mm
-  tube becomes a 2000 m one" failure class is the target).
-- Exactly one ×1e-3 site in the code path, test-pinned (grep-gate the
-  derivation module).
+  `pcb_binding_unresolved` DRC warning naming the slug, not an op error.
+- se clearance/validate sees the board at metre scale: a test-DB board
+  built by a fixture with a 100 mm × 80 mm rectangular outline reads
+  envelope width 0.1 m (test pins the exact value; the "2000 mm tube
+  becomes a 2000 m one" failure class is the target).
+- No scale literal in the derivation module: a test reads its source
+  and fails on `1e-3`, `0.001`, `1e3`, `1000` or `/ 1000` as numeric
+  literals; conversion goes through `catalog.to_metres` and DSL tokens.
 - Absent-height instances appear as 1 mm `origin=proposed` prisms and
-  are enumerated by a validate/DRC finding.
+  are enumerated by a `pcb_height_proposed` DRC warning listing the
+  refdes.
+- The frame-mapping test above passes.
 - `thickness_mm` round-trips as board data; `mechanical_profile` and
   the export view use it; default stays 1.6. The new column is an
   independent scalar — the reserved per-layer `stackup[].thickness_mm`
@@ -136,21 +200,32 @@ geometry crossing**, and the ×1e-3 lives there, once.
   real dogfood board yields derived geometry visible to
   validate/clearance without further ops (test-pinned — guards the
   write-accepted-never-resolved failure mode).
-- Instances carrying the `connector` role yield board-block ports;
-  connecting one to another block's port survives tree round-trip.
-- pcb-side behaviour otherwise unchanged (exporters untouched — the
-  enclave boundary holds).
+- Instances carrying the `connector` role yield board-block ports named
+  by refdes (`J1`); a `connect` from another block's port to `J1`
+  survives tree round-trip and resolves after re-derivation (derived
+  ports are re-derived at load, never stored).
+- pcb-side behaviour otherwise unchanged: Gerber, DSN, KiCad, JLC and
+  EasyEDA exporters untouched; `mechanical_profile` changes are
+  additive keys only (the enclave boundary holds).
 
 ## Target + blast radius
 
-`precis_se` ops/**persist**/validate/drc/**fasten**/handler help + the
-new derivation module (persist.py's tree-load loop is where the
-derivation actually runs — vet round 1) · `precis/pcb/export.py`
-(thickness plumb-through) · pcb board-field migration +
-`handlers/pcb.py` (set/read thickness) · skills (se help gains the
-binding; `precis-pcb-help` gains the projection note **and the
-`connector` roles convention**) · map §Units policy (enclave ruling —
-amended in the same session).
+Two passes; A blocks B (vet round 3 split).
+
+- **Pass A, pcb side:** `pcb_boards.thickness_mm` core migration ·
+  `stackup` op `thickness_mm=` · `pcb_graph` board dict ·
+  `precis/pcb/export.py` (`mechanical_profile` thickness + additive
+  per-block keys) · its `handlers/pcb.py` caller · `precis-pcb-help`
+  (projection note + the `connector` roles convention). Regenerate the
+  schema baseline and `docs/reference/schema.md` via `scripts/bump`.
+- **Pass B, se consumer:** se migration widening the `bound_kind`
+  CHECK · `precis_se` ops (`_BINDING_KINDS`) / **persist** (load pass) /
+  drc / **fasten** / handler / printsolid / printgroup · the new
+  derivation module · `precis-se-help` gains the binding. Pass B's
+  prisms need pass A's extents.
+
+The map §Units policy wording (`multiscale-design-architecture.md`) is
+already amended; nothing to do there.
 
 ## Open questions / decisions log
 
@@ -176,9 +251,61 @@ amended in the same session).
   roles convention. Motivation's "zero callers" corrected to
   "no cad/se consumer". Thickness scalar declared independent of the
   unpopulated `stackup[]` per-layer field.
-- Open: does the board slab subtract mounting-hole cylinders in the se
-  solid, or carry holes as port-like features only? (Proposal: carry as
-  features; subtraction adds kernel cost for no current check.)
+- **Decided** (agent calls 2026-10-02, se-machine-design, Reto may
+  veto), folding readiness vet round 3: holes are markers in
+  `segments`, never subtracted (closes the former open question); no
+  new ×1e-3 site — conversion through `catalog.to_metres` + DSL unit
+  tokens, `mechanical_profile` stays mm; v1 envelope = one conservative
+  box over slab + prisms, with itemised `segments` beside it; thickness
+  set through the `stackup` op; findings `pcb_binding_unresolved` and
+  `pcb_height_proposed`, both warn; two build passes, pcb side first.
+
+- **Accepted** (Reto 2026-10-02, review queue se-machine-design-2): all
+  five round-3 calls stand for v1. Reto adds that the model must get
+  better; that is the ranked follow-up below.
+
+## Follow-up v2 — real per-part heights and subtracted holes (ranked, Reto 2026-10-02)
+
+Not v1, but not optional either: Reto ruled the one conservative box
+and marker-only holes acceptable **for now**, and wants the model to
+grow to:
+
+1. **Per-part envelopes.** Each placed part is its own solid with its
+   real height (courtyard/footprint extent × `height_mm`, top or bottom
+   side), so clearance sees the actual skyline instead of a box at the
+   tallest part. Needs se to carry more than one envelope per block:
+   either derived child blocks (one per part, read-time, never
+   op-authored) or a compound envelope the clearance check iterates.
+   The v1 `segments[0].prisms` list already holds the data, so this is
+   a consumer change, not a new derivation.
+2. **Mounting holes subtracted** from the slab solid, so a fastener or
+   standoff passing through the board clears it in se clearance and
+   fastener-access checks (`se-mechanical-drc.md`). The v1 hole markers
+   carry position and diameter already.
+3. **Proposed heights still flagged.** A part without `height_mm` keeps
+   the 1 mm `origin=proposed` prism and the `pcb_height_proposed`
+   warning; per-part envelopes make that guess more visible, not less.
+
+Ranked in `threads/se-machine-design.md` directly after this item.
+Open when picked up: which of the two multi-solid shapes (child blocks
+versus compound envelope) se adopts. That call is shared with
+`cross-scale-single-assembly.md`, which needs the same capability for
+cartridges.
+
+### Readiness vet round 3 (se-machine-design, 2026-10-02)
+
+Verdict not-ready, five blockers, all folded into the sections above:
+no se migration for the `bound_kind` CHECK; no stated path from
+segments to the one envelope string clearance reads; the ×1e-3
+location contradiction; `mechanical_profile` lacking extent, rotation
+and roles; store access for the pure derivation unstated. Advisories
+folded: thickness plumbing, the other `bound_kind` readers,
+`mode_binding_mismatch`, tighter acceptance criteria, `model: opus`,
+stale pointers. Round 1's "single write-time gate" confirmation below
+was wrong — the se CHECK is a second gate. Stale in the sibling item,
+not fixed here: `cross-scale-single-assembly.md` still calls this item
+"in flight" and cites `handlers/pcb.py:1826` (the caller is now
+~1981).
 
 ### Readiness vet (glowing-zooming-glade, 2026-09-14)
 

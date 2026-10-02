@@ -26,9 +26,9 @@ Two test pieces (box, valve) have proven the revolute-joint pattern once
 each, but neither is designed as a *bearing* — a component meant to be
 reused as a building block inside a larger assembly. The T-handle piece is
 the first one built explicitly to validate the bearing pattern and to be
-the first real consumer of a bearing-specific check
-(`se-bearing-kinematics-check.md`), which today has nothing to check
-against.
+the first real consumer of the se joint sweep
+(`precis_se.kinematics_drc.sweep_findings`: a revolute joint's declared
+`params.range` checked for envelope collisions in `view='drc'`).
 
 ## In scope
 
@@ -36,14 +36,13 @@ against.
   inner T-handle block.
 - The two-block revolute joint, built the same way the box/valve pieces
   already do it — no new joint kind.
-- Wiring this piece up as the first consumer of
-  `se-bearing-kinematics-check.md`'s check family once that exists (this
-  item does not build the check itself).
+- Wiring this piece up as the first consumer of the joint sweep: declare
+  the handle's `range` on its revolute connect and read `view='drc'`.
 
 ## Explicitly NOT in scope
 
-- The bearing kinematics check family itself — `se-bearing-kinematics-check.md`
-  owns that; this item is its first test case, not its implementation.
+- The joint sweep itself — it lives in `precis_se.kinematics_drc`; this
+  item is its first real case, not its implementation.
 - Motion planning or torque budgeting for the handle — out of scope per the
   same DRC-vs-planner boundary `se-3d-viewer`'s thread draws (a check, not
   a planner).

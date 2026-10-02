@@ -9,7 +9,7 @@ ordinals through the catalog's existing write surface.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -375,7 +375,7 @@ def test_cli_compare_prints_mean_and_n(
     args = argparse.Namespace(
         model="a", compare="b", tier="small", gold=None, no_record=True
     )
-    _cmd_eval(None, args)  # type: ignore[arg-type]
+    _cmd_eval(cast(Any, None), args)
     out = capsys.readouterr().out
     assert "5 (0.925/40)" in out and "5 (0.900/40)" in out
 
@@ -532,7 +532,7 @@ def test_cli_compare_prints_number_rule_line(
         endpoint_a='{"quant": "q4"}',
         endpoint_b=None,
     )
-    _cmd_eval(None, args)  # type: ignore[arg-type]
+    _cmd_eval(cast(Any, None), args)
     out = capsys.readouterr().out
     assert (
         "a: mean with number rule 1.000, without 1.000, number-rule-only zeros 0/1"
@@ -546,7 +546,7 @@ def test_cli_compare_prints_number_rule_line(
     assert captured["endpoint_a"] == {"quant": "q4"}
     args.endpoint_a = "{nope"
     with pytest.raises(BadInput):
-        _cmd_eval(None, args)  # type: ignore[arg-type]
+        _cmd_eval(cast(Any, None), args)
 
 
 def test_cli_compare_prints_void_side(
@@ -577,7 +577,7 @@ def test_cli_compare_prints_void_side(
     args = argparse.Namespace(
         model="a", compare="b", tier="small", gold=None, no_record=True
     )
-    _cmd_eval(None, args)  # type: ignore[arg-type]
+    _cmd_eval(cast(Any, None), args)
     out = capsys.readouterr().out
     assert "void (3/40 err)" in out and "(0.900/40)" in out
     assert "(0.900/37)" not in out

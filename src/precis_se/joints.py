@@ -32,7 +32,10 @@ insert, thread-forming core hole) and a cut thread is the wrong default
 in plastic, so the choice is declared rather than assumed; and
 ``counterbore``, which asks for a cap/pan/button head to be buried in the
 first member instead of standing proud (a countersunk head always gets
-its cone — that one is physics, not preference). The rest of ``params``
+its cone — that one is physics, not preference). ``range``/``moves``/
+``samples`` (:data:`RANGE_CLASSES`) are the declared travel of a
+revolute/prismatic joint and the end that travels, consumed by
+:mod:`precis_se.kinematics_drc`'s joint sweep. The rest of ``params``
 stays open and descriptive — that is the rule working, not an
 exception to it.
 """
@@ -179,7 +182,12 @@ def validate_joint(raw: dict[str, Any]) -> dict[str, Any]:
                 f"joint 'params' must be a JSON object, got {params_raw!r}"
             )
         if params_raw:
-            out["params"] = _vet_params(dict(params_raw))
+            out["params"] = _vet_params(dict(params_raw), klass)
+    if "range" in out.get("params", {}) and "axis" not in out:
+        raise JointError(
+            f"joint param 'range' needs the joint's 'axis' — a {klass} joint "
+            "with no axis has no direction to sweep along/about"
+        )
     if klass == "axial":
         params = out.get("params", {})
         tension = params.get("tension_capacity")
@@ -194,12 +202,81 @@ def validate_joint(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _vet_params(params: dict[str, Any]) -> dict[str, Any]:
-    """Check the two contract-classed params (module docstring) and pass
-    everything else through untouched. Absent is always fine — a joint
+#: Classes whose ``params.range`` the joint sweep consumes
+#: (:mod:`precis_se.kinematics_drc`): radians for ``revolute``, metres for
+#: ``prismatic``. ``cylindrical`` (rotation AND slide) is out of v1.
+RANGE_CLASSES: dict[str, str] = {"revolute": "radians", "prismatic": "metres"}
+
+#: ``params.samples`` when a ``range`` names none — evenly spaced over
+#: ``[lo, hi]``, endpoints included.
+DEFAULT_RANGE_SAMPLES = 9
+
+
+def _vet_range(params: dict[str, Any], klass: str) -> None:
+    """``range: [lo, hi]`` + ``moves`` (the moving end's block) + optional
+    ``samples`` (int ≥ 2) — the joint's declared continuous travel, as
+    displacements from the authored pose, checked for collisions by
+    :mod:`precis_se.kinematics_drc`'s sweep. That ``moves`` names one of
+    the connect's two ends is checked by the connect/set_joint ops, which
+    know the ends (this schema sees the joint alone)."""
+    rng = params.get("range")
+    if rng is None:
+        for orphan in ("samples", "moves"):
+            if orphan in params:
+                raise JointError(
+                    f"joint param {orphan!r} needs a 'range' — it describes "
+                    "the sweep over that range, and means nothing alone"
+                )
+        return
+    if klass not in RANGE_CLASSES:
+        raise JointError(
+            f"joint param 'range' is only taken by "
+            f"{' | '.join(sorted(RANGE_CLASSES))} joints (got class {klass!r}) "
+            "— it is the travel the joint sweep checks for collisions"
+        )
+    unit = RANGE_CLASSES[klass]
+    try:
+        lo, hi = (float(x) for x in rng)
+    except (TypeError, ValueError) as exc:
+        raise JointError(
+            f"joint param 'range' must be [lo, hi] ({unit}), got {rng!r}"
+        ) from exc
+    if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+        raise JointError(
+            f"joint param 'range' must be [lo, hi] with lo < hi ({unit}), got {rng!r}"
+        )
+    params["range"] = [lo, hi]
+    moves = params.get("moves")
+    if not isinstance(moves, str) or not moves.strip():
+        raise JointError(
+            "joint param 'range' needs 'moves': the block (one of the "
+            "connect's two ends) that turns/slides through the range — a "
+            f"connect is an unordered pair, so the sweep cannot guess; got {moves!r}"
+        )
+    params["moves"] = moves.strip()
+    samples = params.get("samples")
+    if samples is None:
+        return
+    is_int = isinstance(samples, int) and not isinstance(samples, bool)
+    if isinstance(samples, float) and samples.is_integer():
+        samples, is_int = int(samples), True
+    if not is_int or samples < 2:
+        raise JointError(
+            f"joint param 'samples' must be an integer ≥ 2 (default "
+            f"{DEFAULT_RANGE_SAMPLES}, endpoints included), got "
+            f"{params.get('samples')!r}"
+        )
+    params["samples"] = samples
+
+
+def _vet_params(params: dict[str, Any], klass: str) -> dict[str, Any]:
+    """Check the contract-classed params (module docstring, plus the
+    sweep's ``range``/``samples``) and pass everything else through
+    untouched. Absent is always fine — a joint
     that names no fit class gets the house default at read time, which is
     a *decision recorded once* rather than a number every consumer
     guesses."""
+    _vet_range(params, klass)
     fit = params.get("fit_class")
     if fit is not None:
         known = core_fit_classes.classes()

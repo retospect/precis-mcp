@@ -597,7 +597,10 @@ and the kinematics row says ``no pose`` rather than reading as
 frame — :mod:`precis_se.kinematics_drc` transforms through the block's
 own placement before comparing, and ``revolute_axis_mismatch`` (warn) is
 the disagreement; the joint owns the axis and class, the port owns the
-rotation, never a second slot on joints. The proposer's second family:
+rotation, never a second slot on joints. A revolute/prismatic joint's
+``params.range`` is swept continuously about/along that world axis through
+``envelope_overlaps`` (``joint_sweep_interference``, view='drc' — the
+continuous counterpart of ``view='sweep'``'s discrete states). The proposer's second family:
 a **rotary unit** (a block with a derived swing, else a sourced
 ``step_angle`` with arm₀ = half the envelope diagonal) plus k arm units
 is a lever whose tip stroke ``2·(arm₀ + k·unit_length)·sin(angle/2)``

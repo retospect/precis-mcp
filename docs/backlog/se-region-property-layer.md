@@ -101,7 +101,7 @@ degenerate selector.
 - The membership query, per-axis nearest-neighbour and the pick-and-join
   loop (`se-intent-to-realize-loop.md`).
 - The class lattice itself (`class-lattice-similarity-spaces-and-laws.md`).
-- Motion/kinematics (`se-bearing-kinematics-check.md`).
+- Motion/kinematics (the joint sweep, `precis_se.kinematics_drc`).
 - Electrostatics as a *field solve* (spec §6.1 open item 3); only the
   point-charge analytic rung ships here.
 - Rendering (viewer) and the DNA anchor domains that consume the
@@ -152,6 +152,25 @@ Two guards the builder hits on the first run (se-3d-viewer owner,
   sites, all through one selector.
 - **[decided 2026-09-30, Reto]** Pocket specs are defined classes in the
   term-taxonomy lattice, shared with the paper graph's scenario classes.
+- **[decided 2026-10-02, se-machine-design]** Ship in three slices,
+  because two dependencies are unbuilt and owned elsewhere
+  (`measures-substrate` and the class lattice are knowledge-mesh Do-next
+  4 and 5). **Slice A, now:** in-scope 1, 2, 3, 7, 8 and acceptance 1, 2, 6.
+  Measurand resolved at write through the taxon path resolver; the
+  measure row stores the taxon ref id plus a snapshot of its
+  `canonical_unit` (reads need no join; relations compare the snapshot
+  units). The closed `UNITS` enum stays as the legacy form; `m|count|
+  ratio|deg` map onto seeded nodes. Measurand seeds go in a core
+  forward-only migration that inserts only missing slugs. A region
+  measure whose measurand has no registered computer gets a loud
+  `measurand_unchecked` DRC advisory (the declared-but-unchecked rule
+  from `se-kind.md`), never silence. Selector resolution for `patch:`/
+  `ring:` on cad envelopes is real; `sites:`/`atoms:` parse strictly and
+  resolve against the atomic block where it is a lookup, else return the
+  lenient unresolvable note. **Slice B,** after `measures-substrate`:
+  in-scope 4 and 5, acceptance 3 and 4 (computers, `subject_selector`,
+  the hard-band error). **Slice C,** after the class lattice: in-scope 6,
+  acceptance 5.
 - **open** — `subject_selector` on `measures` versus a `subject_path` that
   also serves papers (figure/table anchors already use `links.meta.span`);
   the extraction session's `measurement_arg` (position, entity) suggests

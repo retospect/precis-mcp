@@ -1323,6 +1323,7 @@ def _op_connect(tree: SeTree, op: dict[str, Any]) -> None:
     objectives = _vet_objectives(op.get("objectives"), opname="connect", edge=True)
     a_block, a_port, a_spec = _resolve_endpoint(tree, a_raw, what="connect", side="'a'")
     b_block, b_port, b_spec = _resolve_endpoint(tree, b_raw, what="connect", side="'b'")
+    _vet_joint_moves(joint, a_block, b_block, opname="connect")
     if (a_block, a_port) == (b_block, b_port):
         # Reachable a second way once uids resolve: '#41.bore' and
         # 'wheel.bore' are the same endpoint written two ways.
@@ -1406,6 +1407,21 @@ def _vet_joint(raw: Any, *, opname: str) -> dict[str, Any] | None:
         raise OpError(f"{opname}: {exc}") from exc
 
 
+def _vet_joint_moves(
+    joint: dict[str, Any] | None, a_block: str, b_block: str, *, opname: str
+) -> None:
+    """A swept joint's ``params.moves`` must name one of the connect's two
+    ends — checked here because :func:`precis_se.joints.validate_joint`
+    sees the joint without its ends."""
+    moves = ((joint or {}).get("params") or {}).get("moves")
+    if moves is not None and moves not in (a_block, b_block):
+        raise OpError(
+            f"{opname}: joint param 'moves' is {moves!r}, but this connect's "
+            f"ends are {a_block!r} and {b_block!r} — name the end that "
+            "turns/slides"
+        )
+
+
 def _vet_objectives(
     raw: Any, *, opname: str, edge: bool = False
 ) -> dict[str, Any] | None:
@@ -1470,6 +1486,7 @@ def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
     if "joint" not in op:
         raise OpError("set_joint needs 'joint' (the joint object, or null to clear)")
     joint = _vet_joint(op.get("joint"), opname="set_joint")
+    _vet_joint_moves(joint, c.a_block, c.b_block, opname="set_joint")
     if joint is not None and c.kind is not None:
         # Mirrors ``connect``'s own mutual exclusion (:func:`_vet_connect_kind`)
         # — reachable the long way round otherwise.

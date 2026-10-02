@@ -13,21 +13,40 @@ off that gap until it closes.
 **Worktree:** `se-machine-design`
 **Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
 
+## Resume state (2026-10-02)
+
+- **Region slice A** (Do next 1): parked on local branch
+  `se-region-slice-a` (WIP e9526e5cf; migrations core 0180 + se 0018).
+  Cherry-pick it back once the joint sweep has landed. It cannot qland
+  (it carries migrations), so it goes through the orchestrator's round
+  gate after a Fable review.
+- **Local se tests are blind until precis-dev is rebuilt.** The image
+  predates the nm→se rename. `check-entry-points --heal` repairs one
+  throwaway `uv run --with numba` env, but pytest runs in another, so
+  no `precis_se` migration reaches the test DB. Every se DB test then
+  fails `unknown kind: 'se'`, the untouched `test_se_atomic_bind.py`
+  included. Gate se work on GitHub (`scripts/ship --remote`).
+
 ## Do next
 
 1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
    axes (charge, field, optical); the peer session (unicycle) is already
-   the pocket object waiting on it. Ranked 1.
+   the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
+   (measurands, selectors, pockets) built, parked (Resume state); B waits on
+   measures-substrate, C on the class lattice (both knowledge-mesh).
 2. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
 3. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 2.
 4. **backlog/pcb-se-binding.md** — the mm→m crossing; a producer exists,
    a consumer was never built. Peer session EWOD found this the same day.
-5. **backlog/pcb-argue-with-design.md**
-6. **backlog/cross-scale-single-assembly.md** — blocked-by 4
+   Vet round 3 folded 2026-10-02; two passes (pcb side first), both
+   carry migrations. Reto accepted the five v1 calls 2026-10-02.
+5. **pcb-se-binding v2** — section "Follow-up v2" in
+   `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
+   with real heights and subtracted mounting holes. Blocked-by 4.
+6. **backlog/pcb-argue-with-design.md**
+7. **backlog/cross-scale-single-assembly.md** — blocked-by 4
    (pcb-se-binding).
-7. **backlog/se-bearing-kinematics-check.md** — first consumer is
-   `hexfold-t-handle-bearing` (hexfold-toolkit thread).
 
 ## Horizon
 

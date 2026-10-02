@@ -327,6 +327,8 @@ and concepts are linked `serves` (max 3 per query); drafts and memories
 count as hits but are not linked. The logbook line per query reads
 `[local N, acquired M; …]`.
 
+## A research tick: compute and the frontier
+
 **Compute.** With `--compute`, each proposal that carries a
 concrete atomistic `structure` (a periodic cell + atoms) becomes a
 `structure` that `serves` the quest (the graph *is* the memory of

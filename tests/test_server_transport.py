@@ -10,6 +10,7 @@ narrowly (not through the full MCP tool-dispatch surface).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -108,6 +109,15 @@ def test_install_token_auth_accepts_correct_token() -> None:
 # ── main()'s transport branching (stdio stays byte-identical) ──────
 
 
+@pytest.fixture(autouse=True)
+def _no_nas_attest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() starts the NAS-attest thread on ``runtime.store``; these tests
+    stub the runtime as a bare object, so the thread is stubbed too."""
+    monkeypatch.setattr(
+        "precis.workers.heartbeat.start_nas_attest_thread", lambda *a, **k: None
+    )
+
+
 def test_main_stdio_default_calls_mcp_run_stdio_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,7 +125,7 @@ def test_main_stdio_default_calls_mcp_run_stdio_unchanged(
     exactly the pre-existing ``mcp.run(transport="stdio")`` call."""
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
     monkeypatch.setattr(server.mcp, "run", lambda transport: calls.append((transport,)))
     monkeypatch.setattr(
@@ -133,7 +143,7 @@ def test_main_network_transport_requires_a_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
     monkeypatch.delenv("PRECIS_MCP_TOKEN", raising=False)
 
@@ -146,7 +156,7 @@ def test_main_network_transport_dispatches_with_token(
 ) -> None:
     captured: dict[str, Any] = {}
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
     monkeypatch.setattr(
         server, "_run_network_transport", lambda **kw: captured.update(kw)
@@ -168,7 +178,7 @@ def test_main_network_transport_passes_an_inherited_fd_through(
 ) -> None:
     captured: dict[str, Any] = {}
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
     monkeypatch.setattr(
         server, "_run_network_transport", lambda **kw: captured.update(kw)
@@ -218,7 +228,7 @@ def test_main_network_transport_falls_back_to_env_token(
 ) -> None:
     captured: dict[str, Any] = {}
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
     monkeypatch.setattr(
         server, "_run_network_transport", lambda **kw: captured.update(kw)
@@ -232,7 +242,7 @@ def test_main_network_transport_falls_back_to_env_token(
 
 def test_main_rejects_unknown_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_log_version_banner", lambda: None)
-    monkeypatch.setattr(server, "_init_runtime", lambda: object())
+    monkeypatch.setattr(server, "_init_runtime", lambda: SimpleNamespace(store=None))
     monkeypatch.setattr(server, "_warm_embedder_background", lambda runtime: None)
 
     with pytest.raises(ValueError, match="unknown --transport"):

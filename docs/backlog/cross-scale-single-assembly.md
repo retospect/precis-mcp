@@ -12,12 +12,13 @@ Reto: co-design macro "laminar objects" (PCB, microfluidic cartridge) with
 motors/mechanics as ONE assembly with the nanoscale designs — not three
 separate artifacts stitched together after the fact.
 
-Evidence: peer session EWOD, 2026-09-30, plus `pcb-se-binding.md` (already
-in flight, `blocked-by` here). pcb already emits `export.mechanical_profile`
+Evidence: peer session EWOD, 2026-09-30, plus `pcb-se-binding.md` (specced,
+unbuilt, `blocked-by` here). pcb already emits `export.mechanical_profile`
 (`src/precis/pcb/export.py` — `pcb-se-binding.md` calls it "the 0041
-bridge", mm-native, `×1e-3` at the one crossing), but its only caller today
-is pcb's own `view='mechanical'` export builder
-(`src/precis/handlers/pcb.py:1826`) — no cad/se consumer reads it yet
+bridge"; it stays mm and the se derivation converts through the existing
+unit tables), but its only caller today is pcb's own `view='mechanical'`
+export builder (`PcbHandler`'s mechanical view in
+`src/precis/handlers/pcb.py`) — no cad/se consumer reads it yet
 (that consumer side is exactly what `pcb-se-binding.md` builds).
 `se.set_binding` enumerates `cad|structure|component|part`
 (`src/precis_se/ops.py::_BINDING_KINDS`) and, before `pcb-se-binding.md`

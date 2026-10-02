@@ -290,6 +290,19 @@ the port's derived axis after the block's own placement is applied —
 past 10° it is `revolute_axis_mismatch` in `view='drc'`: the joint names
 the axis, the port carries the rotation, both must agree.
 
+**Joint sweep.** A `revolute` or `prismatic` joint with an `axis` may
+declare its travel: `params: {'range': [lo, hi], 'moves': '<block>',
+'samples'?: 9}` (radians or metres, displacements from the authored pose,
+`lo < hi`, samples ≥ 2, endpoints included). `moves` is required and
+names the end that turns/slides; a connect is an unordered pair, so `a`/`b`
+order means nothing. `view='drc'` swings/slides that block and its
+`parent` subtree about its port's posed origin and checks envelope
+overlap at every sample against every unconnected block:
+`joint_sweep_interference` (warn) names both blocks and every colliding
+run of values. `joint_sweep_unchecked` (info) names joints past the
+256-sample budget, or whose `moves` names neither end. Discrete states
+alone (`view='sweep'`) never see a collision between them.
+
 ## Ranked library search — search(kind='se', wants=…)
 
 `search(kind='se', wants={...})` ranks every non-instance block in the

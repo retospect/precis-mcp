@@ -283,7 +283,7 @@ def test_via_span_is_f_cu_to_b_cu_and_is_the_only_b_cu_fixed_copper():
     assert exp.ledger["fabric"]["fan"] == "router"
 
 
-def test_expansion_version_is_3_so_older_boards_regenerate_without_a_param_change():
+def test_expansion_version_is_4_so_older_boards_regenerate_without_a_param_change():
     """The B.Cu breakout removal changed the emitted copper for UNCHANGED
     params, and ``_pcb_apply`` decides no-op vs. retire-and-reinsert on
     ``(generator, version, canonical_params)`` alone -- it never diffs the
@@ -302,9 +302,11 @@ def test_expansion_version_is_3_so_older_boards_regenerate_without_a_param_chang
     expansion's output and left all of v2's assertions green -- 48 passed,
     this one line failed. An emitted INSTANCE is output too, and a
     placement lock decides whether the placer may touch the part at all,
-    so the lock is pinned by the two tests below."""
+    so the lock is pinned by the two tests below. Version 4 emits the
+    fixed copper at the array anchor (``test_pcb_generator_version_tripwire``
+    pins that)."""
     exp = G.expand("ewod_pad_array", "ARR", {"grid": [6, 6]})
-    assert exp.version == 3
+    assert exp.version == 4
     necks, vias = _copper_by_ctype(exp)
     # What version 2 MEANS: two copper rows per driven electrode, and the
     # only B.Cu terminal is the via's own far landing.
