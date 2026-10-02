@@ -8,7 +8,8 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
+**Last reviewed:** 2026-10-02 (dogfood-6 valid: 30/55 routed, 0 geometric
+DRC errors; resume at Do-next 3). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
 sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and
 pre-place-route-blocks items deleted as shipped; placer-sees-authored-vias, the gerber DRC
@@ -47,6 +48,10 @@ Do-next renumbered)
    on the dogfood fixture all 54 reach B.Cu through the authored plaza vias.
    The "true via floor of 55" was wrong, because those vias already exist.
    Do not re-open the estimate to explain the 40 failures.
+   **Fixture now exists (2026-10-02):** dogfood-6, validly placed, routes
+   30 of 55 with 25 failed escapes and 0 geometric DRC errors (Boards on
+   prod). Rewrite the acceptance against that; the router half belongs to
+   pcb-easyeda-round-trip.
 4. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 3: both are
@@ -66,6 +71,9 @@ Do-next renumbered)
 
 ## Horizon
 
+0. **backlog/pcb-freerouting-view-replaces-without-legality.md** — the
+   Freerouting `view='route'` re-place skips the legality gate that
+   op=place/move now enforce; gate it or retire the view (product call).
 1. **backlog/pcb-always-valid-board-invariant.md** implementation slices —
    no longer waits on anything: the placer fix it queued behind landed
    2026-10-01. Still the precondition for trusting any number below this
@@ -194,32 +202,20 @@ Do-next renumbered)
 
 ## Boards on prod
 
-- **`ewod-dogfood-6` is the only live design.** Built 2026-09-30 through
-  `scripts/prod-precis` (this worktree's code against the prod DB) because
-  the session MCP was serving a **2026-09-08 image build** that still
-  emitted `fixed='both'` on sinks — a board authored through it reproduced
-  the pinned-sink-under-the-array configuration all by itself. Routed by
-  job 458869 on melchior build `73e22674`, which contains the pad-orientation
-  fix. **Its DRC is 116 errors**: the driver's solder lands sit on the array's
-  authored plaza vias, with `0 via(s) placed` by the router. The placer
-  that produced that is fixed in code (2026-10-01, authored vias are
-  placement obstacles) but **the stored board still carries the bad
-  placement** — it stays red until the fix is deployed and the board is
-  re-placed and re-routed, which is a prod write on Reto's word. The
-  first re-place on Reto's go (2026-10-01, job 460181) accepted 0 of
-  3000 moves: legality gates proposals, not the starting pose, and no
-  single step clears the via field. `OptimizeEngine.legalize_start`
-  (deployed in d170d29c) did not help: the re-place, job 460302, was again
-  0 of 3000 moves with nothing legalized. dogfood-6 has no authored
-  outline, so the placer's domain is the nominal 20 mm canvas, and the
-  driver's 19 x 23.5 mm keep-out shrinks that to the single point (10, 10),
-  where it sits on the vias. The fix grows the no-outline canvas to fit
-  the widest movable part (`_derive_placement_bounds`). Once it is deployed,
-  re-place and then re-route. Separately, the board needs an authored outline
-  large enough for the driver: `view='mechanical'` derives a 14 mm one
-  that excludes it entirely. Its
-  `view='cpl'` no longer lists `ARR1` once deployed, and its
-  `view='gerber'` opens with the DRC banner.
+- **`ewod-dogfood-6` is the only live design, and it is now a valid
+  board.** 2026-10-02 (Reto: "whatever size please do it"): authored a
+  32 mm square outline centred on the array (corner radius 1 mm), which
+  fits the 19 x 23.5 mm driver underneath in any rotation. Re-place job
+  461063 (build 7242d4c9): 0 pre-route DRC errors, no land on a plaza via.
+  Route job 461064: 30 realized, 25 failed, 3 dangling, 49 pin swaps;
+  STATUS failed means incomplete, which the always-valid invariant allows.
+  DRC run 55023e04: 51 errors = the 25 unrouted nets twice (unrouted +
+  connectivity) + 1 `silk_missing` (ARR1_SINK_0's bottom refdes has no
+  spot clear of the 55 plaza vias: a real board finding). **Zero geometric
+  errors.** 160 warnings, all copper at JLC minimums. Its 25 failures are
+  Do-next 3's fixture. Earlier history (the 116-error placement; jobs
+  460181/460302 accepting 0 of 3000 moves for lack of an outline) is in
+  git log.
 - **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
   the junk dogfood"). Every one of them is measured against something now
   known wrong: 1/2 had pinned sinks, 1/2/3 predate the real sink pin names,
