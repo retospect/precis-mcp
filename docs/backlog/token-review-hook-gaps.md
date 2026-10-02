@@ -95,3 +95,25 @@ sampled sessions show healthy `Agent` dispatch (bash:agent ratios 9–30,
 subagent types spanning `coder`/`reviewer`/`navigator`/`extract`/
 `cluster-ops`/`issue-closer` as intended) — Rule F is a real but
 session-specific failure mode, not a fleet-wide default.
+
+## 2026-10-02 pass (25 largest sessions since 09-25, 13.9k Bash calls)
+
+- **Rule D `sed -n` still unfixed, now 17% of Bash**: 2303 of 13891 calls;
+  worst sessions 255-269 each. The >5 KB slices alone are 196 calls / ~1.4 MB
+  (`paper.py` 128 calls/954 KB, `nucleic.py` 68 calls/486 KB), i.e. the same
+  bytes a `Read` with `limit` returns, but outside every hook.
+- **Re-slicing the same file**: 613 of 2758 sed/Read-by-path calls hit a path
+  already read 3+ times in that session (worst 82/215 in one session; top
+  paths `poster.tex` 38x, `threads/session-mcp-shared-server.md` 30x,
+  `pcb/optimize.py` 30x). Each is a fresh slice, so no one slice looks wasteful.
+- **Rule F recurred (fourth time)**: `1894f8a5` 1177 Bash/338 Edit/70 Write with
+  6 Agent calls (no `coder`); `56904dec` 170 Edit/85 Write, 3 Agent
+  (navigator/extract/cluster-ops, no `coder`); `ea8b2acd` 132 Edit/76 Write,
+  2 `coder`. Item is still unshipped; the nudge should be built.
+- **Wrong tier, new**: `c6fc74be` ran four `general-purpose` agents on the
+  `fable` model whose whole job was "Word the ... gripe" text (gripe-filer /
+  haiku remit; it also had 3 real gripe-filer dispatches).
+- **Compact thrash**: 10-22 auto-compacts in each of the top 8 sessions
+  (20, 22, 20, 18 in the four Bash-heavy marathons).
+- Improved: no `TaskOutput` re-poll loops left (0 in the top 8; was 778 KB).
+- Image re-reads split off to a gripe (not a hook matter).

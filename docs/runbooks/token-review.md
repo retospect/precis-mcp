@@ -68,6 +68,16 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-10-02** — scanned the 25 largest main-loop sessions since 09-25
+  (13.9k Bash calls, 6-88 MB each). Rule D `sed -n` still unfixed: 2303 calls
+  (17% of Bash), 196 slices >5 KB = ~1.4 MB; 613/2758 sed/Read-by-path calls
+  re-hit a path already read 3+ times (`poster.tex` 38x). Rule F recurred a
+  fourth time (`1894f8a5` 338 Edit/70 Write, no `coder`; `56904dec` 170 Edit).
+  New: 4 `fable` `general-purpose` agents wording gripe text (gripe-filer/haiku
+  work, `c6fc74be`); 10-22 auto-compacts in every top-8 session. Improved:
+  0 `TaskOutput` re-poll loops (was 778 KB). Largest single class is image
+  Reads: 109 images ~38 MB, `page-1.png` re-Read 17x = 11.4 MB in one poster
+  session, filed as gr461593. Rest folded into `token-review-hook-gaps`.
 - **2026-09-16** — sampled the 8 largest sessions since 09-02 (2.5–16.8 MB,
   main + 6 worktrees). Rule D (`sed -n`/`cat` instead of rtk/Read) still
   prose-only and still regressing: 78 raw un-rtk'd calls >5 KB (~606 KB) across
