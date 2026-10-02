@@ -218,6 +218,12 @@ on a net touching a moved pad (or colliding with the moved group) is
 ripped, not kept: the response lists `ripped N net(s): …` — re-route them
 with `op='route'`.
 
+`op='move'` also takes `moves=[{refdes, x, y, rot}, ...]`, judged together
+as one resulting board, so a swap works where neither single move would (a
+generator member in the list still brings its group; one part twice, or two
+members of one group, is refused; nothing is written on any refusal):
+`put(kind="pcb", id="s", args={"op": "move", "moves": [{"refdes": "U1", "x": 12, "y": 5}, {"refdes": "U2", "x": 4, "y": 5}]})`.
+
 `op='class_rules'` upserts one net class's rules (`{name, rules}` — same
 shape as `put(args={'net_classes': {...}})` at design-authoring time, just
 scoped to one class). **Honest limit:** the stored rules are not yet READ

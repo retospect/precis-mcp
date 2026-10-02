@@ -212,6 +212,10 @@ _POLARIZED_LABEL_RE = re.compile(r"ELEC|TANT|POL", re.IGNORECASE)
 #: A pre-existing finding the group move makes more negative than this is a
 #: new fault, not a standing one.
 _GROUP_MOVE_MARGIN_EPS_MM = 1e-4
+_MOVES_EXAMPLE = (
+    "args={'op':'move','moves':[{'refdes':'U1','x':10,'y':5},"
+    "{'refdes':'U2','x':20,'y':5,'rot':90}]}"
+)
 
 
 def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
@@ -664,21 +668,47 @@ class PcbHandler(Handler):
             )
         )
 
+    @staticmethod
+    def _pose_kwargs(src: dict[str, Any]) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        for k in ("x", "y", "rot"):
+            if src.get(k) is not None:
+                kwargs[k] = float(src[k])
+        return kwargs
+
     def _op_move(self, ref: Any, args: dict[str, Any]) -> Response:
+        if "moves" in args:
+            raw = args["moves"]
+            if not isinstance(raw, list) or not raw:
+                raise BadInput(
+                    "op='move' args.moves must be a non-empty list of poses",
+                    next=_MOVES_EXAMPLE,
+                )
+            entries: list[tuple[str, dict[str, Any]]] = []
+            for item in raw:
+                rd = (
+                    str(item.get("refdes") or "").strip()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                pose_kw = self._pose_kwargs(item) if isinstance(item, dict) else {}
+                if not rd or not pose_kw:
+                    raise BadInput(
+                        f"op='move' moves entry {item!r} needs refdes and at least "
+                        "one of x / y / rot",
+                        next=_MOVES_EXAMPLE,
+                    )
+                entries.append((rd, pose_kw))
+            body = self._move_poses(ref, entries, single_form=False)
+            assert body is not None  # only the single form returns None
+            return Response(body=body)
         refdes = str(args.get("refdes") or "").strip()
         if not refdes:
             raise BadInput(
                 "op='move' needs args.refdes",
                 next="args={'op':'move','refdes':'U1','x':10.0,'y':5.0,'rot':90}",
             )
-        x, y, rot = args.get("x"), args.get("y"), args.get("rot")
-        kwargs: dict[str, Any] = {}
-        if x is not None:
-            kwargs["x"] = float(x)
-        if y is not None:
-            kwargs["y"] = float(y)
-        if rot is not None:
-            kwargs["rot"] = float(rot)
+        kwargs = self._pose_kwargs(args)
         if "fixed" in args:
             kwargs["fixed"] = args["fixed"]
         if not kwargs:
@@ -687,7 +717,7 @@ class PcbHandler(Handler):
                 next="args={'op':'move','refdes':'U1','fixed':'xy'}",
             )
         if {"x", "y", "rot"} & kwargs.keys():
-            group_body = self._move_generator_group(ref, refdes, kwargs)
+            group_body = self._move_poses(ref, [(refdes, kwargs)], single_form=True)
             if group_body is not None:
                 return Response(body=group_body)
             self._refuse_illegal_pose(ref, refdes, kwargs)
@@ -696,69 +726,121 @@ class PcbHandler(Handler):
             raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
         return Response(body=f"# {refdes} moved — {kwargs}")
 
-    def _move_generator_group(
-        self, ref: Any, refdes: str, pose: dict[str, Any]
+    def _move_poses(
+        self,
+        ref: Any,
+        entries: list[tuple[str, dict[str, Any]]],
+        *,
+        single_form: bool,
     ) -> str | None:
-        """``op='move'`` on an instance a generator emitted
-        (docs/backlog/pcb-always-valid-board-invariant.md, Reto's ruling 1,
-        2026-10-02: "a part's own footprint copper always moves with it"):
-        the WHOLE generator group moves as one rigid body — every instance
-        the generator emitted (its own refdes, or ``{name}_…``: the
-        convention ``_pcb_generator_retire_expansion`` retires by) and every
-        ``pcb_fixed_copper`` row it owns, rotated about the moved
-        instance's old origin and translated to its new one. Judged on the
-        RESULTING board before anything is written: each member's pose by
-        the placer's rule (``pose_conflicts``), the carried copper by the
-        route gate's rule against every other part's pads and fixed copper.
-        Router copper that would dangle (a net on a moved pad) or collide is
-        ripped, not kept: the board stays valid and goes incomplete. One
-        transaction (:meth:`Store.pcb_move_group`).
+        """``op='move'`` on one or more parts
+        (docs/backlog/pcb-always-valid-board-invariant.md, Reto's rulings 1
+        and 2, 2026-10-02: "a part's own footprint copper always moves with
+        it"; a list of poses is validated together as ONE resulting state).
 
-        Returns the response body, or ``None`` when ``refdes`` belongs to no
-        generator (the plain single-part path)."""
+        A generator member brings its WHOLE generator group as one rigid
+        body — every instance the generator emitted (its own refdes, or
+        ``{name}_…``: the convention ``_pcb_generator_retire_expansion``
+        retires by) and every ``pcb_fixed_copper`` row it owns, rotated
+        about the moved instance's old origin and translated to its new one.
+        The board is judged AFTER every listed move is applied, before
+        anything is written: each moved part's pose by the placer's rule
+        (``pose_conflicts`` on an engine built over the resulting board, so
+        a part moved into the slot another listed part is leaving is legal
+        — a swap needs no parking spot), the carried copper by the route
+        gate's rule against every other part's pads and fixed copper. Router
+        copper that would dangle (a net on a moved pad) or collide is
+        ripped, not kept: the board stays valid and goes incomplete. One
+        transaction (:meth:`Store.pcb_move_groups`).
+
+        Returns the response body; with ``single_form`` it returns ``None``
+        when the refdes belongs to no generator (the plain single-part
+        path, whose response and refusal predate the list form)."""
         gens = self.store.pcb_generators_for(ref.id)
-        if not gens:
-            return None
         graph = self.store.pcb_graph(ref.id)
         by_refdes = {str(i["refdes"]): i for i in graph.get("instances") or []}
-        if refdes not in by_refdes:
-            return None  # the plain path reports the missing refdes
 
         def owns(name: str, g: dict[str, Any], rd: str) -> bool:
             return rd == g.get("refdes") or rd.startswith(name + "_")
 
-        names = [n for n, g in gens.items() if owns(n, g, refdes)]
-        if not names:
-            return None
-        members = sorted(
-            rd for rd in by_refdes if any(owns(n, gens[n], rd) for n in names)
-        )
-        member_set = set(members)
-        old = by_refdes[refdes]
-        if old["x"] is None or old["y"] is None:
-            raise BadInput(
-                f"pcb: {refdes} belongs to generator {', '.join(names)} but has no "
-                "placed pose, so its group has no frame to move rigidly from",
-                next="run put(args={'op':'place'}) first",
-            )
-        ox, oy = float(old["x"]), float(old["y"])
-        old_rot = float(old["rot"] or 0.0)
-        nx, ny = float(pose.get("x", ox)), float(pose.get("y", oy))
-        new_rot = float(pose.get("rot", old_rot))
-        dtheta = new_rot - old_rot
-
-        poses: list[tuple[str, float, float, float]] = []
-        for rd in members:
-            inst = by_refdes[rd]
-            if rd == refdes:
-                poses.append((rd, nx, ny, new_rot))
-            elif inst["x"] is not None and inst["y"] is not None:
-                dx, dy = rotate_offset(
-                    float(inst["x"]) - ox, float(inst["y"]) - oy, dtheta
+        # One plan per listed part: its rigid body (members), the transform.
+        plans: list[dict[str, Any]] = []
+        claimed: dict[str, str] = {}  # member refdes -> the listed refdes
+        for refdes, pose in entries:
+            if refdes in {p["refdes"] for p in plans}:
+                raise BadInput(
+                    f"pcb: {refdes} is listed twice in moves",
+                    next="list each part once; nothing was changed",
                 )
-                rot = (float(inst["rot"] or 0.0) + dtheta) % 360.0
-                poses.append((rd, nx + dx, ny + dy, rot))
-        new_pose = {rd: (x, y, r) for rd, x, y, r in poses}
+            if refdes not in by_refdes:
+                if single_form:
+                    return None  # the plain path reports the missing refdes
+                raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
+            names = [n for n, g in gens.items() if owns(n, g, refdes)]
+            if single_form and not names:
+                return None
+            members = (
+                sorted(
+                    rd for rd in by_refdes if any(owns(n, gens[n], rd) for n in names)
+                )
+                if names
+                else [refdes]
+            )
+            for m in members:
+                if m in claimed:
+                    raise BadInput(
+                        f"pcb: {refdes} and {claimed[m]} are listed in one move but "
+                        f"share a generator group ({m} belongs to both): a group "
+                        "moves as one rigid body, so list only one of them",
+                        next="nothing was changed",
+                    )
+                claimed[m] = refdes
+            old = by_refdes[refdes]
+            if names and (old["x"] is None or old["y"] is None):
+                raise BadInput(
+                    f"pcb: {refdes} belongs to generator {', '.join(names)} but has "
+                    "no placed pose, so its group has no frame to move rigidly from",
+                    next="run put(args={'op':'place'}) first",
+                )
+            ox = float(old["x"]) if old["x"] is not None else math.nan
+            oy = float(old["y"]) if old["y"] is not None else math.nan
+            old_rot = float(old["rot"] or 0.0)
+            nx, ny = float(pose.get("x", ox)), float(pose.get("y", oy))
+            if math.isnan(nx) or math.isnan(ny):
+                raise BadInput(
+                    f"pcb: {refdes} is unplaced; its move needs both x and y",
+                    next="args={'op':'move','moves':[{'refdes':'U1','x':1,'y':2}]}",
+                )
+            new_rot = float(pose.get("rot", old_rot))
+            dtheta = new_rot - old_rot
+            poses: list[tuple[str, float, float, float]] = []
+            for rd in members:
+                inst = by_refdes[rd]
+                if rd == refdes:
+                    poses.append((rd, nx, ny, new_rot))
+                elif inst["x"] is not None and inst["y"] is not None:
+                    dx, dy = rotate_offset(
+                        float(inst["x"]) - ox, float(inst["y"]) - oy, dtheta
+                    )
+                    rot = (float(inst["rot"] or 0.0) + dtheta) % 360.0
+                    poses.append((rd, nx + dx, ny + dy, rot))
+            plans.append(
+                {
+                    "refdes": refdes,
+                    "names": names,
+                    "members": set(members),
+                    "member_list": members,
+                    "poses": poses,
+                    "pivot": (ox, oy),
+                    "target": (nx, ny),
+                    "dtheta": dtheta,
+                    "pose": pose,
+                }
+            )
+        member_set: set[str] = set().union(*(p["members"] for p in plans))
+        all_names = [n for p in plans for n in p["names"]]
+        all_poses = [t for p in plans for t in p["poses"]]
+        new_pose = {rd: (x, y, r) for rd, x, y, r in all_poses}
         graph_new = {
             **graph,
             "instances": [
@@ -773,6 +855,7 @@ class PcbHandler(Handler):
                 for i in graph["instances"]
             ],
         }
+        label = ", ".join(p["refdes"] for p in plans)
 
         board_id = (graph.get("board") or {}).get("board_id")
         fixed_old = (
@@ -780,24 +863,32 @@ class PcbHandler(Handler):
             if board_id is not None
             else []
         )
-        carried_old = [r for r in fixed_old if r.get("generator_name") in names]
-        carried_new = [
-            pcb_geom.rigid_transform_geom(
-                r, pivot=(ox, oy), target=(nx, ny), dtheta_deg=dtheta
-            )
-            for r in carried_old
-        ]
-        foreign = [r for r in fixed_old if r.get("generator_name") not in names]
-        # No capability row = no rule to judge the carried copper by. Refuse
-        # rather than move unchecked copper (legality never fails open).
-        try:
-            caps = capability_for(
-                pcb_drc.process_for_stackup((graph.get("board") or {})["stackup"])
-            )
-        except (ValueError, KeyError, TypeError) as exc:
-            raise BadInput(
-                f"pcb: cannot judge {refdes}'s generator group copper — {exc}"
-            ) from exc
+        carried_old: list[dict[str, Any]] = []
+        carried_new: list[dict[str, Any]] = []
+        for p in plans:
+            rows = [r for r in fixed_old if r.get("generator_name") in p["names"]]
+            carried_old += rows
+            carried_new += [
+                pcb_geom.rigid_transform_geom(
+                    r, pivot=p["pivot"], target=p["target"], dtheta_deg=p["dtheta"]
+                )
+                for r in rows
+            ]
+        foreign = [r for r in fixed_old if r.get("generator_name") not in all_names]
+
+        def capabilities() -> Any:
+            # No capability row = no rule to judge copper by. Refuse rather
+            # than move unchecked copper (legality never fails open).
+            try:
+                return capability_for(
+                    pcb_drc.process_for_stackup((graph.get("board") or {})["stackup"])
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                raise BadInput(
+                    f"pcb: cannot judge {label}'s copper on this board — {exc}"
+                ) from exc
+
+        caps: Any = capabilities() if (all_names or carried_old) else None
 
         def footprints_for(ir: pcb_ir.PcbIR) -> dict[str, dict[str, Any]]:
             return pcb_session.footprints_by_refdes(
@@ -811,18 +902,19 @@ class PcbHandler(Handler):
 
         problems: list[str] = []
 
-        # (a) every member's pose against the placer's rule, on the board
-        # AFTER the move. The group's own carried vias are left out of this
-        # IR: they travel with the lands, so their relation is rigid — only
-        # authored vias a member could newly land on are the placer's.
+        # (a) every moved part's pose against the placer's rule, on the board
+        # AFTER every listed move. A group's own carried vias are left out of
+        # this IR: they travel with the lands, so their relation is rigid —
+        # only authored vias a member could newly land on are the placer's.
         ir_pose = self._build_ir(ref.id, graph_new, fixed_copper=foreign)
         engine = pcb_optimize.OptimizeEngine(ir_pose, pcb_optimize.OptimizeConfig())
         idx = {str(r): i for i, r in enumerate(ir_pose.instance_refdes)}
-        for rd, x, y, r in poses:
-            for rule, other in engine.pose_conflicts(idx[rd], x, y, r):
-                if other in member_set:
-                    continue  # one rigid body: its own relations do not change
-                problems.append(f"{rule}: {rd} with {other}")
+        for p in plans:
+            for rd, x, y, r in p["poses"]:
+                for rule, other in engine.pose_conflicts(idx[rd], x, y, r):
+                    if other in p["members"]:
+                        continue  # one rigid body: its own relations do not change
+                    problems.append(f"{rule}: {rd} with {other}")
 
         # (b) the carried copper and the moved lands against everything
         # else, by the route gate's rule. Only findings the move ADDS or
@@ -873,18 +965,31 @@ class PcbHandler(Handler):
                         )
                     else:
                         standing.append(line)
+        first = plans[0]
         if problems:
             shown = "; ".join(problems[:8])
             more = f" (+{len(problems) - 8} more)" if len(problems) > 8 else ""
+            if len(plans) == 1 and first["names"]:
+                tx, ty = first["target"]
+                raise BadInput(
+                    f"pcb: moving {label} to ({tx:g}, {ty:g}) would leave an invalid "
+                    f"board — it carries its generator group "
+                    f"({', '.join(first['member_list'])}) and "
+                    f"{len(carried_old)} fixed-copper row(s) with it: {shown}{more}",
+                    next="pick a pose clear of these; nothing was changed",
+                )
+            targets = ", ".join(
+                f"{p['refdes']} to ({p['target'][0]:g}, {p['target'][1]:g})"
+                for p in plans
+            )
             raise BadInput(
-                f"pcb: moving {refdes} to ({nx:g}, {ny:g}) would leave an invalid "
-                f"board — it carries its generator group ({', '.join(members)}) and "
-                f"{len(carried_old)} fixed-copper row(s) with it: {shown}{more}",
-                next="pick a pose clear of these; nothing was changed",
+                f"pcb: moving {targets} together would leave an invalid board: "
+                f"{shown}{more}",
+                next="pick poses clear of these; nothing was changed",
             )
 
         # Router copper: a net on a moved pad dangles, and any other net
-        # whose copper now collides with the moved group has to yield.
+        # whose copper now collides with the moved parts has to yield.
         rip: dict[str, str] = {}
         have_copper = (
             self.store.pcb_nets_with_router_copper(int(board_id))
@@ -908,31 +1013,48 @@ class PcbHandler(Handler):
                 router_rows=router_rows,
                 carried_rows=carried_new,
                 members=member_set,
-                fab_caps=caps,
+                fab_caps=caps if caps is not None else capabilities(),
             )
             for net, lines in conflicts.items():
                 rip.setdefault(net, f"collides with the moved group ({lines[0]})")
+        lock = (
+            (first["refdes"], first["pose"]["fixed"])
+            if single_form and "fixed" in first["pose"]
+            else None
+        )
         try:
-            ripped = self.store.pcb_move_group(
+            ripped = self.store.pcb_move_groups(
                 ref.id,
                 int(board_id) if board_id is not None else 0,
-                poses,
-                generator_names=names if board_id is not None else [],
-                pivot=(ox, oy),
-                target=(nx, ny),
-                dtheta_deg=dtheta,
+                all_poses,
+                transforms=[
+                    (p["names"], p["pivot"], p["target"], p["dtheta"])
+                    for p in plans
+                    if p["names"] and board_id is not None
+                ],
                 rip_nets=sorted(rip),
-                lock=(refdes, pose["fixed"]) if "fixed" in pose else None,
+                lock=lock,
             )
         except ValueError as exc:
             raise NotFound(str(exc)) from exc
-        body = (
-            f"# {refdes} moved — {pose}\n"
-            f"generator group {', '.join(names)} moved rigidly "
-            f"(dx={nx - ox:g}, dy={ny - oy:g}, drot={dtheta:g}): "
-            f"{', '.join(rd for rd, *_ in poses)}; "
-            f"{len(carried_old)} fixed-copper row(s) carried with it"
-        )
+        if single_form:
+            tx, ty = first["target"]
+            px, py = first["pivot"]
+            body = (
+                f"# {label} moved — {first['pose']}\n"
+                f"generator group {', '.join(first['names'])} moved rigidly "
+                f"(dx={tx - px:g}, dy={ty - py:g}, drot={first['dtheta']:g}): "
+                f"{', '.join(rd for rd, *_ in all_poses)}; "
+                f"{len(carried_old)} fixed-copper row(s) carried with it"
+            )
+        else:
+            body = (
+                f"# moved {len(plans)} part(s) together — {label}\n"
+                + "\n".join(
+                    f"{rd}: ({x:g}, {y:g}, rot {r:g})" for rd, x, y, r in all_poses
+                )
+                + f"\n{len(carried_old)} fixed-copper row(s) carried with them"
+            )
         if ripped:
             body += (
                 f"\nripped {len(ripped)} net(s): "

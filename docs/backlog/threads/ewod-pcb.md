@@ -32,9 +32,11 @@ Do-next renumbered)
    the whole group with its fixed copper and rips the router nets it
    strands; `ewod_pad_array` v4 emits its copper at the array anchor. The
    13 strips on pcb 460559 were router faults, fixed by
-   pcb-easyeda-round-trip (0 strips after). **Next:** the multi-pose
-   `op='move'` (Reto ruling 2), then the remaining mutation paths in the
-   item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`).
+   pcb-easyeda-round-trip (0 strips after). The multi-pose `op='move'`
+   (ruling 2) is built too. **Next:** the remaining mutation paths in the
+   item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);
+   the pose half of the move check is still a resulting-state check, on
+   the orchestrator's desk in reviews/ewod-pcb.md.
    Dogfood after the deploy: re-route ewod-dogfood-6, expect 0 in the
    summary's "stripped by post-route DRC" count.
    **Now `status: canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his

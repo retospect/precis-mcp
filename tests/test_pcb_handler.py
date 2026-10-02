@@ -1154,6 +1154,112 @@ def test_op_move_unknown_instance_not_found(pcb):
         pcb.put(id="op-move-404", args={"op": "move", "refdes": "NOPE", "x": 1.0})
 
 
+def _xy(store, slug, refdes):
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    return _poses(store, ref.id)[refdes][:2]
+
+
+def test_op_move_list_swaps_two_parts_neither_can_reach_alone(pcb, store):
+    """Reto's ruling 2 (pcb-always-valid-board-invariant.md): a swap needs no
+    parking spot. A and B sit 2.0 mm apart; each single move onto the
+    other's slot overlaps the other, the joint move is legal."""
+    pcb.put(id="mv-swap", args=_CROSSED)
+    for rd, x, y in (("A", 2.0, 2.0), ("B", 0.0, 0.0)):
+        with pytest.raises(BadInput, match="courtyard_overlap"):
+            pcb.put(id="mv-swap", args={"op": "move", "refdes": rd, "x": x, "y": y})
+    resp = pcb.put(
+        id="mv-swap",
+        args={
+            "op": "move",
+            "moves": [
+                {"refdes": "A", "x": 2.0, "y": 2.0},
+                {"refdes": "B", "x": 0.0, "y": 0.0},
+            ],
+        },
+    )
+    assert "A" in resp.body and "B" in resp.body
+    assert _xy(store, "mv-swap", "A") == (2.0, 2.0)
+    assert _xy(store, "mv-swap", "B") == (0.0, 0.0)
+
+
+def test_op_move_list_with_one_illegal_target_moves_nothing(pcb, store):
+    """Negative control: A's target is clear, B's lands on C; the whole list
+    is refused naming B and C, and A did not move either."""
+    pcb.put(id="mv-swap-bad", args=_CROSSED)
+    with pytest.raises(BadInput, match="courtyard_overlap: B with C"):
+        pcb.put(
+            id="mv-swap-bad",
+            args={
+                "op": "move",
+                "moves": [
+                    {"refdes": "A", "x": 20.0, "y": 20.0},
+                    {"refdes": "B", "x": 0.0, "y": 2.0},
+                ],
+            },
+        )
+    assert _xy(store, "mv-swap-bad", "A") == (0.0, 0.0)
+    assert _xy(store, "mv-swap-bad", "B") == (2.0, 2.0)
+
+
+def test_op_move_list_with_a_generator_member_moves_its_group_and_copper(pcb, store):
+    ref, board_id = _gen_board(pcb, "mv-list-grp")
+    poses0 = _poses(store, ref.id)
+    fixed0 = _fixed_snapshot(store, board_id)
+    resp = pcb.put(
+        id="mv-list-grp",
+        args={
+            "op": "move",
+            "moves": [
+                {"refdes": "ARR1", "x": 20.0, "y": 15.0},
+                {"refdes": "P2", "x": 330.0, "y": 300.0},
+            ],
+        },
+    )
+    poses1 = _poses(store, ref.id)
+    sinks = [r for r in poses0 if r.startswith("ARR1_SINK_")]
+    assert len(sinks) == 4
+    for name in ["ARR1", *sinks]:
+        assert name in resp.body
+        assert (
+            poses1[name][0] - poses0[name][0],
+            poses1[name][1] - poses0[name][1],
+        ) == (pytest.approx((20.0, 15.0), abs=1e-9))
+    assert poses1["P2"][:2] == (330.0, 300.0)
+    assert poses1["P1"] == poses0["P1"]
+    assert _fixed_snapshot(store, board_id) == _shifted(fixed0, 20.0, 15.0)
+
+
+def test_op_move_list_refuses_a_part_twice_and_two_entries_of_one_group(pcb, store):
+    ref, board_id = _gen_board(pcb, "mv-list-dup")
+    poses0 = _poses(store, ref.id)
+    fixed0 = _fixed_snapshot(store, board_id)
+    with pytest.raises(BadInput, match="P2 is listed twice"):
+        pcb.put(
+            id="mv-list-dup",
+            args={
+                "op": "move",
+                "moves": [
+                    {"refdes": "P2", "x": 330.0, "y": 300.0},
+                    {"refdes": "P2", "x": 340.0, "y": 300.0},
+                ],
+            },
+        )
+    with pytest.raises(BadInput, match="ARR1_SINK_0 and ARR1 .*share a generator"):
+        pcb.put(
+            id="mv-list-dup",
+            args={
+                "op": "move",
+                "moves": [
+                    {"refdes": "ARR1", "x": 20.0, "y": 15.0},
+                    {"refdes": "ARR1_SINK_0", "x": 5.0, "y": 5.0, "rot": 90.0},
+                ],
+            },
+        )
+    assert _poses(store, ref.id) == poses0
+    assert _fixed_snapshot(store, board_id) == fixed0
+
+
 def test_op_class_rules_sets_rules(pcb, store):
     pcb.put(id="op-classrules", args=_CROSSED)
     pcb.put(

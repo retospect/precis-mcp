@@ -319,7 +319,7 @@ extracted *affinity*, which is a different fact.
    ripup... maybe better to rip up or remove offending segments". Ripping
    is the default; rubber-banding the attached tracks is optional polish.
    The board stays valid but incomplete, never invalid. **Built 2026-10-02**
-   (`handlers/pcb.py::_move_generator_group`, `Store.pcb_move_group`): a
+   (`handlers/pcb.py::_move_poses`, `Store.pcb_move_group`): a
    move of any generator member moves the whole group (the generator's own
    refdes plus every `{name}_…` instance) and its fixed copper as one rigid
    body in one transaction; members are judged by `pose_conflicts`, carried
@@ -330,7 +330,11 @@ extracted *affinity*, which is a different fact.
    off the origin starts desynced and a group move preserves it (0 such
    arrays in prod, 2026-10-02) — generator fix queued in the thread.
 2. **Multi-pose move: yes** ("totally, that would be awesome"). `op='move'`
-   takes a list of poses validated together as one resulting state.
+   takes a list of poses validated together as one resulting state. **Built
+   2026-10-02**: `args={'op':'move','moves':[{refdes,x,y,rot}, ...]}`;
+   each part is judged by `pose_conflicts` against every other part at its
+   NEW pose (a swap neither part can make alone succeeds), generator
+   members bring their groups, one transaction (`Store.pcb_move_groups`).
 3. **Route commits only DRC-clean nets** (3b) — built 2026-10-02, see
    Acceptance.
 
@@ -342,7 +346,7 @@ extracted *affinity*, which is a different fact.
   `OptimizeEngine.pose_conflicts`, which applies the placer's own rule set and
   checks the moved part only. The other mutation paths listed above
   (`pcb_apply`, `view='route'`, `op='footprint'`, `op='class_rules'`) are
-  still open, and ruling 2 (multi-pose move) is unbuilt.
+  still open; rulings 1 and 2 are built.
 - Negative control: a legal mutation is NOT refused. Without it the refusal
   path can be vacuously "always refuse". (Has a test for `op='move'`.)
 - An incumbent-invalid board is reported as invalid rather than silently

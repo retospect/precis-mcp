@@ -1722,14 +1722,38 @@ class PcbMixin:
         rip_nets: Iterable[str],
         lock: tuple[str, str | None] | None = None,
     ) -> list[str]:
-        """The rigid group move (``op='move'`` on a generator member), ONE
-        transaction: every ``(refdes, x, y, rot)`` pose written, every
-        active ``pcb_fixed_copper`` row of ``generator_names`` carried by
-        the same rigid transform (:func:`precis.pcb.geom.
-        rigid_transform_geom`), and every net of ``rip_nets`` that has
-        router copper ripped (:meth:`pcb_rip_route`'s reset). Any failure
-        rolls all of it back. Returns the nets actually ripped."""
+        """The rigid group move (``op='move'`` on a generator member): the
+        one-transform case of :meth:`pcb_move_groups`."""
         names = list(generator_names)
+        return self.pcb_move_groups(
+            ref_id,
+            board_id,
+            poses,
+            transforms=[(names, pivot, target, dtheta_deg)] if names else [],
+            rip_nets=rip_nets,
+            lock=lock,
+        )
+
+    def pcb_move_groups(
+        self,
+        ref_id: int,
+        board_id: int,
+        poses: list[tuple[str, float, float, float]],
+        *,
+        transforms: list[
+            tuple[list[str], tuple[float, float], tuple[float, float], float]
+        ],
+        rip_nets: Iterable[str],
+        lock: tuple[str, str | None] | None = None,
+    ) -> list[str]:
+        """The multi-part ``op='move'``, ONE transaction: every
+        ``(refdes, x, y, rot)`` pose written, every active
+        ``pcb_fixed_copper`` row of each ``(generator_names, pivot, target,
+        dtheta_deg)`` transform carried by that rigid transform
+        (:func:`precis.pcb.geom.rigid_transform_geom`), and every net of
+        ``rip_nets`` that has router copper ripped (:meth:`pcb_rip_route`'s
+        reset). Any failure rolls all of it back. Returns the nets actually
+        ripped."""
         ripped: list[str] = []
         with self.tx() as conn:
             for refdes, x, y, rot in poses:
@@ -1739,12 +1763,12 @@ class PcbMixin:
                     raise ValueError(f"pcb instance {refdes!r} not found")
             if lock is not None:  # (refdes, new `fixed` value; None clears)
                 self.pcb_move_instance(ref_id, lock[0], fixed=lock[1], conn=conn)
-            if names:
+            for names, pivot, target, dtheta_deg in transforms:
                 rows = conn.execute(
                     "SELECT fixed_id, geom FROM pcb_fixed_copper "
                     "WHERE board_id = %s AND retired_at IS NULL "
                     "AND generator_name = ANY(%s) ORDER BY fixed_id",
-                    (board_id, names),
+                    (board_id, list(names)),
                 ).fetchall()
                 for fixed_id, geom in rows:
                     moved = pcb_geom.rigid_transform_geom(
