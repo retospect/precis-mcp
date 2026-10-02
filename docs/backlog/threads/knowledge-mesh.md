@@ -23,14 +23,13 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/taxonomy-bootstrap.md §Resume** — the gate is cross-run
-   naming agreement (Reto, knowledge-mesh-7), bar 0.711. Packed vs packed
-   passes at 0.794 (p10 0.739), as consistent as unpacked (0.773). Reto
-   held the full run (knowledge-mesh-8) to test the local big model on
-   castor first; castor has no serving date (local-compute). Choice is
-   knowledge-mesh-9 (wait for castor recommended). `--placement local` is
-   built so the test runs the day castor serves: two local 100-row runs,
-   then local-vs-local agreement against 0.711.
+1. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
+   big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
+   not run; local-compute pings on serving). Then: two
+   `--placement local --pack 4 --limit 100` runs, `compare_runs.py`
+   local-vs-local against the 0.711 bar (cross-run folded agreement,
+   knowledge-mesh-7); if it clears, the full run goes local ($0).
+   `--placement local` shipped (fdfae5c5c).
 2. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
@@ -134,9 +133,6 @@ graph-health-metrics, five parked gripes, and the seam with
     migration path there. A review, not a refactor; any time.
 ## Waiting on Reto
 
-- **knowledge-mesh-9 (review queue, 2026-10-02):** wait for castor's
-  local big model (no date) and test there, or buy the full taxonomy run
-  in the cloud now (packed ~$37, passes the gate; unpacked ~$100).
 
 The six 2026-09-30 rulings (fold-in, mirror first, render-only, this
 rename, memory-lint repo-local, one resident block) are recorded in their

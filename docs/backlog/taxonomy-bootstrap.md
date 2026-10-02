@@ -617,8 +617,9 @@ be scale-free. Spend so far today $16.80 ($5.91 void packed, $4.99
 baseline, $5.90 corrected packed). Zero-cost readers in the scratch dir:
 `compare_runs.py`, `probe_read.py`, `half_gaps.py`, `subset_dump.py`.
 
-1. **Full-run configuration** — waits on Reto (knowledge-mesh-8,
-   packed recommended). Gate: cross-run folded agreement, bar 0.711 (p10
+1. **Full-run configuration** — Reto (knowledge-mesh-9): wait for
+   castor's local big model, run the agreement test there with
+   `--placement local`, full run local if it clears 0.711. Earlier read: Gate: cross-run folded agreement, bar 0.711 (p10
    of a hub bootstrap over two unpacked 100-row runs; median 0.773, raw
    0.63). Packed vs packed (100-row run against the 300-row run's shared
    hubs): **0.794 folded, p10 0.739, raw 0.76 — passes**. Packed vs
