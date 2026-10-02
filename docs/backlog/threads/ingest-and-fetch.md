@@ -36,8 +36,12 @@ states that count a paper as usable when it is not, then metadata.
 5. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
 6. **gr456181** — 4,313 S2-enriched papers have no venue (2,477 have a
-   DOI). The code fix is deployed. The re-arm of `s2_enriched_at` is a bulk
-   prod write that needs Reto's go. Metadata only, no body harmed.
+   DOI). The code fix is deployed. Reto approved the `s2_enriched_at`
+   re-arm 2026-10-02 (review item ingest-and-fetch-1) on one condition:
+   be gentle with S2. Re-arm in small batches spread over time, or first
+   confirm the lane's own rate limit is well under S2's public limit and
+   that it backs off on 429. Not started: the fleet hold for Reto's demo
+   came first.
 
 ## Horizon
 
