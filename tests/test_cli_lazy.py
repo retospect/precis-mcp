@@ -9,6 +9,7 @@ and a subcommand whose dependency is missing failing alone, by name.
 from __future__ import annotations
 
 import argparse
+import ast
 import subprocess
 import sys
 import textwrap
@@ -180,3 +181,28 @@ def test_plugin_commands_join_after_core(monkeypatch: pytest.MonkeyPatch) -> Non
     cmds = registry.commands()
     assert cmds[: len(registry.COMMANDS)] == registry.COMMANDS
     assert cmds[len(registry.COMMANDS) :] == (good,)
+
+
+def test_every_cli_parser_module_has_a_registry_row() -> None:
+    """A ``precis.cli`` module with a parser registrar but no registry row
+    is a subcommand that silently does not exist: ``main`` only reaches
+    modules the registry names. The eager tree failed loudly here (an
+    edit to ``main.py`` was needed and showed up in review); the registry
+    does not, so this pins it."""
+    cli_dir = Path(registry.__file__).parent
+    rows = {c.module for c in (*registry.COMMANDS, *registry.JOB_COMMANDS)}
+    missing = []
+    for path in sorted(cli_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        has_registrar = any(
+            isinstance(n, ast.FunctionDef)
+            and n.name.startswith("add_")
+            and n.name.endswith("parser")
+            for n in tree.body
+        )
+        if has_registrar and f"precis.cli.{path.stem}" not in rows:
+            missing.append(path.name)
+    assert not missing, (
+        f"precis.cli modules with add_*parser but no row in "
+        f"precis.cli.registry: {missing} — add a Command row for each."
+    )
