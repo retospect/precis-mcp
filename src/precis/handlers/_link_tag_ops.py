@@ -275,14 +275,103 @@ def guard_taxon_hierarchy(
                 )
 
 
+def _ref_label(ref_id: int, kind: str) -> str:
+    """``kind:id`` handle for an error message (the registry's short handle
+    when the kind has one)."""
+    from precis.utils import handle_registry
+
+    return handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+
+
+def check_relation_constraints(
+    store: Store,
+    rel: str,
+    src_ref_id: int,
+    target: LinkTarget,
+) -> None:
+    """Refuse an add-mode link that breaks the relation's constraint row
+    (migration 0180: ``domain_kinds`` / ``range_kinds`` / ``functional`` /
+    ``acyclic``). The one validator at both generic link doors
+    (:func:`apply_link_ops`, ``NumericRefHandler.link``), mirroring how
+    ``Tag.parse_strict`` is the one choke point for tags. A relation with no
+    constraint row is a no-op.
+
+    A write that uses the inverse slug of a constrained relation
+    (``has-draft`` for ``draft-of``) is checked as the constrained edge
+    with its ends swapped, so the inverse is not a bypass.
+
+    * domain / range: ``refs.kind`` of the source / target must be in the
+      set; the error names the relation, the offending end and the allowed
+      kinds, then the relation's description (the rule's rationale).
+    * ``functional``: the target (the owner end, e.g. the project of a
+      ``draft-of``) may hold at most one live source; a second raises
+      naming the existing one. ``mode='remove'`` the old edge first.
+    * ``acyclic``: refused when the target already reaches the source
+      along the relation (:meth:`Store.ancestors`, either stored direction,
+      depth-capped).
+
+    ``transitive`` is stored for readers; it checks nothing here.
+    """
+    constraints = store.relation_constraints()
+    rc = constraints.get(rel)
+    s_id, d_id = src_ref_id, target.ref_id
+    if rc is None or not rc.constrained:
+        inv = constraints.get(rc.inverse_slug) if rc and rc.inverse_slug else None
+        if inv is None or not inv.constrained:
+            return
+        rc, s_id, d_id = inv, d_id, s_id
+    if rc.domain_kinds is not None or rc.range_kinds is not None:
+        kinds = _endpoint_kinds(store, s_id, d_id)
+        for end, ref_id, allowed, column in (
+            ("source", s_id, rc.domain_kinds, "domain_kinds"),
+            ("target", d_id, rc.range_kinds, "range_kinds"),
+        ):
+            kind = kinds.get(ref_id)
+            if allowed is None or kind is None or kind in allowed:
+                continue
+            allowed_s = ", ".join(sorted(allowed))
+            why = f" — {rc.description}" if rc.description else ""
+            raise BadInput(
+                f"{rc.slug!r} {column} = {allowed_s}: {end} "
+                f"{_ref_label(ref_id, kind)} is kind {kind!r}{why}",
+                next=(
+                    f"link a {allowed_s} ref as the {end} of {rc.slug!r}, "
+                    f"or pick another rel= (get(kind='skill', "
+                    f"id='precis-relations') lists each relation's kinds)"
+                ),
+            )
+    if s_id == d_id:
+        return  # add_link refuses the self-loop with its own message
+    if rc.functional:
+        held = store.functional_conflict(rc.slug, d_id, exclude_src_ref_id=s_id)
+        if held is not None:
+            kinds = _endpoint_kinds(store, held, d_id)
+            raise BadInput(
+                f"{rc.slug!r} is functional: {_ref_label(d_id, kinds.get(d_id, '?'))} "
+                f"already has {_ref_label(held, kinds.get(held, '?'))}",
+                next=(
+                    f"unlink the existing one first (link(..., rel={rc.slug!r}, "
+                    "mode='remove')), or work on the existing one"
+                ),
+            )
+    if rc.acyclic and d_id in store.ancestors(rc.slug, s_id):
+        kinds = _endpoint_kinds(store, s_id, d_id)
+        raise BadInput(
+            f"{rc.slug!r} would form a cycle: "
+            f"{_ref_label(d_id, kinds.get(d_id, '?'))} already reaches "
+            f"{_ref_label(s_id, kinds.get(s_id, '?'))} along {rc.slug!r}",
+            next=f"{rc.slug!r} is acyclic - pick a target that is not above the source",
+        )
+
+
 def guard_and_route_contradicts_disputes(
     store: Store,
     src_ref_id: int,
     target: LinkTarget,
     relation: Relation,
 ) -> int | None:
-    """Enforce the ``contradicts``/``disputes`` write-door policy for an
-    add-mode link, and delegate a live claim-pair ``disputes`` to
+    """Enforce the ``disputes`` write-door policy for an add-mode link:
+    delegate a live claim-pair ``disputes`` to
     :func:`precis.taproot.hub.link_claims`.
 
     Shared by every add-mode link door — the generic ``link()`` handlers
@@ -297,14 +386,12 @@ def guard_and_route_contradicts_disputes(
     when this helper already performed the write — the claim-pair
     ``disputes`` delegation.
 
-    Two relations get extra routing on the add path:
+    Only ``disputes`` gets extra routing here. The ``contradicts`` endpoint
+    rule (claim-graph ``contradicts`` is adjudication-derived; only
+    ``memory``<->``memory`` is fileable, D2) is the ``relations`` row's
+    ``domain_kinds``/``range_kinds``, enforced by
+    :func:`check_relation_constraints` at the same doors.
 
-    * ``contradicts`` — claim-graph ``contradicts`` is adjudication-derived
-      only (Part 2); no agent-facing door can file it manually. The one
-      exception is ``memory``<->``memory`` (a different subsystem, D2),
-      which keeps working via the caller's plain write (this function
-      returns ``None`` for that pair). Any other endpoint pair raises
-      ``BadInput`` pointing at ``disputes``.
     * ``disputes`` — between two live ``TAPROOT:claim`` findings at
       ref-level, this delegates to :func:`precis.taproot.hub.link_claims`
       (the claim-pair door, D4) instead of a plain ``add_link``: it's
@@ -315,19 +402,6 @@ def guard_and_route_contradicts_disputes(
       edge (e.g. a review note on a finding) is exactly what
       :func:`precis.taproot.hub.reattach_as_disputes` also writes plainly.
     """
-    if relation == "contradicts":
-        kinds = _endpoint_kinds(store, src_ref_id, target.ref_id)
-        if kinds.get(src_ref_id) != "memory" or kinds.get(target.ref_id) != "memory":
-            raise BadInput(
-                "claim-graph 'contradicts' is adjudication-derived and "
-                "cannot be filed manually",
-                next=(
-                    "file rel='disputes' instead — free to file, "
-                    "non-blocking (memory<->memory contradicts is "
-                    "unaffected)"
-                ),
-            )
-        return None
     if (
         relation == "disputes"
         and target.pos is None
@@ -372,10 +446,12 @@ def apply_link_ops(
     it). ``merge_meta`` defaults to ``False`` — every other caller of
     this function keeps today's no-op-on-conflict behaviour untouched.
 
-    The ``contradicts``/``disputes`` add-path guard and claim-pair
-    delegation (docs/backlog/disputes-edge-nonblocking-disagreement.md
-    D1-D4) live in :func:`guard_and_route_contradicts_disputes`, shared
-    with every other add-mode link door.
+    The relation constraint row (domain/range kinds, functional, acyclic)
+    is enforced by :func:`check_relation_constraints`; the ``disputes``
+    claim-pair delegation (docs/backlog/disputes-edge-nonblocking-
+    disagreement.md D1-D4) lives in
+    :func:`guard_and_route_contradicts_disputes`. Both are shared with
+    every other add-mode link door.
     """
     relation = validate_relation(rel, store=store)
 
@@ -385,6 +461,7 @@ def apply_link_ops(
     if link is not None:
         target = parse_link_target(link, store=store)
         guard_taxon_hierarchy(store, src_ref_id, target, relation)
+        check_relation_constraints(store, relation, src_ref_id, target)
         routed = guard_and_route_contradicts_disputes(
             store, src_ref_id, target, relation
         )
@@ -557,6 +634,7 @@ def format_link_tag_ack(
 __all__ = [
     "apply_link_ops",
     "apply_tag_ops",
+    "check_relation_constraints",
     "format_link_tag_ack",
     "guard_and_route_contradicts_disputes",
     "guard_taxon_hierarchy",

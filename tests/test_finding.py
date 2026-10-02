@@ -555,9 +555,12 @@ class TestFisheyeExtentLadder:
         out = h.get(id=hub_id, view="fisheye+1hop")
 
         assert "— linked (1 hop) —" in out.body
-        assert "establishes:" in out.body
-        assert "contradicts:" in out.body
-        assert "refines:" in out.body
+        assert "Claim graph:" in out.body
+        # Every edge here points AT the hub, so each reads from the hub's
+        # side: the inverse slug where one exists, ``<-slug`` where not.
+        assert f"<-establishes: pa{supporter}" in out.body
+        assert f"contradicted-by: pa{opponent}" in out.body
+        assert f"<-refines: fi{sharper}" in out.body
 
     def test_fisheye_1hop_carries_the_posture_header(self, store) -> None:
         from precis.taproot.hub import attach_evidence

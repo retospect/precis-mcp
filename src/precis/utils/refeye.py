@@ -72,7 +72,6 @@ SEMANTIC_RELATIONS: frozenset[str] = frozenset(
         "derived-from",
         "generalises",
         "corrects",
-        "refutes",
         "cites",
     }
 )
@@ -111,12 +110,64 @@ CLAIM_RELATIONS: frozenset[str] = frozenset(
     }
 )
 
+#: The structural families a non-draft kind hangs on. Before these, the link
+#: neighbourhood followed only ``SEMANTIC ∪ CLAIM``, so a quest's ``serves``
+#: tree, a concept's prerequisites and a component's parts rendered as an
+#: empty ring (``docs/backlog/fisheye-everywhere.md`` in-scope 3). Each set
+#: names the stored slug *and* its inverse: ``links_for`` returns the row as
+#: stored, so a ``part-of`` row and a ``contains`` row are the same family.
+ROADMAP_RELATIONS: frozenset[str] = frozenset({"serves", "served-by"})
+TAXON_RELATIONS: frozenset[str] = frozenset(
+    {"specialises", "generalises", "instance-of", "has-instance"}
+)
+CONCEPT_RELATIONS: frozenset[str] = frozenset(
+    {"has-prerequisite", "prerequisite-of", "analogy-of", "contrasts-with"}
+)
+COMPONENT_RELATIONS: frozenset[str] = frozenset(
+    {"contains", "part-of", "made-of", "used-in"}
+)
+ARGUMENT_RELATIONS: frozenset[str] = frozenset(
+    {
+        "entails",
+        "entailed-by",
+        "qualifies",
+        "qualified-by",
+        "derived-from",
+        "derived-into",
+    }
+)
+
+#: The ring registry: group heading → the relations rendered under it, in
+#: render order. A decision, not a consequence — the same rule as
+#: ``CLAIM_RELATIONS`` above: a relation joins the ring by being written
+#: here, never by appearing in the ``relations`` table, and
+#: ``tests/test_eye_render.py`` pins every slug here to a registered
+#: relation. A relation listed in two groups renders under the first:
+#: ``generalises`` and ``derived-from`` stay in ``SEMANTIC_RELATIONS`` (the
+#: draft ring follows them) but render under Taxonomy and Argument.
+RING_GROUPS: dict[str, frozenset[str]] = {
+    "Claim graph": CLAIM_RELATIONS,
+    "Roadmap": ROADMAP_RELATIONS,
+    "Taxonomy": TAXON_RELATIONS,
+    "Concepts": CONCEPT_RELATIONS,
+    "Parts": COMPONENT_RELATIONS,
+    "Argument": ARGUMENT_RELATIONS,
+    "Notes & links": SEMANTIC_RELATIONS,
+}
+
 #: What the ``fisheye+1hop`` link neighborhood (``eye_render.py::
-#: _link_neighbors``) follows. ``SEMANTIC_RELATIONS`` itself is left
-#: unchanged — ``render_reference_ring`` (below) keeps following the narrow
-#: set; its draft-side "Claims" group already handles hubs and must not
-#: double up.
-RING_RELATIONS: frozenset[str] = SEMANTIC_RELATIONS | CLAIM_RELATIONS
+#: _link_neighbors``) follows — the union of :data:`RING_GROUPS`.
+#: ``SEMANTIC_RELATIONS`` itself is left unchanged — ``render_reference_ring``
+#: (below) keeps following the narrow set; its draft-side "Claims" group
+#: already handles hubs and must not double up.
+RING_RELATIONS: frozenset[str] = frozenset().union(*RING_GROUPS.values())
+
+
+def ring_group(relation: str) -> str | None:
+    """The :data:`RING_GROUPS` heading ``relation`` renders under, or None
+    when the ring does not follow it."""
+    return next((g for g, rels in RING_GROUPS.items() if relation in rels), None)
+
 
 #: Kind → ring group. Anything unlisted falls into "Notes" (memory / finding /
 #: gripe / conv / todo …) — the "noted on this" bucket.

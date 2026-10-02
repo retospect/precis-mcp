@@ -24,14 +24,12 @@ kind, so the ladder generalizes but its shape does not:
   legacy ``slug~pos`` form is never emitted here.
 - **Link kinds** (``memory`` / ``finding`` / …): the ref renders as its note
   (title → gist → body), and at ``fisheye+1hop`` it grows its **link
-  neighborhood** — every ref linked to it, **either direction**, with its
-  **relation type**, grouped by relation and capped per group. Links are
-  symmetric, so a note linked to a paper surfaces when you fisheye the paper
-  (via the doc eye's ring) and the paper surfaces when you fisheye the note.
-  For a claim hub the neighborhood now also includes its claim graph
-  (``RING_RELATIONS`` = ``SEMANTIC_RELATIONS`` + ``CLAIM_RELATIONS`` —
-  ``establishes``/``corroborates``/``contradicts``/``refines``/
-  ``conjunct-of``/``motivated-by``), not just plain notes/links.
+  neighborhood** — every ref linked to it, **either direction**, with the
+  relation as it reads from this side (``serves`` out, ``served-by`` in),
+  under one heading per ring group (``refeye.RING_GROUPS``: claim graph,
+  roadmap, taxonomy, concepts, parts, argument, notes) and capped per
+  label. A note linked to a paper surfaces when you fisheye the paper (via
+  the doc eye's ring) and the paper surfaces when you fisheye the note.
 
 - **Skill eyes** (``sk:<slug>``): a skill is file-backed, not refs-backed, so
   it has no numeric pk for ``handle_registry.parse``'s decimal grammar
@@ -55,10 +53,10 @@ worker-internal, not an agent-facing verb.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from precis.utils import handle_registry
-from precis.utils.refeye import RING_RELATIONS
+from precis.utils.refeye import RING_GROUPS, ring_group
 from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
@@ -120,23 +118,60 @@ def render_eye(
     store: Any,
     handle: str,
     extent: Extent | str | int,
+    *,
+    q: str | None = None,
 ) -> str:
     """Render one eye by its kind's neighborhood strategy. Raises ``ValueError``
-    if the handle does not resolve to a live ref/chunk."""
+    if the handle does not resolve to a live ref/chunk, or asks a rung its
+    kind does not have.
+
+    ``extent`` is a ladder rung, optionally suffixed ``+recall``
+    (``fisheye+1hop+recall``); a bare ``+recall`` is ``fisheye+1hop+recall``.
+    ``q='<kind>:<label>'`` at ``fisheye+2hop`` expands one second-hop group
+    (:func:`_second_hop`)."""
+    ext, recall = parse_extent(extent)
+    if q is not None and ext < Extent.HOP2:
+        raise ValueError("eye: q='<kind>:<label>' expands a group of fisheye+2hop only")
     if handle.startswith(_SKILL_HANDLE_PREFIX):
-        return _render_skill_eye(handle, Extent.parse(extent))
+        return _render_skill_eye(handle, ext)
     parsed = handle_registry.parse(handle)
     if parsed is None:
         raise ValueError(f"eye: unresolvable handle {handle!r}")
     kind, is_chunk, pk = parsed
-    ext = Extent.parse(extent)
     if kind in _TREE_KINDS:
+        if ext > Extent.HOP1 or recall:
+            raise ValueError(
+                f"eye: {kind} sections stop at fisheye+1hop — the reference "
+                "ring's entries are refs; fisheye one of those to walk further"
+            )
         from precis.utils.fisheye import render_fisheye
 
         return render_fisheye(store, kind=kind, handle=handle, extent=ext)
     if kind in _DOC_KINDS:
-        return _render_doc_eye(store, handle, kind, ext, is_chunk=is_chunk)
-    return _render_note_eye(store, handle, kind, ext)
+        return _render_doc_eye(
+            store, handle, kind, ext, is_chunk=is_chunk, recall=recall, expand=q
+        )
+    return _render_note_eye(store, handle, kind, ext, recall=recall, expand=q)
+
+
+#: The suffix that adds the similarity rung to any extent.
+RECALL_SUFFIX = "+recall"
+
+
+def parse_extent(extent: Extent | str | int) -> tuple[Extent, bool]:
+    """``(rung, recall)`` from an extent value — the ladder rung plus whether
+    the ``+recall`` suffix was given. A bare ``+recall`` sits on top of
+    ``fisheye+1hop``: recall without the edges it complements reads as if
+    similarity were the neighbourhood. Raises ``ValueError`` on an unknown
+    rung, like :meth:`Extent.parse`."""
+    recall = isinstance(extent, str) and extent.strip().lower().endswith(RECALL_SUFFIX)
+    rung: Extent | str | int = extent
+    if recall:
+        rung = str(extent).strip()[: -len(RECALL_SUFFIX)] or Extent.HOP1
+    try:
+        return Extent.parse(rung), recall
+    except (KeyError, ValueError) as e:
+        raise ValueError(f"eye: unknown extent {extent!r}") from e
 
 
 # ── shared helpers ───────────────────────────────────────────────────
@@ -274,7 +309,14 @@ def _fisheye_split(
 
 
 def _render_doc_eye(
-    store: Store, handle: str, kind: str, ext: Extent, *, is_chunk: bool
+    store: Store,
+    handle: str,
+    kind: str,
+    ext: Extent,
+    *,
+    is_chunk: bool,
+    recall: bool = False,
+    expand: str | None = None,
 ) -> str:
     """A doc-kind eye (paper / patent / web / …): the dynamic keyword-cluster TOC
     around the eyeball. A whole-doc handle renders the cluster map; a ``pc``
@@ -306,11 +348,8 @@ def _render_doc_eye(
 
     # The reference ring is a property of the ref, not its body — an empty
     # paper linked to a note still surfaces that note at fisheye+1hop.
-    if ext >= Extent.HOP1:
-        ring = _link_neighbors(store, ref_id)
-        if ring:
-            block += f"\n\n{ring}"
-    return block
+    sections = _rings(store, ref_id, kind, ext, recall=recall, expand=expand)
+    return "\n\n".join([block, *sections])
 
 
 # ── link kinds: the note + its link graph (memory / finding / …) ──────
@@ -327,7 +366,15 @@ def _ordered_body(store: Store, ref_id: int, *, cap: int) -> str:
     return _cap(body, cap)
 
 
-def _render_note_eye(store: Store, handle: str, kind: str, ext: Extent) -> str:
+def _render_note_eye(
+    store: Store,
+    handle: str,
+    kind: str,
+    ext: Extent,
+    *,
+    recall: bool = False,
+    expand: str | None = None,
+) -> str:
     """A link-kind ref (memory / finding / …): the note at its extent (title →
     gist → body), and at ``fisheye+1hop`` its **link neighborhood** — every ref
     linked to it, *either direction*, with its relation type. For a memory the
@@ -335,66 +382,318 @@ def _render_note_eye(store: Store, handle: str, kind: str, ext: Extent) -> str:
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
-    if ext <= Extent.TOC:
+    if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind)}"
-    cap = _SUMMARY_CAP if ext is Extent.SUMMARY else _VERBATIM_CAP
+    cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
     body = _ordered_body(store, int(ref.id), cap=cap)
     block = f"{_head(ref, kind)}\n{body}" if body else _head(ref, kind)
-    if ext < Extent.HOP1:
-        return block
-    neighbors = _link_neighbors(store, int(ref.id))
-    return f"{block}\n\n{neighbors}" if neighbors else block
+    sections = _rings(store, int(ref.id), kind, ext, recall=recall, expand=expand)
+    return "\n\n".join([block, *sections])
+
+
+def _relation_reading(store: Store) -> tuple[dict[str, str], frozenset[str]]:
+    """``(inverse slug by slug, symmetric slugs)`` from the ``relations``
+    table, cached on the store for its lifetime like
+    ``Store.inverse_relation`` — the vocabulary is static once migrations
+    have run."""
+    cached = getattr(store, "_eye_relation_reading", None)
+    if cached is not None:
+        return cast("tuple[dict[str, str], frozenset[str]]", cached)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT slug, inverse_slug, is_symmetric FROM relations"
+        ).fetchall()
+    reading = (
+        {str(r[0]): str(r[1]) for r in rows if r[1] is not None},
+        frozenset(str(r[0]) for r in rows if r[2]),
+    )
+    store._eye_relation_reading = reading  # type: ignore[attr-defined]
+    return reading
+
+
+def _as_seen_from_here(
+    relation: str,
+    *,
+    outbound: bool,
+    inverses: dict[str, str],
+    symmetric: frozenset[str],
+) -> str:
+    """The label an edge reads with from this ref's side.
+
+    ``links_for`` returns each edge as stored, so the same ``serves`` row is
+    "Q serves P" on Q's eye and "P is served by Q" on P's. An outbound edge
+    keeps its slug; an inbound one reads as its inverse slug (``served-by``,
+    ``part-of``), as itself when the relation is symmetric, and as
+    ``<-slug`` when it has neither — the ``<-`` form ``_links_render`` and
+    ``search_merge`` already use for an inbound edge with no passive name.
+    Without this a quest's ring could not say which quests it serves and
+    which serve it (``fisheye-everywhere.md`` AC 2).
+    """
+    if outbound or relation in symmetric:
+        return relation
+    return inverses.get(relation) or f"<-{relation}"
 
 
 def _link_neighbors(store: Store, ref_id: int) -> str:
-    """The ref's one-hop link neighborhood, grouped by relation type — the
-    ``fisheye+1hop`` layer for a non-tree eye. Follows meaning edges +
-    claim-graph edges (`RING_RELATIONS`), **both directions** (``links_for``
-    matches either endpoint, incl. chunk-level edges since they carry the
-    ref id); the neighbor is the *other* end of each edge.
+    """The ref's one-hop link neighborhood — the ``fisheye+1hop`` layer for a
+    non-tree eye. Follows every relation in the ring registry
+    (:data:`~precis.utils.refeye.RING_GROUPS`), **both directions**
+    (``links_for`` matches either endpoint, incl. chunk-level edges since
+    they carry the ref id); the neighbor is the *other* end of each edge,
+    labelled as the edge reads from this side (:func:`_as_seen_from_here`).
 
-    Grouped by relation (relations in sorted order) and capped at
-    `_NEIGHBOR_GROUP_CAP` live neighbours per group — a claim hub can carry
-    dozens of evidence edges, so this is graduated rather than a flat
-    uncapped dump. A truncated group ends with a visible ``… +N more``
-    line (no silent cap); the count is against *rendered* (live,
-    non-deleted) neighbours, not raw edges."""
+    Rendered under one heading per ring group, in registry order, then one
+    block per label (sorted), each capped at `_NEIGHBOR_GROUP_CAP` live
+    neighbours — a claim hub can carry dozens of evidence edges, so this is
+    graduated rather than a flat uncapped dump. A truncated block ends with
+    a visible ``… +N more`` line (no silent cap); the count is against
+    *rendered* (live, non-deleted) neighbours, not raw edges."""
+    return _render_first_hop(*_first_hop(store, ref_id))
+
+
+def _first_hop(
+    store: Store, ref_id: int
+) -> tuple[dict[tuple[str, str], list[int]], dict[int, Any]]:
+    """``(live neighbour ids by (ring group, label), the neighbour refs)`` —
+    the collected form of :func:`_link_neighbors`, shared with the second
+    hop, which walks out from exactly these neighbours."""
     links = store.links_for(ref_id, direction="both")
-    by_rel: dict[str, list[int]] = {}
+    inverses, symmetric = _relation_reading(store)
+    by_label: dict[tuple[str, str], list[int]] = {}
     ids: set[int] = set()
     for link in links:
         rel = getattr(link, "relation", None)
-        if rel not in RING_RELATIONS:
+        group = ring_group(str(rel)) if rel is not None else None
+        if group is None:
             continue
-        other = (
-            int(link.dst_ref_id)
-            if int(link.src_ref_id) == ref_id
-            else int(link.src_ref_id)
-        )
+        outbound = int(link.src_ref_id) == ref_id
+        other = int(link.dst_ref_id) if outbound else int(link.src_ref_id)
         if other == ref_id:
             continue
-        by_rel.setdefault(str(rel), []).append(other)
+        label = _as_seen_from_here(
+            str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
+        )
+        by_label.setdefault((group, label), []).append(other)
         ids.add(other)
-    if not by_rel:
-        return ""
+    if not by_label:
+        return {}, {}
     refs = store.fetch_refs_by_ids(list(ids))
 
     def _live(oid: int) -> bool:
         r = refs.get(oid)
         return r is not None and getattr(r, "retired_at", None) is None
 
+    live = {key: [oid for oid in oids if _live(oid)] for key, oids in by_label.items()}
+    return {key: oids for key, oids in live.items() if oids}, refs
+
+
+def _render_first_hop(
+    by_label: dict[tuple[str, str], list[int]], refs: dict[int, Any]
+) -> str:
+    order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
-    rendered_any = False
-    for rel in sorted(by_rel):
-        live_ids = [oid for oid in by_rel[rel] if _live(oid)]
+    heading = None
+    for group, label in sorted(by_label, key=lambda k: (order[k[0]], k[1])):
+        live_ids = by_label[(group, label)]
+        if group != heading:
+            lines.append(f"{group}:")
+            heading = group
         for oid in live_ids[:_NEIGHBOR_GROUP_CAP]:
-            r = refs[oid]
-            rendered_any = True
-            oh = handle_registry.format_handle(getattr(r, "kind", "?"), oid)
-            title = " ".join((getattr(r, "title", None) or "").split())
-            if len(title) > _NEIGHBOR_TITLE_CAP:
-                title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
-            lines.append(f"  {rel}: {oh} — {title}" if title else f"  {rel}: {oh}")
+            lines.append(f"  {label}: {_neighbor_label(refs[oid], oid)}")
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
             lines.append(f"    … +{len(live_ids) - _NEIGHBOR_GROUP_CAP} more")
-    return "\n".join(lines) if rendered_any else ""
+    return "\n".join(lines) if heading is not None else ""
+
+
+def _neighbor_label(ref: Any, ref_id: int) -> str:
+    oh = handle_registry.format_handle(getattr(ref, "kind", "?"), ref_id)
+    title = " ".join((getattr(ref, "title", None) or "").split())
+    if len(title) > _NEIGHBOR_TITLE_CAP:
+        title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
+    return f"{oh} — {title}" if title else oh
+
+
+#: Most ``(kind, label)`` count lines the second hop renders before its
+#: overflow line. The second hop is counts, never a list, so its size is
+#: bounded by how many distinct (kind, relation) pairs exist, not by edges:
+#: a hub with thousands of second-hop edges still renders this many lines.
+_SECOND_HOP_LINE_CAP = 24
+#: Most refs an expanded second-hop group lists (``q='<kind>:<label>'``).
+_SECOND_HOP_EXPAND_CAP = 40
+#: Edge rows read for the second hop. A safety bound on one SQL read, not a
+#: rendering cap: the counts say "≥" when it is hit.
+_SECOND_HOP_ROW_CAP = 20000
+
+
+def _second_hop(
+    store: Store,
+    ref_id: int,
+    hop1: dict[tuple[str, str], list[int]],
+    *,
+    expand: str | None = None,
+) -> str:
+    """The ``fisheye+2hop`` layer: what the first-hop neighbours link to.
+
+    Rendered as counts per ``(kind, label)`` — "12 paper via cites" — read
+    from the first-hop neighbour's side, excluding the focus itself and refs
+    already on the first hop. A list of second-hop refs would grow with the
+    graph; counts grow only with the vocabulary, which is what keeps a hub
+    with hundreds of second-hop edges inside the response frame
+    (``fisheye-everywhere.md`` AC 4).
+
+    ``expand='<kind>:<label>'`` (the eye's ``q=``) lists that one group's
+    refs instead, capped. The backlog item asked for ``more()`` to expand a
+    group, but ``more()`` only pages an over-long body (``tools/core.py::
+    more``) and has no notion of a named group, so the expansion is the
+    same call with a filter — decided 2026-10-02, recorded in the item.
+    """
+    hop1_ids = {oid for oids in hop1.values() for oid in oids}
+    if not hop1_ids:
+        return ""
+    inverses, symmetric = _relation_reading(store)
+    from precis.utils.refeye import RING_RELATIONS
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT l.src_ref_id, l.dst_ref_id, l.relation, "
+            "       rs.kind, rs.retired_at IS NULL, rd.kind, rd.retired_at IS NULL "
+            "FROM links l "
+            "JOIN refs rs ON rs.ref_id = l.src_ref_id "
+            "JOIN refs rd ON rd.ref_id = l.dst_ref_id "
+            "WHERE (l.src_ref_id = ANY(%s) OR l.dst_ref_id = ANY(%s)) "
+            "  AND l.relation = ANY(%s) "
+            "LIMIT %s",
+            (
+                list(hop1_ids),
+                list(hop1_ids),
+                sorted(RING_RELATIONS),
+                _SECOND_HOP_ROW_CAP,
+            ),
+        ).fetchall()
+    groups: dict[tuple[str, str], set[int]] = {}
+    for src, dst, rel, src_kind, src_live, dst_kind, dst_live in rows:
+        src, dst = int(src), int(dst)
+        # Read each edge from the first-hop end. An edge between two
+        # first-hop refs, or back to the focus, is already on screen.
+        for near, far, far_kind, far_live, outbound in (
+            (src, dst, dst_kind, dst_live, True),
+            (dst, src, src_kind, src_live, False),
+        ):
+            if near not in hop1_ids or far == ref_id or far in hop1_ids:
+                continue
+            if not far_live:
+                continue
+            label = _as_seen_from_here(
+                str(rel), outbound=outbound, inverses=inverses, symmetric=symmetric
+            )
+            groups.setdefault((str(far_kind), label), set()).add(far)
+    if not groups:
+        if expand is not None:
+            raise ValueError(
+                f"eye: no second-hop group {expand!r}; the second hop is empty"
+            )
+        return ""
+    floor = "≥" if len(rows) >= _SECOND_HOP_ROW_CAP else ""
+    if expand is not None:
+        return _expand_second_hop(store, groups, expand)
+    ranked = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    lines = [
+        f"— second hop ({len(hop1_ids)} neighbours out; counts — "
+        "expand one with q='<kind>:<label>') —"
+    ]
+    for (kind, label), ids in ranked[:_SECOND_HOP_LINE_CAP]:
+        lines.append(f"  {floor}{len(ids)} {kind} via {label}")
+    if len(ranked) > _SECOND_HOP_LINE_CAP:
+        rest = sum(len(ids) for _key, ids in ranked[_SECOND_HOP_LINE_CAP:])
+        lines.append(
+            f"    … +{len(ranked) - _SECOND_HOP_LINE_CAP} more groups ({rest} refs)"
+        )
+    return "\n".join(lines)
+
+
+def _expand_second_hop(
+    store: Store, groups: dict[tuple[str, str], set[int]], expand: str
+) -> str:
+    kind, _, label = expand.partition(":")
+    ids = groups.get((kind.strip(), label.strip()))
+    if not ids:
+        known = ", ".join(f"{k}:{lab}" for k, lab in sorted(groups))
+        raise ValueError(f"eye: no second-hop group {expand!r}; groups here: {known}")
+    shown = sorted(ids)[:_SECOND_HOP_EXPAND_CAP]
+    refs = store.fetch_refs_by_ids(shown)
+    lines = [f"— second hop: {len(ids)} {kind} via {label} —"]
+    lines.extend(f"  {_neighbor_label(refs[i], i)}" for i in shown if i in refs)
+    if len(ids) > len(shown):
+        lines.append(f"    … +{len(ids) - len(shown)} more")
+    return "\n".join(lines)
+
+
+#: Nearest neighbours the ``+recall`` rung lists (``fisheye-everywhere.md``
+#: open question: start k=8, same kind + finding).
+_RECALL_K = 8
+#: Cosine-distance floor for ``+recall``: past it a "neighbour" is just the
+#: closest unrelated chunk, and listing it would read as a connection.
+_RECALL_MAX_DISTANCE = 0.6
+
+
+def _recall(store: Store, ref_id: int, kind: str) -> str:
+    """The ``+recall`` rung: the k nearest chunks by embedding, same kind +
+    ``finding``, each with its gist line. Similarity, not edges — the ring
+    above says what is linked; this says what is *about* the same thing and
+    was never linked (``refeye``'s module docstring draws the same line).
+    """
+    seed = store.chunks.seed_chunk_for_ref(ref_id)
+    vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
+    if vec is None:
+        return "— recall: no embedded chunk on this ref yet —"
+    kinds = sorted({kind, "finding"})
+    hits = store.chunks.search_chunks_semantic(
+        query_vec=vec,
+        kinds=kinds,
+        limit=_RECALL_K * 3,
+        max_distance=_RECALL_MAX_DISTANCE,
+        exclude_ref_ids=[ref_id],
+        # memory-like kinds embed their whole-ref card (ord -1), not a body
+        # chunk; let it match, as `seed_chunk_for_ref` does for the seed.
+        card_kinds=("card_combined",),
+    )
+    seen: set[int] = set()
+    lines = [f"— recall (nearest by embedding, {'+'.join(kinds)}, k≤{_RECALL_K}) —"]
+    for block, ref, dist in hits:
+        rid = int(ref.id)
+        if rid in seen:
+            continue  # one line per ref: its nearest chunk speaks for it
+        seen.add(rid)
+        gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)
+        lines.append(f"  {_neighbor_label(ref, rid)}  ({1 - dist:.2f})")
+        if gist:
+            lines.append(f"    {gist}")
+        if len(seen) == _RECALL_K:
+            break
+    if not seen:
+        lines.append("  — nothing within the similarity floor —")
+    return "\n".join(lines)
+
+
+def _rings(
+    store: Store,
+    ref_id: int,
+    kind: str,
+    ext: Extent,
+    *,
+    recall: bool,
+    expand: str | None,
+) -> list[str]:
+    """Every neighbourhood section a non-tree eye appends at ``ext``:
+    the first hop at ``fisheye+1hop`` and up, the second hop at
+    ``fisheye+2hop``, recall when asked."""
+    sections: list[str] = []
+    if ext >= Extent.HOP1:
+        hop1, refs = _first_hop(store, ref_id)
+        if expand is None:
+            sections.append(_render_first_hop(hop1, refs))
+        if ext >= Extent.HOP2:
+            sections.append(_second_hop(store, ref_id, hop1, expand=expand))
+    if recall:
+        sections.append(_recall(store, ref_id, kind))
+    return [s for s in sections if s]

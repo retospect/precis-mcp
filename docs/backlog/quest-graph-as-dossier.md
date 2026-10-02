@@ -27,8 +27,9 @@ Superseded as input-only designs: `quest-dossier-dialectic.md`,
    used for structures/todos/papers; `src/precis/store/types.py`), `dossier-of`
    (draft → quest, 1:1), `contains`/`part-of` (component BOM edge). Decide:
    reuse `serves` as the membership edge, widen `part-of`, or add `belongs-to`.
-   Check `precis-relations` skill and `relation-constraints.md` (kind-scoping
-   of an edge) first.
+   Check the `precis-relations` skill first: its constraint table (domain/range
+   kinds, functional, acyclic; `serves` is already acyclic) is the kind-scoping
+   of an edge.
 2. **Depth and hierarchy under the apex.** Flat membership, or sub-nodes
    (sub-quest, hypothesis, argument) that own their own members; how a cycle
    guard composes with `serves`.

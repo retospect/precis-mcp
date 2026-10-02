@@ -36,6 +36,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._link_tag_ops import (
+    check_relation_constraints,
     guard_and_route_contradicts_disputes,
     guard_taxon_hierarchy,
     require_link_target,
@@ -1448,12 +1449,13 @@ class NumericRefHandler(Handler):
         # mypy: link_target and relation are guaranteed non-None below.
         assert link_target is not None and relation is not None
         if mode == "add":
-            # ``contradicts``/``disputes`` write-door policy (D1-D4) —
-            # shared with ``apply_link_ops`` so the two generic-link doors
-            # never drift (docs/backlog/disputes-edge-nonblocking-
-            # disagreement.md). ``routed`` is non-None only for the
-            # claim-pair ``disputes`` delegation, which already wrote.
+            # Relation constraint row + ``disputes`` write-door policy
+            # (D1-D4) — shared with ``apply_link_ops`` so the two
+            # generic-link doors never drift (docs/backlog/disputes-edge-
+            # nonblocking-disagreement.md). ``routed`` is non-None only for
+            # the claim-pair ``disputes`` delegation, which already wrote.
             guard_taxon_hierarchy(self.store, ref_id, link_target, relation)
+            check_relation_constraints(self.store, relation, ref_id, link_target)
             routed = guard_and_route_contradicts_disputes(
                 self.store, ref_id, link_target, relation
             )

@@ -29,37 +29,32 @@ graph-health-metrics, five parked gripes, and the seam with
    0.32, six calls lost to the 120 s tail. Retry and packing (`--pack 4`)
    shipped; the next act is the packed 300-row probe (paid, ~$6, waits on
    Reto's go — see Waiting on Reto).
-2. **backlog/relation-constraints.md** — status ready, no blocker, small.
-   Domain/range kinds, functional and acyclic as columns on `relations`,
-   one validator in both link doors. Above the measures chain because it
-   closes live holes now (quest `serves` has no cycle guard; the 1:1 draft
-   family is bypassable through `link()`) and gives term-taxonomy's
-   `instance-of` rule a row instead of a bespoke guard.
-3. **backlog/fisheye-everywhere.md** — status ready, no blocker. The eye
-   ladder on every kind, rings per relation group, a focus page for any
-   handle. Split from knowledge-mesh because it depends on no measures work
-   and is the goal's most visible surface; also the answer to "a viewer
-   for the memory" once 6 lands.
-4. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
+2. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
+   ring groups, `fisheye+2hop` and the `+recall` suffix shipped
+   2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
+   (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
+   skill's partial-rollout section. The goal's most visible surface; also
+   the answer to "a viewer for the memory" once 5 lands.
+3. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
    taxon + reference + convention, and it unblocks
    knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
    (Reto: `component_spec_values` joins `measures` in the same
    migration).
-5. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
-   the pillar review). Right after 4 because it builds on the same taxon
+   the pillar review). Right after 3 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-6. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+5. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
    after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 5 only
+   blockers folded into the item, re-vet before build. Below 4 only
    because its recall AC is cheap to run at any time.
-7. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+6. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
@@ -72,8 +67,8 @@ graph-health-metrics, five parked gripes, and the seam with
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
-   universal row) — waits on Do-next 4; its ladder item moved to Do-next 3.
-4. **backlog/experiment-loop.md** — waits on Do-next 4; hypothesis → todo
+   universal row) — waits on Do-next 3; its ladder item moved to Do-next 2.
+4. **backlog/experiment-loop.md** — waits on Do-next 3; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
 5. **backlog/graph-gardener.md** — waits on a populated mesh
@@ -89,15 +84,15 @@ graph-health-metrics, five parked gripes, and the seam with
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 6 gives the topic files a recall measurement, P2 ruled yes
+   Do-next 5 gives the topic files a recall measurement, P2 ruled yes
    2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
-    Do-next 4; sourced numeric triples bound to list entries.
+    Do-next 3; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 4;
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 3;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
     open contradiction it records: `measures-substrate.md` §3 owns an
@@ -108,24 +103,32 @@ graph-health-metrics, five parked gripes, and the seam with
 15. **backlog/capability-landscape-steals.md** — five externally sourced
     ideas (a ChemBench eval slice, categorizer rule distillation, and
     three more) from the capability-landscape comparison; sequenced behind
-    the substrate (Do-next 1-5) by choice, not blocked.
+    the substrate (Do-next 1-4) by choice, not blocked.
 
 ## Waiting on Reto
 
-- **go for the packed 300-row probe** (Do-next 1; ~75 calls, ~$6,
-  ~1.5 h). The build it waited on shipped 2026-10-02. The six 2026-09-30
-  rulings (fold-in, mirror first, render-only, this rename, memory-lint
-  repo-local, one resident block) are recorded in their items.
+- **knowledge-mesh-2 (review queue, 2026-10-02):** probe 2 and 3 dumps
+  and `compare_runs.py` are lost, so the approved "packed vs probe 3
+  naming agreement" check has no baseline; recommended ~$5 unpacked
+  100-row re-run vs aggregates only. The approved packed 300-row probe
+  (knowledge-mesh-1) runs regardless, started 13:05Z into the scratch
+  `norr-her-meta/taxonomy-packed300/`.
+- **round gate for migration 0180** (relation constraints) — tests green
+  on this tree; a migration cannot `/qland`, so the orchestrator gates it.
+
+The six 2026-09-30 rulings (fold-in, mirror first, render-only, this
+rename, memory-lint repo-local, one resident block) are recorded in their
+items.
 
 ## Parked
 
 - **gr445532** — experiment tracking needs multi-class context for
   qualitative terms ("low temperature" means opposite things in different
-  communities); unparks with Do-next 6, whose per-axis similarity spaces
+  communities); unparks with Do-next 4, whose per-axis similarity spaces
   are the natural home for a comparison class.
 - **gr449840** — precis-finding-help's admission criteria exclude the
   definitional/methodological claim classes a taxonomy or architecture
-  paper needs to cite; unparks with Do-next 6, which names a definitional
+  paper needs to cite; unparks with Do-next 4, which names a definitional
   claim class explicitly (membership yes/no/unknown).
 - **gr182230**, **gr180306** — taproot chase-trigger recall gap and a
   claim-hub near-miss dedup (60 days old, both pre-enablement). Unparks
@@ -135,6 +138,13 @@ graph-health-metrics, five parked gripes, and the seam with
   worth measuring the spectrum of.
 
 ## No action needed
+
+- relation constraints — shipped 2026-10-02 (migration 0180, one validator
+  `_link_tag_ops.py::check_relation_constraints` at both link doors, the
+  shared `Store.ancestors` walk). Open, non-blocking: whether a
+  `functional` relation should accept a repoint instead of
+  remove-then-add; it refuses until an agent gripe asks. `instance-of`'s
+  range row lands with term-taxonomy.
 
 - taxonomy-bootstrap blockers 2, 3a, 3b and 4 — measured fixed (over-cap
   107 → 3, facet nodes 22 → 0, stranded unit borrowed, synonym families one

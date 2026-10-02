@@ -173,7 +173,8 @@ retired; this table and that item are the record.
   `taproot/sentence_lint.py::SCOPE_KEYS`; `scope-key-vocabulary-registry.md`
   must read the taxon nodes rather than keep a second list. The generic
   endpoint rule this item wanted for `instance-of` (range = taxon) lands
-  as a row of `relation-constraints.md`, not as a bespoke guard.
+  as a `range_kinds` value on the `relations` row (the columns shipped in
+  migration 0180), not as a bespoke guard.
 - **[decided 2026-09-30, Reto]** The `meta.axis` vocabulary: **seed six,
   earn the rest.** The `axis` start node (v1.5 in-scope 1) is seeded with
   `method`, `material`, `system`, `regime`, `quantity`, `scale` — the same

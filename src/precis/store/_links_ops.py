@@ -55,9 +55,15 @@ from precis.store.types import (
     Link,
     Ref,
     Relation,
+    RelationConstraint,
     S2Direction,
     S2Neighbor,
 )
+
+#: Walk cap for :meth:`LinksMixin.ancestors` — deeper than any real DAG the
+#: acyclic relations carry (assembly trees, quest ladders, prerequisite
+#: chains), shallow enough that a pre-existing cycle terminates fast.
+_ANCESTOR_MAX_DEPTH = 64
 
 
 def _resolve_chunk_id_for_link(
@@ -270,6 +276,129 @@ class LinksMixin:
             }
             self._inverse_relations_cache = cached
         return cached.get(relation)
+
+    def relation_constraints(
+        self, *, refresh: bool = False
+    ) -> dict[str, RelationConstraint]:
+        """Every registered relation's constraint columns (migration 0180),
+        keyed by slug — the data :func:`precis.handlers._link_tag_ops.
+        check_relation_constraints` enforces at the link doors.
+
+        One read per store, cached exactly like :meth:`valid_relations`
+        (same ``__dict__`` pattern; ``refresh=True`` re-reads). A slug absent
+        from the map (registered after the cache loaded) is unconstrained.
+        """
+        cached = getattr(self, "_relation_constraints_cache", None)
+        if cached is None or refresh:
+            with self.pool.connection() as c:
+                rows = c.execute(
+                    "SELECT slug, inverse_slug, description, domain_kinds, "
+                    "range_kinds, functional, transitive, acyclic FROM relations"
+                ).fetchall()
+            cached = {
+                str(r[0]): RelationConstraint(
+                    slug=str(r[0]),
+                    inverse_slug=str(r[1]) if r[1] is not None else None,
+                    description=str(r[2] or ""),
+                    domain_kinds=frozenset(r[3]) if r[3] is not None else None,
+                    range_kinds=frozenset(r[4]) if r[4] is not None else None,
+                    functional=bool(r[5]),
+                    transitive=bool(r[6]),
+                    acyclic=bool(r[7]),
+                )
+                for r in rows
+            }
+            self._relation_constraints_cache = cached
+        return cached
+
+    def ancestors(
+        self,
+        relation: str,
+        ref_id: int,
+        max_depth: int = _ANCESTOR_MAX_DEPTH,
+    ) -> set[int]:
+        """Refs that reach ``ref_id`` by following ``relation`` edges
+        (``x`` such that ``x -relation-> ... -relation-> ref_id``), ``ref_id``
+        itself included only when a cycle leads back to it.
+
+        An edge is read in either stored direction: a ``relation`` row
+        ``s -> d``, or a row of the relation's inverse slug ``d -> s``
+        (``contains`` / ``part-of``), so the walk does not care which side a
+        writer used. Chunk-level endpoints collapse to their refs. The walk
+        is depth-capped at ``max_depth`` so a pre-existing cycle terminates.
+
+        The one closure helper: ``acyclic`` enforcement
+        (:func:`~precis.handlers._link_tag_ops.check_relation_constraints`)
+        and :meth:`~precis.store._component_ops.ComponentMixin.component_would_cycle`
+        both call it, and later readers (taxon ``view='path'``, quest
+        reweight) should too rather than roll their own CTE.
+        """
+        inverse = self.inverse_relation(relation)
+        sql = """
+        WITH RECURSIVE e(src, dst) AS (
+          SELECT src_ref_id, dst_ref_id FROM links WHERE relation = %(rel)s
+          UNION ALL
+          SELECT dst_ref_id, src_ref_id FROM links WHERE relation = %(inv)s
+        ),
+        anc(ref_id, depth) AS (
+          SELECT %(start)s::bigint, 0
+          UNION
+          SELECT e.src, a.depth + 1 FROM e JOIN anc a ON e.dst = a.ref_id
+           WHERE a.depth < %(max)s
+        )
+        SELECT DISTINCT ref_id FROM anc WHERE depth > 0
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                sql,
+                {"rel": relation, "inv": inverse, "start": ref_id, "max": max_depth},
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def functional_conflict(
+        self,
+        relation: str,
+        dst_ref_id: int,
+        *,
+        exclude_src_ref_id: int | None = None,
+        conn: Connection | None = None,
+    ) -> int | None:
+        """The live ref already holding the ``functional`` slot on
+        ``dst_ref_id`` for ``relation``, or ``None`` when the slot is free.
+
+        ``draft-of`` is ``draft -> project``: the 1:1 rule is "a project has
+        at most one draft", so the *target* is the owner and a second live
+        source is the conflict. Rows of the relation's inverse slug
+        (``has-draft``, ``project -> draft``) count too. A retired
+        counterpart does not hold the slot; ``exclude_src_ref_id`` lets a
+        re-link of the very edge already there through. One query shared by
+        the link validator and ``create_draft`` / ``fork_draft``.
+        """
+        inverse = self.inverse_relation(relation)
+        sql = """
+        SELECT cand FROM (
+          SELECT l.src_ref_id AS cand FROM links l
+           WHERE l.relation = %(rel)s AND l.dst_ref_id = %(dst)s
+          UNION ALL
+          SELECT l.dst_ref_id FROM links l
+           WHERE l.relation = %(inv)s AND l.src_ref_id = %(dst)s
+        ) x
+        JOIN refs r ON r.ref_id = x.cand AND r.retired_at IS NULL
+        WHERE x.cand IS DISTINCT FROM %(excl)s::bigint
+        ORDER BY x.cand LIMIT 1
+        """
+        params = {
+            "rel": relation,
+            "inv": inverse,
+            "dst": dst_ref_id,
+            "excl": exclude_src_ref_id,
+        }
+        if conn is not None:
+            row = conn.execute(sql, params).fetchone()
+        else:
+            with self.pool.connection() as c:
+                row = c.execute(sql, params).fetchone()
+        return int(row[0]) if row is not None else None
 
     def add_link(
         self,

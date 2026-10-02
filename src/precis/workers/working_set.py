@@ -84,6 +84,10 @@ class Extent(IntEnum):
     FULL = 3  # "verbatim": node full text
     FIDELITY = 4  # "fisheye": verbatim center + spatial neighborhood
     HOP1 = 5  # "fisheye+1hop": fisheye + the reference ring (one edge out)
+    #: "fisheye+2hop": + the second hop as counts per (kind, relation) — link
+    #: and doc eyes only; a draft/plan section stops at HOP1
+    #: (``utils.eye_render.render_eye``).
+    HOP2 = 6
 
     @property
     def label(self) -> str:
@@ -114,6 +118,7 @@ _EXTENT_LABELS: dict[Extent, str] = {
     Extent.FULL: "verbatim",
     Extent.FIDELITY: "fisheye",
     Extent.HOP1: "fisheye+1hop",
+    Extent.HOP2: "fisheye+2hop",
 }
 
 #: Accepted aliases (label vocabulary + shorthands) → enum identifier name.
@@ -127,6 +132,9 @@ _EXTENT_ALIASES: dict[str, str] = {
     "1hop": "HOP1",
     "hop1": "HOP1",
     "hop": "HOP1",
+    "fisheye+2hop": "HOP2",
+    "2hop": "HOP2",
+    "hop2": "HOP2",
 }
 
 

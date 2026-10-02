@@ -58,10 +58,32 @@ Each rung **strictly contains** the previous one:
 | `verbatim` | the node's full text — alone |
 | `fisheye` | verbatim center **+ the spatial neighborhood** |
 | `fisheye+1hop` | `fisheye` **+ the reference ring** (what it points at) |
+| `fisheye+2hop` | `fisheye+1hop` **+ the second hop as counts** (not on draft/plan) |
+
+Any rung takes a **`+recall` suffix** (`fisheye+1hop+recall`; bare
+`+recall` means that one): it appends the k=8 nearest refs of the same
+kind and `finding` by embedding, each with a gist line — what is *about*
+the same thing but was never linked. Similarity, not edges; a line in
+recall is a lead to check, not a connection. Not on draft/plan sections.
 
 The first three rungs render the node **alone** — no surroundings.
 Surroundings appear only at `fisheye` and up: that's the whole point of
 this skill.
+
+### The second hop (`fisheye+2hop`)
+
+What the ring's refs link to, excluding this ref and the ring itself,
+as one count line per kind and relation: `12 paper via cites` reads
+"twelve papers that the ring's refs cite". Counts keep a hub with
+hundreds of second-hop edges inside one response. To list one group, call
+the same view with `q='<kind>:<relation>'`:
+
+```python
+get(kind="finding", id="fi42", view="fisheye+2hop")                   # counts
+get(kind="finding", id="fi42", view="fisheye+2hop", q="paper:cites")  # that group
+```
+
+`more()` does not expand a group; it only pages a body that was too long.
 
 ## The spatial neighborhood (the `fisheye` rung)
 
@@ -143,13 +165,20 @@ does not:
 - **Link kinds** (`memory`, `finding`, and anything else not above) —
   the ref renders as its note (title → gist → body); `fisheye+1hop`
   grows the **link neighborhood** — every ref linked to it, either
-  direction, with its relation type, grouped by relation and capped per
-  group (an overflow line names what it withheld). Links are symmetric:
-  fisheye-ing a paper surfaces a note linked to it, and vice versa.
-  The neighborhood follows the meaning-edge vocabulary
-  **plus** the Taproot claim graph (`establishes`, `corroborates`,
-  `contradicts`, `refines`, `conjunct-of`, `motivated-by`), so a claim
-  hub eye shows its evidence and its refines chain. A `finding` that is
+  direction, under one heading per relation family: **Claim graph**
+  (`establishes`, `corroborates`, `contradicts`, `refines`,
+  `conjunct-of`, `disputes`, `motivated-by`), **Roadmap** (`serves`),
+  **Taxonomy** (`specialises`, `instance-of`), **Concepts**
+  (`has-prerequisite`, `analogy-of`, `contrasts-with`), **Parts**
+  (`contains`, `made-of`), **Argument** (`entails`, `qualifies`,
+  `derived-from`), **Notes & links** (`related-to`, `see-also`,
+  `supports`, `cites`, …). Each line reads from the focused ref's side:
+  an edge it is the source of keeps its name (`serves: qu12`), an edge
+  pointing at it reads as the inverse (`served-by: qu7`,
+  `contradicted-by: pa3`), and an inbound edge with no inverse name reads
+  `<-establishes: pa5` ("pa5 establishes this"). Each label is capped,
+  with an overflow line naming what it withheld. A claim hub eye shows
+  its evidence and its refines chain. A `finding` that is
   a claim hub additionally leads with its trust posture — see
   `precis-finding-help`. **`finding` is the only live link-kind eye.**
   `memory` is not wired (`MemoryHandler`'s base-view allowlist is

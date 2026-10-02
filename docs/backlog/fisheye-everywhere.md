@@ -27,22 +27,14 @@ Split out so it can ship first.
 
 Carved verbatim from `knowledge-mesh.md` in-scope 3 (now a pointer here):
 
-1. **Eye ladder rungs.** `+recall` (semantic neighbours from the chunk
-   embedding, capped) and `fisheye+2hop` (second hop as counts per kind per
-   relation, expandable by `more()`), on top of the existing
-   `fisheye` / `fisheye+1hop`.
+1. **Eye ladder rungs.** Shipped 2026-10-02: `fisheye+2hop` and the
+   `+recall` suffix (`utils/eye_render.py`; decisions below).
 2. **`extent=` on every kind's `get`.** One argument selects the rung; a
    kind without chunks renders its card as the focus with links as rings.
    Every kind either supports the ladder or raises `Unsupported` with the
    reason in one sentence — no silent fallthrough to a bare chunk.
-3. **Ring registry as a decision, not a consequence.** `RING_RELATIONS`
-   becomes a per-kind-group table: `ROADMAP_RELATIONS` (`serves`), taxon
-   relations (`specialises`, `instance-of`; lands with term-taxonomy),
-   concept relations (`has-prerequisite`, `analogy-of`, `contrasts-with`),
-   component relations (`contains`, `part-of`, `made-of`), argument
-   relations (`entails`, `qualifies`, `derived-from`), and the mirrored
-   file kinds' `related-to` (lands with `file-mirror.md`). The
-   gist-per-kind registry test pins every kind to a gist renderer.
+3. **Ring registry as a decision, not a consequence.** Shipped
+   2026-10-02 as per-family ring groups (`utils/refeye.py::RING_GROUPS`).
 4. **Generalised focus page.** `precis_web/draft_eyes.py` generalised to
    any handle: `/eye/<handle>` renders the same ladder in the browser.
    This is also the answer to "can we see the memory in a viewer": once
@@ -102,7 +94,18 @@ focus page here renders, it does not act.
   because it depends on no measures work and is the goal's most visible
   surface. `knowledge-mesh.md` points here.
 - **[open, non-blocking]** The `+recall` cap (start k=8) and whether recall
-  crosses kinds by default (start: same kind + finding).
+  crosses kinds by default (start: same kind + finding). Built with both
+  defaults and a 0.6 cosine-distance floor (`eye_render._RECALL_*`).
+- **[decided 2026-10-02]** AC 4's "`more()` expands one group" is not
+  buildable as written: `more()` only pages an over-long body
+  (`tools/core.py::more`) and knows no named group. A second-hop group
+  expands through the same call with a filter, `view='fisheye+2hop',
+  q='<kind>:<label>'`; the count line says so.
+- **[decided 2026-10-02]** `+recall` is a suffix on any rung
+  (`fisheye+1hop+recall`), not a rung of its own: similarity and edges are
+  separate axes. A bare `+recall` means `fisheye+1hop+recall`. Draft and
+  plan sections stop at `fisheye+1hop` (a ring entry is a ref; fisheye it
+  to walk on) and refuse `+2hop`/`+recall` with that sentence.
 
 ## Pillar-review deltas (2026-09-30)
 

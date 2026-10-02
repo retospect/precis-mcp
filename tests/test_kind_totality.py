@@ -37,6 +37,7 @@ from precis.taproot.hub import (
     EVIDENCE_SRC_KINDS,
     HUB_ROLES,
     MOTIVATION_RELATION,
+    PATHWAY_EVIDENCE_KINDS,
 )
 from precis.utils import handle_registry, kind_facts
 from precis.utils.eye_render import _DOC_KINDS
@@ -46,6 +47,7 @@ from precis_web.routes.preview import _NUMERIC_KIND_EXCEPTIONS, _NUMERIC_KINDS_F
 
 if TYPE_CHECKING:
     from precis.protocol import KindSpec
+    from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Kinds with no universal handle by design (handle_registry.py's own module
@@ -221,3 +223,25 @@ def test_doc_kinds_diverges_from_corpus_role_only_by_known_gaps() -> None:
     corpus_doc = kind_facts.corpus_role_kinds(_specs(), "evidence", "spec")
     assert _DOC_KINDS - corpus_doc == frozenset({"web"})
     assert corpus_doc - _DOC_KINDS == frozenset()
+
+
+def test_relation_constraint_kinds_are_registered_kinds(store: Store) -> None:
+    """Every kind a ``relations.domain_kinds`` / ``range_kinds`` row names
+    (migration 0180) is a registered kind — a typo'd or since-renamed kind
+    there would silently refuse every write on that relation. Reads the
+    ``kinds`` table (migrations register plugin kinds such as ``pathway``
+    too, which ``precis.handlers``' declared roster does not cover)."""
+    with store.pool.connection() as conn:
+        named = {
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT unnest(coalesce(domain_kinds, '{}') || "
+                "coalesce(range_kinds, '{}')) FROM relations"
+            ).fetchall()
+        }
+        registered = {r[0] for r in conn.execute("SELECT slug FROM kinds").fetchall()}
+    assert named, "no relation constraint names a kind — migration 0180 not applied?"
+    assert named - registered == set()
+    # the evidence-source domain is the taproot sets, never a hand copy
+    c = store.relation_constraints(refresh=True)
+    assert c["establishes"].domain_kinds == EVIDENCE_SRC_KINDS | PATHWAY_EVIDENCE_KINDS

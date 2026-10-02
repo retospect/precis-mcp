@@ -579,6 +579,32 @@ class Link:
 
 
 @dataclass(frozen=True, slots=True)
+class RelationConstraint:
+    """One ``relations`` row's constraint columns (migration 0180), as read by
+    :meth:`Store.relation_constraints`. ``None`` kinds = unconstrained."""
+
+    slug: str
+    inverse_slug: str | None
+    description: str
+    domain_kinds: frozenset[str] | None = None
+    range_kinds: frozenset[str] | None = None
+    functional: bool = False
+    transitive: bool = False
+    acyclic: bool = False
+
+    @property
+    def constrained(self) -> bool:
+        """True when the validator has anything to check for this relation
+        (``transitive`` alone is a declaration, not a check)."""
+        return bool(
+            self.domain_kinds is not None
+            or self.range_kinds is not None
+            or self.functional
+            or self.acyclic
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class S2Neighbor:
     """A row from ``s2_neighbors`` — one Semantic Scholar bibliography /
     cited-by neighbour of a held paper (migration 0106, the Sources/Cited

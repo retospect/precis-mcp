@@ -74,8 +74,9 @@ memory, and no human graph browse existed (`backlog/fisheye-everywhere.md`,
 whose browser focus page is that surface). The same day a sibling session
 given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
 → measure → verdict through the verbs), `backlog/draft-linearization.md`
-(a draft is a render of a subgraph) and `backlog/relation-constraints.md`;
-all three are ranked in `knowledge-mesh.md`.
+(a draft is a render of a subgraph) and relation constraints (shipped
+2026-10-02 as columns on `relations`); the open two are ranked in
+`knowledge-mesh.md`.
 
 **Threads.** `knowledge-mesh.md` (active — substrate, the memory half and
 the surfaces) · `graph-memory-consumers.md` (active — agent-side

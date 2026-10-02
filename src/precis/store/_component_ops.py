@@ -137,6 +137,7 @@ class ComponentMixin:
     add_link: Any
     remove_link: Any
     links_for: Any
+    ancestors: Any
 
     # -- entity ----------------------------------------------------------
 
@@ -415,24 +416,12 @@ class ComponentMixin:
         a cycle: ``child_ref_id`` is ``parent_ref_id`` itself, or is already
         a transitive ANCESTOR of ``parent_ref_id`` (adding the edge would
         then close a loop). ``add_link`` only guards the direct self-loop;
-        this walks the ancestor chain (BFS over incoming ``contains`` edges)
-        to catch the deeper transitive case, keeping the tree a DAG."""
+        the deeper transitive case is the shared
+        :meth:`~precis.store._links_ops.LinksMixin.ancestors` walk, keeping
+        the tree a DAG."""
         if child_ref_id == parent_ref_id:
             return True
-        seen = {parent_ref_id}
-        frontier = [parent_ref_id]
-        while frontier:
-            next_frontier: list[int] = []
-            for ref_id in frontier:
-                for link in self.links_for(ref_id, direction="in", relation="contains"):
-                    ancestor_id = link.src_ref_id
-                    if ancestor_id == child_ref_id:
-                        return True
-                    if ancestor_id not in seen:
-                        seen.add(ancestor_id)
-                        next_frontier.append(ancestor_id)
-            frontier = next_frontier
-        return False
+        return child_ref_id in self.ancestors("contains", parent_ref_id)
 
     def component_add_contains(
         self,

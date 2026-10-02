@@ -159,18 +159,16 @@ Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
 `draft-authoring.md` (dormant)
 
 Seams:
-- `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
+- `backlog/measures-substrate.md` — knowledge-mesh Do-next 3; roadmap Horizon 4
   (meta.supply widened to measures) consumes it.
 - `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
-- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 4; roadmap's
+- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 2; roadmap's
   `view='tree'` and the se viewer thread both render through its ladder;
   the browser focus page it adds is the human graph-browse surface
   (docs/roadmap.md pillar 1).
-- `backlog/relation-constraints.md` — knowledge-mesh Do-next 3; the quest
-  `serves` cycle guard roadmap-quest lacks lands there.
-- `backlog/file-mirror.md` — knowledge-mesh Do-next 7; the memory half of the
+- `backlog/file-mirror.md` — knowledge-mesh Do-next 5; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
   ranked in `knowledge-mesh.md` from 2026-09-30.
 - substrate + memory half vs agent affordances — knowledge-mesh ranks the

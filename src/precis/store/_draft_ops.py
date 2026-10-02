@@ -1923,10 +1923,12 @@ class DraftStore(_AbbrevMixin):
         Returns ``(ref, title_chunk)``."""
         with self.tx() as conn:
             if project_ref_id is not None:
-                dup = conn.execute(
-                    "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = %s",
-                    (project_ref_id, relation),
-                ).fetchone()
+                # The functional-slot query is the link validator's
+                # (``LinksMixin.functional_conflict``) — one definition of
+                # "this project already has one".
+                dup = self._host.functional_conflict(
+                    relation, project_ref_id, conn=conn
+                )
                 if dup is not None:
                     raise ValueError(
                         f"project ref {project_ref_id} already has a {kind}"
@@ -2182,10 +2184,7 @@ class DraftStore(_AbbrevMixin):
         ``NotFound`` if ``src_ref_id`` isn't a live draft, ``ValueError``
         if ``project_id`` already owns a draft."""
         with self.tx() as conn:
-            dup = conn.execute(
-                "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = 'draft-of'",
-                (project_id,),
-            ).fetchone()
+            dup = self._host.functional_conflict("draft-of", project_id, conn=conn)
             if dup is not None:
                 raise ValueError(f"project ref {project_id} already has a draft")
 

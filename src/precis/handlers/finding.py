@@ -858,15 +858,20 @@ class FindingHandler(NumericRefHandler):
                 self.store, ref, embedder=getattr(self.hub, "embedder", None)
             )
         extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
-        if view in extent_ladder:
+        from precis.utils.eye_render import RECALL_SUFFIX
+
+        if view in extent_ladder or (view or "").endswith(RECALL_SUFFIX):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             from precis.utils.eye_render import render_eye
 
             try:
-                body = render_eye(self.store, f"fi{int(ref.id)}", view)
+                body = render_eye(self.store, f"fi{int(ref.id)}", str(view), q=q)
             except ValueError as e:
-                raise BadInput(str(e), next=f"view ∈ {'|'.join(extent_ladder)}") from e
+                raise BadInput(
+                    str(e),
+                    next=f"view ∈ {'|'.join(extent_ladder)}, optionally +recall",
+                ) from e
             return Response(body=_hub_eye_header(self.store, ref) + body)
         return super().get(id=id, view=view, q=q, **_kw)
 

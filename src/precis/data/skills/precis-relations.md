@@ -30,7 +30,7 @@ options list. Link verb mechanics and target grammar live in
 | `cites` | `cited-by` | A references B (paper → paper, memory → paper, etc.). |
 | `supports` | `supported-by` | B is evidence for A. |
 | `disputes` | (none) | A appears to conflict with B — free to file, never blocks. The open-question edge for claim-graph disagreement (memory-vs-memory too). |
-| `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Still valid, unaffected vocabulary for `memory`↔`memory` (a different subsystem, memory reconsolidation). |
+| `contradicts` | `contradicted-by` | Claim-graph disagreement, **adjudication-derived only** — file `disputes`, not this. Fileable only where the constraint table below allows it. |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
 | `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `conjunct-of` | (none) | Taproot only: A (an atomic claim hub) is one conjunct of B (the composite hub bundling it) — no inverse, advisory-only, written by `taproot.hub.apply_extraction`'s decomposition, not hand-authored. |
@@ -46,9 +46,49 @@ options list. Link verb mechanics and target grammar live in
 | `entails` | `entailed-by` | A (an inference node) logically yields B (its conclusion lemma) — asserted, not proven. Premises attach to the inference with `derived-from`; see "Record a reasoning step" below. |
 | `qualifies` | `qualified-by` | A (a caveat node) limits/bounds B (the claim it caveats). Surfaced — never auto-discharged — by `get(view='argument')`. |
 | `cited-in` | (none) | Paper A is woven into and cited by document B (a topic dossier `draft`) — a `citation` exists. |
-| `corroborates` | (none) | Paper A supports an existing point already woven into document B, grouped with it. |
+| `corroborates` | (none) | Evidence A supports an existing point: either a claim hub (evidence edge) or a point already woven into a dossier, grouped with it. |
 | `superseded-in` | (none) | Paper A is subsumed by a later/review paper already integrated into document B; recorded, not separately woven. |
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
+
+## Which endpoints does a relation accept?
+## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?
+
+A few relations carry a constraint the `link()` verb enforces on every
+write. Every other relation accepts any two refs.
+
+| `rel=` | domain (source kind) | range (target kind) | functional | acyclic |
+|---|---|---|---|---|
+| `contradicts` | memory | memory | - | - |
+| `draft-of` | any | any | yes | - |
+| `plan-of` | any | any | yes | - |
+| `dossier-of` | any | any | yes | - |
+| `establishes` | datasheet, edgar, paper, patent, pathway | finding | - | - |
+| `corroborates` | datasheet, edgar, paper, patent, pathway | draft, finding | - | - |
+| `specialises` | any | any | - | yes |
+| `contains` | any | any | - | yes |
+| `has-prerequisite` | any | any | - | yes |
+| `serves` | any | any | - | yes |
+
+Domain is the kind of the ref you link **from**, range the kind of the
+`target=`. `functional` means a target holds at most one source: a project
+has one `draft-of`, one `plan-of`, one `dossier-of`. `acyclic` means the
+relation, read in either direction (`contains` and `part-of` are one
+tree), may not loop back on itself.
+
+A refusal names the relation, the offending end and what it accepts:
+
+- `'contradicts' range_kinds = memory: target paper:5 is kind 'paper'` —
+  link a ref of an allowed kind, or pick another `rel=` (`disputes` for a
+  disagreement).
+- `'draft-of' is functional: todo:9 already has draft:12` — work on the
+  existing one, or free the slot first with
+  `link(..., rel='draft-of', mode='remove')` on the old edge, then add the
+  new one.
+- `'serves' would form a cycle: quest:3 already reaches quest:7` — the
+  target is above the source in the chain; pick one that is not.
+
+Inverse slugs follow the same rule as the relation they mirror
+(`has-draft` is checked as `draft-of`, `part-of` as `contains`).
 
 All relations except `related-to` and `see-also` auto-mirror: writing
 `cites` from A→B makes A→B queryable as `cited-by` from B's side
@@ -90,9 +130,8 @@ link(kind="memory", id=89, target="pa6", rel="disputes")
 takes a position *against* the target's findings: `contradicts` is
 adjudication-derived (claim-graph disagreement, unbuilt Part 2) and
 not fileable this way — `disputes` is the free, non-blocking
-equivalent and works between any two ref kinds. (Exception:
-`memory`↔`memory` `contradicts` is a separate, unaffected subsystem —
-`precis-memory-help`.)
+equivalent and works between any two ref kinds. (The constraint table
+above lists the one kind pair where `contradicts` is fileable.)
 
 ## Record provenance (A came from B)
 ## How do I link a summary to its source?

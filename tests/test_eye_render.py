@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -99,6 +100,76 @@ def test_memory_eye_1hop_counts_overflow_against_live_neighbours(hub: Hub) -> No
 
     assert out.count("related-to: me") == 7
     assert "more" not in out
+
+
+def test_ring_registry_names_only_registered_relations(hub: Hub) -> None:
+    """Every slug the ring follows is a live relation — a typo in a ring
+    group would otherwise render nothing, silently."""
+    from precis.utils.refeye import RING_RELATIONS
+
+    unregistered = RING_RELATIONS - hub.live_store.valid_relations()
+    assert not unregistered, sorted(unregistered)
+
+
+def test_quest_eye_1hop_reads_serves_from_both_sides(hub: Hub) -> None:
+    """``fisheye-everywhere.md`` AC 2: a quest's ring shows what it serves
+    and what serves it, under the Roadmap group, each edge read from this
+    side — the one stored ``serves`` row is ``serves`` on the child's eye
+    and ``served-by`` on the parent's."""
+    store = hub.live_store
+    parent = store.insert_ref(kind="quest", slug=None, title="Grow the mesh")
+    child = store.insert_ref(kind="quest", slug=None, title="Ship the ring")
+    grandchild = store.insert_ref(kind="quest", slug=None, title="Pin the groups")
+    store.add_link(src_ref_id=child.id, dst_ref_id=parent.id, relation="serves")
+    store.add_link(src_ref_id=grandchild.id, dst_ref_id=child.id, relation="serves")
+
+    h = handle_registry.format_handle("quest", child.id)
+    out = render_eye(store, h, "fisheye+1hop")
+    ph = handle_registry.format_handle("quest", parent.id)
+    gh = handle_registry.format_handle("quest", grandchild.id)
+    assert "Roadmap:" in out
+    assert f"  serves: {ph} — Grow the mesh" in out
+    assert f"  served-by: {gh} — Pin the groups" in out
+
+
+def test_concept_and_component_rings_render_their_families(hub: Hub) -> None:
+    store = hub.live_store
+    calc = store.insert_ref(kind="concept", slug=None, title="Calculus")
+    algebra = store.insert_ref(kind="concept", slug=None, title="Algebra")
+    store.add_link(
+        src_ref_id=calc.id, dst_ref_id=algebra.id, relation="has-prerequisite"
+    )
+    out = render_eye(
+        store, handle_registry.format_handle("concept", algebra.id), "fisheye+1hop"
+    )
+    ch = handle_registry.format_handle("concept", calc.id)
+    assert "Concepts:" in out and f"prerequisite-of: {ch} — Calculus" in out
+
+    frame = store.insert_ref(kind="component", slug="frame", title="Frame")
+    bolt = store.insert_ref(kind="component", slug="m3-bolt", title="M3 bolt")
+    store.add_link(src_ref_id=frame.id, dst_ref_id=bolt.id, relation="contains")
+    out = render_eye(
+        store, handle_registry.format_handle("component", bolt.id), "fisheye+1hop"
+    )
+    fh = handle_registry.format_handle("component", frame.id)
+    assert "Parts:" in out and f"part-of: {fh} — Frame" in out
+
+
+def test_inbound_edge_without_an_inverse_reads_with_an_arrow(hub: Hub) -> None:
+    """``see-also`` is asymmetric with no inverse slug: from the target's
+    side it reads ``<-see-also``, never as if this ref were the source."""
+    store = hub.live_store
+    a = store.insert_ref(kind="memory", slug=None, title="Points out")
+    b = store.insert_ref(kind="memory", slug=None, title="Pointed at")
+    store.add_link(src_ref_id=a.id, dst_ref_id=b.id, relation="see-also")
+    out = render_eye(
+        store, handle_registry.format_handle("memory", b.id), "fisheye+1hop"
+    )
+    assert f"  <-see-also: me{a.id} — Points out" in out
+    out = render_eye(
+        store, handle_registry.format_handle("memory", a.id), "fisheye+1hop"
+    )
+    assert f"  see-also: me{b.id} — Pointed at" in out
 
 
 def test_memory_eye_below_1hop_omits_the_link_neighborhood(hub: Hub) -> None:
@@ -309,6 +380,109 @@ def test_unresolvable_flat_eye_degrades_not_crashes(hub: Hub) -> None:
     ws.focus("me999999", "verbatim")  # no such memory
     out = render_working_set(hub.live_store, ws)
     assert "unrenderable" in out  # marker, not an exception
+
+
+# ── fisheye+2hop and +recall (fisheye-everywhere.md AC 3-4) ────────────
+
+
+def _two_hop_fixture(hub: Hub) -> tuple[Any, Any, list[Any]]:
+    """me(focus) —related-to→ me(b), me(c); b cites p1, p2; c cites p1.
+    The second hop from the focus is {p1, p2} via cites — two distinct
+    papers, though three edges reach them."""
+    store = hub.live_store
+    focus = store.insert_ref(kind="memory", slug=None, title="Focus note")
+    b = store.insert_ref(kind="memory", slug=None, title="Note B")
+    c = store.insert_ref(kind="memory", slug=None, title="Note C")
+    papers = [
+        store.insert_ref(kind="paper", slug=f"p{i}", title=f"Paper {i}") for i in (1, 2)
+    ]
+    for near in (b, c):
+        store.add_link(src_ref_id=focus.id, dst_ref_id=near.id, relation="related-to")
+    store.add_link(src_ref_id=b.id, dst_ref_id=papers[0].id, relation="cites")
+    store.add_link(src_ref_id=b.id, dst_ref_id=papers[1].id, relation="cites")
+    store.add_link(src_ref_id=c.id, dst_ref_id=papers[0].id, relation="cites")
+    # An edge back to the focus and one between two first-hop refs are
+    # already on screen; neither may count.
+    store.add_link(src_ref_id=b.id, dst_ref_id=c.id, relation="see-also")
+    return store, focus, papers
+
+
+def test_second_hop_counts_distinct_refs_per_kind_and_label(hub: Hub) -> None:
+    store, focus, _papers = _two_hop_fixture(hub)
+    out = render_eye(
+        store, handle_registry.format_handle("memory", focus.id), "fisheye+2hop"
+    )
+    assert "— linked (1 hop) —" in out, "the first hop still renders"
+    assert "— second hop (2 neighbours out" in out
+    assert "  2 paper via cites" in out
+    assert "see-also" not in out.split("— second hop")[1]
+
+
+def test_second_hop_expands_one_group_with_q(hub: Hub) -> None:
+    store, focus, papers = _two_hop_fixture(hub)
+    h = handle_registry.format_handle("memory", focus.id)
+    out = render_eye(store, h, "fisheye+2hop", q="paper:cites")
+    assert "— second hop: 2 paper via cites —" in out
+    for p in papers:
+        assert f"pa{p.id} — Paper" in out
+    assert "— linked (1 hop) —" not in out, "an expansion shows the group only"
+    with pytest.raises(ValueError, match="groups here: paper:cites"):
+        render_eye(store, h, "fisheye+2hop", q="patent:cites")
+    with pytest.raises(ValueError, match="fisheye\\+2hop only"):
+        render_eye(store, h, "fisheye+1hop", q="paper:cites")
+
+
+def test_second_hop_and_recall_refused_on_tree_kinds() -> None:
+    for extent in ("fisheye+2hop", "+recall"):
+        with pytest.raises(ValueError, match="stop at fisheye\\+1hop"):
+            render_eye(None, "dc5", extent)
+
+
+def test_parse_extent_reads_the_recall_suffix() -> None:
+    from precis.utils.eye_render import parse_extent
+
+    assert parse_extent("+recall") == (Extent.HOP1, True)
+    assert parse_extent("fisheye+recall") == (Extent.FIDELITY, True)
+    assert parse_extent("fisheye+2hop") == (Extent.HOP2, False)
+    assert parse_extent("kwd") == (Extent.TOC, False)
+    with pytest.raises(ValueError, match="unknown extent"):
+        parse_extent("fisheye+3hop")
+
+
+def _embedded_memory(runtime: Any, text: str) -> int:
+    out = runtime.dispatch("put", {"kind": "memory", "text": text})
+    m = re.search(r"id=(\d+)", out)
+    assert m, out
+    ref_id = int(m.group(1))
+    store = runtime.hub.live_store
+    (cid,) = store.chunks.card_chunk_ids([ref_id])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "
+            "VALUES (%s, 'bge-m3', %s, 'ok', 1) "
+            "ON CONFLICT (chunk_id, embedder) DO UPDATE "
+            "SET vector = EXCLUDED.vector, status = 'ok'",
+            (cid, runtime.hub.embed_one(text)),
+        )
+    return ref_id
+
+
+def test_recall_lists_the_nearest_unlinked_memory(runtime_with_store: Any) -> None:
+    rt = runtime_with_store
+    a = _embedded_memory(rt, "copper catalyses nitrate reduction")
+    b = _embedded_memory(rt, "copper catalyses nitrate reduction")
+    store = rt.hub.live_store
+    out = render_eye(store, handle_registry.format_handle("memory", a), "+recall")
+    assert "— recall (nearest by embedding, finding+memory, k≤8) —" in out
+    assert f"me{b}" in out
+    assert f"me{a} —" not in out.split("— recall")[1], "never recalls itself"
+
+
+def test_recall_says_so_when_the_ref_is_not_embedded(hub: Hub) -> None:
+    store = hub.live_store
+    mem = store.insert_ref(kind="memory", slug=None, title="Fresh note")
+    out = render_eye(store, handle_registry.format_handle("memory", mem.id), "+recall")
+    assert "— recall: no embedded chunk on this ref yet —" in out
 
 
 # ── skill eyes: file-backed, atomic (no neighborhood) ──────────────────
