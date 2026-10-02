@@ -625,6 +625,10 @@ def discover(
     the last call takes the remainder) and still emits one record per hub,
     with the call's metering apportioned (see :func:`_record`). ``pack=1``
     is the single-hub prompt, byte for byte, so earlier probes reproduce.
+    A pack never mixes halves: the A/B stability check compares two
+    *independent* namings, and one context naming hubs of both halves
+    would make them agree by construction (the 2026-10-02 packed probe
+    mixed 41 of 49 packs before this rule).
     """
     if pack < 1:
         raise ValueError(f"pack must be at least 1, got {pack}")
@@ -632,13 +636,13 @@ def discover(
     text_field = config.snapshot.text_field
     terms: list[DiscoveredTerm] = []
     warnings: list[str] = []
-    group: list[tuple[int, Half, str, Sequence[Mention]]] = []
+    pending: dict[Half, list[tuple[int, Half, str, Sequence[Mention]]]] = {}
 
     def emit(record: CallRecord) -> None:
         if on_call is not None:
             on_call(record)
 
-    def flush() -> None:
+    def flush(group: list[tuple[int, Half, str, Sequence[Mention]]]) -> None:
         if not group:
             return
         prompt = build_packed_prompt(
@@ -713,9 +717,10 @@ def discover(
             warnings.append(f"ref {ref_id}: row missing {text_field!r} — skipped")
             continue
         if pack > 1:
+            group = pending.setdefault(half, [])
             group.append((ref_id, half, str(text_raw), mentions))
             if len(group) == pack:
-                flush()
+                flush(group)
             continue
         prompt = build_prompt(str(text_raw), mentions, config)
         started = time.monotonic()
@@ -744,7 +749,8 @@ def discover(
                     warnings=len(row_warnings),
                 )
             )
-    flush()
+    for group in pending.values():
+        flush(group)
     return tuple(terms), tuple(warnings)
 
 

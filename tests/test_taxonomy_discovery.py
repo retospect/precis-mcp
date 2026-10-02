@@ -771,7 +771,7 @@ def test_discover_packs_hubs_and_apportions_the_metering() -> None:
         mentions_by_ref,
         _config(),
         client,
-        halves={1: "A", 2: "B", 3: "A"},
+        halves={1: "A", 2: "A", 3: "B"},
         on_call=records.append,
         pack=2,
     )
@@ -803,7 +803,7 @@ def test_discover_packed_call_failure_is_one_failed_row_per_hub() -> None:
         mentions_by_ref,
         _config(),
         RaisingClient(),
-        halves={1: "A", 2: "B"},
+        halves={1: "A", 2: "A"},
         on_call=records.append,
         pack=4,
     )
@@ -811,6 +811,29 @@ def test_discover_packed_call_failure_is_one_failed_row_per_hub() -> None:
     assert [w.split(":")[0] for w in warnings] == ["ref 1", "ref 2"]
     assert [r.error for r in records] == ["model unavailable"] * 2
     assert all(r.payload is None and r.pack_size == 2 for r in records)
+
+
+def test_discover_never_packs_hubs_of_both_halves_together() -> None:
+    """A/B stability compares two independent namings; a pack that holds
+    hubs of both halves would make them agree by construction."""
+    rows, mentions_by_ref = _packed_rows(1, 2, 3, 4, 5)
+    client = _PackedClient()
+    records: list[CallRecord] = []
+    discover(
+        rows,
+        mentions_by_ref,
+        _config(),
+        client,
+        halves={1: "A", 2: "B", 3: "A", 4: "B", 5: "A"},
+        on_call=records.append,
+        pack=2,
+    )
+    halves_by_call: dict[str, set[str]] = {}
+    for r in records:
+        halves_by_call.setdefault(r.prompt_sha256, set()).add(r.half)
+    assert all(len(h) == 1 for h in halves_by_call.values()), halves_by_call
+    assert sorted(r.ref_id for r in records) == [1, 2, 3, 4, 5]
+    assert len(client.calls) == 3, "A: [1, 3] + [5], B: [2, 4]"
 
 
 def test_discover_pack_one_sends_the_single_hub_prompt() -> None:

@@ -566,6 +566,30 @@ like-for-like baseline. `compare_runs.py` is rebuilt in the scratch dir
 and reproduces probe 1's 0.046 on itself. Dumps:
 `norr-her-meta/taxonomy-packed300/` and `taxonomy-unpacked100/`.
 
+**Baseline re-run (unpacked, 100 rows, 13:50 UTC):** 61 calls, 0 failed,
+$4.99, 30 min; 174 rows, 86 nodes, 5 systematic; stability 0.349 = **0.74
+of the ceiling 0.475 — `probe criterion PASS`**. Probe 3 ran the same
+prompt on the same rows and read 0.58 (with 6 calls lost). **The 100-row
+ratio is not reproducible: two runs of one prompt land 0.16 apart, on
+both sides of the bar.** Stop reading the bar at n=100.
+
+**Packed vs unpacked on the 59 shared hubs** (`compare_runs.py`, 174
+mentions in both): measurand key identical 0.60 raw, **0.77 after the
+alias fold**, dimension text 0.56. Probe 3's unpacked-vs-unpacked raw
+agreement was 0.68 on 153 mentions; the 0.08 gap is about 1.6 standard
+errors, so packing's cost to naming agreement is not separable from
+run-to-run noise at this n. The top folded disagreements are families the
+campaign vocabulary can fold for free (`co-content-loss` ↔ `co-loss`,
+`solution-ph` ↔ `ph`, `operating-` ↔ `operational-stability-duration`,
+species elision `faradaic-efficiency` ↔ `faradaic-efficiency-nh3`).
+
+**The packed probe's A/B number is invalid — defect found and fixed.**
+41 of its 49 packs held hubs of both halves, so one model context named
+both sides of the A/B comparison, which the stability check assumes are
+independent. `discovery.discover` now keeps one pending pack per half
+(`test_discover_never_packs_hubs_of_both_halves_together`). The 0.53 is
+discarded; its per-hub rows stay usable for test-retest.
+
 ## Resume (2026-10-02)
 
 State: three probes on the same 100 rows; every vocabulary and census
@@ -576,8 +600,9 @@ packing slice are shipped; nothing unbuilt stands before the next paid run.
 Detail is in the three probe sections above; this section is only the
 order.
 
-1. **Packed 300-row probe** — PAID (~75 calls, ~$6, ~1.5 h), Reto's go
-   required. `precis taxonomy-bootstrap --stage all --limit 300 --pack 4`.
+1. **Packed 300-row probe, re-run with packs per half** — PAID (~49
+   calls, ~$6, ~45 min), Reto's go required (the 2026-10-02 run mixed
+   halves inside packs, §Fourth probe; its A/B number is void). `precis taxonomy-bootstrap --stage all --limit 300 --pack 4`.
    Reads the 0.60 criterion where the unit-key ceiling is above the 0.32
    per-mention noise; a FAIL there is a real prompt or vocabulary finding.
    Full run only after it passes. Packing is itself unmeasured: the field
