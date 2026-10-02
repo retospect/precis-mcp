@@ -108,17 +108,6 @@ gr346534, soft-deleted)
 
 ## No action needed
 
-- **gr458899** — fixed 2026-10-01, pending close. The inert lane was still
-  growing disk: the publish pre-flight ran after the per-gripe clone, so each
-  skip left ~300MB behind that nothing came back for. The pre-flight now runs
-  from the host checkout before any clone, and a skip reclaims a clone an
-  earlier attempt left. The clones already on the node are not touched by
-  this — that sweep is in `backlog/stranded-fix-gripe-branches.md`. Deployed
-  2026-10-01 13:29Z; the code on melchior is confirmed to carry it, the
-  behaviour is not yet observed — no fix_gripe job has run since. The last
-  three before the deploy (12:37–12:43Z) each still left a clone, taking the
-  node to 67 clones / 18G; all 67 were removed 2026-10-01, so the baseline is
-  0. Close the gripe on the first post-deploy skip that leaves it at 0.
 - **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
   inertness is no longer a code-reading claim. Four real runs
   (job:458512, 458575, 458576, 458577) each ended in 0.9s on melchior running
