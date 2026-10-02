@@ -39,10 +39,12 @@ detector). Since 2026-10-01 ~17:52Z it serves the deployed code: `/src`
 is a plain clone (`~/work/projects/code/precis-mcp-prod`) that
 `scripts/deploy` moves to each deployed sha, so a qland no longer restarts
 it and a deploy restarts it once (`deploy`'s change, Reto ran the
-recreate). Embedder admission is answered (gr459844); next are the
-isolation gaps.
-**Last reviewed:** 2026-09-30 (pillar review same day added gr345270 and a
-server-side-session-context Horizon pointer)
+recreate). Embedder admission is answered (gr459844). Since 2026-10-01
+20:25Z secrets reach it as mounted files, not container env (gr458350), and
+since 23:13Z its caches live on a host mount that survives a recreate
+(gr460339). Next: stop recreates stranding interactive sessions, then the
+capacity and isolation gaps.
+**Last reviewed:** 2026-10-02 (handoff: Do-next 0 + Runbook added)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
@@ -53,11 +55,25 @@ server-side-session-context Horizon pointer)
    is `docker rm -f`: SIGKILL, open streams reset, the port dark ~9 s until
    the new supervisor binds. It ranks first because every ensure-script edit
    and every secret rotation triggers it at the next SessionStart anywhere.
-   Next: on the rig, tell the dark window from the reset streams with a real
-   client, then make `--recreate` drain (`docker stop` with a timeout) and
-   shrink the bind gap.
+   Rig, 2026-10-02 (copy of the ensure script on 8767, real
+   `claude -p` client): one recreate, two recreates ~55 s apart, and a call
+   issued ~3 s into the dark window all re-initialized cleanly. So the
+   non-interactive client survives, and the stranding is specific to
+   long-lived interactive sessions — this session reconnected after both
+   prod recreates, deploy's and twinkly's did not. Leading hypothesis: the
+   interactive client does not reset its reconnect budget after a
+   successful reconnect, so a second drop soon after the first exhausts it.
+   That is client-side, so the server-side fix is fewer and shorter drops,
+   shipped as ONE ensure-script install (an edit is itself a recreate):
+   (a) a secret rotation rewrites the mounted files and respawns the child
+   instead of recreating; (b) `--recreate` uses `docker stop -t` and
+   drains; (c) the prepare step reinstalls `--no-deps -e /app` when
+   `pyproject.toml` differs from a stamp in the venv (see Runbook);
+   optionally (d) a holder container owns the port's network namespace.
+   Proving the hypothesis needs two interactive windows on the rig (a
+   human, or `claude` driven through tmux).
 1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
-   capacity number and shared cache left.** gr459088 and gr457326 are CLOSED, verified on the shared
+   capacity number and shared cache left — Reto's call, td461158.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
    1.05 MB → 45 MB, after thirteen hours of zero progress. Five fixes,
    none sufficient alone — per-batch retry (d9bd4e16), cold-cache re-arm
@@ -112,7 +128,25 @@ server-side-session-context Horizon pointer)
    image rebuild bounces every session. Ranked last because its acceptance
    criteria are verified by probing the surface they fix — that surface is
    now trustworthy, so this is unblocked rather than waiting. The role
-   bullet decides whether coding jobs can ever leave containers.
+   bullet decides whether coding jobs can ever leave containers; Reto's
+   call, td461159.
+
+## Runbook
+
+- **A deploy that changes `[project.entry-points]`** (every plugin-split
+  extraction): the image's venv is a path-editable install (pth →
+  `/app/src`), so new modules import but entry points stay at the image
+  build's — e.g. `precis.skills` missing, and the moved skill is NotFound.
+  After the deploy moves the prod clone, refresh in place:
+  `docker exec precis-mcp-http uv pip install --python /opt/venv/bin/python
+  --no-deps -e /app`, then SIGTERM the serve child (pid from the
+  supervisor's "generation N started (pid X)" log line) so the supervisor
+  respawns it — never `--recreate` for this (gr460711). Any later recreate
+  reverts it to the image's metadata until Do-next 0 (c) lands.
+- **Installing a staged ensure script** is the agent's job after a deploy
+  (Reto 2026-10-01): diff, cp, `--recreate`, verify with the names-only
+  `docker inspect` format and precis-status, and have deploy send one ping
+  covering every restart.
 
 ## Horizon
 

@@ -170,7 +170,10 @@ current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
 
 **Threads.** Active: `local-compute.md` (owns local serving: the summariser
 and the single-spark model, and what they do) · `session-mcp-shared-server.md`
-(the platform blocker every thread owner named). Dormant:
+(the platform blocker every thread owner named; since 2026-10-01 the shared
+server is supervised, serves the deployed sha and reads secrets from files —
+open: a container recreate strands interactive sessions, embedder capacity,
+per-session DB roles). Dormant:
 `serving-programme.md` (the MCP ceiling and the eval spine; Reto 2026-10-01 —
 nothing hits the ~28 calls/s ceiling at ~15 sessions).
 
