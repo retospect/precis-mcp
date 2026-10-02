@@ -209,6 +209,47 @@ _OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS)
 _POLARIZED_LABEL_RE = re.compile(r"ELEC|TANT|POL", re.IGNORECASE)
 
 
+#: A pre-existing finding the group move makes more negative than this is a
+#: new fault, not a standing one.
+_GROUP_MOVE_MARGIN_EPS_MM = 1e-4
+
+
+def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
+    """Coordinate-free identity of one object of a DRC finding: a pad is
+    ``refdes/pin``, authored fixed copper its ``fixed_id``. An object with
+    neither (no stable identity) falls back to ``ctype:net:layer``."""
+    refdes, pin = o.get(prefix + "refdes"), o.get(prefix + "pin")
+    if refdes and pin:
+        return f"pad:{refdes}/{pin}"
+    fid = o.get(prefix + "fixed_id")
+    if fid is not None:
+        return f"fixed:{fid}"
+    return (
+        f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
+    )
+
+
+def _finding_identity(f: pcb_drc.DrcFinding) -> tuple[Any, ...]:
+    """``(rule, sorted object identities, layer)`` — no coordinates, so a
+    finding between two members of a rigidly moved group keeps its key."""
+    if f.rule == "via_pad_keepout" and f.objects:
+        o = f.objects[0]
+        via = (
+            f"fixed:{o['via_fixed_id']}"
+            if o.get("via_fixed_id") is not None
+            else f"via:{o.get('via_net')}"
+        )
+        pad = (
+            f"pad:{o.get('pad_refdes')}/{o.get('pad_pin')}"
+            if o.get("pad_refdes") and o.get("pad_pin")
+            else f"pad:{o.get('pad_net')}"
+        )
+        return (f.rule, tuple(sorted((via, pad))), o.get("pad_layer"))
+    ids = tuple(sorted(_finding_object_identity(o) for o in f.objects))
+    layer = f.where.rsplit(" on ", 1)[-1] if " on " in f.where else None
+    return (f.rule, ids, layer)
+
+
 class PcbHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pcb",
@@ -784,35 +825,54 @@ class PcbHandler(Handler):
                 problems.append(f"{rule}: {rd} with {other}")
 
         # (b) the carried copper and the moved lands against everything
-        # else, by the route gate's rule. Only findings the move ADDS count
-        # (coordinate-free key multiset, new minus old): a collision that
-        # was already on the board is not this move's to refuse.
+        # else, by the route gate's rule. Only findings the move ADDS or
+        # WORSENS count: each finding is keyed by the identity of its
+        # objects (pad = refdes/pin, fixed copper = fixed_id), never by
+        # coordinates, so a pre-existing finding between two group members
+        # keeps its key across the rigid move. Same key is not enough: the
+        # measured margin must not get worse (a deeper overlap is a new
+        # fault). What the move leaves standing is reported, not refused.
         ir_new = self._build_ir(ref.id, graph_new, fixed_copper=foreign + carried_new)
+        standing: list[str] = []
         if carried_old:
 
             def keyed(
                 ir: pcb_ir.PcbIR, rows: list[dict[str, Any]]
-            ) -> list[tuple[tuple[str, str], str]]:
+            ) -> list[tuple[tuple[Any, ...], float, str]]:
                 fps = footprints_for(ir)
                 found = [
                     *pcb_session.fixed_copper_findings(ir, fps, rows, caps),
                     *pcb_session.fixed_via_pad_findings(ir, fps, rows, caps),
                 ]
                 return [
-                    (
-                        (f.rule, re.sub(r"\([^)]*\)", "(..)", f.where)),
-                        f"{f.rule}: {f.where}",
-                    )
+                    (_finding_identity(f), f.margin_mm or 0.0, f"{f.rule}: {f.where}")
                     for f in found
                 ]
 
             ir_old = self._build_ir(ref.id, graph, fixed_copper=fixed_old)
-            before = collections.Counter(k for k, _ in keyed(ir_old, fixed_old))
-            for key, line in keyed(ir_new, foreign + carried_new):
-                if before[key] > 0:
-                    before[key] -= 1
-                else:
-                    problems.append(line)
+            before: dict[tuple[Any, ...], list[float]] = collections.defaultdict(list)
+            for key, margin, _ in keyed(ir_old, fixed_old):
+                before[key].append(margin)
+            for margins in before.values():
+                margins.sort()  # worst (most negative) first
+            after: dict[tuple[Any, ...], list[tuple[float, str]]] = (
+                collections.defaultdict(list)
+            )
+            for key, margin, line in keyed(ir_new, foreign + carried_new):
+                after[key].append((margin, line))
+            for key, items in after.items():
+                items.sort()
+                olds = before.get(key, [])
+                for i, (margin, line) in enumerate(items):
+                    if i >= len(olds):
+                        problems.append(line)
+                    elif margin < olds[i] - _GROUP_MOVE_MARGIN_EPS_MM:
+                        problems.append(
+                            f"{line} (worse: {margin:.4f}mm vs {olds[i]:.4f}mm "
+                            "before the move)"
+                        )
+                    else:
+                        standing.append(line)
         if problems:
             shown = "; ".join(problems[:8])
             more = f" (+{len(problems) - 8} more)" if len(problems) > 8 else ""
@@ -878,6 +938,13 @@ class PcbHandler(Handler):
                 f"\nripped {len(ripped)} net(s): "
                 + "; ".join(f"{n} ({rip[n]})" for n in ripped)
                 + "; re-route with op='route'"
+            )
+        if standing:
+            body += (
+                f"\nboard still has {len(standing)} pre-existing DRC error(s) the "
+                "move did not add: "
+                + "; ".join(standing[:5])
+                + (f" (+{len(standing) - 5} more)" if len(standing) > 5 else "")
             )
         return body
 

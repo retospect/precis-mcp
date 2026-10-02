@@ -2089,7 +2089,9 @@ class PcbMixin:
         for a board, flattened to :meth:`pcb_copper_list`'s own item shape
         (``{"ctype", "layer", "net", ...geom fields}``) plus ``fixed:
         True``, ``generator_name`` (which ``pcb_generators`` call emitted
-        it), and ``envelope`` (the rule envelope it was solved under) —
+        it), ``envelope`` (the rule envelope it was solved under) and
+        ``fixed_id`` (the row's stable identity, which a DRC finding's
+        objects carry so a move can key a finding without coordinates) —
         the read-back surface :meth:`pcb_copper_list` unions in so DRC/
         gerber/SVG see it as real copper with no extra plumbing. ``net``
         is ``None`` for a row whose ``net_id`` is NULL (schema-legal —
@@ -2100,7 +2102,7 @@ class PcbMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT fc.ctype, fc.layer, n.name, fc.geom, fc.generator_name, "
-                "       fc.envelope "
+                "       fc.envelope, fc.fixed_id "
                 "FROM pcb_fixed_copper fc "
                 "LEFT JOIN pcb_nets n ON n.net_id = fc.net_id AND n.retired_at IS NULL "
                 "WHERE fc.board_id = %s AND fc.retired_at IS NULL",
@@ -2115,8 +2117,9 @@ class PcbMixin:
                 "fixed": True,
                 "generator_name": gname,
                 "envelope": envelope or {},
+                "fixed_id": fixed_id,
             }
-            for ctype, layer, net_name, geom, gname, envelope in rows
+            for ctype, layer, net_name, geom, gname, envelope, fixed_id in rows
         ]
 
     def pcb_fixed_copper_retire(

@@ -608,6 +608,8 @@ def _clearance_object(
         "layer": item.get("layer"),
         **_derived_tag(item),
     }
+    if item.get("fixed_id") is not None:
+        obj["fixed_id"] = item["fixed_id"]
     if item.get("ctype") == "pad" and item.get("refdes"):
         obj["refdes"], obj["pin"] = item.get("refdes"), item.get("pin")
     if near is not None:
@@ -1455,6 +1457,11 @@ def check_via_pad_keepout(
                         {
                             "via_net": via_net,
                             **({"via_derived": True} if item.get("derived") else {}),
+                            **(
+                                {"via_fixed_id": item["fixed_id"]}
+                                if item.get("fixed_id") is not None
+                                else {}
+                            ),
                             "via_x": vx,
                             "via_y": vy,
                             "pad_net": pad_net,

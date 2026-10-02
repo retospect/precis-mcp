@@ -2059,3 +2059,108 @@ def test_op_move_rips_a_router_net_whose_copper_the_moved_group_lands_on(pcb, st
     )
     assert "ripped 1 net(s): NX (collides with the moved group" in resp.body
     assert store.pcb_nets_with_router_copper(board_id) == set()
+
+
+# ── group move: the delta rule keys findings by object identity ──────────
+
+
+def _vias(store, board_id):
+    return [r for r in store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via"]
+
+
+def _via_geom(via):
+    skip = ("ctype", "layer", "net", "fixed", "generator_name", "envelope", "fixed_id")
+    return {k: v for k, v in via.items() if k not in skip}
+
+
+def _plant_via_on(store, ref, board_id, via, net):
+    """A second ARR1-owned via of ``net`` exactly on ``via`` — a standing
+    violation between two members of the generator group."""
+    geom = _via_geom(via)
+    store.pcb_fixed_copper_put(
+        ref.id,
+        board_id,
+        "ARR1",
+        "ewod_pad_array",
+        "t",
+        [{"ctype": "via", "layer": via["layer"], "net": net, "geom": geom}],
+    )
+
+
+def test_op_move_group_with_an_internal_standing_violation_moves_and_reports_it(
+    pcb, store
+):
+    ref, board_id = _gen_board(pcb, "mv-int")
+    vias = _vias(store, board_id)
+    other_net = next(v["net"] for v in vias if v["net"] != vias[0]["net"])
+    _plant_via_on(store, ref, board_id, vias[0], other_net)
+    poses0 = _poses(store, ref.id)
+
+    resp = pcb.put(
+        id="mv-int", args={"op": "move", "refdes": "ARR1", "x": 20.0, "y": 15.0}
+    )
+
+    assert _poses(store, ref.id)["ARR1"][:2] == (20.0, 15.0) != poses0["ARR1"][:2]
+    assert "board still has" in resp.body
+    assert "pre-existing DRC error(s) the move did not add" in resp.body
+    assert "clearance: via[" in resp.body
+
+
+def test_op_move_group_creating_a_second_collision_of_the_same_rule_is_refused(
+    pcb, store
+):
+    """P1's land sits on via V1 (standing). The move takes V1 off it but
+    lands a DIFFERENT via on it: same rule, same part, a new pair."""
+    ref, board_id = _gen_board(pcb, "mv-rep", p1_from_via=(0.0, 0.0))
+    vias = _vias(store, board_id)
+    v1 = vias[0]
+    v2 = next(v for v in vias if (v["x"], v["y"]) != (v1["x"], v1["y"]))
+    poses0 = _poses(store, ref.id)
+    with pytest.raises(BadInput, match=r"pad\[P1/1"):
+        pcb.put(
+            id="mv-rep",
+            args={
+                "op": "move",
+                "refdes": "ARR1",
+                "x": v1["x"] - v2["x"],
+                "y": v1["y"] - v2["y"],
+            },
+        )
+    assert _poses(store, ref.id) == poses0
+
+
+def test_op_move_group_deepening_a_standing_overlap_is_refused_shallower_passes(
+    pcb, store
+):
+    """A group via planted 0.6 mm left of P1's centre, far from every
+    courtyard, so only the carried-copper rule is in play."""
+    ref, board_id = _gen_board(pcb, "mv-deep")
+    via = _vias(store, board_id)[0]
+    store.pcb_fixed_copper_put(
+        ref.id,
+        board_id,
+        "ARR1",
+        "ewod_pad_array",
+        "t",
+        [
+            {
+                "ctype": "via",
+                "layer": via["layer"],
+                "net": via["net"],
+                "geom": {**_via_geom(via), "x": 299.4, "y": 300.0},
+            }
+        ],
+    )
+    poses0 = _poses(store, ref.id)
+    # Closer by 0.2 mm: same via/pad pair, more negative margin.
+    with pytest.raises(BadInput, match=r"worse: .* before the move"):
+        pcb.put(id="mv-deep", args={"op": "move", "refdes": "ARR1", "x": 0.2, "y": 0.0})
+    assert _poses(store, ref.id) == poses0
+    # Same pose: equal margin passes, and the standing error is reported.
+    resp = pcb.put(
+        id="mv-deep", args={"op": "move", "refdes": "ARR1", "x": 0.0, "y": 0.0}
+    )
+    assert "pre-existing DRC error(s)" in resp.body
+    # Away by 0.2 mm: shallower passes.
+    pcb.put(id="mv-deep", args={"op": "move", "refdes": "ARR1", "x": -0.2, "y": 0.0})
+    assert _poses(store, ref.id)["ARR1"][:2] == (-0.2, 0.0)

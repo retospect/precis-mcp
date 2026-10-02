@@ -472,7 +472,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         if str(ir.net_name[n]) not in authored_net_names
         for layer in plane_layers_of(int(ir.net_plane_layers[n]))
     }
-    ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
 
     # Write back the anneal's settled pin-swap decisions (pcb-engine-plan
     # "PIN_SWAP is not persisted": previously `ir.swap_pins` genuinely
@@ -488,12 +487,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         for entry in pcb_session.pin_swap_diff(ir, baseline_pin_net)
         if (entry["refdes"], entry["pin"]) not in authored_pin_keys
     ]
-    ctx.store.pcb_pin_swaps_replace_derived(
-        pcb_ref_id, int(board_id), pin_swap_overrides
-    )
-
-    pose = pcb_session.positions(ir)
-    ctx.store.pcb_set_pose(pcb_ref_id, pose)
 
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
@@ -574,13 +567,24 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         rres, drc_fail = pcb_session.strip_drc_violating_nets(ir, rres, routed_findings)
     except Exception as exc:
         log.exception("pcb_route: post-route DRC gate raised; writing nothing")
-        ctx.record_failure(
-            f"pcb_route: post-route DRC gate raised ({type(exc).__name__}: "
-            f"{exc}); no routes or copper written because they could not be "
-            "checked",
-            failure_class="infra",
+        gate_failure = (
+            f"pcb_route: post-route DRC gate raised ({exc}); nothing written — "
+            "the board keeps its previous placement, copper and statuses"
         )
+        ctx.append_chunk("job_summary", gate_failure)
+        ctx.record_failure(gate_failure, failure_class="infra")
         return
+
+    # The anneal's settled planes, pin swaps and poses are written only now,
+    # after realize and the post-route gate have both succeeded: written
+    # earlier, a raise in either left the previous run's copper under parts
+    # that had already moved — a board worse than the one the job started
+    # from. On any raise above, the stored board is untouched.
+    ctx.store.pcb_planes_replace_derived(pcb_ref_id, int(board_id), derived_assignments)
+    ctx.store.pcb_pin_swaps_replace_derived(
+        pcb_ref_id, int(board_id), pin_swap_overrides
+    )
+    ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
     fixed_realized_net_ids = {int(ir.seg_net[s]) for s in rres.fixed_realized}
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)

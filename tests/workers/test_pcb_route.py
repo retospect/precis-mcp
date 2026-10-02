@@ -1033,23 +1033,40 @@ def test_pcb_route_strips_a_net_whose_router_copper_violates_drc(
     assert "1 net(s) stripped by post-route DRC" in ctx.summaries[0][1]
 
 
-def test_pcb_route_writes_no_copper_when_the_post_route_gate_raises(
+def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail closed: nothing from an unchecked realize is stored — no copper,
-    and no `realized` status standing in for copper that was never written."""
+    """Fail closed without damage: a raise in the gate writes nothing, so the
+    previous run's placement, copper and statuses survive unchanged (the
+    anneal's poses used to be written before realize, leaving old copper
+    under moved parts), and the job result names the rule that raised."""
+    ref_id = _seed(store, "route-drc-raises", _DESIGN)
+    first = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(first, pcb_route.SPEC)  # type: ignore[arg-type]
+    poses_before = {
+        i["refdes"]: (i["x"], i["y"], i["rot"])
+        for i in store.pcb_load(ref_id)["instances"]
+    }
+    copper_before = _copper_count(store, ref_id)
+    status_before = store.pcb_route_status(ref_id)
+    assert copper_before > 0
+
+    from precis.pcb import drc as pcb_drc
 
     def _boom(*_a: Any, **_k: Any) -> list[Any]:
-        raise RuntimeError("drc exploded")
+        raise ValueError("drc exploded")
 
-    monkeypatch.setattr(pcb_session, "routed_drc_findings", _boom)
-    ref_id = _seed(store, "route-drc-raises", _DESIGN)
-    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    monkeypatch.setattr(pcb_drc, "check_npth_clearance", _boom)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 7})
     pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
 
-    assert _copper_count(store, ref_id) == 0
-    assert store.pcb_route_status(ref_id) == [] or all(
-        r["status"] != "realized" for r in store.pcb_route_status(ref_id)
-    )
+    poses_after = {
+        i["refdes"]: (i["x"], i["y"], i["rot"])
+        for i in store.pcb_load(ref_id)["instances"]
+    }
+    assert poses_after == poses_before
+    assert _copper_count(store, ref_id) == copper_before
+    assert store.pcb_route_status(ref_id) == status_before
     assert len(ctx.failures) == 1 and ctx.failures[0][1] == "infra"
-    assert "post-route DRC gate raised" in ctx.failures[0][0]
+    assert "rule npth_clearance: ValueError: drc exploded" in ctx.failures[0][0]
+    assert "post-route DRC gate raised" in ctx.summaries[-1][1]

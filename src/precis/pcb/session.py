@@ -43,6 +43,8 @@ from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from precis.pcb.capabilities import CapabilityRow
     from precis.pcb.drc import DrcFinding
     from precis.pcb.realize import RealizeResult
@@ -1024,16 +1026,33 @@ def routed_drc_findings(
             ],
         }
     )
+    rules: list[tuple[str, Callable[[], list[DrcFinding]]]] = [
+        (
+            "clearance",
+            lambda: pcb_drc.check_clearance(
+                model, capability, net_rules=net_rules, net_voltages=net_voltages
+            ),
+        ),
+        ("trace_width", lambda: pcb_drc.check_trace_width(model, capability)),
+        ("annular_ring", lambda: pcb_drc.check_annular_ring(model, capability)),
+        ("npth_clearance", lambda: pcb_drc.check_npth_clearance(model, capability)),
+        ("via_pad_keepout", lambda: pcb_drc.check_via_pad_keepout(model, capability)),
+        ("via_via_keepout", lambda: pcb_drc.check_via_via_keepout(model, capability)),
+        (
+            "board_edge_clearance",
+            lambda: pcb_drc.check_board_edge_clearance(
+                model, capability, outline=outline
+            ),
+        ),
+    ]
     findings: list[DrcFinding] = []
-    findings += pcb_drc.check_clearance(
-        model, capability, net_rules=net_rules, net_voltages=net_voltages
-    )
-    findings += pcb_drc.check_trace_width(model, capability)
-    findings += pcb_drc.check_annular_ring(model, capability)
-    findings += pcb_drc.check_npth_clearance(model, capability)
-    findings += pcb_drc.check_via_pad_keepout(model, capability)
-    findings += pcb_drc.check_via_via_keepout(model, capability)
-    findings += pcb_drc.check_board_edge_clearance(model, capability, outline=outline)
+    for name, run in rules:
+        # A raise names its rule: the job result is all a session can read
+        # (worker logs are not), so "which rule" must travel with it.
+        try:
+            findings += run()
+        except Exception as exc:
+            raise RuntimeError(f"rule {name}: {type(exc).__name__}: {exc}") from exc
     return findings
 
 
