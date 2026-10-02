@@ -244,20 +244,28 @@ def build_smooth_drum(raw: dict[str, Any]) -> GeneratedBlock:
         [round(float(r), 3), round(float(z) + dz, 3)] for r, z in meridian_pts
     ]
 
+    # One ring port over the sheet's whole open edge, ordered by angle --
+    # the hexfold ``s_rim`` convention (GeneratedPort.atoms): 99 single-atom
+    # ports read as 99 identical unconnected_port warnings (prod dogfood
+    # 2026-10-02). The edge is in the sheet plane, so the port faces
+    # radially outward; ``direction`` is that of atom 0.
     coord = np.bincount(bonds_arr.ravel(), minlength=len(coords))
     rim = np.flatnonzero(coord == 2)
+    rim = rim[np.argsort(np.arctan2(coords[rim, 1], coords[rim, 0]), kind="stable")]
     ports: list[GeneratedPort] = []
-    for k, atom in enumerate(rim.tolist(), start=1):
-        radial = np.array([coords[atom, 0], coords[atom, 1], 0.0])
+    if len(rim):
+        a0 = int(rim[0])
+        radial = np.array([coords[a0, 0], coords[a0, 1], 0.0])
         norm = float(np.linalg.norm(radial))
         direction = radial / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0])
         ports.append(
             GeneratedPort(
-                name=f"rim{k}",
-                atom_index=int(atom),
+                name="rim",
+                atom_index=a0,
                 direction=[float(x) for x in direction],
                 roles=["covalent", "sp2-rim"],
                 expected_element="C",
+                atoms=[int(a) for a in rim],
             )
         )
 
@@ -294,8 +302,8 @@ def build_smooth_drum(raw: dict[str, Any]) -> GeneratedBlock:
             if relax
             else "NOT relaxed (relax=False): raw fitted net. "
         )
-        + f"{n_atoms} atoms, {len(bonds)} bonds, {len(ports)} sheet-rim "
-        f"port(s); bonds {topology['bond_min_A']}-{topology['bond_max_A']} Å "
+        + f"{n_atoms} atoms, {len(bonds)} bonds, one sheet-rim ring "
+        f"port over {len(rim)} edge atoms; bonds {topology['bond_min_A']}-{topology['bond_max_A']} Å "
         f"(mean {topology['bond_mean_A']}), theta_p max {topology['theta_p_max_deg']}°."
     )
 

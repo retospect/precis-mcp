@@ -108,24 +108,24 @@ def test_envelope_parses_and_covers_atoms(drum: tuple[GeneratedBlock, float]) ->
     )
 
 
-def test_rim_ports(drum: tuple[GeneratedBlock, float]) -> None:
+def test_rim_is_one_ring_port_over_the_whole_edge(
+    drum: tuple[GeneratedBlock, float],
+) -> None:
+    """One port, not one per edge atom: 99 single-atom ports read as 99
+    identical unconnected_port warnings (prod dogfood 2026-10-02)."""
     block, _ = drum
-    assert block.ports
-    n_edge = int(
-        (
-            np.bincount(
-                np.asarray([b[:2] for b in block.bonds]).ravel(),
-                minlength=len(block.coords),
-            )
-            == 2
-        ).sum()
+    coord = np.bincount(
+        np.asarray([b[:2] for b in block.bonds]).ravel(), minlength=len(block.coords)
     )
-    assert len(block.ports) == n_edge
-    p = block.ports[0]
-    assert p.name == "rim1" and p.roles == ["covalent", "sp2-rim"]
-    assert p.direction[2] == 0.0
-    atom = block.coords[p.atom_index]
-    assert np.dot(p.direction[:2], atom[:2]) > 0.0
+    edge = set(np.flatnonzero(coord == 2).tolist())
+    (p,) = block.ports
+    assert p.name == "rim" and p.roles == ["covalent", "sp2-rim"]
+    assert p.atoms is not None and set(p.atoms) == edge
+    assert p.atom_index == p.atoms[0]
+    angles = np.arctan2(block.coords[p.atoms, 1], block.coords[p.atoms, 0])
+    assert np.all(np.diff(angles) >= 0.0)  # ordered around the axis
+    assert abs(p.direction[2]) < 1e-12
+    assert np.dot(p.direction[:2], block.coords[p.atom_index][:2]) > 0.0
 
 
 def test_unrelaxed_flag() -> None:
