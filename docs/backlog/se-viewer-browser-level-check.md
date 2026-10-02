@@ -12,17 +12,16 @@ over the committed `tests/fixtures/viewer_check/unicycle-c1.ops.json`
 (11 checks; first scheduled run green 2026-10-02 08:58Z), and
 `scripts/main-ci-status` reports it.
 
-**Open: the atomic overlay has no nightly coverage.** The unicycle has no
-structure-bound block, so `probe` skips its target-surface checks and
-never builds the atomic overlay, and `viewer_check.py strain` (the strain
-layers: checkbox, threshold slider, top-5% count, θp/120° switch,
-pentagons vs the default θp threshold — 13 checks) has only been run by
-hand, against prod's `hexa-smooth-drum-v2` through
-`scripts/guide-web --db prod`. Closing it needs a second fixture: a small
-sp² structure with pentagons (a capped tube or a C60 inside an envelope)
-plus the se ops that bind it, seeded by `viewer_check.py seed` — which
-today seeds se ops only, so it also has to replay a `structure` design.
-Then the workflow runs `strain` over it beside `probe`.
+**Atomic overlay: BUILT 2026-10-02, waiting on its first CI run.**
+`tests/fixtures/viewer_check/small-drum.ops.json` is one `generate` op
+(smooth_drum neck 8 / wall 40: 1304 atoms, 12 pentagons, 12 heptagons, a
+target meridian, ~1 s to build), so `seed` needed no structure replay.
+The workflow runs `viewer_check.py strain` over it after `probe`; the
+target-surface checks moved from `probe` (where the unicycle always
+skipped them) into `strain`. Local run against a throwaway pg17 on the
+same steps: 16/16 green (target on n=15201, all 60 pentagon atoms over
+the 7.57° default θp). Delete this item once a dispatched or nightly run
+of the workflow is green with both steps.
 
 Every test over the 3D viewer asserts the SHAPE of the emitted scene JSON.
 That is exactly the assertion class that let every visibility toggle in the

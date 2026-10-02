@@ -1,0 +1,16 @@
+{
+ "ops": [
+  {
+   "op": "generate",
+   "generator": "smooth_drum",
+   "name": "drum",
+   "params": {
+    "neck": 8,
+    "wall": 40,
+    "stalk_length_A": 6,
+    "wall_height_A": 12,
+    "sheet_radius_A": 20
+   }
+  }
+ ]
+}

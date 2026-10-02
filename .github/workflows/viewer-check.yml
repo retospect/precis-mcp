@@ -1,9 +1,9 @@
 name: viewer-check
 
 # Browser-level check of the se 3D viewer (scripts/viewer_check.py): a real
-# Chromium drives a local precis-web over a seeded copy of the unicycle
-# design and asserts, by canvas pixel-diff, that each control changes the
-# picture. Explode, selection highlighting and the level control were each
+# Chromium drives a local precis-web over seeded copies of the unicycle
+# design and a small atomic smooth_drum and asserts, by canvas pixel-diff,
+# that each control changes the picture. Explode, selection highlighting and the level control were each
 # dead from their own feature commit behind a green suite — this is the
 # check that would have caught them.
 #
@@ -72,6 +72,10 @@ jobs:
         run: $UV_RUN precis migrate --from-scratch
       - name: Seed the unicycle fixture
         run: $UV_RUN python scripts/viewer_check.py seed tests/fixtures/viewer_check/unicycle-c1.ops.json unicycle-c1
+      # The atomic overlay's fixture: one `generate` op builds a 1304-atom
+      # smooth_drum (12 pentagons, 12 heptagons, a target meridian) in ~1 s.
+      - name: Seed the small-drum fixture
+        run: $UV_RUN python scripts/viewer_check.py seed tests/fixtures/viewer_check/small-drum.ops.json small-drum
       # Playwright is not a project dependency: `--with` adds it to this
       # run only, and the installer fetches just Chromium (~150 MB) plus
       # its system libraries instead of the ~2 GB Playwright image.
@@ -88,6 +92,10 @@ jobs:
           exit 1
       - name: Probe
         run: $UV_RUN --with playwright python scripts/viewer_check.py probe http://127.0.0.1:9123 unicycle-c1 viewer-check-out
+      # Runs even when the probe is red: the two cover disjoint controls.
+      - name: Atomic overlay (target surface + strain layers)
+        if: success() || failure()
+        run: $UV_RUN --with playwright python scripts/viewer_check.py strain http://127.0.0.1:9123 small-drum viewer-check-out/small-drum
       - name: Keep the evidence
         if: failure()
         run: cp web.log viewer-check-out/ 2>/dev/null || true

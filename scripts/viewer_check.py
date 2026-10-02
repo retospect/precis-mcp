@@ -6,7 +6,8 @@ the requirements it encodes are in
 
     viewer_check.py seed <ops.json> <slug>       # needs PRECIS_DATABASE_URL
     viewer_check.py probe <base-url> <slug> <out-dir>
-    viewer_check.py strain <base-url> <slug> <out-dir>   # an atomic design
+    viewer_check.py strain <base-url> <slug> <out-dir>   # an atomic design:
+        # target surface + strain layers (nightly: small-drum.ops.json)
 
 Why it exists: explode, selection highlighting and the level control were
 each dead from the commit that introduced them, behind a green suite. A
@@ -83,10 +84,10 @@ def seed(ops_path: str, slug: str) -> None:
 
     payload = json.loads(pathlib.Path(ops_path).read_text(encoding="utf-8"))
     dsn = os.environ["PRECIS_DATABASE_URL"]
-    pool = ConnectionPool(dsn, min_size=1, max_size=4, open=True)
-    hub = boot(store=Store(pool, dsn=dsn))
-    print(f"seeding {len(payload['ops'])} op(s) -> se:{slug}")
-    print(SeHandler(hub=hub).put(id=slug, text=json.dumps(payload)))
+    with ConnectionPool(dsn, min_size=1, max_size=4, open=True) as pool:
+        hub = boot(store=Store(pool, dsn=dsn))
+        print(f"seeding {len(payload['ops'])} op(s) -> se:{slug}")
+        print(SeHandler(hub=hub).put(id=slug, text=json.dumps(payload)))
 
 
 def _diff(a: Any, b: Any) -> dict[str, Any]:
@@ -297,24 +298,6 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
             Check("level_change_redraws", level["n"] >= LEVEL_CHANGED_MIN, level)
         )
 
-        # Target surface (smooth_drum's revolved surface_meridian): the
-        # checkbox only appears when some atomic block carries a target, so
-        # a design without one (the unicycle) has nothing to probe. Where it
-        # is present, on must change the picture and off must restore it.
-        if page.locator("#bt3d-target").is_visible():
-            before = settle("09_target_off")
-            page.check("#bt3d-target")
-            on_shot = settle("10_target_on")
-            on = _diff(before, on_shot)
-            checks.append(
-                Check("target_surface_on_redraws", on["n"] >= TARGET_CHANGED_MIN, on)
-            )
-            page.uncheck("#bt3d-target")
-            off = _diff(before, settle("11_target_off_again"))
-            checks.append(
-                Check("target_surface_off_restores", off["n"] <= RESTORED_MAX, off)
-            )
-
         # View export: the PNG is the canvas as on screen, scale bar
         # included (the vendored filter dropdown is page chrome, not in
         # it — hence a small tolerance, not zero); the SVG's scale-bar
@@ -437,6 +420,23 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
         page.wait_for_timeout(600)
         floor = _diff(base, shot("s01_noise"))
         checks.append(Check("noise_floor", floor["n"] <= NOISE_MAX, floor))
+
+        # Target surface (smooth_drum's revolved surface_meridian): the
+        # checkbox appears only when an atomic block carries a target, and
+        # the nightly fixture is a smooth_drum, so its absence is a failure.
+        shown = page.locator("#bt3d-target").is_visible()
+        checks.append(Check("target_checkbox_shown", shown, {}))
+        if shown:
+            page.check("#bt3d-target")
+            on = _diff(base, settle("s_target_on"))
+            checks.append(
+                Check("target_surface_on_redraws", on["n"] >= TARGET_CHANGED_MIN, on)
+            )
+            page.uncheck("#bt3d-target")
+            off = _diff(base, settle("s_target_off"))
+            checks.append(
+                Check("target_surface_off_restores", off["n"] <= RESTORED_MAX, off)
+            )
 
         for layer in ("bond", "angle"):
             row = f"bt3d-layer-{layer}"

@@ -30,7 +30,7 @@ went green, so its item shrank to the atomic-fixture residual)
 **Worktree:** `se-3d-viewer`
 
 **Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1
-(an atomic fixture for the nightly) and 3 (level chips) are the items an
+(confirm the nightly atomic step in CI) and 3 (level chips) are the items an
 agent can start without anyone. Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
@@ -72,13 +72,11 @@ up:
    457/9135 bonds, 302/6024 atoms), and all 60 pentagon atoms clear the
    default θp threshold of 4.03°.
 
-1. **backlog/se-viewer-browser-level-check.md** — the nightly is green
-   but runs only the unicycle, which has no atoms, so the atomic overlay
-   (target surface, strain layers, atom pick and hover) has no CI check;
-   `viewer_check.py strain` has only been run by hand. Leverage: the
-   overlay is where most of 2026-10's viewer work landed, and it is the
-   one area a dead control would again sit behind a green suite. Needs a
-   structure-plus-se fixture and a `seed` that replays both.
+1. **backlog/se-viewer-browser-level-check.md** — the atomic fixture
+   (`small-drum.ops.json`, one smooth_drum `generate` op) and the
+   workflow's `strain` step are built and green locally (16/16); left is
+   one green CI run, then delete the item. Atom pick and hover are still
+   unchecked in CI — `probe`'s pick checks are block-level only.
 2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
