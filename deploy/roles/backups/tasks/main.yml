@@ -2,6 +2,14 @@
 # Backup strategy: pg_dump → /shared/backups/postgres, B2 offsite
 # Optional: USB rsync if backup_usb_mount is defined in host_vars
 # Runs on the data node (internal SSD at /opt/nfs)
+#
+# `shared_mount` on the DB node must resolve to a HOST-LOCAL path. It aliases
+# to the same directory as the cluster NFS path there, so both spellings
+# "work" — but routing nightly ~21 GB dumps through the host's own NFS client
+# puts the lockd layer in the backup write path, and that layer is what hangs
+# (`ls` times out at 60 s on the compute nodes — see
+# docs/runbooks/backup-restore-drill.md). Check the overlay's value before a
+# run: host-local path, not the NFS alias.
 
 - name: Set postgres runtime user
   ansible.builtin.set_fact:
@@ -145,4 +153,39 @@
     minute: "30"
     hour: "4"
     job: "{{ shared_mount }}/scripts/b2_sync.sh >> {{ shared_mount }}/logs/backup-b2.log 2>&1"
+  become: true
+
+# ── Restore-drill pull access ──
+# Lets the drill host stage a dump over the cluster's own network instead of an
+# operator relaying 21 GB from outside it (65 min of a measured 3 h recovery —
+# docs/runbooks/backup-restore-drill.md). Both tasks are inert until the
+# overlay defines the two vars, so this ships dark.
+#
+# The key reads whole production dumps, so it is scoped three ways: a dedicated
+# keypair (revocable without touching operator access), `from=` plus `restrict`,
+# and a forced command that is not a shell. Direction is deliberate — the drill
+# host PULLS. A push would need drill work running on the prod DB node.
+- name: Deploy restore-drill pull wrapper (forced command for the drill key)
+  when: drill_pull_pubkey is defined
+  ansible.builtin.template:
+    src: drill_pull.sh.j2
+    dest: "{{ shared_mount }}/scripts/drill_pull.sh"
+    mode: "0750"
+    owner: "{{ pg_user }}"
+  become: true
+
+# drill_pull_from carries the drill host's address and MUST come from the
+# gitignored overlay — a literal here would leak a node address from a public
+# repo and redden tests/test_deploy_tree_no_secrets.py.
+- name: Authorise the restore-drill pull key (read-only, forced command)
+  when:
+    - drill_pull_pubkey is defined
+    - drill_pull_from is defined
+  ansible.posix.authorized_key:
+    user: "{{ pg_user }}"
+    key: "{{ drill_pull_pubkey }}"
+    comment: "restore-drill pull (read-only)"
+    key_options: 'restrict,from="{{ drill_pull_from }}",command="{{ shared_mount }}/scripts/drill_pull.sh"'
+    state: present
+    exclusive: false
   become: true

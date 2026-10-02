@@ -16,7 +16,7 @@ dominated by one index build that has an untried tuning lever.
 
 | Blocker | State | Fix |
 |---|---|---|
-| castor cannot read a dump at speed | open | ssh trust caspar→castor, or the NFS mount, or pre-stage out of band |
+| Drill host cannot read a dump at speed | repo side ready, dark | the pull key below; needs the two overlay vars and a playbook run by Reto |
 | `/mnt/cluster` NFS hangs on castor and pollux | open | `ls` times out at 60 s; the caspar lockd wedge is the candidate |
 | DGX nodes cannot pull from Docker Hub | worked around | TLS handshake timeout to registry-1.docker.io; `docker save` on an operator Mac → `docker load` on the node. `pgvector/pgvector:pg17` (arm64) is already loaded on castor |
 | Restore spends 1h55m on one HNSW index build | open, untried lever | default 64 MB `maintenance_work_mem`; raise it and `max_parallel_maintenance_workers` for the restore session, then measure |
@@ -26,6 +26,46 @@ The tailnet path caspar→castor is **direct, ~2 ms** — the slow transfer is n
 a cluster network problem. An operator Mac outside the cluster LAN measured
 ~3.4 MB/s to caspar, which is why relaying 21 GB through it takes ~1.7 h. The
 cheap permanent fix is ssh key access from caspar to castor.
+
+## Fixing the transfer path (drill pull access)
+
+The 65 min of staging is 21 GB crossing an operator machine outside the cluster
+LAN at ~3.4 MB/s. The cluster's own path between the DB node and the drill host
+is direct and ~2 ms, so this is a credentials gap, not a bandwidth one. The
+repo side ships dark in `deploy/roles/backups`; it activates when the overlay
+defines two variables, and **Reto runs the playbook** (agent playbook runs
+against the fleet are refused by the permission classifier).
+
+Spec, as provisioned by the role:
+
+- **Direction: the drill host pulls.** The drill runs there, so it initiates. A
+  push would mean drill work running on the production DB node.
+- **Accounts**: the drill host's `deploy` → the DB node's `deploy`. Sufficient
+  and minimal: the dump directories are `deploy`-owned, mode 0700, files 0644
+  inside, so root is not needed to read them.
+- **Key**: a dedicated passphrase-less keypair generated on the drill host
+  (`~deploy/.ssh/id_drill_pull`), not the shared operator key — it grants read
+  of entire production dumps and should be revocable on its own. Non-interactive
+  by design; no cron depends on it.
+- **Overlay variables**: `drill_pull_pubkey` (that key's public half) and
+  `drill_pull_from` (the drill host's address). The address lives in the
+  gitignored overlay, never in the tree — the repo is public and gated.
+- **Scope**: `restrict` + `from=` + a forced command
+  (`scripts/drill_pull.sh`), so the key is not a shell. Its whole vocabulary is
+  `ls-dumps` and `get-dump <precis_prod_YYYYMMDD_HHMMSS>`; the name is
+  shape-checked, so no traversal and no reads outside the dump root.
+
+Proof it works, from the drill host as `deploy` — `BatchMode` is the point, so
+it fails instead of falling back to a prompt:
+
+```
+ssh -o BatchMode=yes <db-node> ls-dumps          # → dump directory names, newest last
+ssh -o BatchMode=yes <db-node> 'get-dump <name>' | tar -x -C <staging dir>
+ssh -o BatchMode=yes <db-node> 'get-dump ../etc' # → must be REFUSED
+```
+
+The third line is the one worth running: a forced command that accepts it is
+not restricting anything.
 
 ## Drill log
 

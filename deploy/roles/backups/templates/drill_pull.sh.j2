@@ -1,0 +1,50 @@
+#!/bin/bash
+# Forced command for the restore-drill pull key (authorized_keys command=…).
+#
+# This key exists so an idle node can stage a nightly dump for a restore drill
+# without an operator relaying 21 GB from outside the cluster LAN. It grants
+# read of complete production database dumps, so it is deliberately NOT a
+# shell: this wrapper is the entire vocabulary the key can speak.
+#
+# Two operations, nothing else:
+#   ls-dumps              → one dump directory name per line, newest last
+#   get-dump <dirname>    → that dump directory as an uncompressed tar on stdout
+#
+# Managed by deploy/roles/backups. Do not edit on the host.
+set -euo pipefail
+
+DUMP_ROOT="{{ shared_mount }}/backups/postgres"
+
+deny() {
+  echo "drill_pull: refused: $1" >&2
+  exit 1
+}
+
+# SSH_ORIGINAL_COMMAND is whatever the client asked for; the forced command
+# runs instead of it. Everything below treats it as untrusted input.
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+[ -n "$cmd" ] || deny "no command (this key has no interactive shell)"
+
+verb="${cmd%% *}"
+arg="${cmd#"$verb"}"
+arg="${arg# }"
+
+case "$verb" in
+  ls-dumps)
+    [ -z "$arg" ] || deny "ls-dumps takes no argument"
+    # Name only, so a caller learns nothing about the wider filesystem.
+    find "$DUMP_ROOT" -maxdepth 1 -type d -name 'precis_prod_*' -exec basename {} \; | sort
+    ;;
+  get-dump)
+    # Whitelist the shape exactly: no slashes, no dots, no traversal.
+    case "$arg" in
+      precis_prod_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]) : ;;
+      *) deny "not a dump directory name: $arg" ;;
+    esac
+    [ -d "$DUMP_ROOT/$arg" ] || deny "no such dump: $arg"
+    tar -cf - -C "$DUMP_ROOT" "$arg"
+    ;;
+  *)
+    deny "unknown command: $verb"
+    ;;
+esac
