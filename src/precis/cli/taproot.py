@@ -396,7 +396,29 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="Mint/attach through the write door. Default (omitted) is a "
         "read-only dry-run that makes ZERO claim-data writes (the qualify "
-        "LLM call still runs, budget-metered).",
+        "LLM call still runs, budget-metered). Without --plan, --apply "
+        "qualifies once and writes that same sentence in one invocation "
+        "(the printed report is what was written); it does NOT re-use an "
+        "earlier dry-run's sentence, because the qualify LLM can re-roll. "
+        "To apply a reviewed dry-run, pass the dry-run's --plan-out file "
+        "as --plan.",
+    )
+    dm.add_argument(
+        "--plan-out",
+        default=None,
+        metavar="PATH",
+        help="Dry-run only: write the reviewed qualified sentence (plan "
+        "JSON) here when the qualify was supported, for a later "
+        "--apply --plan PATH. An error with --apply.",
+    )
+    dm.add_argument(
+        "--plan",
+        default=None,
+        metavar="PATH",
+        help="Requires --apply: a --plan-out file from a dry-run. Writes "
+        "exactly that reviewed sentence and skips the qualify LLM; its "
+        "claim and chunk must equal --claim/--chunk, and its grounding "
+        "quote is re-verified against the passage.",
     )
     dm.add_argument(
         "--out",
@@ -1431,7 +1453,48 @@ def _run_direct_mint(args: argparse.Namespace) -> None:
     from precis.config import load_config
     from precis.errors import BadInput
     from precis.runtime import build_runtime
-    from precis.taproot.directed import directed_mint, render_report
+    from precis.taproot.directed import (
+        directed_mint,
+        plan_from_json,
+        plan_to_json,
+        render_report,
+    )
+
+    # Flag combinations and the plan file are checked before any DB/runtime
+    # work: a bad invocation must not spend a connection or an LLM call.
+    if args.plan_out and args.apply:
+        print(
+            "taproot direct-mint: error: --plan-out is dry-run only; "
+            "drop --apply (or use --plan with --apply)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.plan and not args.apply:
+        print("taproot direct-mint: error: --plan requires --apply", file=sys.stderr)
+        sys.exit(1)
+    qualified = None
+    if args.plan:
+        try:
+            with open(args.plan, encoding="utf-8") as f:
+                plan_data = json.load(f)
+            plan_proposed, plan_chunk, qualified = plan_from_json(plan_data)
+        except (OSError, ValueError) as exc:
+            print(
+                f"taproot direct-mint: error: cannot read --plan: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except BadInput as exc:
+            print(f"taproot direct-mint: error: {exc.cause}", file=sys.stderr)
+            sys.exit(1)
+        if plan_proposed != args.claim or plan_chunk != args.chunk:
+            print(
+                "taproot direct-mint: error: --plan was written for a "
+                f"different claim/chunk (plan: pc{plan_chunk}, "
+                f"{plan_proposed!r}); --claim/--chunk must match it exactly",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     cfg = load_config()
     dsn = resolve_dsn(args.database_url)
@@ -1469,12 +1532,18 @@ def _run_direct_mint(args: argparse.Namespace) -> None:
             demand=args.demand,
             apply=args.apply,
             set_by=args.set_by,
+            qualified=qualified,
         )
     except BadInput as exc:
         print(f"taproot direct-mint: error: {exc.cause}", file=sys.stderr)
         sys.exit(1)
     finally:
         store.close()
+
+    if args.plan_out and report.qualify.supported:
+        with open(args.plan_out, "w", encoding="utf-8") as f:
+            json.dump(plan_to_json(report), f, ensure_ascii=False, indent=2)
+        print(f"wrote plan to {args.plan_out}", file=sys.stderr)
 
     rendered = render_report(report)
     if args.out:

@@ -1796,7 +1796,14 @@ def _passes_trust(row: HubOverviewRow | None, trust: str) -> bool:
         # it answer "verified", the exact inversion of the question.
         # Verified *and* unopposed: a hub with a live contradicts edge is
         # exactly what the ratchet hides, so it never answers "settled".
-        return row.supported_count > 0 and not row.disputed
+        # A compound hub carries no evidence edges of its own (they hang
+        # off its ``conjunct-of`` atoms), so ``supported_count`` is 0 by
+        # construction — it answers "verified" when every live atom is
+        # supported and none is contradicted (``atoms_all_supported``).
+        # Posture only: ``gates.check_mint_order`` stays stricter (a signed
+        # artifact per atom), so corroborated-but-unsigned atoms read as
+        # verified here yet still block the compound's mint.
+        return (row.supported_count > 0 or row.atoms_all_supported) and not row.disputed
     if trust == _TRUST_DISPUTED:
         return row.disputed
     return True
@@ -1845,6 +1852,11 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
             support += f" {negative}✗"
         if row.withheld_count:
             support += f" {row.withheld_count}?"
+    # A compound's evidence hangs off its atoms: roll them up so it never
+    # reads as "no verdicts" while every atom is supported.
+    if row.conjunct_count:
+        atoms = f"atoms {row.conjuncts_supported}/{row.conjunct_count}✓"
+        support = f"{support} {atoms}" if support else atoms
     refuted = is_refuted(row)
     flags = [
         f
@@ -1855,6 +1867,8 @@ def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:
         )
         if on
     ]
+    if row.conjuncts_contradicted:
+        flags.append(f"atoms-contradicted:{row.conjuncts_contradicted}")
     # Non-blocking open-question count (D1, migration 0151) — a distinct
     # marker from ``disputed`` above (which is the adjudicated, blocking
     # `contradicts` shape): a live `disputes` edge is never a demerit, so
@@ -1882,8 +1896,9 @@ def _search_hit_posture(row: HubOverviewRow) -> str:
     disputed (a live ``contradicts`` edge — contested, never demoted, the
     RRF lever leaves it at its unpenalised rank), then verified-and-
     unopposed (the dense positive signal — reuses :func:`_passes_trust`'s
-    own ``trust='verified'`` definition: ``supported_count > 0`` and not
-    disputed), else unverified (unminted-with-nothing or withheld-only —
+    own ``trust='verified'`` definition: ``supported_count > 0`` — or, for
+    a compound, every conjunct atom supported — and not disputed), else
+    unverified (unminted-with-nothing or withheld-only —
     the bulk of the corpus per the backlog item's prod snapshot).
     """
     if is_refuted(row):
@@ -1892,6 +1907,8 @@ def _search_hit_posture(row: HubOverviewRow) -> str:
         return "◆ disputed"
     if row.supported_count > 0:
         return f"◆ {row.supported_count}✓ unopposed"
+    if row.atoms_all_supported:
+        return f"◆ atoms {row.conjuncts_supported}/{row.conjunct_count}✓ unopposed"
     return "◆ unverified"
 
 

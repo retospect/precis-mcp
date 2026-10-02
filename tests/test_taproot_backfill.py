@@ -632,6 +632,79 @@ def test_apply_attach_evidence_raise_leaves_prose_untouched(
     assert f"[fi{hub_id}]" not in text
 
 
+def test_apply_later_supporter_failure_reports_partial_not_prose_left(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hub and its primary-supporter edge land, then the second
+    supporter's attach raises: the prose IS rewritten to the landed hub, so
+    the plan reports ``partial`` — not ``error`` with a note claiming the
+    prose was left as [pc…] (taproot-backfill-defects §supporter-error)."""
+    import precis.taproot.hub as hub_mod
+
+    _paper1, pc1 = _pc_of(hub.live_store, paper_title="p1")
+    paper2, pc2 = _pc_of(hub.live_store, paper_title="p2")
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pc1}][{pc2}].")
+    real_attach = hub_mod.attach_evidence
+
+    def _attach_fails_on_paper2(*a: Any, **k: Any) -> None:
+        if k.get("paper_ref_id") == paper2:
+            raise RuntimeError("simulated supporter write failure")
+        real_attach(*a, **k)
+
+    monkeypatch.setattr("precis.taproot.hub.attach_evidence", _attach_fails_on_paper2)
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "partial"
+    assert plan.hub_ref_id is not None
+    assert "prose rewritten" in plan.note and "prose left" not in plan.note
+    assert result.rewritten_text is not None
+    assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
+
+
+def test_apply_extraction_unavailable_is_retryable_not_no_claim(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """An LLM outage during extraction (the strict extractor's
+    ExtractionUnavailable) yields ``extract-unavailable`` with no write and
+    the prose untouched — never the final ``no-claim`` verdict."""
+    from precis.taproot.canon import ExtractionUnavailable
+
+    _paper, pc = _pc_of(hub.live_store)
+    original_text = f"Ribbons are semiconducting [{pc}]."
+    dc = _seed_draft_para(draft, hub, original_text)
+    before = _finding_count(hub.live_store)
+
+    def _outage(_span: str) -> ClaimExtraction:
+        raise ExtractionUnavailable("connection refused")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_outage,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "extract-unavailable"
+    assert result.rewritten_text is None
+    assert _finding_count(hub.live_store) == before
+
+
 def test_apply_collapses_adjacent_cites_to_one_hub(
     draft: DraftHandler, hub: Hub
 ) -> None:

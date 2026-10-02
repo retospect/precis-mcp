@@ -25,9 +25,11 @@ Terminal rows (``superseded``/``retracted``/``rejected``) read as ``none``.
 edits the claim, or touches artifact bytes — moves one publish row down
 one rung and says so. Scale caution applies harder here than elsewhere (a
 bad judge wired to a demoter can un-approve the corpus at machine speed,
-not just promote it wrongly), so the *only* caller is a freshly committed
-``contradicts`` edge, never a bare suspicion — frozen rungs are never
-demoted automatically at all.
+not just promote it wrongly), so a demotion only ever follows a freshly
+committed edge, never a bare suspicion: a ``contradicts`` edge, or
+(:mod:`precis.workers.hub_refine`'s reground applier) evidence edges just
+converted to ``disputes``. Frozen rungs are never demoted automatically at
+all.
 """
 
 from __future__ import annotations

@@ -14,6 +14,7 @@ Two layers, mirroring ``tests/test_taproot_backfill.py``'s split:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,6 +29,8 @@ from precis.taproot.directed import (
     QualifyResult,
     QualifyUnavailable,
     directed_mint,
+    plan_from_json,
+    plan_to_json,
     qualify_claim,
     render_report,
 )
@@ -704,3 +707,182 @@ def test_render_report_applied_new(store: Store) -> None:
     assert "qu222222" in rendered
     assert f"fi{report.hub_ref_id}" in rendered
     assert "Applied" in rendered
+
+
+# ── reviewed plan: qualified= / plan round trip ─────────────────────────
+
+
+_QUOTE = "Pd/C catalyzes Suzuki coupling of aryl bromides at room temperature"
+_SENTENCE = "Pd/C catalyzes Suzuki coupling of aryl bromides at RT."
+
+
+def _qualified(
+    sentence: str = _SENTENCE,
+    quote: str = _QUOTE,
+    scope: dict[str, str] | None = None,
+) -> QualifyResult:
+    return QualifyResult(
+        supported=True,
+        claim=CanonicalClaim(sentence=sentence, scope=scope or {}),
+        quote=quote,
+        reason="reviewed",
+    )
+
+
+def test_directed_mint_qualified_skips_qualify_and_writes_reviewed_sentence(
+    store: Store,
+) -> None:
+    paper, chunk_id = _paper_chunk(store)
+
+    report = directed_mint(
+        store,
+        embedder=None,
+        proposed="Pd/C catalyzes Suzuki coupling.",
+        chunk_id=chunk_id,
+        apply=True,
+        qualified=_qualified(),
+        qualify_fn=_never_called,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+    )
+
+    assert report.applied is True
+    assert report.qualify.claim is not None
+    assert report.qualify.claim.sentence == _SENTENCE
+    assert report.hub_ref_id is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (report.hub_ref_id,)
+        ).fetchone()
+    assert row is not None and row[0] == _SENTENCE
+    edge_meta = _link_meta(store, src=paper, dst=report.hub_ref_id)
+    assert edge_meta["quote"] == _QUOTE
+    assert edge_meta["verified_claim_sha"] == claim_sha(_SENTENCE)
+
+
+def test_directed_mint_qualified_stale_quote_raises_and_writes_nothing(
+    store: Store,
+) -> None:
+    _, chunk_id = _paper_chunk(store)
+    before = _table_counts(store)
+
+    with pytest.raises(BadInput) as ei:
+        directed_mint(
+            store,
+            embedder=None,
+            proposed="Pd/C catalyzes Suzuki coupling.",
+            chunk_id=chunk_id,
+            apply=True,
+            qualified=_qualified(quote="a span that is not in the passage"),
+            qualify_fn=_never_called,
+            block_fn=_never_called,
+            judge_fn=_never_called,
+        )
+
+    assert f"pc{chunk_id}" in ei.value.cause
+    assert "no longer" in ei.value.cause
+    assert _table_counts(store) == before
+
+
+def test_directed_mint_qualified_must_be_supported(store: Store) -> None:
+    _, chunk_id = _paper_chunk(store)
+    unsupported = QualifyResult(supported=False, claim=None, quote=None, reason="nope")
+
+    with pytest.raises(BadInput):
+        directed_mint(
+            store,
+            embedder=None,
+            proposed="Pd/C catalyzes Suzuki coupling.",
+            chunk_id=chunk_id,
+            qualified=unsupported,
+            qualify_fn=_never_called,
+            block_fn=_never_called,
+        )
+
+
+def _report_for(qr: QualifyResult) -> DirectedMintReport:
+    return DirectedMintReport(
+        proposed="Pd/C catalyzes Suzuki coupling.",
+        chunk_id=42,
+        passage_ref_id=1,
+        passage_ref_kind="paper",
+        passage_ref_title="some paper",
+        demand=None,
+        qualify=qr,
+    )
+
+
+def test_plan_json_round_trips() -> None:
+    qr = _qualified(scope={"material": "Pd/C", "method": "Suzuki coupling"})
+    data = plan_to_json(_report_for(qr))
+    assert data["version"] == 1
+
+    # Through real JSON text, as the CLI file does.
+    proposed, chunk_id, back = plan_from_json(json.loads(json.dumps(data)))
+
+    assert proposed == "Pd/C catalyzes Suzuki coupling."
+    assert chunk_id == 42
+    assert back == qr
+
+
+def test_plan_to_json_rejects_unsupported_report() -> None:
+    report = _report_for(
+        QualifyResult(supported=False, claim=None, quote=None, reason="nope")
+    )
+    with pytest.raises(ValueError):
+        plan_to_json(report)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.update(version=2),
+        lambda d: d.pop("proposed"),
+        lambda d: d.update(chunk_id="42"),
+        lambda d: d.update(chunk_id=True),
+        lambda d: d.update(qualify="x"),
+        lambda d: d["qualify"].pop("quote"),
+        lambda d: d["qualify"]["claim"].update(sentence="  "),
+        lambda d: d["qualify"]["claim"].update(scope={"material": 3}),
+    ],
+)
+def test_plan_from_json_bad_shape_raises_bad_input(mutate: Any) -> None:
+    data = plan_to_json(_report_for(_qualified()))
+    mutate(data)
+    with pytest.raises(BadInput):
+        plan_from_json(data)
+
+
+def test_plan_from_json_non_object_raises_bad_input() -> None:
+    with pytest.raises(BadInput):
+        plan_from_json([1, 2])  # type: ignore[arg-type]
+
+
+def test_directed_mint_apply_qualifies_exactly_once(store: Store) -> None:
+    _, chunk_id = _paper_chunk(store)
+    calls: list[tuple[str, str]] = []
+    inner = _qualify_ok(_SENTENCE, _QUOTE)
+
+    def _counting(proposed: str, passage: str) -> QualifyResult:
+        calls.append((proposed, passage))
+        result: QualifyResult = inner(proposed, passage)
+        return result
+
+    report = directed_mint(
+        store,
+        embedder=None,
+        proposed="Pd/C catalyzes Suzuki coupling.",
+        chunk_id=chunk_id,
+        apply=True,
+        qualify_fn=_counting,
+        block_fn=_block_none,
+        judge_fn=_never_called,
+    )
+
+    assert report.applied is True
+    assert len(calls) == 1
+
+
+def test_render_report_dry_run_points_at_plan() -> None:
+    rendered = render_report(_report_for(_qualified()))
+    assert "--apply --plan" in rendered

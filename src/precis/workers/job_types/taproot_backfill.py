@@ -117,6 +117,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     n_converted = 0
     n_failed = 0
     n_ungrounded = 0
+    #: Chunks with a group whose extraction LLM was down — left OFF the
+    #: checkpoint so a retry of this job re-runs them (an outage is not a
+    #: verdict; checkpointing it would make the loss permanent).
+    unavailable: list[int] = []
 
     for _slug, c in pairs:
         if c.chunk_kind in draft_regex.TEXT_DERIVED_KINDS:
@@ -146,6 +150,9 @@ def _dispatch(ctx: Any, spec: Any) -> None:
             if result.rewritten_text is not None:
                 n_converted += 1
             n_ungrounded += result.n_ungrounded
+            if any(p.action == "extract-unavailable" for p in result.plans):
+                unavailable.append(c.chunk_id)
+                continue
 
         done_ids.append(c.chunk_id)
         done_set.add(c.chunk_id)
@@ -157,8 +164,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     if n_ungrounded:
         summary += f", {n_ungrounded} ref-level/ungrounded"
+    if unavailable:
+        summary += f", {len(unavailable)} with claim extraction unavailable"
     ctx.append_chunk("job_summary", summary)
     ctx.set_meta(scanned=n_scanned, converted=n_converted, failed=n_failed)
+    if unavailable:
+        handles = ", ".join(f"dc{cid}" for cid in unavailable)
+        ctx.record_failure(
+            f"taproot_backfill: claim extraction LLM unavailable for {handles} — "
+            "those chunks are not checkpointed; retry this job to re-run them",
+            failure_class="infra",
+        )
 
 
 SPEC = JobTypeSpec(

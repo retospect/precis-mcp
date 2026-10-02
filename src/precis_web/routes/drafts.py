@@ -119,7 +119,7 @@ from precis.store._draft_ops import ChunkReviewEntry, DraftReviewRow, content_sh
 from precis.taproot.backfill import ChunkBackfill, apply_chunk, plan_chunk
 from precis.taproot.canon import block as _backfill_block
 from precis.taproot.canon import dedup_judge as _backfill_dedup_judge
-from precis.taproot.canon import extract_claim as _backfill_extract_claim
+from precis.taproot.canon import extract_claim_strict as _backfill_extract_claim
 from precis.taproot.canon import merge_confirm as _backfill_merge_confirm
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (

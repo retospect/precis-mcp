@@ -2,10 +2,10 @@
 
 **Status:** ends when every claim has one identity, every evidence edge is
 checked against its source, contradictions are ruled on, and the hub corpus is
-publishable (`backlog/claim-publication-nanopub-ots.md`). Today the cluster of
-~35 taproot/finding/nanopub items has never been triaged as a set: Do-next 1 is
-the triage that ranks them, and everything under it is provisional until it
-runs.
+publishable (`backlog/claim-publication-nanopub-ots.md`). Triaged 2026-10-02
+against the code: every item below was read and its named code checked; none
+is fully shipped, six carry a confirmed bug, and the rest order along four
+dependency chains.
 **Last reviewed:** 2026-10-02
 **Worktree:** `claims-and-evidence`
 **Active:** yes — Reto 2026-10-01.
@@ -16,36 +16,52 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-1. **Triage pass over the cluster**, five lines; within a line the order is
-   provisional until the triage says which items still reproduce:
-   - **Identity / model** — `backlog/taproot-claim-model-v2.md` ·
-     `aida-uri-ignores-scope` · `scope-key-vocabulary-registry` ·
-     `taproot-hub-scope-no-edit-door` · `finding-stable-identity` ·
-     `taproot-compound-migration` ·
-     `compound-hub-posture-ignores-conjunct-evidence`. Upstream of the other
-     four: an edge cannot be checked or published against a claim whose
-     identity moves.
-   - **Contradiction / adjudication** — `disputes-adjudication-workflow` ·
-     `taproot-adjudicate-reopened-claims` ·
-     `contradicts-conflates-evidence-and-prose-misuse` ·
-     `claim-conflict-search`.
-   - **Mint / attach doors** — `taproot-cite-time-attach-or-mint` ·
-     `taproot-merge-mcp-surface` ·
-     `direct-mint-apply-rerolls-the-reviewed-sentence` ·
-     `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
-     `preprint-to-published-cite-upgrade`.
-   - **Evidence quality** — `evidence-edge-verification` ·
-     `pa-arm-locate-should-capture-a-verbatim-quote` ·
-     `taproot-sole-supporter-coverage` · `taproot-numeral-audit` ·
-     `taproot-backfill-defects` · `taproot-claim-quality` ·
-     `taproot-inbound-grounding` ·
-     `computed-pathways-cannot-be-cited-as-claim-evidence` (read path
-     shipped; open: magnitude re-check, re-dispatch of a `ready` pathway,
-     nanopub visibility, web attach form).
-   - **Publication** — `claim-publication-nanopub-ots` ·
-     `retire-fi-go-nanopub` · `nanopub-corpus-remediation` ·
-     `approve-prefill-blank-doi`. Last: publishing a corpus whose identity and
-     evidence are unsettled publishes the defects.
+1. **Confirmed small bugs** (each S, verified on the 10-02 tree) — wrong
+   output today, cheapest first:
+   - `claim-publication-nanopub-ots` § latent bug: `nanopub/evidence.py`'s
+     source filter is `("paper", "patent")` while `attach_evidence` also
+     accepts `edgar`/`datasheet` — such evidence silently drops from a bundle.
+     Waits on Reto (review-queue `claims-and-evidence-1`: are edgar/datasheet
+     publishable? recommended: internal-only, refuse at approve).
+   - `approve-prefill-blank-doi` (slug stale: the DOI and empty-snip parts
+     shipped) — the prefill quote ranking ignores numeric literals and the
+     whole-chunk fallback skips the citation-marker filter.
+2. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
+   `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) →
+   `taproot-hub-scope-no-edit-door` (`edit(kind='finding')` takes no
+   `scope=`; open question: does a scope edit re-derive `pub_id`?) →
+   `aida-uri-ignores-scope` (2 duplicate pairs, prod data) → the scope
+   backfill inside `nanopub-corpus-remediation`.
+3. **Adjudication** — `disputes-adjudication-workflow`, which absorbs
+   `taproot-adjudicate-reopened-claims` (premise half-stale: the widening arm
+   now files non-blocking `disputes`, but a demotion still reopens reviewed
+   hubs) · `contradicts-conflates-evidence-and-prose-misuse` (residue = the
+   `misused-by` relation only) · `claim-conflict-search` items 4–5 (slice 1
+   shipped dark; nothing reads its output at approve).
+4. **Doors** — `taproot-merge-mcp-surface` (web door shipped; no MCP verb) ·
+   `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
+   `preprint-to-published-cite-upgrade`.
+5. **Evidence quality** — `evidence-edge-verification` (rubric labels +
+   approve gate; whether the verify/repair runs happened needs prod data) ·
+   `pa-arm-locate-should-capture-a-verbatim-quote` ·
+   `taproot-sole-supporter-coverage` (half shipped; open = name a candidate
+   originator) · `taproot-numeral-audit` · `taproot-backfill-defects`
+   (open: [pc] silent drop, fragment continuation clauses, the 8-finding
+   demotion triage, the extract_claim outage audit in `chase.py` and the
+   `hub_refine` paths) ·
+   `taproot-claim-quality` (§a mostly superseded by the hearsay gate) ·
+   `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
+   claim-evidence` (open: magnitude re-check, re-dispatch of a `ready`
+   pathway, nanopub visibility, web attach form).
+6. **Compound + publication, last** — `taproot-compound-migration` (L;
+   blocked on `reground.py`'s embedding-ranking TODO; blocks
+   `claim-publication-nanopub-ots`) → `claim-publication-nanopub-ots` ·
+   `retire-fi-go-nanopub` (open: `[np<id>]` grammar + migration sweep) ·
+   `nanopub-corpus-remediation` (step 5: `identity.py` hashes the sentence
+   without `_normalize_number_text`). Publishing before identity and
+   evidence settle publishes the defects.
+7. `taproot-claim-model-v2` — persisted `claim_type`; design-heavy, no
+   dependents yet.
 
 ## Horizon
 
@@ -78,6 +94,10 @@ All `backlog/<slug>.md`; each unparks when the triage promotes it.
 - (none)
 
 ## Seam
+
+- `finding-stable-identity` was filed with this cluster by name only: it is
+  about pcb/se DRC findings (`pcb_drc_findings` has no stable key), not claim
+  hubs. Owner is the pcb thread, not this one.
 
 - `knowledge-mesh.md` keeps the taproot umbrella (hub model, seniority,
   hub-refine); this thread owns the defect and follow-on items. A fix that

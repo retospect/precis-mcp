@@ -144,7 +144,7 @@ class _FakeCtx:
         self.meta.update(kw)
         self.meta_set.update(kw)
 
-    def record_failure(self, reason: str) -> None:
+    def record_failure(self, reason: str, **_kw: Any) -> None:
         self.failures.append(reason)
 
     def is_cancel_requested(self) -> bool:
@@ -281,6 +281,51 @@ def test_dispatch_converts_pc_cites_and_lands_evidence(
     assert ctx.meta_set.get("converted", 0) >= 1
     assert _chunk_id(handles["para_a1"]) in ctx.meta_set.get("done_chunk_ids", [])
     assert _chunk_id(handles["para_b1"]) in ctx.meta_set.get("done_chunk_ids", [])
+
+
+def test_dispatch_extraction_outage_is_not_checkpointed_and_fails_job(
+    store: Store, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chunk whose extraction LLM was down stays OFF ``done_chunk_ids`` (a
+    retry re-runs it) and the job ends failed naming it; the chunk whose
+    extraction worked converts and checkpoints as usual."""
+    from precis.taproot.canon import ExtractionUnavailable
+
+    draft = DraftHandler(hub=hub)
+    _paper_a, pc1 = _pc_of(store, paper_title="paper A")
+    _paper_b, pc2 = _pc_of(store, paper_title="paper B")
+    handles = _seed_sectioned_draft(draft, hub, pc1=pc1, pc2=pc2)
+    down_id = _chunk_id(handles["para_b1"])
+
+    def _fake(
+        store: Any, embedder: Any, draft_handler: Any, chunk_id: int, **kw: Any
+    ) -> Any:
+        def _extract(span: str) -> ClaimExtraction:
+            if chunk_id == down_id:
+                raise ExtractionUnavailable("connection refused")
+            return _extract_const("A claim.")(span)
+
+        return _REAL_APPLY_CHUNK(
+            store,
+            embedder,
+            draft_handler,
+            chunk_id,
+            extract_fn=_extract,
+            block_fn=_block_none,
+            judge_fn=_never_called,
+            merge_confirm_fn=_never_called,
+            **kw,
+        )
+
+    monkeypatch.setattr("precis.taproot.backfill.apply_chunk", _fake)
+
+    ctx = _FakeCtx(store=store, meta={"params": {"scope": "nt"}})
+    _spec().dispatch(ctx, _spec())
+
+    done = ctx.meta_set.get("done_chunk_ids", [])
+    assert _chunk_id(handles["para_a1"]) in done
+    assert down_id not in done
+    assert ctx.failures and f"dc{down_id}" in ctx.failures[0]
 
 
 def test_dispatch_converts_figure_caption_citation_and_skips_table(

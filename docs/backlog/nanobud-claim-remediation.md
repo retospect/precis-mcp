@@ -145,8 +145,8 @@ the disputed cohort, so `reword-sweep` will then accept it.
 
 **fi211522 is not an evidence gap.** It is a *compound* hub; all three
 conjunct atoms (fi211519/20/21) are corroborated by pc42017 (Lee et al.
-2008). Posture simply doesn't roll up — filed as
-`docs/backlog/compound-hub-posture-ignores-conjunct-evidence.md`. Its
+2008). Posture did not roll up atom evidence; it does now
+(`HubOverviewRow.conjunct_count`/`conjuncts_supported`). Its
 real defect is the malformed title: unclosed paren, no terminal period.
 Reword only.
 
@@ -211,9 +211,10 @@ Still genuinely open in the prose:
 - Reach `refine_claim_sentence` only through `reword-sweep` — the freeze
   guard lives in the cohort SQL, and the manual retitle door
   (`edit(kind='finding', title=…)`) has **no** freeze check at all.
-- Attach evidence via MCP `put(kind='finding', supporters=[…])`, not
-  `direct-mint --apply` — see
-  `docs/backlog/direct-mint-apply-rerolls-the-reviewed-sentence.md`.
+- Attach evidence via MCP `put(kind='finding', supporters=[…])`, or
+  `direct-mint --apply --plan <dry-run --plan-out file>` — a bare
+  `direct-mint --apply` re-runs the qualify LLM and may write a different
+  sentence than the dry-run showed.
 
 ## Done 2026-08-30 (prod)
 
@@ -307,8 +308,8 @@ empirical claim, and arguably should not be a claim hub at all.
 
 `_reword_one` calls `propose_fn` unconditionally *then* writes, so
 `reword-sweep --apply` re-runs the MEDIUM proposal and may write a
-different sentence than the dry run showed — the same trap as
-`direct-mint-apply-rerolls-the-reviewed-sentence.md`. Apply reviewed text
+different sentence than the dry run showed — the same trap `direct-mint
+--apply` had before its `--plan` file. Apply reviewed text
 through `refine_claim_sentence` directly (`/tmp/apply_reword.py` pattern:
 read the DSN as `scripts/prod-precis` does, `Store.connect`, call the
 door). Both writes returned `alias_kept=True`.
@@ -605,8 +606,7 @@ whether that rate is real debt or noise.
 
 ### Also open
 - Phase 5 (adversarial pass for uncited assertions) never started.
-- `docs/backlog/ingest-strips-greek-glyphs.md` and
-  `compound-hub-posture-ignores-conjunct-evidence.md` are unshipped.
+- `docs/backlog/ingest-strips-greek-glyphs.md` is unshipped.
 
 ## Blocker — `claude` on melchior is logged out
 

@@ -97,6 +97,8 @@ __all__ = [
     "QualifyResult",
     "QualifyUnavailable",
     "directed_mint",
+    "plan_from_json",
+    "plan_to_json",
     "qualify_claim",
     "render_report",
 ]
@@ -384,6 +386,91 @@ class DirectedMintReport:
     applied: bool = False
 
 
+#: Plan-file schema version (:func:`plan_to_json`); bump on a shape change.
+_PLAN_VERSION = 1
+
+
+def plan_to_json(report: DirectedMintReport) -> dict[str, Any]:
+    """Serialise a supported dry-run report's reviewed qualify into a plan
+    dict (JSON-safe) that :func:`plan_from_json` reads back, so ``--apply``
+    can write exactly the sentence a human reviewed instead of re-rolling
+    the qualify LLM.
+
+    Raises:
+        ValueError: ``report.qualify`` is unsupported (nothing to apply).
+    """
+    qr = report.qualify
+    if not qr.supported or qr.claim is None or not qr.quote:
+        raise ValueError("only a supported directed-mint report can be serialised")
+    return {
+        "version": _PLAN_VERSION,
+        "proposed": report.proposed,
+        "chunk_id": report.chunk_id,
+        "qualify": {
+            "claim": {
+                "sentence": qr.claim.sentence,
+                "scope": dict(qr.claim.scope),
+            },
+            "quote": qr.quote,
+            "reason": qr.reason,
+        },
+    }
+
+
+def plan_from_json(data: dict[str, Any]) -> tuple[str, int, QualifyResult]:
+    """Parse a :func:`plan_to_json` dict into ``(proposed, chunk_id,
+    qualify)``. Defensive: any wrong shape, version, or type raises
+    :class:`BadInput` (the file is hand-movable, so never trust it)."""
+
+    def _bad(why: str) -> BadInput:
+        return BadInput(
+            f"unreadable directed-mint plan: {why}",
+            next="regenerate it with a dry-run --plan-out",
+        )
+
+    if not isinstance(data, dict):
+        raise _bad("not a JSON object")
+    if data.get("version") != _PLAN_VERSION:
+        raise _bad(f"unsupported version {data.get('version')!r}")
+    proposed = data.get("proposed")
+    chunk_id = data.get("chunk_id")
+    if not isinstance(proposed, str) or not proposed.strip():
+        raise _bad("missing 'proposed'")
+    # bool is an int subclass; a True chunk_id is a malformed plan.
+    if not isinstance(chunk_id, int) or isinstance(chunk_id, bool):
+        raise _bad("missing or non-integer 'chunk_id'")
+    q = data.get("qualify")
+    if not isinstance(q, dict):
+        raise _bad("missing 'qualify' object")
+    claim = q.get("claim")
+    if not isinstance(claim, dict):
+        raise _bad("missing 'qualify.claim' object")
+    sentence = claim.get("sentence")
+    if not isinstance(sentence, str) or not sentence.strip():
+        raise _bad("missing 'qualify.claim.sentence'")
+    scope = claim.get("scope", {})
+    if not isinstance(scope, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in scope.items()
+    ):
+        raise _bad("'qualify.claim.scope' must map strings to strings")
+    quote = q.get("quote")
+    if not isinstance(quote, str) or not quote.strip():
+        raise _bad("missing 'qualify.quote'")
+    reason = q.get("reason", "")
+    if not isinstance(reason, str):
+        raise _bad("'qualify.reason' must be a string")
+    return (
+        proposed,
+        chunk_id,
+        QualifyResult(
+            supported=True,
+            claim=CanonicalClaim(sentence=sentence, scope=dict(scope)),
+            quote=quote,
+            reason=reason,
+        ),
+    )
+
+
 def _file_review_todo(
     store: Store,
     claim: CanonicalClaim,
@@ -437,6 +524,7 @@ def directed_mint(
     role: str = _DEFAULT_ROLE,
     set_by: ActorSlug = "agent",
     todo_fn: Callable[[CanonicalClaim, Placement], Any] | None = None,
+    qualified: QualifyResult | None = None,
 ) -> DirectedMintReport:
     """Argue ``proposed`` against ``chunk_id``'s passage, then (if
     supported) fit it into the claim tree — the directed-mint front door
@@ -449,7 +537,12 @@ def directed_mint(
        the proposal against the passage. Unsupported -> the report stops
        here (``placement``/``hub_ref_id`` stay ``None``, ``applied=False``
        always): the cascade never runs over a claim the passage doesn't
-       license.
+       license. Skipped when ``qualified=`` is given: that is a previously
+       reviewed :class:`QualifyResult` (see :func:`plan_from_json`), which
+       must be supported with a claim and a quote, and whose quote is
+       re-verified mechanically against the passage read now (a mismatch
+       raises :class:`BadInput` — the reviewed text no longer matches the
+       source; re-run the dry-run). ``qualify_fn`` is never called.
     3. Supported -> the qualified atom runs the SAME cascade tail
        :mod:`.backfill` uses: ``block_fn`` (ANN over existing hubs) ->
        ``judge_fn`` per candidate -> :func:`~precis.taproot.canon.place`
@@ -479,14 +572,36 @@ def directed_mint(
        a stamp failure logs a warning rather than masking the landed
        mint.
 
-    Idempotent by construction, same as the cascade it reuses: a re-run
-    over the same ``(proposed, chunk_id)`` re-derives the same qualified
-    claim, ``block``/``dedup_judge`` converge onto the hub the first run
-    minted (``attach``), and :func:`~precis.taproot.hub.attach_evidence`
-    skips an evidence edge that already exists.
+    Idempotent over the cascade it reuses: once a qualified claim is
+    fixed, ``block``/``dedup_judge`` converge a re-run onto the hub the
+    first run minted (``attach``), and
+    :func:`~precis.taproot.hub.attach_evidence` skips an evidence edge that
+    already exists. The qualify step itself is NOT idempotent: it is an LLM
+    call and can re-roll to a different sentence on every run, so a dry-run
+    review and a later ``apply=True`` call can disagree. That is why the
+    reviewed plan is passed back in via ``qualified=`` (CLI: ``--plan-out``
+    on the dry-run, ``--plan`` on ``--apply``) instead of re-qualifying.
     """
     passage, ref_id, ref_kind, ref_title = _read_passage_chunk(store, chunk_id)
-    qr = qualify_fn(proposed, passage)
+    if qualified is not None:
+        if not (
+            qualified.supported and qualified.claim is not None and qualified.quote
+        ):
+            raise BadInput(
+                "qualified= must be a supported QualifyResult with a claim "
+                "and a grounding quote",
+                next="pass the plan written by a dry-run whose qualify was "
+                "supported (--plan-out)",
+            )
+        if not _quote_in_passage(qualified.quote, passage):
+            raise BadInput(
+                f"the reviewed grounding quote is no longer in pc{chunk_id}",
+                next="the passage changed since the dry-run; re-run the "
+                "dry-run and review again",
+            )
+        qr = qualified
+    else:
+        qr = qualify_fn(proposed, passage)
 
     if not qr.supported or qr.claim is None:
         return DirectedMintReport(
@@ -637,5 +752,9 @@ def render_report(report: DirectedMintReport) -> str:
             lines.append("**Applied**: no hub written (needs_review, filed for review)")
     else:
         lines.append("**Applied**: NO (dry-run — zero claim-data writes)")
+        lines.append(
+            "**To write exactly this sentence**: re-run with --apply --plan "
+            "<file> (the file from this run's --plan-out)."
+        )
 
     return "\n".join(lines)

@@ -75,13 +75,14 @@ from precis.store.types import ActorSlug
 from precis.taproot.canon import (
     CanonicalClaim,
     ClaimExtraction,
+    ExtractionUnavailable,
     MergeCandidate,
     NotClaim,
     Placement,
     Verdict,
     block,
     dedup_judge,
-    extract_claim,
+    extract_claim_strict,
     merge_confirm,
     place,
 )
@@ -192,7 +193,13 @@ class GroupPlan:
     #: ``"ungroundable"`` — every ``[pc]`` supporter names a chunk with no
     #: groundable prose (a title/author front-matter block), so there is no
     #: passage to attach evidence to (no write, prose left ``[pc…]``);
+    #: ``"extract-unavailable"`` — the extraction LLM dispatch failed (infra,
+    #: :class:`~precis.taproot.canon.ExtractionUnavailable`), so nothing was
+    #: decided: no write, prose left as-is, retryable — unlike ``no-claim``,
+    #: which is a final semantic verdict;
     #: ``"error"`` — a write failed for this group (isolated; batch continues);
+    #: ``"partial"`` — the hub landed and the prose was rewritten to it, but a
+    #: later supporter's evidence edge failed (a re-run attaches it);
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
     action: str
@@ -561,8 +568,21 @@ def _run_cascade(
     per-claim; only the write door (:func:`precis.taproot.hub.apply_extraction`,
     called from :func:`apply_chunk`) is decomposition-aware. ``ungrounded``
     marks a ref-level ``[pa]`` promote (whole-paper edge, no grounding
-    passage)."""
-    extraction = extract_fn(group.span_text)
+    passage).
+
+    An :class:`~precis.taproot.canon.ExtractionUnavailable` from ``extract_fn``
+    (the strict extractor's infra-failure signal) becomes the retryable
+    ``extract-unavailable`` plan, never ``no-claim``: an LLM outage is not a
+    verdict that the span asserts nothing."""
+    try:
+        extraction = extract_fn(group.span_text)
+    except ExtractionUnavailable as exc:
+        return GroupPlan(
+            group=group,
+            action="extract-unavailable",
+            supporters=supporters,
+            note=f"claim extraction unavailable (LLM dispatch failed) — re-run: {exc}",
+        )
     if extraction.is_empty:
         return GroupPlan(
             group=group,
@@ -844,7 +864,7 @@ def plan_chunk(
     chunk_id: int,
     *,
     ref_level: bool = False,
-    extract_fn: ExtractFn = extract_claim,
+    extract_fn: ExtractFn = extract_claim_strict,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
@@ -981,7 +1001,7 @@ def apply_chunk(
     *,
     set_by: ActorSlug = "agent",
     ref_level: bool = False,
-    extract_fn: ExtractFn = extract_claim,
+    extract_fn: ExtractFn = extract_claim_strict,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
@@ -1149,10 +1169,19 @@ def apply_chunk(
                         set_by=set_by,
                     )
         except Exception as exc:  # isolate one group, keep the batch going
-            plan.action = "error"
-            plan.note = f"write failed, prose left as [pc…]: {exc}"
             if not hub_landed:
+                plan.action = "error"
+                plan.note = f"write failed, prose left as [pc…]: {exc}"
                 continue  # no hub write landed on this call — nothing to point prose at
+            # The hub and its primary-supporter edge committed; a later
+            # supporter attach raised. The prose still points at the landed
+            # hub (a re-run attaches the missing supporters, skip-if-present),
+            # so the report must say so rather than claim the prose was left.
+            plan.action = "partial"
+            plan.note = (
+                f"hub landed, prose rewritten to [fi{plan.hub_ref_id}], but a "
+                f"supporter evidence edge failed — re-run to attach it: {exc}"
+            )
 
         # Collapse the whole contiguous same-kind run (cites + inter-cite
         # whitespace) to a SINGLE [fi<hub>] with one span-replace — no leftover

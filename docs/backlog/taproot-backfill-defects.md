@@ -27,30 +27,12 @@ The demotion race is fixed (04628e8c); remaining: per-claim triage of the 8
 demoted DNA-origami/nanozyme findings (fi176420 176447 176451 176820 176871
 177633 178235 178237) — restore `TAPROOT:claim` where the rubric passes
 (fi176451's mechanism claim clearly does), leave demoted + de-cite where
-meta-prose; check which draft cites them first. Secondary defect gr191953:
-`src/precis/taproot/backfill.py::apply_chunk` rewrites prose to an `[fi]`
-cite even when `attach_evidence` raised. Deeper options still open: stop the
+meta-prose; check which draft cites them first. Deeper options still open: stop the
 axis pass labeling active-lifecycle findings, or wire classification → real
 `mint_hub`. Owner `src/precis/workers/axis_pass.py::_claim_ref`.
 
 test: run_axis_pass(axis_id='taproot') over a live TAPROOT:claim hub skips
 it, not reclassifies.
-
-## taproot backfill: partial supporter-attach failure sets action="error" but still rewrites prose
-
-_Grouped 2026-09-26; was `taproot-backfill-supporter-error-status-lies`._
-
-Pre-existing (traced to before the atomic-claims build; that build extends
-the shape verbatim to the atom loop): in `apply_chunk`, when the hub has
-landed and a later `attach_evidence` for `plan.supporters[1:]` raises, the
-`except` sets `plan.action = "error"` / note says "prose left as [pc…]" —
-but only `not hub_landed` triggers the `continue`, so execution falls
-through and the `[fi<hub>]` rewrite is appended anyway. The dry-run/apply
-report is factually wrong in that branch (claims prose untouched when it
-was rewritten). Fix: either honor the note (skip the rewrite on error) or
-report truthfully ("partial: supporters missing, prose rewritten"). Matters
-for whoever reads apply reports during the existing-hubs migration pass.
-Owner `src/precis/taproot/backfill.py`.
 
 ## Backfill segmentation mints fragment claim hubs
 
@@ -194,34 +176,18 @@ caption would mean adding a cite to the descriptive sentence, leaving the
   `NO-CLAIM` verdict suffice once the span is presented honestly (i.e. is this
   a segmentation fix or a prompt fix)?
 
-## Taproot backfill: LLM-outage extraction failure is silent claim loss
+## LLM-outage extraction failure is silent claim loss — remaining call sites
 
-_Grouped 2026-09-26; was `taproot-backfill-llm-outage-silent-noclaim`, status draft._
+_Grouped 2026-09-26; was `taproot-backfill-llm-outage-silent-noclaim`._
 
 `extract_claim` (`src/precis/taproot/canon.py`) fail-safes a **dispatch
-error** to the empty extraction — deliberately ("no claim rather than a bad
-one"). In `backfill.py`'s cascade (`_run_cascade` → `extraction.is_empty` →
-`action="no-claim"`, note "span asserts nothing groundable") that turns an
-LLM outage into a *final semantic verdict*: the span's `[pc…]` markers stay
-in prose, but nothing re-runs backfill over an already-processed draft, so
-the claims are lost with no retry and no error signal anywhere.
+error** to the empty extraction, which a caller reads as a final "no claim"
+verdict. Backfill is fixed: it defaults to `extract_claim_strict`, maps
+`ExtractionUnavailable` to the retryable `extract-unavailable` plan (no
+write, prose left), and the `taproot_backfill` job keeps such chunks off its
+`done_chunk_ids` checkpoint and ends `failed` (`failure_class='infra'`) so a
+retry re-runs them. The web convert-cites route uses the strict extractor too.
 
-Found 2026-08-14 while diagnosing the taproot-migrate pilot, where the same
-masking produced a 25/25 NO-CLAIM garbage report (every dispatch
-ECONNREFUSED). The migration dry-run got fixed (strict extraction +
-consecutive-failure breaker); **backfill still has the hole**.
-
-### Fix direction (needs design, not just a swap)
-
-- `extract_claim_strict` now exists (raises `ExtractionUnavailable` on
-  `res.error`; unparseable-but-successful output still degrades to empty —
-  that's genuinely semantic). Backfill should distinguish the two:
-  infra failure → retryable (fail the group/job so the queue retries, or
-  mark the span retryable), semantic empty → final no-claim as today.
-- Mind the existing per-group isolation comment in `backfill.py` (mid-loop
-  transient failures must not strand earlier groups' prose rewrites) — a
-  raising extractor at *plan* time needs its own isolation/retry story,
-  not the apply-phase one.
-- Sizing: the no-claim degrade also feeds `chase.py`'s bridge and
-  `hub_refine` paths via the same helper — audit every `extract_claim`
-  call-site for the same infra/semantic conflation before picking the seam.
+Open: audit the other `extract_claim` callers for the same infra/semantic
+conflation — `workers/chase.py`'s bridge and the `hub_refine` paths — and
+give each the same split (infra → retryable, empty → final).

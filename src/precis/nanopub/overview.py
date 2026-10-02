@@ -93,6 +93,36 @@ class HubOverviewRow:
     #: ``precis.nanopub.stale.candidate_stale_reason``. Appended last for
     #: the same reason as `tagline` — see its note.
     artifact_type: str | None = None
+    #: Live atoms linked ``atom --conjunct-of--> this hub`` — non-zero iff
+    #: the hub is a compound. A compound carries no evidence edges of its
+    #: own (they hang off its atoms), so :attr:`supported_count` reads 0
+    #: for it by construction; the three ``conjunct*`` fields are the
+    #: additive roll-up posture readers use instead of redefining that
+    #: count. Appended last for the same reason as `tagline` — see its note.
+    conjunct_count: int = 0
+    #: Of :attr:`conjunct_count`, the atoms with at least one live
+    #: *supporting* edge — the same predicate as :attr:`supported_count`
+    #: (``establishes``/``corroborates`` from a live source, verdict
+    #: ``yes``/``partial`` or a human sign-off). Posture, not the mint
+    #: gate: ``gates.check_mint_order`` still demands a signed artifact per
+    #: atom, so a corroborated-but-unsigned atom counts here yet blocks a
+    #: mint.
+    conjuncts_supported: int = 0
+    #: Of :attr:`conjunct_count`, the atoms touched by a live
+    #: `contradicts` edge, either direction (same shape as
+    #: :attr:`disputed`, applied per atom).
+    conjuncts_contradicted: int = 0
+
+    @property
+    def atoms_all_supported(self) -> bool:
+        """A compound whose every live atom is supported and none is
+        contradicted — the roll-up counterpart of ``supported_count > 0``
+        for a hub that has no evidence edges of its own."""
+        return (
+            self.conjunct_count > 0
+            and self.conjuncts_supported == self.conjunct_count
+            and self.conjuncts_contradicted == 0
+        )
 
     @property
     def drifted(self) -> bool:
@@ -338,7 +368,10 @@ def hub_rows(
                    COALESCE(w.s, 0) AS supported_count,
                    r.meta->>'tagline' AS tagline,
                    COALESCE(od.n, 0) AS open_disputes_count,
-                   p.artifact_type
+                   p.artifact_type,
+                   COALESCE(cj.n, 0) AS conjunct_count,
+                   COALESCE(cj.s, 0) AS conjuncts_supported,
+                   COALESCE(cj.d, 0) AS conjuncts_contradicted
               FROM refs r
               LEFT JOIN nanopub_publish p
                      ON p.claim_ref_id = r.ref_id AND p.state != ALL(%(terminal)s)
@@ -388,6 +421,41 @@ def hub_rows(
                      WHERE l.dst_ref_id = r.ref_id
                        AND l.relation IN ('establishes', 'corroborates')
               ) w ON TRUE
+              -- A compound's roll-up: its live conjunct atoms (src of an
+              -- inbound `conjunct-of`), how many carry a supporting edge
+              -- (same predicate as `w.s`), how many a live `contradicts`
+              -- edge either direction (same shape as `d`).
+              LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS n,
+                           COUNT(*) FILTER (WHERE EXISTS (
+                             SELECT 1
+                               FROM links e
+                               JOIN refs er ON er.ref_id = e.src_ref_id
+                                           AND er.retired_at IS NULL
+                              WHERE e.dst_ref_id = a.ref_id
+                                AND e.relation IN ('establishes', 'corroborates')
+                                AND (e.meta->>'support' IN ('yes', 'partial')
+                                     OR e.meta->'publish_signoff' IS NOT NULL)
+                           )) AS s,
+                           COUNT(*) FILTER (WHERE EXISTS (
+                             SELECT 1
+                               FROM links c
+                               JOIN refs cr
+                                 ON cr.ref_id = CASE WHEN c.dst_ref_id = a.ref_id
+                                                     THEN c.src_ref_id
+                                                     ELSE c.dst_ref_id END
+                                AND cr.retired_at IS NULL
+                              WHERE (c.dst_ref_id = a.ref_id
+                                     OR c.src_ref_id = a.ref_id)
+                                AND c.relation = 'contradicts'
+                           )) AS d
+                      FROM (SELECT DISTINCT cl.src_ref_id AS ref_id
+                              FROM links cl
+                              JOIN refs ar ON ar.ref_id = cl.src_ref_id
+                                          AND ar.retired_at IS NULL
+                             WHERE cl.dst_ref_id = r.ref_id
+                               AND cl.relation = 'conjunct-of') a
+              ) cj ON TRUE
              WHERE r.kind = 'finding' AND r.retired_at IS NULL
                AND {ref_filter}
                AND {claim_hub_predicate_sql()}
@@ -419,6 +487,9 @@ def hub_rows(
             tagline=r[13],
             open_disputes_count=int(r[14]),
             artifact_type=r[15],
+            conjunct_count=int(r[16]),
+            conjuncts_supported=int(r[17]),
+            conjuncts_contradicted=int(r[18]),
         )
         for r in rows
     ]
