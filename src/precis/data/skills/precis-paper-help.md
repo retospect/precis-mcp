@@ -169,10 +169,9 @@ repairable the same way — `edit(kind='paper', id='<slug>', doi='10.…')` (or
 `arxiv=`) upgrades it in place, so prefer that over minting a second,
 DOI-bearing stub and orphaning the first. A *wrong* identifier is removable
 the same door — `doi=''` (empty string, not omitted) clears this ref's own
-DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. ⚠
-`year=` is accepted by the
-handler but not yet exposed on the `edit` wire schema, so it is silently
-dropped — see `docs/backlog/mcp-verb-kwarg-parity.md`.
+DOI without touching who owns it elsewhere; `arxiv=''` clears likewise. A
+mis-filed record's year and venue repair the same way — `year=2007`,
+`journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`).
 
 The needs-triage backfill (`precis.ingest.metadata_resolve`, "Bucket B")
 guards against pulling in the *wrong* identity in the first place

@@ -161,17 +161,9 @@ _KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
         # -- put: structure (crystal/molecule) edit ops ---------------------
         ("structure", "put", "normalize"),
         # -- edit: bibliographic-metadata repair, paper-like kinds --------
-        ("cfp", "edit", "abstract"),
-        ("cfp", "edit", "entry_type"),
-        ("cfp", "edit", "journal"),
-        ("cfp", "edit", "year"),
         ("datasheet", "edit", "part_lcsc"),
         ("datasheet", "edit", "subtype"),
         ("datasheet", "edit", "vendor"),
-        ("paper", "edit", "abstract"),
-        ("paper", "edit", "entry_type"),
-        ("paper", "edit", "journal"),
-        ("paper", "edit", "year"),
         ("pres", "edit", "bibtex_type"),
         ("pres", "edit", "date"),
         ("pres", "edit", "note"),

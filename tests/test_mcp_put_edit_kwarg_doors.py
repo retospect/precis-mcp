@@ -171,6 +171,30 @@ def test_edit_paper_doi_empty_string_clears_over_the_mcp_door(
     assert "doi" not in identifiers
 
 
+def test_edit_paper_year_and_journal_reach_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+    store: Store,
+) -> None:
+    """``edit(kind='paper', id=..., year=..., journal=...)`` through the real
+    MCP callable repairs a mis-filed record (pa2615: an SI stuck on another
+    paper's 2022 year and journal). PaperHandler.edit always took both; the
+    verb never declared them, so strict-schema clients had no door."""
+    mint_out = tools_core.put(kind="paper", title="A Mis-Filed Supplement Stub")
+    m = re.search(r"paper id=(\d+)", mint_out)
+    assert m is not None, mint_out
+    ref_id = int(m.group(1))
+
+    out = tools_core.edit(
+        kind="paper", id=ref_id, year=2007, journal="Nature Nanotechnology"
+    )
+
+    assert f"updated paper id={ref_id}" in out
+    ref = store.get_ref(kind="paper", id=ref_id)
+    assert ref is not None
+    assert ref.year == 2007
+    assert (ref.meta or {}).get("journal") == "Nature Nanotechnology"
+
+
 def test_edit_finding_testable_by_reaches_the_handler_over_the_mcp_door(
     mounted_runtime: PrecisRuntime,
     store: Store,

@@ -1388,6 +1388,14 @@ def edit(
     # them — PaperHandler.edit already accepted both (gr262482/gr250273).
     doi: str | None = None,
     arxiv: str | None = None,
+    # paper/cfp bibliographic repair: year= replaces refs.year; journal= /
+    # entry_type= / abstract= merge into meta (PaperHandler.edit). A
+    # mis-filed record (an SI stuck on another paper's year and journal)
+    # otherwise had no agent door.
+    year: int | None = None,
+    journal: str | None = None,
+    entry_type: str | None = None,
+    abstract: str | None = None,
     find: str | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -1571,6 +1579,10 @@ def edit(
         "body": body,
         "doi": doi,
         "arxiv": arxiv,
+        "year": year,
+        "journal": journal,
+        "entry_type": entry_type,
+        "abstract": abstract,
         "find": find,
         "before": before,
         "after": after,

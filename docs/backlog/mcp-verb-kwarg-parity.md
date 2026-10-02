@@ -60,14 +60,10 @@ High-impact, called out by name:
   `_KNOWN_GAPS` lines left the ledger. That commit also added
   `route.put(constraints=)` (platform-constraint declaration, new — never a
   gap) on the same wire.
-- **`paper.edit(year=)`** (+ `abstract=`/`journal=`/`entry_type=`), and the
-  same four fields on **`cfp.edit`**, plus **`datasheet.edit(part_lcsc=/
-  subtype=/vendor=)`** — bibliographic/metadata repair. `PaperHandler.edit`'s
-  own docstring documents these as the intended "fix a wrong year, missing
-  abstract" affordance; before this fix pass only `title=`/`authors=`
-  reached the wire (this fix adds `doi=`/`arxiv=` — these four remain
-  unreachable). Directly adjacent to what this fix touched; deliberately
-  left out of scope (see below).
+- ~~**`paper.edit(year=)`** (+ `abstract=`/`journal=`/`entry_type=`, same
+  four on `cfp.edit`)~~ — **FIXED 2026-10-02** (nanobuds-paper, for the
+  pa2615 repair); the eight `_KNOWN_GAPS` lines left the ledger.
+  **`datasheet.edit(part_lcsc=/subtype=/vendor=)`** is still a gap.
 - **`memory.put(rule=)`** / **`memory.put(warrant=)`** (+ the `edit` twins)
   — the documented D3 argument-graph shortcut
   (`put(kind='memory', rule='modus-ponens', warrant='...')`) is completely

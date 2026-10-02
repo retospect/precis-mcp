@@ -27,8 +27,45 @@ both STATUS:done)
 
 ## Do next
 
-Every remaining item is Reto's; each is a `waiting-for:reto` todo under
-td173019. Session work resumes only when one of them comes back.
+**HELD for Reto's demo (2026-10-02 ~11:55Z)** — no new prod compute until
+the orchestrator lifts it. Open review items nanobuds-paper-7..11
+(citation style + Sharma/source audit, Canatu hubs, scope cite, two
+paragraph eyeballs, pa2615 identifier delete). The per-source citation
+audit needs the draft's rendered refs.bib; the classifier refused a local
+`scripts/prod-precis draft export` (production read), so it waits for
+permission. Resume in this order:
+
+0. **Figures** (Reto, review items nanobuds-paper-5/-6): redraw five as our
+   own, keep five as third-party.
+   - Kept five DONE 2026-10-02 13:10Z: new third-party chunks dc4291497
+     (TEM, was dc3015718), dc4291498 (STM/STS, was dc3015724; the three
+     prose cross-refs repointed), dc4291496 (Raman/ED, was dc3015719),
+     dc4291499 (band structures, Wu Figs 5+6, was dc3015725), dc4291500
+     (transmission, was dc3015728); placeholders retired, hygiene clean.
+     Permission `status: requested`; Reto files RightsLink at submission,
+     and the export keeps refusing them until each is `granted`. Image
+     route: the tool `put` has no `image=`, but
+     `args={'image': b64, 'mime':…, 'origin':…, 'permission':…}` reaches
+     the draft handler; crops + uploader in `nanobud-fidelity/figs/`
+     (crop.py, upload.py).
+   - Redraw: dc3015722 as an `own_graph` replot of the paper's Tables 1–2
+     (pc388398, pc388407: cap1–7 binding −0.158 to −0.476 eV vs sidewall
+     +0.736/+0.685; spin-polarised DFT-D3 formation/dissociation barriers
+     1.92/0.77 sidewall, 1.52/1.46 cap4). A graph figure needs
+     `plots=[dc<table>]`, so it needs a table chunk too. dc3015729 as a 2D
+     sublattice schematic (cases A–D). dc3015720, dc3015723, dc3015730
+     need 3D structures: the C60s in se design `nanobud-review-figs`
+     interpenetrate their hosts (gr459567 gap 3, owned by hexfold-toolkit;
+     measured 0.63–1.16 Å). Do not relax them; wait for the placement fix.
+     Structure → figure has no product path (gr461790); local route =
+     viz3d `stick_scene` → `render_svg` → base64 `image=`.
+   - Reground batches: 461608 done, 461803 was running at the hold; batches
+     3–8 not submitted. Resubmit one at a time with
+     `nanobud-fidelity/chain-batches.sh 461803` (pack under
+     `~/.claude/projects/-Users-reto-precis-mcp/`) once the hold lifts.
+
+The items below are all Reto's; each is a `waiting-for:reto` todo under
+td173019.
 
 1. **td461160 — Nanoscale review proposal** — draft at
    `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
