@@ -19,7 +19,11 @@ paper is November 2026's paper of the month (td459589, quest qu459585;
 Reto 2026-10-01). Skeleton draft `catpath-methods` exists, with a plan
 paragraph per section; next comes importing the missing methods papers. The trust
 demo needs the MPI image rebuilt on the node before
-`PRECIS_DFT_MPI_RANKS` is set. Rank the items below by what that paper
+`PRECIS_DFT_MPI_RANKS` is set. Ruled 2026-10-02 (chemistry-6, option 1):
+the orchestrator rebuilds it on the DFT node in the round-2 window, after a
+read-only MPI check. Chemistry then sets the variable and times one relax.
+The host is coordinated with local-compute, because spark's return may move
+the `dft` lane off pollux. Rank the items below by what that paper
 needs.
 
 1. **gr345366 dogfood + gr322060** — both gr345366 causes landed
@@ -62,7 +66,14 @@ it at five; engine-over-UI still holds.
 1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
    state barriers as a pipeline step (barriers, not just thermodynamics);
    triage 2026-10-02: no code yet, the item is a design call (endpoint
-   pairing, cost gate, convergence handling).
+   pairing, cost gate, convergence handling). Endpoint pairing now has a
+   candidate method, filed in the catpath repo as
+   `docs/backlog/global-endpoint-sampling-nebscape.md` (Reto, 2026-10-02;
+   Jung et al. 2026, `pa329700`). It proposes global-optimised IS/FS plus
+   reaction atom mapping in place of recipe pose + rattle, aimed at
+   qu164903's endpoint-agreement trust failures, with precis's AGOX
+   `struct_search` as an optional endpoint generator. Measure first; no
+   build without a ruling.
 2. **catalysis-selectivity thread** — owns
    `backlog/catpath-desorption-link-kind.md` since 2026-10-02 (first slice
    of its step-annotation item) plus the NH₃ network, U/pH selectivity
