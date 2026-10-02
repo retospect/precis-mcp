@@ -23,11 +23,10 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/taxonomy-bootstrap.md §Resume** — the gate is now cross-run
-   naming agreement (Reto, knowledge-mesh-7). Bar 0.711 folded, from two
-   unpacked 100-row runs (median 0.773). Packed runs read 0.68-0.71
-   against unpacked, so packing likely costs agreement. The full run's
-   configuration waits on knowledge-mesh-8 (unpacked ~$100 recommended).
+1. **backlog/taxonomy-bootstrap.md §Resume** — the gate is cross-run
+   naming agreement (Reto, knowledge-mesh-7), bar 0.711. Packed vs packed
+   passes at 0.794 (p10 0.739), as consistent as unpacked (0.773). The
+   full run waits on knowledge-mesh-8 (packed, ~$37, recommended).
 2. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
@@ -42,9 +41,10 @@ graph-health-metrics, five parked gripes, and the seam with
    (knowledge-mesh-6, "this is what we do"): a catalog part becomes a
    chunkless ref on first use (`ref_identifiers('lcsc', …)`), `component
    realized-by part`, `pcb contains part` with the refdes; items inside a
-   design stay addressed through it. Unblocked; one small relation-seed
-   migration goes to the orchestrator's gate. Unblocks
-   datasheet-facts-mesh (Horizon 16).
+   design stay addressed through it. Ready-vetted 2026-10-02, blockers
+   resolved in the item; no migration (`realized-by` exists, 0156). Two
+   slices: the part ref + link door, then board edges + backfill.
+   Unblocks datasheet-facts-mesh (Horizon 16).
 4. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
@@ -130,10 +130,9 @@ graph-health-metrics, five parked gripes, and the seam with
     migration path there. A review, not a refactor; any time.
 ## Waiting on Reto
 
-- **knowledge-mesh-8 (review queue, 2026-10-02):** the full taxonomy
-  run unpacked (~$100, recommended) or packed (~$37), or a ~$2
-  packed-vs-packed check first. The method is with the orchestrator in
-  `reviews/knowledge-mesh.md` §3.
+- **knowledge-mesh-8 (review queue, 2026-10-02):** buy the full taxonomy
+  run packed (~$37, recommended after the packed-vs-packed check passed)
+  or unpacked (~$100).
 
 The six 2026-09-30 rulings (fold-in, mirror first, render-only, this
 rename, memory-lint repo-local, one resident block) are recorded in their
