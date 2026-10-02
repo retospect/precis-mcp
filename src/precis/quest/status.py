@@ -44,11 +44,6 @@ class CandidateRow:
     converged: bool
     measures: dict[str, float]
     ruled_out: list[str]
-    #: Margins demoted as measured on an older reaction network
-    #: (:func:`precis.quest.frontier.apply_network_demotion`): key → the raw
-    #: value, shown marked instead of as a current measure.
-    stale: dict[str, float] = field(default_factory=dict)
-    stale_basis: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,28 +104,13 @@ def _logbook_tail(store: Store, quest_id: int, *, n: int) -> list[LogbookLine]:
 def _candidate_rows(
     store: Store, quest_id: int
 ) -> tuple[list[CandidateRow], list[int]]:
-    from precis.quest.frontier import (
-        NETWORK_DEPENDENT_KEYS,
-        _candidate_from_structure,
-        apply_network_demotion,
-    )
+    from precis.quest.frontier import _candidate_from_structure
     from precis.quest.gaps import _live_servers
 
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
-    cands = [_candidate_from_structure(store, s) for s in structures]
-    apply_network_demotion(cands)  # same demotion the frontier ranks with
     rows: list[CandidateRow] = []
-    for s, cand in zip(structures, cands, strict=True):
-        stale: dict[str, float] = {}
-        stale_basis = None
-        if cand.flags.get("network_stale"):
-            for k in NETWORK_DEPENDENT_KEYS:
-                v = cand.flags.get(f"{k}_untrusted_value")
-                if isinstance(v, (int, float)) and k not in cand.measures:
-                    stale[k] = float(v)
-            b = cand.flags.get("network_stale_basis")
-            if isinstance(b, dict):
-                stale_basis = f"{b.get('template') or '?'}@{b.get('version') or '?'}"
+    for s in structures:
+        cand = _candidate_from_structure(store, s)
         ruled_out = [
             str(t) for t in store.tags_for(s.id) if str(t).startswith("ruled-out:")
         ]
@@ -142,8 +122,6 @@ def _candidate_rows(
                 converged=cand.converged,
                 measures=cand.measures,
                 ruled_out=ruled_out,
-                stale=stale,
-                stale_basis=stale_basis,
             )
         )
     return rows, [s.id for s in structures]
@@ -301,9 +279,6 @@ def render_quest_status(status: QuestStatus) -> str:
     for c in status.candidates:
         conv = "converged" if c.converged else "unconverged"
         out = f"  {c.handle} ({c.name}) — {conv}, {_fmt_measures(c.measures)}"
-        if c.stale:
-            vals = ", ".join(f"{k}={v:g}" for k, v in sorted(c.stale.items()))
-            out += f" — older network ({c.stale_basis or '?'}), not ranked: {vals}"
         if c.ruled_out:
             out += f" — {', '.join(c.ruled_out)}"
         lines.append(out)

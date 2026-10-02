@@ -31,8 +31,8 @@ import logging
 import math
 import os
 import re
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.atomcost import atom_cost, dearest
@@ -75,14 +75,6 @@ _TIER_FIDELITY: dict[str, int] = {_TIER_SCREENING: 0, _TIER_NEB: 1, _TIER_VERIFY
 #: the tick/LLM loop, same convention as ``rubric_composite``).
 _DEFAULT_TIER_PROMOTE_NEB = 2
 _DEFAULT_TIER_PROMOTE_VERIFY = 3
-#: Re-dispatches per pass of candidates whose competitor-set measures sit on
-#: an older reaction network (``meta.fidelity_restale_cap``, same human-set
-#: convention) — see :func:`promote_tiers`' third pass.
-_DEFAULT_TIER_RESTALE = 2
-#: How far into the provisional band (beyond the merged frontier) the restale
-#: pass looks (``meta.fidelity_restale_band``): a catpath bump re-measures what
-#: can change a decision, not every live neb candidate.
-_DEFAULT_TIER_RESTALE_BAND = 3
 
 #: Seeds the verify tier runs at minimum — three is catpath's own "minimum
 #: for a meaningful spread" (docs/METHODS.md, uncertainty pooling); two would
@@ -96,14 +88,7 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
     * ``screening`` — relax-only ranking: ``search.screening=True`` +
       ``template="parked"``. catpath's ``results.json`` then carries no
       barrier scalar; the harvest side sees an empty/thermo-only summary and
-      lets that flow (:func:`_autocatpath_measures_from_job`). Parked lacks
-      N–O scission after hydrogenation and N₂/N₂O coupling, so its
-      competitor-set margins are not comparable with neb's; that is handled
-      at rank time by the per-measure network basis, not by running
-      screening on coadsorbed: a 2026-10-02 replay of 213 neb candidates
-      with barriers stripped showed thermo-only margins on coadsorbed rank
-      no better (Spearman 0.139 vs the barrier-based margin) at ~1.9× the
-      structures (``docs/backlog/pathway-selectivity-u-ph-window.md``).
+      lets that flow (:func:`_autocatpath_measures_from_job`).
     * ``neb`` — straight-to-NEB, overlaid with autocatpath's fast-screening
       NEB stack (three ``search`` knobs, each a *default* an explicit
       caller key overrides; a caller-pinned ``neb_schedule`` suppresses the
@@ -2367,101 +2352,6 @@ def _find_tier_pathway(store: Store, structure_ref_id: int, tier: str) -> int | 
     return int(row[0]) if row else None
 
 
-def _tier_pathway_meta(
-    store: Store, structure_ref_id: int, tier: str
-) -> dict[str, Any] | None:
-    """Meta of the newest ``tier``-rung `pathway` dispatched for this candidate
-    (what :func:`_find_tier_pathway` finds), or ``None`` — the restale pass
-    reads its ``status`` (in flight?) and, once complete, its network basis."""
-    pid = _find_tier_pathway(store, structure_ref_id, tier)
-    if pid is None:
-        return None
-    ref = store.fetch_refs_by_ids({pid}).get(pid)
-    meta = ref.meta if ref is not None else None
-    return dict(meta) if isinstance(meta, dict) else None
-
-
-#: Measures whose VALUE depends on which reaction network was built — the
-#: harvest stamps the network basis on each of them
-#: (``meta.network_basis_by_key``, :func:`_network_basis_by_key`), because a
-#: later harvest on a different network does not re-measure every key it
-#: replaces (a pruned neb run emits no selectivity margin, so the old margin
-#: keeps riding under the OLD basis). ``poison_margin`` is deliberately NOT
-#: here: it screens adsorption only, no network dependence. Only
-#: ``frontier.NETWORK_DEPENDENT_KEYS`` (selectivity_margin/trap_margin/
-#: P_side — competitor-set measures) are ever demoted on a basis mismatch;
-#: the rest are stamped for provenance but still rank. Why the others stay:
-#: a newer network can only ADD steps, which can only lower a main-route
-#: span/barrier, so an older value is an upper bound — bias, not corruption.
-_NETWORK_BASIS_KEYS: tuple[str, ...] = (
-    "barrier",
-    "span",
-    "U_L",
-    "U_L_abs",
-    "U_opt",
-    "span_at_Uopt",
-    "P_side",
-    "selectivity_margin",
-    "trap_margin",
-    *_AUTOCATPATH_KINETICS_KEYS,
-)
-
-
-def _network_basis_by_key(
-    existing_meta: dict[str, Any],
-    measures: dict[str, Any],
-    basis: dict[str, Any],
-) -> dict[str, Any]:
-    """The candidate's ``network_basis_by_key`` after this harvest: the prior
-    map (``existing_meta``), with every :data:`_NETWORK_BASIS_KEYS` measure
-    present in ``measures`` re-stamped with ``basis`` — keys this harvest did
-    not re-measure keep the basis they were actually measured on."""
-    prior = existing_meta.get("network_basis_by_key")
-    by_key: dict[str, Any] = dict(prior) if isinstance(prior, dict) else {}
-    for k in _NETWORK_BASIS_KEYS:
-        if measures.get(k) is not None:
-            by_key[k] = basis
-    return by_key
-
-
-def _resolved_template(config: Mapping[str, Any]) -> str:
-    """The reaction-network template a catpath ``config`` builds: its own
-    ``template`` when set, else catpath's default (mirrors catpath
-    ``network.resolve_template``: ``coadsorbed`` for ``network == "ammonia"``,
-    else ``parked``)."""
-    template = config.get("template") or (
-        "coadsorbed" if config.get("network") == "ammonia" else "parked"
-    )
-    return str(template)
-
-
-def _network_basis(pw_meta: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Which reaction network a pathway's competitor-set measures (selectivity/
-    trap margins, ``P_side``) were taken on — stamped onto the candidate at
-    harvest (``meta.network_basis``) so :mod:`precis.quest.frontier` never
-    ranks a margin from one network against another's.
-
-    ``{"digest": results.network_digest | None, "template": <resolved>,
-    "version": meta.autocatpath_version | None}`` (``template`` per
-    :func:`_resolved_template`). ``None`` when ``pw_meta`` isn't a dict or
-    carries no ``config`` (nothing to resolve a network from — leave the
-    candidate unstamped rather than guess).
-    """
-    if not isinstance(pw_meta, dict):
-        return None
-    config = pw_meta.get("config")
-    if not isinstance(config, dict) or not config:
-        return None
-    results = pw_meta.get("results")
-    results = results if isinstance(results, dict) else {}
-    version = pw_meta.get("autocatpath_version")
-    return {
-        "digest": results.get("network_digest") or None,
-        "template": _resolved_template(config),
-        "version": str(version) if version else None,
-    }
-
-
 def _candidate_rung(meta: dict[str, Any] | None) -> str | None:
     """The candidate's highest COMPLETED ladder rung, or ``None`` if none.
 
@@ -3171,12 +3061,6 @@ def harvest_measures(
             tier = _pathway_tier(pw_meta)
             _canonicalize_barrier(candidate_meta, measures, tier)
             _bump_tier_stamp(candidate_meta, measures, tier)
-            basis = _network_basis(pw_meta)
-            if basis is not None:
-                measures["network_basis"] = basis  # latest harvest, display
-                measures["network_basis_by_key"] = _network_basis_by_key(
-                    candidate_meta, measures, basis
-                )
             store.stamp_ref_meta(s.id, measures)
             candidate_meta.update(measures)
             _fold_viewport_updates(viewport_updates, measures)
@@ -3559,28 +3443,6 @@ def _promotion_sort_key(store: Store, quest_id: int, c: Any) -> float:
     return v if sense == "min" else -v
 
 
-def _merged_frontier_ids(fr: Any) -> set[int]:
-    """The confirmed frontier plus the provisional candidates on the
-    provisional frontier (:func:`precis.quest.frontier._provisional_split`):
-    a candidate whose margin was demoted as stale sits in the provisional
-    band, and must not lose its frontier standing for that alone."""
-    return {c.ref_id for c in fr.frontier} | {
-        pc.candidate.ref_id for pc in fr.provisional if pc.on_frontier
-    }
-
-
-def _restale_scope(fr: Any, band_n: int, sort_key: Callable[[Any], float]) -> set[int]:
-    """Candidates the restale pass may re-dispatch: the merged frontier
-    (:func:`_merged_frontier_ids`) plus the best ``band_n`` of the rest of
-    the provisional band, best-first on ``sort_key``."""
-    scope = _merged_frontier_ids(fr)
-    band = sorted(
-        (pc.candidate for pc in fr.provisional if pc.candidate.ref_id not in scope),
-        key=sort_key,
-    )
-    return scope | {c.ref_id for c in band[: max(band_n, 0)]}
-
-
 def promote_tiers(
     store: Store, quest_id: int, *, hub: Any | None = None, by: str = "agent"
 ) -> list[str]:
@@ -3602,62 +3464,21 @@ def promote_tiers(
       and that have no neb-tier pathway dispatched yet
       (:func:`_find_tier_pathway`), ranked best-first
       (:func:`_promotion_sort_key`) on the screening tier's thermodynamic
-      measures (U_L_abs / span / …). Ranked on MERGED measures
-      (:func:`precis.quest.frontier._merge_provisional_measures`): a
-      screened candidate's demoted (older-network) selectivity margin still
-      orders it, which is like-with-like because screening-tier candidates
-      share one network basis among themselves — otherwise every demoted
-      candidate would sort last on an absent measure and the promotion would
-      stall into arbitrary order. A candidate with no rankable measure at
-      all still sorts last.
+      measures (U_L_abs / span / …).
     * **neb → verify** — up to ``meta.fidelity_promote_verify`` (default
       :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) live, non-ruled-out candidates
       whose highest completed run is ``neb`` with a trusted barrier
       (``barrier_trusted is True`` + a ``barrier`` measure — the neb tier is
       the only source of a trusted `barrier` before a verify run lands, since
       screening emits none) and no verify-tier pathway dispatched yet.
-      Merged-frontier members (:func:`_merged_frontier_ids`: the confirmed
-      frontier plus the provisional frontier) go first, then the rest, each
-      group ranked best-first on MERGED measures. A neb candidate whose
-      margin was demoted as stale (an older network) is ranked by that
-      stale margin, not sunk to the bottom: the verify run re-measures it on
-      the current network anyway, so the stale value only picks the order,
-      and without it the expensive tier would go to whichever candidates
-      were re-measured first after a catpath bump. Eligibility is deliberately NOT restricted to
+      Frontier (Pareto non-dominated) members go first, then the rest, each
+      group ranked best-first. Eligibility is deliberately NOT restricted to
       the frontier: when a rubric axis only the verify tier can measure
       (``P_side`` — pruned competitor barriers / single-seed estimates leave
       selectivity unavailable at neb) keeps every candidate unevaluated, a
       frontier-only rule promotes nobody and the ladder deadlocks (qu164903:
       0 converged points, 0 verify runs, 2026-09-16). A trusted barrier is
       the evidence that the candidate is worth the authoritative pass.
-
-    * **restale** (third pass) — competitor-set measures
-      (:data:`precis.quest.frontier.NETWORK_DEPENDENT_KEYS`) taken on an older
-      reaction network than the quest's current one are demoted out of every
-      ranking here and in the frontier
-      (:func:`precis.quest.frontier.apply_network_demotion`); up to
-      ``meta.fidelity_restale_cap`` (default :data:`_DEFAULT_TIER_RESTALE`)
-      such live, non-ruled-out candidates, best-first over their MERGED
-      (stale-included) measures, are re-dispatched at their own tier. Only
-      candidates that can change a decision are in scope
-      (:func:`_restale_scope`): the merged frontier plus the best
-      ``meta.fidelity_restale_band`` (default
-      :data:`_DEFAULT_TIER_RESTALE_BAND`) of the provisional band. The rest
-      stay provisional with the "older reaction network" reason, so a bump
-      does not re-run every live neb candidate. Skipped
-      when that tier builds another template than the current basis (a
-      screening candidate stays on ``parked``; its margin waits for neb), when
-      a pathway at that tier is already computing, or when it already carries
-      the current basis. The dispatch content key folds the engine token
-      (:func:`_autocatpath_engine_token` — the precis ``autocatpath`` pin /
-      env override), the summary rev, the tier-overlaid config and the slab,
-      NOT the engine version a worker actually ran: a candidate whose
-      re-dispatch mints no new pathway (same key) is logged and skipped
-      without spending a cap slot, so the pass never loops on it. A
-      candidate whose current-basis run emitted no margin (a pruned neb run)
-      keeps its old margin and stays provisional for good: that pathway
-      already carries the current basis, so it is skipped. That is by
-      design, not a stuck candidate.
 
     Returns one short note per promotion dispatched; never raises (a
     promotion bug must not cost an already-successful harvest/graduation
@@ -3679,40 +3500,12 @@ def promote_tiers(
         )
         hub = hub or _hub_for(store)
 
-        from precis.quest.frontier import (
-            _candidate_from_structure,
-            _merge_provisional_measures,
-            apply_network_demotion,
-            current_network_basis,
-            quest_frontier,
-            same_network_basis,
-        )
+        from precis.quest.frontier import _candidate_from_structure, quest_frontier
         from precis.quest.gaps import _live_servers
 
         structures = [
             s for s in _live_servers(store, quest_id) if s.kind == "structure"
         ]
-        cap_restale = int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0)
-        # One current basis per pass over ALL live structures, so the ranking
-        # below is like-with-like (same demotion quest_frontier applies).
-        current_basis = current_network_basis(
-            [_candidate_from_structure(store, s) for s in structures]
-        )
-
-        promoted_ids: set[int] = set()  # dispatched by the two passes above
-
-        def _ranked_candidate(s: Any) -> Any:
-            c = _candidate_from_structure(store, s)
-            apply_network_demotion([c], current_basis)
-            return c
-
-        def _merged_key(c: Any) -> float:
-            # Rank on MERGED measures (stale/untrusted values backfilled), so
-            # a demoted margin still orders its candidate instead of sinking
-            # it to ``inf`` and leaving the order to whoever was re-measured
-            # first.
-            merged, _ = _merge_provisional_measures(c)
-            return _promotion_sort_key(store, quest_id, replace(c, measures=merged))
 
         # screening → neb
         if cap_neb > 0:
@@ -3724,20 +3517,18 @@ def promote_tiers(
                     continue
                 if _find_tier_pathway(store, s.id, _TIER_NEB) is not None:
                     continue
-                eligible.append(_ranked_candidate(s))
-            # Screening-tier candidates share one network basis among
-            # themselves, so their merged margins order them like-with-like.
-            eligible.sort(key=_merged_key)
+                eligible.append(_candidate_from_structure(store, s))
+            eligible.sort(key=lambda c: _promotion_sort_key(store, quest_id, c))
             for c in eligible[:cap_neb]:
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_NEB
                 )
-                promoted_ids.add(c.ref_id)
                 notes.append(f"promoted [{c.handle}] screening→neb: {note}")
 
         # neb → verify (trusted-barrier neb-tier candidates; frontier first)
         if cap_verify > 0:
-            frontier_ids = _merged_frontier_ids(quest_frontier(store, quest_id))
+            fr = quest_frontier(store, quest_id)
+            frontier_ids = {c.ref_id for c in fr.frontier}
             eligible_v = []
             for s in structures:
                 smeta = s.meta or {}
@@ -3748,7 +3539,7 @@ def promote_tiers(
                     continue
                 if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
                     continue
-                c = _ranked_candidate(s)
+                c = _candidate_from_structure(store, s)
                 if c.flags.get("barrier_trusted") is not True:
                     continue
                 if c.measures.get("barrier") is None:
@@ -3757,83 +3548,16 @@ def promote_tiers(
                     continue
                 eligible_v.append(c)
             eligible_v.sort(
-                key=lambda c: (0 if c.ref_id in frontier_ids else 1, _merged_key(c))
+                key=lambda c: (
+                    0 if c.ref_id in frontier_ids else 1,
+                    _promotion_sort_key(store, quest_id, c),
+                )
             )
             for c in eligible_v[:cap_verify]:
                 note = dispatch_autocatpath(
                     store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY
                 )
-                promoted_ids.add(c.ref_id)
                 notes.append(f"promoted [{c.handle}] neb→verify: {note}")
-
-        # restale: re-dispatch candidates measured on an older network
-        if cap_restale > 0 and current_basis is not None:
-            band_n = int(
-                qmeta.get("fidelity_restale_band", _DEFAULT_TIER_RESTALE_BAND) or 0
-            )
-            restale_scope = _restale_scope(
-                quest_frontier(store, quest_id), band_n, _merged_key
-            )
-            stale = []
-            for s in structures:
-                if s.id in promoted_ids or s.id not in restale_scope:
-                    continue
-                if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
-                    continue
-                c = _ranked_candidate(s)
-                tier = c.flags.get("tier")
-                if not c.flags.get("network_stale") or tier not in _TIERS:
-                    continue
-                if _resolved_template(
-                    _apply_tier_config(reaction, str(tier))
-                ) != current_basis.get("template"):
-                    # This tier builds another template (screening = parked
-                    # by design): a re-dispatch cannot land on the current
-                    # network, it would only collapse onto the same job.
-                    continue
-                pw = _tier_pathway_meta(store, c.ref_id, str(tier))
-                if pw is not None:
-                    if pw.get("status") == "computing":
-                        continue
-                    pw_basis = _network_basis(pw)
-                    if pw_basis is not None and same_network_basis(
-                        pw_basis, current_basis
-                    ):
-                        continue
-                stale.append((_merged_key(c), c, str(tier)))
-            stale.sort(key=lambda t: t[0])
-            n_dispatched = n_collapsed = 0
-            for _key, c, tier in stale:
-                if n_dispatched >= cap_restale:
-                    break
-                before = _find_tier_pathway(store, c.ref_id, tier)
-                note = dispatch_autocatpath(
-                    store, c.ref_id, reaction, hub=hub, tier=tier
-                )
-                if _find_tier_pathway(store, c.ref_id, tier) == before:
-                    # Same content key (engine pin/config/geometry unchanged),
-                    # or dispatch skipped: nothing new was minted, so this
-                    # candidate would be re-picked every pass. Skip it
-                    # without spending a cap slot.
-                    n_collapsed += 1
-                    log.info(
-                        "promote_tiers: restale re-dispatch of %s (%s) minted "
-                        "no new pathway: %s",
-                        c.handle,
-                        tier,
-                        note,
-                    )
-                    continue
-                n_dispatched += 1
-                notes.append(
-                    f"re-dispatched [{c.handle}] ({tier}) on the current "
-                    f"reaction network: {note}"
-                )
-            if n_collapsed:
-                notes.append(
-                    f"restale: {n_collapsed} candidate(s) skipped — re-dispatch "
-                    "collapsed onto the existing job (same content key)"
-                )
     except Exception:
         log.exception("promote_tiers: promotion pass failed for quest %s", quest_id)
     return notes
@@ -3847,8 +3571,8 @@ def promote_tiers(
 #: not re-processed — only the fresh redispatch jobs (higher ref ids) are harvested.
 #: Nulling it to 0 would make the next harvest re-read the stale completed job and
 #: re-stamp the very barrier this reset just cleared.
-#: ``barrier_screen`` / ``barrier_fidelity`` / ``tier`` / ``network_basis`` (+
-#: ``_by_key``) are the tier-ladder's own bookkeeping (:func:`_canonicalize_barrier` / :func:`_bump_tier_stamp`)
+#: ``barrier_screen`` / ``barrier_fidelity`` / ``tier`` are the tier-ladder's
+#: own bookkeeping (:func:`_canonicalize_barrier` / :func:`_bump_tier_stamp`)
 #: — cleared alongside the barrier itself so a reset candidate's stale tier
 #: provenance can't mis-canonicalize the FIRST fresh redispatch result (e.g.
 #: reading a stale ``barrier_fidelity="verify"`` and wrongly refusing to
@@ -3864,8 +3588,6 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_screen",
     "barrier_fidelity",
     "tier",
-    "network_basis",
-    "network_basis_by_key",
     # selectivity/poisoning scalars + context — same engine, same staleness
     *_AUTOCATPATH_SELECTIVITY_KEYS,
     *_AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS,

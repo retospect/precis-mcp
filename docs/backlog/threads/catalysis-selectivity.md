@@ -10,12 +10,15 @@ associatively, the objective is span at one U, and the diagram draws
 H-supply as a dashed sawtooth; order is network first (every number
 downstream is measured against it), the diagram in parallel (it is how
 Reto reads the results), then the objective, then where barriers run.
-**Last reviewed:** 2026-10-02 (hold lifted). R1 like-with-like ranking
-(per-measure network-basis stamp, stale competitor-margin demotion, scoped
-restale pass, status-view marker) and the diagram fold/annotation web half
-landed after design review §14 + fixes F1–F3. Open from it: the legacy
-backfill by value match is Reto's call (review-queue
-`catalysis-selectivity-14`); catpath 0.23.0 (Part B) runs in Reto's
+**Last reviewed:** 2026-10-02 (hold lifted). The diagram fold/annotation
+web half landed (0f41f3f04). R1 like-with-like ranking (per-measure
+network-basis stamp, stale competitor-margin demotion, scoped restale pass,
+status-view marker; design review §14 + F1–F3 accepted) landed in the same
+squash, then was backed out of main by the quest-file restore that follows
+it. It waits on Reto's reading of his "no ranking change before
+u-ph-window" ruling (review-queue `catalysis-selectivity-15`). To re-land,
+revert that restore commit. The legacy backfill by value match is also his
+call (`catalysis-selectivity-14`); catpath 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
 **Worktree:** `catalysis-selectivity`
@@ -27,8 +30,8 @@ backfill by value match is Reto's call (review-queue
    NH₃ selectivity against the wrong competitors until N–O cleavage after
    hydrogenation, N₂ and N₂O are in the network; every ranking on
    qu164903 inherits the error. Slice 1 done (parked is incomplete);
-   screening stays parked (R2), and the like-with-like network-basis
-   ranking has shipped. Left: catpath 0.23.0 (NO+NO coupling, NH₂OH
+   screening stays parked (R2); the like-with-like network-basis ranking
+   is built and held (`catalysis-selectivity-15`). Left: catpath 0.23.0 (NO+NO coupling, NH₂OH
    scission, template-level `network_digest`) → `uv lock -P autocatpath`
    → the neb-tier re-run of pw455722's candidate (steps 5–6).
 2. **backlog/pathway-diagram-step-annotations.md** +
