@@ -258,7 +258,8 @@ def _freeze_source_anchor(
         p = dict(p)
         p.pop("source_url", None)
         cid = gates.integral_chunk_id(p.get("chunk_id"))
-        ref = refs.get(ref_by_chunk.get(cid)) if cid is not None else None  # type: ignore[arg-type]
+        ref_id = ref_by_chunk.get(cid) if cid is not None else None
+        ref = refs.get(ref_id) if ref_id is not None else None
         if ref is not None and ref.kind == "edgar":
             anchor = evidence.source_anchor(ref.kind, ref.slug, None)
             if anchor.source_uri:

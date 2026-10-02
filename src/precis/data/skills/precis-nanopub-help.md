@@ -201,6 +201,9 @@ failures an extraction agent can avoid up front:
   normal shape (canonical + as-downloaded alias for dedup probing) and
   does NOT block minting. Zero anywhere = unmintable until the PDF is
   re-hashed or acquired.
+
+## Mint gates — quote mechanics
+
 - **Quote mechanics** — the quote must be verbatim and contiguous
   within ONE stored chunk (adjacent sentences in the same chunk may be
   joined; never across chunks). **Span policy: pick the minimal
