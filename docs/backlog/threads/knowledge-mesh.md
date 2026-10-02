@@ -113,6 +113,14 @@ graph-health-metrics, five parked gripes, and the seam with
   100-row re-run vs aggregates only. The approved packed 300-row probe
   (knowledge-mesh-1) runs regardless, started 13:05Z into the scratch
   `norr-her-meta/taxonomy-packed300/`.
+- **knowledge-mesh-4 (review queue, 2026-10-02): datasheet facts in the
+  mesh.** Reto ruled the content (ewod-pcb-2: ratings, key specs,
+  package, pin table, page-cited, linked to the part; the pull is
+  ewod-pcb Do-next 2). Open is the storage shape; recommended a
+  `component` ref per pulled part (a `part` is a catalog row, not a link
+  target) with facts as `component_spec_values` rows that ride the
+  `measures` fold-in. On the answer: file `datasheet-facts-mesh.md` and
+  rank it here.
 - **round gate for migration 0180** (relation constraints) — tests green
   on this tree; a migration cannot `/qland`, so the orchestrator gates it.
 
@@ -144,7 +152,9 @@ items.
   shared `Store.ancestors` walk). Open, non-blocking: whether a
   `functional` relation should accept a repoint instead of
   remove-then-add; it refuses until an agent gripe asks. `instance-of`'s
-  range row lands with term-taxonomy.
+  range row lands with term-taxonomy. Revisit trigger: when `contains`
+  grows (deep se/BOM trees), measure the acyclic check's per-link
+  `Store.ancestors` walk and its depth cap of 64.
 
 - taxonomy-bootstrap blockers 2, 3a, 3b and 4 — measured fixed (over-cap
   107 → 3, facet nodes 22 → 0, stranded unit borrowed, synonym families one

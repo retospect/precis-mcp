@@ -53,7 +53,8 @@ worker-internal, not an agent-facing verb.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+import weakref
+from typing import TYPE_CHECKING, Any
 
 from precis.utils import handle_registry
 from precis.utils.refeye import RING_GROUPS, ring_group
@@ -391,14 +392,20 @@ def _render_note_eye(
     return "\n\n".join([block, *sections])
 
 
+#: Per-store cache for :func:`_relation_reading`, dropped with its store.
+_RELATION_READING: weakref.WeakKeyDictionary[
+    Store, tuple[dict[str, str], frozenset[str]]
+] = weakref.WeakKeyDictionary()
+
+
 def _relation_reading(store: Store) -> tuple[dict[str, str], frozenset[str]]:
     """``(inverse slug by slug, symmetric slugs)`` from the ``relations``
-    table, cached on the store for its lifetime like
+    table, cached per store for its lifetime like
     ``Store.inverse_relation`` — the vocabulary is static once migrations
     have run."""
-    cached = getattr(store, "_eye_relation_reading", None)
+    cached = _RELATION_READING.get(store)
     if cached is not None:
-        return cast("tuple[dict[str, str], frozenset[str]]", cached)
+        return cached
     with store.pool.connection() as conn:
         rows = conn.execute(
             "SELECT slug, inverse_slug, is_symmetric FROM relations"
@@ -407,7 +414,7 @@ def _relation_reading(store: Store) -> tuple[dict[str, str], frozenset[str]]:
         {str(r[0]): str(r[1]) for r in rows if r[1] is not None},
         frozenset(str(r[0]) for r in rows if r[2]),
     )
-    store._eye_relation_reading = reading  # type: ignore[attr-defined]
+    _RELATION_READING[store] = reading
     return reading
 
 

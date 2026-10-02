@@ -332,6 +332,10 @@ class LinksMixin:
         and :meth:`~precis.store._component_ops.ComponentMixin.component_would_cycle`
         both call it, and later readers (taxon ``view='path'``, quest
         reweight) should too rather than roll their own CTE.
+
+        Revisit when ``contains`` grows (deep se/BOM assembly trees): every
+        add-mode link on an acyclic relation runs this walk, so its cost
+        and the depth cap are the first things to measure there.
         """
         inverse = self.inverse_relation(relation)
         sql = """

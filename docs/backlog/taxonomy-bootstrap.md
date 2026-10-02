@@ -548,6 +548,24 @@ packed, retrying run over a larger slice (300 rows, ~75 packed calls, ~$6),
 where the ceiling rises and the ratio is readable outside the noise; the
 0.60 bar stays as stated and is read there.
 
+## Fourth probe — 2026-10-02 13:05 UTC, 300 rows packed 4 per call
+
+Reto's go (review-queue knowledge-mesh-1). `--stage all --limit 300
+--pack 4`, same snapshot and default salt. 760 mentions, 578 discovered
+rows, 22 warnings, **49 calls for 195 hubs, 0 failed**, **$5.91**, 45 min
+wall; 230 nodes, **14 systematic**, 27 merge suggestions, 2 entries.
+
+**Verdict as printed: `probe criterion FAIL` — stability 0.370 = 0.53 of
+the unit-key ceiling 0.700, bar 0.60.** The ceiling rose from 0.453 to
+0.700 with n, as the third probe predicted. Not read as a vocabulary
+finding yet: packing is a new input, and the probe-2/3 stage dumps and
+the original `compare_runs.py` were lost before this run (the probe-1
+dumps survive; old prompt, not comparable). Reto chose (knowledge-mesh-2)
+an unpacked `--pack 1 --limit 100` re-run on the same rows as the
+like-for-like baseline. `compare_runs.py` is rebuilt in the scratch dir
+and reproduces probe 1's 0.046 on itself. Dumps:
+`norr-her-meta/taxonomy-packed300/` and `taxonomy-unpacked100/`.
+
 ## Resume (2026-10-02)
 
 State: three probes on the same 100 rows; every vocabulary and census
