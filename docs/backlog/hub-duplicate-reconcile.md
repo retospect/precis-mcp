@@ -76,6 +76,13 @@ path (item 5), `finding` refs and their `links`.
   `candidate` in `nanopub_publish`, idempotent, dry-run). If the bundle
   cannot be recovered, keep the branch's winner selection and skip+log as
   small rewrites over `merge_hubs` rather than a second merge path.
+- **[measured 2026-10-02, knowledge-mesh]** fi176861 ↔ fi178714 (the
+  gr180306 twin, since merged/retired) sit at bge-m3 cosine distance
+  **0.102** on their `finding_body` chunks; fi176861's nearest live
+  findings are fi178441 (0.159) and fi177675 (0.187), worth a look as
+  further twins. Mint-time `canon.block` does see them under default
+  HNSW settings (its `chunk_kind` filter makes the planner skip the
+  index), so the embedding window, not retrieval, is the cause.
 - **[note 2026-10-02, knowledge-mesh]** Calibration positives beyond
   fi176861/fi178714: every pair already collapsed by `merge_hubs` (its
   `MERGE_COLLAPSE_RELATION` edges are labelled twins). Run the backfill
