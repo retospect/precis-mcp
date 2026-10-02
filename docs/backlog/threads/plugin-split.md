@@ -19,13 +19,15 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Resume here (2026-10-02)
 
-- **Step 3 landed 06e3f3d7, deploying in round 2.** After the deploy, the
-  shared session MCP (`precis-mcp-http`) still carries its image's old
-  install metadata, so `get(kind='skill', id='precis-pathway-help')` returns
-  NotFound there until its venv is reinstalled against `/src` (or the
-  image is rebuilt and the container recreated). The MCP session owns that
-  step; deploy coordinates it. Verify the skill resolves, then close
-  **gr459123**.
+- **Step 3 is live (deploy 38, 06e3f3d7, 2026-10-02 07:29Z) and owes one
+  reinstall.** The shared session MCP (`precis-mcp-http`) still carries its
+  image's old install metadata, so `get(kind='skill',
+  id='precis-pathway-help')` returns NotFound there (confirmed after the
+  deploy). The fix reinstalls its venv against `-e /app`, not `/src`: the
+  venv's `.pth` points at `/app/src`, and `/src` is read-only. An agent's
+  `docker exec` for it was denied, so it waits on Reto running
+  `/tmp/mcp-reinstall-metadata.sh`; an image rebuild plus recreate also
+  works. Verify the skill resolves, then close **gr459123**.
 - **Entry-point changes need no rebuild round any more.** The ship gate
   runs `uv run` without `--no-sync` and re-syncs `/opt/venv` itself;
   `scripts/test` passes `--heal` to `scripts/lib/check-entry-points.py`,
