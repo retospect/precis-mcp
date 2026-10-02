@@ -23,13 +23,39 @@ states that count a paper as usable when it is not, then metadata.
    2026-10-02: a paper-view banner, a `source caveats:` section on
    findings, and a draft write-path hint (`glyph_cite_hint`). Not built: a
    whole-draft warning in the citations view or the export preflight. The
-   hint fires per write, so it only flags chunks someone touches. Next:
-   confirm the first `glyph_health` rows after the round-1 deploy. Rank 1: the corpus is wrong
+   hint fires per write, so it only flags chunks someone touches. First post-deploy flag (ref 461434,
+   10-02) was a false positive: its 12 control characters were all TeX
+   CMEX delimiter glyphs. Fixed in round 2 by not counting C0 from
+   math-extension fonts; the stored flag on 461434 stays until re-analysed.
+   gr461607 verified live: 1 of 15 PDF ingests since the deploy carries
+   `glyph_health`, against 0 of 1,198 the week before. Next, about a day
+   after the round-2 deploy: measure detector precision, as the
+   orchestrator accepted it 2026-10-02.
+   - Report the flag rate over new ingests. More than a few percent means
+     the orphan-span signal is firing on clean symbol fonts.
+   - Inspect 20 flagged papers per signal: the `/ToUnicode` font tell, and
+     orphan-span-only flags.
+   - Rule, pinned before looking: a paper is damaged if at least one Greek
+     or symbol character on the flagged page is missing or wrong in the
+     stored chunk. Record the page and the character for each.
+   - Report each signal's precision with its interval.
+   - If the orphan signal is below 80%, gate the banner on the font tell
+     or an orphan-count threshold, and keep the flag stored.
+   - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
-2. **gr453860** — 947 papers have a PDF and no body (914 on 09-27). Every
-   surface counts them as held. Visibility has shipped; still open are a
-   journal reason, a heal and the pdf_sha256-as-usable call-site audit.
-   Ranked above 3: this one inflates "usable", 3 only mis-buckets stubs.
+2. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured
+   2026-10-02:
+   - 814 Elsevier not-entitled: the XML has no body and the PDF is the
+     1-page preview. This is the same gap as item 4, now bodiless instead
+     of truncated.
+   - 65 have no ingest trace at all.
+   - 43 corrupt PDFs.
+   - 20 PDF files missing on disk.
+   - 5 scanned.
+   Reto will not rule per paper. The policy is proposed in review item
+   ingest-and-fetch-4: capture fixes, a terminal/transient table, OCR the
+   scanned ones, an automatic heal. Build after he rules. Evidence is in
+   `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
 3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`

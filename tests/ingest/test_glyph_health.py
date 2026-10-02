@@ -15,6 +15,7 @@ from precis.ingest.glyph_health import (
     _parse_tounicode,
     classify_font,
     count_c0_controls,
+    count_c0_in_spans,
     count_greek_chars,
     count_micron_words_without_micro_sign,
     count_orphan_single_char_spans,
@@ -35,6 +36,31 @@ class TestC0Counts:
 
     def test_clean_text_has_none(self) -> None:
         assert count_c0_controls("perfectly clean ascii") == 0
+
+
+class TestC0InSpans:
+    """Per-span C0 count skips TeX math-extension delimiters (ref 461434)."""
+
+    @staticmethod
+    def _dict(*spans: tuple[str, str]) -> dict:
+        return {
+            "blocks": [
+                {"lines": [{"spans": [{"font": f, "text": t} for f, t in spans]}]}
+            ]
+        }
+
+    def test_cmex_delimiters_do_not_count(self) -> None:
+        # cmex10 0x00/0x01 = big parens; a clean LaTeX paper emits these.
+        d = self._dict(("CMR10", "f"), ("CMEX10", "\x00"), ("ABCDEF+CMEX8", "\x10"))
+        assert count_c0_in_spans(d) == 0
+
+    def test_cmmi_c0_still_counts(self) -> None:
+        # CMMI's C0 range is lowercase Greek: that is real glyph loss.
+        d = self._dict(("CMMI10", "\x0b"), ("LMEX10", "\x01"), ("AdvP7DA6", "\x02"))
+        assert count_c0_in_spans(d) == 2
+
+    def test_empty_dict(self) -> None:
+        assert count_c0_in_spans({}) == 0
 
 
 class TestGreekCounts:

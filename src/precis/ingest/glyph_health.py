@@ -129,9 +129,36 @@ _POSITIONAL_GLYPH_RE = re.compile(
 )
 
 
+#: TeX math-extension fonts (Computer Modern ``cmex``, Latin Modern
+#: ``lmex``, Euler ``euex``), subset prefix optional. Their low code points
+#: are big delimiters and radicals — ``cmex10`` 0x00/0x01 are the large
+#: parentheses — so a C0 char from one is an unmapped bracket, not a lost
+#: letter. Counting them flagged a clean LaTeX paper (ref 461434, 12 C0 all
+#: from CMEX8/CMEX10) on the first post-deploy ingest. CMMI's C0 range IS
+#: lowercase Greek and still counts.
+_MATH_EXTENSION_FONT_RE = re.compile(r"(?:^|\+)(?:CMEX|LMEX|EUEX)", re.IGNORECASE)
+
+
 def count_c0_controls(text: str) -> int:
     """Count C0 control chars the ingest strip would delete (mode-(b) residue)."""
     return len(C0_CONTROL_RE.findall(text))
+
+
+def count_c0_in_spans(text_dict: dict[str, Any]) -> int:
+    """Count C0 control chars per span, skipping TeX math-extension fonts.
+
+    Operates on PyMuPDF's ``page.get_text("dict")``. A C0 char set in a
+    :data:`_MATH_EXTENSION_FONT_RE` font is a delimiter glyph with no
+    ``/ToUnicode`` entry, not glyph loss, so it does not count.
+    """
+    total = 0
+    for block in text_dict.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if _MATH_EXTENSION_FONT_RE.search(span.get("font") or ""):
+                    continue
+                total += count_c0_controls(span.get("text") or "")
+    return total
 
 
 def count_greek_chars(text: str) -> int:
@@ -368,10 +395,9 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
             seen_xrefs: set[int] = set()
             for page in doc:
                 try:
-                    raw_c0 += count_c0_controls(page.get_text())
-                    orphan_spans += count_orphan_single_char_spans(
-                        page.get_text("dict")
-                    )
+                    text_dict = page.get_text("dict")
+                    raw_c0 += count_c0_in_spans(text_dict)
+                    orphan_spans += count_orphan_single_char_spans(text_dict)
                     for font in page.get_fonts(full=True):
                         xref = font[0]
                         if xref in seen_xrefs:
@@ -387,9 +413,11 @@ def analyze_pdf(pdf_path: str | Path, extracted_text: str = "") -> dict[str, Any
         log.debug("glyph_health: font analysis failed for %s: %s", pdf_path, exc)
 
     # C0 residue survives extraction only in mode (b); a lying-ToUnicode
-    # mode-(a) document has none, so we take the max of the raw-page count
-    # and any residue still present in the extracted text.
-    c0 = max(raw_c0, count_c0_controls(extracted_text))
+    # mode-(a) document has none. The per-span raw count is authoritative
+    # when the PDF opened: it can tell a math-extension delimiter from a lost
+    # letter, and the extracted text cannot, so it is only the fallback when
+    # the engine is missing or the document would not parse.
+    c0 = raw_c0 if font_error is None else count_c0_controls(extracted_text)
 
     return summarize(
         fonts=fonts,
