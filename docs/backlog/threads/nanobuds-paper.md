@@ -13,21 +13,33 @@ section now opens with the thesis and carries both analogues (2026-09-30).
 Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 10,000+ words, so the restructure reorders rather than cuts; scope is covalent
 and non-covalent buds. RSC reviews go through a proposal form first.
-**Last reviewed:** 2026-10-01 (pillar review 2026-09-30 same day absorbed the nanobud
+**Deployed vs landed (2026-10-02):** everything this thread shipped is on
+prod (fleet 7242d4c9 includes 974e3a20 hygiene fix and 1f2324a4); nothing
+is landed-only. **Traps:** the session classifier blocks direct prod-DB
+Python scripts (td450082 is Reto's to run) but allows `scripts/prod-precis`
+CLI calls and read-only `scripts/prod-psql`; `verify-edges` judges each
+edge against the whole claim, so never attach a methods-only passage to
+"name the method".
+**Last reviewed:** 2026-10-02 (pillar review 2026-09-30 same day absorbed the nanobud
 library items and the hexfold seam-figure want; pruned gr450329/gr450339,
 both STATUS:done)
 **Worktree:** `nanobuds-paper`
 
 ## Do next
 
-1. **Nanoscale review proposal** — draft at
+Every remaining item is Reto's; each is a `waiting-for:reto` todo under
+td173019. Session work resumes only when one of them comes back.
+
+1. **td461160 — Nanoscale review proposal** — draft at
    `~/work/projects/poster/nanobuds-paper/nanoscale-review-proposal.md`
    (outside this repo; authors filled from the draft); Reto fills the
    "importance now" lines and the key references, checks byline order,
    then sends it to the editorial office.
-2. **Reto's read-through before export** — Reto is sourcing the ten
-   figures, checking the findings and reading the export himself
-   (2026-10-01); the session's part of the restructure is done.
+2. **Reto's read-through** — td461161 findings check (first case:
+   dc2445908); figures sourced by Reto; export read on the
+   placeholder-figure export (jo461157, queued 2026-10-02 — see Horizon 2).
+   Then td461162: the Phase 5 adversarial review from the precis-web
+   review block.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
    2026-10-01; the auto-mode classifier still blocks the session's direct
    prod-DB script (re-tried 2026-10-01 after Reto's "prod is authorized"),
@@ -51,14 +63,14 @@ both STATUS:done)
 1. **nanopub approve/sign pass over dr173020's hubs** — waits on Reto's
    findings check (Do next 2; rewording after signing re-opens hubs); the 173020 batch in
    td345830–td345836.
-2. **export + submission** — waits on 1, td450082 and gr454753: the
-   draft_export job refuses on the ten image-less reproduced figures ("no
-   image yet", jo459047, 2026-10-01) and accepts no placeholder waiver, so
-   either every figure gets an image + clearance or the job grows the waiver
-   the skill already documents. docx/pdf via the local prod export path
-   against the RSC template. 43020 stays frozen.
+2. **export + submission** — waits on 1 and td450082. The
+   `placeholder_figures` waiver is deployed (gr454753, on prod since
+   2026-10-02), so a reading export no longer needs the ten figures;
+   jo461157 is that export (params `placeholder_figures: true`). Submission
+   still needs every figure imaged and cleared. docx/pdf via the local prod
+   export path against the RSC template. 43020 stays frozen.
 3. **preprint slot blockers** — the repo-side blockers for the monthly
-   preprint (export gate gr454753, the ten image-less figures, gr459050) are
+   preprint (the ten image-less figures, gr459050) are
    this thread's; the posting step itself (arXiv/Zenodo submission) is
    Reto's: td459586, qu459585's October todo.
 4. **backlog/nanobud-campaign.md**
