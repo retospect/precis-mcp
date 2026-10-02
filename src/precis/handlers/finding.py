@@ -99,6 +99,7 @@ from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers._link_target import LinkTarget, parse_link_target
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.ingest.glyph_health import glyph_caveat
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert, Ref, Tag
@@ -1629,6 +1630,12 @@ class FindingHandler(NumericRefHandler):
                     handle = f"{legacy}~{pos}"
                 lines.append(f"  {handle}")
 
+        caveats = self._source_caveats(ref, primary_cite)
+        if caveats:
+            lines.append("")
+            lines.append("source caveats:")
+            lines.extend(f"  {handle} — {text}" for handle, text in caveats)
+
         status = _extract_status_tag(tags)
         lines.append("")
         status_line = f"status: STATUS:{status or _STATUS_TRACING}"
@@ -1691,6 +1698,40 @@ class FindingHandler(NumericRefHandler):
                     "with optional '~<ord>' chunk selector"
                 ),
             ) from exc
+
+    def _source_caveats(self, ref: Ref, primary_cite: Any) -> list[tuple[str, str]]:
+        """``(paper handle, caveat)`` for each source paper of ``ref`` whose
+        text extraction is glyph-suspected (gr228652).
+
+        Source papers = the kind='paper' targets of the finding's outbound
+        links (covers taproot supporters) plus the paper named by
+        ``meta.primary_cite_key``. A ``misattributes`` link is a disowned
+        source, not one, so it is skipped. One batched ref fetch, no
+        per-link query.
+        """
+        ids = [
+            lk.dst_ref_id
+            for lk in self.store.links_for(ref.id, direction="out")
+            if lk.relation != "misattributes"
+        ]
+        papers = list(self.store.fetch_refs_by_ids(ids, include_deleted=False).values())
+        if primary_cite:
+            prim = self.store.get_ref(kind="paper", id=str(primary_cite))
+            if prim is not None:
+                papers.append(prim)
+        out: list[tuple[str, str]] = []
+        seen: set[int] = set()
+        for p in sorted(papers, key=lambda r: r.id):
+            if p.kind != "paper" or p.id in seen:
+                continue
+            seen.add(p.id)
+            caveat = glyph_caveat(p.meta)
+            if caveat:
+                handle = handle_registry.try_format("paper", p.id) or (
+                    p.slug or f"ref:{p.id}"
+                )
+                out.append((handle, caveat))
+        return out
 
     def _fetch_ref_any_kind(self, ref_id: int) -> Ref:
         """Look up a ref by id without knowing its kind.

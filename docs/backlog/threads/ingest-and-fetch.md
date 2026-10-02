@@ -15,9 +15,16 @@ states that count a paper as usable when it is not, then metadata.
 1. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
-   papers; fixed alongside this re-rank). Next: confirm the first
-   `meta.glyph_health` rows after deploy, re-analyse the stored PDFs to get
-   a real count, then Reto rules on recovery. Rank 1: the corpus is wrong
+   papers; fixed alongside this re-rank). Reto ruled
+   2026-10-02 (review item ingest-and-fetch-2): detection only for now.
+   Flagged papers get marked, and findings and cites drawn from them carry
+   a caveat. Recovery is decided once the post-deploy `meta.glyph_health`
+   count exists. The caveat shipped
+   2026-10-02: a paper-view banner, a `source caveats:` section on
+   findings, and a draft write-path hint (`glyph_cite_hint`). Not built: a
+   whole-draft warning in the citations view or the export preflight. The
+   hint fires per write, so it only flags chunks someone touches. Next:
+   confirm the first `glyph_health` rows after the round-1 deploy. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
 2. **gr453860** — 947 papers have a PDF and no body (914 on 09-27). Every
    surface counts them as held. Visibility has shipped; still open are a
@@ -35,13 +42,16 @@ states that count a paper as usable when it is not, then metadata.
    below it because the fix is a cluster ops run (the vault key), not code.
 5. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
-6. **gr456181** — 4,313 S2-enriched papers have no venue (2,477 have a
-   DOI). The code fix is deployed. Reto approved the `s2_enriched_at`
-   re-arm 2026-10-02 (review item ingest-and-fetch-1) on one condition:
-   be gentle with S2. Re-arm in small batches spread over time, or first
-   confirm the lane's own rate limit is well under S2's public limit and
-   that it backs off on 429. Not started: the fleet hold for Reto's demo
-   came first.
+6. **gr456181** — 4,313 S2-enriched papers have no venue. Reto approved
+   the re-arm 2026-10-02 on condition of gentleness. The enrich lane
+   (`stub_rank`) claims stubs only, so it reaches 3,119 of them; the live
+   `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
+   call covers 500 ids. Re-arm runs in batches of 500 at least an hour
+   apart, each row stamped `meta.s2_rearm.batch` (which also stops a
+   re-enriched-but-still-venueless row being re-armed). Batch 1 went out
+   13:23Z. Next batch only after batch 1's yield is checked. Open: the
+   1,200 *held* venue-less papers no lane re-enriches — Crossref fallback
+   (`backlog/crossref-enrichment.md`) or a held-paper S2 pass.
 
 ## Horizon
 

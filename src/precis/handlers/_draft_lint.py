@@ -18,7 +18,9 @@ notation, ``$…$`` math spans the exporters would demote to literal text
 (:func:`math_form_hint`), dangling ``[...]``/``finding #slug`` references,
 and — reported
 distinctly from a plain dangling reference — a ``[...]`` cite whose target
-is a real ref that has since been soft-deleted (a tombstone, gr265228).
+is a real ref that has since been soft-deleted (a tombstone, gr265228),
+and a cite of a paper whose ingest flagged glyph damage
+(:func:`glyph_cite_hint`, gr228652).
 Pure functions over an explicit :class:`~precis.store.store.Store` (no
 handler `self`) — ``handlers/draft.py::DraftHandler`` is the sole caller,
 wiring these into its ``put``/``edit``/``get`` bodies.
@@ -366,6 +368,35 @@ def pc_cite_claim_hub_hint(store: Store, text: str) -> str:
             f" — cite [{hub_handle}] for living "
             f"resolution, or [{hub_handle}>{tok}] to pin this passage."
         )
+    return "".join(lines)
+
+
+def glyph_cite_hint(store: Store, text: str) -> str:
+    """Warn per paper cited in ``text`` whose ingest flagged glyph damage
+    (``meta.glyph_health.suspected``, gr228652): Greek/\u03bc characters may
+    have been dropped or substituted in the extracted text, so quoted
+    numbers/units can be off by 10^3-10^6x. Advisory only. Scoped to the
+    cites present in the touched text; one batched ref fetch, deduped by ref.
+    """
+    from precis.ingest.glyph_health import glyph_suspected
+    from precis.utils.mentions import resolve_handle_target
+
+    ids: dict[int, str] = {}
+    for tok in find_paper_cite_tokens(text):
+        target = resolve_handle_target(store, tok)
+        if target is not None:
+            ids.setdefault(target.dst_ref_id, tok)
+    if not ids:
+        return ""
+    lines: list[str] = []
+    for rid, ref in sorted(store.fetch_refs_by_ids(ids, include_deleted=False).items()):
+        if ref.kind == "paper" and glyph_suspected(ref.meta):
+            handle = handle_registry.try_format("paper", rid) or ids[rid]
+            lines.append(
+                f"\n\n\u25c6 glyphs: cites {handle}, whose extracted text may "
+                "have lost Greek/\u03bc characters \u2014 check quoted "
+                "numbers/units against the PDF"
+            )
     return "".join(lines)
 
 

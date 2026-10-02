@@ -30,6 +30,13 @@ Every text-level detector tried in the backlog was a base-rate failure
 **font-level** tests plus cheap supporting counts — not heuristics over
 the stored text.
 
+Read side: nothing recovers the text (detection only, by ruling), so every
+surface that shows a flagged paper's content carries a caveat. The single
+shared predicate :func:`glyph_suspected` and the one caveat sentence
+:func:`glyph_caveat` live here, next to the record they interpret, and are
+used by the paper views' banner, the finding view's ``source caveats:``
+section and the draft write-path ``glyph_cite_hint``.
+
 The classification helpers below are pure functions over already-parsed
 font/geometry structures so they are unit-testable without a PDF engine;
 :func:`analyze_pdf` is the thin, defensive PyMuPDF glue that feeds them.
@@ -43,6 +50,43 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Read side: predicate + caveat wording shared by every display surface
+# ---------------------------------------------------------------------------
+
+
+def glyph_suspected(meta: Any) -> bool:
+    """True when ``meta`` (a ref's meta dict) carries a suspected
+    ``glyph_health`` record. Tolerates ``None`` / non-dict / malformed."""
+    if not isinstance(meta, dict):
+        return False
+    rec = meta.get("glyph_health")
+    return isinstance(rec, dict) and rec.get("suspected") is True
+
+
+def glyph_caveat(meta: Any) -> str:
+    """One-line caveat for a glyph-suspected paper (``""`` when clean).
+
+    Names the suspect fonts / modes only when the record carries them.
+    """
+    if not glyph_suspected(meta):
+        return ""
+    rec = meta["glyph_health"]
+    detail: list[str] = []
+    fonts = [str(f) for f in (rec.get("suspect_fonts") or [])]
+    if fonts:
+        detail.append("fonts: " + ", ".join(fonts))
+    modes = [str(m) for m in (rec.get("modes") or [])]
+    if modes:
+        detail.append("modes: " + ", ".join(modes))
+    suffix = f" ({'; '.join(detail)})" if detail else ""
+    return (
+        "Text extraction may have dropped or substituted Greek/\u03bc "
+        f"characters in this paper{suffix}. Check numbers and units against "
+        "the PDF before quoting."
+    )
+
 
 # ---------------------------------------------------------------------------
 # Text-level signals (pure, no PDF engine required)

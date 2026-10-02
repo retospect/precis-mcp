@@ -64,6 +64,7 @@ from precis.handlers._slug_ref_shared import (
     resolve_live_slug_ref,
 )
 from precis.ingest.cards import rewrite_cards
+from precis.ingest.glyph_health import glyph_caveat
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
@@ -1497,7 +1498,7 @@ class PaperHandler(Handler):
         n_blocks = self.store.chunks.count_chunks(ref.id)
 
         lines: list[str] = []
-        banner = _retraction_banner(ref)
+        banner = _paper_banner(ref)
         if banner:
             lines.append(banner)
             lines.append("")
@@ -2122,7 +2123,7 @@ class PaperHandler(Handler):
                 hi = tail[0].ord
 
         lines: list[str] = []
-        banner = _retraction_banner(ref)
+        banner = _paper_banner(ref)
         if banner:
             lines.append(banner)
             lines.append("")
@@ -2372,7 +2373,7 @@ class PaperHandler(Handler):
         )
         table = render_agent_table(rows, schema=["handle", "summary", "keywords"])
         body = f"{head}\n\n{table}"
-        banner = _retraction_banner(ref)
+        banner = _paper_banner(ref)
         if banner:
             body = f"{banner}\n\n{body}"
         return Response(body=body)
@@ -2414,7 +2415,7 @@ class PaperHandler(Handler):
             if scope is None
             else None,
         )
-        banner = _retraction_banner(ref)
+        banner = _paper_banner(ref)
         if banner:
             body = f"{banner}\n\n{body}"
         return Response(body=body)
@@ -2722,6 +2723,18 @@ def _retraction_banner(ref: Ref) -> str | None:
     else:
         parts.append("— see the provenance handler for the full notice.")
     return " ".join(parts)
+
+
+def _paper_banner(ref: Ref) -> str | None:
+    """Combined banner block for the top of a paper view: the retraction
+    banner, then (when ``meta.glyph_health`` is suspected) a glyph-damage
+    line in the same ``> [!]`` style. ``None`` when neither applies."""
+    lines = [_retraction_banner(ref)]
+    caveat = glyph_caveat(ref.meta)
+    if caveat:
+        lines.append(f"> [!] **GLYPH-DAMAGED SOURCE** — {caveat}")
+    out = [ln for ln in lines if ln]
+    return "\n".join(out) if out else None
 
 
 def _is_journal_template_heading(title: str) -> bool:
