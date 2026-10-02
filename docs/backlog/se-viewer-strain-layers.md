@@ -23,16 +23,24 @@ with its own colour family and legend (agreed with Reto 2026-10-02):
 |---|---|---|---|
 | surface deviation (exists, gr450675) | smoothed surface | distance to the Taubin-smoothed sheet | today's pale-blue → blue → dark-red |
 | bond length | bond cylinders | \|l − l₀\|, l₀ = 1.42 Å for C–C | green |
-| angle strain | atom spheres | pyramidalization θp (POAV, `precis_surface.relax.theta_p_deg`) | orange |
+| angle strain | atom spheres | θp pyramidalization (POAV, `precis_surface.relax.theta_p_deg`) or RMS deviation from 120°, switchable | orange |
 
-Angle strain is θp (Reto, 2026-10-02): it is what makes pentagons and
-heptagons stand out. The in-plane deviation from 120° is not used.
+Angle strain has two measures behind a switch on its control row (Reto,
+2026-10-02, "both, with a switch"):
+- **θp** (default): out-of-plane bending, which is what makes pentagons
+  and heptagons stand out;
+- **120°**: in-plane distortion, the RMS deviation of the atom's three
+  bond angles from 120°.
+
+The payload carries both arrays (`angle_strain_thetap`,
+`angle_strain_120`). Switching re-colours the atoms and re-sets the
+threshold to that measure's 95th percentile.
 
 ## In scope
 
 - Server: `atomic3d.json` (`_atomic_block_payload`,
   `src/precis_web/routes/blocktree_view.py`) gains per-bond `bond_dev` and
-  per-atom `angle_strain` arrays, next to the existing `deviation`.
+  per-atom `angle_strain_thetap` / `angle_strain_120` arrays, next to the existing `deviation`.
   Computed for sp² carbon; a block where a measure does not apply omits
   it, and its control stays hidden (the target overlay's convention).
 - Viewer (`static/blocktree-3d.js`, `templates/blocktree/detail3d.html.j2`):
@@ -65,13 +73,14 @@ heptagons stand out. The in-plane deviation from 120° is not used.
   is not evidence).
 - At load, with a layer on, the coloured element count is 5% ± 1% of that
   layer's elements.
-- With angle strain on and the threshold at its default, the atoms of
-  all 12 pentagons on that drum are coloured.
+- With angle strain on (θp) and the threshold at its default, the atoms
+  of all 12 pentagons on that drum are coloured; flipping the switch to
+  120° changes the canvas.
 - Near the smooth end of the atomic ↔ smooth slider, atoms and bonds
   fade out, so the bond and atom layers only show toward the atomic end.
   The item states this; its legends grey out with the fade.
 - `tests/test_web_se_atomic3d.py` pins the new payload arrays (length,
-  C60's θp ≈ 11.6°, bond_dev 0 for an ideal 1.42 Å bond).
+  C60's θp ≈ 11.6°, 120° deviation 0 on flat graphene, bond_dev 0 for an ideal 1.42 Å bond).
 
 ## Target + blast radius
 
