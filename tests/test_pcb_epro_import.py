@@ -50,6 +50,23 @@ def imported(store):
     return pcb_epro.import_epro(store, _zip(), slug="epro-import-1", title="Tiny")
 
 
+def test_every_imported_part_is_locked_by_default(store, imported) -> None:
+    """Reto, 2026-10-02: import freezes placement, so op='route' routes the
+    board as placed instead of annealing it first."""
+    instances = store.pcb_graph(imported.ref_id)["instances"]
+    assert instances and all(i["fixed"] == "both" for i in instances)
+    assert any("imported LOCKED" in w for w in imported.warnings)
+
+
+def test_unfrozen_import_leaves_unlocked_source_parts_free(store) -> None:
+    result = pcb_epro.import_epro(
+        store, _zip(), slug="epro-import-unfrozen", title="Tiny", freeze=False
+    )
+    instances = store.pcb_graph(result.ref_id)["instances"]
+    assert any(i["fixed"] is None for i in instances)
+    assert not any("imported LOCKED" in w for w in result.warnings)
+
+
 # ── the rows arrived ─────────────────────────────────────────────────────
 def test_counts_match_the_source(store, imported) -> None:
     """The source's own record counts, not a plausible-looking subset.

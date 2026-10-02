@@ -422,6 +422,7 @@ def import_epro(
     source_name: str | None = None,
     dry_run: bool = False,
     update: bool = False,
+    freeze: bool = True,
 ) -> ImportResult:
     """Import one ``.epro2`` board into the ``pcb`` kind under ``slug``.
 
@@ -431,12 +432,39 @@ def import_epro(
 
     ``update`` re-imports onto an existing import of the SAME board (see
     :class:`UpdatePlan` for what is applied and what is only reported).
+
+    ``freeze`` (default, Reto 2026-10-02) imports every part locked
+    (``fixed='both'``): a board is imported to keep its placement and fix
+    its routing, and ``op='route'`` anneals every unlocked part first (it
+    once re-placed 103 parts of heater-base-test). One part unlocks with
+    ``op='move'`` ``fixed=None``. A part the source already locked keeps
+    that lock either way. ``--update`` still applies the source's moves to
+    locked parts, as before.
     """
     project = epro.read_archive(data)
     board = project.pcb(board_uuid)
     design, frame = epro.build_design(project, board)
     stackup, planes, stackup_warnings = derive_stackup(board)
     warnings = [*design.warnings, *stackup_warnings]
+    if freeze:
+        newly = 0
+        for comp in design.components:
+            if comp.get("fixed") is None:
+                comp["fixed"] = "both"
+                newly += 1
+        if newly and update:
+            # Only added parts are written by an update; existing ones keep
+            # whatever lock they have on the board.
+            warnings.append(
+                "parts this update adds are imported LOCKED (fixed='both'); "
+                "unlock one with op='move' fixed=None, or pass --unfrozen"
+            )
+        elif newly:
+            warnings.append(
+                f"{newly} part(s) imported LOCKED (fixed='both') so op='route' "
+                f"cannot re-place them; unlock one with op='move' fixed=None, "
+                f"or import with --unfrozen"
+            )
 
     if len(stackup) not in _SUPPORTED_LAYER_COUNTS:
         raise EproImportError(
