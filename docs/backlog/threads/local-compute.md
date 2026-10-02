@@ -78,8 +78,16 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       the LAN (design note §6). Any fix goes to Reto as its own review item.
       Then spark host prep. These are duty prerequisites, not bench prep.
       **Then backlog/cluster-fileserver-move.md** — Reto ruled
-      (local-compute-7) that no Mac or Spark serves files: the share moves to
-      finnmaccool, after a read-only probe and an approved plan.
+      (local-compute-7/8/9) that no Mac or Spark serves files and that the
+      FS fix is a priority now ("it is when it is", no round window).
+      - Plan approved with phase 1 revised: no retained DB backups on the
+        DB node.
+      - Next: Reto creates the NAS export (local-compute-10).
+      - The deploy-role branch is `worktree-agent-af6719b05abd3f35e`. It
+        changes no behaviour at the overlay defaults; a restore_test /
+        drill_pull fix for verified-only mode is in progress. It goes to
+        the orchestrator.
+      - The caspar nfsd restart (local-compute-6) stays held.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
       one box (spec in its decisions log). **Runs on castor now, from local
@@ -88,8 +96,16 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       never needed the share. The gate came from sequencing: the bench was
       on spark, and spark's host-prep list put "unhang the NFS mount"
       first for the eval-run-spine. castor is the box the model will
-      serve on anyway. It picks the model 3 may run on, and unblocks 5 and
-      6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
+      serve on anyway. 2026-10-02 23:50Z castor read:
+      - 3.1 TB of local NVMe free; GPU idle.
+      - Missing: the nvidia docker runtime (the fix needs a docker daemon
+        restart, so it goes to Reto), any vLLM/SGLang image (Docker Hub and
+        nvcr.io unreachable), and the candidate weights.
+      - Staging started: the gpt-oss 120B download into
+        `/home/deploy/models/hf/`, and the vLLM image from spark via
+        `docker save | docker load`.
+      - SGLang has no image route yet.
+      It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round
       deploy window (Reto's ruling 4).
