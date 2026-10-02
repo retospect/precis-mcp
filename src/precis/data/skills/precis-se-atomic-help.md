@@ -66,6 +66,9 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   finding). Nothing is measured when the scene doesn't share the block's
   frame.
   `unbind_structure` drops the measured pose/rot, keeping declared ones.
+
+## Atomic-mode ops — `generate` (exact parameter list)
+
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
   cyclodextrin|hexfold|tpms|schwarzite|smooth_drum`, `params` (dict), `name` (new block) · `parent`/`pose`/
   `rot` passthrough. One op = a canonical block whose atoms follow from
