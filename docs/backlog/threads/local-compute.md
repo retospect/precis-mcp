@@ -43,11 +43,21 @@ then the big model on one spark, then the rungs that consume it.
    castor/pollux serve nothing. **Next, after the round deploy carries
    d2abcbc7 to melchior** (the local endpoint is loopback-only there): on
    melchior, build the set (`--n 40`), then `precis llm eval glm-4.7-flash
-   --compare z-ai/glm-4.7-flash --tier small --gold <set>`. Unverified:
-   that a bare `glm-4.7-flash` at tier small routes to the local
-   `served_by` slot and not the cloud — check the `llm_call_log` placement
-   of the eval rows. Proposed promote rule (Reto to confirm with the
+   --compare z-ai/glm-4.7-flash --tier small --gold <set> --placement-a
+   local --placement-b cloud`. The placement flags are strict: a local-arm
+   reply that ran on the cloud raises `PlacementMismatch`, and a chain with
+   no reachable local rung errors every task (mean 0), so a false tie is
+   impossible. Still open: whether the router builds a local rung for an
+   explicit `glm-4.7-flash` when `llm.chain.small` is cloud-only; if the
+   first run errors, that is the bug to trace. (`--endpoint-a` is an
+   OpenRouter provider pin, not a local URL; the local base URL comes from
+   the reserved slot.) The compare prints, per arm, the mean with and
+   without the number rule and the number-rule-only zero count; if the arms
+   differ by more than 2 of 40 such zeros the delta is unusable (review
+   verdict 2026-10-02). Proposed promote rule (Reto to confirm with the
    result): candidate mean ≥ incumbent mean − 0.05 and no transport errors.
+   No absolute mean goes on a model card until the false-zero share is
+   known.
 4. **Single-spark big model** — **backlog/vllm-per-node-serving.md Slice 0**
    (Nemotron NVFP4 vs gpt-oss control; go/no-go for the oversubscription
    design), after its two spark prerequisites,

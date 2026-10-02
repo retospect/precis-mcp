@@ -137,6 +137,71 @@ def _numbers(text: str) -> set[str]:
     return {m.replace(",", "") for m in _NUM_RE.findall(text or "")}
 
 
+_NUMBER_WORDS: dict[str, str] = {
+    w: str(n)
+    for n, w in enumerate(
+        [
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+        ],
+        start=1,
+    )
+}
+_NUMBER_WORDS.update(
+    {
+        "thirty": "30",
+        "forty": "40",
+        "fifty": "50",
+        "sixty": "60",
+        "seventy": "70",
+        "eighty": "80",
+        "ninety": "90",
+        "hundred": "100",
+        "thousand": "1000",
+    }
+)
+
+
+def _chunk_numbers(chunk_text: str) -> set[str]:
+    """Numeric tokens of the chunk plus the values of spelled-out number words."""
+    words = {
+        _NUMBER_WORDS[w]
+        for w in re.findall(r"[a-z]+", (chunk_text or "").casefold())
+        if w in _NUMBER_WORDS
+    }
+    return _numbers(chunk_text) | words
+
+
+def summary_number_rule_zero(response_text: str, expect: dict[str, Any]) -> bool:
+    """True when the invented-number rule alone zeroes this summary task.
+
+    I.e. the task scores 0 with the rule and >0 without it.
+    """
+    off = {**expect, "number_rule": False}
+    on = {**expect, "number_rule": True}
+    return score_summary(response_text, None, on) == 0.0 and (
+        score_summary(response_text, None, off) > 0.0
+    )
+
+
 def score_summary(
     response_text: str, response_data: dict[str, Any] | None, expect: dict[str, Any]
 ) -> float:
@@ -154,6 +219,10 @@ def score_summary(
     chunk (thousands commas stripped on both sides); a number absent from the
     passage is a hallucination -> 0. Otherwise the score is keypoint coverage
     (matched / total, :func:`_norm` substring), or 1.0 when no keypoints given.
+    A summary number also passes when it equals a spelled-out English number
+    word in the chunk (``eight`` -> ``8``); derived counts stay a zero. The rule
+    is skipped when ``expect["number_rule"]`` is false (see
+    :func:`summary_number_rule_zero`).
     """
     from precis.workers.llm_summarize import (
         EmptySummaryError,
@@ -177,7 +246,9 @@ def score_summary(
         return 0.0
     if nonprose:
         return 1.0
-    if not _numbers(summary) <= _numbers(chunk_text):
+    if expect.get("number_rule", True) and not (
+        _numbers(summary) <= _chunk_numbers(chunk_text)
+    ):
         return 0.0
     kps = [str(k) for k in (expect.get("keypoints") or [])]
     if not kps:
@@ -265,4 +336,5 @@ __all__ = [
     "score_needle",
     "score_summary",
     "score_tool_json",
+    "summary_number_rule_zero",
 ]

@@ -16,9 +16,11 @@ byte-identical to today's behaviour.
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any
 
 from precis.cli._common import resolve_dsn
+from precis.errors import BadInput
 from precis.store import Store
 
 
@@ -159,6 +161,26 @@ def add_parser(subparsers: Any) -> None:
         help="Second model — run both over the gold set and print an A/B table "
         "(implies --no-record).",
     )
+    _ep_help = (
+        "JSON object pinning a booked variant (meta.endpoints shape, gripe "
+        "162624): keys provider, quant, tag (OpenRouter 'provider/quant'), "
+        'max_input, max_output, e.g. \'{"provider": "DeepInfra", '
+        '"quant": "fp8", "tag": "deepinfra/fp8"}\'.'
+    )
+    for side in ("a", "b"):
+        ev.add_argument(
+            f"--placement-{side}",
+            choices=["local", "cloud"],
+            default=None,
+            help=f"[--compare] Strict rung filter for model {side.upper()}; a "
+            "run that lands elsewhere FAILS (PlacementMismatch), never a tie.",
+        )
+        ev.add_argument(
+            f"--endpoint-{side}",
+            default=None,
+            metavar="JSON",
+            help=f"[--compare] Booked endpoint for model {side.upper()}: " + _ep_help,
+        )
     ev.add_argument(
         "--tier",
         default="medium",
@@ -402,6 +424,54 @@ def _cmd_cost(store: Store, args: argparse.Namespace) -> None:
     )
 
 
+def _print_number_rule_lines(
+    reports: dict[str, Any], models: tuple[str, str], gold_path: str | None
+) -> None:
+    """Per arm: summary mean with/without the invented-number rule + the count
+    of tasks zeroed only by it (so a reader sees whether arms differ by noise)."""
+    from precis.llm_eval import load_gold_set
+    from precis.llm_eval.scorers import score_summary, summary_number_rule_zero
+
+    summary_tasks = {
+        t.task_id: t for t in load_gold_set(gold_path) if t.scorer == "summary"
+    }
+    if not summary_tasks:
+        return
+    print()
+    for name in models:
+        rows = [
+            (summary_tasks[ts.task_id], ts)
+            for res in reports[name].results
+            for ts in res.per_task
+            if ts.task_id in summary_tasks
+        ]
+        if not rows:
+            continue
+        n = len(rows)
+        with_rule = sum(ts.score for _, ts in rows) / n
+        # An errored task scores 0 either way; rescore only real replies.
+        without = (
+            sum(
+                0.0
+                if ts.error
+                else score_summary(
+                    ts.response, None, {**t.expect, "number_rule": False}
+                )
+                for t, ts in rows
+            )
+            / n
+        )
+        zeros = sum(
+            1
+            for t, ts in rows
+            if not ts.error and summary_number_rule_zero(ts.response, t.expect)
+        )
+        print(
+            f"{name}: mean with number rule {with_rule:.3f}, without "
+            f"{without:.3f}, number-rule-only zeros {zeros}/{n}"
+        )
+
+
 def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
     from precis.llm_eval import compare as _compare
     from precis.llm_eval import run_eval
@@ -409,6 +479,19 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
 
     tier = Tier(args.tier)
     if args.compare:
+        endpoints: dict[str, dict[str, Any] | None] = {}
+        for side in ("a", "b"):
+            raw = getattr(args, f"endpoint_{side}", None)
+            if raw is None:
+                endpoints[side] = None
+                continue
+            try:
+                ep = json.loads(raw)
+            except ValueError as exc:
+                raise BadInput(f"--endpoint-{side}: invalid JSON: {exc}") from exc
+            if not isinstance(ep, dict):
+                raise BadInput(f"--endpoint-{side}: must be a JSON object")
+            endpoints[side] = ep
         reports = _compare(
             store,
             model_a=args.model,
@@ -416,6 +499,10 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
             tier=tier,
             gold_path=args.gold,
             record=False,
+            placement_a=getattr(args, "placement_a", None),
+            placement_b=getattr(args, "placement_b", None),
+            endpoint_a=endpoints["a"],
+            endpoint_b=endpoints["b"],
         )
         axes = sorted({a for r in reports.values() for a in r.ordinals})
         # Ordinal plus mean/n: the 1-5 bucket alone cannot separate two
@@ -429,6 +516,7 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
                     f"{res.ordinal} ({res.mean_score:.3f}/{res.n})" if res else "—"
                 )
             print(f"{axis:<24} {cells[0]:>22} {cells[1]:>22}")
+        _print_number_rule_lines(reports, (args.model, args.compare), args.gold)
         skipped = reports[args.model].skipped
         if skipped:
             print(f"\nskipped ({len(skipped)}): " + "; ".join(skipped))

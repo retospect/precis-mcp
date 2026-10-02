@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import Internal
 from precis.llm_eval.scorers import SCORERS, bucket_to_ordinal
 from precis.llm_eval.tasks import GoldTask, load_gold_set
 
@@ -39,6 +40,16 @@ class TaskScore:
     task_id: str
     score: float
     error: str | None = None
+    #: Raw reply text, kept so a caller can rescore (e.g. without a rule).
+    response: str = ""
+
+
+class PlacementMismatch(Internal):
+    """A run pinned to a placement landed on another (e.g. local arm on cloud).
+
+    Raised, never scored: a mismatched arm would report a tie between two
+    runs of the same cloud model.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,13 +83,16 @@ def run_axis(
     dispatch_fn: Callable[[Any], Any],
     endpoint: dict[str, Any] | None = None,
     effort: str | None = None,
+    placement: str | None = None,
 ) -> AxisResult:
     """Run one axis's gold tasks through ``model`` and bucket the mean score.
 
     Every task in ``tasks`` must share an axis and a **wired** scorer (the
     caller filters). A dispatch error or a transport failure scores that task 0
     (a model that can't answer fails the axis) with the error retained for the
-    report.
+    report. With ``placement`` set the request carries the strict rung filter
+    and a result that landed elsewhere raises :class:`PlacementMismatch`
+    (not swallowed as a 0).
     """
     from precis.utils.llm.router import LlmRequest
 
@@ -98,6 +112,7 @@ def run_axis(
                     tools_needed=t.tools_needed,
                     endpoint=endpoint,
                     effort=effort,
+                    placement=placement,
                     source="llm_eval",
                 )
             )
@@ -105,15 +120,20 @@ def run_axis(
             log.warning("llm eval: task %s dispatch raised: %s", t.task_id, exc)
             scored.append(TaskScore(t.task_id, 0.0, error=str(exc)))
             continue
+        landed = getattr(res, "placement", None)
+        if placement and landed != placement:
+            raise PlacementMismatch(
+                f"llm eval: task {t.task_id} expected placement {placement!r} "
+                f"but ran on {landed!r} (model {model})"
+            )
         err = getattr(res, "error", None)
         if err:
             scored.append(TaskScore(t.task_id, 0.0, error=str(err)))
             continue
         scorer = SCORERS[t.scorer]
-        score = scorer(
-            getattr(res, "text", "") or "", getattr(res, "data", None), t.expect
-        )
-        scored.append(TaskScore(t.task_id, score))
+        text = getattr(res, "text", "") or ""
+        score = scorer(text, getattr(res, "data", None), t.expect)
+        scored.append(TaskScore(t.task_id, score, response=text))
     mean = sum(s.score for s in scored) / len(scored) if scored else 0.0
     return AxisResult(
         axis=axis,
@@ -134,6 +154,7 @@ def run_eval(
     dispatch_fn: Callable[[Any], Any] | None = None,
     endpoint: dict[str, Any] | None = None,
     effort: str | None = None,
+    placement: str | None = None,
     record: bool = True,
 ) -> EvalReport:
     """Evaluate ``model`` over a gold set and (optionally) record the ordinals.
@@ -178,6 +199,7 @@ def run_eval(
             dispatch_fn=disp,
             endpoint=endpoint,
             effort=effort,
+            placement=placement,
         )
         recorded = False
         if record:
@@ -226,6 +248,10 @@ def compare(
     gold_path: str | None = None,
     dispatch_fn: Callable[[Any], Any] | None = None,
     record: bool = False,
+    placement_a: str | None = None,
+    placement_b: str | None = None,
+    endpoint_a: dict[str, Any] | None = None,
+    endpoint_b: dict[str, Any] | None = None,
 ) -> dict[str, EvalReport]:
     """Run two models over the same gold set — the "compare A vs B" surface.
 
@@ -240,6 +266,8 @@ def compare(
             tier=tier,
             gold_path=gold_path,
             dispatch_fn=dispatch_fn,
+            endpoint=endpoint_a,
+            placement=placement_a,
             record=record,
         ),
         model_b: run_eval(
@@ -248,6 +276,8 @@ def compare(
             tier=tier,
             gold_path=gold_path,
             dispatch_fn=dispatch_fn,
+            endpoint=endpoint_b,
+            placement=placement_b,
             record=record,
         ),
     }
@@ -256,6 +286,7 @@ def compare(
 __all__ = [
     "AxisResult",
     "EvalReport",
+    "PlacementMismatch",
     "TaskScore",
     "compare",
     "run_axis",

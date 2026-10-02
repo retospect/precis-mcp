@@ -15,6 +15,7 @@ from __future__ import annotations
 from precis.llm_eval.harness import (
     AxisResult,
     EvalReport,
+    PlacementMismatch,
     TaskScore,
     compare,
     run_eval,
@@ -25,6 +26,7 @@ __all__ = [
     "AxisResult",
     "EvalReport",
     "GoldTask",
+    "PlacementMismatch",
     "TaskScore",
     "compare",
     "load_gold_set",

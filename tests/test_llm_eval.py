@@ -349,3 +349,172 @@ def test_cli_compare_prints_mean_and_n(
     _cmd_eval(None, args)  # type: ignore[arg-type]
     out = capsys.readouterr().out
     assert "5 (0.925/40)" in out and "5 (0.900/40)" in out
+
+
+# ── placement guard, kept responses, number-rule reporting ────────
+
+
+def _task(tid: str = "t1") -> GoldTask:
+    return GoldTask(
+        task_id=tid,
+        axis="summarize-extract",
+        scorer="summary",
+        prompt="p",
+        expect={"chunk_text": "It took eight weeks.", "nonprose": False},
+    )
+
+
+def _placed_dispatch(landed: str, seen: list[Any]) -> Any:
+    def _d(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(
+            text="BRIEF: Took 8 weeks.\nDETAIL: Eight weeks.",
+            data=None,
+            error=None,
+            placement=landed,
+        )
+
+    return _d
+
+
+def test_placement_mismatch_raises_not_zero() -> None:
+    from precis.llm_eval.harness import PlacementMismatch, run_axis
+    from precis.utils.llm.router import Tier
+
+    with pytest.raises(PlacementMismatch, match=r"t1.*'local'.*'cloud'"):
+        run_axis(
+            [_task()],
+            model="m",
+            tier=Tier.MEDIUM,
+            dispatch_fn=_placed_dispatch("cloud", []),
+            placement="local",
+        )
+
+
+def test_placement_match_carries_request_fields_and_keeps_response() -> None:
+    from precis.llm_eval.harness import run_axis
+    from precis.utils.llm.router import Tier
+
+    seen: list[Any] = []
+    ep = {"provider": "llama-swap", "quant": "q4"}
+    res = run_axis(
+        [_task()],
+        model="m",
+        tier=Tier.MEDIUM,
+        dispatch_fn=_placed_dispatch("local", seen),
+        placement="local",
+        endpoint=ep,
+    )
+    assert seen[0].placement == "local" and seen[0].endpoint == ep
+    assert res.per_task[0].response.startswith("BRIEF: Took 8 weeks")
+    assert res.per_task[0].score > 0
+
+
+def test_compare_threads_per_arm_placement_and_endpoint(store: Any) -> None:
+    from precis.utils.llm.router import Tier
+
+    seen: list[Any] = []
+
+    def _d(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(text="x", data=None, error=None, placement=req.placement)
+
+    compare(
+        store,
+        model_a="a",
+        model_b="b",
+        tier=Tier.MEDIUM,
+        dispatch_fn=_d,
+        placement_a="local",
+        placement_b="cloud",
+        endpoint_a={"quant": "q4"},
+        endpoint_b=None,
+    )
+    by_model = {r.model: r for r in seen}
+    assert by_model["a"].placement == "local"
+    assert by_model["a"].endpoint == {"quant": "q4"}
+    assert by_model["b"].placement == "cloud" and by_model["b"].endpoint is None
+
+
+def test_summary_number_word_in_chunk_allows_digit() -> None:
+    from precis.llm_eval.scorers import score_summary
+
+    exp = {"chunk_text": "It took eight weeks.", "nonprose": False}
+    assert score_summary("BRIEF: Took 8 weeks.\nDETAIL: Eight weeks.", None, exp) > 0
+    # a derived count (not a word in the chunk) stays a zero
+    assert score_summary("BRIEF: Took 56 days.\nDETAIL: Eight weeks.", None, exp) == 0
+
+
+def test_summary_number_rule_zero_cases() -> None:
+    from precis.llm_eval.scorers import score_summary, summary_number_rule_zero
+
+    bad = _GOOD.replace("4.5 h", "7 h")
+    exp = {"chunk_text": _CHUNK, "nonprose": False}
+    assert summary_number_rule_zero(bad, exp) is True
+    assert score_summary(bad, None, {**exp, "number_rule": False}) > 0
+    assert summary_number_rule_zero(_GOOD, exp) is False  # scores >0 with rule
+    assert summary_number_rule_zero("", exp) is False  # zero either way
+
+
+def test_cli_compare_prints_number_rule_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    import precis.llm_eval as llm_eval_pkg
+    from precis.cli.llm import _cmd_eval
+    from precis.llm_eval.harness import AxisResult, EvalReport, TaskScore
+
+    bad = _GOOD.replace("4.5 h", "7 h")
+    task = GoldTask(
+        task_id="s1",
+        axis="summarize-extract",
+        scorer="summary",
+        prompt="",
+        expect={"chunk_text": _CHUNK, "nonprose": False},
+    )
+
+    def _rep(model: str, text: str, score: float) -> EvalReport:
+        res = AxisResult(
+            axis="summarize-extract",
+            n=1,
+            mean_score=score,
+            ordinal=bucket_to_ordinal(score),
+            per_task=[TaskScore("s1", score, response=text)],
+        )
+        return EvalReport(model=model, results=[res], skipped=[])
+
+    captured: dict[str, Any] = {}
+
+    def _fake_compare(store: Any, **kw: Any) -> Any:
+        captured.update(kw)
+        return {"a": _rep("a", _GOOD, 1.0), "b": _rep("b", bad, 0.0)}
+
+    monkeypatch.setattr(llm_eval_pkg, "compare", _fake_compare)
+    monkeypatch.setattr(llm_eval_pkg, "load_gold_set", lambda p=None: [task])
+    args = argparse.Namespace(
+        model="a",
+        compare="b",
+        tier="small",
+        gold=None,
+        no_record=True,
+        placement_a="local",
+        placement_b="cloud",
+        endpoint_a='{"quant": "q4"}',
+        endpoint_b=None,
+    )
+    _cmd_eval(None, args)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert (
+        "a: mean with number rule 1.000, without 1.000, number-rule-only zeros 0/1"
+        in out
+    )
+    assert (
+        "b: mean with number rule 0.000, without 1.000, number-rule-only zeros 1/1"
+        in out
+    )
+    assert captured["placement_a"] == "local"
+    assert captured["endpoint_a"] == {"quant": "q4"}
+    args.endpoint_a = "{nope"
+    with pytest.raises(BadInput):
+        _cmd_eval(None, args)  # type: ignore[arg-type]

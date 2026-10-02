@@ -88,3 +88,18 @@ Docs only. Reads: prod `resource_slots`, `app_settings` `llm.chain.%`,
   `llm:qwen3.6-35b-a3b-ud-q3_k_m` (cap 1). Every chain row is cloud. The
   GPU twins' staged-weight listing timed out on the shared mount and is
   still unread.
+- 2026-10-02 the DB-node `llm:deepseek/deepseek-v4-flash` row, resolved:
+  **keep it, and it currently gates nothing.** It became the fleet-wide
+  big-LLM semaphore through the remote-serving path in
+  `utils/llm/local_serving.py::acquire`: a dispatch on any host reserves
+  against the row named by a LAN-routable `served_by` entry, so a
+  `served_by` entry carrying the DB node as its accounting host made this
+  row the shared cap for the GPU-twin pair. Today the model's prod `llm`
+  card (lm162511) shows no `served_by`, so `acquire` finds no remote entry
+  and returns `None` before touching the row. It cannot mark a call local
+  either: the router stamps `local` only when a reserved slot carries an
+  endpoint. It comes back into force the moment the twins re-advertise the
+  model with that accounting host. Do not delete it (standing ruling; the
+  cap is the twins', the host label is history). Caveat: read through the
+  MCP card view, which may not render an empty `served_by`; the check is
+  `refs.meta->'served_by'` on lm162511.
