@@ -96,6 +96,9 @@ jobs:
       - name: Atomic overlay (target surface + strain layers)
         if: success() || failure()
         run: $UV_RUN --with playwright python scripts/viewer_check.py strain http://127.0.0.1:9123 small-drum viewer-check-out/small-drum
+      - name: No-WebGL fallback
+        if: success() || failure()
+        run: $UV_RUN --with playwright python scripts/viewer_check.py nowebgl http://127.0.0.1:9123 unicycle-c1 viewer-check-out/nowebgl
       - name: Keep the evidence
         if: failure()
         run: cp web.log viewer-check-out/ 2>/dev/null || true

@@ -487,6 +487,26 @@ def test_se_view3d_page_renders(blocktree_client, runtime_with_store) -> None:
     assert "three-cad-viewer" in r.text
 
 
+def test_se_view3d_page_carries_svg_fallback_url(
+    blocktree_client, runtime_with_store
+) -> None:
+    # gr462702: the no-WebGL fallback shows the 2D SVG inline.
+    import html
+    import re
+
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    m = re.search(r'data-svg-url="([^"]+)"', r.text)
+    assert m, "3D page lacks data-svg-url"
+    url = html.unescape(m.group(1))
+    assert url.startswith("/se/unicycle_web/view.svg")
+    svg = blocktree_client.get(url)
+    assert svg.status_code == 200
+    assert svg.headers["content-type"].startswith("image/svg+xml")
+    assert 'data-2d-url="/se/unicycle_web/2d' in r.text
+
+
 def test_se_view3d_scene_controls_are_not_a_submitting_form(
     blocktree_client, runtime_with_store
 ) -> None:

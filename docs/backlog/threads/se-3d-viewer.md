@@ -24,15 +24,15 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-10-02 (round 1 deployed 567f207f: strain layers,
-atomic nightly check and Reto's xyz/pdb export are live and agent-verified
-on prod data; only Reto's own look is left)
+**Last reviewed:** 2026-10-02 (strain layers and the xyz/pdb export live
+since 567f207f; Reto approved both as they are, review item
+se-3d-viewer-1; level chips landed for round 2)
 **Worktree:** `se-3d-viewer`
 
-**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. The level chips shipped in round 2;
-of what is left, Do-next 1 needs a reproducer found first and 2
-(bidirectional hover) needs a design, so the next build is 3 (the
-fastener insertion DRC). The nightly viewer check covers the atomic overlay
+**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702, WebGL fallback) is
+in build; 2 (gr462703, progress bar) waits on the design note's verdict.
+After those the next build is 5 (the fastener insertion DRC); 3 needs a
+reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02 (first dispatched run green, 11 + 16 checks); atom pick
 and hover are its remaining blind spot. Two traps for whoever picks this
 up:
@@ -67,48 +67,50 @@ up:
      design (prod `dogfood-fold-3` is bound, so it renders there).
    Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
    no opaque-while-tinted change.
-   Deployed 2026-10-02 (567f207f) and agent-verified on prod data the
-   same day — `viewer_check.py strain` 17/17 on `hexa-smooth-drum-v2`,
-   `atoms.pdb` of `dogfood-fold-3` carries DA/DC/DG residues (248 atoms,
-   = atomic3d.json): the strain layers on
-   `hexa-smooth-drum-v2` — bond strain (green, on the bonds; a bond over
-   threshold is drawn twice as thick, or it hides between its atoms),
-   angle strain (orange, on the atoms, θp ↔ 120° switch), and the
-   deviation threshold slider. Defaults colour the top 5% (measured
-   457/9135 bonds, 302/6024 atoms), and all 60 pentagon atoms clear the
-   default θp threshold of 4.03°.
-   And (Reto's 2026-10-02 ask): `xyz` / `pdb` beside
-   `png` / `svg` on a structure-bound design (`/se/{slug}/atoms.{fmt}`,
-   every bound block's atoms in the design frame, Å), and xyz · pdb
-   (non-periodic) or xyz · cif (periodic) on `/structure/{slug}`.
    Round 2 (once deployed): the per-block level chip `[E·I·R·z]` on every
    tree row — click a letter to open or collapse that block alone, click
    the underlined one again to undo. z is a dash everywhere in 3D; whether
    to drop it is review item se-3d-viewer-2. The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
-1. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+1. **gr462702** — "3D viewer failed to start: Error creating WebGL context"
+   on hexa-smooth-drum-v2 in some browsers (Reto). The vendored renderer
+   asks for WebGL2 only (three r163+ has no WebGL1 path), and the bare
+   message means no WebGL2 context at all, so a retry with relaxed
+   attributes cannot help. Building: a plain message plus the 2D SVG as a
+   fallback, a lost-context message, and a `viewer_check.py nowebgl`
+   browser check. Which browsers fail is review item se-3d-viewer-3. If
+   other se pages work in the same browser, the cause is Chrome blocking
+   WebGL for the site after GPU crashes, and the fix is instanced atoms and
+   bonds: today each is its own mesh and material, ~15,000 on the drum.
+2. **gr462703** — a progress bar from request to first frame (Reto).
+   Measured first (design note `reviews/se-3d-viewer.md` §1): ~3.6 s on
+   the drum, 60% of it the server build of `atomic3d.json`, which is pure
+   Python per-atom loops (`sheetsmooth.smooth_sheet`, `ring_faces`), then
+   ~0.7 s client mesh build. Proposal: vectorise and cache the server
+   phase, then a 4-step bar over the rest. Waits on the note's verdict.
+3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    No reproducer yet: gr458329 looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-2. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-3. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-4. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by 3 (ruling 2 intends the same per-tool-class
+   Blocked by 5 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon

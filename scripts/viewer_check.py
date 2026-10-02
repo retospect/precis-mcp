@@ -9,6 +9,8 @@ explode, level, export, scroll) and ``strain`` on a small smooth_drum
     viewer_check.py probe <base-url> <slug> <out-dir>
     viewer_check.py strain <base-url> <slug> <out-dir>   # an atomic design:
         # target surface + strain layers (nightly: small-drum.ops.json)
+    viewer_check.py nowebgl <base-url> <slug> <out-dir>   # WebGL off: the
+        # fallback message + inline 2D view appear (gr462702)
 
 Why it exists: explode, selection highlighting and the level control were
 each dead from the commit that introduced them, behind a green suite. A
@@ -660,6 +662,45 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
     return _report(base_url, slug, out, checks)
 
 
+def nowebgl_probe(base_url: str, slug: str, out_dir: str) -> int:
+    """gr462702: with WebGL disabled the page shows ``#bt3d-fallback`` (a
+    message naming WebGL 2 plus the design's 2D SVG inline), not a bare error."""
+    from playwright.sync_api import sync_playwright
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    checks: list[Check] = []
+    errors: list[str] = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--disable-3d-apis"])
+        page = browser.new_page(viewport={"width": 1600, "height": 1000})
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(f"{base_url}/se/{slug}", wait_until="networkidle", timeout=180000)
+        has_gl2 = page.evaluate(
+            "() => document.createElement('canvas').getContext('webgl2') !== null"
+        )
+        checks.append(Check("webgl2 is unavailable in this browser", not has_gl2))
+        page.wait_for_selector("#bt3d-fallback", timeout=int(WAIT_S * 1000))
+        text = page.inner_text("#bt3d-fallback")
+        checks.append(
+            Check("message mentions WebGL 2", "WebGL 2" in text, {"text": text[:200]})
+        )
+        page.wait_for_function(
+            "() => { const i = document.querySelector('#bt3d-fallback img');"
+            " return i && i.complete; }",
+            timeout=int(WAIT_S * 1000),
+        )
+        nat = page.evaluate(
+            "() => document.querySelector('#bt3d-fallback img').naturalWidth"
+        )
+        checks.append(Check("fallback <img> loaded", nat > 0, {"naturalWidth": nat}))
+        page.screenshot(path=str(out / "nowebgl.png"))
+        checks.append(Check("no uncaught pageerror", not errors, {"errors": errors}))
+        browser.close()
+    return _report(base_url, slug, out, checks)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[1] == "seed":
         seed(argv[2], argv[3])
@@ -668,6 +709,8 @@ def main(argv: list[str]) -> int:
         return probe(argv[2], argv[3], argv[4])
     if len(argv) == 5 and argv[1] == "strain":
         return strain_probe(argv[2], argv[3], argv[4])
+    if len(argv) == 5 and argv[1] == "nowebgl":
+        return nowebgl_probe(argv[2], argv[3], argv[4])
     print(__doc__, file=sys.stderr)
     return 2
 

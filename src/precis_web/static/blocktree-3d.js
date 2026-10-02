@@ -162,6 +162,70 @@ function showError(container, message) {
   container.replaceChildren(p);
 }
 
+// gr462702 — the vendored renderer is WebGL2-only, so a browser without it
+// (hardware acceleration off, WebGL blocked after a graphics crash) fails
+// at `new Display`/`new Viewer` with three's "Error creating WebGL context."
+function _isWebglError(err) {
+  return /webgl/i.test(String((err && err.message) || err));
+}
+
+// Replace the dead 3D viewer with a plain message, the design's 2D SVG
+// inline, and a link to the 2D page; the 3D-only controls are disabled so
+// they cannot throw. Built with createElement/textContent only (see
+// showError). `reload` adds a "reload the 3D view" button (context lost).
+function showViewerFallback(viewerEl, err, { reload = false } = {}) {
+  const webgl = _isWebglError(err);
+  const box = document.createElement("div");
+  box.id = "bt3d-fallback";
+  box.className = "p-3 text-sm text-slate-700 space-y-2 overflow-auto";
+  box.style.height = "100%";
+  const msg = document.createElement("p");
+  msg.id = "bt3d-fallback-message";
+  if (webgl) {
+    msg.textContent = reload
+      ? "The 3D view lost its WebGL 2 context (usually a graphics driver reset or the browser reclaiming it), so it cannot draw any more. Reloading the 3D view usually brings it back."
+      : "The 3D view needs WebGL 2, which this browser could not start. Usual causes: hardware acceleration turned off, an older browser, or WebGL blocked for this site after a graphics crash — reloading or another browser may help.";
+  } else {
+    msg.textContent = "3D viewer failed to start: " + String(err);
+  }
+  box.appendChild(msg);
+  if (reload) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "bt3d-fallback-reload";
+    btn.className = "px-3 py-1 rounded border border-slate-300 hover:bg-slate-100";
+    btn.textContent = "reload the 3D view";
+    btn.addEventListener("click", () => window.location.reload());
+    box.appendChild(btn);
+  }
+  const svgUrl = viewerEl.dataset.svgUrl;
+  if (svgUrl) {
+    const img = document.createElement("img");
+    img.id = "bt3d-fallback-img";
+    img.src = svgUrl;
+    img.alt = "2D view of the design";
+    img.className = "max-w-full border border-slate-200 rounded";
+    box.appendChild(img);
+  }
+  const url2d = viewerEl.dataset["2dUrl"];
+  if (url2d) {
+    const a = document.createElement("a");
+    a.href = url2d;
+    a.className = "block text-xs text-blue-600 hover:underline";
+    a.textContent = "2D view →";
+    box.appendChild(a);
+  }
+  viewerEl.replaceChildren(box);
+  for (const id of [
+    "bt3d-level", "bt3d-explode", "bt3d-export-png", "bt3d-export-svg",
+    "bt3d-connections", "bt3d-container-mode", "bt3d-atoms", "bt3d-target",
+    "bt3d-smooth",
+  ]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = true;
+  }
+}
+
 //: Room reserved (px) for the vendored tree panel's OWN sibling "info"
 // box below it (Data Format.md's per-leaf property readout) when we
 // hand the Display an explicit treeHeight — matches that box's own CSS
@@ -2116,9 +2180,17 @@ export async function blocktreeViewer3D({
     viewer = new Viewer(display, viewerOptions, notify);
     renderScene(data.shapes);
   } catch (err) {
-    showError(viewerEl, "3D viewer failed to start: " + String(err));
+    showViewerFallback(viewerEl, err);
     console.error("blocktree-3d: viewer init failed", err);
     return;
+  }
+  // A context lost after a successful start leaves a dead canvas; no
+  // restore attempt, just say so and offer a reload.
+  const liveCanvas = viewerEl.querySelector("canvas");
+  if (liveCanvas) {
+    liveCanvas.addEventListener("webglcontextlost", () => {
+      showViewerFallback(viewerEl, "webgl context lost", { reload: true });
+    });
   }
 
   // gr340029 — re-fit the shell (and re-budget/re-measure the Display

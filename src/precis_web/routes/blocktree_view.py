@@ -904,6 +904,8 @@ async def _view3d_page(
     scene_url = f"/{kind}/{quote(slug, safe='')}/scene3d.json?{scene_qs}"
     # gr337745: the 2D SVG reader moved off the bare slug URL to '/2d'.
     detail_2d_url = f"/{kind}/{quote(slug, safe='')}/2d?{common_qs}"
+    # gr462702: the no-WebGL fallback shows this SVG inline (an <img>).
+    svg_url = f"/{kind}/{quote(slug, safe='')}/view.svg?axis=z&{common_qs}"
     # gr450675 — the atomic↔smooth overlay's own fetch; registered for
     # ``se`` only today (the route the slug's kind can't resolve if this
     # blocktree kind never registers one), same ``rev`` carry-through as
@@ -959,6 +961,7 @@ async def _view3d_page(
             "has_atomic": has_atomic,
             "atomic3d_url": atomic3d_url,
             "detail_2d_url": detail_2d_url,
+            "svg_url": svg_url,
             "note_url": note_url,
             "pick_url": pick_url,
             "note_rewrite_url": note_rewrite_url,
