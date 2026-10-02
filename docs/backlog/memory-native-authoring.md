@@ -181,6 +181,11 @@ scripts only — nothing reads the graph at that moment.
   against prod, wire the hook, reduce `MEMORY.md` to a pointer, and change
   the memory-writing instruction so new memories go to `put(kind='memory',
   tags=['SPACE:repo-dev','section:…'])` instead of a file.
+- **[decided 2026-10-02, Reto — review-queue graph-memory-consumers-1,
+  option 1]** Do the cutover after the first slice (f54d7427) is deployed,
+  once one session has dogfooded the hook's output against the live
+  index. Then all four steps. Not before the deploy: the import and the
+  hook both run deployed code.
 - **[decided 2026-10-02]** Section nodes are `memory` refs tagged
   `section:index`, not a `folder` placement — no new kind.
 - **[built 2026-10-02, first slice]** Choices made in the build:

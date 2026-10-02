@@ -20,7 +20,9 @@ what a live consumer is already going without.
 1. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. First slice built 2026-10-02 (`SPACE:`
    axis, `precis memory import`/`index`, the hook script, test 4a). Next:
-   the cutover, which waits on Reto (review-queue `graph-memory-consumers-1`).
+   the cutover, approved by Reto 2026-10-02 (option 1): once the slice is
+   deployed, dogfood the hook output against the live index in one
+   session, then do the four steps in the item's decisions log.
    Then tests 4b/4c, which need `backlog/file-mirror.md` (knowledge-mesh
    Do-next 7).
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
