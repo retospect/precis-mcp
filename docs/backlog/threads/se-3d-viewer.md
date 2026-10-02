@@ -88,32 +88,37 @@ up:
    a prod run tests the deployed tree after the fact instead of `main`
    before it ships. Prod DATA still reaches the fixture through
    `view='ops'`.
-2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+2. **backlog/se-viewer-strain-layers.md** — Reto 2026-10-02, "soon":
+   bond-length deviation on the bonds and pyramidalization on the atoms,
+   beside today's surface deviation, each with its own colour, checkbox
+   and threshold slider (default: top 5% coloured). Payload arrays plus
+   viewer controls; independent of the items below.
+3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    No reproducer yet: gr458329 looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-3. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+4. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
    Rule settled (td458168): the literal rule wins over its worked example,
    and the shallowest member of an identical run keeps its letter.
-4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+5. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+6. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+7. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by 5 (ruling 2 intends the same per-tool-class
+   Blocked by 6 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon
