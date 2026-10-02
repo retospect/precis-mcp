@@ -783,6 +783,16 @@ function _layerStats(values) {
 //: up again per scene — and a listener attached per setup would stack up
 //: one duplicate handler per reload, each driving a dead ``applyT`` over
 //: a scene graph that no longer holds its meshes.
+//: Phase-boundary timing marks (gr462703): `performance.getEntriesByType(
+//: "mark")` then reads the wait's phases exactly. Never costs the page.
+function _bt3dMark(name) {
+  try {
+    performance.mark(name);
+  } catch (err) {
+    /* timing is best-effort */
+  }
+}
+
 async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
   const [THREE, data] = await Promise.all([
     import("/static/three/three.module.min.js"),
@@ -791,6 +801,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       return r.json();
     }),
   ]);
+  _bt3dMark("bt3d-atomic-fetched");
   if (!data.blocks || !data.blocks.length) return null;
   const scene = viewer && viewer._rendered && viewer._rendered.scene;
   if (!scene) return null;
@@ -1357,6 +1368,7 @@ export async function blocktreeViewer3D({
       return;
     }
     data = await resp.json();
+    _bt3dMark("bt3d-scene-fetched");
   } catch (err) {
     showError(viewerEl, "failed to load scene: " + String(err));
     return;
@@ -2102,10 +2114,17 @@ export async function blocktreeViewer3D({
   // before that listener is wired.
   let exploded = false;
 
+  let firstRenderMarked = false;
+  let atomicBuiltMarked = false;
+
   function renderScene(shapes, { camera = null, refit = true } = {}) {
     shownShapes = shapes;
     viewer.clear();
     viewer.render(shapes, renderOptions, viewerOptions);
+    if (!firstRenderMarked) {
+      firstRenderMarked = true;
+      _bt3dMark("bt3d-first-render");
+    }
     // Every render, not just the first: a reload that reintroduced a
     // second addressing scheme would otherwise pass the check once at
     // load and go quiet exactly when it started lying.
@@ -2133,6 +2152,12 @@ export async function blocktreeViewer3D({
         .then((overlay) => {
           atomicOverlay = overlay;
           if (overlay) applyAtomState();
+          // After the overlay meshes are in and the legend/strain rows are
+          // stamped (applyAtomState redraws); mark once, on first paint.
+          if (!atomicBuiltMarked) {
+            atomicBuiltMarked = true;
+            requestAnimationFrame(() => _bt3dMark("bt3d-atomic-built"));
+          }
         })
         .catch((err) => {
           console.error("blocktree-3d: atomic overlay failed", err);

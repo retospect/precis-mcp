@@ -90,9 +90,12 @@ job).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -1287,6 +1290,95 @@ def _block_pose(node: Any) -> Any:
     return cad_pose(cad_as_vec3(list(node.pose)), cad_as_vec3(list(node.rot)))
 
 
+#: Bump when :func:`_build_atomic_block_payload`'s output changes (a new
+#: field, a changed smoothing/ring rule): the payload cache is keyed on it,
+#: so without a bump a builder change serves stale geometry until restart.
+ATOMIC3D_PAYLOAD_VERSION = 1
+
+#: Total approximate size (bytes of serialised JSON) the payload cache may
+#: hold; least-recently-used blocks are evicted past it.
+_ATOMIC3D_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+
+class _PayloadCache:
+    """Thread-safe LRU of built atomic block payloads, bounded by
+    approximate bytes (``len`` of the payload's JSON). The route builds in
+    ``asyncio.to_thread``, so every access takes the lock."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._items: OrderedDict[tuple[Any, ...], tuple[dict[str, Any], int]] = (
+            OrderedDict()
+        )
+        self._bytes = 0
+
+    def get(self, key: tuple[Any, ...]) -> dict[str, Any] | None:
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is None:
+                return None
+            self._items.move_to_end(key)
+            return hit[0]
+
+    def put(self, key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+        size = len(json.dumps(payload, separators=(",", ":")))
+        if size > self.max_bytes:
+            return
+        with self._lock:
+            old = self._items.pop(key, None)
+            if old is not None:
+                self._bytes -= old[1]
+            self._items[key] = (payload, size)
+            self._bytes += size
+            while self._bytes > self.max_bytes and self._items:
+                _k, (_p, sz) = self._items.popitem(last=False)
+                self._bytes -= sz
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+            self._bytes = 0
+
+
+_ATOMIC3D_CACHE = _PayloadCache(_ATOMIC3D_CACHE_MAX_BYTES)
+
+
+def _atomic_struct_ref(store: Store, node: Any) -> Any:
+    """The live ``structure`` ref a block is bound to, or ``None`` for an
+    unbound block / a binding that no longer resolves."""
+    if getattr(node, "bound_kind", None) != "structure" or not getattr(
+        node, "bound", None
+    ):
+        return None
+    try:
+        return resolve_live_slug_ref(store, kind="structure", id=node.bound)
+    except NotFound:
+        return None
+
+
+def _atomic_block_key(
+    struct_ref: Any, node: Any, *, block_uid: int, name: str, scale: float
+) -> tuple[Any, ...]:
+    """Cache/ETag identity of one block's payload: the structure revision
+    (ref id, the save ``version`` in ``refs.meta`` and ``updated_at``, which
+    also moves for a meta-only change such as a cell or ``generated`` edit)
+    plus everything the world-posed, scaled payload depends on."""
+    meta = struct_ref.meta or {}
+    updated = getattr(struct_ref, "updated_at", None)
+    return (
+        ATOMIC3D_PAYLOAD_VERSION,
+        struct_ref.id,
+        meta.get("version"),
+        updated.isoformat() if updated is not None else None,
+        tuple(float(v) for v in node.pose),
+        tuple(float(v) for v in node.rot),
+        block_uid,
+        name,
+        float(scale),
+    )
+
+
 def _atomic_block_payload(
     store: Store, node: Any, *, block_uid: int, name: str, scale: float
 ) -> dict[str, Any] | None:
@@ -1300,10 +1392,33 @@ def _atomic_block_payload(
         node, "bound", None
     ):
         return None
-    try:
-        struct_ref = resolve_live_slug_ref(store, kind="structure", id=node.bound)
-    except NotFound:
+    struct_ref = _atomic_struct_ref(store, node)
+    if struct_ref is None:
         return None
+    key = _atomic_block_key(
+        struct_ref, node, block_uid=block_uid, name=name, scale=scale
+    )
+    cached = _ATOMIC3D_CACHE.get(key)
+    if cached is not None:
+        return cached
+    payload = _build_atomic_block_payload(
+        store, node, struct_ref, block_uid=block_uid, name=name, scale=scale
+    )
+    if payload is not None:
+        _ATOMIC3D_CACHE.put(key, payload)
+    return payload
+
+
+def _build_atomic_block_payload(
+    store: Store,
+    node: Any,
+    struct_ref: Any,
+    *,
+    block_uid: int,
+    name: str,
+    scale: float,
+) -> dict[str, Any] | None:
+    """The uncached builder behind :func:`_atomic_block_payload`."""
     scene, _handles = store.structure_load(struct_ref.id)
     labels = list(scene.atoms)
     if not labels:
@@ -1358,13 +1473,25 @@ def _atomic_block_payload(
 
 
 def _build_atomic3d(
-    store: Store, kind: str, ref_id: int, *, rev: int | None
-) -> tuple[list[dict[str, Any]], float]:
+    store: Store,
+    kind: str,
+    ref_id: int,
+    *,
+    rev: int | None,
+    if_none_match: str | None = None,
+) -> tuple[list[dict[str, Any]] | None, float, str | None]:
     """Off the event loop, mirroring :func:`_build_scene3d`'s own rev
     handling: the live tree by default, or the ``rev`` snapshot — every
     atomic block bound to a ``structure`` design, regardless of the level/
     isolate plan (an atomic block's chemistry does not depend on whether
-    its container is currently shown collapsed as a box)."""
+    its container is currently shown collapsed as a box).
+
+    Returns ``(blocks, scale, etag)``. The ETag is derived from every
+    block's :func:`_atomic_block_key` (so it needs no payload build); when
+    it equals ``if_none_match`` the build is skipped and ``blocks`` is
+    ``None`` (the caller answers 304). A block whose build RAISES returns
+    ``etag=None``: the partial body must not be revalidated into a 304 for
+    as long as the structure stays unchanged, so it goes out uncacheable."""
     adapter = _ADAPTERS[kind]
     if rev is None:
         tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
@@ -1374,11 +1501,27 @@ def _build_atomic3d(
         tree = _tree_at(store, kind, ref_id, axis)
         uid_by_name = _uids_of(tree)
     scale = scene_scale(tree, adapter.effective_envelope)
-    blocks: list[dict[str, Any]] = []
+    planned: list[tuple[str, Any, int, Any, tuple[Any, ...]]] = []
     for name, node in tree.blocks.items():
         block_uid = uid_by_name.get(name)
         if block_uid is None:
             continue
+        struct_ref = _atomic_struct_ref(store, node)
+        if struct_ref is None:
+            continue
+        key = _atomic_block_key(
+            struct_ref, node, block_uid=block_uid, name=name, scale=scale
+        )
+        planned.append((name, node, block_uid, struct_ref, key))
+    digest = hashlib.sha1(
+        repr((ATOMIC3D_PAYLOAD_VERSION, scale, [p[4] for p in planned])).encode("utf-8")
+    ).hexdigest()
+    etag = f'"{digest}"'
+    if if_none_match is not None and _etag_matches(if_none_match, etag):
+        return None, scale, etag
+    blocks: list[dict[str, Any]] = []
+    complete = True
+    for name, node, block_uid, _struct_ref, _key in planned:
         try:
             payload = _atomic_block_payload(
                 store, node, block_uid=block_uid, name=name, scale=scale
@@ -1391,10 +1534,19 @@ def _build_atomic3d(
             log.exception(
                 "atomic3d payload failed for %s %s block %s", kind, ref_id, name
             )
+            complete = False
             continue
         if payload is not None:
             blocks.append(payload)
-    return blocks, scale
+    return blocks, scale, etag if complete else None
+
+
+def _etag_matches(header: str, etag: str) -> bool:
+    """``If-None-Match`` comparison (weak validators and ``*`` included)."""
+    if header.strip() == "*":
+        return True
+    wanted = etag.removeprefix("W/")
+    return any(part.strip().removeprefix("W/") == wanted for part in header.split(","))
 
 
 async def _atomic3d_response(
@@ -1405,18 +1557,28 @@ async def _atomic3d_response(
         ref = _require_ref(store, kind, slug)
     except NotFound:
         return JSONResponse({"error": "not found"}, status_code=404)
+    inm = request.headers.get("if-none-match")
 
-    def _build() -> tuple[list[dict[str, Any]], float]:
-        return _build_atomic3d(store, kind, ref.id, rev=rev)
+    def _build() -> tuple[list[dict[str, Any]] | None, float, str | None]:
+        return _build_atomic3d(store, kind, ref.id, rev=rev, if_none_match=inm)
 
     try:
-        blocks, scale = await asyncio.to_thread(_build)
+        blocks, scale, etag = await asyncio.to_thread(_build)
     except _NoSuchRevision as exc:
         return JSONResponse({"error": str(exc)}, status_code=404)
+    # `private, no-cache`: the browser keeps the (large) body but must
+    # revalidate with the ETag, so a revisit costs a 304, not 1+ MB.
+    headers = (
+        {"Cache-Control": "private, no-cache", "ETag": etag}
+        if etag is not None
+        else {"Cache-Control": "no-store"}
+    )
+    if blocks is None:
+        return Response(status_code=304, headers=headers)
     deviation_max = max((max(b["deviation"], default=0.0) for b in blocks), default=0.0)
     return JSONResponse(
         {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
     )
 
 

@@ -156,13 +156,25 @@ def smooth_sheet(
     n = len(xyz)
     adj = _adjacency(n, bonds)
 
+    # Neighbour structure built once: flat (atom, neighbour) edge lists over
+    # the de-duplicated adjacency; an atom with no neighbour stays put.
+    deg = np.fromiter((len(nb) for nb in adj), dtype=np.int64, count=n)
+    src = np.repeat(np.arange(n, dtype=np.int64), deg)
+    dst = np.fromiter(
+        (j for nb in adj for j in nb), dtype=np.int64, count=int(deg.sum())
+    )
+    has_nbrs = deg > 0
+    inv_deg = np.zeros(n, dtype=np.float64)
+    inv_deg[has_nbrs] = 1.0 / deg[has_nbrs]
+
     def _pass(x: NDArray[np.float64], factor: float) -> NDArray[np.float64]:
         out = x.copy()
-        for i, nbrs in enumerate(adj):
-            if not nbrs:
-                continue
-            mean = x[nbrs].mean(axis=0)
-            out[i] = x[i] + factor * (mean - x[i])
+        if not len(dst):
+            return out
+        acc = np.zeros_like(x)
+        np.add.at(acc, src, x[dst])
+        mean = acc * inv_deg[:, None]
+        out[has_nbrs] = x[has_nbrs] + factor * (mean[has_nbrs] - x[has_nbrs])
         return out
 
     x = xyz.copy()

@@ -319,3 +319,91 @@ def test_detail3d_page_has_target_surface_toggle_for_the_atomic_design(
     _seed_plain_se(runtime_with_store, "plain_se7")
     assert 'id="bt3d-target"' in atomic3d_client.get("/se/c60design7").text
     assert 'id="bt3d-target"' not in atomic3d_client.get("/se/plain_se7").text
+
+
+def test_atomic3d_payload_cache_etag_and_invalidation(
+    atomic3d_client, runtime_with_store, monkeypatch
+) -> None:
+    """gr462703 — second request is served from the payload cache (no
+    rebuild), an ETag round-trips to a 304, and a changed structure
+    revision or ``ATOMIC3D_PAYLOAD_VERSION`` misses."""
+    from precis_web.routes import blocktree_view as bv
+
+    bv._ATOMIC3D_CACHE.clear()
+    calls: list[int] = []
+    real = bv.smooth_sheet
+
+    def counting(*a: Any, **kw: Any) -> Any:
+        calls.append(1)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(bv, "smooth_sheet", counting)
+    _seed_c60_structure(runtime_with_store, "c60cache")
+    _seed_atomic_se(
+        runtime_with_store, slug="c60cachedesign", structure_slug="c60cache"
+    )
+    url = "/se/c60cachedesign/atomic3d.json"
+
+    r1 = atomic3d_client.get(url)
+    assert r1.status_code == 200
+    assert len(calls) == 1
+    etag = r1.headers["etag"]
+    assert r1.headers["cache-control"] == "private, no-cache"
+
+    r2 = atomic3d_client.get(url)
+    assert r2.status_code == 200 and r2.json() == r1.json()
+    assert len(calls) == 1  # cache hit
+    assert r2.headers["etag"] == etag
+
+    r3 = atomic3d_client.get(url, headers={"If-None-Match": etag})
+    assert r3.status_code == 304
+    assert r3.headers["etag"] == etag
+    assert len(calls) == 1
+
+    # A new payload version misses the cache and changes the ETag.
+    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", 2)
+    r4 = atomic3d_client.get(url, headers={"If-None-Match": etag})
+    assert r4.status_code == 200
+    assert r4.headers["etag"] != etag
+    assert len(calls) == 2
+    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", 1)
+
+    # A new structure revision (an edit) misses and changes the ETag.
+    StructureHandler(hub=runtime_with_store.hub).put(
+        id="c60cache",
+        text=json.dumps(
+            {
+                "cell": {"a": 40.0, "b": 40.0, "c": 40.0, "pbc": [False] * 3},
+                "ops": [{"op": "add_atom", "element": "C", "cart": [1, 1, 1]}],
+            }
+        ),
+    )
+    r5 = atomic3d_client.get(url, headers={"If-None-Match": etag})
+    assert r5.status_code == 200
+    assert r5.headers["etag"] != etag
+    assert len(calls) == 3
+
+
+def test_atomic3d_partial_failure_is_not_cacheable(
+    atomic3d_client, runtime_with_store, monkeypatch
+) -> None:
+    """A block whose payload build raises is skipped, and the partial
+    response goes out with no ETag and ``no-store`` — revalidating it would
+    serve the broken overlay as a 304 until the structure changed."""
+    from precis_web.routes import blocktree_view as bv
+
+    bv._ATOMIC3D_CACHE.clear()
+
+    def boom(*a: Any, **kw: Any) -> Any:
+        raise RuntimeError("ring perception failed")
+
+    monkeypatch.setattr(bv, "smooth_sheet", boom)
+    _seed_c60_structure(runtime_with_store, "c60broken")
+    _seed_atomic_se(
+        runtime_with_store, slug="c60brokendesign", structure_slug="c60broken"
+    )
+    r = atomic3d_client.get("/se/c60brokendesign/atomic3d.json")
+    assert r.status_code == 200
+    assert r.json()["blocks"] == []
+    assert "etag" not in r.headers
+    assert r.headers["cache-control"] == "no-store"
