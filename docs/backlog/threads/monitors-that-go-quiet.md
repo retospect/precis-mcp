@@ -18,22 +18,23 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-01 (stranded-branch landing); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **Finish the stranded fix_gripe branches.** Reto 2026-10-01: "land
-   them". 18 of the 19 keepers landed on main 2026-10-01 as one squash; six
-   of their gripes closed against it, six stay open with the unlanded part
-   named; the 14 drops are deleted on the node
-   and its 67 scratch clones (18G) are gone; `gripe_182230`'s rewritten
-   chase-coverage ledger (migration 0175) is deployed. Left: the 8 salvage
-   items, each named to its owning thread (the node's other 29 branches were
-   deleted 2026-10-02; the bundle keeps them). All in
-   **backlog/stranded-fix-gripe-branches.md**.
+1. **This thread's three stranded-branch salvage items** — gr452203
+   (Do-next 4 below), gr454480 (Parked, the lane) and gr248866 (does a child
+   process inherit the heartbeat's macOS TCC grant? if not, the probe is a
+   false green). The stranded-branch work itself is finished and deployed
+   (2026-10-01/02): 19 keepers landed incl. `gripe_182230` as migration 0175,
+   all 43 node branches deleted, scratch clones gone. Each salvage branch's
+   code is only in the bundle — location and per-item notes in
+   **backlog/stranded-fix-gripe-branches.md**; the other five salvage items
+   belong to other threads and are named there. Reto's open call on the
+   reconcile-sweep design (gripe_180306) is td461151.
 2. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
