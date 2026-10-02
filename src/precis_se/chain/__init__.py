@@ -78,8 +78,9 @@ segment's worth of unit frames — plus its placed loops, on request — and
 binds the minted ``structure`` to that **segment child**, so
 ``envelope_fit`` holds the atoms against the segment's own capsule.
 ``view='export'`` (:mod:`precis_se.chain.export`) writes scadnano,
-caDNAno (lattice-only), oxDNA and PDB; ``structure`` ``view='pdb'`` writes
-one realized region. Not built: A-RNA templates (an RNA helix is refused,
+caDNAno (lattice-only), oxDNA, PDB and the oligo order form (CSV, one
+row per strand 5'→3', refusing an unorderable strand by name);
+``structure`` ``view='pdb'`` writes one realized region. Not built: A-RNA templates (an RNA helix is refused,
 not approximated), import of any of those formats, H-bonds as bonds.
 
 **Walker states** (``se-walker-light-protocol`` slice A, 2026-09-30): a

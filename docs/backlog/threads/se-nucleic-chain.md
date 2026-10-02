@@ -26,7 +26,9 @@ blocked.
 **Resume (handoff 2026-10-02):** staple-sequence fill is deployed (round 1,
 567f207f) and dogfooded on prod. Do-next 1 is blocked on
 hexfold-integration; review item se-nucleic-chain-1 asks Reto whether the
-orderable strand list (Horizon 5) is next. Traps: a chain design laid out before the
+orderable strand list was next — Reto ruled yes 2026-10-02; built in the
+commit that rewrote this block (`view='export'`, `format='order'`), not
+yet deployed or dogfooded on prod. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
@@ -56,19 +58,12 @@ worktree's code against the prod DB (not the deployed code).
    stretched step across a deleted base).
 4. **caDNAno round trip** (unfiled) — settle the handedness reflection
    against a real file; waits on a file to compare.
-5. **orderable strand list** (unfiled; review item se-nucleic-chain-1) —
-   the prod dogfood showed no view prints a strand's letters (only
-   `view='export'` scadnano/caDNAno, which drops the strand names), and the
-   edit echo does not say what the fill wrote. `fill_complement` now writes every
-   staple's sequence; what's left is the order-form output (one row per
-   strand, 5'→3', name + sequence, as a view or export format). File it
-   when a design is headed for an order.
-6. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
+5. **backlog/se-protein-chain-import.md** — proteins on the same block tree;
    waits on a protein-bearing design being wanted.
-7. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
+6. **td344088** (se + hexfold paper; td345823 next) — reports this arc; the
    walker dogfood (td458169) is its protocol figure's source.
 
-8. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
+7. **backlog/se-pick-hierarchy.md** — its render half (atom pick on the
    se page, popup, ask-box insertion) is se-3d-viewer's Horizon 1; the
    resolver it calls is built here (`precis_se/pick.py`). Waits on that
    thread's ranking; nothing owed from this side until it starts.
@@ -79,6 +74,16 @@ worktree's code against the prod DB (not the deployed code).
   available; file it then (Horizon 4).
 
 ## No action needed
+
+- **orderable strand list** — built 2026-10-02 (Reto's ruling on
+  se-nucleic-chain-1) in the commit that added this line:
+  `view='export'`, `args={'format': 'order'}` writes CSV `Name,Sequence`,
+  one row per routed strand by name, 5'→3', named `<design>-<strand>`,
+  scaffold included; refuses naming every unsequenced, N-holding or
+  wrong-length strand. Docs split out of the chain skill into
+  `precis-se-chain-export-help` (the chain skill was 79 bytes under its
+  cap). Dogfood on prod after the round deploys: fill a tile, export
+  `order`, and check the rows against the scadnano export.
 
 - **staple sequences** — shipped 2026-10-02 in the commit that added this
   line (backlog item deleted): `fill_complement` (pure op; `strand=` or

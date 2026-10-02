@@ -1,6 +1,6 @@
 """Interop export of the nucleic-acid domain — ``view='export'``.
 
-Four formats, one way (no import):
+Five formats, one way (no import):
 
 - **scadnano** JSON — helix→helix, domain→domain, register ``deletions`` /
   ``insertions`` carried on the helix row, a loop with ``n > 0``
@@ -25,6 +25,15 @@ Four formats, one way (no import):
   a modelled bulge.
 - **PDB** — every ``realize_chain``-bound segment's atoms, world-posed by
   the segment's own pose, one chain id per segment and a ``TER`` between.
+- **order** — the oligo order form: CSV ``Name,Sequence``, one row per
+  routed strand, 5'→3', named ``<design>-<strand>`` so rows from two
+  designs on one plate don't collide. Every strand is listed, the
+  scaffold included — drop its row when the scaffold is bought, not
+  synthesised. Refuses, naming each strand, when one is unsequenced,
+  holds an ``N`` (``fill_complement(unknown='N')``'s placeholder, not an
+  orderable base) or does not match its route's length
+  (``chain_sequence_length``): an order form is the one export a wrong
+  letter costs money in.
 
 **Helix indices are ours, not caDNAno's.** The chain domain reproduces
 caDNAno's crossover offsets with the neighbour walk *reflected* (the
@@ -37,6 +46,8 @@ settled against a real one.
 
 from __future__ import annotations
 
+import csv
+import io
 import itertools
 import json
 import math
@@ -60,7 +71,7 @@ from precis_se.chain.vocab import (
 )
 from precis_se.ops import SeTree
 
-FORMATS = ("scadnano", "cadnano", "oxdna", "pdb")
+FORMATS = ("scadnano", "cadnano", "oxdna", "pdb", "order")
 
 #: scadnano's file-format version the JSON claims — the structural subset
 #: written here (helices, grid, strands, domains, loopouts, sequence,
@@ -531,6 +542,46 @@ def to_pdb(tree: SeTree, *, design: str, load_structure: LoadStructure) -> str:
 # ── the view ────────────────────────────────────────────────────────────
 
 
+# ── order form ──────────────────────────────────────────────────────────
+
+
+def to_order(tree: SeTree, *, design: str) -> str:
+    """CSV ``Name,Sequence`` — one row per routed strand, 5'→3', by strand
+    name. ``Unsupported`` naming every strand that cannot be ordered."""
+    strands = _strands(tree)
+    if not strands:
+        raise Unsupported(
+            "export order: no routed strand — route one with add_domain first"
+        )
+    indels = helix_indels(tree)
+    rows: list[tuple[str, str]] = []
+    problems: list[str] = []
+    for name in sorted(strands):
+        seq = _sequence(tree, name)
+        want = strand_length_nt(strands[name], indels)
+        if seq is None:
+            problems.append(f"{name}: unsequenced")
+        elif "N" in seq.upper():
+            problems.append(f"{name}: holds N at {seq.upper().count('N')} base(s)")
+        elif len(seq) != want:
+            problems.append(f"{name}: sequence is {len(seq)} nt, route holds {want}")
+        else:
+            rows.append((f"{design}-{name}", seq.upper()))
+    if problems:
+        raise Unsupported(
+            "export order: "
+            + "; ".join(problems)
+            + ". Fill staples with fill_complement, or author the sequence with "
+            "declare_strand; view='drc' names each length or pairing error",
+            next="edit(kind='se', id=…, ops=[{'op': 'fill_complement'}])",
+        )
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["Name", "Sequence"])
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
 def render_export(
     tree: SeTree, fmt: str | None, *, design: str, load_structure: LoadStructure
 ) -> str:
@@ -548,4 +599,6 @@ def render_export(
     if key == "oxdna":
         top, conf = to_oxdna(tree, design=design)
         return f"## {design}.top\n{top}## {design}.conf\n{conf}"
+    if key == "order":
+        return to_order(tree, design=design)
     return to_pdb(tree, design=design, load_structure=load_structure)

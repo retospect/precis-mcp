@@ -9,6 +9,8 @@ never invented.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from typing import Any
@@ -16,8 +18,10 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import Unsupported
 from precis.store import Store
 from precis_se.chain.drc import findings
+from precis_se.chain.export import render_export
 from precis_se.chain.pairing import PAIRED, derive_pairing
 from precis_se.handler import SeHandler
 from precis_se.ops import OpError, SeTree, apply_ops
@@ -303,3 +307,43 @@ def test_view_chain_shows_route_nt_equal_to_sequence_after_the_fill(
         row = rf"^\s*{strand}[,\t]DNA[,\t]{nt}[,\t]{nt} nt[,\t]"
         assert re.search(row, body, re.M), strand
     assert "letters: 64 complementary" in body
+
+
+# ── the order form: view='export', format='order' ──────────────────────
+
+
+def _order(tree: SeTree) -> str:
+    return render_export(tree, "order", design="tile", load_structure=lambda _: None)
+
+
+def test_order_lists_every_strand_5_to_3_by_name_after_the_fill() -> None:
+    rows = list(csv.reader(io.StringIO(_order(_tree({"op": "fill_complement"})))))
+    assert rows[0] == ["Name", "Sequence"]
+    body = dict(rows[1:])
+    names = ("scaf", "st0", "st1", "st2", "st3", "st4")
+    assert list(body) == [f"tile-{s}" for s in names]
+    assert body["tile-scaf"] == SCAFFOLD
+    assert body["tile-st3"] == _revcomp(SCAFFOLD[0:8])
+    staple_nt = sum(len(v) for k, v in body.items() if k != "tile-scaf")
+    assert staple_nt == len(SCAFFOLD)
+
+
+def test_order_refuses_naming_every_strand_it_cannot_order() -> None:
+    with pytest.raises(Unsupported, match="st0: unsequenced; st1: unsequenced"):
+        _order(_tree())
+    tree = _tree(
+        {"op": "fill_complement"},
+        {"op": "declare_strand", "block": "st3", "sequence": "ACGTNAAA"},
+        {"op": "declare_strand", "block": "st4", "sequence": "A" * 12},
+    )
+    with pytest.raises(Unsupported) as exc:
+        _order(tree)
+    message = str(exc.value)
+    assert "st3: holds N at 1 base(s)" in message
+    assert "st4: sequence is 12 nt, route holds 8" in message
+    assert "st0" not in message  # a good strand is not named
+
+
+def test_order_is_one_of_the_export_formats() -> None:
+    with pytest.raises(Unsupported, match="order"):
+        render_export(_tree(), "xlsx", design="tile", load_structure=lambda _: None)

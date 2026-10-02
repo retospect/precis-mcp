@@ -1,7 +1,7 @@
 ---
 id: precis-se-chain-help
 title: precis — nucleic-acid chains in se (DNA/RNA helices, strands, domains)
-summary: pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, fill staple sequences from the scaffold (fill_complement), then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + twenty chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' writes the design out as scadnano/caDNAno/oxDNA/PDB; walker states: see precis-se-walker-help
+summary: pure ops declare a helix (geometry), a strand (route chemistry) and its route (add_domain/set_domain/remove_domain) over an ordinary se block tree, fill staple sequences from the scaffold (fill_complement), then materialise the helix's swept tube (layout_chain) or un-declare it (clear_chain); pairing is DERIVED from two strands occupying one helix offset running opposite ways, never declared; view='chain' + twenty chain_* DRC findings check it; three handler-level proposals finish the job — relax_chain settles the segments and stores each placed loop's curve, fold_layout turns a ViennaRNA MFE fold into helix/strand/domain records, realize_chain mints Arnott B-DNA fibre atoms for one region as a bound structure design; view='export' (scadnano/caDNAno/oxDNA/PDB, and the oligo order form) is precis-se-chain-export-help; walker states: see precis-se-walker-help
 answers:
   - how do I declare a DNA/RNA helix and route a strand along it in se?
   - how do I make a crossover, a hairpin loop, a foothold/toehold in se?
@@ -16,7 +16,6 @@ answers:
   - how do I turn a sequence's ViennaRNA fold into helices/strands/domains (fold_layout)?
   - why does view='drc' say chain_fold_unavailable, and what is chain_offtarget telling me?
   - why does declare_helix/add_domain reject a bare number?
-  - how do I export a chain design to scadnano/caDNAno/oxDNA/PDB (view='export')?
 applies-to: put/edit (kind='se', op=declare_helix|declare_strand|add_domain|set_domain|unpair|fill_complement|remove_domain|clear_chain|layout_chain|relax_chain|fold_layout|realize_chain)
 status: active
 tags: verbs, design
@@ -177,6 +176,8 @@ Never invents a base: a loop nt, a single-stranded or `unpaired` offset, or an
 unsequenced partner refuses the op by name — pass `loops={'<ord>': 'TTTT'}`
 (keyed by the domain the loop precedes), or `unknown='N'` to write `N`. An
 authored sequence is replaced only with `strand=` + `overwrite=true`. Pure.
+The edit echo does not list the letters; read them, one row per strand, with
+`view='export'`, `args={'format': 'order'}` ([[precis-se-chain-export-help]]).
 
 ## The register rule — which offsets admit a 0-nt crossover
 
@@ -321,9 +322,9 @@ nothing). An unsequenced letter, or `N`, is unverifiable and never flags.
 - `view='topology'` gains a "## domains" table (`strand · ord · helix ·
   offsets · dir · loop_before · geometry`) for every `add_domain` row —
   pairing and geometry checks live in `view='chain'`, not here.
-- `view='export'` (`args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'}`) —
-  the design written out to one of the four interop formats; see
-  "Export" below.
+- `view='export'` (`args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'|'order'}`)
+  — the design written out, or the oligo order form; see
+  [[precis-se-chain-export-help]].
 - `view='pick'` — the residue, base pair, domain, strand and blocks one
   realized atom belongs to, a citable `<se:…>` token per level; see
   [[precis-se-chain-atoms-help]].
@@ -485,40 +486,10 @@ for one region of a laid-out helix, bound as a `structure` design on the
 covering segment. Its arguments, ports, loop relax and `envelope_fit`
 behaviour are in [[precis-se-chain-atoms-help]].
 
-## Export
-
-`view='export'`, `args={'format': 'scadnano'|'cadnano'|'oxdna'|'pdb'}` —
-the only accepted arg (`precis_se.chain.export`). One direction, no
-import.
-
-- **scadnano** — helix index = declaration order; `grid`/`grid_position`
-  from the lattice, or `grid: none` + a position in nm off a free path. A
-  loop with `n > 0` nt becomes a scadnano *loopout*; the longest strand is
-  flagged `is_scaffold`.
-- **cadnano** (legacy c2) — lattice designs on **one** lattice only; a
-  waypoint-path helix is `Unsupported` naming it. Every vstrand is padded
-  to the lattice repeat (32 bp square, 21 honeycomb); a loop's nucleotides
-  become a caDNAno insertion (`loop[offset] = n`) at the exit base;
-  longest strand → `scaf`, every other strand → `stap`.
-- **oxdna** — one `## <design>.top` section then `## <design>.conf`,
-  nucleotides per strand listed 3'→5'. An unsequenced nucleotide writes
-  `N` (oxDNA needs a real base — this is a geometry export, not a
-  runnable input). Loop positions follow the placed curve when
-  `relax_chain` wrote one, else the chord between the two exits;
-  positions in oxDNA length units (0.8518 nm). A starting configuration,
-  not an equilibrium one.
-- **pdb** — every `realize_chain`-bound segment, world-posed, one chain
-  id per segment, `TER` between. `Unsupported` when nothing is realized
-  yet. `get(kind='structure', id=<slug>, view='pdb')` on one minted
-  structure writes just that region, with residue names.
-
-**Helix indices/row/col are ours, not caDNAno's.** The register walk here
-is reflected relative to caDNAno's own (a handedness convention) and
-unsettled until compared against a real caDNAno file — don't claim
-column-for-column agreement.
-
 ## See also
 
+- [[precis-se-chain-export-help]] — `view='export'`: scadnano, caDNAno,
+  oxDNA, PDB, and the oligo order form (`format='order'`).
 - [[precis-se-chain-atoms-help]] — `realize_chain` in full and
   `view='pick'`: atoms for a region, and what each atom belongs to.
 - [[precis-se-help]] — blocks, ports, connects, measures, BOM: the rest of
