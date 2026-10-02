@@ -10,6 +10,7 @@ from collections import Counter
 import numpy as np
 
 from precis.viz3d.sheetsmooth import deviation, ring_faces, sheet_mesh, smooth_sheet
+from precis_se.atomic.generators.smooth_drum import build_smooth_drum
 from precis_se.atomic.generators.sp2 import build_cnt, build_fullerene
 
 _C60 = build_fullerene({"atoms": 60})
@@ -105,3 +106,21 @@ def test_sheet_mesh_fan_triangulates_every_ring() -> None:
     # every triangle vertex index is a real atom index.
     assert tris.min() >= 0
     assert tris.max() < len(_C60_COORDS)
+
+
+def test_heptagons_bordered_only_by_smaller_rings_are_found() -> None:
+    """gr461146: every bond of a smooth drum's heptagon also borders a
+    hexagon or pentagon, so a "smallest ring per bond" rule never picks the
+    heptagon and the viewer's smoothed surface had 12 holes. The perceived
+    census must equal the generator's own."""
+    drum = build_smooth_drum(
+        {"neck": 10, "wall": 60, "sheet_radius_A": 30.0, "relax": False}
+    )
+    bonds = [(i, j) for i, j, _order, _kind in drum.bonds]
+    faces = ring_faces(len(drum.coords), bonds, max_ring=8)
+    census = Counter(len(f) for f in faces)
+    assert census[7] == 12
+    assert census[5] == 12
+    assert {str(k): v for k, v in census.items()} == {
+        str(k): v for k, v in drum.topology["rings"].items()
+    }

@@ -8,15 +8,18 @@ block, a bare ``structure`` cell, or a later ``cad`` view can all reuse it
 identically — the same "adapter builds it, this module never reaches for
 the store" split :mod:`.stickfig` already draws.
 
-**Ring perception** (:func:`ring_faces`) is the "smallest ring containing
-this edge" construction restricted to a sp² (max-degree-3) bond graph:
-remove the edge, BFS the shortest alternate path between its two atoms,
-and keep EVERY such minimal-length path (plural, deliberately — a 6:6
-fullerene bond or an interior nanotube bond borders two faces of the SAME
-size, so both must survive, not just whichever BFS visits first). This is
-not general SSSR (it assumes degree ≤ 3, true of every sp² generator this
-slice targets); a higher-valence graph would need a real ring-perception
-library instead.
+**Ring perception** (:func:`ring_faces`) is the "smallest ring through
+this bond angle" construction on a sp² (max-degree-3) bond graph: for
+every atom ``v`` and every pair of its neighbours ``u, w``, BFS the
+shortest ``w -> u`` path that avoids ``v`` and close it through ``v``.
+Every angle of a degree-3 net is a corner of exactly one face, so this
+finds every face — including a heptagon whose every bond also borders a
+smaller hexagon or pentagon (gr461146: the older "smallest ring per BOND"
+rule dropped every heptagon of a smooth drum, leaving holes in the
+viewer's smoothed surface). Ties keep EVERY minimal path (a 6:6 fullerene
+bond borders two equal rings). Not general SSSR (it assumes degree ≤ 3,
+true of every sp² generator this slice targets); a higher-valence graph
+would need a real ring-perception library instead.
 
 **Smoothing** (:func:`smooth_sheet`) is Taubin's λ|μ scheme (Taubin 1995),
 not plain Laplacian averaging: a plain Laplacian smooth shrinks a closed
@@ -66,25 +69,23 @@ def _adjacency(n_atoms: int, bonds: list[tuple[int, int]]) -> list[list[int]]:
     return adj
 
 
-def _shortest_alt_paths(
-    adj: list[list[int]], u: int, v: int, max_len: int
+def _shortest_paths_avoiding(
+    adj: list[list[int]], src: int, dst: int, avoid: int, max_edges: int
 ) -> list[list[int]]:
-    """Every shortest ``u -> v`` path in ``adj`` that does NOT use the
-    direct ``u-v`` edge as its first hop, capped at ``max_len - 1`` edges
-    (so the resulting ring, path + the closing ``v-u`` edge, has at most
-    ``max_len`` atoms). ``[]`` when no such path exists within the cap —
-    an honest "no ring here" for a genuinely open edge (a nanotube rim),
-    not a fabricated oversized ring."""
-    dist: dict[int, int] = {u: 0}
+    """Every shortest ``src -> dst`` path in ``adj`` that never visits
+    ``avoid``, at most ``max_edges`` edges long. ``[]`` when none exists
+    within the cap — an honest "no ring here" for a genuinely open corner
+    (a nanotube rim), not a fabricated oversized ring."""
+    dist: dict[int, int] = {src: 0}
     preds: dict[int, list[int]] = {}
-    dq: deque[int] = deque([u])
+    dq: deque[int] = deque([src])
     while dq:
         cur = dq.popleft()
-        if dist[cur] >= max_len - 1:
+        if cur == dst or dist[cur] >= max_edges:
             continue
         for nxt in adj[cur]:
-            if cur == u and nxt == v:
-                continue  # the direct edge itself never counts as the "alternate" path
+            if nxt == avoid:
+                continue
             nd = dist[cur] + 1
             if nxt not in dist:
                 dist[nxt] = nd
@@ -92,19 +93,19 @@ def _shortest_alt_paths(
                 dq.append(nxt)
             elif dist[nxt] == nd:
                 preds[nxt].append(cur)
-    if v not in dist:
+    if dst not in dist:
         return []
 
     def backtrack(node: int) -> list[list[int]]:
-        if node == u:
-            return [[u]]
+        if node == src:
+            return [[src]]
         out: list[list[int]] = []
         for p in preds.get(node, []):
             for sub in backtrack(p):
                 out.append([*sub, node])
         return out
 
-    return backtrack(v)
+    return backtrack(dst)
 
 
 def _canonical_ring(ring: tuple[int, ...]) -> tuple[int, ...]:
@@ -123,17 +124,19 @@ def _canonical_ring(ring: tuple[int, ...]) -> tuple[int, ...]:
 def ring_faces(
     n_atoms: int, bonds: list[tuple[int, int]], max_ring: int = 8
 ) -> list[tuple[int, ...]]:
-    """Every smallest ring (size ``<= max_ring``) bordering each bond of an
-    sp²-like (max degree 3) bond graph, deduplicated, each ring's atoms in
-    cyclic order (module docstring). Deterministic: the returned list is
-    sorted by each ring's own canonical tuple."""
+    """Every smallest ring (size ``<= max_ring``) through each bond angle
+    of an sp²-like (max degree 3) bond graph, deduplicated, each ring's
+    atoms in cyclic order (module docstring). Deterministic: the returned
+    list is sorted by each ring's own canonical tuple."""
     adj = _adjacency(n_atoms, bonds)
-    edges = sorted({(min(a, b), max(a, b)) for a, b in bonds})
     rings: dict[tuple[int, ...], tuple[int, ...]] = {}
-    for u, v in edges:
-        for path in _shortest_alt_paths(adj, u, v, max_ring):
-            canon = _canonical_ring(tuple(path))
-            rings[canon] = canon
+    for v, nbrs in enumerate(adj):
+        for a in range(len(nbrs)):
+            for b in range(a + 1, len(nbrs)):
+                u, w = nbrs[a], nbrs[b]
+                for path in _shortest_paths_avoiding(adj, w, u, v, max_ring - 2):
+                    canon = _canonical_ring((v, *path))
+                    rings[canon] = canon
     return sorted(rings.values())
 
 
