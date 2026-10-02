@@ -45,6 +45,23 @@ class Defect:
         return abs(6 - self.ring)
 
 
+@dataclass
+class Disclination:
+    """One ring defect's intrinsic polar chart, kept for the relax seed.
+
+    ``phi`` is each atom's intrinsic angle (deg) about ``core``, measured
+    from the leading ray at ``ray`` deg: 0..360+60k around an inserted
+    wedge (``k > 0``), 0..360-60|k| around an excised one (``k < 0``).
+    Inserted wedge copies sit at the same ``flatpos`` as their originals;
+    ``phi`` is what tells them apart (SPEC 15.1, the saddle seed).
+    """
+
+    core: np.ndarray
+    ray: float
+    k: int
+    phi: dict[Vid, float]
+
+
 def _unit(deg: float) -> np.ndarray:
     return np.array([math.cos(math.radians(deg)), math.sin(math.radians(deg))])
 
@@ -88,6 +105,8 @@ class Patch:
         # the defect core (the hole rim then carries the core's share).
         self.authored_sint: int = 0
         self.seam: float = 0.0
+        # intrinsic charts of the ring defects, in surgery order
+        self.discl: list[Disclination] = []
         self.edges: set[frozenset[Vid]] = set()
         self.dirs: dict[tuple[Vid, Vid], np.ndarray] = {}
         for a in sites:
@@ -179,6 +198,15 @@ class Patch:
                 tgt = self._site_at(rm @ (self.flatpos[s] - c) + c)
                 if tgt is not None and tgt is not s:
                     absorbed[s] = tgt
+        # intrinsic angle from the trailing ray: the glued leading ray
+        # closes the 360 - w disc
+        phi: dict[Vid, float] = {}
+        for s in self.flatpos:
+            if s in deleted or s in absorbed:
+                continue
+            x = (self._angle(s) - t1) % 360.0
+            phi[s] = 360.0 - w if (x < 1e-6 or x > 360.0 - 1e-6) else x - w
+        self.discl.append(Disclination(c.copy(), t1, -d.wedges, phi))
         nd: dict[frozenset[Vid], Any] = {}
         eye = np.eye(2)
         for e in self.edges:
@@ -230,6 +258,26 @@ class Patch:
         ray2 = [s for s in self.flatpos if sides[s] == "R2"]
         dup = {q: ("d", index, *self._frame_coords(q, d)) for q in ray1}
         wcp = {x: ("w", index, *self._frame_coords(x, d)) for x in wedge}
+        # intrinsic angle: ray duplicates 0, ordinary atoms their flat angle,
+        # the original leading ray 360, wedge copies 360 + x (420 deg total
+        # for a heptagon).  Earlier defects' charts give each copy its
+        # original's angle: same flat point, same angle about that core.
+        phi: dict[Vid, float] = {}
+        for s, sd in sides.items():
+            phi[s] = (
+                360.0
+                if sd == "R1"
+                else (w if sd == "R2" else (self._angle(s) - t1) % 360.0)
+            )
+        for q in ray1:
+            phi[dup[q]] = 0.0
+        for x in wedge:
+            phi[wcp[x]] = 360.0 + phi[x]
+        for rec in self.discl:
+            for src, cp in [*dup.items(), *wcp.items()]:
+                if src in rec.phi:
+                    rec.phi[cp] = rec.phi[src]
+        self.discl.append(Disclination(c.copy(), t1, d.wedges, phi))
         for q in ray1:
             self.flatpos[dup[q]] = self.flatpos[q]
         for x in wedge:
@@ -561,9 +609,13 @@ def _defect_at_center(
     p = c + lat.sigma_A * _unit(ray_deg)
     best: Site | None = None
     bd = 1e9
-    lim_u = round(p[0] / (SQRT3 * lat.sigma_A))
-    for u in range(lim_u - 4, lim_u + 5):
-        for v in range(lim_u - 4, lim_u + 5):
+    # search around p's own (u, v): a window centred on the x estimate for
+    # both axes missed every site with v far from u + v/2 (sw/57 only
+    # resolved near the origin)
+    uv = np.linalg.solve(np.column_stack([lat.a1, lat.a2]), p)
+    u0, v0 = round(float(uv[0])), round(float(uv[1]))
+    for u in range(u0 - 3, u0 + 4):
+        for v in range(v0 - 3, v0 + 4):
             for s in (0, 1):
                 st = Site(u, v, s)
                 dist = float(np.linalg.norm(lat.cart(st) - p))

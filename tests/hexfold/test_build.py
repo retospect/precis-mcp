@@ -139,3 +139,19 @@ def test_sheet_named_params() -> None:
     b = _net("hexfold 0.1\norigin s\ns: sheet(12, 12)\n")
     assert len(a.atoms) == len(b.atoms)
     assert a.bonds == b.bonds
+
+
+@pytest.mark.parametrize(
+    ("glyph", "rings"),
+    [("sw", [5, 5, 7, 7]), ("57", [5, 7])],
+)
+@pytest.mark.parametrize("site", ["(4,4,A)", "(15,15,A)", "(22,9,A)"])
+def test_glyphs_resolve_anywhere_on_the_sheet(
+    glyph: str, rings: list[int], site: str
+) -> None:
+    """A glyph's cores are found by a site search around each apex; the
+    window was centred on the x estimate for both u and v, so sw/57 only
+    resolved near the origin and failed as cut.overlap at (15,15)."""
+    net = _net(f"hexfold 0.2\norigin s\ns: sheet(30,30) + {glyph}@{site}:0\n")
+    assert not net.report.errors()
+    assert sorted(len(r) for r in net.rings if len(r) != 6) == rings

@@ -201,9 +201,21 @@ def test_clash_bar_comes_from_the_profile() -> None:
 # ---------- the seed tier ----------
 
 
-def test_stacked_seed_is_an_error_even_when_stick_untangles_it() -> None:
-    # sheet_sw's placed seed stacks atoms (0.002 A apart); stick happens to
-    # relax it to 1.65 A, so geom.clash alone would call it nearly clean
+def test_stacked_seed_is_an_error_even_when_stick_untangles_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # sheet_sw seeded flat (the pre-C3 seed, kept here as the fixture)
+    # stacks atoms 0.002 A apart; stick happens to relax it to 1.65 A, so
+    # geom.clash alone would call it nearly clean
+    import hexfold.build as hb
+
+    monkeypatch.setattr(
+        hb,
+        "_disclination_seed",
+        lambda patch: {
+            v: np.array([p[0], p[1], 0.0]) for v, p in patch.flatpos.items()
+        },
+    )
     r = check((_EX / "sheet_sw.hx").read_text(encoding="utf-8"), geometry=True)
     summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
     seed = [f for f in r.findings if f.code == "geom.seed_overlap"]
@@ -220,3 +232,50 @@ def test_sound_seeds_raise_no_seed_overlap(name: str) -> None:
     assert not [f for f in r.findings if f.code == "geom.seed_overlap"]
     summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
     assert summary["seed_clash_min"] is None or summary["seed_clash_min"] > 1.0
+
+
+# ---------- the disclination seed (C3) ----------
+
+
+@pytest.mark.parametrize(
+    "defects",
+    [
+        "+ heptagon@(15,15,A):1",
+        "+ heptagon@(20,20,A):1 + heptagon@(8,8,A):4",
+        "+ pentagon@(15,15,A):0",
+        "+ sw@(15,15,A):0",
+        "+ 57@(15,15,A):1",
+    ],
+)
+def test_defected_sheets_seed_and_relax_without_overlap(defects: str) -> None:
+    # a heptagon's wedge copies used to sit on their originals (0.00 A) and
+    # stick left 0.5 A pairs; the seed now turns each cluster by its
+    # intrinsic angle and lifts it onto a saddle or cone
+    r = check(f"hexfold 0.2\norigin s\ns: sheet(30,30) {defects}\n", geometry=True)
+    bad = [
+        f
+        for f in r.findings
+        if f.code == "geom.seed_overlap"
+        or (f.code == "geom.clash" and f.severity == Severity.ERROR)
+    ]
+    assert not bad
+
+
+def test_single_sheet_pentagon_zips() -> None:
+    # the flat seed left the pentagon's seam open at 2.06 A; the cone seed
+    # is isometric, so stick closes it to within a few mA
+    r = check(
+        "hexfold 0.2\norigin s\ns: sheet(30,30) + pentagon@(15,15,A):0\n", geometry=True
+    )
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    assert summary["bond_max"] < 0.05
+
+
+def test_heptagon_seed_does_not_depend_on_authoring_order() -> None:
+    def seed(defects: str) -> np.ndarray:
+        net = build(f"hexfold 0.2\norigin s\ns: sheet(30,30) {defects}\n", strict=False)
+        return np.array(sorted(map(tuple, np.round(np.asarray(net.seed3), 6))))
+
+    a = seed("+ heptagon@(20,20,A):1 + heptagon@(8,8,A):4")
+    b = seed("+ heptagon@(8,8,A):4 + heptagon@(20,20,A):1")
+    assert a.shape == b.shape and np.allclose(a, b, atol=1e-5)

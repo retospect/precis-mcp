@@ -36,30 +36,51 @@ waited on happened 09-29 — note at the bottom)
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
    verdict (2026-10-02 14:55Z, `reviews/hexfold-toolkit.review.md`) sets
    the order:
+   - **Buds on flat hosts landed on the wrong face; the fix (3d17b6179)
+     is built and held for design review** (C4 in
+     `reviews/hexfold-toolkit.md`). Found by nanobuds-paper's hero
+     figure (`~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/hero3.hx`):
+     - a C60 on a flat `cap(12,0)` lid seeded inside the tube below it;
+     - a sheet's [2+2] C60 landed under the sheet.
+     The new `build._flat_bud_sides` takes the face from the host's
+     fuses. After it lands and deploys: tell nanobuds-paper the sha, and
+     regenerate prod `hexa-nanobud-pillar` (structure 459564, a C60 on a
+     flat lid, probably stored as the ball-in-tube).
    - **Seed tier: built 2026-10-02.** `geom.seed_overlap` is an ERROR
      for seed pairs under 0.7 Å, and `geom.summary` gains
      `seed_clash_count`/`seed_clash_min`. Exactly the four seed-wrong
      examples raise it. The bud necks seed at 1.44–1.78 Å; stick is what
      squeezes them.
    - **Next, the seeds**, each measurable now by its seed numbers:
-     - **Any sheet with an authored heptagon stacks its seed, and stick
-       does not fix it** (found 2026-10-02). `sheet(30,30)` +
-       one heptagon: 1,350 seed pairs at 0.00 Å → 742 pairs at 0.53 Å
-       after stick. Two heptagons: 1,045 → 430 at 0.59 Å. A pentagon or
-       a centred Stone–Wales is clean.
-       - Cause: `_patch_seed3` seeds a sheet at its flat lattice
-         positions. A heptagon's inserted 60° wedge has nowhere to go in
-         a plane, so its copies sit on existing atoms. Cones get a lift
-         (`_cone_seed`); negative-curvature sheets get none.
-       - This is capability (a) of gr459928 (authored defects on a
-         sheet), and its only tests check topology. The fix is a saddle
-         lift for heptagon sheets: a seed construction, so a design note
-         goes to review first.
-     - **gr462144** `sheet_sw`: seed 144, 0.002 Å. It is the same
-       mechanism. The Stone–Wales sits at (4,4) of a 12×12 sheet, and
-       its heptagon wedge runs off the edge before the pentagon cancels
-       it; the same defect centred on a 30×30 sheet is clean. Stick
-       happens to untangle it. The saddle seed should cover it.
+     - **Sheets with authored ring defects: the disclination seed is built,
+       verdict LAND (C3, 2026-10-02 23:55Z).** It is held only because
+       3d17b6179 (C4, not yet reviewed) sits below it on the branch.
+       - Commits: bdf890728 (`build._disclination_seed`, charts in
+         `defects.Disclination`), 2dc06f8b1 (tests), 0b96a0dce (sw/57
+         glyphs resolved only near the lattice origin: mechanical).
+       - Measured, new seed vs flat (`hexfold-corner/c3_accept.py`):
+         - Seed pairs under 0.7 Å: none on any sheet (flat 28–344).
+         - No stick clash ERROR on any sheet.
+         - Stick bond deviation: lone heptagon 0.042 Å (0.362); two
+           heptagons 0.112 (0.354); the lone pentagon's seam now zips,
+           0.004 (0.469).
+         - Origin census: identical across five lattice shifts.
+         - Prod has no structure with an authored ring defect.
+         - gr462144 (`sheet_sw` seed 144 pairs at 0.002 Å) is fixed by it:
+           close it after the deploy.
+       - **Next, the K = 0 (net-zero cluster) gap**, its own slice and
+         design note:
+         - Bond deviation is worse than the flat seed: `sheet_sw` 0.178
+           vs 0.123, `57@(15,15):0` 0.213 vs 0.154.
+         - The far field fails the 5% bar: one row of 2.56 Å bonds runs
+           from the core to the edge, the dislocation's whole Burgers
+           vector on one cut.
+         - Fix per the verdict: measure b as the closure failure of a
+           Burgers circuit around the cluster in the seeded positions; add
+           u(θ) = b·(θ − θ₀)/2π with the branch cut along the open row.
+           Check: the circuit then closes to under 0.1 Å.
+         - Add a bud-on-defected-sheet test: `_flat_normals` now sees a
+           heptagon sheet as non-flat, and nothing covers a bud there.
      - **gr462074** `tube_ring_closure`: seed 212 pairs, 0.00 Å. **Not a
        placement bug.** Two straight rigid tubes cannot close a ring, so
        the joint cycle solve stacks `b` exactly on `a` (centroid distance

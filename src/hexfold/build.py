@@ -9,6 +9,7 @@ every component (code ``internal.euler``).
 
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import math
@@ -631,6 +632,7 @@ def _patch_seed3(patch: Patch, lat: Lattice) -> tuple[dict[Vid, np.ndarray], str
         return out, "cylinder"
     if patch.cone_p is not None:
         return _cone_seed(patch, lat), "cone"
+    lifted = _disclination_seed(patch) if patch.discl else None
     out = {}
     for v, p in patch.flatpos.items():
         if isinstance(v, Site):
@@ -638,8 +640,174 @@ def _patch_seed3(patch: Patch, lat: Lattice) -> tuple[dict[Vid, np.ndarray], str
         else:
             t = cast(tuple, v)
             u, w = int(t[2]), int(t[3])
-        out[v] = np.array([p[0], p[1], 0.05 * sig * math.sin(u) * math.cos(w)])
-    return out, "flat-perturbed"
+        ripple = np.array([0.0, 0.0, 0.05 * sig * math.sin(u) * math.cos(w)])
+        base = lifted[v] if lifted is not None else np.array([p[0], p[1], 0.0])
+        out[v] = base + ripple
+    return out, "disclination" if lifted is not None else "flat-perturbed"
+
+
+@functools.lru_cache(maxsize=8)
+def _saddle_table(k: int) -> tuple[np.ndarray, np.ndarray, float]:
+    """Unit-sphere saddle curve u(t) = (cos t, sin t, b cos 2t)/|.| whose
+    length is 2*pi*(6+k)/6, as (t samples, cumulative arc length, b).
+
+    The cone over this curve is isometric to the 360+60k deg sheet around
+    an inserted wedge: an atom at intrinsic (r, phi) sits at r*u(t) with t
+    the arc-length inverse of phi.
+    """
+    t = np.linspace(0.0, 2.0 * math.pi, 4097)
+    target = 2.0 * math.pi * (6 + k) / 6.0
+
+    def curve(b: float) -> np.ndarray:
+        u = np.stack([np.cos(t), np.sin(t), b * np.cos(2.0 * t)], axis=1)
+        return u / np.linalg.norm(u, axis=1)[:, None]
+
+    def length(b: float) -> float:
+        return float(np.linalg.norm(np.diff(curve(b), axis=0), axis=1).sum())
+
+    lo, hi = 0.0, 1.0
+    while length(hi) < target:
+        hi *= 2.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if length(mid) < target else (lo, mid)
+    b = 0.5 * (lo + hi)
+    seg = np.linalg.norm(np.diff(curve(b), axis=0), axis=1)
+    return t, np.concatenate([[0.0], np.cumsum(seg)]), b
+
+
+def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
+    """Sheet seed that unstacks inserted wedges (C3, gr459567).
+
+    Ring defects whose cores lie within 2.3 lattice cells (4 sigma) of each
+    other, by single linkage, form one cluster -- a 5-7 glyph or a
+    Stone-Wales quad, whose cores sit one cell apart; a lone defect is its
+    own.  Two authored heptagons within that radius therefore merge into
+    one K = 2 cluster with a single saddle of order 2 about their centre.
+    Each cluster gets one intrinsic angle about its centre: the flat angle
+    from a reference direction clear of every member's cut, plus each
+    member's (intrinsic - flat) offset from its own chart -- +60 past a
+    heptagon's copies, -60 past a pentagon's gap.  The cluster's net charge
+    K maps that 360+60K deg onto 360: by the saddle curve's arc length
+    (K > 0), uniformly (K < 0), or not at all (K = 0, a dislocation: the
+    offsets alone close the gap and unstack the copies).  The turns are
+    summed over clusters as displacements, so the result does not depend
+    on surgery order.  On top, a charged cluster's lift -- the isometric
+    saddle (K > 0) or cone (K < 0) minus the flat point -- is blended out
+    between 1/4 and 1/2 of the distance to the nearest other cluster; a
+    lone cluster keeps it to the sheet edge.
+    """
+    recs = patch.discl
+    clusters: list[list[int]] = []
+    link = 4.0 * patch.lat.sigma_A
+    for i, r in enumerate(recs):
+        hit = [
+            c
+            for c in clusters
+            if any(float(np.linalg.norm(r.core - recs[j].core)) <= link for j in c)
+        ]
+        merged = [i] + [j for c in hit for j in c]
+        clusters = [c for c in clusters if c not in hit] + [sorted(merged)]
+    centres = [np.mean([recs[j].core for j in c], axis=0) for c in clusters]
+    reach: list[float | None] = []
+    for ci, c0 in enumerate(centres):
+        ds = [
+            float(np.linalg.norm(c0 - c1)) for cj, c1 in enumerate(centres) if cj != ci
+        ]
+        reach.append(0.5 * min(ds) if ds else None)
+    refs = [_clear_direction([recs[j] for j in c]) for c in clusters]
+
+    def flat_deg(v: np.ndarray, o: np.ndarray) -> float:
+        return math.degrees(math.atan2(float(v[1] - o[1]), float(v[0] - o[0])))
+
+    out: dict[Vid, np.ndarray] = {}
+    for v, p in patch.flatpos.items():
+        xy = np.asarray(p, dtype=float)[:2]
+        disp = np.zeros(2)
+        lift = np.zeros(3)
+        for c, centre, ref, h in zip(clusters, centres, refs, reach, strict=True):
+            rel = xy - centre
+            s = float(np.linalg.norm(rel))
+            if s < 1e-9:
+                continue
+            off = (flat_deg(xy, centre) - ref) % 360.0
+            big_k = 0
+            phi_tot = off
+            for j in c:
+                r = recs[j]
+                big_k += r.k
+                w = 60.0 * abs(r.k)
+                total = 360.0 + 60.0 * r.k
+                x = (flat_deg(xy, r.core) - r.ray) % 360.0
+                x_ref = (ref - r.ray) % 360.0
+                phi = r.phi.get(v)
+                if phi is None:
+                    phi = x if r.k > 0 else (x - w) % 360.0
+                phi_ref = x_ref if r.k > 0 else (x_ref - w) % 360.0
+                d_flat = (x - x_ref) % 360.0
+                d_int = (phi - phi_ref) % total
+                # keep this core's branch on the centre's side of the ref ray
+                if d_flat - off > 180.0:
+                    d_flat -= 360.0
+                    d_int -= total
+                elif off - d_flat > 180.0:
+                    d_flat += 360.0
+                    d_int += total
+                phi_tot += d_int - d_flat
+            total_c = 360.0 + 60.0 * big_k
+            if big_k > 0:
+                tt, cum, b = _saddle_table(big_k)
+                e = float(np.interp(math.radians(phi_tot), cum, tt))
+                u = np.array([math.cos(e), math.sin(e), b * math.cos(2.0 * e)])
+                loc = s * (
+                    u / np.linalg.norm(u) - np.array([math.cos(e), math.sin(e), 0.0])
+                )
+            elif big_k < 0:
+                e = math.radians(phi_tot * 360.0 / total_c)
+                sin_psi = total_c / 360.0
+                cos_psi = math.sqrt(max(0.0, 1.0 - sin_psi * sin_psi))
+                loc = s * np.array(
+                    [
+                        (sin_psi - 1.0) * math.cos(e),
+                        (sin_psi - 1.0) * math.sin(e),
+                        -cos_psi,
+                    ]
+                )
+            else:
+                e = math.radians(phi_tot)
+                loc = np.zeros(3)
+            dt = e - math.radians(off)
+            cs, sn = math.cos(dt), math.sin(dt)
+            disp += (
+                np.array([cs * rel[0] - sn * rel[1], sn * rel[0] + cs * rel[1]]) - rel
+            )
+            fade = 1.0
+            if h is not None:
+                q = min(1.0, max(0.0, (s - 0.5 * h) / (0.5 * h)))
+                fade = 1.0 - q * q * (3.0 - 2.0 * q)
+            if big_k != 0 and fade > 0.0:
+                cr, sr = math.cos(math.radians(ref)), math.sin(math.radians(ref))
+                lift += fade * np.array(
+                    [cr * loc[0] - sr * loc[1], sr * loc[0] + cr * loc[1], loc[2]]
+                )
+        out[v] = np.array([xy[0] + disp[0], xy[1] + disp[1], 0.0]) + lift
+    return out
+
+
+def _clear_direction(members: list[Any]) -> float:
+    """Reference direction (deg) farthest from every member's cut sector
+    [ray, ray + 60|k|]; ties go to the smallest angle."""
+    best, best_gap = 0.0, -1.0
+    for step in range(72):
+        a = 5.0 * step
+        gap = 360.0
+        for r in members:
+            x = (a - r.ray) % 360.0
+            w = 60.0 * abs(r.k)
+            gap = min(gap, 0.0 if x <= w else min(x - w, 360.0 - x))
+        if gap > best_gap + 1e-9:
+            best, best_gap = a, gap
+    return best
 
 
 def _cone_seed(patch: Patch, lat: Lattice) -> dict[Vid, np.ndarray]:
