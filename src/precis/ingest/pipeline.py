@@ -43,7 +43,7 @@ from precis.ingest.db_writer import ChunkToWrite, PaperToWrite
 from precis.ingest.lookup import lookup_doi
 from precis.ingest.marker import extract_blocks_marker
 from precis.ingest.pdf_metadata import DoiProvenance, extract_metadata_from_sources
-from precis.ingest.semantic_scholar import lookup_s2
+from precis.ingest.semantic_scholar import get_paper_by_id
 from precis.utils.authors import author_names as _shared_author_names
 from precis.utils.authors import normalize_authors
 from precis.utils.boilerplate import ChunkClass, classify_chunks
@@ -691,17 +691,28 @@ def fetch_paper_by_arxiv(
 ) -> PaperToWrite:
     """Build a metadata-only :class:`PaperToWrite` from an arXiv ID.
 
-    Hits Semantic Scholar's ``arxiv:`` lookup. CrossRef is *not*
-    consulted because arXiv preprints often lack DOIs at submission
-    time; S2's index is the authoritative source.
+    Hits Semantic Scholar's direct ``arXiv:<id>`` paper endpoint. CrossRef
+    is *not* consulted because arXiv preprints often lack DOIs at
+    submission time; S2's index is the authoritative source.
+
+    The result must carry the requested id in its ``ArXiv`` externalId:
+    this lane used to send ``arxiv:<id>`` to S2's free-text title search
+    and keep the top hit, which bound an unrelated 2019 paper to
+    2405.20258 (2026-08-25 mis-ingest).
     """
     normalised = normalize_arxiv(arxiv_id)
     if not normalised:
         raise ValueError(f"Invalid arXiv ID: {arxiv_id!r}")
 
-    result = lookup_s2(f"arxiv:{normalised}", api_key=s2_api_key)
+    result = get_paper_by_id(f"arXiv:{normalised}", api_key=s2_api_key)
     if result is None:
         raise ValueError(f"arXiv lookup failed (S2 miss): {normalised}")
+    got = normalize_arxiv(result.get("arxiv_id"))
+    if got != normalised:
+        raise ValueError(
+            f"arXiv lookup mismatch: S2 returned arXiv {got!r} "
+            f"for requested {normalised}"
+        )
 
     # S2 frequently has the DOI for the published version; pick it up
     # so future ingests via DOI dedupe to the same ref.

@@ -763,9 +763,25 @@ class TestFetchPaperByArxiv:
             fetch_paper_by_arxiv("not-an-arxiv-id")
 
     def test_s2_miss_raises(self):
-        with patch("precis.ingest.pipeline.lookup_s2", return_value=None):
+        with patch("precis.ingest.pipeline.get_paper_by_id", return_value=None):
             with pytest.raises(ValueError, match="S2 miss"):
                 fetch_paper_by_arxiv("2401.99999")
+
+    def test_mismatched_arxiv_id_is_rejected(self):
+        # The 2026-08-25 mis-ingest: S2 handed back a different paper.
+        wrong = {"title": "Other", "authors": [], "arxiv_id": "1901.00001"}
+        with patch("precis.ingest.pipeline.get_paper_by_id", return_value=wrong) as get:
+            with pytest.raises(ValueError, match="mismatch"):
+                fetch_paper_by_arxiv("2405.20258")
+        get.assert_called_once_with("arXiv:2405.20258", api_key="")
+
+    def test_result_without_arxiv_id_is_rejected(self):
+        with patch(
+            "precis.ingest.pipeline.get_paper_by_id",
+            return_value={"title": "No ids", "authors": []},
+        ):
+            with pytest.raises(ValueError, match="mismatch"):
+                fetch_paper_by_arxiv("2405.20258")
 
     def test_arxiv_pulls_doi_when_present(self):
         s2_result = {
@@ -774,9 +790,10 @@ class TestFetchPaperByArxiv:
             "year": 2024,
             "abstract": "",
             "doi": "10.1038/preprint",
+            "arxiv_id": "2401.12345v2",  # version suffix normalises away
             "s2_id": "abc123",
         }
-        with patch("precis.ingest.pipeline.lookup_s2", return_value=s2_result):
+        with patch("precis.ingest.pipeline.get_paper_by_id", return_value=s2_result):
             paper = fetch_paper_by_arxiv("2401.12345")
 
         assert paper.arxiv_id == "2401.12345"

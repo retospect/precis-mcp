@@ -19,24 +19,20 @@ states that count a paper as usable when it is not, then metadata.
    `meta.glyph_health` rows after deploy, re-analyse the stored PDFs to get
    a real count, then Reto rules on recovery. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
-2. **`backlog/arxiv-add-lane-text-search-mismatch.md`** — still open:
-   `lookup_s2("arxiv:<id>")` goes to S2 free-text search and keeps the top
-   hit unchecked, so `add --arxiv` can bind the wrong paper to a requested
-   id. Silent corruption, but low frequency (manual lane; 1 known row).
-3. **gr453860** — 947 papers have a PDF and no body (914 on 09-27). Every
+2. **gr453860** — 947 papers have a PDF and no body (914 on 09-27). Every
    surface counts them as held. Visibility has shipped; still open are a
    journal reason, a heal and the pdf_sha256-as-usable call-site audit.
-   Ranked above 4: this one inflates "usable", 4 only mis-buckets stubs.
-4. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
+   Ranked above 3: this one inflates "usable", 3 only mis-buckets stubs.
+3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy, yet they count as pending. Needed: a cooling bucket, a
    manual-retrieval list, and an acquire re-stamp guard. It also owns
    gr453862's stub-readout remainder.
-5. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
-   body is a 1-page preview. Same "looks done, isn't" shape as 3. Ranked
+4. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
+   body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.
-6. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
+5. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
-7. **gr456181** — 4,313 S2-enriched papers have no venue (2,477 have a
+6. **gr456181** — 4,313 S2-enriched papers have no venue (2,477 have a
    DOI). The code fix is deployed. The re-arm of `s2_enriched_at` is a bulk
    prod write that needs Reto's go. Metadata only, no body harmed.
 
@@ -52,7 +48,7 @@ states that count a paper as usable when it is not, then metadata.
 5. **`backlog/acquisition-marker-lives-in-the-wrong-place.md`** — backfill
    done; the prose-grep cleanup remains.
 6. **`backlog/oa-acquisition-roadmap.md`** — new OA legs and bulk arms,
-   after the counting bugs (3, 4) make the yield measurable.
+   after the counting bugs (2, 3) make the yield measurable.
 7. **`backlog/ms-teams-paper-feed.md`** — Teams channels as an ingest
    source; pillar 4, 2026-10-01.
 8. **`backlog/april-corpus-nas-migration.md`** — 5,335 April-era PDFs never
