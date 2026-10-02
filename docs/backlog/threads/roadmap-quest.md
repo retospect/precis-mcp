@@ -19,9 +19,16 @@ the extraction-window fix deploys.
 
 1. **Watch the first supply tick after the round deploys the extraction
    fix** (3b032a98d: `_paper_servers` newest-first, plus a prompt clause
-   rejecting a method's own measurement uncertainty). Before it, both
-   qu453869 supply numbers were pa459574's SAXS uncertainty (1.2 nm), read
-   through an oldest-first 8-of-33 paper window. The repair is DONE
+   rejecting a method's own measurement uncertainty) and the verbatim-quote
+   check (in build 2026-10-02, orchestrator verdict
+   `reviews/roadmap-quest.review.md` §2). Root cause, found by the backwards
+   run: pa459574 has 0 chunks (stub, `DREAM:acquire`), so its card was its
+   title only and the model supplied "an uncertainty margin of 1.2 nm" from
+   recall. The check: the quote must be a substring of the card the model
+   was shown; number within rounding plus unit; refuse after `±`; word cues
+   (uncertainty / error / resolution / precision) are held and tagged
+   `review:supply-held`, not refused. Text-less papers are dropped from the
+   findings prompt. The repair is DONE
    2026-10-02 ~12:15Z (Reto approved review item roadmap-quest-1):
    `meta.supply = {}`, rungs td460713 + td460923 `STATUS:won't-do`. If a
    tick re-cites pa459574's 1.2 nm before the deploy, clear `meta.supply`
@@ -39,9 +46,16 @@ the extraction-window fix deploys.
    `SEMANTIC_DISTANCE_FLOOR` (0.65) admits 10 hits for any query in this
    corpus, so `LOCAL_ENOUGH = 3` is never binding and outside search never
    runs. The `drift_per_cycle_nm` supply ticks at 08:36 and 09:57Z came back
-   dry this way. Re-judge after 1's fix ships: if supply stays dry once
-   extraction can see the newly linked papers, escalate to S2 after a dry
-   supply tick on a key, rather than guessing a floor.
+   dry this way. ACCEPTED (orchestrator 2026-10-02): wait for one supply
+   tick after the deploy; if it is still dry, build "escalate on a dry tick
+   for that key". After a supply tick on (capability, key) writes nothing,
+   the next supply tick on that key runs the external leg whatever the
+   local count. Bound: after two dry ticks with the external leg on, stop
+   escalating that key and log it as "not found outside" with the queries
+   used, so it shows as a gap and not as spend. Filed, not to be built now:
+   count a local hit toward `LOCAL_ENOUGH` only when it carries a
+   quantified claim for the key (the better rule; costs a claim read per
+   hit).
 3. **Watch qu453863 ticks after the fix deploys** — `STATUS:active`
    confirmed 10:38Z 10-02. ecefede3's embedder fix is LIVE (every query
    since 04:24Z logs `local 10`, no lexical-only clause). Check: no rung

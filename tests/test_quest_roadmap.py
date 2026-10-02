@@ -10,6 +10,7 @@ materials default is untouched) is ``test_quest_tick.py``'s own pair.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -376,6 +377,7 @@ class TestSupplyRole:
                         "claim": "DNA origami placement achieves 2.1 nm positional accuracy",
                         "value": 2.1,
                         "paper": f"pa{paper}",
+                        "quote": "DNA origami placement achieved 2.1 nm positional accuracy.",
                     }
                 ]
             },
@@ -440,6 +442,216 @@ class TestSupplyRole:
         assert "supply_written" not in result
         assert "supply" not in (store.get_ref(kind="quest", id=cap).meta or {})
         assert result["dry"] is True
+
+    def test_supply_gate_drops_textless_papers_and_checks_every_quote(
+        self, store: Any
+    ) -> None:
+        # pa459574, 2026-10-02: a paper with ZERO chunks yielded a recalled
+        # 1.2 nm that was a method uncertainty. Four findings, one per verdict.
+        root, cap = make_root(store, demand=2.0, supply=None)
+        empty = store.insert_ref(
+            kind="paper", slug="empty01", title="Paper empty01", meta={}
+        ).id
+        refuse_body = "Placement was reproducible across all 40 origami tiles."
+        hold_body = "An uncertainty margin of 1.2 nm was estimated by SAXS."
+        ok_body = "DNA origami placement achieved 2.1 nm positional accuracy."
+        refused = seed_paper(store, cite_key="refuse01", body=refuse_body)
+        held = seed_paper(store, cite_key="hold01", body=hold_body)
+        ok = seed_paper(store, cite_key="ok01", body=ok_body)
+        for pid in (empty, refused, held, ok):
+            store.add_link(src_ref_id=pid, dst_ref_id=cap, relation="serves")
+        client = ScriptedClient(
+            {"searches": ["positional accuracy"]},
+            {
+                "findings": [
+                    # Recalled number, paraphrased quote (min sense: 0.5 would win).
+                    {
+                        "claim": "Placement reaches 0.5 nm",
+                        "value": 0.5,
+                        "paper": f"pa{refused}",
+                        "quote": "Placement reaches 0.5 nm.",
+                    },
+                    {
+                        "claim": "Placement uncertainty is 1.2 nm",
+                        "value": 1.2,
+                        "paper": f"pa{held}",
+                        "quote": hold_body,
+                    },
+                    {
+                        "claim": "DNA origami placement achieves 2.1 nm",
+                        "value": 2.1,
+                        "paper": f"pa{ok}",
+                        "quote": ok_body,
+                    },
+                    # The text-less paper is not in the prompt, so not citable.
+                    {
+                        "claim": "Placement reaches 0.1 nm",
+                        "value": 0.1,
+                        "paper": f"pa{empty}",
+                        "quote": "Placement reaches 0.1 nm.",
+                    },
+                ]
+            },
+        )
+        result = rt.roadmap_tick(store, client, root, search_fn=lambda s, q, ex: [])
+        prompt = client.prompts[1]
+        # (the search prompt still counts it among the papers already held)
+        assert not re.search(rf"\bpa{empty}\b", prompt) and ok_body in prompt
+        assert (result["refused"], result["held"]) == (1, 1)
+        assert "1 refused, 1 held" in result["note"]
+        assert len(result["hubs"]) == 2  # held + ok; the refused one minted none
+        hub_by_title = {}
+        for h in result["hubs"]:
+            ref = store.get_ref(kind="finding", id=int(h[2:]))
+            hub_by_title[ref.title] = int(h[2:])
+        assert set(hub_by_title) == {
+            "Placement uncertainty is 1.2 nm",
+            "DNA origami placement achieves 2.1 nm",
+        }
+        held_hub = hub_by_title["Placement uncertainty is 1.2 nm"]
+        ok_hub = hub_by_title["DNA origami placement achieves 2.1 nm"]
+        assert "review:supply-held" in _tags(store, held_hub)
+        assert "review:supply-held" not in _tags(store, ok_hub)
+        held_entries = [
+            e for e in _entries(store, cap, "observation") if "HELD" in e.text
+        ]
+        assert len(held_entries) == 1
+        assert hold_body in held_entries[0].text
+        assert "uncertainty cue" in held_entries[0].text
+        assert f"pa{held}" in held_entries[0].text
+        # Only the ok finding feeds the supply; the held 1.2 and refused 0.5
+        # would each have won under sense=min had they counted.
+        assert result["supply_written"] == {
+            "key": KEY,
+            "value": 2.1,
+            "evidence": [f"fi{ok_hub}"],
+        }
+        cap_ref = store.get_ref(kind="quest", id=cap)
+        assert cap_ref.meta["supply"][KEY]["value"] == 2.1
+        # The ok hub is grounded at the card's chunk.
+        (chunk,) = store.chunks.list_chunks_for_ref(ok)
+        links = store.links_for(ok_hub, direction="in") + store.links_for(
+            ok_hub, direction="out"
+        )
+        assert f"pc{chunk.id}" in [(ln.meta or {}).get("source_handle") for ln in links]
+
+    def test_supply_gate_refusal_alone_leaves_the_tick_dry(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        p = seed_paper(store, cite_key="para01", body="Tiles were reproducible.")
+        client = ScriptedClient(
+            {"searches": ["x"]},
+            {
+                "findings": [
+                    {
+                        "claim": "Placement reaches 0.5 nm",
+                        "value": 0.5,
+                        "paper": f"pa{p}",
+                        "quote": "Placement reaches 0.5 nm.",
+                    }
+                ]
+            },
+        )
+        result = rt.roadmap_tick(
+            store, client, root, search_fn=lambda s, q, ex: [(p, 1.0)]
+        )
+        assert result["refused"] == 1 and result["hubs"] == []
+        assert "supply_written" not in result
+        assert "supply" not in (store.get_ref(kind="quest", id=cap).meta or {})
+        assert result["dry"] is True
+
+
+class TestCheckSupplyQuote:
+    @staticmethod
+    def _check(
+        quote: str, text: str, value: float = 1.2, unit: str | None = "nm"
+    ) -> tuple[str, str]:
+        r = rt.check_supply_quote(quote, text, value, unit)
+        return r.verdict, r.reason
+
+    def test_ok(self) -> None:
+        s = "Tiles landed within 1.2 nm of the target site."
+        assert self._check(s, "Intro. " + s + " More.") == ("ok", "")
+
+    def test_whitespace_collapsed_in_the_substring_test(self) -> None:
+        text = "Tiles landed within\n  1.2 nm of the\ttarget."
+        assert self._check("Tiles landed within 1.2 nm of the target.", text)[0] == "ok"
+
+    def test_paraphrase_is_refused(self) -> None:
+        text = "Tiles landed within 1.2 nm of the target site."
+        assert self._check("Tiles hit 1.2 nm of the target site.", text) == (
+            "refuse",
+            "quote not in the paper text",
+        )
+
+    def test_case_is_significant(self) -> None:
+        assert self._check("tiles within 1.2 nm", "Tiles within 1.2 nm")[0] == "refuse"
+
+    def test_empty_card_text_is_refused(self) -> None:
+        # The pa459574 shape: a title-only card has no text to quote from.
+        assert self._check("Placement of 1.2 nm.", "") == (
+            "refuse",
+            "quote not in the paper text",
+        )
+        assert self._check("", "Some text 1.2 nm")[0] == "refuse"
+
+    def test_value_absent_is_refused(self) -> None:
+        s = "Tiles landed within 3.4 nm of the target."
+        assert self._check(s, s) == ("refuse", "value not stated in the quote")
+
+    def test_unit_absent_is_refused(self) -> None:
+        s = "Tiles landed within 1.2 of the target."
+        assert self._check(s, s) == ("refuse", "unit not stated with the value")
+        s2 = "Tiles landed within 1.2 s of the target."
+        assert self._check(s2, s2)[0] == "refuse"
+
+    def test_no_unit_determined_skips_the_unit_rule(self) -> None:
+        s = "The count was 1.2 per tile."
+        assert self._check(s, s, unit=None)[0] == "ok"
+
+    def test_plus_minus_value_is_refused(self) -> None:
+        for sign in ("±", "± ", "+/-", "+-", "∓"):
+            s = f"Position was 5.1 {sign}1.2 nm overall."
+            assert self._check(s, s) == (
+                "refuse",
+                "value is an uncertainty (±)",
+            ), sign
+
+    def test_uncertainty_cue_holds(self) -> None:
+        s = "An uncertainty margin of 1.2 nm was estimated."
+        assert self._check(s, s) == ("hold", "uncertainty cue: uncertainty")
+        s2 = "The 1.2 nm precision of the stage limits this."
+        assert self._check(s2, s2) == ("hold", "uncertainty cue: precision")
+
+    def test_cue_beyond_the_window_does_not_hold(self) -> None:
+        s = "Tiles landed within 1.2 nm of the target" + " site" * 20 + ", error free."
+        assert self._check(s, s)[0] == "ok"
+
+    def test_angstrom_converts_to_the_axis_unit(self) -> None:
+        s = "Tiles landed within 12 Å of the target."
+        assert self._check(s, s) == ("ok", "")
+        # 12 Å is 1.2 nm, not 12 nm.
+        assert self._check(s, s, value=12.0)[0] == "refuse"
+
+    def test_rounding_tolerance(self) -> None:
+        s = "Tiles landed within 1.2 nm of the target."
+        assert self._check(s, s, value=1.24)[0] == "ok"
+        assert self._check(s, s, value=1.3) == (
+            "refuse",
+            "value not stated in the quote",
+        )
+        s2 = "Tiles landed within 12 nm of the target."
+        assert self._check(s2, s2, value=12.3)[0] == "ok"
+
+    def test_thousands_separator(self) -> None:
+        s = "The scaffold spans 1,200 nm end to end."
+        assert self._check(s, s, value=1200.0)[0] == "ok"
+
+    def test_axis_unit_from_the_key_suffix(self) -> None:
+        assert rt._axis_unit("placement_error_nm", None) == "nm"
+        assert rt._axis_unit("generation_time_s", None) == "s"
+        assert rt._axis_unit("operating_stability_hours", None) == "hours"
+        assert rt._axis_unit("yield_fraction", None) is None
+        assert rt._axis_unit("force_pn", "pN") == "pN"
 
 
 # ── AC3: bridge role ──────────────────────────────────────────────────

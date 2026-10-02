@@ -76,7 +76,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.quest import roadmap_ledger as ledger
 from precis.quest.dossier import (
@@ -134,6 +134,8 @@ RUNG_TAGS: tuple[str, ...] = ("STATUS:open", "waiting-for:reto")
 #: Cap on the paper cards fed to the supply role's second call.
 _SUPPLY_MAX_PAPERS = 8
 _SUPPLY_CARD_CHARS = 900
+#: Open tag on a finding hub whose supply quote raised an uncertainty cue.
+_SUPPLY_HELD_TAG = "review:supply-held"
 #: Cap on the sibling rungs listed in the bridge prompt.
 _BRIDGE_MAX_RUNGS = 30
 
@@ -470,28 +472,56 @@ def _supply_search_prompt(store: Store, root: Ref, choice: RoleChoice) -> str:
     )
 
 
-def _paper_card(store: Store, paper: Ref) -> str:
-    text = ""
+@dataclass(frozen=True)
+class SupplyCard:
+    """One paper as the findings prompt shows it: the exact ``text`` the model
+    read and the ``chunk_id`` it came from. ``text`` empty = a title-only
+    card (no body chunk), which the findings prompt leaves out."""
+
+    paper: Ref
+    text: str
+    chunk_id: int | None
+
+    def render(self) -> str:
+        head = (
+            f"- {_handle('paper', self.paper.id)} "
+            f"{(self.paper.title or '').splitlines()[0][:120]}"
+        )
+        return f"{head}\n  {self.text}" if self.text else head
+
+
+def _paper_card(store: Store, paper: Ref) -> SupplyCard:
+    text, chunk_id = "", None
     try:
         for b in store.chunks.list_chunks_for_ref(paper.id):
             if b.chunk_kind == _LOG_KIND:
                 continue
-            text = (b.text or "").strip()
+            text = (b.text or "").strip()[:_SUPPLY_CARD_CHARS]
             if text:
+                chunk_id = b.id
                 break
     except Exception:
-        text = ""
-    head = f"- {_handle('paper', paper.id)} {(paper.title or '').splitlines()[0][:120]}"
-    return f"{head}\n  {text[:_SUPPLY_CARD_CHARS]}" if text else head
+        text, chunk_id = "", None
+    return SupplyCard(paper=paper, text=text, chunk_id=chunk_id)
 
 
-def _supply_findings_prompt(store: Store, choice: RoleChoice, papers: list[Ref]) -> str:
-    cards = "\n".join(_paper_card(store, p) for p in papers[:_SUPPLY_MAX_PAPERS])
+def _supply_cards(store: Store, papers: list[Ref]) -> list[SupplyCard]:
+    """Cards for the findings prompt: papers with body text only (a title-only
+    card invites a number recalled from memory — pa459574, 2026-10-02), the
+    :data:`_SUPPLY_MAX_PAPERS` cap applied AFTER that drop, order kept."""
+    cards = (_paper_card(store, p) for p in papers)
+    return [c for c in cards if c.text][:_SUPPLY_MAX_PAPERS]
+
+
+def _supply_findings_prompt(
+    store: Store, choice: RoleChoice, cards: list[SupplyCard]
+) -> str:
+    rendered = "\n".join(c.render() for c in cards)
     unit = f" {choice.unit}" if choice.unit else ""
     return (
         f"## Capability {choice.capability}\n{_statement(choice)}\n"
         f"{_axis_line(choice)}\n\n"
-        f"## Papers\n{cards}\n\n"
+        f"## Papers\n{rendered}\n\n"
         "## Task\n"
         f"From these papers only, extract every quantified claim that reports "
         f"a value of `{choice.key}`{unit}. Each claim is ONE sentence carrying "
@@ -500,9 +530,123 @@ def _supply_findings_prompt(store: Store, choice: RoleChoice, papers: list[Ref])
         "measurement method's own uncertainty, resolution or error bar is not "
         "a value of the axis. Return STRICT JSON:\n"
         '{"findings": [{"claim": "<one sentence with the number>", '
-        '"value": <number>, "paper": "pa<id>"}]}\n'
+        '"value": <number>, "paper": "pa<id>", '
+        '"quote": "<the sentence from the paper text above that states the '
+        'number, copied verbatim>"}]}\n'
         "An empty list is a valid answer when no paper reports the axis."
     )
+
+
+# ── supply quote check ────────────────────────────────────────────────
+
+#: Axis-unit suffixes of a key (``placement_error_nm`` → ``nm``) when the
+#: capability carries no explicit unit.
+_KEY_UNIT_SUFFIXES = frozenset({"nm", "s", "hours", "days", "um", "pm"})
+
+#: Length-unit spellings → nanometres. One table: a number written in any of
+#: these is compared to the value after conversion when the axis is a length.
+_LENGTH_TO_NM: dict[str, float] = {
+    "nm": 1.0,
+    "å": 0.1,
+    "angstrom": 0.1,
+    "angstroms": 0.1,
+    "pm": 0.001,
+    "µm": 1000.0,
+    "μm": 1000.0,
+    "um": 1000.0,
+}
+
+_NUMBER_RE = re.compile(r"(?<![\w.])\d+(?:,\d{3})*(?:\.(\d+))?")
+_PLUS_MINUS = ("±", "+/-", "+-", "∓")
+_UNCERTAINTY_CUE_RE = re.compile(
+    r"\b(?:uncertaint|error|resolution|precision)\w*", re.IGNORECASE
+)
+_CUE_WINDOW = 60
+
+
+@dataclass(frozen=True)
+class SupplyQuoteCheck:
+    verdict: Literal["ok", "refuse", "hold"]
+    reason: str = ""
+
+
+def _collapse_ws(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _axis_unit(key: str, unit: str | None) -> str | None:
+    if unit and unit.strip():
+        return unit.strip()
+    suffix = key.rsplit("_", 1)[-1] if "_" in key else ""
+    return suffix if suffix in _KEY_UNIT_SUFFIXES else None
+
+
+def _follows_unit(rest: str, unit: str) -> bool:
+    """True when ``rest`` (text after a number) starts, after optional
+    whitespace, with ``unit`` as a whole word (``nm`` is not ``nmol``)."""
+    tail = rest.lstrip().lower()
+    u = unit.lower()
+    return tail.startswith(u) and not (len(tail) > len(u) and tail[len(u)].isalpha())
+
+
+def _following_length_unit(rest: str) -> str | None:
+    for u in sorted(_LENGTH_TO_NM, key=len, reverse=True):
+        if _follows_unit(rest, u):
+            return u
+    return None
+
+
+def check_supply_quote(
+    quote: str, card_text: str, value: float, unit: str | None
+) -> SupplyQuoteCheck:
+    """Deterministic gate between a model-extracted supply value and the paper
+    text it claims to come from. ``unit`` is the resolved axis unit
+    (:func:`_axis_unit`); ``None`` skips the unit rule. Rules, in order:
+    quote must be verbatim in ``card_text`` (whitespace-collapsed); a number
+    in it must equal ``value`` within its written rounding (length units
+    converted); the unit must follow it; a ``±`` number is an uncertainty
+    (refuse); an uncertainty cue word near the number holds for review."""
+    q = _collapse_ws(quote or "")
+    if not q or q not in _collapse_ws(card_text or ""):
+        return SupplyQuoteCheck("refuse", "quote not in the paper text")
+
+    axis = unit.lower() if unit else None
+    to_nm = _LENGTH_TO_NM.get(axis) if axis else None
+    # (start, end, unit_ok) of every number in the quote that equals ``value``
+    # within the rounding it was written at.
+    matches: list[tuple[int, int, bool]] = []
+    for m in _NUMBER_RE.finditer(q):
+        n = float(m.group(0).replace(",", ""))
+        tol = 0.5 * 10 ** -len(m.group(1) or "")
+        rest = q[m.end() :]
+        follow = _following_length_unit(rest)
+        if to_nm is not None and follow is not None:
+            f = _LENGTH_TO_NM[follow]
+            if abs(n * f - value * to_nm) > tol * f + 1e-9:
+                continue
+        elif abs(n - value) > tol + 1e-9:
+            continue
+        if unit is None:
+            unit_ok = True
+        else:
+            unit_ok = _follows_unit(rest, unit) or (
+                to_nm is not None and follow is not None
+            )
+        matches.append((m.start(), m.end(), unit_ok))
+    if not matches:
+        return SupplyQuoteCheck("refuse", "value not stated in the quote")
+    matches = [m for m in matches if m[2]]
+    if not matches:
+        return SupplyQuoteCheck("refuse", "unit not stated with the value")
+    plain = [m for m in matches if not q[: m[0]].rstrip().endswith(_PLUS_MINUS)]
+    if not plain:
+        return SupplyQuoteCheck("refuse", "value is an uncertainty (±)")
+    for start, end, _ in plain:
+        window = q[max(0, start - _CUE_WINDOW) : end + _CUE_WINDOW]
+        cue = _UNCERTAINTY_CUE_RE.search(window)
+        if cue:
+            return SupplyQuoteCheck("hold", f"uncertainty cue: {cue.group(0).lower()}")
+    return SupplyQuoteCheck("ok")
 
 
 def _bridge_prompt(
@@ -695,6 +839,37 @@ def _run_demand(
     }
 
 
+def _hold_supply_finding(
+    store: Store,
+    choice: RoleChoice,
+    hub_id: int,
+    paper: str,
+    value: float,
+    reason: str,
+    quote: str,
+) -> None:
+    """A held finding keeps its hub (grounded) but is tagged for review and
+    logged on the capability; it never counts toward the supply value."""
+    from precis.store import Tag
+
+    try:
+        store.add_tag(hub_id, Tag.open(_SUPPLY_HELD_TAG), set_by="agent")
+    except Exception:
+        log.exception("roadmap_tick: could not tag held hub fi%s", hub_id)
+    unit = f" {choice.unit}" if choice.unit else ""
+    append_entry(
+        store,
+        choice.capability_id,
+        text=(
+            f"supply on `{choice.key}` HELD for review ({reason}): "
+            f"{value:g}{unit} from {paper}, hub {_handle('finding', hub_id)}; "
+            f"quote: {quote.strip()}"
+        ),
+        entry_type="observation",
+        by="agent",
+    )
+
+
 def _run_supply(
     store: Store,
     client: Any,
@@ -730,15 +905,20 @@ def _run_supply(
     hubs: list[str] = []
     best: float | None = None
     best_evidence: list[str] = []
-    if papers:
-        reply2 = _ask(client, _supply_findings_prompt(store, choice, papers))
+    refused = held = 0
+    # Papers with no body text never reach the findings prompt: a title-only
+    # card invites a number recalled from memory (pa459574, 2026-10-02).
+    cards = _supply_cards(store, papers)
+    if cards:
+        reply2 = _ask(client, _supply_findings_prompt(store, choice, cards))
         raw_findings = reply2.get("findings")
         findings = (
             [f for f in raw_findings if isinstance(f, dict)]
             if isinstance(raw_findings, list)
             else []
         )
-        known = {_handle("paper", p.id) for p in papers}
+        by_handle = {_handle("paper", c.paper.id): c for c in cards}
+        axis_unit = _axis_unit(choice.key, choice.unit)
         from precis.dispatch import Hub
         from precis.handlers.finding import FindingHandler
 
@@ -747,33 +927,63 @@ def _run_supply(
             claim = str(f.get("claim") or "").strip()
             value = _num(f.get("value"))
             paper = str(f.get("paper") or "").strip()
-            if not claim or value is None or paper not in known:
+            card = by_handle.get(paper)
+            if not claim or value is None or card is None:
                 continue
+            quote = str(f.get("quote") or "")
+            check = check_supply_quote(quote, card.text, value, axis_unit)
+            if check.verdict == "refuse":
+                refused += 1
+                log.info(
+                    "roadmap_tick: supply finding refused: paper=%s value=%g: %s",
+                    paper,
+                    value,
+                    check.reason,
+                )
+                continue
+            supporter: dict[str, Any] = {"paper": paper}
+            if card.chunk_id is not None:
+                supporter["source_handle"] = handle_registry.format_handle(
+                    "paper", card.chunk_id, chunk=True
+                )
             try:
                 # dedup=False: the semantic-dedup cascade needs an embedder
                 # this worker-side hub does not carry; a repeated claim
                 # sentence still converges onto the same hub (pub_id).
-                resp = fh.put(title=claim, supporters=[{"paper": paper}], dedup=False)
+                resp = fh.put(title=claim, supporters=[supporter], dedup=False)
             except Exception:
                 log.exception("roadmap_tick: hub mint failed for %r", claim[:80])
                 continue
             m = _HUB_ID_RE.search(resp.body or "")
             if m is None:
                 continue
-            hub = _handle("finding", int(m.group(1)))
+            hub_id = int(m.group(1))
+            hub = _handle("finding", hub_id)
             hubs.append(hub)
+            if check.verdict == "hold":
+                held += 1
+                _hold_supply_finding(
+                    store, choice, hub_id, paper, value, check.reason, quote
+                )
+                continue
             if _improved(best, value, choice.sense):
                 best, best_evidence = value, [hub]
             elif value == best and hub not in best_evidence:
                 best_evidence.append(hub)
 
     note = f"supply: {searches_run} search(es), {papers_linked} paper(s) linked, {len(hubs)} hub(s)"
+    if refused:
+        note += f", {refused} refused"
+    if held:
+        note += f", {held} held"
+    counts = {"refused": refused, "held": held}
     if best is None:
         return {
             "note": note + ", no quantified claim → supply not written",
             "searches_run": searches_run,
             "papers_linked": papers_linked,
             "hubs": hubs,
+            **counts,
         }
     # Only write when it beats (or first fills) the stored supply — a worse
     # citation must not overwrite a better one.
@@ -784,6 +994,7 @@ def _run_supply(
             "searches_run": searches_run,
             "papers_linked": papers_linked,
             "hubs": hubs,
+            **counts,
         }
     supply = _merged_axis_map(store, choice.capability_id, "supply")
     supply[choice.key] = {"value": best, "evidence": best_evidence}
@@ -805,6 +1016,7 @@ def _run_supply(
         "papers_linked": papers_linked,
         "hubs": hubs,
         "supply_written": {"key": choice.key, "value": best, "evidence": best_evidence},
+        **counts,
     }
 
 
