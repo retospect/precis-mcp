@@ -71,7 +71,7 @@ def incumbent_is_tag(summary: str) -> bool:
 
 def row_to_task(row: dict[str, Any], doc_card: str) -> dict[str, Any]:
     """One sampled row (+ its doc card) -> a ``GoldTask`` JSON object."""
-    from precis.workers.llm_summarize import _Claimed, build_messages
+    from precis.workers.llm_summarize import LlmConfig, _Claimed, build_messages
 
     claim = _Claimed(
         chunk_id=int(row["chunk_id"]),
@@ -92,6 +92,9 @@ def row_to_task(row: dict[str, Any], doc_card: str) -> dict[str, Any]:
         "scorer": "summary",
         "prompt": "",
         "messages": build_messages(claim, doc_card=doc_card),
+        # The summariser's production cap (PRECIS_SUMMARIZE_MAX_TOKENS or the
+        # default), so the replay truncates where prod does.
+        "max_tokens": LlmConfig.from_env().max_tokens,
         "expect": {
             "chunk_text": claim.text,
             "nonprose": incumbent_is_tag(incumbent),

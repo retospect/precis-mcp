@@ -51,6 +51,18 @@ class GoldTask:
     tools_needed: bool = False
     #: OpenAI-shaped message list replayed verbatim (``prompt`` is then empty).
     messages: list[dict[str, str]] | None = None
+    #: Completion cap the production caller sends (e.g. the summariser's
+    #: ``LlmConfig.max_tokens``); ``None`` = the router default.
+    max_tokens: int | None = None
+
+
+def _load_max_tokens(raw: Any, where: str) -> int | None:
+    """Validate a task's optional ``max_tokens`` as a positive int."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise BadInput(f"llm eval: {where} 'max_tokens' must be a positive integer")
+    return raw
 
 
 def _load_messages(raw: Any, where: str) -> list[dict[str, str]] | None:
@@ -107,6 +119,7 @@ def load_gold_set(path: str | Path | None = None) -> list[GoldTask]:
                 expect=dict(item.get("expect") or {}),
                 tools_needed=bool(item.get("tools_needed", False)),
                 messages=_load_messages(item.get("messages"), f"gold task #{i}"),
+                max_tokens=_load_max_tokens(item.get("max_tokens"), f"gold task #{i}"),
             )
         )
     return tasks

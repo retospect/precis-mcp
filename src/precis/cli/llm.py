@@ -464,9 +464,11 @@ def _print_number_rule_lines(
         zeros = sum(
             1 for t, ts in ok if summary_number_rule_zero(ts.response, t.expect)
         )
+        capped = sum(1 for _, ts in ok if ts.capped)
         print(
             f"{name}: mean with number rule {with_rule:.3f}, without "
-            f"{without:.3f}, number-rule-only zeros {zeros}/{n}"
+            f"{without:.3f}, number-rule-only zeros {zeros}/{n}, "
+            f"hit the token cap {capped}/{n}"
         )
 
 

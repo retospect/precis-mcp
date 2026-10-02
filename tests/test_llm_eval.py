@@ -439,6 +439,51 @@ def test_placement_match_carries_request_fields_and_keeps_response() -> None:
     assert res.per_task[0].score > 0
 
 
+def test_task_max_tokens_sent_and_capped_reply_flagged() -> None:
+    from dataclasses import replace
+
+    from precis.llm_eval.harness import run_axis
+    from precis.utils.llm.router import Tier
+
+    seen: list[Any] = []
+
+    def _d(req: Any) -> Any:
+        seen.append(req)
+        used = 220 if len(seen) == 1 else 90
+        return SimpleNamespace(
+            text="BRIEF: Took 8 weeks.", data=None, error=None, output_tokens=used
+        )
+
+    t = replace(_task(), max_tokens=220)
+    res = run_axis(
+        [t, replace(t, task_id="t2")], model="m", tier=Tier.SMALL, dispatch_fn=_d
+    )
+    assert [r.max_tokens for r in seen] == [220, 220]
+    assert [ts.capped for ts in res.per_task] == [True, False]
+
+
+def test_gold_max_tokens_must_be_positive_int(tmp_path: Any) -> None:
+    import json
+
+    from precis.errors import BadInput
+    from precis.llm_eval import load_gold_set
+
+    item = {
+        "task_id": "a",
+        "axis": "summarize-extract",
+        "scorer": "summary",
+        "prompt": "p",
+        "max_tokens": 0,
+    }
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps([item]), encoding="utf-8")
+    with pytest.raises(BadInput, match="max_tokens"):
+        load_gold_set(str(p))
+    item["max_tokens"] = 220
+    p.write_text(json.dumps([item]), encoding="utf-8")
+    assert load_gold_set(str(p))[0].max_tokens == 220
+
+
 def test_compare_threads_per_arm_placement_and_endpoint(store: Any) -> None:
     from precis.utils.llm.router import Tier
 

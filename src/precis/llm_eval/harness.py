@@ -42,6 +42,9 @@ class TaskScore:
     error: str | None = None
     #: Raw reply text, kept so a caller can rescore (e.g. without a rule).
     response: str = ""
+    #: The reply used the task's whole ``max_tokens`` budget, so it was likely
+    #: cut off: a low score may measure the cap, not the model.
+    capped: bool = False
 
 
 class PlacementMismatch(Internal):
@@ -122,6 +125,7 @@ def run_axis(
                     endpoint=endpoint,
                     effort=effort,
                     placement=placement,
+                    max_tokens=t.max_tokens,
                     source="llm_eval",
                 )
             )
@@ -144,7 +148,9 @@ def run_axis(
         scorer = SCORERS[t.scorer]
         text = getattr(res, "text", "") or ""
         score = scorer(text, getattr(res, "data", None), t.expect)
-        scored.append(TaskScore(t.task_id, score, response=text))
+        out = getattr(res, "output_tokens", None)
+        capped = t.max_tokens is not None and out is not None and out >= t.max_tokens
+        scored.append(TaskScore(t.task_id, score, response=text, capped=capped))
     ok = [s for s in scored if s.error is None]
     mean = sum(s.score for s in ok) / len(ok) if ok else 0.0
     return AxisResult(
