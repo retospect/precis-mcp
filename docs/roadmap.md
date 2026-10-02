@@ -131,7 +131,11 @@ chemistry's main line today — the catpath engine (`src/precis_pathway`,
 reference engine in the catpath repo) and the pathway explorer — consumed
 by the catalysis quests.
 
-**Threads.** Active: `hexfold-toolkit.md` · `se-3d-viewer.md` ·
+**Threads.** Active: `catalysis-selectivity.md` (created and activated
+2026-10-02, ranked high by Reto: NO→NH₃ must win every fork,
+thermodynamically and kinetically, over a U/pH window, on a complete
+network; plus the explorer's one-step-per-change diagram) ·
+`hexfold-toolkit.md` · `se-3d-viewer.md` ·
 `se-nucleic-chain.md` · `ewod-pcb.md` (also owns the general PCB items —
 "pcb stuff is on the ewod worker") · `pcb-easyeda-round-trip.md` ·
 `nanobuds-paper.md` · `se-machine-design.md` (the se owner, activated

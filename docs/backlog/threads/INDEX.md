@@ -15,7 +15,7 @@ Each programme below serves one or more:
   `graph-memory-consumers` (dormant; owns consumers of that substrate) +
   `claims-and-evidence` (identity and evidence checks of claims) +
   `draft-authoring` (dormant; drafts, export, tex layer).
-- **3d-design** — `pcb` + `se` + `chemistry` + `multiscale-design-core`
+- **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core`
   (dormant) + `se-machine-design` + `pcb-platform` (dormant).
 - **local-compute** — `local-compute` (active 2026-10-01; owns local model
   serving: the summariser and the single-spark model, and what they do) +
@@ -32,7 +32,8 @@ Each programme below serves one or more:
 `monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
 `plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
 `serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
-`claims-and-evidence` · `chemistry` · `se-machine-design` ·
+`claims-and-evidence` · `chemistry` · `catalysis-selectivity` ·
+`se-machine-design` ·
 `local-compute`.
 
 **Dormant** (file exists, ranked, no session — opens at the next session
@@ -100,7 +101,9 @@ Waits:
 ## chemistry — pathways, catalysis, reaction facts
 
 Threads: `chemistry.md` (pillar 3d-design; catalysis lives here, Reto
-2026-10-01). Code: `src/precis_pathway`; `../catpath` is the reference
+2026-10-01) · `catalysis-selectivity.md` (active 2026-10-02, Reto "high
+up": fork selectivity, NH₃ network completeness, U/pH window, decisive-step
+NEB, step-annotated diagram). Code: `src/precis_pathway`; `../catpath` is the reference
 engine.
 
 Seams:
@@ -114,6 +117,11 @@ Seams:
   pathways; chemistry owns the engine's health and output contract and, since
   2026-10-01, the catalysis quests' content (qu164903 ticking, the qu202467
   restart report, gr345366, gr322060).
+- catalysis-selectivity edits the ammonia network content and adds link
+  fields (`added`/`removed`, typed `kind`); chemistry owns the engine
+  contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
+  moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
+  stays chemistry's, catalysis-selectivity decides where NEB runs.
 - hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
   `backlog/structure-kind-demotion.md` (structure kind, se as origin of
   atoms), not chemistry.

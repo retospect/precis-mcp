@@ -58,10 +58,11 @@ it at five; engine-over-UI still holds.
 1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
    state barriers as a pipeline step (barriers, not just thermodynamics);
    waits on the triage to say what the pipeline already carries.
-2. **backlog/catpath-desorption-link-kind.md** — desorption edges are
-   bookkept as ΔE = 0 like H-supply edges, so CHE math cannot tell a real
-   cost from bookkeeping; the fix is a typed link kind on the catpath
-   side, not in precis. Small; same engine-extension family as 1.
+2. **catalysis-selectivity thread** — owns
+   `backlog/catpath-desorption-link-kind.md` since 2026-10-02 (first slice
+   of its step-annotation item) plus the NH₃ network, U/pH selectivity
+   window and NEB promotion items; Reto ranked it high, so its engine
+   edits go ahead of this file's Horizon.
 3. **backlog/autocatpath-aggregate-ran-11h-on-a-33s-job.md** — the
    kinetics ceiling shipped (the subprocess timeout, deploy 2026-09-27;
    `precis_pathway/runner.py`, `tests/test_pathway_kinetics_timeout.py`);
@@ -129,6 +130,10 @@ it at five; engine-over-UI still holds.
 - (none yet)
 
 ## Seam
+
+- **catalysis-selectivity** changes the ammonia network content and adds
+  link fields; this thread keeps the engine contract and the wheel bump.
+  `pathway-viewer-ux-batch.md` item 3 moved there.
 
 - **plugin-split** owns `backlog/pathway-presentation-shared-module.md`
   (its Do-next 6: where shared pathway presentation lives, plus the
