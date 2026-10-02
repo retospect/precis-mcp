@@ -163,19 +163,19 @@ packages, so they are fair game before 10-16.
    tests walk plugin roots read from pyproject (`tests/_skill_roots.py`), and
    `scripts/test`'s entry-point preflight self-heals a stale dev image per
    run (`--heal`), so a future entry-point change needs no rebuild round.
-4. **CLI lazification** — a new `precis.cli` entry-point group, one-line
-   help in entry-point metadata so top-level `--help` stays complete
-   without importing. `cli/main.py:26` eagerly imports **55** subcommand
-   modules (57 files, `taproot.py` 70 K, `quest.py` 25 K, `patent.py` 24 K)
-   and `precis = "precis.cli:main"` makes every invocation pay it. This
-   already caused a cluster outage — tenacity gated behind `[paper]` →
-   `ModuleNotFoundError` → `serve` exits 1 → every node's embedder dead →
-   embed worker crash-loop — which is why tenacity/pysbd/num2words/shapely
-   were promoted to core deps as insurance. **Hard prerequisite**: without
-   it `pip install precis-util precis-catpath` dies importing
-   `precis.cli.taproot`. Filed as its own item with its own
-   justification — `cli-lazy-subcommand-loading.md`; it fixes that outage
-   class whether or not the split happens.
+4. ~~**CLI lazification.**~~ **DONE 2026-10-02** — `precis.cli.registry`
+   names each subcommand's module and one-line help as strings; `main`
+   imports only the invoked command's module and stubs the rest, so
+   `precis --help` imports none of them and a missing optional dependency
+   fails only its own command, by name. Help lives in a manifest rather
+   than entry-point metadata because entry points cannot carry free text.
+   Core commands are read from the manifest directly, never from install
+   metadata, so a stale container still runs `serve`; other distributions
+   add commands through the `precis.cli` entry-point group, each entry
+   resolving to a sequence of `Command`. When a model leaves core, its
+   subcommand rows move into that model's own manifest. Tests:
+   `tests/test_cli_lazy.py`. The four core deps promoted as insurance
+   (tenacity/pysbd/num2words/shapely) stay — demoting them is separate.
 5. ~~**Compatibility contract, with a test.**~~ **DONE 2026-10-01** —
    `precis.protocol.PLUGIN_API` / `PLUGIN_API_MIN` plus
    `KindSpec.plugin_api`, checked by `kind_gate.gate`. Every in-tree
@@ -211,8 +211,10 @@ nothing else in this item covers them.
 8. **Decide whether members publish to PyPI before minting names.**
    Publishing lapsed: `publish.yml` fires on `v*` tags, the last tag is
    v8.4.4, and pyproject is at 8.35.x. Nobody noticed because the cluster
-   installs from the repo. Reto's "release a minimal package" goal makes
-   this live, no longer optional.
+   installs from the repo. **Ruled 2026-10-02 (Reto): publish.** Member
+   wheels go to PyPI starting from precis-util's first release; claim the
+   names on PyPI before the split mints them, and revive `publish.yml`.
+   Step 7 follows from this ruling.
 
 Then, after 10-16, in this order: `hexfold` out (imports nothing — proves
 the mechanics at zero API risk) → `precis_surface` out (one import; fold
@@ -247,8 +249,6 @@ catpath as the reference model.
   and exposes that model's kinds and skills — no precis-mcp installed.
 * The import-boundary test fails on a core→plugin import and on
   cross-plugin SQL.
-* `precis <subcommand> --help` and top-level `--help` work without
-  importing the other 54 subcommand modules.
 * A model built against an older util darks with a message an agent can act
   on, not a traceback and not silence.
 * Migrations still apply in any install order (already structural:
@@ -257,7 +257,6 @@ catpath as the reference model.
 
 ## Target + blast radius
 
-`src/precis/cli/main.py` + all 57 `cli/` modules (step 4) ·
 `src/precis/handlers/skill.py` (already supports step 3; only declarations
 change) · `src/precis/quest/{figures,results_table,compute}.py` (step 2) ·
 `pyproject.toml` entry-point

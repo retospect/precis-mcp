@@ -64,7 +64,7 @@ precis-mcp/
     jobs/                    # job executors (fix_gripe, plan_tick, …)
     embedder*.py             # BGE-M3 wrapper + HTTP service
     cad/ pcb/ structure/     # keystone-kind IR + export
-    cli/                     # subcommand modules
+    cli/                     # subcommand modules; registry.py names each (imported lazily)
     utils/                   # safe_fetch, toc, cluster_map, …
     data/skills/             # on-demand agent docs (precis-*-help)
   tests/                     # pytest suite (mirrors src/ layout)

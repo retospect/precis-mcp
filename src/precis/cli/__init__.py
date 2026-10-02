@@ -12,15 +12,26 @@ top-level ``__init__`` re-exports the symbols external code
 
 Everything else lives in submodules under :mod:`precis.cli`; nothing
 consumed externally by ``from precis.cli import X`` should break.
+``_parse_interval`` resolves on first access, so importing the console
+script does not import :mod:`precis.cli.patent`.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from precis.cli.main import _build_parser, main
-from precis.cli.patent import _parse_interval
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_parse_interval":
+        from precis.cli.patent import _parse_interval
+
+        return _parse_interval
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "_build_parser",
-    "_parse_interval",
     "main",
 ]

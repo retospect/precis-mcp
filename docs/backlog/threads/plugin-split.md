@@ -7,18 +7,22 @@ catpath is the reference model in its own repo — specced in
 `docs/mission.md`'s "machine-usable tools" for agents, since an installed
 model adds kinds to a constant 7-verb surface rather than tools to an
 agent's budget. Module moves are held to 2026-10-16 (Reto's 30-day rule);
-until then only behaviour-neutral prep lands. Steps 1, 2, 3 and 5 of the
-backlog item have landed. Reto's 2026-10-01 rulings are in it:
+until then only behaviour-neutral prep lands. Steps 1–5 of the backlog
+item have landed. Reto's 2026-10-01 rulings are in it:
 package-split superseded, private-until-paper = invisible. The goal is a
 minimal releasable model package that is also fully useful inside precis,
 and deploys that don't take hours for a simple change. Pathway
 presentation work is the same thread by dependency.
 **Last reviewed:** 2026-09-30 (pillar review same day added gr458360 and
 gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
-**Worktree:** `iridescent-watching-reef` (any fresh tree works; nothing is unlanded)
+**Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 
 ## Resume here (2026-10-02)
 
+- **Step 4 is done** (2026-10-02): CLI subcommands load lazily from
+  `precis.cli.registry`; a plugin adds commands via the `precis.cli`
+  entry-point group. Behaviour-neutral at the CLI surface — help output
+  is byte-identical to the eager tree (`tests/test_cli_lazy.py`).
 - **Step 3 is done** (deploy 38; gr459123 closed 2026-10-02 after the
   session MCP's respawn resolved `precis-pathway-help` from the plugin).
   A long-lived container holding old install metadata needs a reinstall or
@@ -42,17 +46,18 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
-   split (installing precis-util + precis-catpath dies importing
-   precis.cli.taproot) and independently closes the outage class that killed
-   every node's embedder. It touches 58 modules. Steps 1, 2, 3 and 5 of
-   `plugin-split-runtime-shell.md` have landed (3 on 2026-10-02: the
-   pathway skill ships from the plugin, gr459123). The import boundary
+1. **backlog/plugin-split-runtime-shell.md step 6** — store-free vs
+   store-backed test split, so a member wheel runs its own suite without a
+   database (2026-09-16 shares: cad 9/25, pcb 13/47, structure 4/16).
+   Behaviour-neutral, so it fits before 10-16. The import boundary still
    carries one grandfathered breach, **gr459054** (`quest/roadmap_tick.py`
    importing `precis_se.handler`); the fix is the quest thread's, and a
-   staleness assertion drops the exemption when they land it. An
-   entry-point change no longer needs a dev-image rebuild round: the ship
-   gate re-syncs on its own and `scripts/test --heal`s per run.
+   staleness assertion drops the exemption when they land it.
+2. **Step 8, ruled 2026-10-02 (Reto): publish to PyPI** from
+   precis-util's first release. Claim the member names before the split
+   mints them and revive `publish.yml` (it lapsed at v8.4.4; pyproject is
+   at 8.35.x). Step 7 (the deploy channel for member wheels) follows from
+   this ruling.
 
 **gr457894 left Do next on 2026-10-01, and this is the correction that
 matters most in this file.** It sat at Do-next 1 for five rounds on the claim
@@ -96,8 +101,7 @@ own item); they become items as each comes into reach.
 4. **backlog/plugin-split-runtime-shell.md**, the precis-geom wheel
    (cad/structure/design/blocktree + se) — waits on 3; the load-bearing
    layer (948 KB, se at 138 geometry imports).
-5. **backlog/plugin-split-runtime-shell.md +
-   backlog/cli-lazy-subcommand-loading.md** — `pip install precis-util
+5. **backlog/plugin-split-runtime-shell.md** — `pip install precis-util
    <one-model>` boots a serve exposing that model's kinds and skills with no
    precis-mcp installed. Waits on 4; the acceptance criterion the whole
    split is judged against.

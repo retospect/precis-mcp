@@ -1,87 +1,23 @@
 """Top-level CLI entry point and dispatcher.
 
 Hosts :func:`main` (the ``precis`` console script entry point) and
-:func:`_build_parser` (the argparse tree). Each subcommand's
-parser registration and implementation live in a sibling module:
-
-- :mod:`precis.cli.migrate`   — ``precis migrate``
-- :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
-- :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
-- :mod:`precis.cli.memory`    — ``precis memory import|index`` (harness memory as graph nodes)
-- :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
-- :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
-- :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
-- :mod:`precis.cli.jobs_admin`— ``precis jobs kill`` (§B-2 operator backstop)
-
-Keeping the dispatch table in one place is the cost; the benefit is
-that each subcommand owns a single file you can read without
-hunting through a 1 100-line monolith.
+:func:`_build_parser` (the argparse tree). Each subcommand's parser
+registration and implementation live in a sibling module, named by a
+row in :mod:`precis.cli.registry`. Only the invoked subcommand's module
+is imported; the rest appear in ``--help`` from their registry rows, so
+one subcommand's missing optional dependency cannot break another.
+``serve`` and the ``jobs`` group are built here.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 import sys
+from types import ModuleType
 
-from precis.cli import (
-    add,
-    anki_sync,
-    cast,
-    classify,
-    convert_draft_lists,
-    cron,
-    db,
-    doi_backfill,
-    draft,
-    email,
-    enrich_openalex,
-    eval_cmd,
-    fetch_openalex,
-    fix_metadata,
-    gripe,
-    heartbeat,
-    ingest,
-    jobs_admin,
-    llm,
-    logs,
-    maintenance,
-    markup_backfill,
-    memory,
-    migrate,
-    migrate_refs,
-    nanopub,
-    paper,
-    patent,
-    pcb,
-    perplexity,
-    podcast,
-    provenance,
-    quest,
-    reconcile,
-    repl,
-    resolve,
-    resolve_metadata,
-    retire_draft_equations,
-    schema_doc,
-    secret,
-    serve_embeddings,
-    service,
-    settings,
-    sim,
-    stats,
-    stubs,
-    taproot,
-    taproot_migrate,
-    taxonomy,
-    title_backfill,
-    tools,
-    users,
-    verify,
-    watch,
-    web,
-    worker,
-)
+from precis.cli.registry import JOB_COMMANDS, Command, commands
 from precis.utils.utc_logging import force_utc_timestamps
 
 log = logging.getLogger(__name__)
@@ -95,8 +31,8 @@ def main() -> None:
     because it's the only subcommand with no arguments of its own
     and no database touch.
     """
-    parser = _build_parser()
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    args = _build_parser(_command_path(argv)).parse_args(argv)
 
     force_utc_timestamps()
     logging.basicConfig(
@@ -116,217 +52,11 @@ def main() -> None:
         )
         return
 
-    if args.cmd == "serve-embeddings":
-        serve_embeddings.run(args)
-        return
-
-    if args.cmd == "anki-sync":
-        anki_sync.run(args)
-        return
-
-    if args.cmd == "migrate":
-        migrate.run(args)
-        return
-
-    if args.cmd == "schema-doc":
-        schema_doc.run(args)
-        return
-
-    if args.cmd == "secret":
-        secret.run(args)
-        return
-
-    if args.cmd == "settings":
-        settings.run(args)
-        return
-
-    if args.cmd == "users":
-        users.run(args)
-        return
-
-    if args.cmd == "db":
-        db.run(args)
-        return
-
-    if args.cmd == "maintenance":
-        maintenance.run(args)
-        return
-
-    if args.cmd == "enrich-openalex":
-        enrich_openalex.run(args)
-        return
-    if args.cmd == "fetch-openalex":
-        fetch_openalex.run(args)
-        return
-    if args.cmd == "fix-metadata":
-        fix_metadata.run(args)
-        return
-
-    if args.cmd == "migrate-refs":
-        migrate_refs.run(args)
-        return
-
-    if args.cmd == "reconcile-duplicates":
-        reconcile.run(args)
-        return
-
-    if args.cmd == "markup-backfill":
-        markup_backfill.run(args)
-        return
-
-    if args.cmd == "taxonomy-bootstrap":
-        taxonomy.run(args)
-        return
-
-    if args.cmd == "title-backfill":
-        title_backfill.run(args)
-        return
-
-    if args.cmd == "retire-draft-equations":
-        retire_draft_equations.run(args)
-        return
-
-    if args.cmd == "convert-draft-lists":
-        convert_draft_lists.run(args)
-        return
-
-    if args.cmd == "resolve-metadata":
-        resolve_metadata.run(args)
-        return
-
-    if args.cmd == "backfill-dois":
-        doi_backfill.run(args)
-        return
-
-    if args.cmd == "podcast":
-        podcast.run(args)
-        return
-
-    if args.cmd == "gripes":
-        gripe.run(args)
-        return
-
-    if args.cmd == "memory":
-        memory.run(args)
-        return
-
-    if args.cmd == "add":
-        add.run(args)
-        return
-
-    if args.cmd == "ingest":
-        watch.run(args)
-        return
-
-    if args.cmd == "_watch_batch_ingest":
-        watch.run_batch(args)
-        return
-
-    if args.cmd == "worker":
-        worker.run(args)
-        return
-
-    if args.cmd == "logs":
-        logs.run(args)
-        return
-
-    if args.cmd == "stubs":
-        stubs.run(args)
-        return
-
-    if args.cmd == "stats":
-        stats.run(args)
-        return
-
-    if args.cmd == "resolve":
-        resolve.run(args)
-        return
-
-    if args.cmd == "draft":
-        draft.run(args)
-        return
-
-    if args.cmd == "paper":
-        paper.run(args)
-        return
-
-    if args.cmd == "verify":
-        verify.run(args)
-        return
-
     if args.cmd == "jobs":
-        _dispatch_job(args)
+        _call(_select(JOB_COMMANDS, args.job), args)
         return
 
-    if args.cmd == "tools":
-        tools.run(args)
-        return
-
-    if args.cmd == "repl":
-        repl.run(args)
-        return
-
-    if args.cmd == "web":
-        web.run(args)
-        return
-
-    if args.cmd == "heartbeat":
-        heartbeat.run(args)
-        return
-
-    if args.cmd == "pcb":
-        pcb.run(args)
-        return
-
-    if args.cmd == "cron":
-        cron.run(args)
-        return
-
-    if args.cmd == "cast":
-        cast.run(args)
-        return
-
-    if args.cmd == "quest":
-        quest.run(args)
-        return
-
-    if args.cmd == "classify":
-        classify.run(args)
-        return
-
-    if args.cmd == "llm":
-        llm.run(args)
-        return
-
-    if args.cmd == "service":
-        service.run(args)
-        return
-
-    if args.cmd == "taproot":
-        taproot.run(args)
-        return
-
-    if args.cmd == "nanopub":
-        nanopub.run(args)
-        return
-
-    if args.cmd == "taproot-migrate":
-        taproot_migrate.run(args)
-        return
-
-    if args.cmd == "email":
-        email.run(args)
-        return
-
-    if args.cmd == "sim":
-        sim.run(args)
-        return
-
-    if args.cmd == "eval":
-        eval_cmd.run(args)
-        return
-
-    parser.error(f"unknown command: {args.cmd!r}")
+    _call(_select(commands(), args.cmd), args)
 
 
 # ---------------------------------------------------------------------------
@@ -334,13 +64,14 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(path: tuple[str, ...] | None = None) -> argparse.ArgumentParser:
     """Build the top-level argparse tree.
 
-    Each subcommand module contributes its own subparser(s) via the
-    ``add_parser`` / ``add_parsers`` hook. This function stays the
-    single source of truth for the top-level command list; the
-    implementations live elsewhere.
+    ``path`` is the command (and, under ``jobs``, the job) being invoked,
+    from :func:`_command_path`: only its module is imported and given its
+    real subparser; every other command is a help-only stub. ``()``
+    imports nothing, which is what bare ``precis --help`` needs. ``None``
+    builds every real subparser — tests use it to parse any command line.
     """
     parser = argparse.ArgumentParser(
         prog="precis",
@@ -377,105 +108,86 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Serve a network transport on this already-listening inherited "
         "socket instead of binding --host/--port (set by precis.mcp_supervisor).",
     )
-    serve_embeddings.add_parser(sub)
-    anki_sync.add_parser(sub)
+    _add_commands(sub, commands(), path[0] if path else None, full=path is None)
 
-    migrate.add_parser(sub)
-    schema_doc.add_parser(sub)
-    secret.add_parser(sub)
-    nanopub.add_parser(sub)
-    pcb.add_parser(sub)
-    settings.add_parser(sub)
-    users.add_parser(sub)
-    db.add_parser(sub)
-    maintenance.add_parser(sub)
-    enrich_openalex.add_parser(sub)
-    fetch_openalex.add_parser(sub)
-    fix_metadata.add_parser(sub)
-    migrate_refs.add_parser(sub)
-    reconcile.add_parser(sub)
-    markup_backfill.add_parser(sub)
-    title_backfill.add_parser(sub)
-    taxonomy.add_parser(sub)
-    retire_draft_equations.add_parser(sub)
-    convert_draft_lists.add_parser(sub)
-    resolve_metadata.add_parser(sub)
-    doi_backfill.add_parser(sub)
-    podcast.add_parser(sub)
-    gripe.add_parser(sub)
-    memory.add_parser(sub)
-    add.add_parser(sub)
-    watch.add_parser(sub)
-    watch.add_batch_parser(sub)
-    worker.add_parser(sub)
-    logs.add_parser(sub)
-    stubs.add_parser(sub)
-    stats.add_parser(sub)
-    resolve.add_parser(sub)
-    draft.add_parser(sub)
-    paper.add_parser(sub)
-    verify.add_parser(sub)
-    tools.add_parser(sub)
-    repl.add_parser(sub)
-    web.add_parser(sub)
-    cron.add_parser(sub)
-    cast.add_parser(sub)
-    quest.add_parser(sub)
-    classify.add_parser(sub)
-    llm.add_parser(sub)
-    heartbeat.add_parser(sub)
-    service.add_parser(sub)
-    taproot.add_parser(sub)
-    taproot_migrate.add_parser(sub)
-    email.add_parser(sub)
-    sim.add_parser(sub)
-    eval_cmd.add_parser(sub)
-
-    jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
-    jobs_sub = jobs.add_subparsers(dest="job", required=True)
-
-    ingest.add_parsers(jobs_sub)
-    perplexity.add_parser(jobs_sub)
-    patent.add_parsers(jobs_sub)
-    provenance.add_parsers(jobs_sub)
-    jobs_admin.add_parser(jobs_sub)
+    if path is None or path[:1] == ("jobs",):
+        jobs = sub.add_parser("jobs", help=_JOBS_HELP)
+        jobs_sub = jobs.add_subparsers(dest="job", required=True)
+        selected = path[1] if path is not None and len(path) > 1 else None
+        _add_commands(jobs_sub, JOB_COMMANDS, selected, full=path is None)
+    else:
+        sub.add_parser("jobs", help=_JOBS_HELP, add_help=False)
 
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Job dispatch
-# ---------------------------------------------------------------------------
+_JOBS_HELP = "Run a one-shot maintenance job."
 
 
-#: Jobs subcommand → (module, callable-attr-name). The runner looks
-#: up the module attribute lazily so adding a new job is one line
-#: here plus one handler in the owning module.
-_JOB_DISPATCH: dict[str, tuple[object, str]] = {
-    "ingest": (ingest, "run_ingest"),
-    "ingest-md": (ingest, "run_md"),
-    "ingest-oracles": (ingest, "run_oracles"),
-    "import-perplexity": (perplexity, "run"),
-    "watch-patents": (patent, "run_watch"),
-    "list-patent-watches": (patent, "run_list"),
-    "run-patent-watches": (patent, "run_runner"),
-    "sweep-patent-fulltext": (patent, "run_fulltext_sweep_cli"),
-    "fetch-google-patents": (patent, "run_gp_fetch_cli"),
-    "reingest-patents": (patent, "run_reingest_cli"),
-    "check-provenance": (provenance, "run"),
-    "sync-retraction-watch": (provenance, "run_sync"),
-    "kill": (jobs_admin, "run"),
-}
+def _command_path(argv: list[str]) -> tuple[str, ...]:
+    """The subcommand names in ``argv`` that pick which modules to import.
+
+    Neither the top-level parser nor ``jobs`` takes an option of its own
+    besides ``-h``, so the first positional token is the command and,
+    under ``jobs``, the second is the job.
+    """
+    words = [a for a in argv if not a.startswith("-")]
+    return tuple(words[:2]) if words[:1] == ["jobs"] else tuple(words[:1])
 
 
-def _dispatch_job(args: argparse.Namespace) -> None:
-    """Route ``precis jobs <job>`` to the owning module's runner."""
-    entry = _JOB_DISPATCH.get(args.job)
-    if entry is None:
-        print(f"jobs: unknown subcommand {args.job!r}", file=sys.stderr)
-        sys.exit(2)
-    module, fn_name = entry
-    getattr(module, fn_name)(args)
+def _add_commands(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser],
+    cmds: tuple[Command, ...],
+    selected: str | None,
+    *,
+    full: bool,
+) -> None:
+    """Register ``cmds`` on ``sub``: real parsers for the selected module, stubs for the rest.
+
+    A stub carries the name and one-line help only, which is all
+    ``--help`` one level up renders, so listing a command never imports
+    it. Every command of the selected command's module gets its real
+    parser, since one registrar can add several (``jobs ingest``).
+    """
+    real = {c.module for c in cmds if full or c.name == selected}
+    registered: set[tuple[str, str]] = set()
+    for c in cmds:
+        if c.module not in real:
+            if c.help is None:
+                sub.add_parser(c.name, add_help=False)
+            else:
+                sub.add_parser(c.name, help=c.help, add_help=False)
+            continue
+        if (c.module, c.register) not in registered:
+            registered.add((c.module, c.register))
+            getattr(_load(c), c.register)(sub)
+
+
+def _load(cmd: Command) -> ModuleType:
+    """Import ``cmd``'s module, or exit naming the dependency it lacks."""
+    try:
+        return importlib.import_module(cmd.module)
+    except ImportError as exc:
+        missing = getattr(exc, "name", None)
+        why = f"missing dependency {missing!r}" if missing else str(exc)
+        print(
+            f"precis {cmd.name}: unavailable — importing {cmd.module} failed: {why}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+
+def _select(cmds: tuple[Command, ...], name: str) -> Command:
+    for c in cmds:
+        if c.name == name:
+            return c
+    print(f"precis: unknown subcommand {name!r}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _call(cmd: Command, args: argparse.Namespace) -> None:
+    """Run ``cmd``; its module is already imported by the parser build."""
+    getattr(_load(cmd), cmd.run)(args)
 
 
 if __name__ == "__main__":
