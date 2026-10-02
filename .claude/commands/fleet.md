@@ -43,8 +43,11 @@ Note from the user: `$ARGUMENTS`
    - `scripts/fleet say .claude/fleet/msg-design-review.txt <the design-review: yes windows>`
    A message sent to a busy session queues behind its turn. `say` skips a
    window with a dialog open and prints it; resend to those once the
-   review session has answered the dialog. Never send a bare Enter to a
-   window: it can answer a dialog.
+   review session has answered the dialog. Always send through `say`: it
+   sends the text, pauses, then sends Enter as a separate keystroke and
+   checks an idle window took it. Text and Enter in one `tmux send-keys`
+   leaves the message unsent in an idle session's box. Never send a bare
+   Enter to a window by hand: it can answer a dialog.
 
 4. **Arm the watchers** (Monitor, 30-minute maximum; re-arm each expiry):
    - `scripts/fleet watch-ctx` — context thresholds, see *Compaction*.
@@ -57,6 +60,29 @@ Note from the user: `$ARGUMENTS`
    pinned deploy → verify → restart notice. After the deploy, also file
    `release-<round>-<n>.md` look-at items in the review queue: what is
    newly live and what Reto should look at, with the URL or command.
+
+   Three things `/round` does not say, all yours:
+   - **Migrations and `safe_fetch.py` come to you.** A peer does not run
+     `/go` on them: its local full gate holds the ship lock and blocks
+     every qland. The peer commits, marks `scripts/round eta`, names the
+     branch; you squash-land those branches just before the round's gate.
+   - **You hand out migration numbers.** Keep the round's claimed numbers
+     in `.claude/purpose`; before the gate, check the range for two files
+     with one number (`/whatneedsdoing`'s collision scan).
+   - **Review the round's diff before the gate.** `git diff <base>
+     origin/main`, one `reviewer` agent per work area on its paths, asked
+     for what lint and tests cannot see: a stored design or measure whose
+     meaning changes without a marker, an output change on regeneration
+     with no version bump, a default that got more expensive. Findings go
+     to the owning window with `say`; one that needs Reto is a
+     review-queue item. A finding does not block the deploy unless it
+     writes wrong data.
+
+   One `scripts/test` run per session at a time, narrowest scope: 20
+   sessions gating at once have filled the Docker disk and run the host
+   out of file handles. Watch both before a gate
+   (`colima ssh -- df -h /var/lib/docker`, `sysctl kern.num_files
+   kern.maxfiles`).
 
 6. **Write `.claude/purpose`**: the round number and base, and that this
    tree is the orchestrator.

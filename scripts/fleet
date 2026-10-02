@@ -39,8 +39,20 @@ fill() { # substitute {slug} {queue} {reviews} in a message file, one line out
 send() { # send <window> <text>; refuses a window with a dialog open
   if has_dialog "$1"; then echo "SKIPPED (dialog open): $1"; return 0; fi
   tmux send-keys -t "$1" -l "$2"
+  # An Enter that arrives with the text is taken as part of the paste and
+  # the message sits unsent in the box: pause, submit, then check.
+  sleep 1
   tmux send-keys -t "$1" Enter
-  echo "sent: $1"
+  sleep 1
+  local pane; pane=$(tmux capture-pane -p -t "$1")
+  # A busy session shows the queued text too; only an idle one needs the retry.
+  if ! printf '%s\n' "$pane" | grep -q -E '… \([0-9]+' && ! has_dialog "$1" &&
+     printf '%s\n' "$pane" | grep -A1 '^❯' | grep -q -F -- "${2:0:40}"; then
+    tmux send-keys -t "$1" Enter
+    echo "sent (second Enter): $1"
+  else
+    echo "sent: $1"
+  fi
 }
 
 cmd_up() {
@@ -81,6 +93,8 @@ cmd_status() {
 cmd_say() {
   need_tmux
   local file="$1"; shift
+  # An unreadable file would send an empty message, i.e. a bare Enter.
+  [ -s "$file" ] || { echo "scripts/fleet say: no such message file: $file" >&2; exit 2; }
   local wins
   if [ $# -gt 0 ]; then wins="$*"; else wins=$(threads | cut -f1); fi
   for w in $wins; do
