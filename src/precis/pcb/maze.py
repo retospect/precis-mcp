@@ -493,6 +493,10 @@ class OccupancyGrid:
         #: number in the tens to low hundreds on any board this router
         #: sees — cheap to scan exactly, no discretisation to get wrong.
         self._pads: list[tuple[float, float, float]] = []
+        #: ``(x, y, copper_radius_mm)`` of every committed via
+        #: (:meth:`register_via`): the via search keeps a new via off these
+        #: as it keeps off pads, net-blind (two holes, same net or not).
+        self._vias: list[tuple[float, float, float]] = []
         #: ``(via_radius_mm, len(_pads)) -> mask`` for
         #: :meth:`_pad_keepout_mask`. ``_pads`` is append-only and
         #: ``clearance_mm`` is fixed at construction, so the pad count is a
@@ -843,10 +847,24 @@ class OccupancyGrid:
         pad by; a via's barrel is, physically, exactly the kind of
         independent copper feature that figure exists to keep apart.
         """
-        for px, py, pr in self._pads:
+        for px, py, pr in (*self._pads, *self._vias):
             if math.hypot(x - px, y - py) - via_radius_mm - pr < self.clearance_mm:
                 return False
         return True
+
+    def register_via(self, x: float, y: float, radius_mm: float) -> None:
+        """Record a committed via so later via candidates clear it, net-blind.
+
+        Owner disks keep OTHER nets' vias away. Nothing kept a net's own
+        next via off its last one, so two connections of one net could
+        drop vias with overlapping drills, which ``drc.check_via_via_keepout``
+        refuses whatever the net (measured on Reto's board 2026-10-02: AD2,
+        VCC and BTN1 pairs 0.10-0.20 mm apart). Same margin and arithmetic
+        as a pad (:meth:`via_clears_pads`). Cached keep-out masks take the
+        new disk in place rather than being rebuilt."""
+        self._vias.append((x, y, radius_mm))
+        for (via_r, _n), mask in self._pad_keepout_cache.items():
+            self._or_keepout_disk(mask, x, y, via_r + radius_mm + self.clearance_mm)
 
     def _pad_keepout_mask(self, via_radius_mm: float) -> np.ndarray:
         """``(ny, nx)`` boolean: True where a via of this radius would fail
@@ -874,23 +892,27 @@ class OccupancyGrid:
         return mask
 
     def _build_pad_keepout_mask(self, via_radius_mm: float) -> np.ndarray:
-        spec = self.spec
-        mask = np.zeros((spec.ny, spec.nx), dtype=bool)
-        for px, py, pr in self._pads:
-            radius_mm = via_radius_mm + pr + self.clearance_mm
-            r_cells = math.ceil(radius_mm / spec.pitch)
-            cx, cy = spec.to_cell(px, py)
-            lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
-            lo_y, hi_y = max(0, cy - r_cells), min(spec.ny - 1, cy + r_cells)
-            if lo_x > hi_x or lo_y > hi_y:
-                continue
-            ix = np.arange(lo_x, hi_x + 1)
-            iy = np.arange(lo_y, hi_y + 1)
-            dx = spec.x0 + ix * spec.pitch - px
-            dy = spec.y0 + iy * spec.pitch - py
-            inside = (dy[:, None] ** 2 + dx[None, :] ** 2) <= radius_mm**2
-            mask[lo_y : hi_y + 1, lo_x : hi_x + 1] |= inside
+        mask = np.zeros((self.spec.ny, self.spec.nx), dtype=bool)
+        for px, py, pr in (*self._pads, *self._vias):
+            self._or_keepout_disk(mask, px, py, via_radius_mm + pr + self.clearance_mm)
         return mask
+
+    def _or_keepout_disk(
+        self, mask: np.ndarray, px: float, py: float, radius_mm: float
+    ) -> None:
+        spec = self.spec
+        r_cells = math.ceil(radius_mm / spec.pitch)
+        cx, cy = spec.to_cell(px, py)
+        lo_x, hi_x = max(0, cx - r_cells), min(spec.nx - 1, cx + r_cells)
+        lo_y, hi_y = max(0, cy - r_cells), min(spec.ny - 1, cy + r_cells)
+        if lo_x > hi_x or lo_y > hi_y:
+            return
+        ix = np.arange(lo_x, hi_x + 1)
+        iy = np.arange(lo_y, hi_y + 1)
+        dx = spec.x0 + ix * spec.pitch - px
+        dy = spec.y0 + iy * spec.pitch - py
+        inside = (dy[:, None] ** 2 + dx[None, :] ** 2) <= radius_mm**2
+        mask[lo_y : hi_y + 1, lo_x : hi_x + 1] |= inside
 
     def stamp_path(self, path: RoutePath, width_mm: float) -> None:
         """Claim a routed path's corridor. Sampling every point of the

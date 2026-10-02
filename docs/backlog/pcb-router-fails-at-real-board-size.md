@@ -294,11 +294,23 @@ rebuilt its pads-only probe grid per segment (36 of 85 s of realize).
    is the placement IR's straight-line crossing from
    `pcb_route._residual_crossings`, not routed copper), 3 unrouted with
    `same-layer-crossing`. **The 13 `drc` nets are the next thing to
-   diagnose**: the router realized them, and the gate stripped them. Either
-   the router lays copper the DRC refuses (a legality mismatch between
-   maze disks and DRC geometry, e.g. oblique pads, which DRC may see as
-   their unrotated rectangle), or the gate is wrong. Either way it is
-   cheaper than more congestion work.
+   diagnose**: the router realized them, and the gate stripped them.
+14. DONE 2026-10-02: the 13 were all router faults (orchestrator review
+   round 5 accepted the classification). 12 nets had copper 0.22-0.40 mm
+   from the Ø6 NPTH holes against the 0.45 mm `npth_annular_ring_mm`
+   floor. `_claim_mounting_holes` had used the net clearance; it now
+   grows a bare hole's claim to the NPTH figure, and so does the pour
+   path's `_mounting_hole_blockers`. Same-net vias overlapped drills
+   (AD2, VCC, BTN1); `OccupancyGrid.register_via` now keeps every via
+   off every committed via, net-blind. No oblique pad was involved.
+   **10-01's 65/89 included 10 nets a fab would have rejected**: the
+   router realized 65 then as now, and on this board 10 of those (plus 3
+   partials) violate NPTH or via-to-via rules. The 65 → 55 drop was the
+   gate catching them, not the holes costing routes. After both fixes,
+   zero nets are stripped by the gate (seed-by-seed counts in the thread
+   file). Left: own-path via pairs inside one search
+   (`pcb-router-own-path-via-pair.md`, gate-caught today), and the ~22
+   `unrouted` nets, which are congestion.
 
 Literature, for the fix owner: grid-maze routers are known to degrade on
 fine-pitch parts on large boards because cell size couples to board size;

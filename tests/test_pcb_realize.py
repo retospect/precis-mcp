@@ -2857,6 +2857,92 @@ def test_claim_mounting_holes_blocks_every_layer_and_the_via_keepout():
     assert grid.via_clears_pads(5.0 + 3.0, 5.0 + 3.0, 0.3)
 
 
+def test_a_bare_npth_hole_is_claimed_out_to_the_fab_npth_clearance():
+    """Reto's board, 2026-10-02: router copper sat 0.22-0.40 mm from the
+    Ø6 holes against a 0.45 mm npth floor, and the post-route gate
+    stripped 12 nets. The claim must grow by npth minus net clearance; a
+    plated ring keeps the net-clearance claim."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.pcb import maze as pcb_maze
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import MountingHole, PcbIR
+
+    def claimed_at(hole: MountingHole, npth: float, dx: float) -> bool:
+        spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=100, ny=100, n_layers=4)
+        grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+        ir = cast("PcbIR", SimpleNamespace(mounting_holes=(hole,), n_nets=1, n_pins=1))
+        pcb_realize._claim_mounting_holes(grid, ir, npth_clearance_mm=npth)
+        ix, iy = spec.to_cell(5.0 + dx, 5.0)
+        return bool(grid.owner[0, iy, ix] != pcb_maze.FREE)
+
+    bare = MountingHole(x=5.0, y=5.0, drill_mm=2.0)
+    # edge at 1.0; net clearance alone claims to 1.15, npth 0.45 to 1.45
+    assert not claimed_at(bare, 0.0, 1.3)
+    assert claimed_at(bare, 0.45, 1.3)
+    ringed = MountingHole(x=5.0, y=5.0, drill_mm=2.0, ring_dia_mm=2.0, plated=True)
+    assert not claimed_at(ringed, 0.45, 1.3)
+
+
+def test_a_pour_antipads_a_bare_npth_hole_by_the_fab_npth_clearance():
+    """The pour path's hole blocker grows the same way the router's claim
+    does: plane_pours adds `clearance`, so the blocker adds the rest."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.ir import MountingHole, PcbIR
+
+    ir = cast(
+        "PcbIR",
+        SimpleNamespace(
+            mounting_holes=(
+                MountingHole(x=1.0, y=1.0, drill_mm=6.0),
+                MountingHole(x=9.0, y=1.0, drill_mm=3.0, ring_dia_mm=5.0, plated=True),
+            )
+        ),
+    )
+    bare, ringed = pcb_realize._mounting_hole_blockers(
+        ir, ["F.Cu"], npth_clearance_mm=0.45, clearance=0.15
+    )
+    assert bare["dia_mm"] == pytest.approx(6.0 + 2 * 0.30)
+    assert ringed["dia_mm"] == 5.0
+    plain = pcb_realize._mounting_hole_blockers(ir, ["F.Cu"])
+    assert plain[0]["dia_mm"] == 6.0
+
+
+def test_npth_clearance_is_the_fab_field_drc_measures():
+    from precis.pcb import realize as pcb_realize
+
+    caps = pcb_realize.RealizeConfig().fab_caps
+    want = caps.house_default.get("npth_annular_ring_mm") or caps.jlc_min.get(
+        "npth_annular_ring_mm"
+    )
+    assert want and pcb_realize._npth_clearance_mm(pcb_realize.RealizeConfig()) == want
+
+
+def test_a_committed_via_keeps_the_next_via_off_it_whatever_the_net():
+    """Two connections of one net dropped vias with overlapping drills on
+    Reto's board (AD2, VCC, BTN1): owner disks only keep OTHER nets away.
+    A registered via is a net-blind keep-out, in the point query and in a
+    keep-out mask cached before it was registered."""
+    from precis.pcb import maze as pcb_maze
+
+    spec = pcb_maze.GridSpec(x0=0.0, y0=0.0, pitch=0.1, nx=60, ny=60, n_layers=4)
+    grid = pcb_maze.OccupancyGrid(spec, clearance_mm=0.15)
+    mask_before = grid._pad_keepout_mask(0.3)
+    ix, iy = spec.to_cell(2.3, 2.0)
+    assert not mask_before[iy, ix]
+    assert grid.via_clears_pads(2.3, 2.0, 0.3)
+
+    grid.register_via(2.0, 2.0, 0.3)
+    assert not grid.via_clears_pads(2.3, 2.0, 0.3)
+    assert grid.via_clears_pads(3.5, 2.0, 0.3)
+    assert grid._pad_keepout_mask(0.3)[iy, ix]
+    assert mask_before[iy, ix], "the cached mask did not take the via"
+
+
 def test_claim_fiducial_keepouts_owns_cells_on_every_layer():
     """A render-time fiducial is now a whole-stack copper feature
     (:func:`precis.pcb.silk.build_fiducials`), so the router's pre-claim

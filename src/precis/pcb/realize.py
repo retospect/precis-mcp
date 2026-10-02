@@ -1585,6 +1585,7 @@ def _realize_maze(
         max(clearance, edge_min) + 0.01,
         footprints,
         fixed_copper,
+        npth_clearance_mm=_npth_clearance_mm(config),
     )
     tracks, vias = _prune_redundant_drop_vias(ir, tracks, vias, pours)
     # Deliberate stitching vias, AFTER pouring -- this pass needs the
@@ -1638,6 +1639,7 @@ def _realize_maze(
             max(clearance, edge_min) + 0.01,
             footprints,
             fixed_copper,
+            npth_clearance_mm=_npth_clearance_mm(config),
         )
     reasons = _diagnose_all(
         ir,
@@ -1651,6 +1653,7 @@ def _realize_maze(
         rules_by_net,
         config.max_expansions,
         fixed_copper=fixed_copper,
+        npth_clearance_mm=_npth_clearance_mm(config),
         net_layer_lock_fail=net_layer_lock_fail,
     )
     return (
@@ -1677,6 +1680,7 @@ def _diagnose_all(
     max_expansions: int,
     *,
     fixed_copper: list[dict[str, Any]] | None = None,
+    npth_clearance_mm: float = 0.0,
     net_layer_lock_fail: dict[int, str] | None = None,
 ) -> list[UnroutedReason]:
     """One :class:`UnroutedReason` per segment in ``unrouted +
@@ -1724,7 +1728,9 @@ def _diagnose_all(
         rules = rules_by_net[net_id]
         n_vias, group_extent = _via_group_extent(ir, net_id, rules, clearance)
         if probe is None:
-            probe = _pads_only_probe(ir, spec, pads, clearance, fixed_copper)
+            probe = _pads_only_probe(
+                ir, spec, pads, clearance, fixed_copper, npth_clearance_mm
+            )
         reasons.append(
             _diagnose_unrouted(
                 ir,
@@ -1818,7 +1824,22 @@ _MOUNTING_HOLE_NET_OFFSET = 4096
 _UNCLAIMED_PAD_NET_OFFSET = 8192
 
 
-def _claim_mounting_holes(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
+def _npth_clearance_mm(config: RealizeConfig) -> float:
+    """Copper-to-NPTH clearance the fab wants: ``npth_annular_ring_mm``,
+    house default first, then the JLC floor (the ``board_edge`` pattern
+    above). ``drc.check_npth_clearance`` measures the same field, so a
+    router that clears less lays copper the post-route gate strips."""
+    caps = config.fab_caps
+    return float(
+        caps.house_default.get("npth_annular_ring_mm")
+        or caps.jlc_min.get("npth_annular_ring_mm")
+        or 0.0
+    )
+
+
+def _claim_mounting_holes(
+    grid: maze.OccupancyGrid, ir: PcbIR, *, npth_clearance_mm: float = 0.0
+) -> None:
     """Claim every :attr:`~precis.pcb.ir.PcbIR.mounting_holes` entry on
     the grid — BEFORE :func:`_stamp_pads`, same discipline (and same
     reason) as :func:`_claim_fiducial_keepouts` above: a hole only the
@@ -1833,11 +1854,19 @@ def _claim_mounting_holes(grid: maze.OccupancyGrid, ir: PcbIR) -> None:
     annulus (a solder-nut's ring is copper other nets owe clearance to,
     exactly like a pad). :meth:`~precis.pcb.maze.OccupancyGrid.stamp_pad`
     for the core so the via keep-out mask sees it too — a via inside a
-    mounting hole's ring is fab-fatal the same way one inside a pad is."""
+    mounting hole's ring is fab-fatal the same way one inside a pad is.
+
+    A bare non-plated hole owes copper ``npth_clearance_mm``
+    (:func:`_npth_clearance_mm`), not the grid's net clearance: the claim
+    grows by the difference. Measured on Reto's board 2026-10-02: 12 of
+    the 13 nets the post-route gate stripped sat 0.22-0.40 mm from a
+    Ø6 hole against a 0.45 mm floor."""
     for k, hole in enumerate(ir.mounting_holes):
         r = max(float(hole.drill_mm), float(hole.ring_dia_mm)) / 2.0
         if r <= 0.0:
             continue
+        if not hole.plated and float(hole.ring_dia_mm) <= 0.0:
+            r += max(0.0, npth_clearance_mm - grid.clearance_mm)
         net = int(ir.n_nets) + int(ir.n_pins) + _MOUNTING_HOLE_NET_OFFSET + k
         layers = range(0, grid.spec.n_layers)
         grid.stamp_disk(layers, hole.x, hole.y, grid.core_radius_mm(2.0 * r), net)
@@ -2076,13 +2105,14 @@ def _pads_only_probe(
     pads: list[tuple[Point, int, maze.PadShape, tuple[int, ...]]],
     clearance: float,
     fixed_copper: list[dict[str, Any]] | None,
+    npth_clearance_mm: float = 0.0,
 ) -> maze.OccupancyGrid:
     """The grid :func:`_diagnose_unrouted` searches: every fixed obstacle
     and pad claimed, no routed copper."""
     probe = maze.OccupancyGrid(spec, clearance_mm=clearance)
     _claim_fixed_copper(probe, ir, fixed_copper)
     _claim_fiducial_keepouts(probe, ir)
-    _claim_mounting_holes(probe, ir)
+    _claim_mounting_holes(probe, ir, npth_clearance_mm=npth_clearance_mm)
     _stamp_pads(probe, pads)
     return probe
 
@@ -2243,7 +2273,7 @@ def _claim_static(
     could not serve."""
     _claim_fixed_copper(grid, ir, fixed_copper)
     _claim_fiducial_keepouts(grid, ir)
-    _claim_mounting_holes(grid, ir)
+    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)
     # Plane-served segments are dog-bone stubs, not searched routes — but
     # they ARE copper, so they get realized (and claimed) first, before
@@ -2740,6 +2770,7 @@ def _route_pass(
             for k in range(n_vias):
                 gx = vx + (k - (n_vias - 1) / 2.0) * pitch
                 grid.stamp_disk(range(0, spec.n_layers), gx, vy, via_r, net_id)
+                grid.register_via(gx, vy, rules.via_dia_mm / 2.0)
                 vias.append(
                     RealizedVia(
                         seg_id=seg_id,
@@ -2875,7 +2906,13 @@ def _pad_blockers(
     return out
 
 
-def _mounting_hole_blockers(ir: PcbIR, layers: list[str]) -> list[dict[str, Any]]:
+def _mounting_hole_blockers(
+    ir: PcbIR,
+    layers: list[str],
+    *,
+    npth_clearance_mm: float = 0.0,
+    clearance: float = 0.0,
+) -> list[dict[str, Any]]:
     """Every :attr:`~precis.pcb.ir.PcbIR.mounting_holes` entry as a fake
     every-layer ``via`` blocker for :func:`~precis.pcb.planes.plane_pours`
     — same reshaping trick (and same reason) as :func:`_pad_blockers`
@@ -2884,12 +2921,17 @@ def _mounting_hole_blockers(ir: PcbIR, layers: list[str]) -> list[dict[str, Any]
     cut (and a floating nut ring merged into a plane is a picture of a
     short). ``net=""`` never equals a pour's net, so every plane yields
     an antipad; the diameter is the larger of drill and ring, unbuffered
-    (``plane_pours`` applies its own uniform ``clearance_mm``)."""
+    (``plane_pours`` applies its own uniform ``clearance_mm``). A bare
+    NPTH hole grows by ``npth_clearance_mm - clearance`` per side, so the
+    pour clears it by the fab's NPTH figure, as :func:`_claim_mounting_holes`
+    does for routed copper."""
     out: list[dict[str, Any]] = []
     for hole in ir.mounting_holes:
         dia = max(float(hole.drill_mm), float(hole.ring_dia_mm))
         if dia <= 0.0:
             continue
+        if not hole.plated and float(hole.ring_dia_mm) <= 0.0:
+            dia += 2.0 * max(0.0, npth_clearance_mm - clearance)
         out.append(
             {
                 "ctype": "via",
@@ -2976,6 +3018,8 @@ def _pour_planes(
     edge_inset: float,
     footprints: dict[str, dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
+    *,
+    npth_clearance_mm: float = 0.0,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Pour every plane-assigned layer over the FINISHED copper.
 
@@ -3024,7 +3068,12 @@ def _pour_planes(
         copper = (
             to_gerber_model(interim, ir, layers=layer_names, outline=[])["copper"]
             + _pad_blockers(ir, layer_names, footprints)
-            + _mounting_hole_blockers(ir, layer_names)
+            + _mounting_hole_blockers(
+                ir,
+                layer_names,
+                npth_clearance_mm=npth_clearance_mm,
+                clearance=clearance,
+            )
             + list(fixed_copper or [])
         )
         pours = plane_pours(
@@ -4599,7 +4648,7 @@ def _stitch_plane_fragments(
 
     grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
     _claim_fiducial_keepouts(grid, ir)
-    _claim_mounting_holes(grid, ir)
+    _claim_mounting_holes(grid, ir, npth_clearance_mm=_npth_clearance_mm(config))
     _stamp_pads(grid, pads)
     for t in tracks:
         _stamp_realized_track(grid, t)

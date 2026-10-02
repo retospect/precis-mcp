@@ -80,8 +80,16 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    2.5× the time**, so it stays off. The current baseline is 55, not 65:
    the board now carries its real holes, and the post-route DRC gate
    strips 13 realized nets (method + tags in the item, step 13).
-   NEXT = why the gate strips those 13 (router/DRC legality mismatch, or
-   a wrong gate), measured with the same harness.
+   Classified 2026-10-02: all 13 were router faults. 12 sat inside the
+   0.45 mm NPTH clearance of the Ø6 holes, and same-net vias overlapped
+   drills. Two router fixes (NPTH claim radius, net-blind via-to-via
+   keep-out), accepted in review round 5, leave **zero nets stripped by
+   the gate**. Routed count: 67/89 at seeds 1, 2 and 3 (frozen board,
+   `scratch/pcb_route_offline.py` method, item step 14). With every part
+   frozen the seed has nothing to vary, so the three runs agree by
+   construction; they show determinism, not robustness. The remaining 22
+   are all `unrouted`, i.e. congestion. Own-path via pairs are filed
+   (`pcb-router-own-path-via-pair.md`); the gate catches them today.
 2. **The real board's design-rule table is dropped at import** — the 184
    records once read as keepouts are 16 `RULE` + 168 `RULE_SELECTOR`,
    which in Pro are most likely the design-rule table and its per-net
