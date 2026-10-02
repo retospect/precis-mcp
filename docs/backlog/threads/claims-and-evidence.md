@@ -21,11 +21,10 @@ defect and follow-on cluster below is owned here.
    - `claim-publication-nanopub-ots` § latent bug: `nanopub/evidence.py`'s
      source filter is `("paper", "patent")` while `attach_evidence` also
      accepts `edgar`/`datasheet` — such evidence silently drops from a bundle.
-     Waits on Reto (review-queue `claims-and-evidence-1`: are edgar/datasheet
-     publishable? recommended: internal-only, refuse at approve).
-   - `approve-prefill-blank-doi` (slug stale: the DOI and empty-snip parts
-     shipped) — the prefill quote ranking ignores numeric literals and the
-     whole-chunk fallback skips the citation-marker filter.
+     Reto ruled 10-02 (`claims-and-evidence-1`): both publishable, edgar
+     cites its SEC accession. Edgar widening in flight; the datasheet
+     identifier waits on `claims-and-evidence-2` (a datasheet ref stores no
+     URL). The contradicts half was already fixed (D1 `live_contradicts`).
 2. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
    `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) →
    `taproot-hub-scope-no-edit-door` (`edit(kind='finding')` takes no

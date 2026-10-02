@@ -544,6 +544,7 @@ def _frozen_rung(state: str | None) -> str:
 
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_DIGIT_RUN = re.compile(r"\d+")
 
 
 def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
@@ -565,11 +566,21 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
     best-sentence-only pick handed the reviewer an empty snip that the
     gate refused on submit (first seen on fi191121, 2026-09-16). Only when
     no candidate carries a unique window does the top sentence go out with
-    an empty snip."""
+    an empty snip.
+
+    Ranking puts the claim's numerals first: a sentence carrying the
+    claim's digit runs outranks one with more shared words, so a
+    measurement claim gets the sentence that states the number rather
+    than a figure caption or table header that shares its vocabulary
+    (the 2026-08-17 nanobud batch review). When no sentence qualifies, the
+    whole chunk is offered only if it is itself marker-free; otherwise the
+    quote is left blank for the reviewer rather than prefilled with
+    citation residue the gate would refuse."""
     from precis.nanopub import evidence as ev
     from precis.nanopub import snip as sniplib
 
     claim_tokens = set(sniplib.tokens(claim))
+    claim_numerals = set(_DIGIT_RUN.findall(claim))
     candidates = [
         s.strip()
         for s in _SENTENCE_SPLIT.split(chunk.text or "")
@@ -578,10 +589,13 @@ def _suggest_quote_snip(store: Any, chunk: Any, claim: str) -> tuple[str, str]:
     haystacks = [c.text for c in ev.paper_body_chunks(store, chunk.ref_id)]
     if not candidates:
         whole = (chunk.text or "").strip()
+        if ev.citation_markers(whole):
+            return "", ""
         return whole, _unique_snip(whole, haystacks)
     ranked = sorted(
         candidates,
         key=lambda s: (
+            len(claim_numerals & set(_DIGIT_RUN.findall(s))),
             len(claim_tokens & set(sniplib.tokens(s))),
             len(sniplib.tokens(s)),
         ),

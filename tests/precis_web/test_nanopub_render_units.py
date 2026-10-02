@@ -492,6 +492,57 @@ def test_suggest_quote_snip_happy_path_no_overlap(store: Any) -> None:
     assert snip != ""
 
 
+def test_suggest_quote_snip_prefers_the_sentence_carrying_the_claims_numerals(
+    store: Any,
+) -> None:
+    """A caption-like sentence shares more of the claim's words, but only
+    the measurement sentence carries the claim's numbers — the numerals
+    outrank word overlap (2026-08-17 nanobud batch review)."""
+    from precis.nanopub import evidence as ev
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a graphene strength paper", kind="paper")
+    text = (
+        "Figure two shows the Young modulus and intrinsic strength of "
+        "monolayer graphene membranes. The membranes reached a modulus of "
+        "1.0 TPa under the indentation load."
+    )
+    chunk_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text)
+    claim = (
+        "Monolayer graphene has a Young modulus of 1.0 TPa and high intrinsic strength."
+    )
+    chunk = ev.ChunkInfo(
+        chunk_id=chunk_id, ref_id=ref_id, ord=0, text=text, section_path=["Results"]
+    )
+
+    quote, snip = _suggest_quote_snip(store, chunk, claim)
+
+    assert quote.startswith("The membranes reached a modulus of 1.0 TPa")
+    assert snip != ""
+
+
+def test_suggest_quote_snip_marker_only_chunk_prefills_blank(store: Any) -> None:
+    """Every sentence carries a citation marker, so no sentence qualifies;
+    the whole-chunk fallback must not hand back marker residue the gate
+    refuses — the quote is left blank for the reviewer."""
+    from precis.nanopub import evidence as ev
+    from precis_web.nanopub_render import _suggest_quote_snip
+    from tests.workers._helpers import seed_ref
+
+    ref_id = seed_ref(store, title="a heavily cited review", kind="paper")
+    text = (
+        "Nanobuds were first synthesised by an aerosol method [12]. "
+        "Their transport properties were then computed in detail [13,14]."
+    )
+    chunk_id = _seed_body_chunk(store, ref_id=ref_id, ord=0, text=text)
+    chunk = ev.ChunkInfo(
+        chunk_id=chunk_id, ref_id=ref_id, ord=0, text=text, section_path=["Results"]
+    )
+
+    assert _suggest_quote_snip(store, chunk, "nanobud transport") == ("", "")
+
+
 def test_suggest_quote_snip_no_unique_window_anywhere_returns_empty_snip(
     store: Any,
 ) -> None:
