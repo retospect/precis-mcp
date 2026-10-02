@@ -1765,7 +1765,11 @@ def _payload_from_result(res: Any) -> dict[str, Any] | None:
     data = getattr(res, "data", None)
     if isinstance(data, dict) and data and (_PAYLOAD_KEYS & data.keys()):
         return data
-    return extract_json_object(getattr(res, "text", "") or "")
+    # Opt-in stray-closer repair (gr345366 cause B): the tick's model
+    # sometimes writes a stray ``]`` after ``dossier_text``.
+    return extract_json_object(
+        getattr(res, "text", "") or "", repair_stray_closers=True
+    )
 
 
 #: The hypothesis-dedup Jaccard floor + its token-overlap primitives now

@@ -22,20 +22,17 @@ demo needs the MPI image rebuilt on the node before
 `PRECIS_DFT_MPI_RANKS` is set. Rank the items below by what that paper
 needs.
 
-1. **gr345366 cause B + gr322060** — qu164903 ticks again (last tick
-   succeeded 2026-10-01 21:14Z, failure count 0). The 2026-10-01 rest was
-   quota notices again, not parse failures: `result_from_agent`'s guard
-   missed the CLI's new `terminal_reason='completed'` stamp; fixed
-   2026-10-02 (`router.py::result_from_agent`), protects every quest only
-   once deployed. Left: cause B (stray `]` after `dossier_text`, needs a
-   decision) and gr322060, the relax-infra tracker.
-   `backlog/qu164903-campaign.md` residuals are ops/Reto (st164913
-   un-rule-out, kinetics cutover prod write, presentation items);
+1. **gr345366 dogfood + gr322060** — both gr345366 causes landed
+   2026-10-02 and protect quests once deployed: the quota guard accepts
+   `terminal_reason='completed'` (`router.py::result_from_agent`), and
+   quest_tick opts into the stray-closer repair
+   (`json_reply.py::_repair_stray_closers`, logged as
+   `json_reply: dropped stray`). After the deploy, check qu164903's tick
+   failures and count those log lines; close gr345366 if the
+   unparseable-output failures stop. Left: gr322060, the relax-infra
+   tracker. `backlog/qu164903-campaign.md` residuals are ops/Reto
+   (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
-   Cause B: Reto approved option 1 (review item chemistry-1, 2026-10-02):
-   an opt-in repair in `extract_json_object` that drops a proven-unmatched
-   stray `]`/`}` on an "Expecting ',' delimiter" error, at most 2 retries,
-   quest_tick only, every repair logged. Not started (demo hold).
 2. **qu202467 restart report** — paused 2026-10-01 ($6,211 tote, 0 deeds,
    holding ticks). Restart condition (in its logbook): this thread reports at
    least one named blocker fixed (frontier-table sync wall; literature

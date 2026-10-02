@@ -17,7 +17,13 @@ flow past the type contract — every path here is guarded.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+#: Cap on stray-closer deletions per candidate (:func:`_repair_stray_closers`).
+_MAX_STRAY_CLOSER_REPAIRS = 2
 
 
 def _last_balanced_block(text: str, open_ch: str, close_ch: str) -> str | None:
@@ -41,7 +47,49 @@ def _last_balanced_block(text: str, open_ch: str, close_ch: str) -> str | None:
     return candidate
 
 
-def extract_json_object(text: str) -> dict[str, Any] | None:
+def _repair_stray_closers(candidate: str) -> dict[str, Any] | None:
+    """Parse ``candidate`` after deleting up to :data:`_MAX_STRAY_CLOSER_REPAIRS`
+    proven-unmatched closers, or ``None``.
+
+    Fires only on the decoder's ``Expecting ',' delimiter`` error when the
+    offending character is a ``]`` or ``}``: the parser has just finished a
+    value inside an open container and met a closer of the WRONG type, so
+    that character matches no opener — deleting it cannot drop content. Any
+    other error (truncation leaves ``Expecting value`` / ``Unterminated
+    string``) still fails. Each deletion logs a warning so the repair rate
+    stays measurable (gr345366 cause B: a stray ``]`` after ``dossier_text``
+    in 17 of 17 checked quest-tick failures).
+    """
+    for _ in range(_MAX_STRAY_CLOSER_REPAIRS):
+        try:
+            obj = json.loads(candidate, strict=False)
+        except json.JSONDecodeError as exc:
+            pos = exc.pos
+            if not (
+                exc.msg == "Expecting ',' delimiter"
+                and 0 <= pos < len(candidate)
+                and candidate[pos] in "]}"
+            ):
+                return None
+            log.warning(
+                "json_reply: dropped stray %r at offset %d (context %r)",
+                candidate[pos],
+                pos,
+                candidate[max(0, pos - 40) : pos + 40],
+            )
+            candidate = candidate[:pos] + candidate[pos + 1 :]
+            continue
+        return obj if isinstance(obj, dict) else None
+    try:
+        obj = json.loads(candidate, strict=False)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def extract_json_object(
+    text: str, *, repair_stray_closers: bool = False
+) -> dict[str, Any] | None:
     """Parse ``text`` as a JSON object, tolerating surrounding prose/fences.
 
     Tries the whole string first (the common well-behaved reply), then falls
@@ -59,6 +107,12 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     surfacing the real fault. ``None`` on no text, no parseable block, or a
     parse that yields something other than a dict (a JSON list, string, or
     number is never mistaken for the requested object).
+
+    ``repair_stray_closers=True`` adds a third pass, after both of the above
+    fail: :func:`_repair_stray_closers` on each candidate, which drops at
+    most two closers the decoder has proven unmatched and logs each drop.
+    Opt-in per caller; only the quest tick uses it (Reto, 2026-10-02,
+    review item chemistry-1). Every other caller stays strict.
     """
     if not text:
         return None
@@ -78,6 +132,11 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
                 continue
             if isinstance(obj, dict):
                 return obj
+    if repair_stray_closers:
+        for candidate in candidates:
+            repaired = _repair_stray_closers(candidate)
+            if repaired is not None:
+                return repaired
     return None
 
 

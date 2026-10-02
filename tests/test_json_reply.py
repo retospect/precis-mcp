@@ -11,6 +11,10 @@ must not paper over either.
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from precis.utils.llm.json_reply import extract_json_object
 
 
@@ -37,9 +41,9 @@ def test_extract_json_object_stray_bracket_after_string_stays_none() -> None:
     after a string field's closing quote, before the next key. The braces
     are balanced (so the block extractor finds a full candidate) but the
     syntax itself is broken — not a control-character issue — so
-    strict=False must not repair it. Bracket-repair heuristics are
-    explicitly out of scope: a legit array elsewhere in the payload must
-    never be "fixed" into something it didn't say."""
+    strict=False must not repair it. The default stays strict; only a caller
+    that opts in (``repair_stray_closers=True``, quest tick only) gets the
+    narrow repair tested below."""
     text = (
         '{"logbook": [{"entry_type": "note", "text": "hi"}],'
         ' "dossier_text": "closes the thread on this tick."],'
@@ -58,3 +62,57 @@ def test_extract_json_object_still_parses_clean_json() -> None:
 
 def test_extract_json_object_no_json_at_all_stays_none() -> None:
     assert extract_json_object("no json in here") is None
+
+
+# --- opt-in stray-closer repair (gr345366 cause B; Reto, review chemistry-1) ---
+
+_STRAY = (
+    '{"logbook": [{"entry_type": "note", "text": "hi"}],'
+    ' "dossier_text": "closes the thread on this tick."],'
+    ' "directions": []}'
+)
+
+
+def test_stray_bracket_repaired_only_when_opted_in(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same prod shape stays ``None`` by default (above) and parses with
+    the repair on, keeping every real array intact; the drop is logged."""
+    assert extract_json_object(_STRAY) is None
+    with caplog.at_level(logging.WARNING):
+        got = extract_json_object(_STRAY, repair_stray_closers=True)
+    assert got == {
+        "logbook": [{"entry_type": "note", "text": "hi"}],
+        "dossier_text": "closes the thread on this tick.",
+        "directions": [],
+    }
+    assert "dropped stray" in caplog.text
+
+
+def test_stray_repair_inside_prose_and_fence() -> None:
+    text = "Here is the tick:\n```json\n" + _STRAY + "\n```\n"
+    assert extract_json_object(text, repair_stray_closers=True) is not None
+
+
+def test_stray_brace_in_array_repaired() -> None:
+    text = '{"a": ["x"}], "b": 1}'
+    assert extract_json_object(text, repair_stray_closers=True) == {
+        "a": ["x"],
+        "b": 1,
+    }
+
+
+def test_stray_repair_capped_at_two() -> None:
+    two = '{"a": "x"]], "b": 1}'
+    three = '{"a": "x"]]], "b": 1}'
+    assert extract_json_object(two, repair_stray_closers=True) == {"a": "x", "b": 1}
+    assert extract_json_object(three, repair_stray_closers=True) is None
+
+
+def test_stray_repair_never_rescues_truncation_or_other_errors() -> None:
+    for text in (
+        '{"logbook": [{"entry_type": "note", "text": "cut off mid',
+        '{"a": [1, 2',
+        '{"a": "x", "b"]: 1}',
+    ):
+        assert extract_json_object(text, repair_stray_closers=True) is None
