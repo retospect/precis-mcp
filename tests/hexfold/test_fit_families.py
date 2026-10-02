@@ -82,7 +82,7 @@ def test_fuse_k_fit_applied_unchanged_da_neck() -> None:
     costs = [tuple(a["cost"]) for a in alts]
     assert costs == sorted(costs)
     # every registration of this 5-fold seam yields the same ring-size
-    # multiset {6,7,7,8,8} (max 8, local residual contribution 6), so the
+    # multiset {6,7,7,8,8} (max 8, defect charge sum|6-n| = 6), so the
     # applied k's own cost equals the first alternative's — verifying
     # "first alternative's cost >= applied cost" for the tie case.
     assert costs[0] == (8.0, 6.0, 1)

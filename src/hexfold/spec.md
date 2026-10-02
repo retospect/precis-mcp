@@ -508,7 +508,12 @@ Unsolvable → `fit.unsolvable` (ERROR) with the nearest commensurate values in
   sheet put heptagons on the outside of the bend; (2) smallest maximum
   seam ring; (3) smallest `|euler.residual|`; (4) lowest lattice index.
   Hand-authored files without a smooth section therefore keep their 0.1
-  results.
+  results. `[impl 0.2, 2026-10-02]` For a fuse phase `k`, (3) is the
+  seam's defect charge `Σ|6−n|` instead: the signed seam sum is the same
+  for every phase of one fuse, so `|euler.residual|` never ranks a k
+  family, and the charge separates a minimal seam from one carrying extra
+  5-7 pairs at the same max ring (a graded bend's `{7:3}` against
+  `{5:3, 7:6}`, gr459928).
 - **`fit` on more parameters:** `tube(fit in {(5,5),(6,6)}, len=fit)`,
   `cap(fit)`; a domain is a set literal or `fit` alone (the primitive's
   whole catalogue, §26). Chains of parts with `fit` members are solved by

@@ -963,6 +963,21 @@ def _rank_fit(
     return ranked
 
 
+def _k_cost(faces: list[tuple[int, ...]]) -> tuple[float, float]:
+    """SPEC 12.1 cost terms (2) and (3) for one fuse phase ``k``: the
+    largest seam ring, then the seam's defect charge ``sum|6 - n|``.
+
+    The signed seam sum ``sum(6 - n)`` is the same for every phase of one
+    fuse (V, bond count and seam face count do not depend on which atoms
+    pair up), so ``|euler.residual|`` cannot rank a k family; the unsigned
+    charge can.  It separates a minimal seam from one carrying extra 5-7
+    pairs at the same max ring — on a graded bend (gr459928) a clean
+    ``{7:3}`` against a ``{5:3, 7:6}`` that a lowest-k tie-break picks."""
+    mx = max((len(f) for f in faces), default=0)
+    charge = sum(abs(6 - len(f)) for f in faces)
+    return float(mx), float(charge)
+
+
 def _fit_alternatives_finding(
     param: str,
     where: str,
@@ -3658,24 +3673,16 @@ def _apply_connects(
             n = len(p.dangling)
             if c.k == -1:
                 # k=fit: enumerate every registration (SPEC 12.1 family),
-                # rank by (2) smallest max seam-ring size, (3) |residual|,
-                # (4) lowest k — DA-neck host seat.  V, bond count and the
-                # total seam face count are the same for every kc (only
-                # which atoms pair up changes, not how many faces or bonds
-                # form), so the seam's own contribution to the counting
-                # law, sum(6-n) over its faces, differs from the true
-                # global euler.residual by a constant that is the same
-                # for every kc here — ranking on the local term ranks the
-                # family identically to ranking on the global one.
+                # rank by (2) smallest max seam-ring size, (3) smallest
+                # seam defect charge, (4) lowest k — DA-neck host seat,
+                # graded-bend seams (_k_cost says why not |residual|).
                 candidates: list[tuple[int, float, float, int]] = []
                 for kc in range(min(n, _FIT_CAP)):
                     trial = [
                         (p.dangling[i], q.dangling[(kc - i) % n]) for i in range(n)
                     ]
-                    fs = _seam_faces(p.atoms, q.atoms, trial)
-                    mx = max((len(f) for f in fs), default=0)
-                    local_resid = abs(sum(6 - len(f) for f in fs))
-                    candidates.append((kc, float(mx), float(local_resid), kc))
+                    mx, charge = _k_cost(_seam_faces(p.atoms, q.atoms, trial))
+                    candidates.append((kc, mx, charge, kc))
                 ranked = _rank_fit(candidates)
                 kk = ranked[0][0]
                 spec = _record_k(spec, ci, kk)

@@ -61,7 +61,8 @@ class Option:
     #: |value - target| in the native unit (modular for ``k``); 0 for a
     #: don't-care wish
     distance: float
-    #: SPEC 12.1 cost tuple (max seam ring, |seam residual|, lattice index)
+    #: SPEC 12.1 cost tuple (max seam ring, seam defect charge for ``k`` /
+    #: 0 for ``len``, lattice index)
     cost: tuple[float, float, float]
     clean: bool
     #: ERROR codes when not clean
@@ -234,15 +235,16 @@ def _len_options(spec: Spec, name: str, wish: Wish, handle: str) -> OptionsResul
 
 
 def _seam_cost(net: Any, span: tuple[int, int]) -> tuple[float, float]:
-    """(max seam ring, |sum(6 - n)|) from the connect's own ``seam.rings``."""
+    """(max seam ring, defect charge ``sum|6 - n|``) from the connect's own
+    ``seam.rings`` — the k-family terms of ``hexfold.build._k_cost``."""
     for f in net.report.findings:
         if f.code == "seam.rings" and f.span == span:
             rings = dict(f.data).get("rings", {})
             if not rings:
                 return 0.0, 0.0
             mx = max(int(s) for s in rings)
-            resid = abs(sum((6 - int(s)) * int(c) for s, c in rings.items()))
-            return float(mx), float(resid)
+            charge = sum(abs(6 - int(s)) * int(c) for s, c in rings.items())
+            return float(mx), float(charge)
     return 0.0, 0.0
 
 

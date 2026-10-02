@@ -34,7 +34,15 @@ import numpy as np
 if TYPE_CHECKING:
     from .catalogue import CatalogueStore
 
-from .build import _FIT_CAP, Net, Port, _fuse_transform, _rank_fit, _seam_faces
+from .build import (
+    _FIT_CAP,
+    Net,
+    Port,
+    _fuse_transform,
+    _k_cost,
+    _rank_fit,
+    _seam_faces,
+)
 from .lattice import ideal_angle_deg
 from .report import Finding, Severity
 from .stick import stick_relax_pinned
@@ -192,10 +200,8 @@ def rank_k(
     candidates: list[tuple[int, float, float, int]] = []
     for kc in range(min(n, _FIT_CAP)):
         trial = [(pa.dangling[i], pb.dangling[(kc - i) % n]) for i in range(n)]
-        fs = _seam_faces(pa.atoms, pb.atoms, trial)
-        mx = max((len(f) for f in fs), default=0)
-        local_resid = abs(sum(6 - len(f) for f in fs))
-        candidates.append((kc, float(mx), float(local_resid), kc))
+        mx, charge = _k_cost(_seam_faces(pa.atoms, pb.atoms, trial))
+        candidates.append((kc, mx, charge, kc))
     return _rank_fit(candidates)
 
 

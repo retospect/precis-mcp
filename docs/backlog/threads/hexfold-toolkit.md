@@ -70,10 +70,25 @@ waited on happened 09-29 — note at the bottom)
      - `hex(r)` holes now centre on a disclination core.
      - Flat lids accept authored defects.
      - Sheet and lid `b_expected` count the authored wedges.
+   - Built topologically 2026-10-02, **unrelaxed**: the convex corner
+     3+3, a flat washer's outer rim onto a p=3 frustum's hole, frustum
+     rim onto the wider tube (`CORNER_33` in the test file). The tests
+     prove a defect census and Euler closure, not a corner; **the next
+     step on this item is to relax it** (stick, then Tersoff, as the foot
+     was) and show it embeds as an outward slope. Clean only at
+     k ≡ 3 mod 4 on the washer seam; any other phase adds three 5-7
+     pairs. The flare at the tube top is the foot construction again. A
+     seam's phase decides whether corners line up, so the k ranking
+     (`build._k_cost`, used by `join.rank_k` and `hexfold options`) now
+     breaks the max-ring tie on defect charge `Σ|6−n|`; before, `options`
+     interleaved clean and dirty phases by index. The foot's k=0 was
+     clean only because 0 ≡ 0 mod 3. Prod sweep 2026-10-02: 7 join
+     composites, 2 resolved via `k='fit'` (456187, 456190), neither
+     re-phases (every alternative ties on the new cost too); replay uses
+     the recorded integer k regardless.
    - Still open:
-     - The flares and convex corners: the same frusta flipped, with
-       pentagon seams.
-     - The irregular hole.
+     - The irregular hole. Phase cannot replace it: 6 and 4 corners share
+       only 2 at every k (swept, 24 phases).
      - Tube-wall surgery, which is still unbuilt.
      - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
@@ -130,14 +145,7 @@ waited on happened 09-29 — note at the bottom)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-7. **gr454488** — five residuals from the 2026-09-28 dogfood: every
-   `generate` block trips `mode_binding_mismatch` because generate never
-   sets mode; sheet rim port direction is centroid noise; the persisted
-   build record drops geometry findings the check-mode echo has; "dry-run"
-   wording survives past its rename; generator-declared measures claim
-   `origin=user`. Five independent one-line fixes, bundled because one
-   dogfood found all five.
-8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
@@ -147,11 +155,19 @@ waited on happened 09-29 — note at the bottom)
      it reported pushing never existed (gr458326).
    - Contained until then: `DbCatalogueStore` withholds measured rows
      unless `trust_measured=True`, and nothing sets it. Leave it off.
-   - First slice, with tests: assert the relaxer converged, and flag a
-     non-monotone `max_disp` as "unstable".
+   - First slice, half shipped (7bf54004b, a stranded fix_gripe branch):
+     a non-monotone `max_disp` downgrades the row to
+     `coverage="unstable"` (`catalogue._STABILITY_RISE_FACTOR`, test
+     `test_measure_environment_flags_far_rim_runaway_unstable`). Still
+     open: asserting convergence. The `join.Relaxer` contract returns
+     coordinates only; the stick relaxer discards its `max_force` and has
+     no tolerance, and the geo relaxer's `trace.converged` is checked only
+     by the test adapter (`tests/test_hexfold_seam_decay.py::_geo_relaxer`).
+     Threading it means changing the `Relaxer` return type, so it is a
+     design call, not a one-liner.
    - Second, larger slice: the `EnvKey` extent field, shared with
      gr457997.
-9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
@@ -329,7 +345,11 @@ waited on happened 09-29 — note at the bottom)
   the structures it left live and the `delete(kind='structure', …)` call
   for each. One test pins the leak itself, so a later cascade fix has to
   update the message in the same change rather than quietly making it a
-  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 5.
+  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 6.
+- **gr454488** — CLOSED 2026-10-02. All eight residuals were fixed on
+  2026-09-28 by 1a5475438 (in prod), with regression tests in
+  `tests/test_se_hexfold_dogfood2.py`; this file had it ranked at 7 for
+  four days without checking.
 - **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
   this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
   may not belong to two composites: `prepare_join` refuses via

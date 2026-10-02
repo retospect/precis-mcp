@@ -13,6 +13,7 @@ import pytest
 
 from hexfold.build import Net, build
 from hexfold.check import check
+from hexfold.options import options
 
 
 def _net(text: str) -> Net:
@@ -120,3 +121,57 @@ def test_foot_2_plus_2_plus_2() -> None:
     assert census[(7, "b+s")] - census[(5, "b+s")] == 2
     res = [f for f in check(FOOT_222).findings if f.code == "euler.residual"]
     assert res and all(dict(f.data)["residual"] == 0 for f in res)
+
+
+# ---------- convex corner (the flipped frustum) ----------
+
+# (12,0) neck -> flat washer -> p=3 frustum -> (30,0) wall: the washer's
+# outer rim (+6) onto the frustum hole (-3) mints 3 pentagons, the frustum
+# rim (+3) onto the tube (0) the other 3.  Only k = 3 mod 4 on the washer
+# seam lines the frustum's 3 corners up with 3 of the washer's 6; every
+# other phase adds three 5-7 pairs.
+CORNER_33 = """hexfold 0.2
+origin n
+n: tube(12,0, len=3)
+w: cap(24,0) - hex(1)@(0,0,A):0
+f: cap(60,0) + 3@(-1,0,A):2 - hex(7)@(-1,0,A):0
+t: tube(30,0, len=4)
+n.out --fuse k=0--> w.hole
+w.in --fuse k={k}--> f.hole
+f.in --fuse k=0--> t.in
+"""
+
+
+def test_convex_corner_3_plus_3() -> None:
+    spec = CORNER_33.format(k=3)
+    net = _net(spec)
+    assert _errors(net) == []
+    assert _seam_census(net) == Counter({(7, "n+w"): 6, (5, "f+w"): 3, (5, "f+t"): 3})
+    res = [f for f in check(spec).findings if f.code == "euler.residual"]
+    assert res and all(dict(f.data)["residual"] == 0 for f in res)
+
+
+def test_convex_corner_misphased_carries_5_7_pairs() -> None:
+    census = _seam_census(_net(CORNER_33.format(k=0)))
+    assert census[(5, "f+w")] == 6
+    assert census[(7, "f+w")] == 3
+
+
+# ---------- k ranking: defect charge breaks the max-ring tie ----------
+
+
+def test_k_options_rank_the_minimal_concave_seam_first() -> None:
+    # every phase of the 3+3 foot's flat seam has max ring 7 and the same
+    # signed sum; only k = 0 mod 3 is the clean {7:3} (charge 3), the rest
+    # are {5:3, 7:6} (charge 9).  Lowest k alone would interleave them.
+    r = options(FOOT_33, "s.hole.k")
+    assert [o.value for o in r.options[:6]] == [0, 3, 6, 9, 12, 15]
+    assert [o.cost[:2] for o in r.options[:6]] == [(7.0, 3.0)] * 6
+    assert r.options[6].cost[:2] == (7.0, 9.0)
+
+
+def test_k_options_put_the_convex_corner_phase_first() -> None:
+    r = options(CORNER_33.format(k=0), "w.in.k")
+    assert r.options[0].value == 3
+    # max ring 6: the clean seam is three pentagons among hexagons
+    assert r.options[0].cost[:2] == (6.0, 3.0)
