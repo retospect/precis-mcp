@@ -570,8 +570,10 @@ def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
     gist — a quest serving hundreds of papers (the audited qu164903 case)
     gets the *relevant* ones, not just the first few in serves-graph
     insertion order. Filled to :data:`_LITERATURE_TOKEN_BUDGET` rather than
-    a bare count cap, always showing at least one paper when there are any;
-    a trailing line reports what didn't fit.
+    a bare count cap, always showing at least one paper when there are any.
+    A trailing line counts what didn't fit, split into held and stubs, and
+    every unshown paper the quest's own recent logbook names gets a status
+    line — a cut is not a stub (qu202467, 2026-10-02).
     """
     live = gaps_mod._live_servers(store, quest_id)
     papers = [r for r in live if r.kind == "paper"]
@@ -591,10 +593,53 @@ def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
         out.append(line)
         used_tokens += line_tokens
         shown += 1
-    remaining = len(ranked) - shown
-    if remaining > 0:
-        out.append(f"(+{remaining} more served papers not shown)")
+    unshown = ranked[shown:]
+    if unshown:
+        held_n = sum(1 for _, h in unshown if h)
+        out.append(
+            f"(+{len(unshown)} more served papers not shown: {held_n} held with "
+            f"a body, {len(unshown) - held_n} stubs — not shown is not a stub)"
+        )
+        named = _logbook_named_papers(store, quest_id)
+        status = [_named_paper_status(r, h) for r, h in unshown if r.id in named][
+            :_NAMED_PAPERS_MAX
+        ]
+        if status:
+            out.append("Papers your logbook names that are not shown above:")
+            out.extend(status)
     return out
+
+
+#: How many recent logbook entries :func:`_logbook_named_papers` scans, and
+#: the cap on named-paper status lines. A tick reasons about the papers its
+#: own logbook names; qu202467 called 5 held papers "unresolved stubs" for
+#: ticks because they fell below the literature budget cut (2026-10-02).
+_NAMED_PAPERS_SCAN = 40
+_NAMED_PAPERS_MAX = 20
+_PAPER_HANDLE_RE = re.compile(r"\bpa(\d+)\b")
+
+
+def _logbook_named_papers(store: Store, quest_id: int) -> set[int]:
+    """Ref ids of papers named by ``pa<id>`` handle in the last
+    :data:`_NAMED_PAPERS_SCAN` logbook entries."""
+    entries = [
+        b
+        for b in store.chunks.list_chunks_for_ref(quest_id)
+        if b.chunk_kind == LOG_KIND
+    ]
+    ids: set[int] = set()
+    for b in entries[-_NAMED_PAPERS_SCAN:]:
+        ids.update(int(m) for m in _PAPER_HANDLE_RE.findall(b.text or ""))
+    return ids
+
+
+def _named_paper_status(ref: Ref, handle: str | None) -> str:
+    """One status line for a logbook-named paper cut from the shown list."""
+    pa = handle_registry.try_format("paper", ref.id) or f"paper:{ref.id}"
+    title = (ref.title or "").splitlines()[0][:60] if ref.title else "(untitled)"
+    if handle:
+        return f"- [{pa}] held with a body, cite as [{handle}] — {title}"
+    return f"- [{pa}] stub awaiting fetch — {title}"
 
 
 #: Instruction appended to the literature section — the dossier is a
@@ -609,8 +654,11 @@ _CITE_INSTRUCTION = (
     "\nWhen the rewritten dossier states a claim this literature supports, "
     "cite the specific paper inline by the bare `[pc<id>]` handle shown "
     "above (e.g. `...a markedly lower barrier [pc234]`). A served paper "
-    "listed with no handle has no body chunk yet (a stub awaiting fetch) — "
-    "do not cite it. See `get(kind='skill', id='precis-cite-paper-help')`.\n"
+    "listed with no handle, or marked a stub, has no body chunk yet (a stub "
+    "awaiting fetch) — do not cite it. A paper that is not listed at all was "
+    "cut for space, not left unfetched: the count line says how many of the "
+    "unlisted papers are held. "
+    "See `get(kind='skill', id='precis-cite-paper-help')`.\n"
 )
 
 

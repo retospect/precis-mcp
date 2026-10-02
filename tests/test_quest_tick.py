@@ -2752,7 +2752,51 @@ class TestLiteratureTokenBudget:
 
         detail = tick_mod._served_papers_detail(store, qid)
         assert 0 < len(detail) < 40
-        assert re.match(r"^\(\+\d+ more served papers not shown\)$", detail[-1])
+        assert re.match(
+            r"^\(\+\d+ more served papers not shown: 0 held with a body, \d+ stubs",
+            detail[-1],
+        )
+
+    def test_cut_papers_the_logbook_names_get_a_status_line(self, store: Any) -> None:
+        """qu202467 (2026-10-02): held papers below the budget cut read as
+        "unresolved stubs" to the tick. A cut paper the logbook names gets an
+        explicit held/stub line, and the count line splits held from stubs."""
+        from precis.quest.logbook import append_entry
+        from precis.utils import handle_registry
+
+        qid = _mk_quest(store, "A striving with abundant literature")
+        abstract = "A specific measured finding. " * 20
+        filler = []
+        for i in range(40):
+            pid = _held_paper_no_vector(store, f"Filler {i:02d}")
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET meta = %s::jsonb WHERE ref_id = %s",
+                    (json.dumps({"abstract": abstract}), pid),
+                )
+                conn.commit()
+            filler.append(pid)
+        held = _held_paper_no_vector(store, "Named held paper")
+        stub = _stub_paper_no_vector(store, "Named stub paper")
+        _link_serves(store, qid, *filler, held, stub)
+        pa_held = handle_registry.try_format("paper", held)
+        pa_stub = handle_registry.try_format("paper", stub)
+        append_entry(
+            store,
+            qid,
+            text=f"waiting on gold stubs {pa_held} and {pa_stub}",
+            entry_type="decision",
+            by="agent",
+        )
+
+        detail = tick_mod._served_papers_detail(store, qid)
+        text = "\n".join(detail)
+        assert "Named held paper" not in "\n".join(
+            line for line in detail if line.startswith("- [pc")
+        )
+        assert re.search(r"not shown: \d+ held with a body, 1 stubs", text)
+        assert f"- [{pa_held}] held with a body, cite as [pc" in text
+        assert f"- [{pa_stub}] stub awaiting fetch — Named stub paper" in text
 
 
 def _sequenced_dispatch(

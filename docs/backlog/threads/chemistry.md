@@ -33,12 +33,17 @@ needs.
    tracker. `backlog/qu164903-campaign.md` residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
-2. **qu202467 restart report** — paused 2026-10-01 ($6,211 tote, 0 deeds,
-   holding ticks). Restart condition (in its logbook): this thread reports at
-   least one named blocker fixed (frontier-table sync wall; literature
-   fetch-step bottleneck / six unresolved gold stubs; no tool to check stub
-   fetch status without re-searching) AND names the next measurement a tick
-   would make; Reto decides on that report.
+2. **qu202467 restart** — report filed 2026-10-02 (review item
+   chemistry-7; Reto decides). The "six unresolved gold stubs" blocker was
+   a visibility defect: five had bodies since August/September, but the
+   tick's literature section shows about 12 of 484 served papers, and the
+   cite instruction read "unlisted" as "stub". Fixed in abf642971
+   (`tick.py::_served_papers_detail`: held/stub split on the cut line, plus
+   a status line for each cut paper the logbook names); general to every
+   quest with more than about 12 served papers. Recommended: restart after
+   round 2 deploys, capped at 3 ticks, re-pause if it doesn't cite the five.
+   Not fixed: the frontier-table sync wall (undiagnosed) — the next
+   blocker if the quest holds again.
 3. **backlog/autocatpath-seed-health.md** — PARTIAL (child-killed fix
    a772a52aa and the 0.11 tier overlays shipped). Left: read the first
    unbuffered prod failures before picking a remedy, the re-lease churn
