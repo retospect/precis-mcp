@@ -88,6 +88,11 @@ class MemoryHandler(NumericRefHandler):
     kind: ClassVar[str] = "memory"
     sense: ClassVar[str] = "memory"
 
+    # Every memory lands in a space; a caller's own ``SPACE:`` tag replaces
+    # this (closed tags add with ``replace_prefix``). ``repo-dev`` is the
+    # dev-harness memory (docs/backlog/memory-native-authoring.md).
+    default_tags_on_create: ClassVar[tuple[str, ...]] = ("SPACE:research",)
+
     # The body lives in a `memory_body` chunk (ord>=0), embedded + keyworded
     # by the standard workers — that chunk is the memory's single embed
     # source. No `card_combined` card any more (migration 0050): emitting
@@ -701,6 +706,24 @@ class MemoryHandler(NumericRefHandler):
                         tag_objs.append(t)
         if not any(str(t) == str(_DREAM_CONSOLIDATED) for t in tag_objs):
             tag_objs.append(_DREAM_CONSOLIDATED)
+        # SPACE: is closed, so the open-tag union above drops it. The
+        # survivor keeps the originals' space; merging across spaces would
+        # leak one partition into another, so it is refused.
+        if not any(t.namespace == "closed" and t.prefix == "SPACE" for t in tag_objs):
+            spaces = {
+                str(t)
+                for r in originals
+                for t in self.store.tags_for(r.id)
+                if t.namespace == "closed" and t.prefix == "SPACE"
+            }
+            if len(spaces) > 1:
+                raise BadInput(
+                    f"supersede across spaces {sorted(spaces)} — merge memories "
+                    "of one SPACE: only",
+                    next="pass new_tags=['SPACE:<one>', …] to choose explicitly",
+                )
+            space = spaces.pop() if spaces else self.default_tags_on_create[0]
+            tag_objs.append(Tag.parse_strict(space, kind="memory"))
 
         title = (
             new_title.strip()

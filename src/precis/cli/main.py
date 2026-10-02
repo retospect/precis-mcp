@@ -7,6 +7,7 @@ parser registration and implementation live in a sibling module:
 - :mod:`precis.cli.migrate`   — ``precis migrate``
 - :mod:`precis.cli.maintenance` — ``precis maintenance run`` (nightly cron)
 - :mod:`precis.cli.gripe`     — ``precis gripes`` (human-only triage dump)
+- :mod:`precis.cli.memory`    — ``precis memory import|index`` (harness memory as graph nodes)
 - :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
 - :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
@@ -46,6 +47,7 @@ from precis.cli import (
     logs,
     maintenance,
     markup_backfill,
+    memory,
     migrate,
     migrate_refs,
     nanopub,
@@ -202,6 +204,10 @@ def main() -> None:
 
     if args.cmd == "gripes":
         gripe.run(args)
+        return
+
+    if args.cmd == "memory":
+        memory.run(args)
         return
 
     if args.cmd == "add":
@@ -397,6 +403,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doi_backfill.add_parser(sub)
     podcast.add_parser(sub)
     gripe.add_parser(sub)
+    memory.add_parser(sub)
     add.add_parser(sub)
     watch.add_parser(sub)
     watch.add_batch_parser(sub)

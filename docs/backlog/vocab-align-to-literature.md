@@ -27,23 +27,15 @@ the literature has no word for, and those stay. The work is picking the third
 that has a standard equivalent, and distinguishing cheap changes from breaking
 ones.
 
-## Tier 1 — glossary gloss only, no rename (safe, do first)
+## Tier 1 — glossary gloss only, no rename
 
-Add the standard term to the existing entry as `(lit: <standard term>)`. No
-code, no skills, no prod data touched. These are cases where the coined word
-is fine in-house but a reader needs the bridge.
+Glosses shipped in `docs/glossary.md` as `(lit: …)` (fisheye/eye, extent
+ladder, frontier, dossier, termination node, screening tier, spray/dreamable,
+trust ladder/axis). One row remains, held on the verification in Open:
 
 | coined | literature standard | source field |
 |---|---|---|
-| `fisheye` view, `eye` | fisheye view, **degree-of-interest function** | Furnas 1986, HCI — already the standard word; the DOI function is what `extent ladder` computes |
-| `extent ladder` | degree-of-interest (DOI) function | Furnas 1986 |
-| `frontier` | **Pareto frontier** | multi-objective optimisation — already standard, just say Pareto |
-| `dossier` | **living review** / living systematic review | evidence synthesis |
-| `termination node` | **stopping criterion** | numerical methods |
-| `screening tier` | **screening** | design of experiments — already standard |
 | `envelope` (se block) | **bounding volume** *if it is an outer bound* | collision detection; see polarity note below |
-| `spray` / `dreamable` | **diversification** / exploration | search + recommender literature |
-| `trust ladder`, `trust axis` | **provenance** vs **evidential support** | two distinct axes; the skill already separates them correctly |
 
 ## Tier 2 — rename in docs and skills (moderate; no DB migration)
 
@@ -127,7 +119,7 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
 
 ## Definition of done
 
-- Tier 1 glosses added, one line each, in the existing entries.
+- Tier 1 `envelope` row resolved: glossed, or moved to tier 2 per Open.
 - Tier 2 renamed in `docs/`, `src/precis/data/skills/`, code identifiers and
   comments, with the old term kept as `(legacy: X)` inside the winner's
   glossary entry per the file's own retired-synonym convention.
@@ -140,6 +132,13 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
 - CiTO alignment (tier 2, row 3) touches taproot verifier semantics — confirm
   with whoever owns the evidence-edge model before renaming.
 - `envelope` → `bounding volume` is tier 1 only if envelopes really are outer
-  bounds everywhere. Verify against `precis_se/geometry_plausibility.py`
-  first; if some are exact and some are outer, this is tier 2 plus a type
-  change.
+  bounds everywhere. Checked read-only against `precis_se/geometry_plausibility.py`
+  and `validate.py::envelope_overlaps`: not outer bounds — an se envelope is
+  the block's authored cad-DSL solid (`box`/`cyl`/`sphere`/`cone`), used as
+  the block's geometry for interpenetration and axis checks, with no
+  `exact`/`outer`/`inner` declaration; `drc.py` and the plausibility module
+  both say it "legitimately understates a joint". It also has no glossary
+  entry (only **envelope revision**, a different sense), and the spec uses
+  "envelope" for capability/performance and working-motion senses too. So
+  `bounding volume` is wrong as a gloss; this is tier 2 plus a type change,
+  and a glossary entry (overloaded section) is the first step.

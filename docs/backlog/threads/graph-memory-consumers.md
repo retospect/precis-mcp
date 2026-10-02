@@ -9,19 +9,23 @@ half (file-mirror, context hierarchy, session history) and the surfaces
 (fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
-**Last reviewed:** 2026-10-01
+**Last reviewed:** 2026-10-02
 **Worktree:** `graph-memory-consumers`
 **Active:** yes — Reto 2026-10-01: "graph memory we want soon".
 
 ## Do next
 
 1. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
-   ahead of td458720's sequencing. Depends on `backlog/file-mirror.md`
-   (knowledge-mesh Do-next 7).
+   ahead of td458720's sequencing. First slice built 2026-10-02 (`SPACE:`
+   axis, `precis memory import`/`index`, the hook script, test 4a). Next:
+   the cutover, which waits on Reto (review-queue `graph-memory-consumers-1`).
+   Then tests 4b/4c, which need `backlog/file-mirror.md` (knowledge-mesh
+   Do-next 7).
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
    January paper (td459587), so it lands before January even though
-   item 1 outranks it on value.
+   item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
+   `envelope` row moved to tier 2: it is not an outer bound.
 3. **backlog/draft-authoring-graph-affordances.md** — nanobuds-paper
    evidence: work leaves the graph today (a proposal in /tmp, write checks
    in SQL, history unreachable, dedup hiding live hubs), so a live

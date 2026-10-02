@@ -328,6 +328,23 @@ def test_supersede_default_tags_union(handler: MemoryHandler, store: Store) -> N
     assert {"topic:co2", "confidence-strong", "DREAM:consolidated"} <= tags
 
 
+def test_supersede_survivor_keeps_the_originals_space(
+    handler: MemoryHandler, store: Store
+) -> None:
+    a = _id_of(handler.put(text="alpha", tags=["SPACE:repo-dev"]))
+    b = _id_of(handler.put(text="beta", tags=["SPACE:repo-dev"]))
+    new_id = _new_id(handler.supersede(merge_ids=[a, b], new_text="ab"))
+    spaces = {str(t) for t in store.tags_for(new_id) if t.prefix == "SPACE"}
+    assert spaces == {"SPACE:repo-dev"}
+
+
+def test_supersede_refuses_a_merge_across_spaces(handler: MemoryHandler) -> None:
+    a = _id_of(handler.put(text="alpha", tags=["SPACE:repo-dev"]))
+    b = _id_of(handler.put(text="beta"))  # default SPACE:research
+    with pytest.raises(BadInput, match="across spaces"):
+        handler.supersede(merge_ids=[a, b], new_text="ab")
+
+
 def test_supersede_requires_two_ids(handler: MemoryHandler) -> None:
     a = _id_of(handler.put(text="solo"))
     with pytest.raises(BadInput, match="2"):

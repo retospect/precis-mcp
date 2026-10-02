@@ -33,6 +33,15 @@ raises `[error:BadInput] memory id must be an integer, got '<slug>'`.
 If you only have a topic, not the id: `search(kind='memory',
 q='<topic>')` first, then use the integer id from the hit.
 
+**Space.** Every memory carries one `SPACE:` tag. `put` stamps
+`SPACE:research` unless you pass your own (`tags=['SPACE:repo-dev']`
+replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
+`precis memory import <dir>` seeds `SPACE:repo-dev` nodes from a harness
+`MEMORY.md` and its topic files (one node per `##` section and per bullet,
+`related-to` links from cross-references; safe to re-run, never overwrites
+a node edited in the graph); `precis memory index` prints them back as the
+session-start index.
+
 ## Save a thought
 ## Capture a note
 ## Jot something down before I forget

@@ -1152,6 +1152,15 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # wrongly register a phantom ``axis:attempt`` service in
     # ``/categorizers``.
     "ATTEMPT": frozenset({"open", "active", "tried", "ruled-out", "idea"}),
+    # Memory space (docs/backlog/memory-native-authoring.md): which corpus a
+    # node belongs to. ``research`` is the default stamp on a ``memory``
+    # (``MemoryHandler.default_tags_on_create``); ``repo-dev`` marks the
+    # dev-harness memory imported by ``precis memory import``; ``personal``
+    # is registered so the axis is closed (pillar 4, nothing writes it).
+    # Code-only like ATTEMPT — no ``data/axes/*.yaml``, no migration. Listed on
+    # memory / skill / todo / gripe in ``_KIND_ALLOWED_AXES``; ``finding`` and
+    # ``markdown`` are unlisted (unrestricted) and accept it without an edit.
+    "SPACE": frozenset({"research", "repo-dev", "personal"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as
@@ -1185,8 +1194,8 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # anchored at a draft chunk (missing-citation / empty-stub / …) so the
     # defect is filterable and the draft reader can badge it by category.
     # ``finding`` is unlisted (unrestricted), so it accepts AUDIT too.
-    "todo": frozenset({"STATUS", "PRIO", "AUDIT"}),
-    "gripe": frozenset({"STATUS", "PRIO"}),
+    "todo": frozenset({"STATUS", "PRIO", "AUDIT", "SPACE"}),
+    "gripe": frozenset({"STATUS", "PRIO", "SPACE"}),
     # Quest — the striving above the work (migration 0065). STATUS carries the
     # perpetual lifecycle (active/dormant/abandoned — never `done`); PRIO is the
     # striving weight that (from slice 2) flows down the `serves` DAG as the
@@ -1200,7 +1209,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # agent-authored (dreamed) memories (consolidated survivors + speculative
     # inspirations). ``STALE:`` is the argument-graph retraction-ripple
     # marker — system-set only, see ``_SYSTEM_WRITABLE_PREFIXES``.
-    "memory": frozenset({"DREAM", "STALE"}),
+    "memory": frozenset({"DREAM", "STALE", "SPACE"}),
     # Anki cloze cards carry no closed axes — Anki owns scheduling, so
     # there is no STATUS / EASE / DUE review state here.
     "anki": frozenset(),
@@ -1230,7 +1239,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # with no workflow state.
     "oracle": frozenset(),
     # Skill refs ditto.
-    "skill": frozenset(),
+    "skill": frozenset({"SPACE"}),
     # Patent refs use SRC (e.g. SRC:primary for the patent we ingested
     # direct, SRC:secondary for refs found via family-walk) and CACHE
     # (cluster-wide cache discipline). STATUS doesn't apply — patents

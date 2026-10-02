@@ -165,6 +165,7 @@ the canonical list:
 | `DENSITY:` | `dense` / `medium` / `sparse` | chunk pipeline (chunk-level — not applied to refs) |
 | `AUDIT:` | `missing-citation` / `empty-stub` / `unsupported-claim` / `citation-drift` / `missing-data` | content-QA audit (on the anchored change-request `todo`/`finding`) |
 | `ATTEMPT:` | `open` / `active` / `tried` / `ruled-out` / `idea` | quest tick (chunk-level — on a dossier's ledger-node chunks, not refs) |
+| `SPACE:` | `research` / `repo-dev` / `personal` — which corpus a node belongs to; `memory` defaults to `research`, `repo-dev` is dev-harness memory (`personal` is reserved, nothing writes it) | agent |
 | `TAPROOT:` | `claim` / `review` | `axis:taproot` classifier — `finding`-ref hub discriminator; agent add/remove allowed (legacy rows grandfathered) |
 
 Any UPPERCASE prefix outside that table is rejected — coin concepts
@@ -204,15 +205,16 @@ axes and suggests the lowercase rewrite.
 
 | Kind | Allowed closed axes |
 |---|---|
-| `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category) — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
-| `gripe` | `STATUS`, `PRIO` |
+| `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category), `SPACE` — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
+| `gripe` | `STATUS`, `PRIO`, `SPACE` |
 | `quest` | `STATUS` (perpetual lifecycle — `active`/`dormant`/`abandoned`, never `done`), `PRIO` (striving weight) |
-| `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator) |
+| `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator), `SPACE` |
 | `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |
-| `memory` | `DREAM` (dreaming-worker provenance) |
-| `anki`, `conv`, `oracle`, `skill` | _none_ — use lowercase open tags or bare flags |
+| `memory` | `DREAM` (dreaming-worker provenance), `SPACE` (default `research`; a caller's `SPACE:` replaces it), `STALE` (system-set) |
+| `skill` | `SPACE` |
+| `anki`, `conv`, `oracle` | _none_ — use lowercase open tags or bare flags |
 
 Free-form kinds (`memory` etc.) express the same semantics with open
 tags:
