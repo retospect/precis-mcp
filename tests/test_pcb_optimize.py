@@ -1076,6 +1076,94 @@ def test_determinism_same_seed_same_result():
     ]
 
 
+# ── best-state restore (gr462607) ─────────────────────────────────────
+def _ir_state(ir) -> dict:
+    return {
+        "xy": (ir.inst_x.copy(), ir.inst_y.copy(), ir.inst_rot.copy()),
+        "pin_net": ir.pin_net.copy(),
+        "planes": ir.net_plane_layers.copy(),
+        "seg_layer": ir.seg_layer.copy(),
+        "seg_side": ir.seg_side.copy(),
+    }
+
+
+def _states_equal(a: dict, b: dict) -> bool:
+    import numpy as np
+
+    return all(
+        np.array_equal(x, y)
+        for k in a
+        for x, y in zip(
+            a[k] if isinstance(a[k], tuple) else (a[k],),
+            b[k] if isinstance(b[k], tuple) else (b[k],),
+        )
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
+def test_cost_after_never_exceeds_cost_before(seed):
+    ir = from_graph(_board(10, seed=seed), stackup=DEFAULT_STACKUP)
+    r = optimize(ir, OptimizeConfig(seed=seed, iters=400, t0=50.0))
+    assert r.cost_after <= r.cost_before + 1e-9
+
+
+def _hot_run(seed: int):
+    ir = _seeded_ir(10, graph_seed=21, seed_rng_seed=22)
+    config = OptimizeConfig(seed=seed, iters=300, t0=500.0, cooling=1.0)
+    engine = OptimizeEngine(ir, config)
+    engine.schedule = 1.0
+    start_total = engine.total()
+    engine.schedule = 0.0
+    seen: list[tuple[float, dict]] = [(start_total, _ir_state(ir))]
+    orig = engine._total_at_report
+    probes = 0
+
+    def spy() -> float:
+        nonlocal probes
+        v = orig()
+        probes += 1
+        if probes > 1:  # probe 1 is the anneal's own start-state read
+            seen.append((v, _ir_state(ir)))
+        return v
+
+    engine._total_at_report = spy  # type: ignore[method-assign]
+    engine.anneal(random.Random(seed))
+    return ir, config, engine, seen
+
+
+def test_final_worse_than_intermediate_restores_best():
+    """A hot, barely-cooling run ends far from its best; the best comes back,
+    caches agree, and the arrays equal what they were at that moment."""
+    for seed in range(23, 43):
+        ir, config, engine, seen = _hot_run(seed)
+        # last probe is the post-restore assert read when a restore happened
+        if engine.restored_best_at is not None:
+            break
+    else:
+        pytest.fail("no seed produced a final state worse than an earlier one")
+
+    best_total, best_state = min(seen[:-1], key=lambda t: t[0])
+    assert seen[-2][0] > best_total + 1e-9  # the final accepted state was worse
+    assert 0 <= engine.restored_best_at < sum(m.accepted for m in engine.moves)
+    engine.schedule = 1.0
+    assert engine.total() == pytest.approx(best_total, abs=1e-9)
+    assert _states_equal(_ir_state(ir), best_state)
+    # no stale cache: a from-scratch evaluation agrees with the engine
+    full = evaluate_cost(
+        ir, Level.L4, dataclasses.replace(config.cost, schedule=engine.schedule)
+    )
+    assert engine.total() == pytest.approx(full.total, rel=1e-9, abs=1e-9)
+
+
+def test_result_reports_restored_best_in_header():
+    ir = from_graph(_board(10, seed=21), stackup=DEFAULT_STACKUP)
+    r = optimize(ir, OptimizeConfig(seed=23, iters=300, t0=500.0, cooling=1.0))
+    assert r.restored_best_at is not None
+    accepted = sum(r.digest.move_counts.values())
+    assert f"best_at={r.restored_best_at}/{accepted} " in digest_toon(r)
+    assert r.cost_after <= r.cost_before + 1e-9
+
+
 # ── fixed='xy'|'rot'|'both' ───────────────────────────────────────────
 def test_fixed_flags_restrict_move_generator_membership():
     fixed = {0: "xy", 1: "both", 2: "rot"}

@@ -38,15 +38,14 @@ Do-next renumbered)
    the whole group with its fixed copper and rips the router nets it
    strands; `ewod_pad_array` v4 emits its copper at the array anchor. The
    13 strips on pcb 460559 were router faults, fixed by
-   pcb-easyeda-round-trip (0 strips after). **Next after the pose delta:
-   gripe 462607** — the anneal returns its last state, not its best; both
-   prod route runs on dogfood-6 ended ~1.1 cost worse than they started
-   and the job stored that. Fix in `optimize()`/`anneal()` (best-state
-   snapshot + restore), plus a job-level determinism test. The multi-pose `op='move'`
+   pcb-easyeda-round-trip (0 strips after). Gripe 462607 fixed 2026-10-02: the anneal restores its best state
+   (judged at the reporting schedule), so `cost_after <= cost_before`
+   always; job summaries show `best_at=N/M`. Still owed: a job-level
+   determinism test for `pcb_route`. The pose half of the move check is a
+   delta now too (verdict 2026-10-02). The multi-pose `op='move'`
    (ruling 2) is built too. **Next:** the remaining mutation paths in the
    item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);
-   the pose half of the move check is still a resulting-state check, on
-   the orchestrator's desk in reviews/ewod-pcb.md.
+
    Dogfood after the deploy: re-route ewod-dogfood-6, expect 0 in the
    summary's "stripped by post-route DRC" count.
    **Now `status: canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his

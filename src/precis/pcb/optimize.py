@@ -647,6 +647,10 @@ class OptimizeResult:
     #: Refdes of every instance :meth:`OptimizeEngine.legalize_start`
     #: moved off an illegal STARTING pose before the anneal ran.
     legalized: tuple[str, ...] = ()
+    #: Accepted-move index (count of accepted moves applied) the anneal's
+    #: best state was restored to, or None when the final state was best.
+    #: The start state is index 0.
+    restored_best_at: int | None = None
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -1651,6 +1655,7 @@ class OptimizeEngine:
         )  # placement moves need L4 fidelity to see congestion at all
         self.schedule = 0.0  # constraint-hardening dial this engine drives itself
         self.moves: list[MoveRecord] = []
+        self.restored_best_at: int | None = None
 
         n = ir.n_instances
         #: gid -> every member instance id, sorted ascending — the SAME
@@ -3214,8 +3219,35 @@ class OptimizeEngine:
         self._rescan_segments(tuple(touched))
 
     # -- SA loop -----------------------------------------------------------
+    def _report_schedule(self) -> float:
+        """The fixed schedule ``optimize()`` reports ``cost_*`` at."""
+        return 1.0 if self.config.iters > 1 else 0.0
+
+    def _total_at_report(self) -> float:
+        saved = self.schedule
+        self.schedule = self._report_schedule()
+        try:
+            return self.total()
+        finally:
+            self.schedule = saved
+
     def anneal(self, rng: random.Random) -> None:
+        """Run the SA loop, then restore the best state seen.
+
+        Acceptance runs at the moving schedule, so "best" is judged by
+        ``total()`` at the fixed reporting schedule after every accepted
+        move (the start state is candidate 0). The snapshot is an undo
+        log: the accepted :class:`Move` objects. Restoring = undoing the
+        moves past the best index through the engine's own ``undo_move``,
+        which rescans every cache the anneal itself keeps in step, so no
+        array/cache pair can disagree. ``self.moves`` still describes
+        every accepted/rejected proposal; ``restored_best_at`` says where
+        the state was rolled back to."""
         cfg = self.config
+        self.restored_best_at = None
+        accepted_log: list[Move] = []
+        best_total = self._total_at_report()
+        best_k = 0
         t0 = cfg.t0 if cfg.t0 is not None else max(5.0, self.board_side / 2.0)
         temp = t0
         moves: list[MoveRecord] = []
@@ -3266,11 +3298,24 @@ class OptimizeEngine:
             if accept:
                 cur_total = new_total
                 moves.append(MoveRecord(it, kind.value, refdes, True, delta))
+                accepted_log.append(move)
+                rt = self._total_at_report()
+                if rt < best_total:
+                    best_total = rt
+                    best_k = len(accepted_log)
             else:
                 self.undo_move(move)
                 moves.append(MoveRecord(it, kind.value, refdes, False, delta))
             temp *= cfg.cooling
         self.moves = moves
+        if best_k < len(accepted_log):
+            for mv in reversed(accepted_log[best_k:]):
+                self.undo_move(mv)
+            self.restored_best_at = best_k
+            restored = self._total_at_report()
+            assert abs(restored - best_total) <= 1e-9, (
+                f"restored best total {restored!r} != recorded {best_total!r}"
+            )
 
     # -- digest --------------------------------------------------------
     def _cell_label(self, x: float, y: float) -> str:
@@ -3878,7 +3923,7 @@ def optimize(
     )
     engine = OptimizeEngine(ir, config)
     legalized = engine.legalize_start()
-    report_schedule = 1.0 if config.iters > 1 else 0.0
+    report_schedule = engine._report_schedule()
     engine.schedule = report_schedule
     cost_before = engine.total()
     engine.schedule = 0.0
@@ -3913,6 +3958,7 @@ def optimize(
             and engine._fixed_via_gap(i) < _FIXED_VIA_CLEARANCE_MM
         ),
         legalized=legalized,
+        restored_best_at=engine.restored_best_at,
     )
 
 
@@ -3928,7 +3974,12 @@ def digest_toon(result: OptimizeResult) -> str:
         f"total={result.cost_after:.4f} money={result.digest.money:.4f} "
         f"risk={result.digest.risk:.4f} before={result.cost_before:.4f} "
         f"accepted={accepted}/{result.iters} "
-        f"moves={','.join(f'{k}:{v}' for k, v in sorted(result.digest.move_counts.items()))}"
+        + (
+            f"best_at={result.restored_best_at}/{accepted} "
+            if result.restored_best_at is not None
+            else ""
+        )
+        + f"moves={','.join(f'{k}:{v}' for k, v in sorted(result.digest.move_counts.items()))}"
     )
     term_rows = [
         {
