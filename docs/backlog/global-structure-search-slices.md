@@ -50,6 +50,7 @@ A surrogate (GPR fingerprint) trained on one problem's AGOX database can acceler
 ### Open questions / decisions log
 
 - OPEN (non-blocking): AGOX `Database` save/load as warm-start — verify the API before speccing. (Slice 1's decisions log is in git: `docs/backlog/global-structure-search-gofee-agox.md` at 98fcdfa8.)
+- OPEN (blocking for warm-start): the prior job's `database_path` may be node-local. `struct_search.py::_NFS_ROOT` reads `PRECIS_DFT_NFS_ROOT`, the same variable the dft role sets for struct_relax scratch. On a DFT node with node-local scratch (`dft_nfs_root`, chemistry 2026-10-02, while `/mnt/cluster` was hung), and whenever `_default_workdir` falls back to a temp dir, the recorded path exists only on the host that ran the search. A warm-start claimed on another host then cannot read it. Pin the warm-start job to the prior job's host, or copy the database to the shared root at write-back.
 
 ## global structure search — slice 3: hyperspatial / degree-of-existence generators (Pickard 2019, Hammer 2025)
 
