@@ -20,6 +20,11 @@ Do-next renumbered)
 
 ## Do next
 
+0. **backlog/pcb-silk-refdes-side-follows-part-rotation.md**: Reto's own
+   board (heater-base-test, 2026-10-02). Rot-180 0402 columns put their
+   refdes on the opposite side from R51, R23 differs again, and each label
+   breaks its neighbour's courtyard outline. The cause is in `silk.py`,
+   which this thread owns.
 1. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
    canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid

@@ -39,6 +39,13 @@ nothing uncommitted)
 
 ## Do next
 
+0. **Reto's heater-base-test findings (2026-10-02), filed by ewod-pcb.**
+   backlog/pcb-epro-import-drops-footprint-fill-holes-and-stale-footprints.md
+   covers the CN1/CN2 ring around a dropped FILL hole and the C27–29
+   courtyards left stale by `--update`.
+   backlog/pcb-last-route-meta-outlives-ripped-copper.md covers the 89 nets
+   ripped at 01:55–01:58Z while `last_route` still claims 66 realized.
+   Rank them against 1 yourself.
 1. **backlog/pcb-router-fails-at-real-board-size.md** — this thread OWNS
    the fix (agreed with ewod-pcb 2026-10-01; avoid-list in the item).
    Measured
