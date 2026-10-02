@@ -518,7 +518,8 @@ class PathwayHandler(Handler):
             ).fetchall()
             rows = conn.execute(
                 "SELECT slug_id.id_value, refs.title, refs.meta->>'status', "
-                "refs.updated_at FROM refs "
+                "refs.updated_at, refs.meta->>'tier', refs.meta->'span', "
+                "refs.meta->'low_confidence' FROM refs "
                 "LEFT JOIN ref_identifiers slug_id "
                 "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
                 "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
@@ -532,22 +533,37 @@ class PathwayHandler(Handler):
                 "text='<config yaml>') — see precis-pathway-help."
             )
         total = sum(n for _, n in counts)
+        # Quest candidates all carry the same reaction title, so a title
+        # column would repeat one string 20 times. Name it once instead; the
+        # tier and the energetic span are what tell the rows apart.
+        titles = {title for _, title, *_ in rows}
+        shared = titles.pop() if len(titles) == 1 else None
         lines = [
             f"{total} pathways ("
             + ", ".join(f"{n} {status}" for status, n in counts)
-            + f"); the {len(rows)} most recently updated:",
+            + f"); the {len(rows)} most recently updated"
+            + (f", all '{shared}'" if shared else "")
+            + ":",
             "",
-            "slug | title | status | updated",
+            "slug | "
+            + ("" if shared else "title | ")
+            + "status | tier | span eV | updated",
         ]
-        for slug, title, status, updated in rows:
+        for slug, title, status, updated, tier, span, low in rows:
+            span_txt = f"{span:.2f}" if isinstance(span, (int, float)) else "-"
+            if low is True:
+                span_txt += " (low confidence)"
             lines.append(
-                f"{slug or '?'} | {title} | {status or '?'} | {updated:%Y-%m-%d %H:%MZ}"
+                f"{slug or '?'} | "
+                + ("" if shared else f"{title} | ")
+                + f"{status or '?'} | {tier or '-'} | {span_txt} | "
+                f"{updated:%Y-%m-%d %H:%MZ}"
             )
         # Point the hint at a ready pathway: view='analysis' on one still
         # computing only says "check back shortly".
         first = next(
-            (slug for slug, _, status, _ in rows if slug and status == "ready"),
-            next((slug for slug, *_ in rows if slug), None),
+            (row[0] for row in rows if row[0] and row[2] == "ready"),
+            next((row[0] for row in rows if row[0]), None),
         )
         if first:
             lines += [

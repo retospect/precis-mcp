@@ -2762,20 +2762,49 @@ def test_bare_get_lists_pathways_with_real_slugs(pathway_store: Store) -> None:
             ("list-ready-a", "NO → NH3 on Pd", "ready"),
             ("list-failed-b", "pathway list-failed-b (failed)", "failed"),
         ):
+            meta: dict[str, Any] = {"status": status}
+            if status == "ready":
+                meta |= {"tier": "neb", "span": 1.5867, "low_confidence": True}
             pathway_store.insert_ref(
                 kind="pathway",
                 slug=slug,
                 title=title,
-                meta={"status": status},
+                meta=meta,
                 conn=conn,
             )
 
     body = h.get().body
     assert body.startswith("2 pathways (")
     assert "1 ready" in body and "1 failed" in body
-    assert "list-ready-a | NO → NH3 on Pd | ready |" in body
+    assert (
+        "list-ready-a | NO → NH3 on Pd | ready | neb | 1.59 (low confidence) |" in body
+    )
+    assert "list-failed-b | pathway list-failed-b (failed) | failed | - | - |" in body
     assert "list-failed-b |" in body
     # The next-hint names a real slug, and a ready one: view='analysis' on a
     # failed or computing pathway is a dead end.
     hint = body.rsplit("next: ", 1)[1]
     assert "id='list-ready-a'" in hint
+
+
+def test_bare_get_names_a_shared_title_once(pathway_store: Store) -> None:
+    """Quest candidates all carry one reaction title; repeating it per row
+    hid the columns that tell them apart (prod 2026-10-02: 20 rows of
+    'NO → NH3 on Pd')."""
+    with pathway_store.tx() as conn:
+        for slug, tier, span in (
+            ("same-a", "neb", 2.02),
+            ("same-b", "screening", 0.87),
+        ):
+            pathway_store.insert_ref(
+                kind="pathway",
+                slug=slug,
+                title="NO → NH3 on Pd",
+                meta={"status": "ready", "tier": tier, "span": span},
+                conn=conn,
+            )
+    body = _handler(pathway_store).get().body
+    assert "most recently updated, all 'NO → NH3 on Pd':" in body
+    assert "slug | status | tier | span eV | updated" in body
+    assert "same-b | ready | screening | 0.87 |" in body
+    assert body.count("NO → NH3 on Pd") == 1

@@ -37,7 +37,8 @@ not a bug; retry from a host that has it.
 ## Find existing pathways / list what has been run
 
 `pathway` has no `search`. A bare get lists the most recently updated
-pathways, with their slugs and the total per status:
+pathways with their slugs, status, tier (`screening` or `neb`) and energetic
+span in eV, plus the total per status:
 
 ```python
 get(kind="pathway")
