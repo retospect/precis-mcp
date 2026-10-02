@@ -70,14 +70,23 @@ def test_the_outline_and_the_mounting_hole_land_as_features(store, imported) -> 
     features = store.pcb_features_list(imported.ref_id)
     ftypes = [f["ftype"] for f in features]
     assert ftypes.count("outline") == 1
-    assert ftypes.count("mounting_hole") == 1
+    # The board's free-pad hole and R1's footprint hole.
+    assert ftypes.count("mounting_hole") == 2
+    assert {
+        f["geom"].get("part") for f in features if f["ftype"] == "mounting_hole"
+    } == {
+        None,
+        "R1",
+    }
 
     outline = next(f for f in features if f["ftype"] == "outline")
     xs = [p[0] for p in outline["geom"]["path"]]
     # The board's own 1000 mil width, not a bbox around the two parts.
     assert max(xs) - min(xs) == pytest.approx(1000 * 0.0254, abs=1e-6)
 
-    hole = next(f for f in features if f["ftype"] == "mounting_hole")
+    hole = next(
+        f for f in features if f["ftype"] == "mounting_hole" and "part" not in f["geom"]
+    )
     assert hole["geom"]["dia_mm"] == pytest.approx(6.0, abs=1e-5)
     # NOT marked fixed: pcb_features.fixed is unconstrained text that
     # nothing reads, so a value there would claim a freeze that does not
@@ -400,7 +409,56 @@ def test_an_unchanged_update_changes_nothing(store, imported) -> None:
     assert plan is not None
     assert (plan.moved, plan.added, plan.removed, plan.rewired) == ([], [], [], [])
     assert (plan.features_added, plan.features_missing) == (0, 0)
+    # The stored footprints round-trip through JSONB unchanged, so a
+    # re-read of the same source refreshes none of them.
+    assert (plan.footprints_refreshed, plan.footprints_differ) == ([], [])
     assert _pose(store, imported.ref_id) == before
+
+
+def _set_stored_footprint(store, ref_id: int, name: str, column: str, value) -> None:
+    from psycopg.types.json import Jsonb
+
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            f"UPDATE pcb_local_footprints SET {column} = %s "
+            "WHERE ref_id = %s AND name = %s",
+            (Jsonb(value), ref_id, name),
+        ).rowcount
+        conn.commit()
+    assert n == 1
+
+
+def test_update_refreshes_a_footprint_whose_geometry_changed(store, imported) -> None:
+    """heater-base-test: C27-29 kept the pad-extent courtyard an older
+    reader stored, because --update never rewrote an existing footprint."""
+    stored = store.pcb_local_footprints_for(imported.ref_id)
+    name = sorted(stored)[0]
+    fresh = stored[name]["courtyard"]
+    _set_stored_footprint(
+        store, imported.ref_id, name, "courtyard", {"bbox": [-0.1, -0.1, 0.1, 0.1]}
+    )
+    result = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
+    assert result.update is not None
+    assert result.update.footprints_refreshed == [name]
+    assert f"  refreshed footprint {name}" in result.update.lines()
+    assert store.pcb_local_footprints_for(imported.ref_id)[name]["courtyard"] == fresh
+
+
+def test_update_does_not_apply_a_footprint_whose_pin_map_changed(
+    store, imported
+) -> None:
+    stored = store.pcb_local_footprints_for(imported.ref_id)
+    name = sorted(stored)[0]
+    renamed = {
+        pad: {**entry, "name": f"X{pad}"}
+        for pad, entry in stored[name]["pin_map"].items()
+    }
+    _set_stored_footprint(store, imported.ref_id, name, "pin_map", renamed)
+    result = pcb_epro.import_epro(store, _zip(), slug=imported.slug, update=True)
+    assert result.update is not None
+    assert result.update.footprints_differ == [name]
+    assert result.update.footprints_refreshed == []
+    assert store.pcb_local_footprints_for(imported.ref_id)[name]["pin_map"] == renamed
 
 
 def test_a_dry_run_update_reports_and_writes_nothing(store, imported) -> None:

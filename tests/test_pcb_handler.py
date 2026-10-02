@@ -1559,6 +1559,39 @@ def test_congestion_view_gives_no_tick_when_nets_failed(pcb, store):
     assert "✓" in pcb.get(id="cong-failed", view="congestion").body
 
 
+def test_congestion_view_flags_a_digest_whose_nets_were_ripped_since(pcb, store):
+    """heater-base-test: every net was ripped after a 66-realized route and
+    view='congestion' still reported the 66 with no hint the copper was
+    gone."""
+    pcb.put(id="cong-ripped", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="cong-ripped")
+    assert ref is not None
+    assert store.pcb_pin_topology(ref.id, "N1", "A.1", "B.1", 1)
+    _set_last_route(store, "cong-ripped", {"realized": 2, "failed": 0})
+    assert "✓" in pcb.get(id="cong-ripped", view="congestion").body
+
+    pcb.put(id="cong-ripped", args={"op": "rip", "net": "N1"})
+    body = pcb.get(id="cong-ripped", view="congestion").body
+    assert "STALE — 1 net(s) ripped since that run" in body
+    assert "stored now: 0 realized, 2 unrouted" in body
+    assert "✓" not in body
+
+    # A fresh route run overwrites the digest, clearing the stale mark.
+    _set_last_route(store, "cong-ripped", {"realized": 2, "failed": 0})
+    assert "STALE" not in pcb.get(id="cong-ripped", view="congestion").body
+
+
+def test_rip_leaves_meta_alone_when_no_route_ran(pcb, store):
+    pcb.put(id="rip-nometa", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="rip-nometa")
+    assert ref is not None
+    assert store.pcb_pin_topology(ref.id, "N1", "A.1", "B.1", 1)
+    pcb.put(id="rip-nometa", args={"op": "rip", "net": "N1"})
+    after = store.get_ref(kind="pcb", id="rip-nometa")
+    assert after is not None
+    assert "last_route" not in (after.meta or {})
+
+
 def test_planes_view_empty_then_assigned(pcb, store):
     pcb.put(id="planes-x", args=_CROSSED)
     empty = pcb.get(id="planes-x", view="planes")

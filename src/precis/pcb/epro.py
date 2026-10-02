@@ -85,6 +85,8 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis.pcb import padplace
+
 #: 1 mil = 0.0254 mm. The ``.epru`` document body's unit, everywhere
 #: except ``POURED.pourFill`` (see the module docstring).
 _MM_PER_MIL = 0.0254
@@ -1037,6 +1039,13 @@ class Design:
 #: ``POLY`` line runs in footprint-local mil.
 _FP_COURTYARD_LAYER = 48
 
+#: The MULTI layer. A ``FILL`` on it inside a footprint is a board cutout:
+#: KiCad's EasyEDA Pro importer maps layer 12 to Edge.Cuts. Spike-verified
+#: 2026-10-02 on the real board: 7 such FILLs, all circles: the Ø6.4 mm
+#: hole of the ``SMD-1_BD8.7-D6.2`` standoff and the Ø1.1-1.6 mm peg holes
+#: of three connectors. Imported as non-plated holes.
+_FP_MULTI_LAYER = 12
+
 #: Courtyard excess around the pads when a footprint draws no courtyard
 #: of its own: IPC-7351's nominal (density level B) 0.25 mm.
 _FALLBACK_COURTYARD_EXCESS_MM = 0.25
@@ -1169,9 +1178,40 @@ def extract_footprints(
                 "pads": pads,
                 "pin_map": pin_map,
                 "courtyard": _footprint_courtyard(doc, pads),
+                "holes": _footprint_holes(doc, name, warnings),
             }
         )
     return out, names, warnings
+
+
+def _footprint_holes(
+    doc: EproDocument, name: str, warnings: list[str]
+) -> list[dict[str, float]]:
+    """The footprint's non-plated holes, ``{x, y, dia_mm}`` in
+    footprint-local mm (the pads' frame): every circular ``FILL`` on
+    :data:`_FP_MULTI_LAYER`. A non-circular one is a cutout of another
+    shape, which precis has no model for, so it is warned about and
+    dropped rather than approximated."""
+    out: list[dict[str, float]] = []
+    for b in doc.bodies("FILL"):
+        if b.get("layerId") != _FP_MULTI_LAYER:
+            continue
+        path = b.get("path") or []
+        circle = path[0] if path and isinstance(path[0], list) else path
+        if len(circle) == 4 and circle[0] == "CIRCLE":
+            out.append(
+                {
+                    "x": Frame.length(float(circle[1])),
+                    "y": -Frame.length(float(circle[2])) or 0.0,
+                    "dia_mm": 2.0 * Frame.length(float(circle[3])),
+                }
+            )
+        else:
+            warnings.append(
+                f"footprint {name!r} has a non-circular cutout on the multi "
+                f"layer; precis has no cutout model, so it is NOT imported"
+            )
+    return out
 
 
 def extract_components(
@@ -1334,6 +1374,33 @@ def extract_mounting_holes(
     return out, warnings
 
 
+def footprint_hole_features(
+    components: list[dict[str, Any]], footprints: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """One ``mounting_hole`` feature per placed footprint hole, at board
+    position through the pads' own transform
+    (:func:`precis.pcb.padplace.place_pad_point`), so a bottom-side or
+    rotated part puts its hole where its pads say it is. ``geom.part``
+    names the part it came from."""
+    holes_by_fp = {f["name"]: f.get("holes") or [] for f in footprints}
+    out: list[dict[str, Any]] = []
+    for comp in components:
+        for hole in holes_by_fp.get(str(comp.get("footprint") or ""), []):
+            x, y = padplace.place_pad_point(hole, comp)
+            out.append(
+                {
+                    "ftype": "mounting_hole",
+                    "geom": {
+                        "x": round(x, 4),
+                        "y": round(y, 4),
+                        "dia_mm": round(hole["dia_mm"], 4),
+                        "part": comp["refdes"],
+                    },
+                }
+            )
+    return out
+
+
 def build_design(
     project: EproProject, pcb: EproDocument | None = None
 ) -> tuple[Design, Frame]:
@@ -1396,9 +1463,17 @@ def build_design(
 
     holes, hole_warnings = extract_mounting_holes(board, frame)
     design.warnings += hole_warnings
+    part_holes = footprint_hole_features(components, footprints)
+    if part_holes:
+        design.warnings.append(
+            f"{len(part_holes)} footprint hole(s) imported as mounting holes "
+            f"at their part's position; a feature does not follow its part, "
+            f"so moving that part leaves the hole behind"
+        )
     design.features = [
         {"ftype": "outline", "geom": {"path": [[x, y] for x, y in outline]}},
         *holes,
+        *part_holes,
     ]
 
     rules = len(board.of_type("RULE")) + len(board.of_type("RULE_SELECTOR"))
@@ -1415,7 +1490,7 @@ def build_design(
         "footprints": len(design.footprints),
         "nets": len(design.nets),
         "connections": len(design.connections),
-        "mounting_holes": len(holes),
+        "mounting_holes": len(holes) + len(part_holes),
         "outline_vertices": len(outline),
     }
     return design, frame

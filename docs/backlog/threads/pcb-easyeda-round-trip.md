@@ -22,8 +22,15 @@ sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones;
 closed). DRC still shows 4 annular-ring errors on the SATA connector's
 slot holes (imported as round, with a warning; no slot model yet —
 gr461213, Horizon 14).
-Its footprints predate EasyEDA-courtyard import, and `--update` does not
-refresh existing footprints (harmless today).
+Reto's 2026-10-02 look found the CN1/CN2 standoff rings around no hole
+and C27–29 with pad-strip courtyards: the reader dropped footprint FILLs
+on the multi layer (KiCad maps them to Edge.Cuts) and `--update` never
+refreshed a stored footprint. Both fixed; the board got 15 refreshed
+footprints and 8 footprint holes (CN1/2/5/6 Ø6.4, U32/U33 SATA pegs
+Ø1.6). A footprint hole is a `mounting_hole` feature (`geom.part`), so it
+does not follow a moved part — cutouts inside footprints need a real
+model before anything re-places those parts. `view='congestion'` now marks
+a `last_route` digest STALE after `op='rip'`.
 **Trap:** `op='route'` runs the place anneal first and MOVES every
 unfrozen part; it re-placed 103 parts on this board once (restored with
 `import-epro --update` + `op='rip'` per net). Measure routing with the
@@ -39,13 +46,6 @@ nothing uncommitted)
 
 ## Do next
 
-0. **Reto's heater-base-test findings (2026-10-02), filed by ewod-pcb.**
-   backlog/pcb-epro-import-drops-footprint-fill-holes-and-stale-footprints.md
-   covers the CN1/CN2 ring around a dropped FILL hole and the C27–29
-   courtyards left stale by `--update`.
-   backlog/pcb-last-route-meta-outlives-ripped-copper.md covers the 89 nets
-   ripped at 01:55–01:58Z while `last_route` still claims 66 realized.
-   Rank them against 1 yourself.
 1. **backlog/pcb-router-fails-at-real-board-size.md** — this thread OWNS
    the fix (agreed with ewod-pcb 2026-10-01; avoid-list in the item).
    Measured

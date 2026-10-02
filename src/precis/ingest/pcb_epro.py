@@ -82,7 +82,8 @@ class UpdatePlan:
     """What ``--update`` would do to an existing import, decided before
     anything is written so a ``--dry-run`` shows exactly the same thing.
 
-    Only POSES and NEW PARTS are applied. Everything else the source
+    Only POSES, NEW PARTS and refreshed footprint GEOMETRY (same pads and
+    pin map) are applied. Everything else the source
     changed is reported and left alone, because precis is where the
     design is being corrected: a re-import that rewired a pin or retired
     a part would silently undo a fix made here since the last import.
@@ -100,12 +101,21 @@ class UpdatePlan:
     rewired: list[str] = field(default_factory=list)
     features_added: int = 0
     features_missing: int = 0
+    #: Stored footprints whose geometry (pad sizes, shapes, courtyard)
+    #: differs from a fresh read of the source with the same pad numbers
+    #: and pin map. Refreshed: the reader improved, or the author fixed the
+    #: footprint, and neither changes what a pin means.
+    footprints_refreshed: list[str] = field(default_factory=list)
+    #: Same name, different pad numbers or pin map: not applied, since the
+    #: board's connections name pins of the stored version.
+    footprints_differ: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [
             f"update: {len(self.moved)} moved, {len(self.added)} added, "
             f"{len(self.removed)} not in the source (kept), "
-            f"{len(self.rewired)} pin(s) wired differently (not applied)"
+            f"{len(self.rewired)} pin(s) wired differently (not applied), "
+            f"{len(self.footprints_refreshed)} footprint(s) refreshed"
         ]
         for refdes, old, new, fixed in self.moved:
             lock = " (locked; moved anyway — the source is the author's edit)"
@@ -117,6 +127,12 @@ class UpdatePlan:
         out += [f"  added {r}" for r in self.added]
         out += [f"  kept {r}: on the board, not in the source" for r in self.removed]
         out += [f"  differs {w}" for w in self.rewired]
+        out += [f"  refreshed footprint {n}" for n in self.footprints_refreshed]
+        out += [
+            f"  footprint {n}: pad numbers or pin map changed in the source "
+            f"(not applied; import to a fresh slug to take it)"
+            for n in self.footprints_differ
+        ]
         if self.features_added or self.features_missing:
             out.append(
                 f"  features: {self.features_added} in the source but not on "
@@ -544,6 +560,34 @@ def _provenance(
     }
 
 
+def _plan_footprints(
+    plan: UpdatePlan, stored: dict[str, dict[str, Any]], design: epro.Design
+) -> None:
+    """Sort the source's footprints that already exist on the board into
+    refreshed (same pads and pin map, other geometry differs) and differ
+    (pad numbers or pin map changed). New names ride in with new parts."""
+    for f in design.footprints:
+        name, fresh = normalize_local_footprint(f)
+        old = stored.get(name)
+        if old is None:
+            continue
+        if _canon(_pad_numbers(old)) != _canon(_pad_numbers(fresh)) or _canon(
+            old.get("pin_map") or {}
+        ) != _canon(fresh.get("pin_map") or {}):
+            plan.footprints_differ.append(name)
+        elif any(
+            _canon(old.get(k)) != _canon(fresh.get(k))
+            for k in ("pads", "courtyard", "centroid")
+        ):
+            plan.footprints_refreshed.append(name)
+    plan.footprints_refreshed.sort()
+    plan.footprints_differ.sort()
+
+
+def _pad_numbers(footprint: dict[str, Any]) -> list[str]:
+    return sorted(str(p.get("number")) for p in footprint.get("pads") or [])
+
+
 def _stackup_shape(stackup: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
     return [
         (s.get("name"), s.get("role"), s.get("plane_net"), bool(s.get("routable")))
@@ -596,6 +640,7 @@ def _update(
             "board carries; --update does not change the stackup (import to "
             "a fresh slug to take the new one)"
         )
+    _plan_footprints(plan, store.pcb_local_footprints_for(ref_id), design)
     result = ImportResult(
         slug=slug,
         ref_id=ref_id,
@@ -610,6 +655,7 @@ def _update(
         added = set(plan.added)
         components = [c for c in design.components if c["refdes"] in added]
         used = {c.get("footprint") for c in components}
+        used |= set(plan.footprints_refreshed)
         connections = [k for k in design.connections if k["refdes"] in added]
         wired = {k["net"] for k in connections}
         meta = {

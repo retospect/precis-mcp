@@ -2109,6 +2109,15 @@ class PcbMixin:
                 "DELETE FROM pcb_copper WHERE board_id = %s AND net_id = %s",
                 (board_id, net_id),
             )
+            # The last route run's digest no longer describes the stored
+            # copper: count the rips on it so view='congestion' says so. The
+            # next route run overwrites `last_route` wholesale, resetting it.
+            conn.execute(
+                "UPDATE refs SET meta = jsonb_set(meta, '{last_route,ripped}', "
+                "to_jsonb(COALESCE((meta #>> '{last_route,ripped}')::int, 0) + 1)) "
+                "WHERE ref_id = %s AND jsonb_typeof(meta -> 'last_route') = 'object'",
+                (ref_id,),
+            )
         return True
 
     def pcb_pin_topology(

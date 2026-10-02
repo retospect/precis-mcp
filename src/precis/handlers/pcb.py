@@ -63,6 +63,7 @@ See ``precis-pcb-help`` and ``precis-pcb-route-help``.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
@@ -2393,6 +2394,19 @@ class PcbHandler(Handler):
             f"# congestion — last route: {last_route.get('realized', 0)} realized, "
             f"{last_route.get('failed', 0)} failed, {len(warnings)} gap warning(s)"
         )
+        ripped = int(last_route.get("ripped") or 0)
+        if ripped:
+            # The digest outlived its copper (op='rip' since the run): say
+            # what is stored now instead of passing the old run off as it.
+            status = collections.Counter(
+                str(r["status"]) for r in self.store.pcb_route_status(ref_id)
+            )
+            head += (
+                f"\n⚠️ STALE — {ripped} net(s) ripped since that run; stored now: "
+                f"{status.get('realized', 0)} realized, "
+                f"{status.get('unrouted', 0)} unrouted (view='route-status')"
+            )
+            return Response(body=head + "".join(f"\n- {w}" for w in warnings))
         if not warnings:
             # No tick under failed nets: "no over-capacity gaps" only rules
             # out ONE cause, and read beside "40 failed" it reads as a pass.

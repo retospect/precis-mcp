@@ -311,7 +311,12 @@ def test_the_outline_is_the_first_feature_and_is_real(design) -> None:
 
 
 def test_a_non_plated_free_pad_becomes_a_mounting_hole(design) -> None:
-    holes = [f for f in design.features if f["ftype"] == "mounting_hole"]
+    # The board's own free pad; R1's footprint hole is the other one.
+    holes = [
+        f
+        for f in design.features
+        if f["ftype"] == "mounting_hole" and "part" not in f["geom"]
+    ]
     assert len(holes) == 1
     assert holes[0]["geom"]["dia_mm"] == pytest.approx(6.0, abs=1e-5)
     # No 'fixed': the column is inert (nothing reads pcb_features.fixed),
