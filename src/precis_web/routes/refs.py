@@ -1763,8 +1763,7 @@ def _pathway_provenance(
 # verify pathway lands it ``refines``-links its now-superseded parked
 # sibling (``precis.quest.compute._link_refines``). This section renders
 # that ladder on the pathway detail page: a tier chip (item 1), a cross-tier
-# toggle + barrier delta (item 2), and — on a verify pathway specifically —
-# a ghost overlay of the parked sibling's own profile (item 3).
+# toggle + barrier delta (item 2).
 
 #: Ladder rank, low->high fidelity — the sort key the toggle orders its two
 #: entries by (so a lower-fidelity tier always renders first, left of a
@@ -1952,75 +1951,6 @@ def _pathway_tier_toggle(
             delta_text = f"verified − {lower_word}: {delta:+.2f} eV"
 
     return {"entries": entries, "delta_text": delta_text}
-
-
-def _pathway_fragment_multiset(node_id: str) -> Counter[str]:
-    """A state id's constituent species as a MULTISET (``"H+H"`` ->
-    ``{"H": 2}``) — the ghost overlay's join (below) needs multiplicity,
-    unlike :func:`_pathway_fragments`'s frozenset (which the supply-edge
-    diff, item C, deliberately dedupes)."""
-    return Counter(node_id.split("+"))
-
-
-def _pathway_parked_maps_to_coadsorbed(parked_id: str, coadsorbed_id: str) -> bool:
-    """True when a parked(neb)-tier state id maps onto a verify(coadsorbed)-
-    tier one (item 3's ghost-overlay join): an exact id match, or the
-    coadsorbed id's multiset is the parked id's multiset plus EXACTLY one
-    extra fragment (the spectator) — e.g. ``"NH+O"`` maps onto ``"NH"``
-    (drop spectator ``"O"``), but not onto ``"NH2"`` (not a superset) nor a
-    coadsorbed id with two-or-more extra fragments (not a single-spectator
-    difference)."""
-    if parked_id == coadsorbed_id:
-        return True
-    parked = _pathway_fragment_multiset(parked_id)
-    coadsorbed = _pathway_fragment_multiset(coadsorbed_id)
-    if sum(coadsorbed.values()) != sum(parked.values()) + 1:
-        return False
-    if sum((parked - coadsorbed).values()) != 0:  # every parked fragment covered
-        return False
-    return sum((coadsorbed - parked).values()) == 1  # exactly one spectator extra
-
-
-def _pathway_ghost_series(
-    diagram: dict[str, Any] | None, tier_sibling: dict[str, Any] | None
-) -> list[dict[str, Any]] | None:
-    """The parked(neb)-tier sibling's own energy profile, mapped onto THIS
-    verify pathway's own state ids (item 3): one point per diagram node that
-    resolves a parked match (``_pathway_parked_maps_to_coadsorbed``),
-    carrying the parked node's OWN ``rel_energy``/``n_H`` verbatim — no
-    interpolation, no fabrication (an unmapped state simply isn't ghosted).
-    ``None`` when there's no NEB sibling specifically (a screening-tier
-    sibling carries no per-state barrier graph worth ghosting), neither side
-    has a graph, or fewer than 2 states map (too little to draw a line)."""
-    if diagram is None or tier_sibling is None or tier_sibling["tier"] != "neb":
-        return None
-    sib_graph = (tier_sibling["meta"] or {}).get("graph")
-    if not sib_graph or not sib_graph.get("nodes"):
-        return None
-    parked_nodes = [n for n in sib_graph["nodes"] if n.get("id") is not None]
-    points: list[dict[str, Any]] = []
-    for node in diagram["nodes"]:
-        coadsorbed_id = node["id"]
-        match = next(
-            (
-                pn
-                for pn in parked_nodes
-                if _pathway_parked_maps_to_coadsorbed(str(pn["id"]), coadsorbed_id)
-            ),
-            None,
-        )
-        if match is None or match.get("rel_energy") is None:
-            continue
-        points.append(
-            {
-                "state_id": coadsorbed_id,
-                "rel_energy": match["rel_energy"],
-                "n_H": match.get("n_H"),
-            }
-        )
-    if len(points) < 2:
-        return None
-    return points
 
 
 def _pathway_candidate_stepper(
@@ -2221,14 +2151,12 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     )
 
     # Tier ladder (screening -> neb -> verify): the chip (item 1), the
-    # cross-tier toggle + barrier delta (item 2), and — verify pathways only
-    # — the parked sibling's ghost overlay (item 3). All optional; a legacy
-    # or ad-hoc pathway (no candidate, no sibling) still renders, just
-    # without them.
+    # cross-tier toggle + barrier delta (item 2). Both optional; a legacy or
+    # ad-hoc pathway (no candidate, no sibling) still renders, just without
+    # them.
     tier = _pathway_tier(meta)
     tier_sibling = _pathway_tier_sibling(store, ref, tier, candidate_ref_id)
     tier_toggle = _pathway_tier_toggle(ref.id, tier, tier_sibling, meta)
-    ghost_series = _pathway_ghost_series(diagram, tier_sibling)
 
     # No graph yet -> a status-aware banner (computing/failed/superseded)
     # instead of just the bare empty-diagram message.
@@ -2274,7 +2202,6 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "stepper": stepper,
             "tier": tier,
             "tier_toggle": tier_toggle,
-            "ghost_series": ghost_series,
         },
     )
 

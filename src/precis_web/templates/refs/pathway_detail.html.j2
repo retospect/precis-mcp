@@ -571,14 +571,6 @@
     // defined either way so the readout/fork-prob code never has to null-
     // check the container).
     results: {{ results_electro | tojson }},
-    // Tier-ladder ghost overlay (item 3) — the parked(neb) sibling's OWN
-    // energy profile, already mapped onto THIS pathway's state ids
-    // server-side (``_pathway_ghost_series``'s state-id join); ``null`` on
-    // a non-verify pathway, a sibling-less one, or when fewer than 2 states
-    // mapped. Each point is ``{state_id, rel_energy, n_H}`` — the SAME
-    // shape as a graph node's own energy/n_H fields, so ``renderDiagram``
-    // re-applies the U-slider lever to it identically.
-    ghost: {{ ghost_series | tojson }},
   };
 
   function isBadState(id) {
@@ -744,7 +736,9 @@
     const out = [];
     arrivals.forEach((f) => { out.push({ text: '+' + pwSub(f), arrow: 'down' }); });
     if (nProt > 0) {
-      out.push({ text: nProt === 1 ? PW_PROTON : `+${nProt}H⁺+${nProt}e⁻`, arrow: 'down' });
+      // ``proton``: the diagram draws this one as an angled arrow onto the
+      // fed level (not the ↓ glyph in the label text)
+      out.push({ text: nProt === 1 ? PW_PROTON : `+${nProt}H⁺+${nProt}e⁻`, arrow: 'down', proton: true });
     }
     spectators.forEach((f) => { out.push({ text: pwSub(f) + '*', arrow: '' }); });
     leaving.forEach((f) => {
@@ -1047,18 +1041,6 @@
       const geo = stepGeom(s);
       if (geo) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
     });
-    // Ghost overlay (tier-ladder item 3) — the parked sibling's own energy,
-    // re-levered by ITS OWN n_H, folds into the y-scale too so the ghost
-    // line never clips off-canvas. Computed once here (not inside the
-    // parts-building pass below) so both the scale and the draw step read
-    // the exact same value.
-    const ghostY = (gp) => gp.rel_energy + (gp.n_H != null ? gp.n_H : 0) * currentU;
-    (V.ghost || []).forEach((gp) => {
-      if (xOf[gp.state_id] == null) { return; }
-      const y = ghostY(gp);
-      yMin = Math.min(yMin, y);
-      yMax = Math.max(yMax, y);
-    });
     if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
     if (yMax - yMin < 1e-6) { yMax = yMin + 1; }
     const yPad = (yMax - yMin) * 0.14;
@@ -1067,25 +1049,6 @@
 
     const parts = [];
     parts.push(`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="select-none" style="min-width:${W}px">`);
-
-    // ── ghost overlay (tier-ladder item 3) — drawn FIRST (behind
-    // everything, including the column-bg rects right below) so it reads
-    // as background context: a dashed, faint polyline through the parked
-    // sibling's own mapped level midpoints. No humps, no labels, no click
-    // target — purely a visual reference. Skipped outright when fewer than
-    // 2 states resolve an x position (mirrors the server's own <2 guard,
-    // since a mapped state can still fall off THIS diagram's own paths).
-    if (V.ghost && V.ghost.length) {
-      const ghostPts = V.ghost
-        .filter((gp) => xOf[gp.state_id] != null)
-        .map((gp) => ({ x: xScale(xOf[gp.state_id]), y: py(ghostY(gp)) }))
-        .sort((a, b) => a.x - b.x);
-      if (ghostPts.length >= 2) {
-        const pts = ghostPts.map((p) => `${p.x},${p.y}`).join(' ');
-        parts.push(`<polyline points="${pts}" fill="none" stroke="#94a3b8" `
-          + `stroke-width="2.5" stroke-dasharray="6 4" opacity="0.4" pointer-events="none"/>`);
-      }
-    }
 
     // ── selected-state column background (item 5) — one rect per state
     // x-column, drawn first (behind everything else, "fill=none" by
@@ -1113,6 +1076,11 @@
     // run after both loops) spreads each column's stack order-preservingly
     // before anything actually becomes SVG text. ──
     const labelQueue = [];
+    // hydrogenation steps whose proton/electron feed is drawn as an arrow onto
+    // the product level — collected here, emitted after the levels (below)
+    // because the tip must land on the SAME bar coordinates the level loop
+    // computes (so the arrow follows the U slider like the bars do).
+    const hydroArrows = [];
 
     // ── path membership — every drawn element records which root->leaf
     // paths it lies on (data-paths="|0|2|"), the hook applyPathSelection
@@ -1185,14 +1153,19 @@
       // step annotation — what entered/left, above the hump (and above its
       // Ea label: both share the gap column, so the order-preserving stack
       // keeps this one on top). Fades with the path like every element.
+      // The proton feed of a hydrogenation is NOT in this text: it is drawn
+      // as an angled arrow onto the product level (hydroArrows, below).
       const anns = pwStepAnnotations(s, isLeaf);
-      if (anns.length) {
+      const textAnns = anns.filter((a) => !a.proton);
+      if (textAnns.length) {
         labelQueue.push({
           x: xm, y: py(peakY + bsd) - 4 - (hasEa ? 10 : 0), anchorX: xm, anchorY: py(peakY),
-          text: pwFormatAnnotations(anns), fontSize: 8, color, bold: false, title: null,
+          text: pwFormatAnnotations(textAnns), fontSize: 8, color, bold: false, title: null,
           paths: edgePaths[s.key], cls: 'pw-annot',
         });
       }
+      const proton = anns.find((a) => a.proton);
+      if (proton) { hydroArrows.push({ step: s, text: proton.text, color, pa }); }
     });
 
     // levels — ±1σ band, the level line, the label — each drawn ONCE at its
@@ -1260,6 +1233,48 @@
       const bandHalf = 14;
       parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${y - bandHalf}" width="${x1 - x0}" height="${bandHalf * 2}" `
         + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+    });
+
+    // ── hydrogenation arrows — one per step that takes a proton+electron: a
+    // short arrow entering from the UPPER RIGHT whose head tip lands exactly
+    // on the product level bar it feeds (same x-column/py() the level loop
+    // above used, so a U-slider re-render moves arrow and bar together). The
+    // tip sits on the bar's right half (clear of the centred level label);
+    // the label hangs above the tail. The tip vertex is the polygon's FIRST
+    // point and the line's (x2,y2) stop at the head's base. ──
+    // Arrows sharing an x-column (different branches' products at the same
+    // step index) keep the same short fixed shaft; the column draws ONE slate
+    // label, on the top arrow's tail (sorted by tip y), instead of a pile of
+    // path-coloured ones.
+    const arrowCols = {};
+    hydroArrows.forEach((ha) => {
+      const tgt = byId[ha.step.tgt];
+      if (!tgt || tgt.rel_energy == null || xOf[tgt.id] == null) { ha.skip = true; return; }
+      ha.tipY = py(tgt.rel_energy);
+      (arrowCols[xOf[tgt.id]] = arrowCols[xOf[tgt.id]] || []).push(ha);
+    });
+    Object.keys(arrowCols).forEach((k) => {
+      const col = arrowCols[k].slice().sort((a, b) => a.tipY - b.tipY);
+      col.forEach((ha, i) => { ha.shared = col.length > 1; ha.labelled = i === 0; });
+    });
+    hydroArrows.forEach((ha) => {
+      if (ha.skip) { return; }
+      const tgt = byId[ha.step.tgt];
+      const cx = xScale(xOf[tgt.id]);
+      const tipX = cx + 0.4 * half, tipY = ha.tipY;
+      const dx = 22, dy = 22, len = Math.sqrt(dx * dx + dy * dy);
+      const tailX = tipX + dx, tailY = tipY - dy;
+      const ux = dx / len, uy = -dy / len;  // unit vector tail -> tip is (-ux, -uy)
+      const headLen = 6, headHalf = 2.6;
+      const bx = tipX + ux * headLen, by = tipY + uy * headLen;  // head base centre
+      const nx = -uy, ny = ux;  // perpendicular
+      parts.push(`<g class="pw-hydro-arrow"${ha.pa} data-from="${esc(ha.step.src)}" data-to="${esc(ha.step.tgt)}">`
+        + `<line x1="${tailX}" y1="${tailY}" x2="${bx}" y2="${by}" stroke="${ha.color}" stroke-width="1.2"/>`
+        + `<polygon points="${tipX},${tipY} ${bx + nx * headHalf},${by + ny * headHalf} ${bx - nx * headHalf},${by - ny * headHalf}" fill="${ha.color}"/>`
+        + (ha.labelled
+          ? `<text class="pw-hydro-label" x="${tailX}" y="${tailY - 3}" font-size="8" fill="${ha.shared ? '#64748b' : ha.color}" text-anchor="middle" paint-order="stroke" stroke="#f8fafc" stroke-width="2.5">${esc(ha.text)}</text>`
+          : '')
+        + `</g>`);
     });
 
     // ── label placement (item 1) — placeLabels (above) spreads each

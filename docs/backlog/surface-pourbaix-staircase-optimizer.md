@@ -104,6 +104,12 @@ slab's anchor energies exist. In it:
    new slabs, consistent with catalysis-selectivity-16 and -18. Its stage
    0 showed MACE-MP-0 has no α/β gap at that sampling and overbinds H, so
    an occupancy axis from MACE would be untrustworthy too.
+   **Depends on the PBE H-flight check** (catalysis-selectivity-26, design
+   note §22). Next to a subsurface dopant (Ta), MACE moves H from the
+   subsurface onto the surface with no barrier. If PBE gives the opposite
+   sign, the optimizer must not trust MACE-built H-loaded surface states as
+   resting-state candidates without a PBE spot-check rung. If PBE agrees,
+   MACE may build them, and the depleted-shell construction rule stands.
 7. Wulff construction: which facets, weighted by area under (U, pH).
 8. How cross-functional spread enters the diagram and the score.
 

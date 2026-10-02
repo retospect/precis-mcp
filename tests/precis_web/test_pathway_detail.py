@@ -1566,170 +1566,6 @@ def test_pathway_tier_toggle_absent_without_sibling(client, runtime) -> None:
     assert '<span class="font-semibold text-slate-500">view:</span>' not in resp.text
 
 
-def test_pathway_parked_maps_to_coadsorbed_multiset_join() -> None:
-    """Item 3's pure join: an exact id match, or the coadsorbed id's
-    '+'-split multiset equal to the parked id's multiset plus EXACTLY one
-    extra (spectator) fragment — never a non-superset, never a two-or-more
-    fragment gap."""
-    from precis_web.routes.refs import _pathway_parked_maps_to_coadsorbed
-
-    assert _pathway_parked_maps_to_coadsorbed("NH", "NH") is True
-    assert _pathway_parked_maps_to_coadsorbed("NH", "NH+O") is True  # drop O
-    assert _pathway_parked_maps_to_coadsorbed("N+H", "N+H+O") is True
-    assert _pathway_parked_maps_to_coadsorbed("H", "H+H") is True  # multiset, +1 H
-    assert _pathway_parked_maps_to_coadsorbed("NH", "NH2") is False  # not a superset
-    assert _pathway_parked_maps_to_coadsorbed("NH", "NH+O+H") is False  # 2 extras
-
-
-def test_pathway_ghost_overlay_payload_maps_parked_sibling_via_state_id_join(
-    client, runtime
-) -> None:
-    """Item 3: on a VERIFY pathway, the parked(neb) sibling's own energy
-    profile is mapped onto THIS pathway's own coadsorbed state ids — passed
-    through verbatim (no interpolation, no fabrication)."""
-    coadsorbed_graph = {
-        "nodes": [
-            {
-                "id": "NH+O",
-                "rel_energy": 0.0,
-                "n_H": 0,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-            {
-                "id": "NH2+O",
-                "rel_energy": 0.3,
-                "n_H": 1,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-        ],
-        "links": [
-            {
-                "source": "NH+O",
-                "target": "NH2+O",
-                "kind": "reaction",
-                "barrier": 0.1,
-                "barrier_std": 0.0,
-                "delta_e": 0.0,
-                "delta_e_std": 0.0,
-                "low_confidence": False,
-            },
-        ],
-    }
-    _seed_pathway(
-        runtime.store,
-        meta={"tier": "verify", "graph": coadsorbed_graph},
-        body_text=None,
-    )
-    parked_graph = {
-        "nodes": [
-            {"id": "NH", "rel_energy": -0.05, "n_H": 0},
-            {"id": "NH2", "rel_energy": 0.25, "n_H": 1},
-        ],
-        "links": [],
-    }
-    sibling_ref = make_ref(
-        id=171700,
-        kind="pathway",
-        title="parked",
-        meta={"tier": "neb", "graph": parked_graph},
-    )
-    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
-
-    resp = client.get("/refs/pathway/171696")
-    assert resp.status_code == 200
-    ghost = _extract_json_array(resp.text, "ghost: ")
-    assert {p["state_id"] for p in ghost} == {"NH+O", "NH2+O"}
-    by_state = {p["state_id"]: p for p in ghost}
-    assert by_state["NH+O"]["rel_energy"] == -0.05
-    assert by_state["NH+O"]["n_H"] == 0
-    assert by_state["NH2+O"]["rel_energy"] == 0.25
-    assert by_state["NH2+O"]["n_H"] == 1
-
-
-def test_pathway_ghost_overlay_skipped_when_fewer_than_two_states_map(
-    client, runtime
-) -> None:
-    """Item 3's floor: fewer than 2 mapped states skips the ghost entirely
-    (``ghost: null``) rather than drawing a single, meaningless dot."""
-    coadsorbed_graph = {
-        "nodes": [
-            {
-                "id": "NH+O",
-                "rel_energy": 0.0,
-                "n_H": 0,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-            {
-                "id": "totally-unmapped",
-                "rel_energy": 0.3,
-                "n_H": 1,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-        ],
-        "links": [
-            {
-                "source": "NH+O",
-                "target": "totally-unmapped",
-                "kind": "reaction",
-                "barrier": 0.1,
-                "barrier_std": 0.0,
-                "delta_e": 0.0,
-                "delta_e_std": 0.0,
-                "low_confidence": False,
-            },
-        ],
-    }
-    _seed_pathway(
-        runtime.store,
-        meta={"tier": "verify", "graph": coadsorbed_graph},
-        body_text=None,
-    )
-    parked_graph = {"nodes": [{"id": "NH", "rel_energy": -0.05, "n_H": 0}], "links": []}
-    sibling_ref = make_ref(
-        id=171700,
-        kind="pathway",
-        title="parked",
-        meta={"tier": "neb", "graph": parked_graph},
-    )
-    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
-
-    resp = client.get("/refs/pathway/171696")
-    assert resp.status_code == 200
-    assert "ghost: null" in resp.text
-
-
-def test_pathway_ghost_overlay_absent_on_non_verify_pathway(client, runtime) -> None:
-    """The ghost is a verify-pathway-only affordance — a neb pathway (even
-    with a resolvable sibling) never carries one."""
-    graph = {
-        "nodes": [
-            {
-                "id": "NH",
-                "rel_energy": 0.0,
-                "n_H": 0,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-            {
-                "id": "NH2",
-                "rel_energy": 0.3,
-                "n_H": 1,
-                "energy_std": 0.0,
-                "low_confidence": False,
-            },
-        ],
-        "links": [],
-    }
-    _seed_pathway(runtime.store, meta={"tier": "neb", "graph": graph}, body_text=None)
-    resp = client.get("/refs/pathway/171696")
-    assert resp.status_code == 200
-    assert "ghost: null" in resp.text
-
-
 # ── Kinetics panel (meta.results.kinetics -> vendored report panel) ─────
 
 
@@ -2113,17 +1949,22 @@ def test_pathway_diagram_renders_folded_steps_with_annotations(
     annots = re.findall(
         r'<text class="pw-annot" data-paths="([^"]*)"[^>]*>([^<]*)', svg
     )
-    assert [a[1] for a in annots] == [
-        "O*",
-        _PROTON_DOWN,
-        _PROTON_DOWN,
-        _PROTON_DOWN + " · −NH₃ ↑",
-        _PROTON_DOWN,
-        _PROTON_DOWN + " · −H₂O ↑",
+    # the proton feed is an arrow (pw-hydro-arrow), not part of this text
+    assert [a[1] for a in annots] == ["O*", "−NH₃ ↑", "−H₂O ↑"]
+    # fade hook: the shared first step belongs to both paths, the NH3 leaf
+    # to path 0 only, the H2O leaf to path 1 only
+    assert [a[0] for a in annots] == ["|0|1|", "|0|", "|1|"]
+    arrows = re.findall(
+        r'<g class="pw-hydro-arrow" data-paths="([^"]*)" data-from="([^"]*)" data-to="([^"]*)"',
+        svg,
+    )
+    assert arrows == [
+        ("|0|", "N+O", "NH"),
+        ("|0|", "NH", "NH2"),
+        ("|0|", "NH2", "NH3"),
+        ("|1|", "N+O", "OH"),
+        ("|1|", "OH", "H2O"),
     ]
-    # fade hook: the shared first step belongs to both paths, the NH3-route
-    # hydrogenations to path 0 only, the O-route ones to path 1 only
-    assert [a[0] for a in annots] == ["|0|1|", "|0|", "|0|", "|0|", "|1|", "|1|"]
 
 
 @_needs_node
@@ -2148,8 +1989,8 @@ def test_pathway_diagram_annotations_survive_explicit_link_fields(
     assert adds.count({"H": 1}) == 5 and adds.count(None) == 6
     svg = _render_diagram_svg(tmp_path, resp.text)
     texts = re.findall(r'<text class="pw-annot"[^>]*>([^<]*)', svg)
-    assert texts[3] == _PROTON_DOWN + " · −NH₃ ↑"
-    assert texts[5] == _PROTON_DOWN + " · −H₂O ↑"
+    assert texts == ["O*", "−NH₃ ↑", "−H₂O ↑"]
+    assert len(re.findall(r'class="pw-hydro-arrow"', svg)) == 5
 
 
 def test_pathway_graph_payload_passes_link_added_removed_through() -> None:
@@ -2184,3 +2025,99 @@ def test_pathway_diagram_template_has_no_dashed_supply_branch() -> None:
     assert "// pw-annot:begin" in tpl and "// pw-annot:end" in tpl
     assert "function pwFoldPath(" in tpl and "function pwLinkAnnotations(" in tpl
     assert "if (e.kind === 'supply') { return; }" in tpl  # fork guard
+
+
+def _level_bars(svg: str) -> dict[str, tuple[float, float, float]]:
+    """state id -> (bar x0, bar x1, bar y) from the level click bands (each is
+    centred on its bar: rect y = bar y - 14, same x extent as the bar)."""
+    out: dict[str, tuple[float, float, float]] = {}
+    for sid, x, y, w in re.findall(
+        r'<rect class="pw-svg-node" data-state="([^"]*)" x="([\d.]+)" y="([\d.-]+)" '
+        r'width="([\d.]+)" height="28"',
+        svg,
+    ):
+        out[sid] = (float(x), float(x) + float(w), float(y) + 14)
+    return out
+
+
+_HYDRO_ARROW_RE = (
+    r'<g class="pw-hydro-arrow"[^>]*data-to="([^"]*)">'
+    r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)"[^>]*/>'
+    r'<polygon points="([\d.-]+),([\d.-]+) [^"]*"[^>]*/>'
+    r'(?:<text class="pw-hydro-label" x="([\d.-]+)" y="([\d.-]+)" [^>]*fill="([^"]*)"'
+    r"[^>]*>([^<]*)</text>)?</g>"
+)
+
+
+@_needs_node
+def test_pathway_hydrogenation_arrow_tip_lands_on_fed_level_from_upper_right(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Each hydrogenation step's arrow enters at an angle from the upper
+    right: the head's tip vertex sits on the PRODUCT level bar it feeds (x
+    inside the bar, y on the bar) and the tail is right of and above it.
+    Arrows sharing an x-column (NH/OH, NH2/H2O) carry ONE slate label, on
+    the top arrow's tail; a lone arrow keeps its path-coloured label."""
+    _seed_parked(runtime, _parked_graph())
+    svg = _render_diagram_svg(tmp_path, client.get("/refs/pathway/171696").text)
+    bars = _level_bars(svg)
+    groups = re.findall(_HYDRO_ARROW_RE, svg)
+    assert [g[0] for g in groups] == ["NH", "NH2", "NH3", "OH", "H2O"]
+    by_to = {g[0]: g for g in groups}
+    for to, tx, ty, bx, by, hx, hy, lx, ly, fill, text in groups:
+        x0, x1, y = bars[to]
+        tail = (float(tx), float(ty))
+        tip = (float(hx), float(hy))
+        assert x0 < tip[0] < x1, (to, tip, x0, x1)
+        assert tip[1] == pytest.approx(y, abs=1e-6), (to, tip, y)
+        assert tail[0] > tip[0] and tail[1] < tip[1]  # right of and above
+        # every shaft is the same short 45 degree one: (+22, -22) from its tip
+        assert (tail[0] - tip[0], tip[1] - tail[1]) == pytest.approx((22, 22), abs=1e-6)
+        # the line stops at the head's base, on the tail -> tip chord
+        base = (float(bx), float(by))
+        assert (tip[0] - tail[0]) * (base[1] - tail[1]) == pytest.approx(
+            (tip[1] - tail[1]) * (base[0] - tail[0]), abs=1e-6
+        )
+        if lx:
+            assert float(lx) == tail[0] and float(ly) < tail[1]
+            assert text == "+H⁺+e⁻"
+    # shared columns: OH (-0.4) is above NH (-0.5), NH2 (-0.6) above H2O (-0.7)
+    labelled = [g[0] for g in groups if g[7]]
+    assert labelled == ["NH2", "NH3", "OH"]  # one per column, none on NH / H2O
+    for top in ("OH", "NH2"):
+        assert by_to[top][9] == "#64748b"
+    assert by_to["NH3"][9] != "#64748b"
+
+
+@_needs_node
+def test_pathway_pw455722_shape_draws_no_grey_dashed_sawtooth(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Prod pathway 455722 (screening tier, parked template): its candidate
+    carries a NEB sibling whose states map onto this graph's ids, which used
+    to draw a grey dashed "ghost" polyline (stroke #94a3b8, dasharray
+    "6 4") zig-zagging through the level midpoints. The page carries no
+    dashed element at all whatever the sibling holds."""
+    _seed_pathway(
+        runtime.store,
+        meta={"tier": "screening", "candidate_ref": 209903, "graph": _parked_graph()},
+        body_text=None,
+    )
+    sibling_graph = {
+        "nodes": [
+            {"id": nid, "rel_energy": e + 0.3 * (i % 2), "n_H": nh}
+            for i, (nid, nh, e) in enumerate(_PARKED_NODES)
+        ],
+        "links": [],
+    }
+    sibling_ref = make_ref(
+        id=246279,
+        kind="pathway",
+        title="neb",
+        meta={"tier": "neb", "graph": sibling_graph},
+    )
+    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
+    resp = client.get("/refs/pathway/171696")
+    svg = _render_diagram_svg(tmp_path, resp.text)
+    assert "stroke-dasharray" not in svg
+    assert "#94a3b8" not in "".join(re.findall(r"<polyline[^>]*>", svg))

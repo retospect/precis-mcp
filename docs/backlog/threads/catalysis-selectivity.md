@@ -17,12 +17,18 @@ landed after design review §14 + fixes F1–F3 (R1 briefly backed out, then
 re-landed on Reto's ruling `catalysis-selectivity-15`: a correctness fix,
 not a criterion change). Margins compare only on equal engine version too
 (Reto, `catalysis-selectivity-24`; the correction-set id joins once catpath
-records one). Open from it: the legacy backfill by value match. Its dry run
-would demote 196 of 215 selectivity margins (every one not on
-coadsorbed@0.22.0), so it is back with Reto as `catalysis-selectivity-25`
-and not applied. The Pd-hydride NEB pilot is held until the
-surface-Pourbaix work is built (Reto, item 23); the PBE H-flight check is
-costed in `catalysis-selectivity-26`. Catpath 0.23.0 (Part B) runs in Reto's
+records one). On hold (Reto, items 25 and 23, 2026-10-02): the legacy
+backfill, the qu164903 promotion pause, every re-run and the Pd-hydride
+NEB pilot. All of it waits for the improved catpath (the item-19
+corrections plus the surface-Pourbaix work). The backfill is re-filed
+when that is close, with its dry run redone against it. The last dry run
+(design note §21) would have labelled 196 of 215 selectivity margins
+older-network, changing no ranking: margins are not qu164903 objectives.
+The pause would only have stopped the re-runs, so it is no longer needed.
+The PBE H-flight check (pair plus undoped control, `catalysis-selectivity-26`)
+is approved to run on a Spark, with the host coordinated through
+local-compute; it also feeds the surface-Pourbaix optimizer. Catpath
+0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
 **Worktree:** `catalysis-selectivity`
@@ -50,9 +56,14 @@ costed in `catalysis-selectivity-26`. Catpath 0.23.0 (Part B) runs in Reto's
 3. **backlog/pathway-diagram-step-annotations.md** +
    **backlog/catpath-desorption-link-kind.md** (its first slice, moved
    here from chemistry Horizon 2) — independent of 1, parallel. The web
-   half (fold + label inference) has shipped; left: the catpath
-   `added`/`removed`/`kind` link fields, then Reto's look at pw455722
-   (the shoulder question).
+   half (fold + label inference) has shipped. Reto's look at pw455722
+   (`catalysis-selectivity-22`) asked for two changes; both are now done:
+   - the grey dashed line was the tier-ladder ghost overlay, which a neb
+     sibling triggered on a screening page; it is removed;
+   - the +H⁺+e⁻ feed is now a short arrow angled in from the upper right,
+     landing on the level it feeds, with one grey label per shared column.
+
+   Left: the catpath `added`/`removed`/`kind` link fields.
 4. **backlog/pourbaix-bulk-verdict-job.md** →
    **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
    network (2026-10-02); independent of 1–3. A candidate whose bulk

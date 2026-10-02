@@ -31,8 +31,8 @@ implementations remain separate code that will drift again.
   — the precis `meta.graph` form; the export's per-path `levels/links`
   list is a lossy projection of it).
 - Precis-only layers stay host-side, passed as options/hooks: the CHE
-  potential lever transforms node energies *before* render; ghost overlay,
-  measure traces, and fork-probability annotations are optional layers.
+  potential lever transforms node energies *before* render; measure traces
+  and fork-probability annotations are optional layers.
 - Golden tests asserting identical label *orderings* between viz.py's
   Python `_stack_labels` and the JS port for shared fixture columns.
 
