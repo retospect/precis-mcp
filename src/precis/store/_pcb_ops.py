@@ -280,6 +280,8 @@ class PcbMixin:
     insert_ref: Any
     get_ref: Any
     retire_ref: Any  # RefsMixin — the shared ref soft-delete
+    add_link: Any  # LinksMixin — the board → part ``contains`` edges
+    remove_link: Any
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
 
     # -- write ----------------------------------------------------------
@@ -601,7 +603,108 @@ class PcbMixin:
             ref_id=ref.id,
             card_text=self._pcb_card_text(conn, ref.id, title),
         )
+        self._pcb_reconcile_part_edges(conn, ref.id)
         return ref, created, counts
+
+    def _pcb_reconcile_part_edges(
+        self, conn: Connection, ref_id: int, *, dry_run: bool = False
+    ) -> dict[str, int]:
+        """Make the board's ``contains`` → part edges match its live parts.
+
+        One edge per (board, part) with ``links.meta = {refdes: [...], qty}``;
+        a part no longer placed loses its edge; part refs are minted on
+        first use (:meth:`ensure_part_ref`). A C-number outside the catalog
+        with no ref gets no edge (``uncatalogued``). Only changed edges are
+        written, so an unchanged re-apply is one read. ``dry_run`` counts
+        what would change and writes nothing (``precis.handlers.part``).
+        """
+        stats = {"mint": 0, "add": 0, "update": 0, "remove": 0, "uncatalogued": 0}
+        placed = conn.execute(
+            "SELECT upper(btrim(c.part_lcsc)), "
+            "       array_agg(i.refdes ORDER BY i.refdes) "
+            "FROM pcb_instances i "
+            "JOIN pcb_components c ON c.component_id = i.component_id "
+            "WHERE i.ref_id = %s AND i.retired_at IS NULL "
+            "  AND btrim(coalesce(c.part_lcsc, '')) <> '' "
+            "GROUP BY 1",
+            (ref_id,),
+        ).fetchall()
+        current = {
+            int(r[0]): dict(r[1] or {})
+            for r in conn.execute(
+                "SELECT l.dst_ref_id, l.meta FROM links l "
+                "JOIN refs r ON r.ref_id = l.dst_ref_id "
+                "WHERE l.src_ref_id = %s AND l.relation = 'contains' "
+                "  AND l.src_chunk_id IS NULL AND l.dst_chunk_id IS NULL "
+                "  AND r.kind = 'part'",
+                (ref_id,),
+            ).fetchall()
+        }
+        wanted: dict[int, dict[str, Any]] = {}
+        for lcsc, refdes in placed:
+            edge = {"refdes": list(refdes), "qty": len(refdes)}
+            part_id = self.part_ref_id(lcsc, conn=conn)
+            if part_id is None:
+                if dry_run:
+                    in_catalog = conn.execute(
+                        "SELECT 1 FROM parts WHERE lcsc = %s", (lcsc,)
+                    ).fetchone()
+                    stats["mint" if in_catalog else "uncatalogued"] += 1
+                    stats["add"] += 1 if in_catalog else 0
+                    continue
+                try:
+                    part_id = self.ensure_part_ref(lcsc, set_by="system", conn=conn)
+                except NotFound:
+                    stats["uncatalogued"] += 1
+                    continue
+                stats["mint"] += 1
+            wanted[part_id] = edge
+        for part_id, edge in wanted.items():
+            have = current.get(part_id)
+            if have is not None and {k: have.get(k) for k in edge} == edge:
+                continue
+            stats["update" if have is not None else "add"] += 1
+            if not dry_run:
+                self.add_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=part_id,
+                    relation="contains",
+                    set_by="system",
+                    meta=edge,
+                    merge_meta=True,
+                    conn=conn,
+                )
+        for part_id in current.keys() - wanted.keys():
+            stats["remove"] += 1
+            if not dry_run:
+                self.remove_link(
+                    src_ref_id=ref_id,
+                    dst_ref_id=part_id,
+                    relation="contains",
+                    conn=conn,
+                )
+        return stats
+
+    def pcb_link_parts(self, *, dry_run: bool = True) -> dict[str, int]:
+        """Run :meth:`_pcb_reconcile_part_edges` over every live board (the
+        ``precis pcb link-parts`` backfill). Idempotent; ``dry_run`` (the
+        default) writes nothing. Returns summed stats plus ``boards``."""
+        totals = {"boards": 0, "mint": 0, "add": 0, "update": 0, "remove": 0}
+        totals["uncatalogued"] = 0
+        with self.tx() as conn:
+            boards = [
+                int(r[0])
+                for r in conn.execute(
+                    "SELECT ref_id FROM refs WHERE kind = 'pcb' "
+                    "AND retired_at IS NULL ORDER BY ref_id"
+                ).fetchall()
+            ]
+            for board in boards:
+                stats = self._pcb_reconcile_part_edges(conn, board, dry_run=dry_run)
+                totals["boards"] += 1
+                for k, v in stats.items():
+                    totals[k] += v
+        return totals
 
     def _pcb_card_text(self, conn: Connection, ref_id: int, title: str) -> str:
         """The one embeddable summary per design — built from the current graph
@@ -3169,7 +3272,7 @@ class PcbMixin:
         A part ref is ``refs(kind='part', slug=<C-no>)`` plus a
         ``ref_identifiers('lcsc', <C-no>)`` row, chunkless (the embed and
         summary cascade never sees it), titled from the catalog row at
-        mint time (docs/backlog/linkable-parts.md). An existing live ref
+        mint time (``precis.handlers.part`` docstring). An existing live ref
         is returned whether or not its row is still in ``parts``; a mint
         needs the row and raises :class:`NotFound` without it.
 

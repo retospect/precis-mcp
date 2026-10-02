@@ -1,4 +1,4 @@
-"""Linkable parts, slice 1 (docs/backlog/linkable-parts.md).
+"""Linkable parts (design in the ``precis.handlers.part`` docstring).
 
 A catalog part becomes a lazy ``part`` ref on its first add-mode link:
 ``Store.ensure_part_ref`` mints it, the two generic link doors call it,
@@ -234,3 +234,119 @@ def test_datasheet_part_lcsc_outside_the_catalog_keeps_meta_only(seeded):
     assert "not in the catalog" in resp.body
     assert seeded.get_ref(kind="datasheet", id=ds.id).meta["part_lcsc"] == "C99999999"
     assert _datasheet_of(seeded, ds.id) == []
+
+
+# ── slice 2: board → part contains edges ─────────────────────────────
+
+_NO_CHANGE = {"mint": 0, "add": 0, "update": 0, "remove": 0, "uncatalogued": 0}
+
+
+def _board(store, slug: str, parts: dict[str, str | None]) -> int:
+    ref, _created, _counts = store.pcb_apply(
+        slug=slug,
+        title=f"board {slug}",
+        components=[
+            {"refdes": refdes, "part_lcsc": lcsc, "pins": [{"name": "1"}]}
+            for refdes, lcsc in parts.items()
+        ],
+        nets=[],
+        connections=[],
+    )
+    return int(ref.id)
+
+
+def _part_edges(store, board_id: int) -> dict[str, dict]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ri.id_value, l.meta FROM links l "
+            "JOIN ref_identifiers ri "
+            "  ON ri.ref_id = l.dst_ref_id AND ri.id_kind = 'lcsc' "
+            "WHERE l.src_ref_id = %s AND l.relation = 'contains'",
+            (board_id,),
+        ).fetchall()
+    return {str(r[0]): dict(r[1]) for r in rows}
+
+
+def test_board_gets_one_contains_edge_per_part_with_refdes_and_qty(seeded):
+    board = _board(seeded, "b1", {"R1": "C25804", "R2": "c25804", "U1": "C1525"})
+    assert _part_edges(seeded, board) == {
+        "C25804": {"refdes": ["R1", "R2"], "qty": 2},
+        "C1525": {"refdes": ["U1"], "qty": 1},
+    }
+    with seeded.tx() as conn:
+        assert seeded._pcb_reconcile_part_edges(conn, board, dry_run=True) == (
+            _NO_CHANGE
+        )
+
+
+def test_an_uncatalogued_board_part_gets_no_edge_and_no_error(seeded):
+    board = _board(seeded, "b2", {"R1": "C99999999", "R2": None})
+    assert _part_edges(seeded, board) == {}
+    assert _part_ref_count(seeded, "C99999999") == 0
+
+
+def test_a_regenerated_expansion_moves_and_drops_part_edges(seeded, monkeypatch):
+    from precis.pcb.generators import GeneratorExpansion
+
+    def _expand(generator: str, name: str, params: dict) -> GeneratorExpansion:
+        lcsc = {1: ["C25804", "C25804"], 2: ["C1525"]}[params["v"]]
+        refdes = [name, f"{name}_B"][: len(lcsc)]
+        return GeneratorExpansion(
+            refdes=name,
+            generator="fake_parts_gen",
+            version=1,
+            canonical_params=dict(params),
+            components=[
+                {"refdes": r, "part_lcsc": c, "pins": [{"name": "1"}]}
+                for r, c in zip(refdes, lcsc, strict=True)
+            ],
+            nets=[],
+            connections=[],
+            footprints=[],
+            features=[],
+            ledger={},
+        )
+
+    monkeypatch.setattr("precis.pcb.generators.expand", _expand)
+
+    def apply(v: int) -> int:
+        ref, _created, _counts = seeded.pcb_apply(
+            slug="b3",
+            title="b3",
+            components=[],
+            nets=[],
+            connections=[],
+            generators=[
+                {"name": "G", "generator": "fake_parts_gen", "params": {"v": v}}
+            ],
+        )
+        return int(ref.id)
+
+    board = apply(1)
+    assert _part_edges(seeded, board) == {"C25804": {"refdes": ["G", "G_B"], "qty": 2}}
+    apply(2)
+    assert _part_edges(seeded, board) == {"C1525": {"refdes": ["G"], "qty": 1}}
+
+
+def test_board_and_part_fisheyes_list_each_other(seeded):
+    from precis.utils.eye_render import render_eye
+
+    board = _board(seeded, "b4", {"R1": "C25804"})
+    part_handle = handle_registry.format_handle("part", seeded.part_ref_id("C25804"))
+    board_handle = handle_registry.format_handle("pcb", board)
+    assert "board b4" in render_eye(seeded, part_handle, "fisheye+1hop")
+    assert "CL05B25804" in render_eye(seeded, board_handle, "fisheye+1hop")
+
+
+def test_link_parts_backfill_dry_run_then_idempotent(store):
+    board = _board(store, "b5", {"R1": "C25804", "R2": "C25804"})
+    assert _part_edges(store, board) == {}  # catalog empty at apply time
+    store.parts_import(_catalog_rows(25804))
+    dry = store.pcb_link_parts(dry_run=True)
+    assert (dry["boards"], dry["mint"], dry["add"]) == (1, 1, 1)
+    assert _part_edges(store, board) == {}
+    real = store.pcb_link_parts(dry_run=False)
+    assert (real["mint"], real["add"]) == (1, 1)
+    assert _part_edges(store, board) == {"C25804": {"refdes": ["R1", "R2"], "qty": 2}}
+    again = store.pcb_link_parts(dry_run=False)
+    assert {k: again[k] for k in _NO_CHANGE} == _NO_CHANGE

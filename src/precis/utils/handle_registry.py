@@ -193,7 +193,7 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 _FILE_BACKED_KINDS = frozenset({"skill", "python", "md"})
 # ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
 # C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live
-# decimal handle (docs/backlog/linkable-parts.md).
+# decimal handle (``precis.handlers.part`` docstring).
 _OTHER_TABLE_KINDS = frozenset({"tag"})
 
 # --- codeless kinds (providers / stateless tools / live adapters) ---------

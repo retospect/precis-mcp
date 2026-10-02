@@ -300,7 +300,7 @@ def mint_lazy_link_target(target: str, *, store: Store) -> None:
     Add-mode link doors only (``apply_link_ops``, ``NumericRefHandler.link``),
     called before :func:`parse_link_target`, which never mints: it also
     serves unlink and ``like=``. A C-number absent from the catalog raises
-    ``NotFound`` and mints nothing (docs/backlog/linkable-parts.md).
+    ``NotFound`` and mints nothing (``precis.handlers.part`` docstring).
     """
     if not isinstance(target, str):
         return

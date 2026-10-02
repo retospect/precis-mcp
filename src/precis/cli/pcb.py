@@ -20,6 +20,11 @@ Subcommands:
   but nothing ever called it; there was no CLI verb and no worker pass).
   See ``docs/backlog/pcb-guided-place-route.md`` "Footprint + catalog
   reality" for the full context.
+* ``link-parts`` — backfill every live board's ``contains`` → part edges
+  (one per placed C-number, refdes and qty on the edge), minting part refs
+  on first use (``precis.handlers.part`` docstring). ``pcb_apply`` keeps
+  them current from then on. ``--dry-run`` counts, writes nothing;
+  idempotent.
 
 Two sources, not equivalent:
 
@@ -65,8 +70,8 @@ EXIT_REFUSED = 3
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    """Register the ``pcb`` subcommand (``import-epro``,
-    ``refresh-parts``)."""
+    """Register the ``pcb`` subcommand (``import-epro``, ``copper-report``,
+    ``refresh-parts``, ``link-parts``)."""
     p = sub.add_parser(
         "pcb",
         help="PCB board import and catalog maintenance.",
@@ -188,6 +193,22 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Override PRECIS_DATABASE_URL.",
     )
     rp.set_defaults(func=run)
+
+    lp = psub.add_parser(
+        "link-parts",
+        help="Backfill every board's contains → part edges.",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    lp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count boards, refs to mint and edges to write; write nothing.",
+    )
+    lp.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+    lp.set_defaults(func=run)
     return p
 
 
@@ -199,6 +220,26 @@ def run(args: argparse.Namespace) -> None:
         _copper_report(args)
     elif args.pcb_cmd == "refresh-parts":
         _refresh_parts(args)
+    elif args.pcb_cmd == "link-parts":
+        _link_parts(args)
+
+
+def _link_parts(args: argparse.Namespace) -> None:
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(getattr(args, "database_url", None)))
+    try:
+        t = store.pcb_link_parts(dry_run=args.dry_run)
+    finally:
+        store.close()
+    verb = "would" if args.dry_run else "did"
+    print(
+        f"pcb link-parts: {t['boards']} board(s); {verb} mint {t['mint']} part "
+        f"ref(s), add {t['add']}, update {t['update']}, remove {t['remove']} "
+        f"edge(s); {t['uncatalogued']} placed C-number(s) not in the catalog"
+    )
+    if args.dry_run:
+        print("  (dry run — nothing was written)")
 
 
 def _import_epro(args: argparse.Namespace) -> None:

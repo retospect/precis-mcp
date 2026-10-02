@@ -88,6 +88,8 @@ link(kind="memory", id=42, target="part:C25804")  # any kind with a link verb
   the catalog".
 - `edit(kind='datasheet', id=…, part_lcsc='C25804')` links the datasheet
   `datasheet-of` the part ([[precis-datasheet-help]]).
+- A `pcb` design that places the part links it on its own: one `contains`
+  edge per board, with the refdes list and qty ([[precis-pcb-help]]).
 
 ## Use it in a design — the auto-stamp
 

@@ -40,13 +40,13 @@ graph-health-metrics, five parked gripes, and the seam with
    `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
    (an errored dedup judgment read as "different") is owned by
    claims-and-evidence.
-3. **backlog/linkable-parts.md** slice 2 — board edges: `_pcb_apply`
-   reconciles `pcb contains part` (refdes list + qty on the edge), plus a
-   `precis pcb link-parts --dry-run` backfill. Slice 1 (lazy part ref on
-   first link, `pn` handles, part ring, datasheet `datasheet-of`
-   dual-write, component `link` verb) landed 2026-10-02, undeployed;
-   post-deploy, link one prod memory to a real C-number and read
-   `get(kind='part')`. No migration.
+3. **Part refs post-deploy** (shipped 2026-10-02, undeployed; design in
+   the `precis.handlers.part` docstring): lazy part refs on first link,
+   `pn` handles, datasheet `datasheet-of` dual-write, component `link`,
+   and board `contains` part edges reconciled by every `pcb_apply`. After
+   the round deploys: `precis pcb link-parts --dry-run` on prod
+   (read-only), then hand Reto the real run as a command; then read one
+   board's part in `get(kind='part')`.
 4. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind

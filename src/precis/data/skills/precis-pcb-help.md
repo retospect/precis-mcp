@@ -179,6 +179,12 @@ get(kind="pcb", id="sensor-node@I2C_SCL")  # ONE net: every (refdes, pin) on it
 `#REFDES` is the **hop** — the core traversal move. `@NET` is the membership
 view. Walk the design instance-by-instance instead of ingesting it whole.
 
+Every catalog part on the board is also a graph edge: the design `contains`
+one part ref per C-number, with the refdes list and qty on the edge, kept
+current by each `put`. So `get(kind='part', id='C25804')` lists the boards
+that use it ([[precis-part-select-help]]). A C-number not in the catalog gets
+no edge.
+
 ## See the geometry — `get(view=…)` (the "eyes")
 
 You never look at a render. You ask numeric questions:

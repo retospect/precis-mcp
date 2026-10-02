@@ -1,11 +1,7 @@
 """PartHandler — the LCSC/JLCPCB catalog kind.
 
 A ``part`` is reference data in the ``parts`` catalog table, addressed by
-its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``. A part
-becomes a ref lazily, on its first add-mode link
-(:meth:`Store.ensure_part_ref`, docs/backlog/linkable-parts.md); ``get``
-then appends the ref's link ring, and keeps rendering the ref after the
-daily catalog swap drops its row.
+its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``.
 It is **ingest-only** — populated by ``precis pcb refresh-parts`` / the
 ``parts_refresh`` worker (JLCPCB Open API cursor walk, falling back to the
 community ``jlcparts`` SQLite dump absent API credentials), never by
@@ -14,6 +10,38 @@ community ``jlcparts`` SQLite dump absent API credentials), never by
 Slice 1 ships read-only access (``get`` one part, ``search`` the catalog) over
 whatever the importer has loaded; the turnover ranking + lazy
 ``easyeda2kicad`` footprint fetch land in Slice 2.
+
+**A part in the mesh** (Reto 2026-10-02, knowledge-mesh-6: lazy part
+refs; items inside a design stay addressed through their design). The
+catalog is ~100–300k rows replaced daily, so a part becomes a ref only on
+first use:
+
+- Identity: ``refs(kind='part', slug=<C-no>)`` plus
+  ``ref_identifiers('lcsc', <C-no>)``, chunkless, titled from the catalog
+  row at mint time; handle ``pn<ref_id>``.
+  :meth:`Store.ensure_part_ref` finds or mints it, race-safe on the
+  ``lcsc`` identifier's primary key. It mints only for a C-number present
+  in ``parts``; an existing ref is returned whether or not its row is
+  still there.
+- Mint doors: the add-mode generic link doors (``apply_link_ops``,
+  ``NumericRefHandler.link``) through
+  :func:`~precis.handlers._link_target.mint_lazy_link_target`.
+  ``parse_link_target`` never mints, because it also serves unlink,
+  ``like=`` and put-time ``link=``; its ``NotFound`` for an unminted part
+  names ``link()``.
+- ``component realized-by part`` goes through ``ComponentHandler.link``,
+  which refuses ``made-of``/``contains`` (they keep their ``put`` doors).
+- A datasheet's ``part_lcsc`` dual-writes ``meta.part_lcsc`` (nanopub,
+  docx, latex read it) and ``datasheet-of``; outside the catalog it keeps
+  the meta and skips the edge.
+- A board ``contains`` one part ref per placed C-number, with
+  ``links.meta = {refdes, qty}``, reconciled at the end of every
+  ``pcb_apply`` (``PcbMixin._pcb_reconcile_part_edges``) and backfilled by
+  ``precis pcb link-parts``. A C-number outside the catalog gets no edge;
+  revisit if a hand-authored board needs a dropped part (the alternative
+  is minting from the board's own snapshot).
+- ``get`` appends the ref's ring; after the catalog swap drops the row it
+  renders the ref with "no longer in the catalog" instead of ``NotFound``.
 """
 
 from __future__ import annotations

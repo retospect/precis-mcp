@@ -164,12 +164,11 @@ Seams:
 - `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
-- `backlog/linkable-parts.md` — knowledge-mesh Do-next 3; ewod-pcb's
-  `pcb-datasheet-autopull.md` links a pulled datasheet `datasheet-of` the
-  part ref this mints, and `datasheet-facts-mesh.md` (knowledge-mesh
-  Horizon 16) hangs the extracted facts on it. Sequencing: the pull can
-  ship first, storing `part_lcsc` in meta as today; it switches to the
-  edge when linkable-parts lands.
+- Part refs (shipped 2026-10-02, `precis.handlers.part` docstring) —
+  ewod-pcb's `pcb-datasheet-autopull.md` gets `datasheet-of` for free:
+  setting `part_lcsc` on the pulled datasheet writes the edge too, and
+  `datasheet-facts-mesh.md` (knowledge-mesh Horizon 16) hangs the
+  extracted facts on the part ref.
 - `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 4; roadmap's
   `view='tree'` and the se viewer thread both render through its ladder;
   the browser focus page it adds is the human graph-browse surface
