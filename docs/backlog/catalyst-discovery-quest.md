@@ -69,6 +69,7 @@ reuse the stale `precis-dft` Materials-Project ingest). Two uses: seed
 designs (real relaxed slabs the big model edits) and reference anchors
 (known barriers/energies to calibrate the ML backend). Source TBD
 (Materials Project / OC20 / curated). Rides ADR 0053's import ladder.
+Source choice and storage shape: `chem-database-tie-ins.md`.
 
 ### Slice 7 — Optuna optimizer advisor (§7.8)
 

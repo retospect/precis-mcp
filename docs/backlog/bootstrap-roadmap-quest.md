@@ -383,7 +383,7 @@ it had never made.
   `opus`. Nothing in `scripts/` routes this field automatically — dispatch
   is by hand either way.
 - **Model tiers. Decided 2026-09-28: the role picks the tier, in code, with
-  no knob.** `quest-redispatch-tier.md` is the wrong anchor — it re-scores a
+  no knob.** The (shipped) quest-redispatch-tier fix is the wrong anchor — it re-scores a
   simulation's `barrier_fidelity` ladder (`quest/compute.py::
   redispatch_candidates`), an unrelated sense of "tier". The real per-tick
   mechanism (`quest/loop.py::_loop_params`, `meta.loop.tier`) is fixed when

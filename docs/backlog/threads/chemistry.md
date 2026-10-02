@@ -32,6 +32,10 @@ needs.
    `backlog/qu164903-campaign.md` residuals are ops/Reto (st164913
    un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
+   Cause B: Reto approved option 1 (review item chemistry-1, 2026-10-02):
+   an opt-in repair in `extract_json_object` that drops a proven-unmatched
+   stray `]`/`}` on an "Expecting ',' delimiter" error, at most 2 retries,
+   quest_tick only, every repair logged. Not started (demo hold).
 2. **qu202467 restart report** — paused 2026-10-01 ($6,211 tote, 0 deeds,
    holding ticks). Restart condition (in its logbook): this thread reports at
    least one named blocker fixed (frontier-table sync wall; literature
@@ -43,19 +47,14 @@ needs.
    unbuffered prod failures before picking a remedy, the re-lease churn
    evidence, the dev-loop decisions. Engine reliability gates every
    number the quest loop consumes.
-4. **backlog/quest-redispatch-tier.md** — confirmed open:
-   `quest/compute.py::redispatch_candidates` calls `dispatch_autocatpath`
-   with no `tier=`, so every re-dispatch runs at neb. Moved up from
-   Horizon: each re-dispatch at the wrong rung spends neb compute and
-   records a rung the candidate never earned; code-only and small.
-5. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
+4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into
    additive compute.
 
 ## Horizon
 
-The first five are engine items moved down from Do next 2026-10-01 to keep
+Items 1-4 and 6 are engine items moved down from Do next 2026-10-01 to keep
 it at five; engine-over-UI still holds.
 
 1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
@@ -79,51 +78,58 @@ it at five; engine-over-UI still holds.
    product of the engine. Phases 0-1 shipped (12b0a5e68); Phase 2 (report
    step) and Phase 3 (coverage job, cross-repo) are left. After Do next
    3-5 because a report over unhealthy seeds is the artefact problem again.
-5. **backlog/autocatpath-integration.md** — the remaining slices of the
+5. **backlog/chem-database-tie-ins.md** — MOF and catalyst database
+   tie-ins (Reto, 2026-10-02): structure seeds, reference energies,
+   screening. Four decisions are with Reto (review queue chemistry-2..5),
+   and nothing is built before his answers. Ranked here because the
+   November trust-demo paper needs reference energies UMA was not trained
+   on. Answering chemistry-3 also settles `structure-import.md`'s pending
+   source pick.
+6. **backlog/autocatpath-integration.md** — the remaining slices of the
    native integration (most shipped; present state is in the
    `src/precis_pathway/` docstrings and ADR 0069); read with 4.
-6. **backlog/catalyst-physical-realism.md** + **backlog/slab-modelling-knobs.md**
+7. **backlog/catalyst-physical-realism.md** + **backlog/slab-modelling-knobs.md**
    — defect ensembles, poisoning, slab knobs; make the engine's answer
    physically honest. After the engine reliability block. Slab knobs:
    `remove_atom` op and variable-cell relax (precis-dft container side)
    open, `n_slab` provenance half-threaded.
-7. **backlog/ephemeral-potentials-for-catpath.md** — a throwaway potential
+8. **backlog/ephemeral-potentials-for-catpath.md** — a throwaway potential
    as a pre-screen, DFT only on survivors; cost lever, waits on Do next 3 so
    the saving is measured on a healthy pipeline.
-8. **backlog/quest-data-table-and-formula-discovery.md** — the
+9. **backlog/quest-data-table-and-formula-discovery.md** — the
    `precis quest table` export verb does not exist yet, then the
    deterministic baseline; `meta.params`, `view='series'` and the
    `wrong_site` distrust gate (575e24f38) shipped.
-9. **backlog/quest-artifacts-in-dossier.md** — embed the existing
+10. **backlog/quest-artifacts-in-dossier.md** — embed the existing
     pareto/energy-profile renders in the quest's document; the dossier target
     is superseded by `backlog/quest-graph-as-dossier.md`
     (graph-memory-consumers Horizon 1), so this waits on its design.
-10. **backlog/material-off-sample-model.md** (material kind's off-sample
+11. **backlog/material-off-sample-model.md** (material kind's off-sample
    estimate layer, ADR 0070 deferral) +
    **backlog/harvest-bookmark-concurrency.md** — small `idea`s homed here
    by the sweep; harvest-bookmark has no live repro (one job per
    candidate today).
-11. **backlog/protomia-gap-eval-and-molecular-properties.md** — eval a
+12. **backlog/protomia-gap-eval-and-molecular-properties.md** — eval a
    candidate tool, then close the molecular-property gap it exposes.
-12. **backlog/reaction-kind-and-synthesis-cost.md** — sourced reaction-fact
+13. **backlog/reaction-kind-and-synthesis-cost.md** — sourced reaction-fact
    store and cost over routes; rung 1 (the `rxn` kind, e2f420ab4) shipped,
    rungs 2-5 left.
-13. **backlog/estimate-kind-ms-chemistry-workup.md** — argue before
-   simulating; sets up sims, waits on 12 for facts to argue from.
-14. **backlog/composable-pipeline-kind.md** +
+14. **backlog/estimate-kind-ms-chemistry-workup.md** — argue before
+   simulating; sets up sims, waits on 13 for facts to argue from.
+15. **backlog/composable-pipeline-kind.md** +
    **backlog/chem-tools-integration.md** +
    **backlog/structure-import.md** — chaining and import surface for
    chem tools; presentation/packaging layer, after the engine.
-15. **backlog/sim-harness.md** — quest-driven automation, writeup draft and
+16. **backlog/sim-harness.md** — quest-driven automation, writeup draft and
    container drive path (slices 2–3); consumes roadmap-quest's loop.
-16. **backlog/pathway-explorer.md** + **backlog/pathway-viewer-ux-batch.md**
+17. **backlog/pathway-explorer.md** + **backlog/pathway-viewer-ux-batch.md**
    — the UI. Last by the rank rule: it presents what the engine has to
    get right first. Shared presentation logic belongs to plugin-split
    (Seam).
-17. **backlog/chem-name-lookup-verb.md** — PubChem-backed
+18. **backlog/chem-name-lookup-verb.md** — PubChem-backed
    formula/ID → common name; small, and a dependency of
-   reaction-kind-and-synthesis-cost (12). From pillar 4, 2026-10-01.
-18. **backlog/catpath-wheel-version-reuse.md** — one catpath version across
+   reaction-kind-and-synthesis-cost (13). From pillar 4, 2026-10-01.
+19. **backlog/catpath-wheel-version-reuse.md** — one catpath version across
    many commits leaves a hand-passed wheel unidentifiable; deploy hygiene for
    the engine this thread owns. Platform pass 2026-10-02.
 

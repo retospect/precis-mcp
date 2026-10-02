@@ -2352,6 +2352,58 @@ def _find_tier_pathway(store: Store, structure_ref_id: int, tier: str) -> int | 
     return int(row[0]) if row else None
 
 
+def _candidate_rung(meta: dict[str, Any] | None) -> str | None:
+    """The candidate's highest COMPLETED ladder rung, or ``None`` if none.
+
+    ``meta.tier`` is the ladder stamp (:func:`_bump_tier_stamp`);
+    ``meta.barrier_fidelity`` is the pre-ladder stamp a neb-era candidate may
+    carry alone (same fallback as :func:`promote_tiers`' neb → verify pass).
+    """
+    meta = meta or {}
+    for key in ("tier", "barrier_fidelity"):
+        if meta.get(key) in _TIERS:
+            return str(meta[key])
+    return None
+
+
+def _redispatch_tier(store: Store, quest_id: int, structure: Any) -> str:
+    """The rung an engine-bump re-score re-runs a candidate at.
+
+    Its highest completed rung — the one its canonical barrier came from
+    (:func:`_canonicalize_barrier`); re-scoring one rung lower would rank it
+    on a lower-fidelity number, and a screening-only candidate re-run at neb
+    would spend neb compute on a rung it never earned. A candidate with no
+    completed rung re-runs at the quest's entry rung (screening when the quest
+    opted into the ladder, else neb — the :func:`run_compute_step` default).
+    """
+    rung = _candidate_rung(getattr(structure, "meta", None))
+    if rung is not None:
+        return rung
+    return _TIER_SCREENING if _fidelity_ladder_enabled(store, quest_id) else _TIER_NEB
+
+
+def _retry_tier(store: Store, structure: Any, job_meta: dict[str, Any]) -> str:
+    """The rung an infra retry re-runs at: the failed run's own.
+
+    Read from the failed job's pathway (``params.pathway_ref_id`` → the
+    dispatch-time ``meta.tier`` stamp), so a failed screening seed retries at
+    screening rather than escalating to neb. Falls back to the candidate's
+    highest completed rung, then ``neb`` (a legacy explore job predates both
+    stamps).
+    """
+    params = job_meta.get("params")
+    pid = params.get("pathway_ref_id") if isinstance(params, dict) else None
+    if pid is not None:
+        try:
+            pref = store.fetch_refs_by_ids({int(pid)}).get(int(pid))
+        except (TypeError, ValueError):
+            pref = None
+        tier = (pref.meta or {}).get("tier") if pref is not None else None
+        if tier in _TIERS:
+            return str(tier)
+    return _candidate_rung(getattr(structure, "meta", None)) or _TIER_NEB
+
+
 def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
     """The ladder tier a completed pathway belongs to.
 
@@ -3167,7 +3219,13 @@ def harvest_measures(
                         "(amnesty-eligible, not ruled out)"
                     )
                 else:
-                    dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                    dispatch_autocatpath(
+                        store,
+                        s.id,
+                        reaction,
+                        hub=hub,
+                        tier=_retry_tier(store, s, cp_job_meta),
+                    )
                     store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
                     notes.append(
                         f"stale-era autocatpath failure for [{handle}] → amnesty "
@@ -3187,7 +3245,13 @@ def harvest_measures(
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)
                     if sk_retries < _MAX_INFRA_RETRIES:
-                        dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                        dispatch_autocatpath(
+                            store,
+                            s.id,
+                            reaction,
+                            hub=hub,
+                            tier=_retry_tier(store, s, cp_job_meta),
+                        )
                         _bump_seed_infra_retry_count(store, s.id)
                         notes.append(
                             f"stuck seed for [{handle}] → re-dispatched "
@@ -3223,7 +3287,13 @@ def harvest_measures(
                         "(retry-eligible, not ruled out)"
                     )
                 elif cp_retries < _MAX_INFRA_RETRIES:
-                    dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                    dispatch_autocatpath(
+                        store,
+                        s.id,
+                        reaction,
+                        hub=hub,
+                        tier=_retry_tier(store, s, cp_job_meta),
+                    )
                     store.stamp_ref_meta(
                         s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
                     )
@@ -3322,18 +3392,29 @@ def redispatch_candidates(
     safe. Ruled-out candidates are skipped by default (a dead geometry earns no
     more compute); pass ``include_ruled_out=True`` to also re-evaluate candidates
     whose rule-out was decided on now-suspect stale barriers.
+
+    Each candidate re-runs at its own highest completed rung
+    (:func:`_redispatch_tier`), not a blanket ``neb``.
     """
     hub = hub or _hub_for(store)
     reaction = _quest_reaction_config(store, quest_id)
     if reaction is None:
         return f"redispatch skipped: quest {quest_id} has no reaction_config"
     n = 0
-    for sid in _candidate_struct_ids(store, quest_id):
+    sids = _candidate_struct_ids(store, quest_id)
+    refs = store.fetch_refs_by_ids(set(sids))
+    for sid in sids:
         if not include_ruled_out and any(
             str(t).startswith("ruled-out:") for t in store.tags_for(sid)
         ):
             continue
-        note = dispatch_autocatpath(store, sid, reaction, hub=hub)
+        note = dispatch_autocatpath(
+            store,
+            sid,
+            reaction,
+            hub=hub,
+            tier=_redispatch_tier(store, quest_id, refs.get(sid)),
+        )
         if note.startswith("autocatpath["):
             n += 1
     return f"re-dispatched {n} candidate(s) on the deployed engine"

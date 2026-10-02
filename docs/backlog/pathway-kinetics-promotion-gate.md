@@ -54,8 +54,9 @@ on every edge (pw455722 has 15 reaction edges; about 6 decide it).
 
 catpath pipeline step selection (which edges get NEB); precis quest
 promotion (`src/precis/quest/`, `fidelity_promote_neb`), the
-redispatch path (`quest-redispatch-tier.md` touches the same code —
-sequence behind it or coordinate).
+redispatch path (`redispatch_candidates` re-runs each candidate at its
+own highest completed rung via `_redispatch_tier`; infra retries reuse the
+failed run's rung via `_retry_tier`).
 
 ## Open questions / decisions log
 

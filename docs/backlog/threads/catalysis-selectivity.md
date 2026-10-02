@@ -60,4 +60,5 @@ Reto reads the results), then the objective, then where barriers run.
 - `pathway-viewer-ux-batch.md` item 3 (where H₂O leaves) is subsumed by
   Do-next 2; the rest of that item stays with chemistry.
 - **roadmap-quest** owns promotion dispatch; Do-next 4 changes the
-  promotion rule, sequenced with `quest-redispatch-tier.md`.
+  promotion rule; re-dispatch and infra retries now keep each candidate's
+  own rung (`quest/compute.py::_redispatch_tier`, `_retry_tier`).

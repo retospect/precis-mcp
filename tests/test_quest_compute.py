@@ -5083,6 +5083,75 @@ class TestDispatchAutocatpath:
         assert len(self._seed_jobs(store, good)) == 6
         assert self._agg_todo_ids(store, bad) == []
 
+    def test_redispatch_candidates_rescores_at_each_candidates_own_rung(
+        self, store: Any
+    ) -> None:
+        """A re-score re-runs each candidate at its highest completed rung: a
+        verify-rung candidate at verify (not one rung down), a screening-only
+        candidate on a ladder quest at screening (not an unearned neb)."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"reaction_config": self._RX, "fidelity_ladder": True}
+        )
+        spec2 = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}],
+        }
+        verified = compute_mod.ensure_candidate(
+            store, qid, {"name": "verified", "structure": _SPEC}
+        )
+        screened = compute_mod.ensure_candidate(
+            store, qid, {"name": "screened", "structure": spec2}
+        )
+        assert verified is not None and screened is not None
+        store.stamp_ref_meta(verified, {"tier": compute_mod._TIER_VERIFY})
+        store.stamp_ref_meta(screened, {"tier": compute_mod._TIER_SCREENING})
+
+        compute_mod.redispatch_candidates(store, qid)
+
+        tp = compute_mod._find_tier_pathway
+        assert tp(store, verified, compute_mod._TIER_VERIFY) is not None
+        assert tp(store, verified, compute_mod._TIER_NEB) is None
+        assert tp(store, screened, compute_mod._TIER_SCREENING) is not None
+        assert tp(store, screened, compute_mod._TIER_NEB) is None
+
+    def test_redispatch_tier_without_a_completed_rung_uses_the_entry_rung(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert compute_mod._redispatch_tier(store, qid, ref) == compute_mod._TIER_NEB
+        store.stamp_ref_meta(qid, {"fidelity_ladder": True})
+        assert (
+            compute_mod._redispatch_tier(store, qid, ref) == compute_mod._TIER_SCREENING
+        )
+        # pre-ladder stamp alone counts as a completed rung
+        store.stamp_ref_meta(sid, {"barrier_fidelity": compute_mod._TIER_NEB})
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert compute_mod._redispatch_tier(store, qid, ref) == compute_mod._TIER_NEB
+
+    def test_retry_tier_reads_the_failed_runs_pathway(self, store: Any) -> None:
+        """An infra retry re-runs the failed run's rung: a failed screening
+        seed retries at screening, not neb."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_SCREENING
+        )
+        pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_SCREENING)
+        assert pid is not None
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        job_meta = {"job_type": "autocatpath_seed", "params": {"pathway_ref_id": pid}}
+        assert (
+            compute_mod._retry_tier(store, ref, job_meta) == compute_mod._TIER_SCREENING
+        )
+        # legacy explore job (no pathway id) falls back to the candidate's rung, then neb
+        assert compute_mod._retry_tier(store, ref, {}) == compute_mod._TIER_NEB
+        store.stamp_ref_meta(sid, {"tier": compute_mod._TIER_VERIFY})
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        assert compute_mod._retry_tier(store, ref, {}) == compute_mod._TIER_VERIFY
+
     def test_candidate_ids_ignore_non_structure_serves_links(self, store: Any) -> None:
         """A quest's `serves` in-links mix structures with papers/dossier/todos;
         redispatch + reset act on structures only (a paper has no slab to export)."""
