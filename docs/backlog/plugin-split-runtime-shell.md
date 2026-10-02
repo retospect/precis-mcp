@@ -201,8 +201,19 @@ Steps 6–8 were lifted from the deleted `package-split.md` (2026-10-01);
 nothing else in this item covers them.
 
 6. **Store-free vs store-backed test split**, so a member wheel can run its
-   own suite without a database. As measured 2026-09-16, the store-free
-   share is cad 9/25, pcb 13/47, structure 4/16.
+   own suite without a database. **Done as prep 2026-10-02; the rest is
+   per-extraction work.** The split already exists: `tests/conftest.py`
+   marks a test `db` when it uses a store-backed fixture, and those skip
+   when Postgres is unreachable. Re-measured 2026-10-02 (store-free files /
+   all files, by `tests/test_<pkg>*`): cad 18/29, pcb 52/78, structure
+   9/17, precis_se 14/62, precis_pathway 1/7. hexfold, precis_surface,
+   precis_chain and precis_dft have no store-backed tests and import no
+   core fixture. One mis-tag was fixed: precis_dft's in-memory `store`
+   fixture was name-matched as `db`. What remains is at each extraction:
+   the member's store-free files move with it, and its store-backed files
+   stay in the integration suite. Until a member's tests move,
+   `tests/conftest.py` still imports psycopg and core at module level, so
+   they cannot be collected without core installed.
 7. **Deploy channel for member wheels.** Choose between a
    `#subdirectory=` source in the `deploy/redeploy-precis.yml` install line
    and the existing `/opt/precis/wheels` find-links (the catpath

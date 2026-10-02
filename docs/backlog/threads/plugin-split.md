@@ -46,13 +46,14 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **backlog/plugin-split-runtime-shell.md step 6** — store-free vs
-   store-backed test split, so a member wheel runs its own suite without a
-   database (2026-09-16 shares: cad 9/25, pcb 13/47, structure 4/16).
-   Behaviour-neutral, so it fits before 10-16. The import boundary still
-   carries one grandfathered breach, **gr459054** (`quest/roadmap_tick.py`
-   importing `precis_se.handler`); the fix is the quest thread's, and a
-   staleness assertion drops the exemption when they land it.
+1. **Step 7: deploy channel for member wheels** (backlog item step 7),
+   now unblocked by the step-8 ruling below. Step 6 closed as prep on
+   2026-10-02: the `db` marker already splits store-free from store-backed
+   tests, and the per-package shares are in the item. The import boundary
+   still carries one grandfathered breach, **gr459054**
+   (`quest/roadmap_tick.py` importing `precis_se.handler`); the fix is the
+   quest thread's, and a staleness assertion drops the exemption when they
+   land it.
 2. **Step 8, ruled 2026-10-02 (Reto): publish to PyPI** from
    precis-util's first release. Claim the member names before the split
    mints them and revive `publish.yml` (it lapsed at v8.4.4; pyproject is
