@@ -31,10 +31,14 @@ se-3d-viewer-1; level chips landed for round 2)
 
 **Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
 and waits on Reto for the cause; 2 (gr462703) has its server half shipped
-and the bar shipped; instancing is next. After those the next build is 5
+the bar and instancing shipped; the inline early fetch is noted, not
+due. After those the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
-since 2026-10-02 (first dispatched run green, 11 + 16 checks); atom pick
-and hover are its remaining blind spot. Two traps for whoever picks this
+since 2026-10-02; `strain` checks atom hover since instancing, so atom
+click-pick is its remaining blind spot. The atom overlay's InstancedMeshes
+are r160 objects drawn by three-cad-viewer's newer bundled renderer, which
+needs `morphTexture`/`previousInstanceMatrix` set to null
+(`_forBundledRenderer`); a bump of either three.js copy re-checks that. Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
   credential: `scripts/guide-web --db prod --port 9110` (local
@@ -81,7 +85,9 @@ up:
    message means no WebGL2 context at all, so a retry with relaxed
    attributes cannot help. Cause still open: which browsers fail is review
    item se-3d-viewer-3. If other se pages work there, it is Chrome blocking
-   WebGL for the site after GPU crashes, and instancing (item 2) is the fix.
+   WebGL for the site after GPU crashes; instancing (item 2, now in round 2)
+   cut the drum from ~15,000 meshes and materials to two per block, which
+   is the fix for that cause.
 2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
    Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server
    phase SHIPPED: vectorised smoothing (1.0 s → 0.04 s), payload and gzip
@@ -92,15 +98,15 @@ up:
    (chunked per 1000), checked nightly by `strain`'s `progress_*` checks.
    Its 30 s / 2 min paths are unexercised (they need a slow server), and
    `progress_build_repaints` needs a fixture over 1000 atoms (the small
-   drum has 1304). Next, in order:
-   - instanced atom and bond meshes. The ~0.78 s client mesh build is now
-     the largest phase; each atom and bond is still its own mesh and
-     material, ~15,000 on the drum.
+   drum has 1304). Instanced atom and bond meshes SHIPPED in round 2: one
+   InstancedMesh per block per kind; on the 6123-atom drum the client build
+   went 0.78 s → 0.24 s, first visit 1.55 s → ~0.9 s, revisit 1.30 s →
+   ~0.7 s (local). Left:
    - start the `scene3d`/`atomic3d` fetches from an inline script before
      the module bundle parses: ~0.5 s of page and module load comes before
      the first request today (verdict 1c: note it, not now).
-   Reto's own timing (review item se-3d-viewer-4) decides only whether
-   instancing moves ahead of the bar's remaining work.
+   Reto's own timing (review item se-3d-viewer-4) now only says whether
+   prod is slower than local; both client levers it ordered have shipped.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later

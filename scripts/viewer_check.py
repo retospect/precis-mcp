@@ -34,8 +34,8 @@ How it measures (each rule paid for by a wrong reading on the hand harness):
 - the tree row set and the canvas fail independently: small parts near the
   edge of visible can leave a real swap at a few hundred pixels.
 
-Not covered yet: atom pick and hover (``probe``'s pick checks are
-block-level only).
+Not covered yet: atom click-pick (``probe``'s pick checks are
+block-level only); atom hover is checked by ``strain``.
 
 Writes ``report.json`` plus every shot to ``<out-dir>``; exits 1 when any
 check fails, so the workflow uploads the directory as the evidence.
@@ -47,6 +47,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -577,6 +578,34 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
         page.wait_for_timeout(600)
         floor = _diff(base, shot("s01_noise"))
         checks.append(Check("noise_floor", floor["n"] <= NOISE_MAX, floor))
+
+        # Atom hover (atoms on, slider at its default atoms end): sweep a
+        # 9x9 grid over the central 60% of the canvas; after each move wait
+        # for two animation frames (the hover raycast runs in one rAF), then
+        # read the tooltip. Passes on the first point that names an atom.
+        box = page.locator("#bt3d-viewer canvas").bounding_box()
+        found: dict[str, Any] = {}
+        if box:
+            for gy in range(9):
+                for gx in range(9):
+                    x = box["x"] + box["width"] * (0.2 + 0.6 * gx / 8)
+                    y = box["y"] + box["height"] * (0.2 + 0.6 * gy / 8)
+                    page.mouse.move(x, y)
+                    page.evaluate(
+                        "() => new Promise(r => requestAnimationFrame("
+                        "() => requestAnimationFrame(r)))"
+                    )
+                    text = page.evaluate(
+                        "() => { const t = document.querySelector('.bt3d-atom-tip');"
+                        " return t && !t.hidden ? t.textContent : null; }"
+                    )
+                    if text and re.match(r"^[A-Z][a-z]? · ", text):
+                        found = {"text": text, "point": [round(x), round(y)]}
+                        break
+                if found:
+                    break
+            page.mouse.move(0, 0)
+        checks.append(Check("atom_hover_readout", bool(found), found))
 
         # Target surface (smooth_drum's revolved surface_meridian): the
         # checkbox appears only when an atomic block carries a target, and

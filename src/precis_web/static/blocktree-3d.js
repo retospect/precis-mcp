@@ -963,19 +963,58 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     return { atomR, bondR };
   }
 
-  function orientBond(mesh, a, b, bondR) {
+  // Scratch objects, reused by every matrix write (no per-atom allocation).
+  const _mat = new THREE.Matrix4();
+  const _pos = new THREE.Vector3();
+  const _dir = new THREE.Vector3();
+  const _quat = new THREE.Quaternion();
+  const _scl = new THREE.Vector3();
+  const _identityQuat = new THREE.Quaternion();
+  const _tmpColor = new THREE.Color();
+  const _bondGrey = new THREE.Color(_BOND_GREY);
+
+  //: Writes bond `k`'s instance matrix: a unit cylinder moved to the
+  //: midpoint of a→b, turned from +Y onto the bond, scaled (r, length, r).
+  function orientBond(mesh, k, a, b, bondR) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
     const len = Math.hypot(dx, dy, dz) || 1e-12;
-    mesh.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
-    mesh.scale.set(bondR, len, bondR);
-    const dir = new THREE.Vector3(dx, dy, dz).normalize();
-    mesh.quaternion.setFromUnitVectors(yAxis, dir);
+    _pos.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+    _scl.set(bondR, len, bondR);
+    _dir.set(dx, dy, dz).normalize();
+    _quat.setFromUnitVectors(yAxis, _dir);
+    _mat.compose(_pos, _quat, _scl);
+    mesh.setMatrixAt(k, _mat);
+  }
+
+  //: Raycasting an InstancedMesh tests against its bounding sphere, so it
+  //: has to follow the instance matrices.
+  function refreshBounds(mesh) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    if (mesh.computeBoundingBox) mesh.computeBoundingBox();
+  }
+
+  //: These InstancedMeshes come from the overlay's r160 three.js but are
+  //: drawn by three-cad-viewer's newer bundled renderer (module comment
+  //: above `_ATOMIC_CPK`). That renderer reads fields r160 never sets and
+  //: treats `undefined` as present: `morphTexture !== null` turns on
+  //: USE_INSTANCING_MORPH and the shader fails to compile, so nothing
+  //: draws. Set them to the null the newer class would. Culling is off
+  //: because the two revisions disagree on where instance bounds live.
+  function _forBundledRenderer(mesh) {
+    if (mesh.morphTexture === undefined) mesh.morphTexture = null;
+    if (mesh.previousInstanceMatrix === undefined) mesh.previousInstanceMatrix = null;
+    mesh.frustumCulled = false;
   }
 
   const group = new THREE.Group();
   group.name = "bt3d-atomic-overlay";
   scene.add(group);
 
+  // Atoms and bonds are instanced: one InstancedMesh and one material per
+  // block per kind, not one Mesh per atom/bond. A drum is ~15,000 of them,
+  // and that many meshes and materials slowed the build (gr462703) and made
+  // Chrome lose the WebGL context (gr462702). Colour is per instance.
   const sphereGeo = new THREE.SphereGeometry(1, 12, 8);
   const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8, 1);
   const blocks = [];
@@ -1074,41 +1113,42 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
       cageEnvelope(sceneShapes ? findPathByUid(sceneShapes, b.uid) : null);
       const { atomR, bondR } = atomBondRadiiFor(b);
       const n = b.elements.length;
-      const atomMeshes = [];
+      // One InstancedMesh per block per kind: the material stays white
+      // because the per-instance colour multiplies it. Instance order is
+      // the payload's atom order — the order the pick route resolves
+      // against.
+      const atomMesh = new THREE.InstancedMesh(
+        sphereGeo,
+        new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true }),
+        n
+      );
+      _forBundledRenderer(atomMesh);
+      atomMesh.userData.blockIndex = blocks.length;
+      const cpk = new Array(n);
       for (let i = 0; i < n; i++) {
-        const colour = _ATOMIC_CPK[b.elements[i]] || _ATOMIC_CPK_DEFAULT;
-        const mat = new THREE.MeshStandardMaterial({
-          color: colour,
-          transparent: true,
-        });
-        const mesh = new THREE.Mesh(sphereGeo, mat);
-        mesh.userData.cpk = colour;
-        mesh.scale.setScalar(atomR);
-        // What `pickAtom` hands back: the block's uid and the atom's
-        // ordinal in this payload, which is the bound scene's own atom
-        // order — the same order the pick route resolves against.
-        mesh.userData.pick = { block: b.uid, atom: i };
-        // The hover readout: element, then the atom's name (residue and
-        // chain for a realized chain, the scene label otherwise).
-        mesh.userData.hover = `${b.elements[i]} · ${(b.hover && b.hover[i]) || `#${i}`}`;
-        group.add(mesh);
-        atomMeshes.push(mesh);
+        cpk[i] = new THREE.Color(_ATOMIC_CPK[b.elements[i]] || _ATOMIC_CPK_DEFAULT);
+        atomMesh.setColorAt(i, cpk[i]);
         atomsDone++;
         if (atomsDone % _BUILD_SLICE_ATOMS === 0) await reportBuild();
       }
-      const bondMeshes = [];
-      const bondSlice = Math.max(1, Math.ceil((_BUILD_SLICE_ATOMS * (b.bonds || []).length) / Math.max(1, n)));
-      for (const [i, j] of b.bonds || []) {
-        const mat = new THREE.MeshStandardMaterial({
-          color: _BOND_GREY,
-          transparent: true,
-        });
-        const mesh = new THREE.Mesh(cylGeo, mat);
-        group.add(mesh);
-        bondMeshes.push({ mesh, i, j, hot: false });
+      group.add(atomMesh);
+      const bondList = b.bonds || [];
+      const bondMesh = new THREE.InstancedMesh(
+        cylGeo,
+        new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true }),
+        bondList.length
+      );
+      _forBundledRenderer(bondMesh);
+      const greyColour = new THREE.Color(_BOND_GREY);
+      const bondEntries = [];
+      const bondSlice = Math.max(1, Math.ceil((_BUILD_SLICE_ATOMS * bondList.length) / Math.max(1, n)));
+      for (const [i, j] of bondList) {
+        bondMesh.setColorAt(bondEntries.length, greyColour);
+        bondEntries.push({ i, j, hot: false });
         bondsDone++;
-        if (bondMeshes.length % bondSlice === 0) await reportBuild();
+        if (bondEntries.length % bondSlice === 0) await reportBuild();
       }
+      group.add(bondMesh);
 
       // The smoothed surface — fan-triangulated rings, coloured per vertex
       // by aberration (gr450675's own "colour by deviation" ask).
@@ -1146,9 +1186,13 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         src: b,
         coords: b.coords,
         smooth: b.smooth,
-        atomMeshes,
-        bondMeshes,
+        atomMesh,
+        bondMesh,
+        bondEntries,
+        cpk,
+        atomR,
         bondR,
+        lerped: null,
         surfMesh,
         surfPositions: positions,
         surfColors: colors,
@@ -1167,28 +1211,34 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
 
   function applyT(t) {
     for (const blk of blocks) {
-      const { coords, smooth, atomMeshes, bondMeshes, bondR, surfMesh, surfPositions } = blk;
-      const n = atomMeshes.length;
-      const lerped = new Array(n);
+      const { coords, smooth, atomMesh, bondMesh, bondEntries, atomR, bondR, surfMesh, surfPositions } = blk;
+      const n = coords.length;
+      // Kept for `applyStrain`, which re-composes bond matrices at the
+      // current slider position.
+      const lerped = blk.lerped || (blk.lerped = Array.from({ length: n }, () => [0, 0, 0]));
       for (let i = 0; i < n; i++) {
         const c = coords[i], s = smooth[i];
         const x = c[0] + (s[0] - c[0]) * t;
         const y = c[1] + (s[1] - c[1]) * t;
         const z = c[2] + (s[2] - c[2]) * t;
-        lerped[i] = [x, y, z];
-        const mesh = atomMeshes[i];
-        mesh.position.set(x, y, z);
-        mesh.material.opacity = 1 - t;
-        mesh.visible = t < 0.999;
+        const p = lerped[i];
+        p[0] = x; p[1] = y; p[2] = z;
+        _pos.set(x, y, z);
+        _scl.setScalar(atomR);
+        _mat.compose(_pos, _identityQuat, _scl);
+        atomMesh.setMatrixAt(i, _mat);
         surfPositions[i * 3] = x;
         surfPositions[i * 3 + 1] = y;
         surfPositions[i * 3 + 2] = z;
       }
-      for (const { mesh, i, j, hot } of bondMeshes) {
-        orientBond(mesh, lerped[i], lerped[j], hot ? bondR * _HOT_BOND_SCALE : bondR);
-        mesh.material.opacity = 1 - t;
-        mesh.visible = t < 0.999;
+      for (let k = 0; k < bondEntries.length; k++) {
+        const { i, j, hot } = bondEntries[k];
+        orientBond(bondMesh, k, lerped[i], lerped[j], hot ? bondR * _HOT_BOND_SCALE : bondR);
       }
+      refreshBounds(atomMesh);
+      refreshBounds(bondMesh);
+      atomMesh.material.opacity = bondMesh.material.opacity = 1 - t;
+      atomMesh.visible = bondMesh.visible = t < 0.999;
       surfMesh.geometry.attributes.position.needsUpdate = true;
       surfMesh.geometry.computeVertexNormals();
       surfMesh.material.opacity = t;
@@ -1257,11 +1307,18 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     );
     raycaster.setFromCamera(ndc, camera);
     const atoms = [];
-    for (const blk of blocks) {
-      for (const mesh of blk.atomMeshes) if (mesh.visible) atoms.push(mesh);
-    }
+    for (const blk of blocks) if (blk.atomMesh.visible) atoms.push(blk.atomMesh);
     const hit = raycaster.intersectObjects(atoms, false)[0];
-    return hit ? { ...hit.object.userData.pick, hover: hit.object.userData.hover } : null;
+    if (!hit || hit.instanceId === undefined) return null;
+    const b = blocks[hit.object.userData.blockIndex].src;
+    const i = hit.instanceId;
+    // The hover readout: element, then the atom's name (residue and chain
+    // for a realized chain, the scene label otherwise).
+    return {
+      block: b.uid,
+      atom: i,
+      hover: `${b.elements[i]} · ${(b.hover && b.hover[i]) || `#${i}`}`,
+    };
   }
 
   // ── target surface (smooth_drum's surface_meridian, revolved server-side)
@@ -1348,26 +1405,35 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     for (const blk of blocks) {
       const b = blk.src;
       const angleVals = b[_LAYER_FIELDS[state.angle.key]];
-      blk.atomMeshes.forEach((mesh, i) => {
+      const n = blk.cpk.length;
+      for (let i = 0; i < n; i++) {
         const t = state.angle.on && angle && angleVals
           ? _aboveThreshold(angleVals[i], state.angle.thr, angle.max)
           : null;
         if (angleVals) tally("angle", angleVals[i], t);
-        if (t === null) mesh.material.color.set(mesh.userData.cpk);
-        else mesh.material.color.setRGB(..._rampColor(_ANGLE_STRAIN_STOPS, t));
-      });
-      blk.bondMeshes.forEach((entry, k) => {
-        const { mesh } = entry;
+        if (t === null) blk.atomMesh.setColorAt(i, blk.cpk[i]);
+        else blk.atomMesh.setColorAt(i, _tmpColor.setRGB(..._rampColor(_ANGLE_STRAIN_STOPS, t)));
+      }
+      if (n) blk.atomMesh.instanceColor.needsUpdate = true;
+      const bondEntries = blk.bondEntries;
+      for (let k = 0; k < bondEntries.length; k++) {
+        const entry = bondEntries[k];
         const t = state.bond.on && bond && b.bond_dev
           ? _aboveThreshold(b.bond_dev[k], state.bond.thr, bond.max)
           : null;
         if (b.bond_dev) tally("bond", b.bond_dev[k], t);
         entry.hot = t !== null;
-        mesh.scale.x = mesh.scale.z = entry.hot ? blk.bondR * _HOT_BOND_SCALE : blk.bondR;
-        if (t === null) mesh.material.color.set(_BOND_GREY);
-        else mesh.material.color.setRGB(..._rampColor(_BOND_STRAIN_STOPS, t));
-      });
-      const n = blk.atomMeshes.length;
+        orientBond(
+          blk.bondMesh, k, blk.lerped[entry.i], blk.lerped[entry.j],
+          entry.hot ? blk.bondR * _HOT_BOND_SCALE : blk.bondR
+        );
+        if (t === null) blk.bondMesh.setColorAt(k, _bondGrey);
+        else blk.bondMesh.setColorAt(k, _tmpColor.setRGB(..._rampColor(_BOND_STRAIN_STOPS, t)));
+      }
+      if (bondEntries.length) {
+        blk.bondMesh.instanceColor.needsUpdate = true;
+        refreshBounds(blk.bondMesh);
+      }
       for (let i = 0; i < n; i++) {
         const t = dev ? _aboveThreshold(b.deviation[i], state.deviation.thr, dev.max) : null;
         tally("deviation", b.deviation[i], t);
