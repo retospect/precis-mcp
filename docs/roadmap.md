@@ -28,7 +28,13 @@ letter so the split stays visible:
 A preprint is the unit because review time is outside our control. The
 cadence lives in precis, not here: quest `qu459585` holds one todo per
 month, each blocked by the decision it waits on, and a missed month is a
-`dead-end` logbook entry with its reason. Papers are not a pillar. A paper
+`dead-end` logbook entry with its reason. Conferences are part of the same
+output (Reto, 2026-10-02): an abstract, poster or talk drawn from a paper in
+the cadence. Each call is a `cfp` ref carrying its verified deadline, hung
+under `qu459585` as a todo beside the paper it draws on, and written against
+with `precis-proposal-help`; a recurring search keeps the list of calls
+current. A conference submission does not stand in for the month's
+preprint. Papers are not a pillar, and neither are conferences. A paper
 gets a thread only while it holds the month's slot (nanobuds-paper today);
 otherwise the repo-side blockers it exposes are gripes for the thread that
 owns them. `/pillar-review` reads the quest's tree each pass.
@@ -301,6 +307,10 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-02 — not a full pass: conferences added to A's output (Reto, via
+  the review queue): `cfp` refs under qu459585, a recurring search for
+  calls. Open on Reto: whether a conference submission may ever count as
+  the month's output; which call fits which paper.
 - 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
   dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,
