@@ -123,44 +123,41 @@ under (ref_id) AS (
 SELECT DISTINCT r.meta->>'slug' AS slug
   FROM under u JOIN refs r ON r.ref_id = u.ref_id;
 
--- 3. nodes: only the missing ones -------------------------------------------
-CREATE TEMP TABLE _measurand_new (ref_id bigint) ON COMMIT DROP;
-
-WITH ins AS (
+-- 3. nodes, card chunks and positions: only the missing ones ----------------
+-- One statement: the refs INSERT's RETURNING feeds the chunk and link
+-- INSERTs through data-modifying CTEs, so no scratch table is written
+-- (every INSERT target is a real, already-classified table).
+-- The ord -1 card_combined chunk has embedding NULL: the worker embeds.
+-- text = precis.taxonomy.nodes.taxon_card_text(name, definition, aliases);
+-- every node here has no aliases. Position: child specialises the
+-- measurand start node.
+WITH root AS (
+    SELECT ref_id FROM refs
+     WHERE kind = 'taxon' AND retired_at IS NULL
+       AND meta->>'start' = 'true' AND meta->>'slug' = 'measurand'
+     ORDER BY ref_id
+     LIMIT 1
+),
+ins AS (
     INSERT INTO refs (kind, title, meta)
     SELECT 'taxon', s.name, s.meta
       FROM _measurand_seed s
      WHERE NOT EXISTS (SELECT 1 FROM _measurand_have h WHERE h.slug = s.slug)
-       AND EXISTS (
-           SELECT 1 FROM refs
-            WHERE kind = 'taxon' AND retired_at IS NULL
-              AND meta->>'start' = 'true' AND meta->>'slug' = 'measurand')
+       AND EXISTS (SELECT 1 FROM root)
      ORDER BY s.ord
+    RETURNING ref_id, meta
+),
+card AS (
+    INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta)
+    SELECT ins.ref_id, -1, 'card_combined',
+           (ins.meta->>'name') || ' — ' || (ins.meta->>'definition'),
+           '{}'::jsonb
+      FROM ins
     RETURNING ref_id
 )
-INSERT INTO _measurand_new (ref_id) SELECT ref_id FROM ins;
-
--- 4. the ord -1 card_combined chunk (embedding NULL: the worker embeds) ----
--- text = precis.taxonomy.nodes.taxon_card_text(name, definition, aliases);
--- every node here has no aliases.
-INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta)
-SELECT r.ref_id, -1, 'card_combined',
-       (r.meta->>'name') || ' — ' || (r.meta->>'definition'),
-       '{}'::jsonb
-  FROM refs r
-  JOIN _measurand_new n ON n.ref_id = r.ref_id;
-
--- 5. position: child specialises the measurand start node -------------------
 INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)
-SELECT n.ref_id, root.ref_id, 'specialises', 'system'
-  FROM _measurand_new n
- CROSS JOIN (
-     SELECT ref_id FROM refs
-      WHERE kind = 'taxon' AND retired_at IS NULL
-        AND meta->>'start' = 'true' AND meta->>'slug' = 'measurand'
-      ORDER BY ref_id
-      LIMIT 1
- ) root;
+SELECT ins.ref_id, root.ref_id, 'specialises', 'system'
+  FROM ins CROSS JOIN root;
 
 COMMIT;
 

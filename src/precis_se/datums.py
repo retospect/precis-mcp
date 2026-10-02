@@ -119,7 +119,7 @@ U_FALLBACK_DEG = 5.0
 _U_FALLBACK_COS = math.cos(math.radians(U_FALLBACK_DEG))
 #: A face counts as a rectangle when its polygon area is within this
 #: fraction of its bounding rectangle's.
-_RECT_AREA_TOL = 0.01
+_RECT_AREA_RTOL = 0.01
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _PATCH_RE = re.compile(rf"^(?P<u>{_NUM}),(?P<v>{_NUM})\+(?P<w>{_NUM})x(?P<h>{_NUM})$")
@@ -698,7 +698,7 @@ def _u_axis(n: Any) -> Any:
 
 def _polygon_is_rectangle(ring: Any, u: Any, v: Any) -> bool:
     """Is the face polygon ``ring`` (local vertices) a rectangle in the
-    ``u``/``v`` frame — its area within :data:`_RECT_AREA_TOL` of its
+    ``u``/``v`` frame — its area within :data:`_RECT_AREA_RTOL` of its
     bounding rectangle's?"""
     pts = np.asarray(ring, dtype=float)
     us, vs = pts @ u, pts @ v
@@ -709,7 +709,7 @@ def _polygon_is_rectangle(ring: Any, u: Any, v: Any) -> bool:
     for j in range(len(pts)):
         avec += np.cross(pts[j], pts[(j + 1) % len(pts)])
     area = float(np.linalg.norm(avec)) / 2.0
-    return abs(area - bbox) <= _RECT_AREA_TOL * bbox
+    return abs(area - bbox) <= _RECT_AREA_RTOL * bbox
 
 
 def _face_frame(placed: Placed, tag: str) -> FaceFrame | None:
