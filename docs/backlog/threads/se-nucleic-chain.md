@@ -23,11 +23,12 @@ blocked.
 **Last reviewed:** 2026-10-02 (handoff)
 **Worktree:** `se-nucleic-chain`
 
-**Resume (handoff 2026-10-02):** nothing in flight; every slice is landed
-and deployed (fleet on the 2026-10-02 deploy 38, which carries the last
-fix: view='chain' counting a deleted offset as deleted). Do-next 1 is
-blocked on hexfold-integration; staple-sequence fill shipped 2026-10-02
-(dogfood it on prod once deployed). Traps: a chain design laid out before the
+**Resume (handoff 2026-10-02, held for Reto's demo):** staple-sequence
+fill QLANDED 2c560a0f5 (pytest-ungated; its CI test was red on the tab-
+separated agent table, fixed in that same ship but never re-run — the
+orchestrator's integrated gate is its first run). Not deployed; dogfood
+it on prod after the round's deploy. Do-next 1 is blocked on
+hexfold-integration. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
