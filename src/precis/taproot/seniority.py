@@ -32,6 +32,14 @@ Derivation (taproot.md, locked decision):
    :func:`_fetch_paper_facts`), so a patent ref ingested before
    ``_patent_ingest.py`` started populating ``year=`` still interleaves by
    its real date instead of always sorting last.
+5. **Computed evidence** (a ``pathway`` source, :data:`~precis.taproot.hub.
+   PATHWAY_EVIDENCE_KINDS`) is read by the same query but routed to its own
+   :attr:`HubEvidence.computed` group — never into ``S``, the originator
+   walk or the coverage note, which are statements about a citation graph a
+   compute artifact is not part of. Each :class:`ComputedEdge` re-checks its
+   pinned ``content_key`` against the pathway's current ``meta`` and names a
+   stale citation (docs/backlog/computed-pathways-cannot-be-cited-as-claim-
+   evidence.md).
 """
 
 from __future__ import annotations
@@ -43,7 +51,7 @@ from typing import Any
 from precis.errors import BadInput
 from precis.store.protocols import PoolStore
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
-from precis.taproot.hub import EVIDENCE_SRC_KINDS
+from precis.taproot.hub import EVIDENCE_SRC_KINDS, PATHWAY_EVIDENCE_KINDS
 from precis.utils import handle_registry
 
 #: The two roles that feed the seniority split (`establishes` is the
@@ -66,6 +74,16 @@ _CITES_RELATION = "cites"
 #: = ANY(%s)`` SQL params below, which want a list-friendly shape rather
 #: than a frozenset.
 _EVIDENCE_SRC_KINDS: tuple[str, ...] = tuple(sorted(EVIDENCE_SRC_KINDS))
+
+#: Computed-evidence source kinds — the write door's separate
+#: :data:`~precis.taproot.hub.PATHWAY_EVIDENCE_KINDS`. Read by the same
+#: evidence queries (filtering them out left a durably-written pathway edge
+#: invisible on the claim page) but split off into
+#: :attr:`HubEvidence.computed` before the seniority derivation runs.
+_COMPUTED_SRC_KINDS: tuple[str, ...] = tuple(sorted(PATHWAY_EVIDENCE_KINDS))
+
+#: Every source kind the evidence read queries admit.
+_READ_SRC_KINDS: tuple[str, ...] = (*_EVIDENCE_SRC_KINDS, *_COMPUTED_SRC_KINDS)
 
 _UNDETERMINED_NOTE = "seniority undetermined: no intra-set citation edges held"
 
@@ -133,6 +151,29 @@ class GroundingRef:
 
 
 @dataclass(frozen=True)
+class ComputedEdge:
+    """One computed (``pathway``) evidence edge onto a claim hub.
+
+    Kept apart from :class:`EvidenceEdge`: a pathway has no year, no
+    citation-graph seniority and no cite_key, and every
+    :class:`EvidenceEdge` consumer formats its ``paper_ref_id`` as a paper
+    handle. :attr:`content_key` is the key the edge pinned at attach time
+    (:func:`~precis.taproot.hub._pathway_evidence_meta`);
+    :attr:`stale_reason` is set when the pathway has since been superseded
+    or its own ``meta.content_key`` no longer matches the pin."""
+
+    pathway_ref_id: int
+    title: str
+    #: The RAW stored relation — ``corroborates`` for every edge written
+    #: through ``attach_evidence``.
+    relation: str
+    content_key: str | None
+    support: str | None
+    caveats: list[str]
+    stale_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class HubEvidence:
     """A claim hub's evidence, split by derived seniority."""
 
@@ -153,6 +194,10 @@ class HubEvidence:
     #: note from a muted aside to a visible warning on this flag rather
     #: than parsing the note text.
     sole_derivative: bool = False
+    #: Computed (``pathway``) evidence, ordered by pathway ref_id — outside
+    #: the seniority split, the coverage note and the print set (a pathway
+    #: has no cite_key), so no paper-shaped consumer sees it by accident.
+    computed: list[ComputedEdge] = field(default_factory=list)
 
 
 def _is_claim_hub(store: PoolStore, ref_id: int) -> bool:
@@ -242,11 +287,15 @@ def _grounding_handle(src_chunk_id: int | None, meta: dict[str, Any]) -> str | N
     return None
 
 
-def _fetch_evidence_rows(
-    store: PoolStore, hub_ref_id: int
-) -> list[tuple[int, int | None, str, dict[str, Any]]]:
-    """Direct ``paper -> hub`` read: ``(src_ref_id, src_chunk_id, relation,
-    meta)`` rows.
+#: One raw evidence row: ``(src_ref_id, src_chunk_id, relation, meta,
+#: src_kind)``.
+_EvidenceRow = tuple[int, int | None, str, dict[str, Any], str]
+
+
+def _fetch_evidence_rows(store: PoolStore, hub_ref_id: int) -> list[_EvidenceRow]:
+    """Direct ``source -> hub`` read: ``(src_ref_id, src_chunk_id, relation,
+    meta, src_kind)`` rows — papers/patents and computed pathways alike
+    (:data:`_READ_SRC_KINDS`); the caller splits them.
 
     Bypasses ``store.links_for``'s inverse-relation rewrite on purpose.
     ``contradicts`` has a registered inverse ``contradicted-by``
@@ -258,17 +307,18 @@ def _fetch_evidence_rows(
     branch writes) shares the same slug too and would otherwise surface
     the *other hub* (a finding, not a paper) as a contradictor. Both are
     excluded by joining ``refs`` and requiring the stored source endpoint
-    be one of :data:`_EVIDENCE_SRC_KINDS` — taproot.md
+    be one of :data:`_READ_SRC_KINDS` — taproot.md
     decision #2: "endpoint kinds disambiguate," extended to cover a
-    patent evidence source (``hub.attach_evidence`` accepts one; a hub is
-    neither, so it stays excluded). ``establishes``/``corroborates`` have
-    no inverse slug (migrations 0094/0085) so they aren't exposed to the
-    same bug, but they're routed through this one query for uniformity.
+    patent evidence source and a computed pathway (``hub.attach_evidence``
+    accepts both; a hub is neither, so it stays excluded).
+    ``establishes``/``corroborates`` have no inverse slug (migrations
+    0094/0085) so they aren't exposed to the same bug, but they're routed
+    through this one query for uniformity.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT l.src_ref_id, l.src_chunk_id, l.relation, l.meta
+            SELECT l.src_ref_id, l.src_chunk_id, l.relation, l.meta, p.kind
             FROM links l
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = %(hub)s
@@ -279,10 +329,77 @@ def _fetch_evidence_rows(
             {
                 "hub": hub_ref_id,
                 "roles": list(_ALL_ROLES),
-                "kinds": list(_EVIDENCE_SRC_KINDS),
+                "kinds": list(_READ_SRC_KINDS),
             },
         ).fetchall()
-    return [(row[0], row[1], row[2], row[3] or {}) for row in rows]
+    return [(row[0], row[1], row[2], row[3] or {}, row[4]) for row in rows]
+
+
+def _fetch_pathway_facts(
+    store: PoolStore, ref_ids: set[int]
+) -> dict[int, tuple[str, dict[str, Any]]]:
+    """Bulk-fetch ``(title, meta)`` per computed-evidence source ref_id —
+    the current ``meta`` is what :func:`_computed_stale_reason` compares the
+    edge's pinned ``content_key`` against. No query when ``ref_ids`` is
+    empty (the common hub has no computed evidence)."""
+    if not ref_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, title, meta FROM refs WHERE ref_id = ANY(%s)",
+            (list(ref_ids),),
+        ).fetchall()
+    return {row[0]: (row[1], row[2] or {}) for row in rows}
+
+
+def _computed_stale_reason(
+    pinned_key: str | None, pathway_meta: dict[str, Any]
+) -> str | None:
+    """Why a computed citation no longer stands, or ``None`` when it does.
+
+    Superseded wins (it names the replacement); otherwise a pinned
+    ``content_key`` that differs from the pathway's current one means the
+    inputs behind the cited numbers changed under the citation. An edge with
+    no pin (written before the pin existed, or not via ``attach_evidence``)
+    cannot be checked and reports nothing rather than guessing."""
+    if pathway_meta.get("status") == "superseded":
+        by = pathway_meta.get("superseded_by")
+        if isinstance(by, int) or (isinstance(by, str) and by.isdigit()):
+            by_handle = handle_registry.try_format("pathway", int(by))
+            return f"superseded by {by_handle or f'ref_id={by}'}"
+        return "superseded"
+    current = pathway_meta.get("content_key")
+    if pinned_key and current and current != pinned_key:
+        return (
+            f"content key changed since citation ({pinned_key[:10]} → {current[:10]})"
+        )
+    return None
+
+
+def _build_computed(
+    rows: list[tuple[int, str, dict[str, Any]]],
+    facts: dict[int, tuple[str, dict[str, Any]]],
+) -> list[ComputedEdge]:
+    """``(pathway_ref_id, relation, edge_meta)`` rows → one
+    :class:`ComputedEdge` per pathway (first edge wins, as the paper groups
+    dedupe by paper), ordered by pathway ref_id."""
+    seen: dict[int, ComputedEdge] = {}
+    for ref_id, relation, meta in rows:
+        if ref_id in seen:
+            continue
+        title, pmeta = facts.get(ref_id, (f"<pathway {ref_id}>", {}))
+        pinned = meta.get("content_key")
+        pinned = pinned if isinstance(pinned, str) else None
+        seen[ref_id] = ComputedEdge(
+            pathway_ref_id=ref_id,
+            title=title or f"<pathway {ref_id}>",
+            relation=relation,
+            content_key=pinned,
+            support=meta.get("support"),
+            caveats=list(meta.get("caveats") or []),
+            stale_reason=_computed_stale_reason(pinned, pmeta),
+        )
+    return [seen[r] for r in sorted(seen)]
 
 
 def _fetch_paper_facts(
@@ -600,11 +717,15 @@ def derive_evidence(
 
     support_edges: dict[int, dict[str, Any]] = {}
     contradict_edges: dict[int, dict[str, Any]] = {}
+    computed_rows: list[tuple[int, str, dict[str, Any]]] = []
     grounding: list[GroundingRef] = []
     seen_grounding: set[tuple[int, str]] = set()
-    for src_ref_id, src_chunk_id, relation, meta in _fetch_evidence_rows(
+    for src_ref_id, src_chunk_id, relation, meta, kind in _fetch_evidence_rows(
         store, hub_ref_id
     ):
+        if kind in _COMPUTED_SRC_KINDS:
+            computed_rows.append((src_ref_id, relation, meta))
+            continue
         target = contradict_edges if relation == _CONTRADICTS_ROLE else support_edges
         target.setdefault(src_ref_id, meta)
         handle = _grounding_handle(src_chunk_id, meta)
@@ -643,6 +764,7 @@ def derive_evidence(
         )
         for ref_id, meta in contradict_edges.items()
     ]
+    pathway_facts = _fetch_pathway_facts(store, {r[0] for r in computed_rows})
 
     return HubEvidence(
         hub_ref_id=hub_ref_id,
@@ -652,6 +774,7 @@ def derive_evidence(
         coverage_note=coverage_note,
         grounding=grounding,
         sole_derivative=sole_derivative,
+        computed=_build_computed(computed_rows, pathway_facts),
     )
 
 
@@ -669,20 +792,19 @@ def derive_evidence(
 
 def _fetch_evidence_rows_bulk(
     store: PoolStore, hub_ref_ids: list[int]
-) -> dict[int, list[tuple[int, int | None, str, dict[str, Any]]]]:
+) -> dict[int, list[_EvidenceRow]]:
     """Bulk twin of :func:`_fetch_evidence_rows` — one query for every hub
     in ``hub_ref_ids`` instead of one per hub. Same
-    :data:`_EVIDENCE_SRC_KINDS` endpoint-disambiguation guard (see
+    :data:`_READ_SRC_KINDS` endpoint-disambiguation guard (see
     :func:`_fetch_evidence_rows`'s docstring for why that matters)."""
-    out: dict[int, list[tuple[int, int | None, str, dict[str, Any]]]] = {
-        h: [] for h in hub_ref_ids
-    }
+    out: dict[int, list[_EvidenceRow]] = {h: [] for h in hub_ref_ids}
     if not hub_ref_ids:
         return out
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT l.dst_ref_id, l.src_ref_id, l.src_chunk_id, l.relation, l.meta
+            SELECT l.dst_ref_id, l.src_ref_id, l.src_chunk_id, l.relation, l.meta,
+                   p.kind
             FROM links l
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = ANY(%(hubs)s)
@@ -693,12 +815,12 @@ def _fetch_evidence_rows_bulk(
             {
                 "hubs": hub_ref_ids,
                 "roles": list(_ALL_ROLES),
-                "kinds": list(_EVIDENCE_SRC_KINDS),
+                "kinds": list(_READ_SRC_KINDS),
             },
         ).fetchall()
-    for hub_id, src, src_chunk_id, relation, meta in rows:
+    for hub_id, src, src_chunk_id, relation, meta, kind in rows:
         out.setdefault(int(hub_id), []).append(
-            (int(src), src_chunk_id, str(relation), meta or {})
+            (int(src), src_chunk_id, str(relation), meta or {}, str(kind))
         )
     return out
 
@@ -748,14 +870,23 @@ def derive_evidence_bulk(
 
     support_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
     contradict_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
+    computed_by_hub: dict[int, list[tuple[int, str, dict[str, Any]]]] = {}
     grounding_by_hub: dict[int, list[GroundingRef]] = {}
     all_paper_ids: set[int] = set()
+    all_pathway_ids: set[int] = set()
     for hub_id in ids:
         support_edges: dict[int, dict[str, Any]] = {}
         contradict_edges: dict[int, dict[str, Any]] = {}
+        computed_rows: list[tuple[int, str, dict[str, Any]]] = []
         grounding: list[GroundingRef] = []
         seen_grounding: set[tuple[int, str]] = set()
-        for src_ref_id, src_chunk_id, relation, meta in rows_by_hub.get(hub_id, []):
+        for src_ref_id, src_chunk_id, relation, meta, kind in rows_by_hub.get(
+            hub_id, []
+        ):
+            if kind in _COMPUTED_SRC_KINDS:
+                computed_rows.append((src_ref_id, relation, meta))
+                all_pathway_ids.add(src_ref_id)
+                continue
             target = (
                 contradict_edges if relation == _CONTRADICTS_ROLE else support_edges
             )
@@ -767,12 +898,14 @@ def derive_evidence_bulk(
                 grounding.append(GroundingRef(src_ref_id, handle, relation))
         support_by_hub[hub_id] = support_edges
         contradict_by_hub[hub_id] = contradict_edges
+        computed_by_hub[hub_id] = computed_rows
         grounding_by_hub[hub_id] = grounding
 
     originators_by_hub = _find_originators_bulk(
         store, {h: list(s) for h, s in support_by_hub.items()}
     )
     facts = _fetch_paper_facts(store, all_paper_ids)
+    pathway_facts = _fetch_pathway_facts(store, all_pathway_ids)
 
     out: dict[int, HubEvidence] = {}
     for hub_id in ids:
@@ -815,6 +948,7 @@ def derive_evidence_bulk(
             coverage_note=coverage_note,
             grounding=grounding_by_hub[hub_id],
             sole_derivative=sole_derivative,
+            computed=_build_computed(computed_by_hub[hub_id], pathway_facts),
         )
     return out
 
@@ -822,6 +956,7 @@ def derive_evidence_bulk(
 __all__ = [
     "ClaimLinks",
     "ClaimRef",
+    "ComputedEdge",
     "EvidenceEdge",
     "GroundingRef",
     "HubEvidence",

@@ -5,6 +5,7 @@ and has a memory linked to it (inbound), plus the fisheye HOP1 wiring."""
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,9 +14,10 @@ from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
+from precis.taproot.seniority import ComputedEdge, HubEvidence
 from precis.utils import handle_registry
 from precis.utils.fisheye import render_fisheye
-from precis.utils.refeye import collect_ring, render_reference_ring
+from precis.utils.refeye import _claim_block, collect_ring, render_reference_ring
 
 
 def _handles(body: str) -> list[str]:
@@ -744,3 +746,34 @@ def test_ring_claims_group_keeps_pin_when_pinned_form_seen_first(
     assert "Claims:" in ring
     assert ring.count(_CLAIM.sentence) == 1  # still deduped to one block
     assert "📌" in ring  # the pin from the first-seen occurrence survives
+
+
+def test_claim_block_lists_computed_evidence_with_stale_marker() -> None:
+    """A hub whose only evidence is computed shows the pathway lines — not
+    the "(no evidence derived yet)" placeholder — and a stale citation
+    carries its reason."""
+    ref = SimpleNamespace(id=42, kind="finding", slug=None, title="A DFT claim")
+    evidence = HubEvidence(
+        hub_ref_id=42,
+        originators=[],
+        corroborators=[],
+        contradictors=[],
+        coverage_note=None,
+        computed=[
+            ComputedEdge(
+                pathway_ref_id=7,
+                title="probe-rx-aaa111",
+                relation="corroborates",
+                content_key="sha-aaa111",
+                support=None,
+                caveats=[],
+                stale_reason="superseded by pw9",
+            )
+        ],
+    )
+
+    block = _claim_block(ref, evidence, cap=5)
+
+    assert "(no evidence derived yet)" not in block
+    assert "⚙ " in block and "probe-rx-aaa111" in block
+    assert "⚠ stale: superseded by pw9" in block

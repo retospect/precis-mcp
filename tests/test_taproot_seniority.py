@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
 from typing import Any
 
 import pytest
@@ -32,6 +33,7 @@ from precis.taproot.seniority import (
     derive_refines,
 )
 from precis.utils import handle_registry
+from tests.test_taproot_hub import _seed_pathway
 from tests.workers._helpers import seed_chunk, seed_ref
 
 _CLAIM = CanonicalClaim(
@@ -1271,3 +1273,102 @@ def test_grounding_relation_distinguishes_support_from_contradiction(
         pc_a: "corroborates",
         pc_b: "contradicts",
     }
+
+
+# ── computed (pathway) evidence ────────────────────────────────────────
+# docs/backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md: the
+# write door accepts a pathway src, so the read path must surface it — in
+# its own `computed` group, outside the paper seniority split.
+
+
+def _set_pathway_meta(store: Any, ref_id: int, patch: dict[str, Any]) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps(patch), ref_id),
+        )
+        conn.commit()
+
+
+def test_derive_evidence_surfaces_pathway_in_computed_group(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="sen-rx-aaa111", content_key="sha-aaa111")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+
+    ev = derive_evidence(store, hub)
+
+    assert [c.pathway_ref_id for c in ev.computed] == [pathway]
+    computed = ev.computed[0]
+    assert computed.relation == "corroborates"
+    assert computed.content_key == "sha-aaa111"
+    assert computed.stale_reason is None
+    # Never folded into the paper groups, the coverage note or sole-derivative.
+    assert ev.originators == [] and ev.corroborators == []
+    assert ev.coverage_note is None
+    assert ev.sole_derivative is False
+
+
+def test_derive_evidence_pathway_beside_a_paper_keeps_paper_seniority(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="The only paper", year=2010)
+    pathway = _seed_pathway(store, slug="sen-rx-bbb222", content_key="sha-bbb222")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=paper, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+
+    ev = derive_evidence(store, hub)
+
+    assert [e.paper_ref_id for e in ev.corroborators] == [paper]
+    assert ev.sole_derivative is True  # the paper is still the sole supporter
+    assert [c.pathway_ref_id for c in ev.computed] == [pathway]
+
+
+def test_derive_evidence_pathway_content_key_drift_is_stale(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="sen-rx-ccc333", content_key="sha-ccc333aa")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+    _set_pathway_meta(store, pathway, {"content_key": "sha-ddd444bb"})
+
+    reason = derive_evidence(store, hub).computed[0].stale_reason
+
+    assert reason is not None
+    assert "content key changed" in reason
+    assert "sha-ccc333" in reason and "sha-ddd444" in reason
+
+
+def test_derive_evidence_superseded_pathway_names_successor(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="sen-rx-eee555", content_key="sha-eee555")
+    successor = _seed_pathway(store, slug="sen-rx-fff666", content_key="sha-fff666")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=pathway, role="corroborates")
+    _set_pathway_meta(
+        store, pathway, {"status": "superseded", "superseded_by": successor}
+    )
+
+    reason = derive_evidence(store, hub).computed[0].stale_reason
+
+    assert reason is not None
+    assert reason.startswith("superseded by ")
+    assert str(successor) in reason
+
+
+def test_derive_evidence_bulk_matches_singular_for_computed(store: Any) -> None:
+    hub_a = mint_hub(store, _CLAIM)
+    hub_b = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="DFT gives a 0.8 eV barrier for NO dissociation on Pd(111).",
+            scope={"material": "Pd(111)", "method": "DFT"},
+        ),
+    )
+    pathway = _seed_pathway(store, slug="sen-rx-ggg777", content_key="sha-ggg777")
+    paper = _paper(store, title="A paper on hub B", year=2012)
+    attach_evidence(store, hub_ref_id=hub_a, paper_ref_id=pathway, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub_b, paper_ref_id=paper, role="corroborates")
+
+    bulk = derive_evidence_bulk(store, [hub_a, hub_b])
+
+    assert bulk[hub_a] == derive_evidence(store, hub_a)
+    assert bulk[hub_b] == derive_evidence(store, hub_b)
+    assert bulk[hub_b].computed == []

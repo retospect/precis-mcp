@@ -108,31 +108,45 @@ Crossref retraction check are both skipped for a pathway src (no text, no
 DOI) — the existing `check_retraction and kind == "paper"` gate already
 excludes it.
 
-Still open, not touched this slice:
+## Status 2026-10-02 — read path
 
-- **Read-time staleness surfacing.** `quest/compute.py::dispatch_autocatpath`
-  only stamps a prior pathway `superseded` when it was still `"computing"` —
-  a `"ready"` prior pathway that a citation already pinned is left alone
-  even after a fresher re-dispatch, so a citation can go stale without the
-  write-time guard ever seeing it. Needs a read-time check (rendering the
-  hub, or an audit pass) that compares a pinned `content_key` against the
-  candidate's current pathway, not just attach-time.
+Slice 2: `taproot/seniority.py` reads pathway edges
+(`_READ_SRC_KINDS`) and routes them to a separate
+`HubEvidence.computed: list[ComputedEdge]` — outside the originator walk,
+the coverage note, `sole_derivative` and the print set (a pathway has no
+cite_key). Kept out of `corroborators` on purpose: every `EvidenceEdge`
+consumer formats `paper_ref_id` as a `pa` handle and looks up cite_keys.
+The claim page (`claim/_body.html.j2` "Computed evidence"), the popover
+count and the fisheye Claims block (`refeye._computed_line`) render it.
+Each `ComputedEdge.stale_reason` is set at read time when the pathway is
+`superseded` (naming `superseded_by`) or its current `meta.content_key`
+differs from the edge's pin.
+
+`taproot/repair_evidence.py`'s `paper`/`patent` filter is correct as is:
+that pass re-grounds an edge against source *text*, which a pathway has
+none of.
+
+A hub whose only evidence is computed stays `inflight` / `unverified` in
+`claim_trust` — nothing prints, so the label is accurate; a computed-tier
+trust label is a decision for the admissibility work below, not a read fix.
+
+Still open:
+
+- **Fresher re-dispatch of a `ready` pathway.**
+  `quest/compute.py::dispatch_autocatpath` only stamps a prior pathway
+  `superseded` when it was still `"computing"`, so a pinned `ready` pathway
+  keeps its own content key after a re-dispatch and the read-time check
+  above cannot see it. Detecting it needs "the candidate's current pathway
+  for the same reaction", which the slug alone does not give (the key folds
+  the reaction config, so two reactions under one candidate also differ).
 - **Magnitude re-check.** No verbatim-quote analogue yet: a claim's stated
   barrier value is not re-checked against `results.graph.links[].barrier` /
   `barrier_std` at attach time or read time.
 - **Nanopub bundle visibility.** `src/precis/nanopub/evidence.py`'s
   `_EVIDENCE_KINDS` is still paper/patent only, so a pathway-sourced
   evidence edge is invisible to nanopub assembly even once attached here.
-
-Also downstream of `attach_evidence` (not edited, listed for the next
-slice): `precis/taproot/seniority.py`'s evidence queries filter
-`p.kind = ANY(_EVIDENCE_SRC_KINDS)`, so a pathway edge is silently excluded
-from `derive_evidence`/`derive_evidence_bulk` — a pathway-sourced hub shows
-no originators/corroborators on the claim page today, even though the edge
-is durably written. `precis/taproot/repair_evidence.py` filters
-`s.kind IN ('paper', 'patent')` (narrower still). `precis_web/routes/
-nanopub.py`'s evidence-attach form only parses `pa`/`pt` source-ref
-prefixes. `precis/taproot/cite.py` and `precis_web/claim_render.py` build
-citation/rendering handles via `handle_registry.format_handle("paper",
-...)`, unreachable for a pathway edge today because seniority.py already
-filters it out upstream.
+  `load_bundle` can now read `HubEvidence.computed`; what a compute-backed
+  nanopub asserts is the admissibility question in "Target + blast radius".
+- **Web attach form.** `precis_web/routes/nanopub.py`'s evidence-attach
+  form only parses `pa`/`pt` source-ref prefixes; a `pw` pathway can be
+  attached only through `attach_evidence` directly.

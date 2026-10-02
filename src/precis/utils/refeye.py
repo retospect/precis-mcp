@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from precis.taproot.seniority import (
     ClaimLinks,
+    ComputedEdge,
     EvidenceEdge,
     HubEvidence,
     derive_evidence,
@@ -207,6 +208,20 @@ def _evidence_line(edge: EvidenceEdge, *, marked: bool, pinned: bool = False) ->
     return f"{prefix}{label}{year}{grounding}"
 
 
+def _computed_line(edge: ComputedEdge) -> str:
+    """One computed-evidence line: ``⚙ pw<id> — <title> — ⚠ stale: <why>``
+    (the stale suffix only when the pinned content key no longer stands)."""
+    handle = handle_registry.try_format("pathway", edge.pathway_ref_id) or (
+        f"pathway {edge.pathway_ref_id}"
+    )
+    title = " ".join((edge.title or "").split())
+    if len(title) > 90:
+        title = title[:89].rstrip() + "…"
+    label = f"{handle} — {title}" if title else handle
+    stale = f" — ⚠ stale: {edge.stale_reason}" if edge.stale_reason else ""
+    return f"⚙ {label}{stale}"
+
+
 def _claim_link_line(prefix: str, cr: Any) -> str:
     """One advisory claim→claim line: ``↳ refines fi<id> — <sentence>``
     (migration 0100). Read-only reflection of a ``refines`` edge — no
@@ -348,9 +363,17 @@ def _claim_block(
         if evidence.contradictors:
             lines.append(f"  ⚠ {len(evidence.contradictors)} contradictors")
     else:
-        lines.append("  (no evidence derived yet)")
+        if not evidence.computed:
+            lines.append("  (no evidence derived yet)")
         if evidence.contradictors:
             lines.append(f"  ⚠ {len(evidence.contradictors)} contradictors")
+
+    if evidence.computed:
+        shown_computed = evidence.computed[:cap]
+        lines += [f"  {_computed_line(c)}" for c in shown_computed]
+        computed_overflow = len(evidence.computed) - len(shown_computed)
+        if computed_overflow > 0:
+            lines.append(f"    +{computed_overflow} more computed — focus to expand")
 
     if pin_op == ">" and pinned_set:
         originator_ref_ids = {e.paper_ref_id for e in evidence.originators}

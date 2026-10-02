@@ -4,9 +4,9 @@
 checked against its source, contradictions are ruled on, and the hub corpus is
 publishable (`backlog/claim-publication-nanopub-ots.md`). Today the cluster of
 ~35 taproot/finding/nanopub items has never been triaged as a set: Do-next 1 is
-the one confirmed bug, Do-next 2 is the triage that ranks the rest, and
-everything under 2 is provisional until it runs.
-**Last reviewed:** 2026-10-01
+the triage that ranks them, and everything under it is provisional until it
+runs.
+**Last reviewed:** 2026-10-02
 **Worktree:** `claims-and-evidence`
 **Active:** yes — Reto 2026-10-01.
 
@@ -16,13 +16,7 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-1. **backlog/computed-pathways-cannot-be-cited-as-claim-evidence.md** — the
-   bug half. A pathway evidence edge is written, but
-   `taproot/seniority.py::_EVIDENCE_SRC_KINDS` filters it out of
-   `derive_evidence`, so the claim page shows no originators; read the item's
-   "Still open" section for the narrower `repair_evidence.py` filter and the
-   nanopub-bundle gap. Silent wrong output, hence first.
-2. **Triage pass over the rest**, five lines; within a line the order is
+1. **Triage pass over the cluster**, five lines; within a line the order is
    provisional until the triage says which items still reproduce:
    - **Identity / model** — `backlog/taproot-claim-model-v2.md` ·
      `aida-uri-ignores-scope` · `scope-key-vocabulary-registry` ·
@@ -44,8 +38,10 @@ defect and follow-on cluster below is owned here.
      `pa-arm-locate-should-capture-a-verbatim-quote` ·
      `taproot-sole-supporter-coverage` · `taproot-numeral-audit` ·
      `taproot-backfill-defects` · `taproot-claim-quality` ·
-     `taproot-inbound-grounding` · gr458941 (fisheye Claims group: originator
-     never derived — same read path as Do-next 1).
+     `taproot-inbound-grounding` ·
+     `computed-pathways-cannot-be-cited-as-claim-evidence` (read path
+     shipped; open: magnitude re-check, re-dispatch of a `ready` pathway,
+     nanopub visibility, web attach form).
    - **Publication** — `claim-publication-nanopub-ots` ·
      `retire-fi-go-nanopub` · `nanopub-corpus-remediation` ·
      `approve-prefill-blank-doi`. Last: publishing a corpus whose identity and

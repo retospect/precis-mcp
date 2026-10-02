@@ -19,6 +19,7 @@ from precis_web.claim_render import (
     hub_cite_heads,
     render_claim_evidence,
 )
+from tests.test_taproot_hub import _seed_pathway
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
@@ -408,3 +409,26 @@ def test_render_claim_evidence_tagline_carries_through(hub: Hub) -> None:
 
     assert data is not None
     assert data["tagline"] == "Pd/C is Suzuki catalyst"
+
+
+def test_render_claim_evidence_lists_computed_pathway_outside_print_set(
+    hub: Hub,
+) -> None:
+    """A pathway evidence edge renders as a "computed" row — and only there:
+    it has no cite_key, so the print set stays empty and the hub inflight."""
+    store = hub.live_store
+    claim_hub = mint_hub(store, _CLAIM)
+    pathway = _seed_pathway(store, slug="render-rx-aaa111", content_key="sha-aaa111")
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=pathway, role="corroborates"
+    )
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    assert [c["pathway_ref_id"] for c in data["computed"]] == [pathway]
+    assert data["computed"][0]["content_key"] == "sha-aaa111"
+    assert data["computed"][0]["stale"] is None
+    assert data["originators"] == [] and data["corroborators"] == []
+    assert data["inflight"] is True

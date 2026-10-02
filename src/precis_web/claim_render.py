@@ -37,6 +37,7 @@ from markupsafe import Markup
 from precis.taproot.cite import hub_cite_keys
 from precis.taproot.seniority import (
     CiterEdge,
+    ComputedEdge,
     EvidenceEdge,
     HubEvidence,
     conjunct_atoms_bulk,
@@ -301,6 +302,22 @@ def _edge_row(
         "starred": starred,
         "unacquirable": isinstance(unacq, dict),
         "unacq_note": unacq.get("note") if isinstance(unacq, dict) else None,
+    }
+
+
+def _computed_row(edge: ComputedEdge) -> dict[str, Any]:
+    """One "Computed evidence" row: a ``pathway`` the claim cites as its
+    support, shaped for the template. ``handle`` is the record handle
+    (``pw<id>``; ``None`` when the pathway plugin registered no code), and
+    ``stale`` names why the citation no longer stands — superseded, or the
+    pathway's content key moved off the one the edge pinned."""
+    return {
+        "handle": handle_registry.try_format("pathway", edge.pathway_ref_id),
+        "pathway_ref_id": edge.pathway_ref_id,
+        "title": " ".join((edge.title or "").split()),
+        "content_key": (edge.content_key or "")[:10] or None,
+        "stale": edge.stale_reason,
+        "caveats": edge.caveats,
     }
 
 
@@ -765,6 +782,9 @@ def _render_one(
         "originators": originators,
         "corroborators": corroborators,
         "contradictors": contradictors,
+        # Computed (pathway) evidence — never in the print set: a pathway
+        # has no cite_key, so it cannot reach the export's bibliography.
+        "computed": [_computed_row(e) for e in evidence.computed],
         "chunks": _grounding_chunks(store, grounding_rows, chunk_cache=chunk_cache),
         "coverage_note": evidence.coverage_note,
         "sole_derivative": evidence.sole_derivative,

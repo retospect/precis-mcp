@@ -54,12 +54,13 @@
   </ul>
   {% endif %}
   {% set unstarred_corroborators = corroborators | rejectattr('starred') | list %}
-  {% if unstarred_corroborators or contradictors %}
-  <p class="text-[11px] text-slate-400">
-    {% if unstarred_corroborators %}+{{ unstarred_corroborators | length }} corroborating{% endif %}
-    {% if unstarred_corroborators and contradictors %} / {% endif %}
-    {% if contradictors %}+{{ contradictors | length }} contradicting{% endif %}
-  </p>
+  {% set computed_rows = computed | default([]) %}
+  {% set tail = [] %}
+  {% if unstarred_corroborators %}{% set _ = tail.append('+' ~ (unstarred_corroborators | length) ~ ' corroborating') %}{% endif %}
+  {% if computed_rows %}{% set _ = tail.append('+' ~ (computed_rows | length) ~ ' computed') %}{% endif %}
+  {% if contradictors %}{% set _ = tail.append('+' ~ (contradictors | length) ~ ' contradicting') %}{% endif %}
+  {% if tail %}
+  <p class="text-[11px] text-slate-400">{{ tail | join(' / ') }}</p>
   {% endif %}
   {% endif %}
 </div>
