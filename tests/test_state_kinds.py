@@ -107,6 +107,21 @@ class TestGripe:
         ref = gripe.store.get_ref(kind="gripe", id=gid)
         assert ref is not None and ref.prio is None
 
+    def test_bare_status_remove_is_bad_input(self, gripe: GripeHandler) -> None:
+        """Removing a gripe's only STATUS is refused up front (the 0176
+        trigger would otherwise fail the commit with a raw check_violation);
+        remove + replacement add in one call still works."""
+        gripe.put(text="status remove probe")
+        gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
+
+        with pytest.raises(BadInput, match="always has one STATUS") as exc:
+            gripe.tag(id=gid, remove=["STATUS:open"])
+        assert "add=['STATUS:wontfix']" in (exc.value.next or "")
+
+        gripe.tag(id=gid, remove=["STATUS:open"], add=["STATUS:triaged"])
+        tags = {str(t) for t in gripe.store.tags_for(gid)}
+        assert "STATUS:triaged" in tags and "STATUS:open" not in tags
+
     def test_prio_tag_at_create_syncs_to_column(self, gripe: GripeHandler) -> None:
         gripe.put(text="search 500s on a bare percent sign", tags=["PRIO:urgent"])
         ref = gripe.store.list_refs(kind="gripe", limit=1)[0]

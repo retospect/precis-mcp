@@ -239,6 +239,19 @@ class GripeHandler(NumericRefHandler):
         # verb level alongside todo's) wins over the tag alias. Mirrors
         # QuestHandler.tag.
         prio = validate_prio(prio)
+        # Every gripe carries exactly one STATUS (migration 0176's commit-time
+        # trigger), so a bare STATUS remove would fail at commit as a raw
+        # check_violation. Refuse it here with the replacement idiom instead.
+        if any(t.startswith("STATUS:") for t in remove or ()) and not any(
+            t.startswith("STATUS:") for t in add or ()
+        ):
+            raise BadInput(
+                f"a {self._sense()} always has one STATUS; it cannot be removed",
+                next=(
+                    f"replace it: tag(kind={self.kind!r}, id={id}, "
+                    "add=['STATUS:wontfix']) — a STATUS add displaces the old value"
+                ),
+            )
         add, prio_from_tag = split_prio(add)
         clear_prio = False
         if remove:
