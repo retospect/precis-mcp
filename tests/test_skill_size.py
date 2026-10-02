@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-_SKILLS_DIR = Path(__file__).parent.parent / "src" / "precis" / "data" / "skills"
+from tests._skill_roots import skill_files
 
 #: Hard cap in bytes. A skill over this fails the gate unless allowlisted.
 FAIL_BYTES = 32 * 1024
@@ -53,7 +53,7 @@ _ALLOWLIST: dict[str, str] = {
 
 
 def _skill_files() -> list[Path]:
-    return sorted(_SKILLS_DIR.glob("*.md"))
+    return skill_files(recursive=False)
 
 
 @pytest.mark.parametrize("path", _skill_files(), ids=lambda p: p.stem)

@@ -20,12 +20,21 @@ it hands wrong answers to `importlib.metadata.entry_points()` while every import
 still succeeds, so it must be checked explicitly.
 
 A UV_WITH bridge can't paper over this one (entry-points come from install-time
-metadata, not from `--with`), so the only fix is an image rebuild — which is
-what the failure message says.
+metadata, not from `--with`). `--heal` (what scripts/test passes) repairs it
+for the one run instead: it re-runs the image's own editable install
+(`uv pip install --python <this venv> --no-deps -e <root>`, ~3 s) inside the
+throwaway `compose run --rm` container, which regenerates the dist-info, then
+re-checks. That container is discarded, so the shared image stays untouched
+and no sibling worktree is affected; a rebuild only stops the per-run cost.
+This is what lets an entry-point change (plugin-split step 3, gr459123) land
+without a coordinated rebuild of the shared precis-dev image. The ship gate
+needs none of this: it runs `uv run` without `--no-sync`, which re-syncs the
+project into /opt/venv on its own.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tomllib
 from importlib.metadata import distribution
@@ -54,8 +63,7 @@ def _installed_group(dist_name: str, group: str) -> dict[str, str]:
     }
 
 
-def main() -> int:
-    data = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+def _drift(data: dict) -> list[str]:
     groups = _declared_groups(data)
     dist_name = data["project"]["name"]
 
@@ -73,6 +81,32 @@ def main() -> int:
         for name in installed:
             if name not in declared:
                 drift.append(f"{group}: '{name}' installed but no longer declared")
+    return drift
+
+
+def _reinstall() -> bool:
+    """Redo the image's editable install into the running venv, so its
+    dist-info (and entry_points.txt) match the mounted pyproject."""
+    cmd = [
+        "uv", "pip", "install", "--python", sys.executable,
+        "--no-deps", "-e", str(PYPROJECT_PATH.parent), "-q",
+    ]  # fmt: skip
+    return subprocess.run(cmd, check=False).returncode == 0
+
+
+def main(argv: list[str]) -> int:
+    data = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+    drift = _drift(data)
+    if drift and "--heal" in argv:
+        print(
+            "precis-dev image predates this tree's entry-points ("
+            + "; ".join(drift)
+            + ") — reinstalling into this run's container only; "
+            "scripts/build-image precis-dev stops the per-run cost.",
+            file=sys.stderr,
+        )
+        if _reinstall():
+            drift = _drift(data)
 
     if drift:
         print(
@@ -88,4 +122,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

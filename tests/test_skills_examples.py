@@ -26,6 +26,7 @@ import pytest
 from precis.cad.dsl import _ALIAS_KEYS
 from precis.cad.dsl import parse as cad_dsl_parse
 from precis.store.types import _KIND_ALLOWED_AXES
+from tests._skill_roots import skill_files
 
 _SKILLS_DIR = (
     Path(__file__).resolve().parent.parent / "src" / "precis" / "data" / "skills"
@@ -77,7 +78,7 @@ def _is_aspirational(text: str) -> bool:
 
 
 def _iter_skill_files() -> list[Path]:
-    return sorted(p for p in _SKILLS_DIR.iterdir() if p.suffix == ".md")
+    return skill_files(recursive=False)
 
 
 def _extract_python_blocks(text: str) -> list[str]:

@@ -158,10 +158,11 @@ packages, so they are fair game before 10-16.
    core (allowed direction) in `handler.py`, `toon_views.py` and
    `_dispatch_common.py`. Verified: `grep` for a core→plugin import across
    `src/precis/` returns nothing.
-3. **Declare `precis.skills` from one in-tree plugin** (pathway or se) and
-   move its skills under that package. Exercises a built-but-never-used
-   path in production, and is the cheapest possible test of the
-   agent-facing seam.
+3. **DONE 2026-10-02** — `precis-pathway-help` ships from
+   `precis_pathway.skills` via the `precis.skills` group. The skill corpus
+   tests walk plugin roots read from pyproject (`tests/_skill_roots.py`), and
+   `scripts/test`'s entry-point preflight self-heals a stale dev image per
+   run (`--heal`), so a future entry-point change needs no rebuild round.
 4. **CLI lazification** — a new `precis.cli` entry-point group, one-line
    help in entry-point metadata so top-level `--help` stays complete
    without importing. `cli/main.py:26` eagerly imports **55** subcommand

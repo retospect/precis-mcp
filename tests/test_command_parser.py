@@ -21,13 +21,13 @@ See the :mod:`precis.tools.command_parser` docstring.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
 from precis.tools import TOOL_REGISTRY
 from precis.tools.command_parser import CommandParseError, parse_command
 from precis.utils.next_block import render_next_section
+from tests._skill_roots import skill_files
 
 # ---------------------------------------------------------------------------
 # Acceptance — one representative call per verb
@@ -252,9 +252,8 @@ def _has_bareword_placeholder(call: str) -> bool:
 
 
 def _skill_corpus_calls() -> list[str]:
-    skills_dir = Path(__file__).resolve().parents[1] / "src/precis/data/skills"
     calls: list[str] = []
-    for path in sorted(skills_dir.glob("*.md")):
+    for path in skill_files(recursive=False):
         text = path.read_text(encoding="utf-8")
         for call in _extract_calls(text):
             if any(marker in call for marker in _PLACEHOLDER_MARKERS):

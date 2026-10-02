@@ -6,6 +6,7 @@ Pure tests against tmp_path directories — no DB.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -562,7 +563,7 @@ def test_scan_no_kind_or_topic_tags_when_axes_absent(tmp_path: Path) -> None:
 
 
 def test_shipped_skill_corpus_has_zero_gate_findings(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The hard-fail gate (:data:`GRAPH_GATES_HARD_FAIL`) against the real
     ``src/precis/data/skills/`` tree: every ``[[slug]]`` wikilink resolves
@@ -577,8 +578,6 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     memory) — this test asserts against the current source tree's
     promise, not a possibly-stale build artifact.
     """
-    from importlib.resources import files
-
     from precis.ingest.skill_template import DocResolver, Includer
     from precis.utils import handle_registry as hr
     from precis_bio import handles as bio_handles
@@ -586,6 +585,7 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     from precis_estimate import handles as estimate_handles
     from precis_pathway import handles as pathway_handles
     from precis_se import handles as se_handles
+    from tests._skill_roots import skill_files, skill_roots
 
     plugin_kind_codes: dict[str, str] = {}
     plugin_chunk_codes: dict[str, str] = {}
@@ -602,12 +602,18 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     monkeypatch.setattr(hr, "_plugin_kind_codes", plugin_kind_codes)
     monkeypatch.setattr(hr, "_plugin_chunk_codes", plugin_chunk_codes)
 
-    skills_dir = Path(str(files("precis.data.skills")))
-    docs = {p.stem: p.read_text(encoding="utf-8") for p in skills_dir.rglob("*.md")}
+    docs = {p.stem: p.read_text(encoding="utf-8") for p in skill_files()}
     includer = Includer(resolvers={"doc": DocResolver(docs=docs)})
 
-    r = scan_skill_dir(skills_dir, includer=includer)
-    assert r.failures == (), "\n".join(str(f) for f in r.failures)
+    # One merged tree: [[links]] resolve against the scanned corpus, and a
+    # plugin skill legitimately links built-ins (and vice versa).
+    merged = tmp_path / "skills"
+    for root in skill_roots():
+        shutil.copytree(
+            root, merged, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__*")
+        )
+    failures = scan_skill_dir(merged, includer=includer).failures
+    assert failures == (), "\n".join(str(f) for f in failures)
 
 
 def test_link_to_gate_failed_file_does_not_cascade(tmp_path: Path) -> None:

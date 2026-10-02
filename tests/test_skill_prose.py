@@ -45,7 +45,7 @@ from pathlib import Path
 
 import pytest
 
-_SKILLS_DIR = Path(__file__).parent.parent / "src" / "precis" / "data" / "skills"
+from tests._skill_roots import skill_files, skill_key, skill_path
 
 _ADR = re.compile(r"\bADR[ -]?\d{4}\b")
 _BACKLOG = re.compile(r"docs/backlog/")
@@ -235,13 +235,13 @@ _ALLOWLIST: dict[str, dict[str, int]] = {
 
 def _skill_files() -> list[Path]:
     """Top-level skills plus ``personas/`` — both are served bodies."""
-    return sorted(_SKILLS_DIR.rglob("*.md"))
+    return skill_files()
 
 
 def _key(path: Path) -> str:
     """Allowlist key: path relative to the skills dir, no suffix
     (``precis-get-help``, ``personas/precis-draft-reviewer``)."""
-    return path.relative_to(_SKILLS_DIR).with_suffix("").as_posix()
+    return skill_key(path)
 
 
 @pytest.mark.parametrize("path", _skill_files(), ids=_key)
@@ -272,7 +272,7 @@ def test_skill_prose_allowlist_only_shrinks() -> None:
     stale: list[str] = []
     for check, entries in _ALLOWLIST.items():
         for slug, allowed in entries.items():
-            path = _SKILLS_DIR / f"{slug}.md"
+            path = skill_path(slug)
             if not path.exists():
                 stale.append(f"{check}/{slug}: file gone — delete the entry")
                 continue

@@ -51,6 +51,7 @@ from precis.workers.schedule.parse import every_to_cron
 from precis_se import persist
 from precis_se import printgroup as se_printgroup
 from precis_se.handler import SeHandler
+from tests._skill_roots import skill_path
 from tests.conftest import id_of
 from tests.test_se_print_intent import _3mf_objects, handler, register_se_simp
 from tests.test_se_print_manufacture import _cut_bore
@@ -59,13 +60,9 @@ from tests.test_se_print_views import _mint_slug
 # fixtures re-exported for pytest (test_se_print_manufacture.py's pattern)
 __all__ = ["handler", "register_se_simp"]
 
-_SKILLS_DIR = (
-    Path(__file__).resolve().parent.parent / "src" / "precis" / "data" / "skills"
-)
-
 
 def _skill_text(slug: str) -> str:
-    path = _SKILLS_DIR / f"{slug}.md"
+    path = skill_path(slug)
     assert path.exists(), f"missing skill file: {path}"
     return path.read_text(encoding="utf-8")
 

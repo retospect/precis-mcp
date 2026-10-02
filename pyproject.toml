@@ -523,6 +523,12 @@ autocatpath = "precis_pathway.migrations"
 precis_estimate = "precis_estimate.migrations"
 precis_se = "precis_se.migrations"
 
+# Skill roots a plugin ships with itself (plugin-split step 3). Each value is
+# a package holding *.md skills; precis.handlers.skill walks it after the
+# built-ins, which win any slug clash.
+[project.entry-points."precis.skills"]
+precis_pathway = "precis_pathway.skills"
+
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"

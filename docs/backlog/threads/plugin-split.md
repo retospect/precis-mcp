@@ -18,31 +18,17 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 
 ## Do next
 
-1. **backlog/plugin-split-runtime-shell.md** — step 3 (step 2 landed
-   2026-09-29; step 1 landed 2026-10-01 as
-   `tests/test_plugin_import_boundary.py`; step 5 landed 2026-10-01 as
-   `PLUGIN_API` plus plugins going through the kind gate, which they had
-   bypassed entirely). The boundary is now a gate
-   rather than a convention, which is what the 10-16 moves get verified
-   against. It carries one grandfathered breach, **gr459054** —
-   `quest/roadmap_tick.py` importing `precis_se.handler`, found by
-   dogfooding the same day, the same violation step 2 removed reintroduced
-   four days later in a different file. The fix is the quest thread's;
-   a staleness assertion drops the exemption automatically when they land
-   it. Step 3 (declare `precis.skills` from one in-tree plugin) was built
-   and proved working on 2026-10-01, then reverted unlanded — **gr459123**:
-   an entry point is read from installed dist metadata, not the checkout, so
-   both long-lived containers still report an empty group and landing it
-   would red the pathway skill assertion in every in-flight worktree's gate
-   until each image rebuilds. Prod is not at risk (deploy does a real
-   `uv pip install --upgrade`). It needs only an announced dev-image
-   rebuild round — not gr457894, per the correction below. It is the
-   dev-side form of the same class: an installed dist serving metadata its
-   pyproject no longer matches.
-2. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
+1. **backlog/cli-lazy-subcommand-loading.md** — hard prerequisite for the
    split (installing precis-util + precis-catpath dies importing
    precis.cli.taproot) and independently closes the outage class that killed
-   every node's embedder. It touches 58 modules.
+   every node's embedder. It touches 58 modules. Steps 1, 2, 3 and 5 of
+   `plugin-split-runtime-shell.md` have landed (3 on 2026-10-02: the
+   pathway skill ships from the plugin, gr459123). The import boundary
+   carries one grandfathered breach, **gr459054** (`quest/roadmap_tick.py`
+   importing `precis_se.handler`); the fix is the quest thread's, and a
+   staleness assertion drops the exemption when they land it. An
+   entry-point change no longer needs a dev-image rebuild round: the ship
+   gate re-syncs on its own and `scripts/test --heal`s per run.
 
 **gr457894 left Do next on 2026-10-01, and this is the correction that
 matters most in this file.** It sat at Do-next 1 for five rounds on the claim
