@@ -179,6 +179,16 @@ current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
 (`backlog/local-summarizer.md`), then the model that fits one spark
 (`backlog/vllm-per-node-serving.md` Slice 0).
 
+**Compute reserve: Meluxina** (Reto, 2026-10-02: "we should use compute
+there"). An external Slurm HPC allocation, reached as a client through
+`slullama`. Two uses, both owned by `local-compute.md`: LLM operations, as
+a placement-chain rung (`backlog/slullama-hpc-placement.md`: the card is
+shipped dark, the rung waits on cluster access, td345845); and catpath
+runs, which have no item yet. How it shows in the local-versus-cloud share
+(its own row, or folded into local) is undecided. No hostname, address or
+account id for it goes in this repo; coordinates live in the gitignored
+overlay.
+
 **Threads.** Active: `local-compute.md` (owns local serving: the summariser
 and the single-spark model, and what they do) · `session-mcp-shared-server.md`
 (the platform blocker every thread owner named; since 2026-10-01 the shared
@@ -310,7 +320,9 @@ Newest first; one line per pass (`/pillar-review` writes it).
 - 2026-10-02 — not a full pass: conferences added to A's output (Reto, via
   the review queue): `cfp` refs under qu459585, a recurring search for
   calls. Open on Reto: whether a conference submission may ever count as
-  the month's output; which call fits which paper.
+  the month's output; which call fits which paper. Meluxina added to
+  Pillar 3 as a compute reserve for LLM and catpath work (Reto, same
+  route); open on Reto: the SSH key in td345845.
 - 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
   dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,
