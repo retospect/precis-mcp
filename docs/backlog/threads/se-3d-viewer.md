@@ -24,15 +24,32 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-09-30 (gr457931 shipped; dogfooded on prod data;
-pillar review same day added three orphan gripes and the property-layer
-seam note; gr458393 adopted from local-compute and SHIPPED same day)
+**Last reviewed:** 2026-10-02 (handoff: Do-next 0 deployed and
+agent-verified on prod data; nothing landed-but-undeployed, nothing in
+flight)
 **Worktree:** `se-3d-viewer`
+
+**Resume state (2026-10-02).** Everything this thread has built is
+deployed. Do-next 0 waits on Reto alone; Do-next 1 waits on GitHub's
+scheduler; Do-next 3 (level chips) is the next item an agent can start
+without anyone, and none has started it. Two traps for whoever picks this
+up:
+- Checking the viewer against prod data without the prod web's Basic
+  credential: `scripts/guide-web --db prod --port 9110` (local
+  `precis web` as the read-only `agent_ro` role, auth off), then drive
+  it from the Playwright container with
+  `--add-host=host.docker.internal:host-gateway`. Never route around
+  the prod credential instead.
+- The local viewer harness designs (`unicycle-c1`, `hairpin-pick`) live
+  in the shared test DB, which every `scripts/test` run may wipe —
+  re-seed with `scripts/viewer_check.py seed <ops.json> <slug>` before
+  a browser check, or it reads as a 404.
 
 ## Do next
 
-0. **Dogfood Reto's 2026-10-01 prod pass after the next deploy.** All of
-   it is built; what is left is Reto's look on prod:
+0. **Reto's look at his 2026-10-01 prod pass.** All of it is deployed and
+   was agent-verified 2026-10-02 on prod's `dogfood-fold-3` (through
+   guide-web, above); what is left is Reto's own look (td461212):
    - pick steps 1–3 (atom click → panel → cite), which his pass predated;
    - page scroll (vendored three-cad-viewer.css's global
      `body{overflow:hidden; user-select:none}`, undone in
@@ -51,7 +68,10 @@ seam note; gr458393 adopted from local-compute and SHIPPED same day)
 
 1. **backlog/se-viewer-browser-level-check.md** — BUILT 2026-10-01
    (viewer-check.yml, nightly); delete once a scheduled GitHub run is
-   green. Before it, no browser-level check
+   green. As of 2026-10-02 07:30Z only the manual run exists: the
+   02:41Z schedule had not fired, which is GitHub's normal lag here
+   (check.yml's 05:23Z cron lands around 11:00Z), not a defect until
+   a full day passes with no scheduled run. Before it, no browser-level check
    existed, so every correctness claim rests on a hand-built harness in a
    worktree that will be reaped, including the scripts that resolved
    gr458329. Leverage: makes 2–4 verifiable instead of assertable, and is
