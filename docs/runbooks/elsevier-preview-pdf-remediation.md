@@ -146,3 +146,41 @@ be prepared/reviewed from a dev session (as above, read-only until the
 `BEGIN`/`COMMIT` block runs), but the actual fetch pass needs a real
 worker's vault-capable DSN — run via a `cluster-admin` session against
 melchior/caspar, watching the pass logs for the re-fetch.
+
+## Front-matter-only preview PDFs — `precis markup-backfill` (gripe 372781)
+
+**Symptom.** Elsevier's Article Retrieval API can return a well-formed,
+complete `%PDF-` that is only the entitlement-limited preview page (title,
+affiliations, abstract, first intro paragraphs, printed footer) with no
+error. It ingests silently as ~8 body chunks. Example: pa167977 (fetched
+2026-07-22Z, before the markup-first XML leg existed; gr372863).
+
+**Tooling (on main, deployed 2026-09-25Z).** Markup ingest outcomes are
+journalled as `markup:<fmt>` ref_events (`markup_ingested` /
+`markup_parse_failed`). `precis markup-backfill`
+(`src/precis/cli/markup_backfill.py`) = detector + one-shot
+`meta.markup_refetch` pin + `stub_predicate_sql` escape hatch + gated
+DELETE+INSERT body replace (only at >=3x and >=30 chunks). Deliberately
+**not** wired into `paper_reconcile` — Reto wants to eyeball the dry-run
+first; wiring it in is the follow-up.
+
+**Next step (not yet run).**
+1. Dry-run `precis markup-backfill`. Expect ~1641 rows (prod 2026-09-20Z
+   funnel: 3726 Elsevier-PDF-only → 2717 thin → 1659 with the footer
+   signature → 1641 without a reference list). The docstring's "~7800" is an
+   estimate of the affected population, not the detector yield. Re-measure;
+   the corpus has grown.
+2. `--apply`, then watch for `markup_backfill` / `body_replaced` events.
+
+**Detector caveat.** The "no reference list" filter trims only 18 of 1659;
+the footer signature does the discrimination. The real safety net is the
+growth guard at replacement time.
+
+**Fragile config.** `PRECIS_FETCH_MARKUP` is set on melchior only (overlay
+`host_vars`, gitignored). Harmless only while melchior claims essentially all
+OA-fetch work — if melchior drains, every Elsevier paper silently reverts to
+preview-PDF ingest, and nothing in the repo shows it.
+
+**Open.** Gripe 372785: extend past Elsevier (Wiley TDM next). Do not widen
+to "any thin PDF body" — each publisher needs its own validated footer
+signature.
