@@ -59,6 +59,18 @@ gr346534, soft-deleted)
    thread's own "unremarkable doctor report" goal until fixed.
    Only its defect 4 (the unbounded `kind_provider` table) landed
    2026-10-01, from the stranded branch; the false criticals are still open.
+6. **Verify the structural reviewer gets its tools** (gr245505, closed). On
+   10+ runs from 2026-09-19 it finished its one turn while
+   `mcp init: precis=pending`, making zero tool calls. Two fixes deployed
+   in 81154bc0. The first is the root fix: `claude -p` runs get
+   `CLAUDE_CODE_MCP_STARTUP_WAIT_MS=30000`
+   (`claude_agent._prepare_agent_env` and the container executor's env).
+   It needs CLI 2.1.274 or later; melchior has 2.1.285. The second is a
+   retry-once in `review.py`, the backstop. Check: the first structural
+   review after that deploy makes more than 0 tool calls. A fresh
+   `structural:tool-starved` alert reading `precis=pending` means the wait
+   is not taking effect; reopen gr245505 with that alert's detail. The three
+   duplicate Reto asks (td459083, td456036, td454135) are done.
 
 ## Horizon
 
