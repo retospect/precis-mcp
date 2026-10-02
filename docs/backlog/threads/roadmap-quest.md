@@ -25,7 +25,14 @@ the extraction-window fix deploys.
    2026-10-02 ~12:15Z (Reto approved review item roadmap-quest-1):
    `meta.supply = {}`, rungs td460713 + td460923 `STATUS:won't-do`. If a
    tick re-cites pa459574's 1.2 nm before the deploy, clear `meta.supply`
-   again after it.
+   again after it. After the deploy, read every stored `meta.supply` value
+   against its finding's source passage. The tick only writes a supply value
+   that BEATS the stored one (and `best_supply` reads `meta.supply` first),
+   so a misread value in the better direction (too small on a `min` axis)
+   can never be displaced by a tick. The only way to correct it is by hand:
+   `edit(kind='quest', id=<cap>, meta={'supply': {...}})`, which replaces
+   the whole `supply` dict, so re-send every key you keep (pass `{}` to
+   clear it, as on 10-02).
 2. **Local-first never yields to S2.** Every unattended supply query logged
    `[local 10, acquired 0; outside skipped, graph answered]`:
    `relevance_floor()` defaults to 0.0 and the semantic leg's

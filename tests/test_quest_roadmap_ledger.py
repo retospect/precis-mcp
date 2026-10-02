@@ -373,3 +373,39 @@ class TestSignatureAndRender:
         root, _cap = make_root(store, demand=None, supply=None, unit=None)
         row = render_ledger_markdown(_rows(store, root)).splitlines()[-1]
         assert row.count("—") == 4  # demanded · supply · evidence · rung
+
+
+# ── rungs_for cap ─────────────────────────────────────────────────────
+
+
+class TestRungsForCap:
+    """The per-capability cap counts RUNGS. A capability's ``serves`` fan-in
+    is mostly papers, so a cap over the raw links let early non-rung servers
+    push every rung out of the read."""
+
+    def test_non_rung_servers_do_not_crowd_rungs_out(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(ledger, "LEDGER_MAX_RUNGS_PER_CAPABILITY", 2)
+        _root, cap = make_root(store)
+        th = _todos(store)
+        for i in range(3):
+            plain = id_of(th.put(text=f"plain server {i}").body)
+            store.add_link(src_ref_id=plain, dst_ref_id=cap, relation="serves")
+        rung = make_rung(store, cap, value=1.0)
+        got = [r.ref.id for r in ledger.rungs_for(store, [cap])[cap]]
+        assert got == [rung]
+
+    def test_truncation_keeps_the_oldest_and_warns(
+        self,
+        store: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(ledger, "LEDGER_MAX_RUNGS_PER_CAPABILITY", 2)
+        _root, cap = make_root(store)
+        rungs = [make_rung(store, cap, value=float(i), title=f"r{i}") for i in range(3)]
+        with caplog.at_level("WARNING", logger=ledger.__name__):
+            got = [r.ref.id for r in ledger.rungs_for(store, [cap])[cap]]
+        assert got == rungs[:2]
+        assert f"qu{cap} has 3 rungs" in caplog.text

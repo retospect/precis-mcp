@@ -36,11 +36,14 @@ one capability while claiming a value for another contributes to neither.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
+
+logger = logging.getLogger(__name__)
 
 # ── tunables ──────────────────────────────────────────────────────────
 
@@ -50,9 +53,12 @@ if TYPE_CHECKING:
 #: emitter appends a ``fanout-capped`` Gap so the truncation is visible).
 LEDGER_MAX_CAPABILITIES = 40
 
-#: Bound the per-capability rung fan-in the same way. Past this many rungs
-#: on one capability the excess (newest ``td`` first dropped — links come
-#: back in insertion order, so the oldest rungs are kept) is not read.
+#: Bound the per-capability rung fan-in the same way. Counted over RUNGS,
+#: after filtering: a capability's ``serves`` fan-in is mostly papers (supply
+#: ticks link them), so capping the raw links would let papers crowd rungs
+#: out. Past this many rungs the excess (newest ``td`` first dropped — links
+#: come back in insertion order, so the oldest rungs are kept) is not read,
+#: and :func:`rungs_for` logs a warning naming the capability.
 LEDGER_MAX_RUNGS_PER_CAPABILITY = 200
 
 #: ``STATUS`` values under which a rung has delivered its ``produces``.
@@ -229,7 +235,6 @@ def rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[Rung]]:
                 continue
             seen.add(src)
             ids.append(src)
-        ids = ids[:LEDGER_MAX_RUNGS_PER_CAPABILITY]
         per_cap[cid] = ids
         all_ids.extend(ids)
     if not all_ids:
@@ -256,14 +261,24 @@ def rungs_for(store: Store, capability_ids: list[int]) -> dict[int, list[Rung]]:
         for rid, val in rows:
             status.setdefault(int(rid), str(val))
     rung_set = set(rung_ids)
-    return {
-        cid: [
+    out: dict[int, list[Rung]] = {}
+    for cid, ids in per_cap.items():
+        rungs = [
             Rung(ref=refs[i], status=status.get(i, "open"))
             for i in ids
             if i in rung_set
         ]
-        for cid, ids in per_cap.items()
-    }
+        if len(rungs) > LEDGER_MAX_RUNGS_PER_CAPABILITY:
+            logger.warning(
+                "roadmap ledger: capability qu%d has %d rungs, reading the "
+                "oldest %d (LEDGER_MAX_RUNGS_PER_CAPABILITY)",
+                cid,
+                len(rungs),
+                LEDGER_MAX_RUNGS_PER_CAPABILITY,
+            )
+            rungs = rungs[:LEDGER_MAX_RUNGS_PER_CAPABILITY]
+        out[cid] = rungs
+    return out
 
 
 def _produced(
