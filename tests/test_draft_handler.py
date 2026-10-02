@@ -2799,3 +2799,37 @@ def test_bare_identifier_hint(draft: DraftHandler, hub: Hub) -> None:
         at={"after": "¶" + title_h},
     )
     assert "bare identifier in prose" not in r.body
+
+
+def test_house_style_write_hint_and_hygiene_view(draft: DraftHandler, hub: Hub) -> None:
+    """Em-dash / bold / ``--`` in prose land with an advisory ``house style``
+    hint; clean prose and math subscripts are silent. ``view='hygiene'``
+    counts violations per rule and shows the all-clear on a clean draft."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+
+    assert "✓ house style" in draft.get(id="nt", view="hygiene").body
+
+    ok = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="Level $P_5$ in snake_case.",
+        at={"after": "¶" + th},
+    )
+    assert "house style" not in ok.body
+    assert "✓ house style" in draft.get(id="nt", view="hygiene").body
+
+    bad = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="It is **best** — and tailor -- improve.",
+        at={"after": "¶" + th},
+    )
+    assert "⚠ house style" in bad.body
+    assert "em_dash at 1:16" in bad.body
+
+    out = draft.get(id="nt", view="hygiene").body
+    assert "⚠ house style: 3 violation(s) in 1 chunk(s)" in out
+    assert "1 em_dash, 1 bold, 1 double_hyphen" in out
+    assert "✓ house style" not in out

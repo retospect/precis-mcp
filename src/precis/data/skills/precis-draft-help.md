@@ -49,7 +49,7 @@ with a bare `dc<id>`, never a `-B..A` window.
 | `get(id='dc<id>', view='fisheye')` | verbatim center + graduated neighborhood |
 | `get(id='dc<id>', view='fisheye+1hop')` | fisheye + cited/cross-ref/note ring |
 | `get(id=<scope>, view='toc')` | heading skeleton (whole draft, or one heading's subtree) |
-| `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full |
+| `get(id=<scope>, view='hygiene')` | undefined-abbrev + unresolved-citation lists, full, plus house-style counts |
 | `get(id=<scope>, view='backfill')` | uncited-but-relevant papers, gap-finder |
 | `get(id=<scope>, view='wordcount')` | per-section word counts vs targets |
 | `get(id='dc<id>', view='history')` | the chunk's edit events, newest first, with prior text (`args={'limit':N}`, ≤500) |
@@ -312,7 +312,10 @@ the matching `chunk_kind` + a one-line caption, not a bare "paragraph."
 **Plain prose, no emphasis markup** — `**bold**` and single-`*` italic
 both render but read as shouting; `_italic_` does NOT render and leaves
 literal `_` (collides with `$x_1$` math subscripts). No em-dashes (`—`)
-— split the sentence, or use a colon/comma/parens.
+— split the sentence, or use a colon/comma/parens. Also no `--`.
+Math (`$P_5$`), backtick code, URLs and `[handles]` are exempt. A
+violation trips a `⚠ house style` hint on write, and `view='hygiene'`
+counts them per rule with example `dc` handles.
 
 **Units & temperatures: literal sign, spaced off the value.** `63 °C` —
 space, then degree sign `°` (U+00B0), then `C`. Range `63–65 °C`;

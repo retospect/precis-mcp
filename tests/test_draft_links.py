@@ -692,3 +692,111 @@ def test_unrelated_chunk_write_does_not_clear_drift(
         "drift was silently cleared by a write to an unrelated chunk — "
         "the stale paraphrase is still on the page"
     )
+
+
+# ── write cost: a text write re-resolves only its own chunk ─────────────
+
+
+def _two_para_draft(draft: DraftHandler, hub: Hub) -> tuple[int, int, str, str]:
+    a = hub.live_store.insert_ref(kind="memory", slug=None, title="A").id
+    b = hub.live_store.insert_ref(kind="memory", slug=None, title="B").id
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    title_h = hub.live_store.drafts.reading_order(ref.id)[0].dc
+    draft.put(
+        id="nt", chunk_kind="paragraph", text=f"see memory:{a}", at={"after": title_h}
+    )
+    p1 = hub.live_store.drafts.reading_order(ref.id)[1].dc
+    draft.put(id="nt", chunk_kind="paragraph", text=f"and memory:{b}", at={"after": p1})
+    p2 = hub.live_store.drafts.reading_order(ref.id)[2].dc
+    return a, b, p1, p2
+
+
+def test_text_edit_reresolves_only_the_written_chunk(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.utils import draft_markup
+
+    a, b, _p1, p2 = _two_para_draft(draft, hub)
+    real = draft_markup.resolve_draft_link_targets
+    seen: list[str] = []
+
+    def counting(store, text, **kw):
+        seen.append(text)
+        return real(store, text, **kw)
+
+    monkeypatch.setattr(draft_markup, "resolve_draft_link_targets", counting)
+    draft.edit(id=p2, text=f"and still memory:{b}, reworded")
+
+    assert seen == [f"and still memory:{b}, reworded"]
+    # The untouched paragraph's edge is carried over, not dropped.
+    assert {(a, None), (b, None)} <= _auto_links(hub, "nt")
+
+
+def test_text_edit_does_not_reupsert_unchanged_edges(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, b, _p1, p2 = _two_para_draft(draft, hub)
+    calls: list[int] = []
+    real = hub.live_store.add_link
+
+    def counting(**kw):
+        calls.append(kw["dst_ref_id"])
+        return real(**kw)
+
+    monkeypatch.setattr(hub.live_store, "add_link", counting)
+    draft.edit(id=p2, text=f"and memory:{b} again")
+
+    assert calls == []
+    assert {(a, None), (b, None)} <= _auto_links(hub, "nt")
+
+
+def test_text_edit_still_drops_a_removed_reference_and_adds_a_new_one(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    a, b, _p1, p2 = _two_para_draft(draft, hub)
+    c = hub.live_store.insert_ref(kind="memory", slug=None, title="C").id
+
+    draft.edit(id=p2, text=f"now memory:{c} instead")
+
+    links = _auto_links(hub, "nt")
+    assert (a, None) in links
+    assert (c, None) in links
+    assert (b, None) not in links
+
+
+def test_deleting_a_chunk_drops_its_edges(draft: DraftHandler, hub: Hub) -> None:
+    a, b, _p1, p2 = _two_para_draft(draft, hub)
+
+    draft.delete(id=p2)
+
+    links = _auto_links(hub, "nt")
+    assert (a, None) in links
+    assert (b, None) not in links
+
+
+def test_text_edit_drops_a_ref_level_auto_mention_edge(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A legacy ref-level auto-mention edge (no source chunk) is one a full
+    # recompute never wants; a scoped write must drop it too, not carry it.
+    a, b, _p1, p2 = _two_para_draft(draft, hub)
+    ref = hub.live_store.get_ref(kind="draft", id="nt")
+    assert ref is not None
+    c = hub.live_store.insert_ref(kind="memory", slug=None, title="C").id
+    hub.live_store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=c,
+        relation="related-to",
+        meta={"auto": "mention"},
+    )
+
+    draft.edit(id=p2, text=f"and memory:{b} again")
+
+    dsts = {
+        link.dst_ref_id for link in hub.live_store.links_for(ref.id, direction="out")
+    }
+    assert c not in dsts
+    assert {a, b} <= dsts

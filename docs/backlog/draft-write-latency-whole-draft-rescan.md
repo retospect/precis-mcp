@@ -61,6 +61,17 @@ embed already is. The docstring explains why it was made whole-draft
 paragraph) — that property must survive whichever route is taken, so this
 needs a design pass, not a one-line change.
 
+## Built 2026-10-02 — open until prod confirms
+
+`sync_draft_links(restamp_chunk_ids=…)` (every chunk-scoped `put`/`edit`
+already passes it) re-resolves only the written chunk, carries the other live
+chunks' `auto='mention'` edges over unchanged, and skips `add_link` when the
+stored meta already holds every key it would write. Pinned by
+`tests/test_draft_links.py::test_text_edit_reresolves_only_the_written_chunk`
+and `::test_text_edit_does_not_reupsert_unchanged_edges`. Close this item
+once prod `tool_calls` shows text-write `edit`/`put` on dr173020 in seconds,
+not the 33–47 s p50 measured 09-27..10-01.
+
 ## Acceptance criteria
 
 - `put`/`edit` latency on a large draft no longer scales with total chunk

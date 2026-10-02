@@ -76,6 +76,7 @@ from precis.taproot.canon import (
     block,
     claim_sha,
     dedup_judge,
+    judge_candidates,
     merge_confirm,
     nearest_hubs,
     place,
@@ -132,7 +133,7 @@ def put_hub(
         candidates = block_fn(claim, store, embedder)
     except (EmbedderUnavailable, Upstream) as exc:
         raise _dedup_unavailable_upstream(exc) from exc
-    judged = [(cand, judge_fn(sentence, cand.claim)) for cand in candidates]
+    judged = judge_candidates(sentence, candidates, judge_fn)
     placement = place(claim, judged, merge_confirm_fn=merge_confirm_fn)
 
     if placement.action == "attach":

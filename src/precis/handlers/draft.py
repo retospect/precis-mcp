@@ -1150,6 +1150,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.bare_identifier_hint(str(text))
                 body += _draft_lint.temperature_form_hint(str(text))
                 body += _draft_lint.math_form_hint(str(text))
+                body += _draft_lint.house_style_hint(str(text), kind)
             return Response(body=body)
 
         # else: create the draft
@@ -1921,6 +1922,7 @@ class DraftHandler(Handler):
                 body += _draft_lint.bare_identifier_hint(new_text)
                 body += _draft_lint.temperature_form_hint(new_text)
                 body += _draft_lint.math_form_hint(new_text, old_text)
+                body += _draft_lint.house_style_hint(new_text, c.chunk_kind)
                 body += _draft_lint.dangling_edit_hint(self.store, new_text, old_text)
                 body += _landed_sha_line(c.text)
             return Response(body=body)
@@ -2141,10 +2143,16 @@ class DraftHandler(Handler):
         whole concatenated draft, as this once did, threw the source chunk
         away and every edge landed ref-level ``dr<id>``.)
 
-        Recomputed over the whole draft on each write, replacing the prior
-        ``auto='mention'`` set in BOTH relations so a removed reference
-        loses its edge. Best-effort: a resolution failure never fails the
-        write — mirrors the note autolinker
+        Replaces the prior ``auto='mention'`` set in BOTH relations so a
+        removed reference loses its edge. With ``restamp_chunk_ids=None`` it
+        re-resolves every chunk; with ``restamp_chunk_ids`` it re-resolves
+        only those chunks and carries every other live chunk's existing
+        auto-mention edges over unchanged (their text did not change). A
+        carried edge keeps its old resolution: one whose target was since
+        retired, or a mention that only now resolves, waits for the next
+        unscoped sync (chunk delete/move, ``draft_refresh``). Either way an edge whose stored meta already holds what would be
+        written is not re-upserted. Best-effort: a resolution failure never
+        fails the write — mirrors the note autolinker
         (`_numeric_ref._sync_mention_links`).
 
         A ``cites`` edge to a ``finding`` hub additionally carries
@@ -2156,9 +2164,9 @@ class DraftHandler(Handler):
         compares against the hub's live pub_id/title to surface a
         rewording (docs/backlog/cite-pins-hub-version.md); ``cited_title``
         is what lets the drift report quote the old sentence, not just say
-        it moved. Because this function recomputes over the whole draft on
-        every write, it re-runs ``add_link`` on every existing edge too,
-        not just ones a caller actually just wrote prose for — so
+        it moved. Because this function can recompute over the whole draft
+        (``restamp_chunk_ids=None``), it sees every existing edge, not just
+        ones a caller actually just wrote prose for — so
         **advancing the stamp unconditionally is wrong, not just
         imprecise**: the stamp means "this passage's prose was checked
         against this version of the hub", and moving it without the prose
@@ -2189,11 +2197,29 @@ class DraftHandler(Handler):
         try:
             chunks = self.store.drafts.reading_order(ref_id)
             ord_by_chunk = self.store.drafts.chunk_ord_map(ref_id)
+            # Scoped mode: a caller that names the chunk(s) it just wrote
+            # re-resolves only those; every other live chunk keeps the
+            # auto-mention edges it already has (carried over below). Its
+            # text did not change, so re-resolving it bought nothing and
+            # cost a handle lookup per reference — on a ~200-chunk draft
+            # that was most of a 30-50 s write (prod, 2026-09-27..10-01).
+            scoped_ords: set[int] | None = None
+            if restamp_chunk_ids is not None:
+                scoped_ords = {
+                    o
+                    for cid, o in ord_by_chunk.items()
+                    if cid in restamp_chunk_ids and o is not None
+                }
             # Resolve per chunk so the source draft chunk (its ord) is
             # preserved. (src_ord, dst_ref_id, dst_pos) → desired relation.
             resolved: list[tuple[int | None, Any]] = []
             dst_ids: set[int] = set()
             for c in chunks:
+                if (
+                    restamp_chunk_ids is not None
+                    and c.chunk_id not in restamp_chunk_ids
+                ):
+                    continue
                 targets = draft_markup.resolve_draft_link_targets(
                     self.store, c.text, exclude_ref_id=ref_id
                 )
@@ -2213,6 +2239,30 @@ class DraftHandler(Handler):
                     else "related-to"
                 )
                 wanted[(src_ord, t.dst_ref_id, t.dst_pos)] = rel
+            existing_links = [
+                (relation, link)
+                for relation in ("cites", "related-to")
+                for link in self.store.links_for(
+                    ref_id, direction="out", relation=relation
+                )
+            ]
+            if scoped_ords is not None:
+                # Scoped mode: carry over the auto-mention edges of every
+                # live chunk that was not re-resolved. Liveness is checked
+                # on the source chunk id, not its ord (``links_for`` still
+                # reports a retired chunk's old ord). A ref-level edge (no
+                # source chunk) is never carried: a full recompute never
+                # wants one, so it drops below as it would there.
+                for relation, link in existing_links:
+                    if (link.meta or {}).get("auto") != "mention":
+                        continue
+                    if link.src_ord in scoped_ords:
+                        continue
+                    if link.src_chunk_id not in ord_by_chunk:
+                        continue
+                    wanted.setdefault(
+                        (link.src_ord, link.dst_ref_id, link.dst_ord), relation
+                    )
             # Drop stale auto-mention edges in BOTH relations (a removed
             # reference, one whose routed relation changed, or one that
             # moved to a different source chunk). Also record every
@@ -2222,24 +2272,21 @@ class DraftHandler(Handler):
             existing_meta: dict[
                 tuple[int | None, int, int | None, str], dict[str, Any]
             ] = {}
-            for relation in ("cites", "related-to"):
-                for link in self.store.links_for(
-                    ref_id, direction="out", relation=relation
-                ):
-                    existing_meta[
-                        (link.src_ord, link.dst_ref_id, link.dst_ord, relation)
-                    ] = link.meta or {}
-                    if (link.meta or {}).get("auto") != "mention":
-                        continue
-                    key = (link.src_ord, link.dst_ref_id, link.dst_ord)
-                    if wanted.get(key) != relation:
-                        self.store.remove_link(
-                            src_ref_id=ref_id,
-                            src_pos=link.src_ord,
-                            dst_ref_id=link.dst_ref_id,
-                            dst_pos=link.dst_ord,
-                            relation=relation,
-                        )
+            for relation, link in existing_links:
+                existing_meta[
+                    (link.src_ord, link.dst_ref_id, link.dst_ord, relation)
+                ] = link.meta or {}
+                if (link.meta or {}).get("auto") != "mention":
+                    continue
+                key = (link.src_ord, link.dst_ref_id, link.dst_ord)
+                if wanted.get(key) != relation:
+                    self.store.remove_link(
+                        src_ref_id=ref_id,
+                        src_pos=link.src_ord,
+                        dst_ref_id=link.dst_ref_id,
+                        dst_pos=link.dst_ord,
+                        relation=relation,
+                    )
             # Version-pin cites to a finding hub (docs/backlog/
             # cite-pins-hub-version.md): batch-fetch the current pub_id
             # for every finding hub this draft cites, so the write loop
@@ -2284,6 +2331,14 @@ class DraftHandler(Handler):
                         hub_ref = refs_by_id.get(dst)
                         if hub_ref is not None:
                             meta["cited_title"] = hub_ref.title
+                # The upsert keeps ``set_by`` and merges ``meta``, so an edge
+                # whose stored meta already holds every key/value we would
+                # write is a no-op; skip its round trips (5 per edge).
+                prior_meta = existing_meta.get((src_ord, dst, pos, relation))
+                if prior_meta is not None and all(
+                    prior_meta.get(k) == v for k, v in meta.items()
+                ):
+                    continue
                 self.store.add_link(
                     src_ref_id=ref_id,
                     src_pos=src_ord,
@@ -2964,6 +3019,11 @@ class DraftHandler(Handler):
         :meth:`_hygiene_author_source_line`. Both share one batched
         identifier/ref fetch done here.
 
+        An eighth line — house-style violations (em-dash, bold/italic
+        markup, ``--``) in prose chunks and figure captions, with per-rule
+        counts and example ``dc`` handles; advisory only — see
+        :meth:`_hygiene_house_style_lines`.
+
         ``elide=True`` (the outline footer's default) truncates each list to
         8 entries with a "``+N more``" tail and points at
         ``view='hygiene'`` for the rest. ``elide=False``
@@ -3049,9 +3109,49 @@ class DraftHandler(Handler):
             if authors_line:
                 out.append(authors_line)
 
+        out.extend(self._hygiene_house_style_lines(chunks, clear_line=not elide))
+
         if not out:
             return []
         return ["", "## Hygiene", *out]
+
+    @staticmethod
+    def _hygiene_house_style_lines(chunks: list[Any], *, clear_line: bool) -> list[str]:
+        """House-style line (``utils/house_style.py``): per-rule counts plus
+        up to 5 example ``dc<id>`` handles. Prose chunk kinds plus figure
+        captions only; tables, equations, code and terms are skipped. An
+        all-clear line is emitted only when ``clear_line`` (the full
+        ``view='hygiene'`` report), so a clean outline stays footer-free."""
+        from precis.utils.house_style import RULE_NAMES, find_style_flags
+        from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+        counts: dict[str, int] = {}
+        examples: list[str] = []
+        for c in chunks:
+            if not c.text or (
+                c.chunk_kind not in PROSE_CHUNK_KINDS and c.chunk_kind != "figure"
+            ):
+                continue
+            flags = find_style_flags(c.text)
+            for f in flags:
+                counts[f.rule] = counts.get(f.rule, 0) + 1
+            if flags and c.dc not in examples:
+                examples.append(c.dc)
+        if not counts:
+            return (
+                ["✓ house style: no em-dashes, bold/italic markup or `--` in prose."]
+                if clear_line
+                else []
+            )
+        per_rule = ", ".join(f"{counts[r]} {r}" for r in RULE_NAMES if r in counts)
+        shown = ", ".join(examples[:5])
+        tail = f" (+{len(examples) - 5} more)" if len(examples) > 5 else ""
+        return [
+            f"⚠ house style: {sum(counts.values())} violation(s) in "
+            f"{len(examples)} chunk(s) ({per_rule}): {shown}{tail}. "
+            "Read the chunk and edit it: no em-dash (split the sentence, or "
+            "colon/comma), no **bold**/*italic*/_italic_, no `--`."
+        ]
 
     def _render_hygiene(
         self, slug: str, ref: Any = None, *, root_handle: str | None = None

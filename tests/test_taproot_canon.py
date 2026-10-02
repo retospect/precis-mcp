@@ -964,3 +964,58 @@ def test_extraction_report_format_renders_gates_and_metric(tmp_path: Any) -> Non
     assert "compound-without-atoms" in text
     assert "residual conjunction" in text
     assert "1 passages" in text
+
+
+# ── judge_candidates — concurrent dedup judging ─────────────────────────
+
+
+def test_judge_candidates_preserves_order_and_runs_concurrently() -> None:
+    import threading
+
+    cands = [
+        MergeCandidate(hub_ref_id=i, claim=f"claim {i}", distance=0.1 * i)
+        for i in range(5)
+    ]
+    barrier = threading.Barrier(len(cands), timeout=5)
+
+    def judge(a: str, b: str) -> Verdict:
+        # Every judgment must be in flight at once or the barrier times out.
+        barrier.wait()
+        return Verdict(verdict="different", confidence=0.9, rationale=b)
+
+    judged = canon.judge_candidates("query", cands, judge)
+
+    assert [c.hub_ref_id for c, _ in judged] == [0, 1, 2, 3, 4]
+    assert [v["rationale"] for _, v in judged] == [f"claim {i}" for i in range(5)]
+
+
+def test_judge_candidates_carries_caller_contextvars() -> None:
+    import contextvars
+
+    var: contextvars.ContextVar[str] = contextvars.ContextVar(
+        "judge_ctx", default="unset"
+    )
+    var.set("caller")
+    cands = [MergeCandidate(hub_ref_id=i, claim="c", distance=0.0) for i in range(3)]
+
+    judged = canon.judge_candidates(
+        "q",
+        cands,
+        lambda a, b: Verdict(verdict="different", confidence=1.0, rationale=var.get()),
+    )
+
+    assert {v["rationale"] for _, v in judged} == {"caller"}
+
+
+def test_judge_candidates_propagates_judge_error() -> None:
+    cands = [MergeCandidate(hub_ref_id=i, claim="c", distance=0.0) for i in range(3)]
+
+    def judge(a: str, b: str) -> Verdict:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        canon.judge_candidates("q", cands, judge)
+
+
+def test_judge_candidates_empty() -> None:
+    assert canon.judge_candidates("q", [], dedup_judge) == []

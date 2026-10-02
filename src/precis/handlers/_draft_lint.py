@@ -455,6 +455,39 @@ def temperature_form_hint(text: str) -> str:
     )
 
 
+def house_style_hint(text: str, chunk_kind: str | None = None) -> str:
+    """Advisory ⚠ for prose that breaks the plain-prose house style: an
+    em-dash, ``**bold**``, ``*italic*``, ``_italic_`` or a ``--`` double
+    hyphen outside math, code, URLs and handle brackets
+    (``utils/house_style.py``). Each line names the span, its position and
+    the fix. A hint, never a refusal: the write still lands. A known
+    ``chunk_kind`` outside prose and figure captions (table, equation,
+    code, …) is skipped, matching the hygiene view's scan."""
+    from precis.utils.house_style import find_style_flags
+    from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+    if (
+        chunk_kind is not None
+        and chunk_kind not in PROSE_CHUNK_KINDS
+        and chunk_kind != "figure"
+    ):
+        return ""
+    flags = find_style_flags(text)
+    if not flags:
+        return ""
+    lines = [
+        f"  - {f.rule} at {f.line}:{f.col} `{f.snippet[:40]}`: {f.fix}"
+        for f in flags[:5]
+    ]
+    more = f"\n  (+{len(flags) - 5} more)" if len(flags) > 5 else ""
+    return (
+        f"\n\n⚠ house style: {len(flags)} plain-prose violation(s) "
+        "(no em-dash, no **bold**/*italic*/_italic_, no `--`):\n"
+        + "\n".join(lines)
+        + more
+    )
+
+
 def math_form_hint(new_text: str, old_text: str = "") -> str:
     r"""Advisory ⚠ for ``$…$`` math spans the LaTeX exporter would DEMOTE
     to escaped literal prose — unbalanced ``{ }`` braces, or prose/currency

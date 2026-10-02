@@ -27,10 +27,13 @@ persists nothing — no migration, no hub/edge writes.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
@@ -1045,6 +1048,43 @@ def dedup_judge(a: str, b: str) -> Verdict:
     return _coerce_verdict(data, default_rationale="unparseable model output")
 
 
+JUDGE_MAX_WORKERS = 8
+
+
+def judge_candidates(
+    sentence: str,
+    candidates: list[MergeCandidate],
+    judge_fn: Callable[[str, str], Verdict] = dedup_judge,
+    *,
+    max_workers: int = JUDGE_MAX_WORKERS,
+) -> list[tuple[MergeCandidate, Verdict]]:
+    """Run ``judge_fn(sentence, cand.claim)`` for every candidate
+    concurrently and return ``(candidate, verdict)`` pairs in candidate
+    order — the input :func:`place` takes.
+
+    Each judgment is an independent MEDIUM-tier call, so running the k
+    from :func:`block` one after another made the hub-mint door cost k
+    model round trips (94-182 s for ``put(kind='finding', supporters=)``
+    in prod, 2026-09-27..10-01); concurrently it costs about one. Every
+    task runs in its own copy of the caller's :mod:`contextvars` context so
+    the router still sees the caller's session / tick attribution. An
+    exception from any judgment propagates, as the serial loop did.
+    """
+    if len(candidates) <= 1:
+        return [(cand, judge_fn(sentence, cand.claim)) for cand in candidates]
+    workers = min(max_workers, len(candidates))
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="dedup-judge"
+    ) as pool:
+        futures = [
+            pool.submit(contextvars.copy_context().run, judge_fn, sentence, cand.claim)
+            for cand in candidates
+        ]
+        return [
+            (cand, fut.result()) for cand, fut in zip(candidates, futures, strict=True)
+        ]
+
+
 # ── merge_confirm — BIG, only on a risky same ───────────────────────────
 
 _MERGE_CONFIRM_SYS = (
@@ -1245,6 +1285,7 @@ __all__ = [
     "extract_claim",
     "extract_claim_strict",
     "extract_claim_strict_big",
+    "judge_candidates",
     "merge_confirm",
     "nearest_hubs",
     "not_hypothesis_predicate_sql",
