@@ -96,7 +96,11 @@ Per slice; the real one is a human opening the file.
    closed — the mirror axis is known (Y) and pinned by a test, so refusing
    them would cost more than it protects. *Done: a human opens it in EasyEDA
    Pro and sees the outline with every part at the right spot with the right
-   refdes, including the bottom-side ones.*
+   refdes, including the bottom-side ones.* **BUILT 2026-10-02**
+   (`precis.pcb.epro_write`, `view='epro'`); the human check is pending.
+   Oblique rect/obround pads are warned by refdes and written at
+   `padAngle` 0 — writing the real angle waits for a Pro-written file that
+   pins Pro's `padAngle` sense.
 2. **2c — copper.** `LINE`, `ARC`, `VIA`. *Done: Pro's unrouted count equals
    `view='route-status'`; clicking a trace shows the right net.*
 3. **2d — pours.** *Done: re-pour in Pro succeeds; visual compare against

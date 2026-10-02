@@ -45,7 +45,7 @@ pixels. The verbs map onto the seven-verb surface:
   capability map (usable/reserved pads, plaza slots, pin names, computed
   sizing; ``args={'name'?,'format':'svg'|'ledger'}``, pcb-ewod-multitile
   Slice 2); or an *export*
-  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'`` writes a
+  (``view='bom'|'cpl'|'netlist'|'dsn'|'mechanical'|'gerber'|'epro'`` writes a
   JLCPCB fab artifact — ``'gerber'`` is the full manufacturable bundle
   (gerbers + Excellon, zipped) off our own realizer/pads, never
   Freerouting/kicad-cli; ``view='route'`` runs the Freerouting
@@ -83,6 +83,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
+from precis.pcb import epro_write as pcb_epro_write
 from precis.pcb import export as pcb_export
 from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
 from precis.pcb import generators as pcb_generators
@@ -145,7 +146,7 @@ _PROBE_VIEWS = (
 #: unwired) is the odd one out here — it doesn't read ``_export_model``
 #: (the netlist IR), it assembles :mod:`precis.pcb.gerber`'s copper+pad
 #: model straight off the store, see :meth:`PcbHandler._render_gerber`.
-_EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical", "gerber")
+_EXPORT_VIEWS = ("bom", "cpl", "netlist", "dsn", "mechanical", "gerber", "epro")
 #: How many errors ``view='gerber'``'s DRC banner quotes before pointing at
 #: ``view='drc'`` for the rest — enough to see what kind of failure it is.
 _GERBER_BANNER_FINDINGS = 8
@@ -252,7 +253,9 @@ class PcbHandler(Handler):
             "or an export (view='bom'|'cpl'|'netlist'|"
             "'dsn'|'mechanical'|'gerber' writes a JLCPCB fab artifact -- "
             "'gerber' is the full manufacturable bundle (gerbers+Excellon, "
-            "zipped); view='route' runs "
+            "zipped); view='epro' writes an EasyEDA Pro .epro2 (outline, "
+            "parts, pads, nets; no copper yet, no schematic; not yet opened "
+            "in EasyEDA Pro); view='route' runs "
             "the demoted Freerouting escape hatch), all with args={...}; "
             "put(args={'op':'place'}) / args={'op':'route'} ENQUEUE a worker "
             "job (never inline; idempotent per design+op+content-hash) — "
@@ -1964,6 +1967,8 @@ class PcbHandler(Handler):
         needed; the file lands under the corpus (or a temp dir)."""
         if view == "gerber":
             return self._render_gerber(ref_id, args)
+        if view == "epro":
+            return self._render_epro(ref_id, args)
         ref = self.store.get_ref(kind="pcb", id=ref_id)
         slug = ref.slug if ref is not None and ref.slug else str(ref_id)
         model = self._export_model(ref_id)
@@ -2271,6 +2276,64 @@ class PcbHandler(Handler):
         if warnings:
             head += "\n" + "\n".join(f"⚠️  {w}" for w in warnings)
         listing = "\n".join(sorted(files))
+        return Response(body=head + "\n\n```\n" + listing + "\n```")
+
+    def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
+        """Write an EasyEDA Pro ``.epro2`` (:mod:`precis.pcb.epro_write`)
+        off :meth:`_fab_model` — parts, pads, nets and the outline, so a
+        colleague can open the board and keep working. Refuses synthesized
+        pads unless ``args={'allow_synthesized': true}``."""
+        ref = self.store.get_ref(kind="pcb", id=ref_id)
+        slug = ref.slug if ref is not None and ref.slug else str(ref_id)
+        built = self._fab_model(ref_id, slug=slug)
+        if built is None:
+            return Response(
+                body="no board yet\n\nNext: put(kind='pcb', id='slug', "
+                "args={'components':[...],'nets':[...]}) to create the design."
+            )
+        model, warnings = built
+        try:
+            exported = pcb_epro_write.epro_files(
+                model,
+                slug=slug,
+                allow_synthesized=bool(args.get("allow_synthesized")),
+            )
+        except pcb_gerber.SynthesizedPadError as exc:
+            raise BadInput(
+                f"pcb: {exc} Use view='svg' args={{'level':'fab'}} to inspect "
+                "the board without exporting it."
+            ) from exc
+        except ValueError as exc:  # a name the record separator cannot carry
+            raise BadInput(f"pcb: cannot write .epro2: {exc}") from exc
+        blob = pcb_epro_write.zip_epro(exported.files)
+
+        raw_dir = args.get("dir")
+        out_dir = Path(str(raw_dir)).expanduser() if raw_dir else self._export_dir(slug)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{slug}.epro2"
+        path.write_bytes(blob)
+
+        st = exported.stats
+        head = (
+            f"# exported {slug} → EPRO2 (EasyEDA Pro)\n{path}  "
+            f"({len(blob):,} bytes zipped)\n"
+            f"components: {st['components']}  pads: {st['pads']}  "
+            f"nets: {st['nets']}\n"
+            "No schematic is included, on purpose: do NOT run 'Update PCB from "
+            "schematic' in Pro — it would rewrite the netlist and destroy the "
+            "board.\n"
+            "Copper (tracks, vias, pours) is NOT exported yet (slice 2c): the "
+            "file carries the outline, parts, pads and nets only.\n"
+            # Remove in the commit that records a human opening one in Pro
+            # (docs/backlog/pcb-epro-export.md, 2b acceptance).
+            "UNVERIFIED: no file from this writer has been opened in EasyEDA "
+            "Pro yet; check part positions (bottom side especially) before "
+            "relying on it."
+        )
+        notes = [*exported.warnings, *warnings]
+        if notes:
+            head += "\n" + "\n".join(f"⚠️  {w}" for w in notes)
+        listing = "\n".join(sorted(exported.files))
         return Response(body=head + "\n\n```\n" + listing + "\n```")
 
     def _render_route(self, ref_id: int, args: dict[str, Any]) -> Response:

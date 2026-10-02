@@ -48,13 +48,11 @@ sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
-**Last reviewed:** 2026-10-02 (negotiated congestion landed DARK after
-the orchestrator's review fixes; the real-board number still waits on
-review-queue `pcb-easyeda-round-trip-1`. Export slice 2b's writer
-(`epro_write.py`, `view='epro'`, 22 tests green) is built and parked on
-local branch `pcb-epro-2b`, held for design review — restore it with
-`git checkout pcb-epro-2b -- src/precis/pcb/epro_write.py
-tests/test_pcb_epro_export.py src/precis/handlers/pcb.py`.)
+**Last reviewed:** 2026-10-02 (negotiated congestion landed DARK
+825e451aa; the real-board number still waits on review-queue
+`pcb-easyeda-round-trip-1`. Export slice 2b's writer landed after design
+review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
+`pcb-easyeda-round-trip-2`.)
 **Worktree:** `pcb-easyeda-round-trip`
 
 ## Do next
@@ -94,10 +92,13 @@ tests/test_pcb_epro_export.py src/precis/handlers/pcb.py`.)
    Re-routing to a corrected spec is the reason for importing; outranks the
    export half for that reason, not cost. Touches realize/maze, which
    ewod-pcb's generator depends on.
-4. **backlog/pcb-epro-export.md** — slice 2b only (the smallest file Pro
-   opens). Until a human confirms Pro opens our file, every later export
-   slice rests on an unverified premise. R1 closed: bottom-side parts in
-   from the start.
+4. **backlog/pcb-epro-export.md** — slice 2b is BUILT (`epro_write.py`,
+   `view='epro'`); its acceptance is Reto opening the look-at file in Pro
+   (review-queue `pcb-easyeda-round-trip-2`: an asymmetric part at four
+   angles on both sides, against `lookat-expected.svg`). Until that passes,
+   every later export slice rests on an unverified premise, and the view's
+   UNVERIFIED banner stays. On pass: drop the banner and the
+   description's "not yet opened" in the same commit.
 
 ## Horizon
 

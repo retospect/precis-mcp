@@ -273,6 +273,13 @@ def place_footprint_pads(
         }
         if shape != "circle":
             base["h"] = round(h, 4)
+        if shape in ("rect", "obround") and not pad_axis_aligned(total_rot):
+            # The w/h above are the AUTHORED extent, not the board one (module
+            # docstring, Shape/size). Say so on the pad, so a writer that
+            # cannot rotate it either can warn by refdes. Instance + pad
+            # rotation, before the bottom mirror: only "oblique or not" is
+            # meaningful, and a mirror does not change that.
+            base["oblique_rot"] = round(total_rot % 360.0, 4)
         if shape == "polygon" and pad.get("poly"):
             base["poly"] = [
                 [
