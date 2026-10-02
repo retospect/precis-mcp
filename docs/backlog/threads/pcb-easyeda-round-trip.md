@@ -33,12 +33,11 @@ model before anything re-places those parts. Worse, found the same day:
 the importer had written every mounting hole as `geom: {x, y, dia_mm}`,
 a shape no reader takes, so the board's 24 Ø6 holes never reached the
 drill file, DRC or router keep-outs. Fixed: position on the feature row,
-`geom.diameter`. Prod rows rewritten in place (drills 126 → 158). Open:
-DRC shows 8 false `courtyard_hole` errors (each part vs its own hole) and
-the placer would push those 6 parts off their holes; ewod-pcb is adding
-the owner exemption (`MountingHole.part`). After the next deploy, check
-that `view='congestion'` on heater-base-test reads STALE (meta already
-carries `ripped: 89`). `view='congestion'` now marks
+`geom.diameter`. Prod rows rewritten in place (drills 126 → 158). A part's own
+hole is exempt from `courtyard_hole` in DRC and the placer
+(`MountingHole.part`, ewod-pcb). Both verified on prod data 2026-10-02
+with main's code: DRC has no `courtyard_hole` errors and
+`view='congestion'` reads STALE. `view='congestion'` now marks
 a `last_route` digest STALE after `op='rip'`.
 **Trap:** `op='route'` runs the place anneal first and MOVES every
 unfrozen part; it re-placed 103 parts on this board once (restored with
