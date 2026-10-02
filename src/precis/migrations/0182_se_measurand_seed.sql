@@ -1,4 +1,4 @@
--- 0180_se_measurand_seed.sql
+-- 0182_se_measurand_seed.sql
 --
 -- Seeds the `measurand` taxon nodes the se region property layer names
 -- (docs/backlog/se-region-property-layer.md, slice A, in-scope 1): the
@@ -164,4 +164,4 @@ SELECT n.ref_id, root.ref_id, 'specialises', 'system'
 
 COMMIT;
 
--- End of 0180_se_measurand_seed.sql
+-- End of 0182_se_measurand_seed.sql

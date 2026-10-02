@@ -60,7 +60,7 @@ _RELATION_KEYS = frozenset({"source", "offset", "tol", "scale", "feature"})
 UNITS = ("m", "count", "ratio", "deg")
 
 #: The legacy enum's four units as ``measurand`` taxon slugs (seeded by
-#: core migration 0180 where missing). ``unit='m'`` and
+#: core migration 0182 where missing). ``unit='m'`` and
 #: ``measurand='length'`` are the same claim; a legacy ``unit=`` write
 #: still stores no measurand, so pre-measurand rows stay byte-identical.
 LEGACY_MEASURANDS: dict[str, str] = {

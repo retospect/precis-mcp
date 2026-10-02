@@ -4,7 +4,7 @@ taxonomy measurands on measures, the region selectors (``patch:``/``ring:``/
 ops-export round trip.
 
 Pure tests run on bare :class:`~precis_se.ops.SeTree`s with a stub measurand
-resolver; the store tests seed the taxonomy (0174 + 0180) into the test DB —
+resolver; the store tests seed the taxonomy (0174 + 0182) into the test DB —
 ``refs`` is truncated between tests, so the seed fixture re-runs both files.
 """
 
@@ -674,9 +674,9 @@ _SEEDED = (
 
 @pytest.fixture
 def taxonomy(store: Store) -> Store:
-    """The taxonomy as prod has it: 0174's registry seed, then 0180."""
+    """The taxonomy as prod has it: 0174's registry seed, then 0182."""
     _run_migration("0174_taxon_seed.sql")
-    _run_migration("0180_se_measurand_seed.sql")
+    _run_migration("0182_se_measurand_seed.sql")
     return store
 
 
@@ -694,7 +694,7 @@ def test_seed_inserts_each_measurand_once_and_is_idempotent(taxonomy: Store) -> 
     store = taxonomy
     first = _taxa(store)
     assert sorted(m["slug"] for _i, _t, m in first) == sorted(_SEEDED)
-    _run_migration("0180_se_measurand_seed.sql")
+    _run_migration("0182_se_measurand_seed.sql")
     assert _taxa(store) == first  # replay inserts nothing
 
     def _slug(rid: int) -> str | None:
@@ -732,7 +732,7 @@ def test_seed_is_a_noop_without_the_measurand_root(store: Store) -> None:
     """A database whose taxonomy is gone (the truncated test DB the
     migrator catches up) inserts nothing — never unrooted nodes, never a
     failed chain."""
-    _run_migration("0180_se_measurand_seed.sql")
+    _run_migration("0182_se_measurand_seed.sql")
     assert _taxa(store) == []
 
 

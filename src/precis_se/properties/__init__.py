@@ -4,7 +4,7 @@ value (docs/backlog/se-region-property-layer.md).
 
 **Slice A (this package today):** a measure may name a ``measurand`` — a
 ``taxon`` node under the ``measurand`` start node (seeded by core migration
-``0180_se_measurand_seed.sql``) — instead of, or as well as, the legacy
+``0182_se_measurand_seed.sql``) — instead of, or as well as, the legacy
 closed ``unit`` enum. :mod:`precis_se.properties.measurand` resolves it at
 write time and snapshots three facts onto the measure row
 (:class:`~precis_se.measures.MeasureSpec`): the taxon ref id, the slug, and

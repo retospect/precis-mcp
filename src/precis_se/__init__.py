@@ -138,7 +138,7 @@ envelope params.
 **Region properties** (docs/backlog/se-region-property-layer.md, slice A;
 skill ``precis-se-regions-help``): a measure may name a ``measurand`` — a
 ``taxon`` node under the ``measurand`` start node, seeded by core
-migration ``0180_se_measurand_seed.sql`` — resolved at write through
+migration ``0182_se_measurand_seed.sql`` — resolved at write through
 :attr:`~precis_se.ops.SeTree.measurands`
 (:mod:`precis_se.properties.measurand`) and snapshotted onto the row
 (slug + taxon ref id in ``se_measures.measurand``/``measurand_ref_id``,
