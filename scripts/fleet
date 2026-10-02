@@ -104,13 +104,19 @@ cmd_up() {
 
 cmd_status() {
   need_tmux
-  tmux list-windows -F '#{window_index} #{window_name}' | while read -r idx w; do
+  # precis MCP per pane: a session that gave up on it is otherwise silent
+  # (gr462596) — DOWN means run /mcp → precis → Reconnect in that window.
+  local mcp
+  mcp=$(python3 "$(dirname "$0")/lib/fleet_mcp_state.py" 2>/dev/null || true)
+  printf '%-3s %-28s %-8s %-7s %s\n' "#" window ctx state mcp
+  tmux list-windows -F '#{window_index} #{window_name} #{pane_id}' | while read -r idx w pid; do
     pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
     pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 || true)
     if printf '%s\n' "$pane" | grep -q -e 'Enter to select' -e 'Do you want to'; then st=DIALOG
     elif printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy
     else st=idle; fi
-    printf '%-3s %-28s %-8s %s\n' "$idx" "$w" "${pct:--}" "$st"
+    m=$(printf '%s\n' "$mcp" | awk -v p="$pid" '$1 == p {print $2; exit}')
+    printf '%-3s %-28s %-8s %-7s %s\n' "$idx" "$w" "${pct:--}" "$st" "${m:--}"
   done
 }
 

@@ -37,7 +37,9 @@ Note from the user: `$ARGUMENTS`
    the session MCP server to answer, because a session that starts while
    the server is down gives up on it for good after ~7 s. The orchestrator
    seat itself started before that check runs, so after a reboot check its
-   own `/mcp` once the server is up.
+   own `/mcp` once the server is up. `scripts/fleet status` has an `mcp`
+   column: `DOWN` means that session gave up on precis and needs `/mcp` →
+   precis → Reconnect, since a stranded session never says so.
 
 3. **Standing instructions**, about a minute after the windows exist, to
    the windows `up` reported as created (not to ones that already had
