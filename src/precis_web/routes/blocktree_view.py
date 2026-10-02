@@ -99,7 +99,13 @@ from urllib.parse import quote
 
 import numpy as np
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 
 from precis.blocktree.types import BlockNode, Tree
 from precis.cad.tessellate import apply_rigid
@@ -1264,6 +1270,13 @@ def _strain_arrays(
     return out
 
 
+def _block_pose(node: Any) -> Any:
+    """The block's rigid pose (``node.pose`` metres, ``node.rot``) as a
+    transform — the one place the atomic overlay and the atom-file export
+    both place a block's local Å frame in the design."""
+    return cad_pose(cad_as_vec3(list(node.pose)), cad_as_vec3(list(node.rot)))
+
+
 def _atomic_block_payload(
     store: Store, node: Any, *, block_uid: int, name: str, scale: float
 ) -> dict[str, Any] | None:
@@ -1304,7 +1317,7 @@ def _atomic_block_payload(
 
     # Same world placement as world_mesh: identity-local-frame metres,
     # posed by the block's own pose/rot, then the scene's display scale.
-    xf = cad_pose(cad_as_vec3(list(node.pose)), cad_as_vec3(list(node.rot)))
+    xf = _block_pose(node)
     world_coords = apply_rigid(xf, cart_A * _ATOMIC_A_TO_M) * scale
     world_smooth = apply_rigid(xf, smooth_A * _ATOMIC_A_TO_M) * scale
 
@@ -1394,6 +1407,112 @@ async def _atomic3d_response(
     return JSONResponse(
         {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
         headers={"Cache-Control": "no-store"},
+    )
+
+
+def _bound_structure_atoms(
+    store: Store, tree: Tree[BlockNode, Any]
+) -> list[dict[str, Any]]:
+    """Every structure-bound block's atoms in the design's world frame, in Å
+    (the pose is metres, so Å -> m -> pose -> Å; no display scale — that is
+    the viewer's, not the file's). One entry per block that resolves:
+    ``name``, ``elements``, ``coords`` (n, 3) and the structure's
+    ``chain_atoms`` record (or ``None``)."""
+    out: list[dict[str, Any]] = []
+    for name, node in tree.blocks.items():
+        bound = getattr(node, "bound", None)
+        if getattr(node, "bound_kind", None) != "structure" or not bound:
+            continue
+        try:
+            struct_ref = resolve_live_slug_ref(store, kind="structure", id=bound)
+        except NotFound:
+            continue
+        scene, _handles = store.structure_load(struct_ref.id)
+        atoms = list(scene.atoms.values())
+        if not atoms:
+            continue
+        cart_A = np.array(
+            [scene.cell.frac_to_cart(a.frac) for a in atoms], dtype=np.float64
+        )
+        world_A = apply_rigid(_block_pose(node), cart_A * _ATOMIC_A_TO_M)
+        record = (struct_ref.meta or {}).get("chain_atoms")
+        out.append(
+            {
+                "name": name,
+                "elements": [a.element for a in atoms],
+                "coords": world_A / _ATOMIC_A_TO_M,
+                "chain_atoms": record if isinstance(record, dict) else None,
+            }
+        )
+    return out
+
+
+def _atoms_file(kind: str, blocks: list[dict[str, Any]], fmt: str) -> str:
+    """Merge the blocks into one non-periodic ``xyz`` (extended XYZ, the
+    block name as a per-atom column) or ``pdb`` (one chain letter per block
+    unless the block's structure carries ``chain_atoms``)."""
+    elements = [e for b in blocks for e in b["elements"]]
+    coords = np.vstack([b["coords"] for b in blocks])
+    if fmt == "xyz":
+        head = f'Properties=species:S:1:pos:R:3:block:S:1 pbc="F F F" source="{kind}"'
+        lines = [str(len(elements)), head]
+        i = 0
+        for b in blocks:
+            tag = re.sub(r"\s+", "_", str(b["name"]))
+            for el in b["elements"]:
+                x, y, z = coords[i]
+                lines.append(f"{el} {x:.8f} {y:.8f} {z:.8f} {tag}")
+                i += 1
+        return "\n".join(lines) + "\n"
+    from precis_chain.pdb import write_pdb
+
+    names: list[str] = []
+    resnames: list[str] = []
+    resseq: list[int] = []
+    chains: list[str] = []
+    for idx, b in enumerate(blocks):
+        n = len(b["elements"])
+        rec = b["chain_atoms"] or {}
+
+        def _col(key: str, default: list[Any], n: int = n, rec: Any = rec) -> list[Any]:
+            vals = rec.get(key)
+            return vals if isinstance(vals, list) and len(vals) == n else default
+
+        names += [str(v) for v in _col("names", b["elements"])]
+        resnames += [str(v) for v in _col("resnames", ["UNK"] * n)]
+        resseq += [int(v) for v in _col("resseq", [1] * n)]
+        chains += [str(v) for v in _col("chain_ids", [_CHAIN_LETTERS[idx % 26]] * n)]
+    return write_pdb(elements, coords, names, resnames, resseq, chains)
+
+
+_CHAIN_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+async def _atoms_response(request: Request, kind: str, slug: str, fmt: str) -> Response:
+    if fmt not in ("xyz", "pdb"):
+        return PlainTextResponse(f"unknown atoms format {fmt!r}\n", status_code=404)
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, kind, slug)
+    except NotFound:
+        return PlainTextResponse(f"no live {kind} design {slug!r}\n", status_code=404)
+
+    def _build() -> str | None:
+        tree: Tree[BlockNode, Any] = _ADAPTERS[kind].load_tree(store, ref.id)
+        blocks = _bound_structure_atoms(store, tree)
+        return _atoms_file(kind, blocks, fmt) if blocks else None
+
+    body = await asyncio.to_thread(_build)
+    if body is None:
+        return PlainTextResponse(
+            f"{kind} design {slug!r} has no structure-bound block\n", status_code=404
+        )
+    return PlainTextResponse(
+        body,
+        headers={
+            "Content-Disposition": f'attachment; filename="{ref.slug}-atoms.{fmt}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -1511,6 +1630,11 @@ async def se_scene3d(
 @router.get("/se/{slug}/atomic3d.json")
 async def se_atomic3d(request: Request, slug: str, rev: int | None = None) -> Response:
     return await _atomic3d_response(request, "se", slug, rev=rev)
+
+
+@router.get("/se/{slug}/atoms.{fmt}")
+async def se_atoms_file(request: Request, slug: str, fmt: str) -> Response:
+    return await _atoms_response(request, "se", slug, fmt)
 
 
 @router.get("/se/{slug}/pick")

@@ -63,6 +63,16 @@
     export
     <button type="button" id="bt3d-export-png" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">PNG</button>
     <button type="button" id="bt3d-export-svg" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">SVG</button>
+    {# Atom files (the current design; not offered on a past revision): every
+       structure-bound block's atoms in Å in the design's world frame. #}
+    {% if has_atomic and not read_only %}
+    <a id="bt3d-export-xyz" href="/{{ kind }}/{{ slug | urlencode }}/atoms.xyz" download
+       title="every structure-bound block's atoms, Å, design world frame (extended XYZ)"
+       class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">xyz</a>
+    <a id="bt3d-export-pdb" href="/{{ kind }}/{{ slug | urlencode }}/atoms.pdb" download
+       title="the same atoms as PDB, one chain per block (or the structure's own chains)"
+       class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">pdb</a>
+    {% endif %}
   </span>
   <label class="flex items-center gap-1 text-xs text-slate-600">
     <input type="checkbox" id="bt3d-connections" checked />

@@ -516,7 +516,7 @@ def test_se_view3d_ships_a_busy_mark_for_the_refetching_controls(
     rest, shown for the duration, with the two triggering controls
     disabled rather than live over a guard that drops the second change.
     Only the markup contract is checkable here; that the module toggles it
-    is browser-level (backlog/se-viewer-browser-level-check.md)."""
+    is browser-level (scripts/viewer_check.py probe)."""
     _seed_se(runtime_with_store)
     r = blocktree_client.get("/se/unicycle_web")
     assert r.status_code == 200

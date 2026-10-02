@@ -1,8 +1,9 @@
 """Browser-level check of the se 3D viewer: drive a real Chromium against a
 local precis-web and assert, by canvas pixel-diff, that each control
-CHANGES THE PICTURE. Run nightly by ``.github/workflows/viewer-check.yml``;
-the requirements it encodes are in
-``docs/backlog/se-viewer-browser-level-check.md``.
+CHANGES THE PICTURE. Run nightly by ``.github/workflows/viewer-check.yml``
+over two committed fixtures: ``probe`` on the unicycle (blocks, selection,
+explode, level, export, scroll) and ``strain`` on a small smooth_drum
+(target surface, strain layers, pentagon θp).
 
     viewer_check.py seed <ops.json> <slug>       # needs PRECIS_DATABASE_URL
     viewer_check.py probe <base-url> <slug> <out-dir>
@@ -23,7 +24,16 @@ How it measures (each rule paid for by a wrong reading on the hand harness):
 - a held state (explode) is sampled as a series, not one frame;
 - "back to normal" is asserted against a shot of the same state reached
   directly (the wheel selected from a clean slate), never against a shot
-  that merely looks similar.
+  that merely looks similar;
+- "X still holds after a round trip" needs a shot between the two halves
+  that DID change, or a canvas that rendered neither click passes;
+- a numeric readout (the scale bar) is checked against a witness that does
+  not share its arithmetic, e.g. the model's pixel extent vs a known size;
+- the tree row set and the canvas fail independently: small parts near the
+  edge of visible can leave a real swap at a few hundred pixels.
+
+Not covered yet: atom pick and hover (``probe``'s pick checks are
+block-level only).
 
 Writes ``report.json`` plus every shot to ``<out-dir>``; exits 1 when any
 check fails, so the workflow uploads the directory as the evidence.
@@ -506,6 +516,21 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
         data = page.evaluate(
             "(u) => fetch(u).then(r => r.json())", f"{base_url}/se/{slug}/atomic3d.json"
         )
+        # The xyz download: fires, and its atom count (line 1) equals the
+        # atoms atomic3d.json draws.
+        if page.locator("#bt3d-export-xyz").is_visible():
+            with page.expect_download() as dl:
+                page.click("#bt3d-export-xyz")
+            xyz_path = dl.value.path()
+            first = pathlib.Path(xyz_path).read_text(encoding="utf-8").split("\n", 1)[0]
+            drawn = sum(len(b["elements"]) for b in data["blocks"])
+            checks.append(
+                Check(
+                    "xyz_export_atom_count",
+                    first.strip().isdigit() and int(first) == drawn,
+                    {"file": first.strip(), "atomic3d": drawn},
+                )
+            )
         thetap = np.array(
             [
                 v

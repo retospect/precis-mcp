@@ -29,9 +29,10 @@ gr458061 is another thread's item.
 went green, so its item shrank to the atomic-fixture residual)
 **Worktree:** `se-3d-viewer`
 
-**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1
-(confirm the nightly atomic step in CI) and 3 (level chips) are the items an
-agent can start without anyone. Two traps for whoever picks this
+**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 2
+(level chips) is the next item an agent can start without anyone. The nightly viewer check covers the atomic overlay
+since 2026-10-02 (first dispatched run green, 11 + 16 checks); atom pick
+and hover are its remaining blind spot. Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
   credential: `scripts/guide-web --db prod --port 9110` (local
@@ -71,38 +72,37 @@ up:
    deviation threshold slider. Defaults colour the top 5% (measured
    457/9135 bonds, 302/6024 atoms), and all 60 pentagon atoms clear the
    default θp threshold of 4.03°.
+   Also once deployed (Reto's 2026-10-02 ask): `xyz` / `pdb` beside
+   `png` / `svg` on a structure-bound design (`/se/{slug}/atoms.{fmt}`,
+   every bound block's atoms in the design frame, Å), and xyz · pdb
+   (non-periodic) or xyz · cif (periodic) on `/structure/{slug}`.
 
-1. **backlog/se-viewer-browser-level-check.md** — the atomic fixture
-   (`small-drum.ops.json`, one smooth_drum `generate` op) and the
-   workflow's `strain` step are built and green locally (16/16); left is
-   one green CI run, then delete the item. Atom pick and hover are still
-   unchecked in CI — `probe`'s pick checks are block-level only.
-2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+1. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    No reproducer yet: gr458329 looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-3. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+2. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
    Rule settled (td458168): the literal rule wins over its worked example,
    and the shallowest member of an identical run keeps its letter.
-4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+3. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+4. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+5. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by 5 (ruling 2 intends the same per-tool-class
+   Blocked by 4 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon
@@ -246,7 +246,7 @@ and holds rather than playing once and snapping back. Now n=41280 with the
 model separating, and un-explode restores to n=0.
 
 Two traps it leaves behind, both written up in
-`backlog/se-viewer-browser-level-check.md`: the vendored transport bar
+`scripts/viewer_check.py`'s docstring: the vendored transport bar
 appears along the bottom edge on interaction, so an uncropped canvas diff
 reports a healthy n=2479 for a completely dead control; and an animation
 sampled once can be dead or merely back round the loop, so it needs a

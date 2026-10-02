@@ -9,6 +9,10 @@
     {{ drive_back('structure', 'Structures') }}
     <h1 class="text-lg font-semibold">{{ title }}</h1>
     <span class="text-xs text-slate-400">{{ slug }} · {% if read_only %}v{{ rev }} of v{{ version }}{% else %}v{{ version }}{% endif %} · {{ viewer.n_atoms }} atom{{ '' if viewer.n_atoms == 1 else 's' }} · pbc {{ pbc | join('/') }}</span>
+    <span id="sv-export" class="text-xs text-slate-500"
+          title="download the current geometry — xyz is extended XYZ (plain-XYZ readers accept it); PDB for a non-periodic cell, CIF for a periodic one">
+      {%- for f in export_fmts %}{{ ' · ' if not loop.first else '' }}<a class="underline" id="sv-export-{{ f }}" href="/structure/{{ slug }}/export.{{ f }}" download>{{ f }}</a>{% endfor -%}
+    </span>
     {% if read_only %}
     <span id="sv-readonly" class="text-[11px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200"
           title="A past revision — the cell as it was at save {{ rev }}. Nothing here can be edited; go to the current version to relax, instruct or apply.">

@@ -59,13 +59,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from precis.design import history as design_history
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import paper_provenance_rows
 from precis.structure import evaluate_measure
+from precis.structure import export as structure_export
 from precis.structure.cache import apply_geometry
 from precis.structure.elements import covalent_radius_A as covalent_radius
 from precis.structure.probe import coordination, detect_bonds
@@ -1050,6 +1051,7 @@ async def structure_detail(request: Request, slug: str) -> HTMLResponse:
             "title": ref.title or ref.slug,
             "version": current,
             "pbc": list(meta.get("pbc", (True, True, True))),
+            "export_fmts": _export_fmts(meta.get("pbc", (True, True, True))),
             "runs": runs,
             "pending": _pending_jobs(store, ref.id),
             "run_count": _run_count(store, ref.id),
@@ -1093,6 +1095,49 @@ def _int_or_none(raw: str | None) -> int | None:
         return int(raw) if raw else None
     except ValueError:
         return None
+
+
+def _export_fmts(pbc: Any) -> list[str]:
+    """File formats the detail page offers: extended XYZ always; PDB only for
+    a non-periodic cell (readers handle slabs poorly), CIF only when some
+    axis is periodic."""
+    periodic = any(bool(p) for p in pbc)
+    return ["xyz", "cif"] if periodic else ["xyz", "pdb"]
+
+
+_EXPORT_FORMATS = ("xyz", "pdb", "cif")
+
+
+@router.get("/structure/{slug}/export.{fmt}")
+async def structure_export_file(request: Request, slug: str, fmt: str) -> Response:
+    """Download the design's current geometry as ``xyz`` (extended XYZ, which
+    plain-XYZ readers accept) / ``pdb`` / ``cif`` — the writers behind
+    ``get(kind='structure', view='extxyz'|'pdb'|'cif')``."""
+    if fmt not in _EXPORT_FORMATS:
+        return Response(f"unknown export format {fmt!r}\n", status_code=404)
+    store = get_store(request)
+    try:
+        ref = resolve_live_slug_ref(store, kind="structure", id=slug)
+    except NotFound:
+        return Response(f"no live structure design {slug!r}\n", status_code=404)
+    if fmt == "cif" and not structure_export.ase_available():
+        return Response("CIF export needs ASE (precis-mcp[dft])\n", status_code=501)
+    meta = dict(ref.meta or {})
+
+    def _render() -> str:
+        scene, _handles = store.structure_load(ref.id)
+        if fmt == "xyz":
+            return structure_export.to_extxyz(scene)
+        if fmt == "pdb":
+            return structure_export.to_pdb(scene, chain_atoms=meta.get("chain_atoms"))
+        return structure_export.to_cif(scene)
+
+    body = await asyncio.to_thread(_render)
+    return Response(
+        body,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{ref.slug}.{fmt}"'},
+    )
 
 
 @router.get("/structure/{slug}/run/{run_id}", response_class=HTMLResponse)
