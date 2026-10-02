@@ -6,15 +6,41 @@ catpath is the reference model in its own repo — specced in
 `backlog/plugin-split-runtime-shell.md`; it is the packaging half of
 `docs/mission.md`'s "machine-usable tools" for agents, since an installed
 model adds kinds to a constant 7-verb surface rather than tools to an
-agent's budget. Today the split is prep-only until 2026-10-16; step 2 has
-landed, and the dogfood that looked like it broke prod was a stale local
-MCP (gr458061) — but the deploy-mechanics defect it surfaced is real and
-every remaining step re-triggers it. Make module moves deploy-safe, then
-continue the behaviour-neutral prep. Pathway presentation work is the same
-thread by dependency.
+agent's budget. Module moves are held to 2026-10-16 (Reto's 30-day rule);
+until then only behaviour-neutral prep lands. Steps 1, 2, 3 and 5 of the
+backlog item have landed. Reto's 2026-10-01 rulings are in it:
+package-split superseded, private-until-paper = invisible. The goal is a
+minimal releasable model package that is also fully useful inside precis,
+and deploys that don't take hours for a simple change. Pathway
+presentation work is the same thread by dependency.
 **Last reviewed:** 2026-09-30 (pillar review same day added gr458360 and
 gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
-**Worktree:** `plugin-split`
+**Worktree:** `iridescent-watching-reef` (any fresh tree works; nothing is unlanded)
+
+## Resume here (2026-10-02)
+
+- **Step 3 landed 06e3f3d7, deploying in round 2.** After the deploy, the
+  shared session MCP (`precis-mcp-http`) still carries its image's old
+  install metadata, so `get(kind='skill', id='precis-pathway-help')` returns
+  NotFound there until its venv is reinstalled against `/src` (or the
+  image is rebuilt and the container recreated). The MCP session owns that
+  step; deploy coordinates it. Verify the skill resolves, then close
+  **gr459123**.
+- **Entry-point changes need no rebuild round any more.** The ship gate
+  runs `uv run` without `--no-sync` and re-syncs `/opt/venv` itself;
+  `scripts/test` passes `--heal` to `scripts/lib/check-entry-points.py`,
+  which reinstalls into its throwaway container (~3 s). Only long-lived
+  containers (the session MCP) still need a reinstall step.
+- **Dogfood on prod, not locally.** The session MCP serves the deployed
+  sha only (`origin/prod`); a qland is invisible until deploy. The local
+  `scripts/prod-precis tools get --kind skill --id precis-status` fallback
+  runs this tree on the Mac, where `pathway` is absent because autocatpath
+  is not installed — that is not a prod finding. `precis-status` now names
+  gate-failed kinds ("Kinds unavailable: …") on both paths.
+- **Possibly redundant test setup, unchecked:** `test_se_catalog_binding`,
+  `test_se_fasten_seatclamp` and `test_se_realized_by` replay *core*
+  migrations (0093, 0156, 0163) by hand. The 50 plugin seeders were removed
+  2026-10-02; these were left because they are core, not plugin, SQL.
 
 ## Do next
 
