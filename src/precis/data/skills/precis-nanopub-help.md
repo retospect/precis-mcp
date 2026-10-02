@@ -418,6 +418,10 @@ per class — do not mutate the hub, its edges, or its sources:
   propose the `meta.doi` backfill to a human.
 - `[grounding] no DOI` + genuinely DOI-less (book, patent) → note the
   edge-stays/passage-out policy on the hub; nothing to fix.
+- `[grounding] … has no DOI on record` → the passage names a DOI the
+  source ref does not carry. Approve cites only the ref's own DOI (it
+  overwrites a typed-in one), so backfill the ref's DOI first, then
+  re-approve.
 - `[grounding] datasheet has no single pdf_sha256` → the datasheet's
   PDF identity is missing or ambiguous; a re-ingest/sha-hygiene item for
   a human, not a payload fix.

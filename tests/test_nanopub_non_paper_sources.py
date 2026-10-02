@@ -232,7 +232,8 @@ def test_paper_still_requires_a_doi(store: Any) -> None:
 def test_approve_freezes_a_paper_source_uri_and_groups_contiguity_by_it(
     store: Any,
 ) -> None:
-    paper, chunk1, sha = _seed_paper(store)
+    doi = "10.1103/physrevlett.109.195502"
+    paper, chunk1, sha = _seed_paper(store, doi=doi)
     chunk2 = _add_body_chunk(
         store, paper, ord=1, text="The elastic modulus stays isotropic overall."
     )
@@ -245,9 +246,31 @@ def test_approve_freezes_a_paper_source_uri_and_groups_contiguity_by_it(
         meta={"source_handle": f"pc{chunk2}"},
         check_retraction=False,
     )
-    doi = "10.1103/PhysRevLett.109.195502"
     payload = _two_passage_payload(doi, sha, chunk1, _QUOTE, _SNIP, chunk2)
     row = mint.approve(store, hub, payload=payload, interactive=True)
     passages = row.grounding["passages"]
     assert {p["contiguous_group"] for p in passages} == {True}
     assert {p["source_uri"] for p in passages} == {f"https://doi.org/{doi}"}
+
+
+def test_patent_passage_with_a_hand_typed_doi_is_refused(store: Any) -> None:
+    """Round-1 review: the payload DOI is reviewer-editable, so a patent with
+    no DOI on record must not publish under a typed-in DOI URL."""
+    ref_id, chunk = _seed_non_paper_source(store, "patent", slug="US1234567B2")
+    hub = _seed_hub(store, _SENTENCE, ref_id, chunk)
+    bundle = evidence.load_bundle(store, hub)
+    violations = gates.run_mint_gates(store, bundle, _payload(chunk))
+    assert any("no DOI on record" in v.message for v in violations)
+
+
+def test_approve_freezes_the_papers_doi_on_record_over_a_typed_in_one(
+    store: Any,
+) -> None:
+    paper, chunk, sha = _seed_paper(store, doi="10.1000/on-record")
+    hub = _seed_hub(store, _SENTENCE, paper, chunk)
+    typed = _payload(chunk, sha=sha)
+    typed["passages"][0]["doi"] = "10.1000/typed-in"
+    row = mint.approve(store, hub, payload=typed, interactive=True)
+    (frozen,) = row.grounding["passages"]
+    assert frozen["doi"] == "10.1000/on-record"
+    assert frozen["source_uri"] == "https://doi.org/10.1000/on-record"

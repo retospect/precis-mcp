@@ -16,10 +16,14 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-1. **Scope chain** — `scope-key-vocabulary-registry` (two hardcoded key sets,
-   `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) →
-   `taproot-hub-scope-no-edit-door` (`edit(kind='finding')` takes no
-   `scope=`; open question: does a scope edit re-derive `pub_id`?) →
+1. **Scope chain** — `taproot-hub-scope-no-edit-door` (in flight 10-02:
+   `edit(kind='finding', meta={'scope': …})` through
+   `refine_claim_sentence`, which already re-derives `pub_id` and keeps the
+   old as alias — a scope edit is an identity edit like a retitle) ·
+   `scope-key-vocabulary-registry` (two hardcoded key sets,
+   `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) — **blocked on
+   knowledge-mesh's `term-taxonomy` v1.5 `axis` start node**: Reto ruled
+   2026-09-30 the registry reads the axis taxon nodes, not a second list →
    `aida-uri-ignores-scope` (2 duplicate pairs, prod data) → the scope
    backfill inside `nanopub-corpus-remediation`.
 2. **Adjudication** — `disputes-adjudication-workflow`, which absorbs

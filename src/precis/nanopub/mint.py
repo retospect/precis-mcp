@@ -276,6 +276,10 @@ def _freeze_source_anchor(
                 p["source_uri"] = anchor.source_uri
                 if anchor.source_url:
                     p["source_url"] = anchor.source_url
+        elif ref is not None and (on_record := evidence.ref_doi(store, ref)):
+            # The gate already required the payload DOI to match this one.
+            p["doi"] = on_record
+            p["source_uri"] = assemble.doi_source_uri(on_record)
         elif p.get("doi"):
             p["source_uri"] = assemble.doi_source_uri(str(p["doi"]))
         stamped.append(p)

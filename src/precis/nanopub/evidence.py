@@ -305,6 +305,16 @@ def source_anchor(
     return SourceAnchor(None)
 
 
+def ref_doi(store: Store, ref: Any) -> str | None:
+    """The DOI on a ref's own record — its ``ref_identifiers`` ``doi`` row,
+    else the legacy ``meta.doi`` — the same lookup :func:`load_bundle` uses.
+    The mint path cites a DOI-gated source only by this value, never by a
+    DOI typed into the reviewer-editable payload."""
+    ids = store.identifiers_for_refs([ref.id]).get(ref.id, {})
+    doi = ids.get("doi") or (ref.meta or {}).get("doi")
+    return str(doi) if doi else None
+
+
 def datasheet_sha(store: Store, ref_id: int) -> str | None:
     """The datasheet's PDF sha for its ``urn:sha256:`` identifier: its one
     ``pdf_sha256`` identifier row — the same rows the mint gate's

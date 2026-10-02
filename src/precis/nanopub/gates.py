@@ -756,6 +756,19 @@ def _check_passage(
                 "open item)",
             )
         )
+    elif ref is not None and ev.ref_doi(store, ref) is None:
+        # A DOI-gated source (paper, patent) is cited by the DOI on the
+        # ref's own record — approve freezes that value over whatever the
+        # reviewer-editable payload carried — so a source with none on
+        # record cannot publish under a hand-typed DOI.
+        out.append(
+            GateViolation(
+                "grounding",
+                f"{label}: {kind} ref {ref.id} has no DOI on record — a DOI "
+                "typed into the payload cannot be verified; backfill the "
+                "ref's DOI first",
+            )
+        )
 
     if raw_chunk_id is not None and chunk_id is None:
         out.append(

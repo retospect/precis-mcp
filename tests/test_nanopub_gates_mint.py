@@ -852,7 +852,7 @@ def test_full_mint_pipeline(store: Any, monkeypatch: Any) -> None:
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
 
-    paper, chunk, sha = _seed_paper(store)
+    paper, chunk, sha = _seed_paper(store, doi="10.1103/physrevlett.109.195502")
     hub = _seed_hub(
         store, "DFT shows MOFs can be anisotropic up to 400:1.", paper, chunk
     )
@@ -868,7 +868,7 @@ def test_full_mint_pipeline(store: Any, monkeypatch: Any) -> None:
 
     artifact = store.nanopub_artifact(signed.artifact_id)
     assert artifact is not None
-    assert artifact.dois == ["10.1103/PhysRevLett.109.195502"]
+    assert artifact.dois == ["10.1103/physrevlett.109.195502"]
     trig = artifact.trig_bytes.decode("utf-8")
     assert _QUOTE in trig
     assert sha in trig  # sourcePdfSha256 pins the exact quoted copy
