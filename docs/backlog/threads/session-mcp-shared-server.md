@@ -107,8 +107,15 @@ capacity and isolation gaps.
    **Second gap, same day:** `scripts/deploy` moves the prod clone only on
    the machine that runs it, so melchior's clone (made 10:01Z) never moved
    while deploys ran elsewhere — the server served 06e3f3d7 under a
-   0dc5e6a0 prod. Moved by hand 10:54Z; the ensure script must follow
-   origin/prod itself.
+   0dc5e6a0 prod. Moved by hand 10:54Z; the staged script's `follow_prod`
+   follows origin/prod itself (at most one fetch a minute, at SessionStart
+   only — a deploy from elsewhere lands at the next session start).
+   **Install plan (Reto, review items -1 and -2, 2026-10-02):** melchior
+   installs the staged script right after the round-1 deploy, in one
+   `--recreate`. The dev Mac's copy is installed afterwards by a session
+   Reto starts there (copy from melchior, merge local edits, one
+   `--recreate`, check the served sha) — keep
+   `scratch/gr460711/ensure.sh` on melchior until that is done.
 1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
    capacity number and shared cache left — Reto's call, td461158.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
