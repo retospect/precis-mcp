@@ -38,6 +38,13 @@ delta-G they already have.
 
 ## Open questions
 
+- (Cross-link, 2026-10-02.) `surface-pourbaix-staircase-optimizer.md` §6.2
+  needs sparse and active-learned NEBs for its reset contour. Its design
+  asks for an audit of our NEB setup against NEBscape: minima-hopping IS/FS
+  generation, permutation-reduced atom mapping, FS→IS symmetry alignment,
+  μ/τ reaction-distance ranking, and the fidelity criteria. The audit
+  belongs here.
+
 - Endpoint pairing: NEB needs a matched initial/final pair with consistent cell
   and atom ordering. Who produces that — the reaction enumerator in
   `src/precis_dft/reactions/enumerate.py`, or a new mapper?

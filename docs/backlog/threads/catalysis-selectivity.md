@@ -74,6 +74,16 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
 2. **backlog/pathway-conditions-effects-report.md** — chemistry's report
    for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
+3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto,
+   2026-10-02: **file only, do not build**) extends the Pourbaix work
+   (Do-next 4, Parts A and B) into a surface validity map, a linked
+   reaction staircase, and a Shapley-attribution field that tells the
+   slab search where and why a candidate loses its window.
+   - Ranked last because it needs Parts A and B landed, the corrected
+     references (catalysis-selectivity-19), and Do-next 5's window
+     objective, which it generalises.
+   - The proof-of-concept paper (Fe-doped Pd, ~Nov 2026) belongs to
+     qu459585, not this thread.
 
 ## Parked
 

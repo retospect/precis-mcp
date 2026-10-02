@@ -86,6 +86,16 @@ Surface H* coverage at −0.3 V is modelled on neither substrate. The
 comparison stands, but absolute margins do not describe the operating
 surface.
 
+Pilot status (2026-10-02, design note §20b): the pair for 242611 is built
+and the script is ready (`scratch/pdh-pilot/`).
+- Around the subsurface Ta, MACE pushes the three Ta-vertex top-gap H to
+  the surface during the construction relax. Recommended: leave those
+  sites empty and record them in `substrate_level.emptied_sites`.
+- Waiting on the §20b verdict and the round-1 deploy.
+- To file as a gripe once the precis MCP reconnects: preflight's
+  `domain_straddle` treats H as an organic element. Every hydride twin
+  gets a false "metal-organic, treat energies as qualitative" caveat.
+
 Related (not this item): `frontier._candidate_from_structure` lifts every
 numeric top-level structure meta key into a ranking measure. Every
 bookkeeping key needs listing in `_META_NON_MEASURE`, which is fragile; an
@@ -130,6 +140,12 @@ Proposed, not yet asked: set `fidelity_promote_*` to 0 on that quest for
 the duration, and record the pause in the quest logbook.
 
 ## Open questions / decisions log
+
+- (Cross-link.) `surface-pourbaix-staircase-optimizer.md` open question 6
+  asks whether subsurface H should be discrete slabs or a continuous
+  occupancy axis. This item is the discrete route, and stage 0's result
+  (MACE gives no α/β gap at that sampling and overbinds H) bears on that
+  question.
 
 - **Decided, Reto 2026-10-02 (`catalysis-selectivity-16`):** approved as
   staged. Stage 0 gates the top-10 β re-run. Lattice on expansion
