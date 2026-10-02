@@ -45,7 +45,9 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._stub_predicate import (
+    ACQUIRE_REARM_DAYS,
     MANUAL_DOWNLOAD_ID_KINDS,
+    NO_OA_MIN_PASSES,
     fetchable_id_exists_sql,
     stub_predicate_sql,
 )
@@ -757,7 +759,10 @@ class RefsMixin:
         stamps ``meta.oa_requeued.at=now()`` — ``claim_stubs_to_fetch``'s
         backoff bypass treats a stamp newer than the last attempt as
         "retry immediately once", so a stub deep in backoff still fetches
-        next pass.
+        next pass. The stamp is written at most once per
+        :data:`ACQUIRE_REARM_DAYS`: a re-acquire inside that window keeps
+        the existing stamp (and still re-pins prio), so repeated acquires
+        of the same cite cannot defeat the backoff (gr453859).
 
         Auto-discovered stubs (chase/watch/orcid/draft-import/
         finding-acquire) deliberately skip this, flowing through
@@ -770,16 +775,21 @@ class RefsMixin:
                 """
                 UPDATE refs
                    SET prio = 1,
-                       meta = meta || jsonb_build_object(
-                           'prio_by', 'acquire',
-                           'oa_requeued',
-                           jsonb_build_object('at', now(), 'by', 'acquire')
-                       ),
+                       meta = meta || jsonb_build_object('prio_by', 'acquire')
+                           || CASE
+                                WHEN (meta #>> '{oa_requeued,at}')::timestamptz
+                                     > now() - make_interval(days => %s)
+                                THEN '{}'::jsonb
+                                ELSE jsonb_build_object(
+                                    'oa_requeued',
+                                    jsonb_build_object('at', now(), 'by', 'acquire')
+                                )
+                              END,
                        updated_at = now()
                  WHERE ref_id = %s AND kind = 'paper'
                    AND pdf_sha256 IS NULL AND retired_at IS NULL
                 """,
-                (ref_id,),
+                (ACQUIRE_REARM_DAYS, ref_id),
             )
             return cur.rowcount == 1
 
@@ -796,6 +806,7 @@ class RefsMixin:
         awaiting: bool = False,
         id_kinds: tuple[str, ...] = ("doi", "arxiv", "s2"),
         sort: Literal["oldest-request", "last-tried"] = "oldest-request",
+        no_oa: bool = False,
     ) -> list[dict[str, Any]]:
         """The "papers we still need to get" backlog.
 
@@ -837,7 +848,10 @@ class RefsMixin:
         'chase-queue')`` (MCP) off one query
         (``store/_stub_predicate.py``). ``awaiting=True`` restricts to
         rows the fetcher would try next pass: never attempted, or
-        attempted >24h ago and not yet ``fetch_ok``.
+        attempted >24h ago and not yet ``fetch_ok``. ``no_oa=True``
+        restricts to the manual-retrieval list: at least
+        :data:`NO_OA_MIN_PASSES` passes, every fetcher event
+        ``no_oa_version`` (gr453859).
         """
         tiebreak_sql = {
             "oldest-request": "s.created_at ASC, s.ref_id ASC",
@@ -907,11 +921,12 @@ class RefsMixin:
             ),
             fetch_stats AS (
                 -- One fetch pass emits one event per cascade leg, so
-                -- count distinct minute-buckets to recover *passes*, not
-                -- leg-events (passes are minutes-to-hours apart; a pass's
-                -- own legs land within seconds).
+                -- count distinct hour-buckets to recover *passes*, not
+                -- leg-events — the same bucketing claim_stubs_to_fetch's
+                -- backoff uses, so "N passes" means one thing everywhere.
                 SELECT ref_id,
-                       count(DISTINCT date_trunc('minute', ts)) AS attempts
+                       count(DISTINCT date_trunc('hour', ts)) AS attempts,
+                       bool_and(event = 'no_oa_version') AS all_no_oa
                   FROM ref_events
                  WHERE source LIKE 'fetcher:%%'
                  GROUP BY ref_id
@@ -956,6 +971,8 @@ class RefsMixin:
                     (le.ref_id IS NULL
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                 ELSE TRUE END
+               AND (NOT %s::bool
+                    OR (COALESCE(fs.attempts, 0) >= %s AND fs.all_no_oa))
              -- Deprioritized stubs (FALSE < TRUE, so ASC) last, then
              -- the requested sort within each bucket.
              ORDER BY (dp.ref_id IS NOT NULL) ASC, {order_sql}
@@ -963,7 +980,9 @@ class RefsMixin:
         """
         out: list[dict[str, Any]] = []
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, (awaiting, limit, offset)).fetchall()
+            rows = conn.execute(
+                sql, (awaiting, no_oa, NO_OA_MIN_PASSES, limit, offset)
+            ).fetchall()
         for row in rows:
             out.append(
                 {

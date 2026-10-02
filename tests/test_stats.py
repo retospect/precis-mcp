@@ -25,6 +25,7 @@ from precis.cli.stats import (
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.handlers.memory import MemoryHandler
+from precis.store._stub_predicate import NO_OA_MIN_PASSES
 from precis.store.types import ChunkInsert, Tag
 from tests.conftest import id_of
 
@@ -167,6 +168,30 @@ class TestQueryStubs:
         rows = _query_stubs(store)
         as_dict = {r["state"]: r["count"] for r in rows}
         assert as_dict == {"awaiting": 1, "retry": 1}
+
+    def test_no_oa_bucket_after_exhausted_passes(self, store) -> None:
+        """gr453859: NO_OA_MIN_PASSES hour-separated passes where every
+        fetcher event said no_oa_version leave 'retry' for 'no-oa'; a
+        single fetch_failed keeps the stub in 'retry'."""
+        exhausted = _seed_paper(store, cite_key="stub-a", pdf_sha256=None)
+        mixed = _seed_paper(store, cite_key="stub-b", pdf_sha256=None)
+        with store.pool.connection() as conn:
+            for rid in (exhausted, mixed):
+                for h in range(NO_OA_MIN_PASSES):
+                    conn.execute(
+                        "INSERT INTO ref_events (ref_id, source, event, payload, ts) "
+                        "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}', "
+                        "        now() - make_interval(hours => %s))",
+                        (rid, 10 * (h + 1)),
+                    )
+            conn.execute(
+                "INSERT INTO ref_events (ref_id, source, event, payload) "
+                "VALUES (%s, 'fetcher:s2', 'fetch_failed', '{}')",
+                (mixed,),
+            )
+
+        as_dict = {r["state"]: r["count"] for r in _query_stubs(store)}
+        assert as_dict == {"no-oa": 1, "retry": 1}
 
     def test_non_stub_paper_excluded(self, store) -> None:
         """A paper whose pdf_sha256 is set is no longer a stub and

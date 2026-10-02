@@ -24,9 +24,12 @@ states that count a paper as usable when it is not, then metadata.
    journal reason, a heal and the pdf_sha256-as-usable call-site audit.
    Ranked above 3: this one inflates "usable", 3 only mis-buckets stubs.
 3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
-   said no OA copy, yet they count as pending. Needed: a cooling bucket, a
-   manual-retrieval list, and an acquire re-stamp guard. It also owns
-   gr453862's stub-readout remainder.
+   said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
+   `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
+   (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
+   acquire re-stamp guard (`ACQUIRE_REARM_DAYS`). Still open: the /drive
+   "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
+   set in, and gr453862's stub-readout remainder.
 4. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
    body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.

@@ -18,6 +18,8 @@ Typical use:
 * ``precis stubs --limit 100``
 * ``precis stubs --awaiting`` — only stubs never attempted (or
   attempted >24h ago and still pending).
+* ``precis stubs --no-oa`` — the manual-retrieval list: several passes,
+  every source said no open-access copy (gr453859).
 * ``precis stubs --format json`` — for piping into a workflow.
 
 Sibling commands:
@@ -78,6 +80,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "on its next pass).",
     )
     p.add_argument(
+        "--no-oa",
+        action="store_true",
+        help="Show only stubs the fetcher has given up on for now: "
+        "several passes, every source said no open-access copy. "
+        "This is the list to retrieve by hand or buy.",
+    )
+    p.add_argument(
         "--database-url",
         default=None,
         help="Override PRECIS_DATABASE_URL.",
@@ -89,10 +98,15 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url)
     store = Store.connect(dsn)
     try:
-        rows = store.stub_backlog(limit=args.limit, awaiting=args.awaiting)
+        rows = store.stub_backlog(
+            limit=args.limit, awaiting=args.awaiting, no_oa=args.no_oa
+        )
     finally:
         store.close()
 
+    if not rows and args.no_oa:
+        print("stubs: no stub has exhausted its no-OA passes", file=sys.stderr)
+        return
     if not rows:
         print(
             "stubs: no stub paper refs found "

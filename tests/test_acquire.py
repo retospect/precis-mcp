@@ -14,6 +14,7 @@ from precis.errors import BadInput
 from precis.handlers import paper as paper_mod
 from precis.handlers.paper import PaperHandler, _parse_acquire_identifier
 from precis.store import Store
+from precis.store._stub_predicate import ACQUIRE_REARM_DAYS
 from tests.conftest import record_handle
 
 
@@ -145,34 +146,59 @@ def test_acquire_pins_stub_to_fetch_front(handler: PaperHandler, store: Store) -
     assert requeued_at is not None
 
 
-def test_reacquire_repins_and_restamps(handler: PaperHandler, store: Store) -> None:
-    # Re-requesting a still-pending stub re-pins it and refreshes the
-    # oa_requeued stamp — the stamp being newer than the last fetch attempt
-    # is what lifts a backed-off stub out of its retry window.
-    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2").body)
+def _age_pin(store: Store, rid: int, *, stamp_age: str) -> None:
+    """Simulate stub_rank-era drift plus an ``oa_requeued`` stamp this old."""
     with store.pool.connection() as conn:
-        # simulate stub_rank-era state drift + an old stamp
         conn.execute(
             "UPDATE refs SET prio = 7, meta = meta || jsonb_build_object("
             "'prio_by', 'stub_rank', "
-            "'oa_requeued', jsonb_build_object('at', now() - interval '1 day')) "
+            "'oa_requeued', jsonb_build_object('at', now() - %s::interval)) "
             "WHERE ref_id = %s",
-            (rid,),
+            (stamp_age, rid),
         )
         conn.commit()
+
+
+def _stamp_is_fresh(store: Store, rid: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT (meta #>> '{oa_requeued,at}')::timestamptz "
+            "> now() - interval '1 minute' FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+    assert row is not None
+    return bool(row[0])
+
+
+def test_reacquire_repins_but_keeps_recent_stamp(
+    handler: PaperHandler, store: Store
+) -> None:
+    # gr453859: a draft that re-acquires its cites on every save must not
+    # re-arm the backoff bypass each time. Inside ACQUIRE_REARM_DAYS the
+    # re-acquire still re-pins prio, but leaves the existing stamp alone.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2").body)
+    _age_pin(store, rid, stamp_age="1 day")
     second = handler.acquire(identifier="doi:10.1/pin2")
     assert _ref_id(second.body) == rid
     assert "pinned to front of fetch queue" in second.body
     prio, prio_by, requeued_at = _fetch_pin(store, rid)
     assert (prio, prio_by) == (1, "acquire")
     assert requeued_at is not None
-    with store.pool.connection() as conn:
-        fresh = conn.execute(
-            "SELECT (meta #>> '{oa_requeued,at}')::timestamptz "
-            "> now() - interval '1 minute' FROM refs WHERE ref_id = %s",
-            (rid,),
-        ).fetchone()
-    assert fresh is not None and fresh[0] is True
+    assert _stamp_is_fresh(store, rid) is False
+
+
+def test_reacquire_restamps_after_rearm_window(
+    handler: PaperHandler, store: Store
+) -> None:
+    # A stamp older than ACQUIRE_REARM_DAYS is refreshed, so an explicit
+    # re-acquire a week later still lifts a backed-off stub out of its
+    # retry window once.
+    rid = _ref_id(handler.acquire(identifier="doi:10.1/pin2b").body)
+    _age_pin(store, rid, stamp_age=f"{ACQUIRE_REARM_DAYS + 1} days")
+    handler.acquire(identifier="doi:10.1/pin2b")
+    prio, prio_by, _ = _fetch_pin(store, rid)
+    assert (prio, prio_by) == (1, "acquire")
+    assert _stamp_is_fresh(store, rid) is True
 
 
 def test_pin_stub_for_fetch_without_conn(handler: PaperHandler, store: Store) -> None:

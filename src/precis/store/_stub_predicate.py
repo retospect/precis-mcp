@@ -48,6 +48,20 @@ STUB_ID_KINDS: frozenset[str] = frozenset(_STUB_ID_KIND_ORDER)
 #: queue floats DOI/arXiv rows ahead of it (``downloadable_first``).
 MANUAL_DOWNLOAD_ID_KINDS: frozenset[str] = frozenset(("doi", "arxiv"))
 
+#: A stub is in the **no-OA** bucket once this many distinct fetch passes
+#: have run and every ``fetcher:%`` event it ever got was
+#: ``no_oa_version`` — no download failure, no API error, nothing that
+#: says a free copy might exist. Not terminal (embargoes lift and the
+#: backoff keeps a monthly retry), but it stops counting as "pending" and
+#: is the list a human buys or retrieves by hand (gr453859).
+NO_OA_MIN_PASSES: int = 3
+
+#: How long an explicit acquire's ``meta.oa_requeued`` stamp stays
+#: authoritative. A re-acquire inside this window keeps the existing stamp,
+#: so a draft that re-acquires its cites on every save cannot re-arm the
+#: backoff bypass each time (gr453859).
+ACQUIRE_REARM_DAYS: int = 7
+
 
 def _accepted_id_kinds(id_kinds: Iterable[str], *, caller: str) -> list[str]:
     """Intersect ``id_kinds`` with the fixed :data:`STUB_ID_KINDS` order.

@@ -198,6 +198,31 @@ def test_stub_backlog_awaiting_filters_recent_attempts(store: Store) -> None:
     assert fresh not in awaiting
 
 
+def _passes(store: Store, ref_id: int, event: str, hours_ago: list[float]) -> None:
+    """One fetch pass per entry, two cascade legs each (one hour-bucket)."""
+    for h in hours_ago:
+        _fetch_event(store, ref_id, event, hours_ago=h, source="fetcher:unpaywall")
+        _fetch_event(store, ref_id, event, hours_ago=h, source="fetcher:openalex")
+
+
+def test_stub_backlog_no_oa_lists_only_exhausted_stubs(store: Store) -> None:
+    # gr453859: the manual-retrieval list = NO_OA_MIN_PASSES passes, every
+    # fetcher event no_oa_version. Legs of one pass count once.
+    exhausted = _stub(store, cite_key="paywalled1970", doi="10.1/paywalled")
+    _passes(store, exhausted, "no_oa_version", [100, 50, 3])
+    two_passes = _stub(store, cite_key="twopass2020", doi="10.1/two")
+    _passes(store, two_passes, "no_oa_version", [50, 3])
+    had_failure = _stub(store, cite_key="failed2020", doi="10.1/failed")
+    _passes(store, had_failure, "no_oa_version", [100, 50])
+    _fetch_event(store, had_failure, "fetch_failed", hours_ago=3)
+    _stub(store, cite_key="never2020", doi="10.1/never")
+
+    rows = store.stub_backlog(no_oa=True)
+    assert [r["ref_id"] for r in rows] == [exhausted]
+    assert rows[0]["identifier"] == "10.1/paywalled"
+    assert len(store.stub_backlog()) == 4
+
+
 def test_stub_backlog_limit(store: Store) -> None:
     for i in range(5):
         _stub(store, cite_key=f"p{i}2024", doi=f"10.1/{i}")
