@@ -23,12 +23,12 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/taxonomy-bootstrap.md §Resume (2026-10-02)** — the metered
-   re-probe ran 2026-09-30 22:00 UTC: `probe criterion FAIL` by 0.008
-   (0.58 of the ceiling vs 0.60) with a first-measured per-mention noise of
-   0.32, six calls lost to the 120 s tail. Retry and packing (`--pack 4`)
-   shipped; the next act is the packed 300-row probe (paid, ~$6, waits on
-   Reto's go — see Waiting on Reto).
+1. **backlog/taxonomy-bootstrap.md §Resume (after the fourth probe)** —
+   four probes; packing measured neutral (0.670 vs 0.690 on shared hubs,
+   split-averaged); the 300-row run fails (split mean 0.568, bootstrap
+   p10 0.489), and the ratio-to-unit-ceiling bar is shown not to be
+   scale-free. No paid run until the orchestrator's verdict on
+   `reviews/knowledge-mesh.md` §2 picks the replacement gate.
 2. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
@@ -107,22 +107,16 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Waiting on Reto
 
-- **knowledge-mesh-2 (review queue, 2026-10-02):** probe 2 and 3 dumps
-  and `compare_runs.py` are lost, so the approved "packed vs probe 3
-  naming agreement" check has no baseline; recommended ~$5 unpacked
-  100-row re-run vs aggregates only. The approved packed 300-row probe
-  (knowledge-mesh-1) runs regardless, started 13:05Z into the scratch
-  `norr-her-meta/taxonomy-packed300/`.
-- **knowledge-mesh-4 (review queue, 2026-10-02): datasheet facts in the
-  mesh.** Reto ruled the content (ewod-pcb-2: ratings, key specs,
-  package, pin table, page-cited, linked to the part; the pull is
-  ewod-pcb Do-next 2). Open is the storage shape; recommended a
-  `component` ref per pulled part (a `part` is a catalog row, not a link
-  target) with facts as `component_spec_values` rows that ride the
-  `measures` fold-in. On the answer: file `datasheet-facts-mesh.md` and
-  rank it here.
-- **round gate for migration 0180** (relation constraints) — tests green
-  on this tree; a migration cannot `/qland`, so the orchestrator gates it.
+- **knowledge-mesh-6 (review queue, 2026-10-02): make parts, items and
+  designs linkable.** Reto asked back on knowledge-mesh-4 (datasheet facts
+  in the mesh): every part, item and design should be a mesh node.
+  Proposed: a lazy `part` ref per catalog row on first use (identity in
+  `ref_identifiers('lcsc', …)`, chunkless), `component realized-by part`,
+  design-internal items addressed through their design (`pcb contains
+  part`, refdes in link meta); datasheet facts as `measures` rows on the
+  part ref, so they build after Do-next 3. Nothing builds until he rules.
+- **reviews/knowledge-mesh.md §2 (orchestrator verdict):** the taxonomy
+  probe gate; see Do-next 1.
 
 The six 2026-09-30 rulings (fold-in, mirror first, render-only, this
 rename, memory-lint repo-local, one resident block) are recorded in their

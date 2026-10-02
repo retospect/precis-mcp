@@ -590,27 +590,37 @@ independent. `discovery.discover` now keeps one pending pack per half
 (`test_discover_never_packs_hubs_of_both_halves_together`). The 0.53 is
 discarded; its per-hub rows stay usable for test-retest.
 
-## Resume (2026-10-02)
+**Corrected packed re-run (packs per half, 300 rows, 14:45 UTC):** 50
+calls, 0 failed, $5.90, 44 min; 576 rows over 191 hubs, 222 nodes, 14
+systematic; printed 0.53 of the ceiling 0.704, FAIL. Read per the review
+verdict (`reviews/knowledge-mesh.md` §1-2; `probe_read.py`: ratio
+averaged over 200 A/B splits, call as the unit, plus a hub bootstrap):
+**split mean 0.568, bootstrap p10 0.489**. The unpacked 100-row baseline
+reads split mean 0.690, p10 0.590. On the 59 hubs both cover, packed
+reads 0.670 against 0.690: **packing does not move the ratio**. The drop
+at 300 rows is rows 101-300.
 
-State: three probes on the same 100 rows; every vocabulary and census
-blocker closed; metering on and read (§Third probe). The probe criterion
-reads 0.58 of the ceiling against a 0.60 bar with a measured per-mention
-noise of 0.32, so the bar is inside the noise at this n. The retry and the
-packing slice are shipped; nothing unbuilt stands before the next paid run.
-Detail is in the three probe sections above; this section is only the
-order.
+**The bar is the open problem, not the vocabulary.** The ceiling keys by
+unit, so distinct quantities sharing a unit (eV, V, %) merge in it; it
+climbed 0.475 → 0.704 from 100 to 300 rows while stability went 0.349 →
+0.371. The unmatched weight at 300 rows is mostly one-hub quantities
+(`half_gaps.py`); the visible foldable pairs are worth ~0.03-0.05. The
+0.60 bar was stated 2026-09-30 beside single readings, not calibrated.
+A replacement gate is put to the orchestrator in `reviews/knowledge-mesh.md`
+§2 (recommended: cross-run folded-key agreement on shared mentions,
+0.71-0.77 measured, which does not move with n).
 
-1. **Packed 300-row probe, re-run with packs per half** — PAID (~49
-   calls, ~$6, ~45 min), Reto's go required (the 2026-10-02 run mixed
-   halves inside packs, §Fourth probe; its A/B number is void). `precis taxonomy-bootstrap --stage all --limit 300 --pack 4`.
-   Reads the 0.60 criterion where the unit-key ceiling is above the 0.32
-   per-mention noise; a FAIL there is a real prompt or vocabulary finding.
-   Full run only after it passes. Packing is itself unmeasured: the field
-   rules are the single-hub text word for word, but four sentences in one
-   context is a new input, so before reading the bar compare its
-   test-retest against probe 3 on the hubs both runs cover
-   (`compare_runs.py`); a packing-made drop in naming agreement is a
-   finding about packing, not about the vocabulary.
+## Resume (2026-10-02, after the fourth probe)
+
+State: four probes; packing measured neutral; the probe bar shown not to
+be scale-free. Spend so far today $16.80 ($5.91 void packed, $4.99
+baseline, $5.90 corrected packed). Zero-cost readers in the scratch dir:
+`compare_runs.py`, `probe_read.py`, `half_gaps.py`, `subset_dump.py`.
+
+1. **Gate decision** — waits on the verdict on `reviews/knowledge-mesh.md`
+   §2. No paid run until it lands. If the gate becomes cross-run
+   agreement, its bar needs one unpacked-vs-unpacked folded agreement
+   number (a second unpacked 100-row run, ~$5, Reto's go).
 2. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
