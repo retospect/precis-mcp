@@ -71,7 +71,7 @@ container items.
   OFF: prod `service_config` melchior/`backlog_groom` prio 5 to 0 at
   2026-10-02 22:04Z; re-arm only on Reto's say with
   `precis service prio melchior backlog_groom 5`. Code stays;
-  `diagnose_scan` stays on; owning thread sessions fix gripes. Deleted
+  `diagnose_scan` is off too (melchior prio 0, Reto 2026-10-02); owning thread sessions fix gripes. Deleted
   `backlog/fix-gripe-oauth-instead-of-api-key.md` and
   `backlog/dark-factory-arming.md` as moot. `fixer-salvage-failed-builds`,
   `prioritization-auto-scoring` and `backlog-groomer-items-half` presume the

@@ -33,8 +33,8 @@ on `main`, and iterating until the fix holds. Joins `precis-gripe-help` (the bug
 The repo session that owns the gripe's work thread, in its own
 worktree. Unthreaded
 gripes are relinked to a thread by `/pillar-review`. The
-`diagnose_gripe` pass still writes `DIAGNOSIS (auto…)` comments that
-help that session; its `auto-fix` tag is inert.
+automatic `diagnose_gripe` pass is off too; a hand-`put`
+`diagnose_gripe` job still runs and comments a `DIAGNOSIS`.
 
 ## How do I hand-submit a fix_gripe job (reference only)?
 
