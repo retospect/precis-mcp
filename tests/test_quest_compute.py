@@ -29,8 +29,10 @@ from precis.quest.frontier import (
     _candidate_from_structure,
     _provisional_reasons,
     _rubric_composite_for,
+    apply_network_demotion,
     better_arrow_for,
     build_frontier_scatter,
+    current_network_basis,
     pareto_split,
     quest_frontier,
     render_frontier_tree,
@@ -1882,6 +1884,279 @@ class TestQuestFrontier:
 def _cand(store: Any, sid: int) -> Candidate:
     ref = store.fetch_refs_by_ids({sid})[sid]
     return _candidate_from_structure(store, ref)
+
+
+class TestNetworkBasis:
+    """``compute._network_basis`` — which reaction network a pathway's
+    competitor-set measures were taken on."""
+
+    def test_explicit_template_wins(self) -> None:
+        b = compute_mod._network_basis(
+            {
+                "config": {"network": "ammonia", "template": "parked"},
+                "autocatpath_version": "0.22.0",
+            }
+        )
+        assert b == {"digest": None, "template": "parked", "version": "0.22.0"}
+
+    def test_unset_template_on_ammonia_resolves_to_coadsorbed(self) -> None:
+        b = compute_mod._network_basis({"config": {"network": "ammonia"}})
+        assert b is not None
+        assert b["template"] == "coadsorbed"
+        assert b["version"] is None
+
+    def test_unset_template_elsewhere_resolves_to_parked(self) -> None:
+        b = compute_mod._network_basis({"config": {"network": "other"}})
+        assert b is not None and b["template"] == "parked"
+
+    def test_missing_config_or_non_dict_is_none(self) -> None:
+        assert compute_mod._network_basis({"autocatpath_version": "0.22.0"}) is None
+        assert compute_mod._network_basis({"config": {}}) is None
+        assert compute_mod._network_basis(None) is None
+
+    def test_digest_carried_from_results(self) -> None:
+        b = compute_mod._network_basis(
+            {"config": {"network": "ammonia"}, "results": {"network_digest": "d1"}}
+        )
+        assert b is not None and b["digest"] == "d1"
+
+
+class TestNetworkLikeWithLike:
+    """Competitor-set measures from an older reaction network never rank
+    against the current network's (``apply_network_demotion``)."""
+
+    _OLD = {"digest": None, "template": "parked", "version": "0.22.0"}
+    _NEW = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
+
+    @staticmethod
+    def _by_key(basis: Any, *keys: str) -> dict[str, Any]:
+        return dict.fromkeys(keys, basis)
+
+    def _cands(self, store: Any) -> tuple[int, list[int]]:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        ids = []
+        for i, elem in enumerate(("Fe", "Co", "Ni")):
+            sid = compute_mod.ensure_candidate(
+                store,
+                qid,
+                {
+                    "name": f"c{i}",
+                    "structure": {
+                        "cell": {"a": 8.4, "b": 8.4, "c": 24.0},
+                        "ops": [
+                            {"op": "add_atom", "element": elem, "frac": [0.0, 0.0, 0.5]}
+                        ],
+                    },
+                },
+            )
+            assert sid is not None
+            ids.append(sid)
+        return qid, ids
+
+    def test_older_network_margins_leave_measures_barrier_untouched(
+        self, store: Any
+    ) -> None:
+        _qid, ids = self._cands(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "selectivity_margin": 0.5,
+                "trap_margin": 0.4,
+                "P_side": 0.1,
+                "barrier": 0.6,
+                "network_basis": self._OLD,
+                "network_basis_by_key": self._by_key(
+                    self._OLD,
+                    "selectivity_margin",
+                    "trap_margin",
+                    "P_side",
+                    "barrier",
+                ),
+            },
+        )
+        store.stamp_ref_meta(
+            ids[1],
+            {
+                "selectivity_margin": 0.1,
+                "barrier": 0.7,
+                "network_basis": self._NEW,
+                "network_basis_by_key": self._by_key(
+                    self._NEW, "selectivity_margin", "barrier"
+                ),
+            },
+        )
+        legacy = ids[2]  # no basis at all
+        store.stamp_ref_meta(legacy, {"selectivity_margin": 0.9, "barrier": 0.8})
+        cands = [_cand(store, i) for i in ids]
+        used = apply_network_demotion(cands)
+        assert used == self._NEW
+        old, new, leg = cands
+        for k in ("selectivity_margin", "trap_margin", "P_side"):
+            assert k not in old.measures
+        assert old.flags["selectivity_margin_untrusted_value"] == 0.5
+        assert old.flags["trap_margin_untrusted_value"] == 0.4
+        assert old.flags["P_side_untrusted_value"] == 0.1
+        assert old.flags["network_stale"] is True
+        assert old.measures["barrier"] == 0.6  # main-route quantity stays
+        assert new.measures["selectivity_margin"] == 0.1
+        assert "network_stale" not in new.flags
+        assert leg.measures["selectivity_margin"] == 0.9  # legacy untouched
+        assert "network_stale" not in leg.flags
+
+    def test_demotion_is_per_key_not_per_candidate(self, store: Any) -> None:
+        """A candidate's selectivity margin came from the old network but its
+        trap margin was re-measured on the current one: only the former
+        moves; a key with no stamp at all is left alone."""
+        _qid, ids = self._cands(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "selectivity_margin": 0.5,
+                "trap_margin": 0.3,
+                "P_side": 0.2,
+                "network_basis_by_key": {
+                    "selectivity_margin": self._OLD,
+                    "trap_margin": self._NEW,
+                },
+            },
+        )
+        store.stamp_ref_meta(
+            ids[1],
+            {
+                "selectivity_margin": 0.1,
+                "network_basis_by_key": self._by_key(self._NEW, "selectivity_margin"),
+            },
+        )
+        cands = [_cand(store, i) for i in ids[:2]]
+        apply_network_demotion(cands)
+        mixed = cands[0]
+        assert "selectivity_margin" not in mixed.measures
+        assert mixed.measures["trap_margin"] == 0.3
+        assert mixed.measures["P_side"] == 0.2  # no stamp -> legacy, untouched
+        assert mixed.flags["network_stale"] is True
+        assert mixed.flags["network_stale_basis"] == self._OLD
+
+    def test_quest_frontier_never_ranks_the_older_margin(self, store: Any) -> None:
+        qid, ids = self._cands(store)
+        store.stamp_ref_meta(
+            qid,
+            {"rubric_objectives": [{"key": "selectivity_margin", "sense": "max"}]},
+        )
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "selectivity_margin": 0.5,
+                "network_basis_by_key": self._by_key(self._OLD, "selectivity_margin"),
+            },
+        )
+        store.stamp_ref_meta(
+            ids[1],
+            {
+                "selectivity_margin": 0.1,
+                "network_basis_by_key": self._by_key(self._NEW, "selectivity_margin"),
+            },
+        )
+        for sid in ids[:2]:  # a frontier member needs a converged relax
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=5,
+                max_disp=0.0,
+                energy=-1.0,
+            )
+        fr = quest_frontier(store, qid)
+        # the optimistic parked 0.5 does NOT out-rank the coadsorbed 0.1
+        assert [c.ref_id for c in fr.frontier] == [ids[1]]
+        prov = {p.candidate.ref_id: p for p in fr.provisional}
+        assert ids[0] in prov
+        assert any(
+            "older reaction network (parked@0.22.0)" in r for r in prov[ids[0]].reasons
+        )
+
+    def test_two_slabs_on_one_template_and_version_are_one_network(self) -> None:
+        """The basis carries nothing candidate-specific: two pathways on
+        different slabs (and different best_first pruning) with the same
+        template, version and template-level ``network_digest`` name one
+        network — with and without the digest. The digest must therefore be
+        computed over the template's species/step set before pruning (catpath
+        Part B brief §2b)."""
+        from precis.quest.frontier import same_network_basis
+
+        def _pw(slab: str, n_structures: int, digest: str | None) -> dict[str, Any]:
+            return {
+                "config": {"network": "ammonia", "slab": slab},
+                "autocatpath_version": "0.23.0",
+                "results": {"network_digest": digest, "n_structures": n_structures},
+            }
+
+        for digest in ("abc123", None):
+            a = compute_mod._network_basis(_pw("Pd(111)", 50, digest))
+            b = compute_mod._network_basis(_pw("Cu3P(001)", 31, digest))
+            assert a is not None and b is not None
+            assert a == b
+            assert same_network_basis(a, b)
+
+    def test_same_digest_is_the_same_network_despite_template(self, store: Any) -> None:
+        _qid, ids = self._cands(store)
+        store.stamp_ref_meta(
+            ids[0],
+            {
+                "selectivity_margin": 0.5,
+                "network_basis_by_key": {
+                    "selectivity_margin": {
+                        "digest": "d",
+                        "template": "parked",
+                        "version": "0.21.0",
+                    }
+                },
+            },
+        )
+        store.stamp_ref_meta(
+            ids[1],
+            {
+                "selectivity_margin": 0.1,
+                "network_basis_by_key": {
+                    "selectivity_margin": {
+                        "digest": "d",
+                        "template": "coadsorbed",
+                        "version": "0.22.0",
+                    }
+                },
+            },
+        )
+        cands = [_cand(store, i) for i in ids[:2]]
+        apply_network_demotion(cands)
+        assert all("network_stale" not in c.flags for c in cands)
+
+    def test_current_basis_prefers_reference_template_then_version_then_digest(
+        self,
+    ) -> None:
+        def _c(basis: Any) -> Candidate:
+            return Candidate(
+                ref_id=1,
+                handle="h",
+                name="n",
+                measures={},
+                converged=True,
+                params={},
+                flags={"network_basis_by_key": {"selectivity_margin": basis}},
+            )
+
+        # a catpath bump seen first on parked screening runs does not make
+        # parked the reference while any coadsorbed margin exists
+        newer_parked = {"digest": None, "template": "parked", "version": "0.23.0"}
+        assert current_network_basis([_c(self._NEW), _c(newer_parked)]) == self._NEW
+        newer = {"digest": None, "template": "coadsorbed", "version": "0.23.0"}
+        assert current_network_basis([_c(self._NEW), _c(newer)]) == newer
+        junk = {"digest": "x", "template": "coadsorbed", "version": "not-a-version"}
+        assert current_network_basis([_c(junk), _c(self._NEW)]) == self._NEW
+        assert current_network_basis([_c(self._OLD), _c(newer_parked)]) == newer_parked
+        assert current_network_basis([_c(self._OLD), _c(self._NEW)]) == self._NEW
+        with_digest = {"digest": "d", "template": "coadsorbed", "version": "0.22.0"}
+        assert current_network_basis([_c(self._NEW), _c(with_digest)]) == with_digest
+        assert current_network_basis([]) is None
 
 
 class TestGeneralizedFrontier:
@@ -4232,6 +4507,116 @@ class TestTierLadderHarvest:
         assert meta["tier"] == "neb"
         assert "barrier_screen" not in meta
 
+    def test_harvest_stamps_network_basis_from_the_pathway(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "tier": "neb",
+                "warnings": [],
+                "low_confidence": False,
+                "config": {"network": "ammonia"},  # template unset
+                "results": {"network_digest": "abc123"},
+                "autocatpath_version": "0.22.0",
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        basis = {"digest": "abc123", "template": "coadsorbed", "version": "0.22.0"}
+        assert meta["network_basis"] == basis
+        # stamped per network-dependent measure actually present
+        assert meta["network_basis_by_key"] == {"barrier": basis}
+        # a dict is never a measure
+        c = _cand(store, sid)
+        assert "network_basis" not in c.measures
+        assert "network_basis_by_key" not in c.measures
+
+    def test_unremeasured_key_keeps_the_basis_it_was_measured_on(
+        self, store: Any
+    ) -> None:
+        """A later harvest on another network only re-stamps the keys it
+        carries: the earlier selectivity margin stays on the OLD basis."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+
+        def _pw(template: str, version: str) -> int:
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "tier": "neb",
+                    "warnings": [],
+                    "low_confidence": False,
+                    "config": {"network": "ammonia", "template": template},
+                    "autocatpath_version": version,
+                },
+                parent_id=sid,
+            ).id
+
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.5,
+                    "selectivity_margin": 0.4,
+                    "poison_margin": 0.2,
+                },
+                "pathway_ref": _pw("parked", "0.21.0"),
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {"result": {"barrier": 0.3}, "pathway_ref": _pw("coadsorbed", "0.22.0")},
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        old = {"digest": None, "template": "parked", "version": "0.21.0"}
+        new = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
+        assert meta["network_basis"] == new  # latest harvest
+        by_key = meta["network_basis_by_key"]
+        assert by_key["barrier"] == new
+        assert by_key["selectivity_margin"] == old
+        assert "poison_margin" not in by_key  # adsorption-only: no network
+        assert meta["selectivity_margin"] == 0.4
+
+    def test_harvest_without_pathway_config_stamps_no_basis(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"tier": "neb", "warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "network_basis" not in meta
+
+    def test_reset_compute_clears_network_basis(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid, {"network_basis": {"digest": None, "template": "parked"}}
+        )
+        compute_mod.reset_compute(store, qid, keep_dossier=True)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("network_basis") is None
+
     def test_verify_supersedes_neb_moves_parked_value_to_barrier_screen(
         self, store: Any
     ) -> None:
@@ -5685,6 +6070,320 @@ class TestTierPromotion:
 
         monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
         return calls
+
+    # -- restale pass (network-basis re-dispatch) ---------------------------
+
+    # A catpath bump changes the coadsorbed network neb/verify build; the
+    # screening tier builds parked by decision and is never re-dispatched.
+    _OLD = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
+    _NEW = {"digest": None, "template": "coadsorbed", "version": "0.23.0"}
+    _PARKED = {"digest": None, "template": "parked", "version": "0.23.0"}
+
+    def _stub_minting_dispatch(
+        self, monkeypatch: Any, *, mint: bool = True
+    ) -> list[tuple[int, Any]]:
+        """Dispatch stub that (like the real one on a changed content key)
+        inserts a fresh computing pathway for the (candidate, tier)."""
+        calls: list[tuple[int, Any]] = []
+
+        def _fake(store: Any, sid: int, _cfg: dict, **kw: Any) -> str:
+            calls.append((sid, kw.get("tier")))
+            if mint:
+                store.insert_ref(
+                    kind="pathway",
+                    slug=f"pw-new-{sid}-{len(calls)}",
+                    title="pw",
+                    meta={
+                        "candidate_ref": sid,
+                        "tier": kw.get("tier"),
+                        "status": "computing",
+                    },
+                    parent_id=sid,
+                )
+            return f"autocatpath[emt] dispatched for {sid}"
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
+        return calls
+
+    def _restale_quest(self, store: Any, **extra: Any) -> int:
+        qid = self._quest(
+            store, fidelity_promote_neb=0, fidelity_promote_verify=0, **extra
+        )
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "U_L_abs", "sense": "min"}]}
+        )
+        return qid
+
+    def _stale_candidate(
+        self,
+        store: Any,
+        qid: int,
+        name: str,
+        u_l_abs: float,
+        basis: Any = None,
+        tier: str = "neb",
+    ) -> int:
+        sid = self._screening_candidate(store, qid, name, u_l_abs)
+        b = basis or self._OLD
+        store.stamp_ref_meta(
+            sid,
+            {
+                "tier": tier,
+                "network_basis": b,
+                "network_basis_by_key": {"selectivity_margin": b},
+            },
+        )
+        return sid
+
+    def test_restale_honours_cap_best_first(self, store: Any, monkeypatch: Any) -> None:
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=2)
+        self._stale_candidate(store, qid, "a", 0.9)
+        best = self._stale_candidate(store, qid, "bb", 0.1)
+        second = self._stale_candidate(store, qid, "ccc", 0.3)
+        current = self._stale_candidate(store, qid, "dddd", 0.0, basis=self._NEW)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert [sid for sid, _t in calls] == [best, second]  # cap 2, best-first
+        assert all(t == compute_mod._TIER_NEB for _s, t in calls)
+        assert current not in {sid for sid, _t in calls}
+        assert len(notes) == 2
+
+    def test_restale_default_cap_is_two(self, store: Any, monkeypatch: Any) -> None:
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store)  # no fidelity_restale_cap
+        for i, name in enumerate(("a", "bb", "ccc", "dddd")):
+            self._stale_candidate(store, qid, name, 0.1 * i)
+        self._stale_candidate(store, qid, "eeeee", 0.0, basis=self._NEW)
+        compute_mod.promote_tiers(store, qid)
+        assert len(calls) == 2
+
+    def test_restale_cap_zero_disables(self, store: Any, monkeypatch: Any) -> None:
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=0)
+        self._stale_candidate(store, qid, "a", 0.1)
+        self._stale_candidate(store, qid, "bb", 0.2, basis=self._NEW)
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_restale_skips_in_flight_and_current_basis_pathways(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)  # sets current
+        in_flight = self._stale_candidate(store, qid, "a", 0.1)
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-fl-{in_flight}",
+            title="pw",
+            meta={
+                "candidate_ref": in_flight,
+                "tier": "neb",
+                "status": "computing",
+            },
+            parent_id=in_flight,
+        )
+        landed = self._stale_candidate(store, qid, "ccc", 0.2)
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-ok-{landed}",
+            title="pw",
+            meta={
+                "candidate_ref": landed,
+                "tier": "neb",
+                "status": "ready",
+                "config": {"network": "ammonia"},
+                "autocatpath_version": "0.23.0",
+            },
+            parent_id=landed,
+        )
+        eligible = self._stale_candidate(store, qid, "dddd", 0.3)
+        compute_mod.promote_tiers(store, qid)
+        assert {sid for sid, _t in calls} == {eligible}
+
+    def test_restale_skips_ruled_out_candidates(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        from precis.store import Tag
+
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)
+        out = self._stale_candidate(store, qid, "a", 0.1)
+        store.add_tag(out, Tag.open("ruled-out:relax-failed"), set_by="system")
+        keep = self._stale_candidate(store, qid, "ccc", 0.2)
+        compute_mod.promote_tiers(store, qid)
+        assert {sid for sid, _t in calls} == {keep}
+
+    def test_restale_scope_is_merged_frontier_plus_band_top_n(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A bump re-measures what can change a decision: the merged frontier
+        plus the best ``fidelity_restale_band`` of the provisional band, not
+        every stale candidate."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(
+            store, fidelity_restale_cap=10, fidelity_restale_band=2
+        )
+        on_front = self._stale_candidate(store, qid, "a", -1.0)  # best: frontier
+        # current basis, ranked below the stale band so it takes no band slot
+        self._stale_candidate(store, qid, "bb", 0.9, basis=self._NEW)
+        band = [
+            self._stale_candidate(store, qid, "c" * (i + 3), 0.1 * (i + 1))
+            for i in range(5)
+        ]
+        compute_mod.promote_tiers(store, qid)
+        assert [sid for sid, _t in calls] == [on_front, band[0], band[1]]
+
+    def test_restale_band_zero_keeps_only_the_merged_frontier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(
+            store, fidelity_restale_cap=10, fidelity_restale_band=0
+        )
+        on_front = self._stale_candidate(store, qid, "a", -1.0)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)
+        self._stale_candidate(store, qid, "ccc", 0.3)
+        compute_mod.promote_tiers(store, qid)
+        assert [sid for sid, _t in calls] == [on_front]
+
+    def test_verify_promotion_ranks_stale_margins_on_merged_measures(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """After a bump, neb candidates whose margin went stale still order
+        the verify pass by that margin (and a stale margin on the provisional
+        frontier counts as frontier), instead of sinking to the bottom and
+        handing verify to whoever was re-measured first."""
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(
+            store,
+            fidelity_promote_neb=0,
+            fidelity_promote_verify=2,
+            fidelity_restale_cap=0,
+        )
+        store.stamp_ref_meta(
+            qid,
+            {"rubric_objectives": [{"key": "selectivity_margin", "sense": "max"}]},
+        )
+        sids = {}
+        for name, margin, basis in (
+            ("cur", 0.1, self._NEW),
+            ("stale_mid", 0.5, self._OLD),
+            ("stale_best", 0.9, self._OLD),
+        ):
+            sid = self._neb_frontier_candidate(store, qid, name, 0.5, -1.0)
+            store.stamp_ref_meta(
+                sid,
+                {
+                    "tier": "neb",
+                    "selectivity_margin": margin,
+                    "network_basis_by_key": {"selectivity_margin": basis},
+                },
+            )
+            sids[name] = sid
+        compute_mod.promote_tiers(store, qid)
+        # merged frontier = {cur (confirmed), stale_best (provisional
+        # frontier)}, best-first on merged margins; stale_mid is dominated
+        assert [sid for sid, _t in calls] == [sids["stale_best"], sids["cur"]]
+        assert all(t == compute_mod._TIER_VERIFY for _s, t in calls)
+
+    def test_restale_never_redispatches_parked_screening(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Screening builds parked by decision: re-dispatching it cannot reach
+        the coadsorbed reference, so its demoted margin waits for neb."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._restale_quest(store, fidelity_restale_cap=5)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)
+        self._stale_candidate(
+            store, qid, "a", 0.1, basis=self._PARKED, tier="screening"
+        )
+        stale_neb = self._stale_candidate(store, qid, "ccc", 0.2)
+        compute_mod.promote_tiers(store, qid)
+        assert calls == [(stale_neb, compute_mod._TIER_NEB)]
+
+    def test_screening_promotion_ranks_stale_margins_like_with_like(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Screened-only candidates whose selectivity margin is all stale
+        (provisional) still promote exactly ``fidelity_promote_neb`` of them,
+        best MERGED margin first — not arbitrary order off an absent key."""
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, fidelity_promote_neb=2, fidelity_promote_verify=0)
+        store.stamp_ref_meta(
+            qid,
+            {"rubric_objectives": [{"key": "selectivity_margin", "sense": "max"}]},
+        )
+        # the quest's current network is set by one non-screening candidate
+        cur = compute_mod.ensure_candidate(
+            store, qid, {"name": "cur", "structure": self._spec_for("cur")}
+        )
+        assert cur is not None
+        store.stamp_ref_meta(
+            cur,
+            {
+                "tier": "neb",
+                "selectivity_margin": 0.05,
+                "network_basis_by_key": {"selectivity_margin": self._NEW},
+            },
+        )
+        margins = {"worst": 0.1, "best": 0.9, "second": 0.5}
+        sids = {}
+        for name in margins:  # creation order != margin order
+            sid = self._screening_candidate(store, qid, name, 0.0)
+            store.stamp_ref_meta(
+                sid,
+                {
+                    "selectivity_margin": margins[name],
+                    "network_basis_by_key": {"selectivity_margin": self._PARKED},
+                },
+            )
+            sids[name] = sid
+        # sanity: every screened margin really is demoted out of `measures`
+        from precis.quest.frontier import apply_network_demotion as _demote
+
+        probe = [_cand(store, s) for s in (*sids.values(), cur)]
+        _demote(probe)
+        assert all("selectivity_margin" not in c.measures for c in probe[:3])
+
+        compute_mod.promote_tiers(store, qid)
+        promoted = [sid for sid, _t in calls]
+        assert promoted == [sids["best"], sids["second"]]  # exactly the cap
+        assert all(t == compute_mod._TIER_NEB for _s, t in calls)
+
+    def test_screening_promotion_sorts_a_candidate_with_no_measure_last(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, fidelity_promote_neb=1, fidelity_promote_verify=0)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "U_L_abs", "sense": "min"}]}
+        )
+        bare = compute_mod.ensure_candidate(
+            store, qid, {"name": "bare", "structure": self._spec_for("bare")}
+        )
+        assert bare is not None
+        store.stamp_ref_meta(bare, {"tier": "screening"})  # no rankable measure
+        measured = self._screening_candidate(store, qid, "measured", 0.9)
+        compute_mod.promote_tiers(store, qid)
+        assert [sid for sid, _t in calls] == [measured]
+
+    def test_restale_collapsed_dispatch_spends_no_cap_and_is_noted(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Same content key (engine pin unchanged) -> dispatch mints no new
+        pathway: logged + skipped, never spends a cap slot, never loops."""
+        calls = self._stub_minting_dispatch(monkeypatch, mint=False)
+        qid = self._restale_quest(store, fidelity_restale_cap=1)
+        self._stale_candidate(store, qid, "bb", 0.0, basis=self._NEW)
+        for i, name in enumerate(("a", "ccc", "dddd")):
+            self._stale_candidate(store, qid, name, 0.1 * (i + 1))
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(calls) == 3  # every stale candidate tried; none minted
+        assert len(notes) == 1
+        assert "3 candidate(s) skipped" in notes[0]
+        assert "same content key" in notes[0]
 
     def test_ladder_off_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
         calls = self._stub_dispatch(monkeypatch)
