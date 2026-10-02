@@ -317,6 +317,8 @@ an older reaction network (template@version)" until that candidate is
 re-measured. `backfill-network-basis` stamps the network on pre-stamp
 candidates, but only where a completed pathway reproduces the stored value.
 
+## A research tick — searches and compute
+
 **Searches go local first.** A tick's `searches` hit our own graph (papers,
 findings, drafts, concepts, memories) before anything outside. Semantic
 Scholar is queried and papers acquired only when fewer than 3 relevant local
