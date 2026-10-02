@@ -159,16 +159,22 @@ Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
 `draft-authoring.md` (dormant)
 
 Seams:
-- `backlog/measures-substrate.md` — knowledge-mesh Do-next 4; roadmap Horizon 4
+- `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
   (meta.supply widened to measures) consumes it.
 - `backlog/knowledge-mesh.md` — knowledge-mesh Horizon 3; roadmap Horizon 4 is
   its in-scope 2.
 - `backlog/curation-gate.md` — both park on it; owned by serving.
-- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 3; roadmap's
+- `backlog/linkable-parts.md` — knowledge-mesh Do-next 3; ewod-pcb's
+  `pcb-datasheet-autopull.md` links a pulled datasheet `datasheet-of` the
+  part ref this mints, and `datasheet-facts-mesh.md` (knowledge-mesh
+  Horizon 16) hangs the extracted facts on it. Sequencing: the pull can
+  ship first, storing `part_lcsc` in meta as today; it switches to the
+  edge when linkable-parts lands.
+- `backlog/fisheye-everywhere.md` — knowledge-mesh Do-next 4; roadmap's
   `view='tree'` and the se viewer thread both render through its ladder;
   the browser focus page it adds is the human graph-browse surface
   (docs/roadmap.md pillar 1).
-- `backlog/file-mirror.md` — knowledge-mesh Do-next 6; the memory half of the
+- `backlog/file-mirror.md` — knowledge-mesh Do-next 7; the memory half of the
   thread (context-memory-hierarchy, session-history-into-precis) is
   ranked in `knowledge-mesh.md` from 2026-09-30.
 - substrate + memory half vs agent affordances — knowledge-mesh ranks the

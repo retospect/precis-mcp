@@ -226,10 +226,17 @@ link row has `src_chunk_id` set is refused, naming the rule;
 `measurands` row of status `core` cannot be minted by a put (migration
 only), `proposed` can — same rule as today.
 
-**4. Unit conversion, minimal.** Canonical-unit normalisation for the
-`core` measurands only, via `convert`; a non-canonical unit on a
-`proposed` measurand is stored as `reported_unit` with `value_num` NULL
-rather than rejected (today's v1 rejects).
+**4. One canonical unit per measurand; values stored normalised**
+(Reto 2026-10-02, knowledge-mesh-7: "unify the units and just store the
+value" — a barrier is always eV, never meV). Every measurand taxon node,
+`core` or `proposed`, carries exactly one canonical unit, fixed when the
+node is minted (the taxonomy list's `canonical_unit`). A put converts the
+reported value into it via `convert`; `value_num`/`low`/`high` are always
+in the canonical unit. The reported literal and unit stay as provenance
+(`literal`, `reported_unit`), never as the value. A unit that cannot be
+converted to the measurand's dimension is refused, naming both units
+(this replaces the earlier "store `reported_unit` with `value_num` NULL"
+rule for `proposed` measurands).
 
 **5. Docs.** `precis-material-help` (values now live in `measures`;
 verbs unchanged), new `precis-measure-help` (row shape, tiers, the
@@ -338,6 +345,12 @@ literal-first rule, reference states), `docs/reference/schema.md` regen.
   a theoretical safeguard against a hypothetical nonzero count.
 
 ## Open questions / decisions log
+
+- **[decided 2026-10-02, Reto knowledge-mesh-7]** One canonical unit per
+  measurand, values stored normalised to it, the reported value and unit
+  kept only as provenance. Applies to `proposed` measurands too (in-scope
+  4 amended). The `component_spec_values` fold-in inherits it: datasheet
+  ratings land in the measurand's unit (V, A, °C), never as printed.
 
 - **Rename vs new table.** Decided: rename + compatibility views. A
   third sourcing grammar beside `material` and `component` was the thing

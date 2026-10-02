@@ -617,10 +617,13 @@ be scale-free. Spend so far today $16.80 ($5.91 void packed, $4.99
 baseline, $5.90 corrected packed). Zero-cost readers in the scratch dir:
 `compare_runs.py`, `probe_read.py`, `half_gaps.py`, `subset_dump.py`.
 
-1. **Gate decision** — waits on the verdict on `reviews/knowledge-mesh.md`
-   §2. No paid run until it lands. If the gate becomes cross-run
-   agreement, its bar needs one unpacked-vs-unpacked folded agreement
-   number (a second unpacked 100-row run, ~$5, Reto's go).
+1. **Full-run configuration** — waits on Reto (knowledge-mesh-8). The
+   gate is cross-run folded agreement (decisions log), bar 0.711 = the
+   p10 of a hub bootstrap over two unpacked 100-row runs (median 0.773;
+   raw 0.63). Packed 300 against each unpacked run: 0.706 and 0.684, so
+   packing likely costs ~0.07-0.09. Recommended: the full run unpacked
+   (~1231 calls, ~$100, ~10 h); alternative: a ~$2 packed-vs-packed
+   pair first. Spend on probes so far: $21.87.
 2. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
@@ -642,6 +645,15 @@ the saved probe output (the fixtures encoded the wrong belief and 159 green
 tests missed blocker 1); read the 0.80 threshold at n=100.
 
 ## Open questions / decisions log
+
+- **[decided 2026-10-02, Reto knowledge-mesh-7]** The full-run gate is
+  cross-run naming agreement on shared mentions (folded by the campaign's
+  written alias rules, fixed before comparing; raw beside it;
+  mention-weighted and per hub), not A/B stability over the unit-key
+  ceiling, which falls with n (`reviews/knowledge-mesh.md` §2). Also:
+  each list entry carries one canonical unit, and values bound to it are
+  stored normalised (`measures-substrate.md` in-scope 4); this removes the
+  unit-keyed ceiling's reason to exist.
 
 - **[decided 2026-09-28]** Sign off thresholds and procedure, never the
   list. Defaults above adopted on Reto's "continue".
