@@ -3,9 +3,10 @@
 Anthropic's own CLI/API surfaces an exhausted usage quota as ordinary
 text — never a distinguished exit code, event type, or stderr marker
 (:mod:`precis.utils.claude_agent`'s stream-json ``result`` event carries
-none: a quota-exhausted run looks exactly like a clean answer — a
-trailing ``result`` event with no ``error_*`` subtype, ``is_error``
-false, exit 0). Every consumer therefore has to recognize the *wording*
+none that callers can rely on: a quota-exhausted run looks like a clean
+answer — a trailing ``result`` event with no ``error_*`` subtype and
+``terminal_reason='completed'``; newer CLIs add ``is_error=true`` and
+``api_error_status=429``, older ones did not). Every consumer therefore has to recognize the *wording*
 instead, and there have been three of them observed in prod so far, all
 sharing one lead-in family:
 

@@ -930,7 +930,9 @@ def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
         tool_calls=tool_calls,
         raw_stdout=res.stdout or "",
         # How the run ended abnormally, when it did (max_turns / budget / other
-        # error_* subtype). ``None`` on a clean run. Both the clean path and the
+        # error_* subtype). ``None`` or ``'completed'`` on a clean run — current
+        # CLIs stamp ``terminal_reason='completed'`` on every finished turn, so
+        # a consumer testing for "clean" must accept both. Both the clean path and the
         # recovered-exhaustion path carry the full stream on ``res.stdout``, so
         # this is a definitive read for a caller that maps it to a resume signal.
         terminal_reason=stream_terminal_reason(res.stdout or ""),

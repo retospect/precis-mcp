@@ -894,8 +894,8 @@ class LlmResult:
       unlike a timeout/breaker/rate-limit). Read by
       :func:`~precis.quest.tick.run_quest_tick` to stamp
       :attr:`~precis.quest.tick.QuestTickOutcome.failure_kind` (gr335087).
-    * ``quota_exhausted`` — ``True`` when a ``claude_agent`` run exited
-      CLEANLY (exit 0, no ``error_*`` stream-json subtype) but its final
+    * ``quota_exhausted`` — ``True`` when a ``claude_agent`` run ended
+      CLEANLY (no ``error_*`` stream-json subtype) but its final
       text is nothing but an account-quota-exhaustion notice
       (:func:`~precis.utils.llm.quota.is_quota_exhaustion_text` —
       gr345336). Anthropic surfaces this with no structural signal
@@ -966,12 +966,19 @@ class LlmResult:
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a :class:`~precis.utils.claude_agent.AgentResult`.
 
-    A CLEAN run (``terminal_reason`` ``None`` — no ``error_*`` stream-json
-    subtype, exit 0) whose final text is nothing but an account-quota-
-    exhaustion notice (gr345336) is reported ``paused``/``quota_exhausted``
-    instead of as an ordinary answer — see :attr:`LlmResult.quota_exhausted`.
-    Anthropic gives this no structural signal (it looks exactly like a
-    completed turn); text is all there is to key on.
+    A CLEAN run (``terminal_reason`` ``None`` or ``'completed'`` — no
+    ``error_*`` stream-json subtype) whose final text is nothing but an
+    account-quota-exhaustion notice (gr345336) is reported
+    ``paused``/``quota_exhausted`` instead of as an ordinary answer — see
+    :attr:`LlmResult.quota_exhausted`. Anthropic gives this no reliable
+    structural signal (it looks like a completed turn); text is all there is
+    to key on.
+
+    ``'completed'`` counts as clean because current CLIs stamp it on every
+    finished turn, quota notices included (a 2026-10-01 quest_tick stream:
+    ``"terminal_reason":"completed"`` beside ``"api_error_status":429``).
+    A ``None``-only guard let those notices through as unparseable answers,
+    which spent quest_tick's failure budget and rested qu164903 (gr345366).
     """
     result = LlmResult(
         text=res.final_text,
@@ -988,7 +995,9 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
         cache_read_tokens=res.cache_read_tokens,
         cache_creation_tokens=res.cache_creation_tokens,
     )
-    if res.terminal_reason is None and is_quota_exhaustion_text(res.final_text):
+    if res.terminal_reason in (None, "completed") and is_quota_exhaustion_text(
+        res.final_text
+    ):
         result = _replace(
             result,
             paused=True,

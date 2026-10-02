@@ -12,6 +12,7 @@ the corresponding call site resolves to today.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import Message
@@ -21,7 +22,7 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
-from precis.utils.claude_agent import AgentResult
+from precis.utils.claude_agent import AgentResult, stream_terminal_reason
 from precis.utils.claude_p import ClaudePResult
 from precis.utils.llm import router
 from precis.utils.llm.router import (
@@ -273,6 +274,42 @@ def test_result_from_agent_long_answer_quoting_quota_phrase_not_paused() -> None
     assert got.quota_exhausted is False
     assert got.error is None
     assert got.text == long_answer
+
+
+def test_result_from_agent_quota_notice_with_completed_terminal_reason_pauses() -> None:
+    """gr345366: current CLIs end a quota-notice run with
+    ``terminal_reason='completed'`` (and ``is_error``/429), so
+    :func:`stream_terminal_reason` reports ``'completed'``, not ``None``.
+    The quota check must still fire — a ``None``-only guard let the notice
+    through as an unparseable answer and rested qu164903 on 2026-10-01.
+    The result event below is the prod stream's, trimmed."""
+    notice = "You're out of extra usage · resets 11am (UTC)"
+    stream = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "api_error_status": 429,
+            "num_turns": 1,
+            "result": notice,
+            "stop_reason": "stop_sequence",
+            "total_cost_usd": 0,
+            "terminal_reason": "completed",
+        }
+    )
+    terminal = stream_terminal_reason(stream)
+    assert terminal == "completed"
+    raw = AgentResult(
+        final_text=notice,
+        cost_usd=0.0,
+        duration_s=0.5,
+        turns_used=1,
+        raw_stdout=stream,
+        terminal_reason=terminal,
+    )
+    got = result_from_agent(raw, model="claude-sonnet-5", tier=Tier.BIG)
+    assert got.paused is True
+    assert got.quota_exhausted is True
 
 
 def test_result_from_agent_quota_text_on_abnormal_exit_not_paused() -> None:
