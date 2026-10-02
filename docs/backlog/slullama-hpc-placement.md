@@ -81,8 +81,10 @@ llm.chain.big = [{"placement":"local","transport":"openai_tools","model":"qwen-h
    fleet; may want a loopback-aware extension of
    `_skip_unserved_local_rung` to cover `OPENAI_TOOLS` too.
 3. **Cluster access.** Meluxina login node on a non-standard SSH port
-   (`login.lxp.lu:8822`); the Meluxina username is distinct from the ICHEC
-   account; SSH pubkey registered through the provider's helpdesk
+   (host, port and username live only in the gitignored overlay
+   `deploy/inventory/hosts.yml` — never in a tracked file, test or commit
+   message; this repo is public); the Meluxina username is distinct from the
+   ICHEC account; SSH pubkey registered through the provider's helpdesk
    (out-of-band — matches the `ssh_tunnels` external-endpoint provisioning
    path, which already expects a human-provisioned `authorized_keys`). GPU
    partition (`gpu`) + a `--qos` to pick. Modules only load on compute

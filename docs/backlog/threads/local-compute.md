@@ -20,16 +20,27 @@ then the big model on one spark, then the rungs that consume it.
    each item below.
 2. **backlog/local-summarizer.md** — the first workload to go local again
    (~1.8M-chunk backlog, bulk and content-light); gated on
-   `backlog/model-qualification.md`, measured by 1. The gate's instrument is
-   built (WIP on this branch, not landed): `llm_eval` scorer `summary`
-   replays the production summariser messages and grades with the worker's
-   own parse/reject plus an invented-number check;
-   `scripts/llm_eval/build_summarize_gold.py` samples already-summarised
-   paper chunks read-only into gitignored `gold_set/local/`. Resume: re-run
-   `UV_WITH="--with numba" scripts/test tests/test_llm_eval.py` (last
-   assertion edited after the last run), qland, then build the set and
-   compare a local candidate vs `glm-4.7-flash`. Waiting on review item
-   local-compute-2 (cluster read to find the candidate; gold-set location).
+   `backlog/model-qualification.md`, measured by 1. The gate's instrument
+   landed (d2abcbc7): `llm_eval` scorer `summary` replays the production
+   summariser messages and grades with the worker's own parse/reject plus an
+   invented-number check; `scripts/llm_eval/build_summarize_gold.py` samples
+   already-summarised paper chunks read-only into gitignored
+   `gold_set/local/` (Reto 2026-10-02: the set never enters the public
+   repo). `llm eval --compare` prints mean/n beside the ordinal.
+   **First candidate exists already:** cluster read 2026-10-02 13:17Z —
+   melchior llama-swap (port 11445) serves `glm-4.7-flash` (Q5_K_M),
+   `qwen3.6-27b-q8_0` and `qwen3-next-80b-a3b-q4_k_m`, all idle; prod
+   `resource_slots` holds `melchior|llm:glm-4.7-flash` cap 4. The `small`
+   chain buys `z-ai/glm-4.7-flash` from OpenRouter, so the first
+   qualification is the local quantisation against its own cloud original.
+   castor/pollux serve nothing. **Next, after the round deploy carries
+   d2abcbc7 to melchior** (the local endpoint is loopback-only there): on
+   melchior, build the set (`--n 40`), then `precis llm eval glm-4.7-flash
+   --compare z-ai/glm-4.7-flash --tier small --gold <set>`. Unverified:
+   that a bare `glm-4.7-flash` at tier small routes to the local
+   `served_by` slot and not the cloud — check the `llm_call_log` placement
+   of the eval rows. Proposed promote rule (Reto to confirm with the
+   result): candidate mean ≥ incumbent mean − 0.05 and no transport errors.
 3. **Single-spark big model** — **backlog/vllm-per-node-serving.md Slice 0**
    (Nemotron NVFP4 vs gpt-oss control; go/no-go for the oversubscription
    design), after its two spark prerequisites,

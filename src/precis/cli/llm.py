@@ -418,11 +418,17 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
             record=False,
         )
         axes = sorted({a for r in reports.values() for a in r.ordinals})
-        print(f"{'axis':<24} {args.model:>16} {args.compare:>16}")
+        # Ordinal plus mean/n: the 1-5 bucket alone cannot separate two
+        # close models (a quantisation vs its cloud original).
+        print(f"{'axis':<24} {args.model:>22} {args.compare:>22}")
         for axis in axes:
-            oa = reports[args.model].ordinals.get(axis, "—")
-            ob = reports[args.compare].ordinals.get(axis, "—")
-            print(f"{axis:<24} {oa!s:>16} {ob!s:>16}")
+            cells = []
+            for name in (args.model, args.compare):
+                res = next((r for r in reports[name].results if r.axis == axis), None)
+                cells.append(
+                    f"{res.ordinal} ({res.mean_score:.3f}/{res.n})" if res else "—"
+                )
+            print(f"{axis:<24} {cells[0]:>22} {cells[1]:>22}")
         skipped = reports[args.model].skipped
         if skipped:
             print(f"\nskipped ({len(skipped)}): " + "; ".join(skipped))

@@ -317,3 +317,35 @@ def test_build_summarize_gold_row_to_task() -> None:
     assert t["expect"]["nonprose"] is True and t["expect"]["chunk_text"] == _CHUNK
     assert any(_CHUNK in m["content"] for m in t["messages"])
     assert not mod.incumbent_is_tag("Prose brief.\n\nDetail (x).")
+
+
+def test_cli_compare_prints_mean_and_n(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--compare shows mean/n beside the ordinal so close models separate."""
+    import argparse
+
+    import precis.llm_eval as llm_eval_pkg
+    from precis.cli.llm import _cmd_eval
+    from precis.llm_eval.harness import AxisResult, EvalReport
+
+    def _rep(model: str, mean: float) -> EvalReport:
+        res = AxisResult(
+            axis="summarize-extract",
+            n=40,
+            mean_score=mean,
+            ordinal=bucket_to_ordinal(mean),
+        )
+        return EvalReport(model=model, results=[res], skipped=[])
+
+    monkeypatch.setattr(
+        llm_eval_pkg,
+        "compare",
+        lambda store, **kw: {"a": _rep("a", 0.925), "b": _rep("b", 0.9)},
+    )
+    args = argparse.Namespace(
+        model="a", compare="b", tier="small", gold=None, no_record=True
+    )
+    _cmd_eval(None, args)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "5 (0.925/40)" in out and "5 (0.900/40)" in out
