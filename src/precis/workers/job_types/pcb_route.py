@@ -49,6 +49,7 @@ from precis.pcb.optimize import (
     optimize,
     resolve_measures,
 )
+from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -562,6 +563,36 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     rres = pcb_realize.realize(
         ir, config=realize_config, footprints=footprints, fixed_copper=fixed_copper
     )
+    # Post-route legality gate. Legality is a hard gate and incompleteness the
+    # only permitted failure (docs/backlog/pcb-always-valid-board-invariant.md):
+    # router copper that breaks a geometric DRC rule is NOT stored — its net
+    # is stripped and failed with the rule named. Everything below reads the
+    # stripped `rres`. Unlike the advisory pre-route gate above this one fails
+    # CLOSED: if the check itself raises, nothing from this realize is
+    # written — not the copper (unchecked), and not the per-net statuses
+    # either, which without that copper would call a plane net `realized`.
+    drc_fail: dict[str, list[dict[str, Any]]] = {}
+    try:
+        routed_findings = pcb_session.routed_drc_findings(
+            ir,
+            rres,
+            capability=fab_caps,
+            footprints=footprints,
+            fixed_copper=fixed_copper,
+            outline=pcb_session.outline_from_features(features),
+            net_rules=_graph_net_rules(graph, fab_caps),
+            net_voltages=_graph_net_voltages(graph),
+        )
+        rres, drc_fail = pcb_session.strip_drc_violating_nets(ir, rres, routed_findings)
+    except Exception as exc:
+        log.exception("pcb_route: post-route DRC gate raised; writing nothing")
+        ctx.record_failure(
+            f"pcb_route: post-route DRC gate raised ({type(exc).__name__}: "
+            f"{exc}); no routes or copper written because they could not be "
+            "checked",
+            failure_class="infra",
+        )
+        return
     fixed_realized_net_ids = {int(ir.seg_net[s]) for s in rres.fixed_realized}
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)
@@ -712,6 +743,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             + congestion
             + unrouted_fail.get(net_name, [])
             + unstitched_fail.get(net_name, [])
+            + drc_fail.get(net_name, [])
         )
         note = None
         if problems:
@@ -875,7 +907,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"route), {len(rres.vias)} via(s) placed, "
         f"{len(rres.warnings)} congestion warning(s), "
         f"{len(pin_swap_overrides)} pin swap(s) settled, "
-        f"{n_placement_errors} pre-route DRC error(s)"
+        f"{n_placement_errors} pre-route DRC error(s), "
+        f"{len(drc_fail)} net(s) stripped by post-route DRC"
         f"{pin_swap_summary}\n\n" + digest_toon(result),
     )
     # Reto's ruling (2026-10-01): "it's no good if the wires are not there.
@@ -893,6 +926,33 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "view='route-status' for each net's reason",
             failure_class="non-convergence",
         )
+
+
+def _graph_net_rules(graph: dict[str, Any], fab_caps: Any) -> dict[str, NetRules]:
+    """Per-net resolved rules for the post-route clearance check — built the
+    way ``handlers/pcb.py::_drc_run`` builds them (clearance is the only
+    field ``check_clearance`` reads, so the layer flag is arbitrary)."""
+    net_classes = graph.get("net_classes") or {}
+    return {
+        str(n["name"]): resolve_net_rules(
+            str(n.get("net_class") or ""),
+            layer_is_outer=True,
+            fab_caps=fab_caps,
+            overrides=net_classes.get(n.get("net_class") or ""),
+            current_a=n.get("est_current_a"),
+        )
+        for n in graph.get("nets") or []
+    }
+
+
+def _graph_net_voltages(graph: dict[str, Any]) -> dict[str, float]:
+    """Annotated nets only — a missing ``working_voltage_v`` is "not
+    annotated", never 0 V (``_drc_run``'s same rule)."""
+    return {
+        str(n["name"]): float(n["working_voltage_v"])
+        for n in graph.get("nets") or []
+        if n.get("working_voltage_v") is not None
+    }
 
 
 def _run(*_a: Any, **_k: Any) -> Any:

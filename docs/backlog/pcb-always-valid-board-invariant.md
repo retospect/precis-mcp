@@ -316,10 +316,15 @@ extracted *affinity*, which is a different fact.
 2. **Does `move` grow a multi-pose form**, or do we accept a
    parking-slot workflow and let swaps be a two-step dance that can dead-end
    on a dense board?
-3. **`route` that cannot finish:** refuse the whole commit, or commit only
-   the DRC-clean nets? Option (b) is more useful and needs the in-job DRC
-   from "Where the invariant lives"; option (a) needs the five writes folded
-   into one transaction. Both are real work.
+3. ~~**`route` that cannot finish:** refuse the whole commit, or commit
+   only the DRC-clean nets?~~ **Resolved as (b) by rulings already on
+   record**, not a new call: "routing is valid (but may be incomplete)"
+   (2026-09-30), "you may show it to me but it is failed" (2026-10-01),
+   and the copper table above (router copper yields). So the route job
+   DRCs its own router copper before writing; a net whose router copper
+   violates a geometric rule is stripped and lands `failed` with
+   `drc:<rule>` in its note. Option (a)'s single transaction is still
+   open as crash-safety, separate from validity.
 
 ## Acceptance
 
@@ -336,7 +341,14 @@ extracted *affinity*, which is a different fact.
   accepted — the delta-vs-state clause. The courtyard-vs-hole rule it
   needed for the mounting-hole fixture exists (`courtyard_hole`).
 - `route` on a board it cannot fully realize does not leave stored copper
-  with unreported DRC errors.
+  with unreported DRC errors. **Done (2026-10-02)** for the copper rules
+  (clearance, width, annular ring, NPTH, via/pad, via/via, board edge):
+  `pcb_session.routed_drc_findings` + `strip_drc_violating_nets` run in the
+  route job between `realize()` and the writes; router rows are tagged
+  `derived` so a finding names whose copper yields. If the check raises,
+  the job writes nothing. Not covered: board furniture (fiducials) —
+  `view='drc'` builds it, the job does not, so a track near a fiducial
+  can still be stored and only show up there.
 - `check_unrouted` does NOT cause a refusal — the geometric/routedness
   split has its own test, or the invariant is unshippable.
 

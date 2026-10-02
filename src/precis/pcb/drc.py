@@ -588,6 +588,17 @@ def _nearest_xy(
     return (float(na.x), float(na.y)), (float(nb.x), float(nb.y))
 
 
+def _derived_tag(item: dict[str, Any]) -> dict[str, Any]:
+    """``{"derived": True}`` for a ROUTER-drawn copper row, else ``{}``.
+
+    A caller that must tell router copper from authored (``fixed``) copper in
+    a finding's ``objects`` (:func:`precis.pcb.session.
+    strip_drc_violating_nets`) tags the model's router rows ``derived: True``;
+    this carries that tag through to the finding. Absent for every other
+    caller, so existing finding shapes are unchanged."""
+    return {"derived": True} if item.get("derived") else {}
+
+
 def _clearance_object(
     item: dict[str, Any], near: tuple[float, float] | None
 ) -> dict[str, Any]:
@@ -595,6 +606,7 @@ def _clearance_object(
         "ctype": item.get("ctype"),
         "net": item.get("net"),
         "layer": item.get("layer"),
+        **_derived_tag(item),
     }
     if item.get("ctype") == "pad" and item.get("refdes"):
         obj["refdes"], obj["pin"] = item.get("refdes"), item.get("pin")
@@ -1043,7 +1055,7 @@ def check_trace_width(
                 detail=_margin_detail(
                     "trace width", width, capability, field, severity, margin
                 ),
-                objects=({"net": net, "layer": layer},),
+                objects=({"net": net, "layer": layer, **_derived_tag(item)},),
                 margin_mm=margin,
             )
         )
@@ -1118,7 +1130,14 @@ def check_annular_ring(
                 detail=_margin_detail(
                     "via annular ring", ring, capability, field, severity, margin
                 ),
-                objects=({"net": net, "x": item.get("x"), "y": item.get("y")},),
+                objects=(
+                    {
+                        "net": net,
+                        "x": item.get("x"),
+                        "y": item.get("y"),
+                        **_derived_tag(item),
+                    },
+                ),
                 margin_mm=margin,
             )
         )
@@ -1176,13 +1195,15 @@ def check_npth_clearance(
         hx, hy = float(h["x"]), float(h["y"])
         hr = float(h.get("dia_mm", 0.0)) / 2.0
         best = math.inf
+        nearest: _Prim | None = None
         for p in prims:
             d = (
                 _dist(p.a, (hx, hy))
                 if p.b is None
                 else dist_point_to_segment((hx, hy), p.a, p.b)
             )
-            best = min(best, d - hr - p.r)
+            if d - hr - p.r < best:
+                best, nearest = d - hr - p.r, p
         if best is math.inf:
             continue
         result = _two_tier(best, jlc_min, house)
@@ -1197,7 +1218,23 @@ def check_npth_clearance(
                 detail=_margin_detail(
                     "NPTH copper clearance", best, capability, field, severity, margin
                 ),
-                objects=({"hole_x": hx, "hole_y": hy},),
+                objects=(
+                    {
+                        "hole_x": hx,
+                        "hole_y": hy,
+                        # The nearest copper item is the one that violates
+                        # (it is the minimum), so name it: a strip pass
+                        # otherwise cannot tell whose copper sits on the hole.
+                        **(
+                            {
+                                "net": nearest.net,
+                                **_derived_tag(model["copper"][nearest.group]),
+                            }
+                            if nearest is not None
+                            else {}
+                        ),
+                    },
+                ),
                 margin_mm=margin,
             )
         )
@@ -1415,6 +1452,7 @@ def check_via_pad_keepout(
                     objects=(
                         {
                             "via_net": via_net,
+                            **({"via_derived": True} if item.get("derived") else {}),
                             "via_x": vx,
                             "via_y": vy,
                             "pad_net": pad_net,
@@ -1529,6 +1567,8 @@ def check_via_via_keepout(
                     "b_net": b_net,
                     "b_x": bx,
                     "b_y": by,
+                    **({"a_derived": True} if via_a.get("derived") else {}),
+                    **({"b_derived": True} if via_b.get("derived") else {}),
                 },
             )
 
@@ -1910,7 +1950,12 @@ def check_board_edge_clearance(
         # without instrumenting a run, which is how a 10um shortfall on this
         # very rule sat unattributed. Tracks and pours have no single point
         # and simply omit them.
-        obj: dict[str, Any] = {"net": net, "layer": layer, "ctype": ctype}
+        obj: dict[str, Any] = {
+            "net": net,
+            "layer": layer,
+            "ctype": ctype,
+            **_derived_tag(item),
+        }
         if item.get("x") is not None and item.get("y") is not None:
             obj["x"], obj["y"] = float(item["x"]), float(item["y"])
         findings.append(

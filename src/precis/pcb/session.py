@@ -45,6 +45,7 @@ from precis.pcb import padplace as pcb_padplace
 if TYPE_CHECKING:
     from precis.pcb.capabilities import CapabilityRow
     from precis.pcb.drc import DrcFinding
+    from precis.pcb.realize import RealizeResult
     from precis.pcb.rules import NetRules
 
 log = logging.getLogger(__name__)
@@ -853,6 +854,136 @@ def placement_drc_findings(
         courtyard_bottom=courtyard_bottom,
         net_rules=net_rules,
     )
+
+
+def routed_drc_findings(
+    ir: pcb_ir.PcbIR,
+    rres: RealizeResult,
+    *,
+    capability: CapabilityRow,
+    footprints: dict[str, dict[str, Any]] | None = None,
+    fixed_copper: list[dict[str, Any]] | None = None,
+    outline: list[list[float]] | None = None,
+    net_rules: dict[str, NetRules] | None = None,
+    net_voltages: dict[str, float] | None = None,
+) -> list[DrcFinding]:
+    """The post-route legality pass — the COPPER geometry rules over pads +
+    authored fixed copper + the router's own copper (``rres``), the model
+    :func:`precis.pcb.realize.to_gerber_model` would hand a fab (quantized
+    the same way: what is checked is what ships). Router rows carry
+    ``derived: True`` so a finding's ``objects`` say which side is router
+    copper (:func:`strip_drc_violating_nets` reads that).
+
+    Rules: clearance (with ``net_rules``/``net_voltages``), trace width,
+    annular ring, NPTH clearance (``ir.mounting_holes`` as unplated drills,
+    as ``handlers/pcb.py::_drc_drills`` feeds them), via/pad and via/via
+    keep-out, board-edge clearance. NOT connectivity/unrouted (routedness,
+    not validity — the invariant's split) and not courtyard/silk/outline
+    containment (placement, gated by :func:`placement_drc_findings`)."""
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb import realize as pcb_realize
+
+    layers = [str(layer.get("name")) for layer in ir.stackup]
+    model = pcb_realize._quantized(
+        {
+            "layers": layers,
+            "pads": pcb_realize.pads_for_ir(ir, layers, footprints),
+            "copper": [
+                *({**row, "net": row.get("net") or ""} for row in (fixed_copper or [])),
+                *pcb_realize.result_copper_rows(rres, ir, layers, derived=True),
+            ],
+            "drills": [
+                {
+                    "x": h.x,
+                    "y": h.y,
+                    "dia_mm": h.drill_mm,
+                    "plated": bool(h.plated),
+                }
+                for h in ir.mounting_holes
+            ],
+        }
+    )
+    findings: list[DrcFinding] = []
+    findings += pcb_drc.check_clearance(
+        model, capability, net_rules=net_rules, net_voltages=net_voltages
+    )
+    findings += pcb_drc.check_trace_width(model, capability)
+    findings += pcb_drc.check_annular_ring(model, capability)
+    findings += pcb_drc.check_npth_clearance(model, capability)
+    findings += pcb_drc.check_via_pad_keepout(model, capability)
+    findings += pcb_drc.check_via_via_keepout(model, capability)
+    findings += pcb_drc.check_board_edge_clearance(model, capability, outline=outline)
+    return findings
+
+
+#: ``(net key, derived key)`` pairs a finding's ``objects`` use, per rule
+#: family (clearance/width/ring/edge/npth: plain; via-pad: ``via_``; via-via:
+#: ``a_``/``b_``). A net is ROUTER copper only where the paired flag is set.
+_ROUTER_NET_KEYS = (
+    ("net", "derived"),
+    ("via_net", "via_derived"),
+    ("a_net", "a_derived"),
+    ("b_net", "b_derived"),
+)
+#: Per-net cap on the problem dicts kept (a badly placed net can trip the
+#: same rule hundreds of times); the overflow count is appended to the last
+#: message instead of adding a differently-named reason to the net's note.
+_MAX_DRC_PROBLEMS_PER_NET = 10
+
+
+def strip_drc_violating_nets(
+    ir: pcb_ir.PcbIR,
+    rres: RealizeResult,
+    findings: list[DrcFinding],
+) -> tuple[RealizeResult, dict[str, list[dict[str, Any]]]]:
+    """Router copper YIELDS to legality: every net with router copper named in
+    an ERROR finding loses ALL its router tracks, vias and pours, and is
+    returned with a ``{"kind": "drc", "reason": "drc:<rule>", "message":
+    "<where>: <detail>"}`` problem per finding (the shape ``pcb_route``'s
+    ``problems`` already use, so the net lands ``failed`` with the rule in its
+    note). Pads and authored/fixed copper never yield: a finding whose only
+    copper is pads/fixed rows is ignored here (the pre-route gate owns it).
+    When two router nets conflict BOTH are stripped — conservative and simple;
+    ripping only one would need a choice of loser this pass has no basis for.
+
+    Returns a NEW :class:`~precis.pcb.realize.RealizeResult` (the input is
+    untouched) plus ``{net_name: [problem, ...]}``."""
+    import dataclasses
+
+    problems: dict[str, list[dict[str, Any]]] = {}
+    extra: dict[str, int] = {}
+    for f in findings:
+        if f.severity != "error":
+            continue
+        nets: set[str] = set()
+        for obj in f.objects:
+            for net_key, flag_key in _ROUTER_NET_KEYS:
+                if obj.get(flag_key) and obj.get(net_key):
+                    nets.add(str(obj[net_key]))
+        for net in sorted(nets):
+            kept = problems.setdefault(net, [])
+            if len(kept) >= _MAX_DRC_PROBLEMS_PER_NET:
+                extra[net] = extra.get(net, 0) + 1
+                continue
+            kept.append(
+                {
+                    "kind": "drc",
+                    "reason": f"drc:{f.rule}",
+                    "message": f"{f.where}: {f.detail}",
+                }
+            )
+    for net, n in extra.items():
+        problems[net][-1]["message"] += f" (+{n} more DRC finding(s) on this net)"
+    if not problems:
+        return rres, problems
+    ids = {i for i in range(ir.n_nets) if str(ir.net_name[i]) in problems}
+    stripped = dataclasses.replace(
+        rres,
+        tracks=tuple(t for t in rres.tracks if int(t.net_id) not in ids),
+        vias=tuple(v for v in rres.vias if int(v.net_id) not in ids),
+        pours=tuple(p for p in rres.pours if str(p.get("net", "")) not in problems),
+    )
+    return stripped, problems
 
 
 def placement_drc_report(findings: list[DrcFinding]) -> tuple[int, str | None]:

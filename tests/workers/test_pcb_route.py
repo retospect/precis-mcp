@@ -989,3 +989,67 @@ def test_routed_net_is_never_failed_by_a_gap_capacity_warning(
     # The warning is still reported — in the summary, not as the net's fate.
     summary = "\n".join(t for k, t in ctx.summaries if k == "job_summary")
     assert "1 congestion warning" in summary
+
+
+def _copper_count(store: Store, ref_id: int) -> int:
+    board_id = store.pcb_ensure_board(ref_id)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM pcb_copper WHERE board_id = %s", (board_id,)
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_pcb_route_strips_a_net_whose_router_copper_violates_drc(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Router copper that breaks a geometric DRC rule is not stored: its net
+    lands ``failed`` with the rule named and writes no copper, and the job
+    fails (a failed net always does)."""
+    from precis.pcb.drc import DrcFinding
+
+    def _violation(*_a: Any, **_k: Any) -> list[DrcFinding]:
+        return [
+            DrcFinding(
+                rule="clearance",
+                severity="error",
+                where="track[N1] <-> pad[X]",
+                detail="0.050mm < 0.090mm",
+                objects=({"ctype": "track", "net": "N1", "derived": True},),
+            )
+        ]
+
+    monkeypatch.setattr(pcb_session, "routed_drc_findings", _violation)
+    ref_id = _seed(store, "route-drc-strip", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    (row,) = store.pcb_route_status(ref_id)
+    assert row["status"] == "failed"
+    assert "drc:clearance" in (row["note"] or "")
+    assert _copper_count(store, ref_id) == 0
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
+    assert "1 net(s) stripped by post-route DRC" in ctx.summaries[0][1]
+
+
+def test_pcb_route_writes_no_copper_when_the_post_route_gate_raises(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: nothing from an unchecked realize is stored — no copper,
+    and no `realized` status standing in for copper that was never written."""
+
+    def _boom(*_a: Any, **_k: Any) -> list[Any]:
+        raise RuntimeError("drc exploded")
+
+    monkeypatch.setattr(pcb_session, "routed_drc_findings", _boom)
+    ref_id = _seed(store, "route-drc-raises", _DESIGN)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
+    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+
+    assert _copper_count(store, ref_id) == 0
+    assert store.pcb_route_status(ref_id) == [] or all(
+        r["status"] != "realized" for r in store.pcb_route_status(ref_id)
+    )
+    assert len(ctx.failures) == 1 and ctx.failures[0][1] == "infra"
+    assert "post-route DRC gate raised" in ctx.failures[0][0]

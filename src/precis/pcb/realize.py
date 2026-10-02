@@ -5724,33 +5724,21 @@ def re_realize_segments(
 # ── gerber.py hand-off ────────────────────────────────────────────────────
 
 
-def to_gerber_model(
+def result_copper_rows(
     result: RealizeResult,
     ir: PcbIR,
-    *,
     layers: list[str],
-    outline: list[list[float]],
+    *,
     track_width_mm: float | None = None,
-    footprints: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Assemble a :mod:`precis.pcb.gerber`-shaped model dict from a
-    :class:`RealizeResult` — ``layers`` is the board's layer-name list
-    (export label only, per the IR's own "names are an export concern
-    only" discipline: this is the ONE place an integer layer index gets
-    turned into a name, at hand-off to gerber). Each track's width is its
-    OWN :attr:`RealizedTrack.width_mm` — already resolved per net/layer by
-    :mod:`precis.pcb.rules` at realize time (module docstring). Passing an
-    explicit ``track_width_mm`` overrides every track uniformly, for a
-    caller that genuinely wants one flat width (e.g. a quick sanity export)
-    rather than the per-net resolution. ``footprints`` is forwarded to
-    :func:`pads_for_ir` unchanged (real per-pin pad size where supplied,
-    :mod:`precis.pcb.landpattern` synthesis otherwise).
-
-    Each via becomes a ``"span"`` layer-NAME pair — the SAME two-name shape
-    :mod:`precis.pcb.gerber`'s ``_via_layers``/:mod:`precis.pcb.drc`'s
-    ``_via_layer_names`` both already read — never a ``"layer"`` key
-    (:class:`RealizedVia`'s own docstring: that scalar shape is the exact
-    prior regression this function must not reintroduce)."""
+    derived: bool = False,
+) -> list[dict[str, Any]]:
+    """The router's tracks, vias and pours as :mod:`precis.pcb.gerber`-shaped
+    copper rows — :func:`to_gerber_model`'s copper half, factored out so the
+    post-route DRC gate (:func:`precis.pcb.session.routed_drc_findings`)
+    checks the SAME rows a fab receives. ``derived=True`` tags each row
+    ``"derived": True`` so a DRC finding's ``objects`` can tell router copper
+    from authored (``fixed``) copper; off for the gerber model, which has no
+    use for the key."""
     copper: list[dict[str, Any]] = []
     for t in result.tracks:
         if t.layer < 0 or t.layer >= len(layers):
@@ -5779,6 +5767,39 @@ def to_gerber_model(
             }
         )
     copper += [dict(p) for p in result.pours]
+    if derived:
+        copper = [{**row, "derived": True} for row in copper]
+    return copper
+
+
+def to_gerber_model(
+    result: RealizeResult,
+    ir: PcbIR,
+    *,
+    layers: list[str],
+    outline: list[list[float]],
+    track_width_mm: float | None = None,
+    footprints: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Assemble a :mod:`precis.pcb.gerber`-shaped model dict from a
+    :class:`RealizeResult` — ``layers`` is the board's layer-name list
+    (export label only, per the IR's own "names are an export concern
+    only" discipline: this is the ONE place an integer layer index gets
+    turned into a name, at hand-off to gerber). Each track's width is its
+    OWN :attr:`RealizedTrack.width_mm` — already resolved per net/layer by
+    :mod:`precis.pcb.rules` at realize time (module docstring). Passing an
+    explicit ``track_width_mm`` overrides every track uniformly, for a
+    caller that genuinely wants one flat width (e.g. a quick sanity export)
+    rather than the per-net resolution. ``footprints`` is forwarded to
+    :func:`pads_for_ir` unchanged (real per-pin pad size where supplied,
+    :mod:`precis.pcb.landpattern` synthesis otherwise).
+
+    Each via becomes a ``"span"`` layer-NAME pair — the SAME two-name shape
+    :mod:`precis.pcb.gerber`'s ``_via_layers``/:mod:`precis.pcb.drc`'s
+    ``_via_layer_names`` both already read — never a ``"layer"`` key
+    (:class:`RealizedVia`'s own docstring: that scalar shape is the exact
+    prior regression this function must not reintroduce)."""
+    copper = result_copper_rows(result, ir, layers, track_width_mm=track_width_mm)
     return _quantized(
         {
             "layers": layers,

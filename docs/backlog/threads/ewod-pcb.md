@@ -8,7 +8,7 @@ sink's pads were synthesized bounds; DRC never ran on what routing stored):
 make the geometry real, make invalidity impossible to store, then
 re-measure everything ranked off the old numbers. Shares generator, DRC
 and realizer files with pcb-easyeda-round-trip: sequence, do not merge.
-**Last reviewed:** 2026-10-02 (silk shared label spot shipped; dogfood-6
+**Last reviewed:** 2026-10-02 (route-job post-route DRC gate landed; silk shared label spot shipped; dogfood-6
 valid: 30/55 routed, 0 geometric DRC errors; resume at Do-next 3). 2026-10-01 (Pillar 2 review: pcb items from the unthreaded
 sweep adopted — escape-and-driver-chain, floating-pour-island, stackup
 orphan, checklist-kind, component-followons, argue-backport; round-7 and
@@ -26,8 +26,15 @@ Do-next renumbered)
    identical parts shares one spot. What is left is small: a courtyard
    break that did not reproduce on the real pads (re-check on the next
    render), and EasyEDA designator poses not imported.
-1. **backlog/pcb-always-valid-board-invariant.md** — **now `status:
-   canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
+1. **backlog/pcb-always-valid-board-invariant.md** — the route job now
+   DRCs its own router copper before writing (2026-10-02, undeployed):
+   a violating net is stripped and lands `failed` with `drc:<rule>`.
+   Decision 3 was read off standing rulings; review item ewod-pcb-1 lets
+   Reto overrule it and still holds decisions 1-2 (move carries authored
+   copper; multi-pose move). After the deploy, re-route ewod-dogfood-6 and
+   check the summary's "stripped by post-route DRC" count — expected 0,
+   since the board already reads 0 geometric DRC errors.
+   **Now `status: canonical`** (Reto, 2026-09-30: "ok make it canonical"), carrying his
    design consequence: *"If placement is always valid and routing is valid
    (but may be incomplete), we should never get a failure."* So legality is
    a hard gate on both stages and incompleteness is the only permitted
