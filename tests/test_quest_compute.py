@@ -2115,7 +2115,7 @@ class TestNetworkLikeWithLike:
                     "selectivity_margin": {
                         "digest": "d",
                         "template": "parked",
-                        "version": "0.21.0",
+                        "version": "0.22.0",
                     }
                 },
             },
@@ -2136,6 +2136,24 @@ class TestNetworkLikeWithLike:
         cands = [_cand(store, i) for i in ids[:2]]
         apply_network_demotion(cands)
         assert all("network_stale" not in c.flags for c in cands)
+
+    def test_same_digest_on_another_engine_version_is_not_like_with_like(
+        self,
+    ) -> None:
+        """catalysis-selectivity-24: the digest hashes topology only, so a
+        release that changes energies on the same steps keeps the digest.
+        Equal digests on two engine versions must not compare."""
+        from precis.quest.frontier import same_network_basis
+
+        old = {"digest": "d", "template": "coadsorbed", "version": "0.22.0"}
+        new = {"digest": "d", "template": "coadsorbed", "version": "0.23.0"}
+        assert not same_network_basis(old, new)
+        assert same_network_basis(old, dict(old))
+        # a digest-less stamp still needs template and version both
+        bare = {"digest": None, "template": "coadsorbed", "version": "0.22.0"}
+        assert same_network_basis(bare, old)
+        assert not same_network_basis(bare, {**bare, "template": "parked"})
+        assert not same_network_basis(bare, {**bare, "version": None})
 
     def test_current_basis_prefers_reference_template_then_version_then_digest(
         self,

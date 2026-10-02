@@ -15,9 +15,14 @@ Reto reads the results), then the objective, then where barriers run.
 restale pass, status-view marker) and the diagram fold/annotation web half
 landed after design review §14 + fixes F1–F3 (R1 briefly backed out, then
 re-landed on Reto's ruling `catalysis-selectivity-15`: a correctness fix,
-not a criterion change). Open from it: the legacy backfill by value match
-(approved, `catalysis-selectivity-14`; Reto sees the dry-run count before
-any write); the Pd-hydride plan (review item first, compute after); catpath 0.23.0 (Part B) runs in Reto's
+not a criterion change). Margins compare only on equal engine version too
+(Reto, `catalysis-selectivity-24`; the correction-set id joins once catpath
+records one). Open from it: the legacy backfill by value match. Its dry run
+would demote 196 of 215 selectivity margins (every one not on
+coadsorbed@0.22.0), so it is back with Reto as `catalysis-selectivity-25`
+and not applied. The Pd-hydride NEB pilot is held until the
+surface-Pourbaix work is built (Reto, item 23); the PBE H-flight check is
+costed in `catalysis-selectivity-26`. Catpath 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
 **Worktree:** `catalysis-selectivity`
@@ -35,11 +40,13 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
    → the neb-tier re-run of pw455722's candidate (steps 5–6).
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
-   Pd(111). Plan (stage-0 potential validation, levels from computed x(U)
-   steps, β re-run of the top 10) awaits approval in review-queue
-   `catalysis-selectivity-16`; no compute before it. Precis-side fixes
-   (struct_relax lattice write-back, preflight on H-loaded slabs) can
-   start.
+   Pd(111). Stages 0–2 done. The pilot pair is built
+   (`scratch/pdh-pilot/`), and its NEB runs are held until the
+   surface-Pourbaix optimizer (Horizon 3) is built, because the bare-surface
+   construction may change once the resting state at the operating point is
+   known (Reto, item 23). The PBE check of the H flight from Ta runs only on
+   Reto's ok (`catalysis-selectivity-26`). Precis-side fixes (struct_relax
+   lattice write-back, preflight on H-loaded slabs) can start.
 3. **backlog/pathway-diagram-step-annotations.md** +
    **backlog/catpath-desorption-link-kind.md** (its first slice, moved
    here from chemistry Horizon 2) — independent of 1, parallel. The web
@@ -55,7 +62,9 @@ any write); the Pd-hydride plan (review item first, compute after); catpath 0.23
    branch `worktree-agent-af864454b1508ef28` (tip `224232762`) for round 2,
    not a qland, because it changes deploy roles. The orchestrator owns that
    branch now. After it lands: clamp the within-tol note's margin at 0 (a
-   ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"). The gate (B) waits on A
+   ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"), and cite
+   materialsproject/pymatgen#4709 at the `process_multientry` workaround
+   so it can be deleted once upstream fixes it. The gate (B) waits on A
    landing, the MP key in the vault (Reto), and qu202468's operating point
    (set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10).
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto

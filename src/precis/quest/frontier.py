@@ -1578,15 +1578,21 @@ def _version_key(v: Any) -> tuple[int, ...]:
 
 
 def same_network_basis(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """Whether two ``network_basis`` stamps name the same reaction network:
-    equal digests when both carry one, else equal ``(template, version)``."""
+    """Whether two ``network_basis`` stamps were measured on the same reaction
+    network by the same engine: equal ``version`` always, then equal digests
+    when both carry one, else equal ``template``.
+
+    The version is required even when the digests match (Reto,
+    review-queue ``catalysis-selectivity-24``): catpath's digest hashes the
+    network's topology only, so a release that keeps the steps but changes
+    the energies (the item-19 gas and H* corrections) would otherwise rank
+    old-engine margins against new-engine ones."""
+    if a.get("version") != b.get("version"):
+        return False
     da, db = a.get("digest"), b.get("digest")
     if da and db:
         return bool(da == db)
-    return (a.get("template"), a.get("version")) == (
-        b.get("template"),
-        b.get("version"),
-    )
+    return bool(a.get("template") == b.get("template"))
 
 
 def _key_bases(c: Candidate) -> dict[str, dict[str, Any]]:
