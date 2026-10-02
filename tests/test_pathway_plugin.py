@@ -742,7 +742,7 @@ def test_barriers_ranked_puts_nan_and_missing_barriers_last() -> None:
     }
     eas = [r["ea"] for r in analysis.barriers_ranked(g)]
     assert eas[:3] == [0.9, 0.1, 0.0]
-    assert math.isnan(eas[3]) and eas[4] is None
+    assert eas[3] is None and eas[4] is None  # NaN normalised to None (gr460408)
 
 
 def test_toon_views_and_aligned_compare() -> None:

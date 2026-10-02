@@ -48,8 +48,23 @@ def roots(graph: dict[str, Any], results: dict[str, Any]) -> tuple[str, str]:
 def _num(x: Any, default: float = 0.0) -> float:
     """A non-finite barrier/energy is persisted as JSON null (see
     ``precis_pathway.persist._json_finite``); coerce that null back to a numeric
-    default so the graph math below never does ``float(None)``/``None > float``."""
-    return default if x is None else float(x)
+    default so the graph math below never does ``float(None)``/``None > float``.
+    A raw NaN/inf (the graph straight off the engine, before persist) is treated
+    the same way: NaN compares false both ways, so left in a ``max()`` it made
+    the answer depend on iteration order (gr460408)."""
+    if x is None:
+        return default
+    v = float(x)
+    return v if math.isfinite(v) else default
+
+
+def _finite_or_none(x: Any) -> float | None:
+    """The barrier as a number, or None when missing/NaN/inf — one shape for
+    every consumer, whether the graph is pre- or post-``_json_finite``."""
+    if x is None:
+        return None
+    v = float(x)
+    return v if math.isfinite(v) else None
 
 
 def _reaction_edges(graph: dict[str, Any]) -> list[dict[str, Any]]:
@@ -116,7 +131,7 @@ def rate_limiting(
     top = max(steps, key=lambda e: _num(e.get("barrier"), float("-inf")))
     return {
         "step": f"{top['source']}→{top['target']}",
-        "ea": top.get("barrier"),
+        "ea": _finite_or_none(top.get("barrier")),
         "std": top.get("barrier_std", 0.0),
         "low_confidence": bool(top.get("low_confidence", False)),
     }
@@ -148,7 +163,7 @@ def barriers_ranked(graph: dict[str, Any]) -> list[dict[str, Any]]:
     rows = [
         {
             "reaction": f"{e['source']}→{e['target']}",
-            "ea": e.get("barrier"),
+            "ea": _finite_or_none(e.get("barrier")),
             "std": e.get("barrier_std", 0.0),
             "conf": "low" if e.get("low_confidence") else "ok",
         }
@@ -160,7 +175,7 @@ def barriers_ranked(graph: dict[str, Any]) -> list[dict[str, Any]]:
     # no defined order and the table came out scrambled differently per Python.
     def _key(r: dict[str, Any]) -> tuple[bool, float]:
         ea = r["ea"]
-        missing = ea is None or math.isnan(ea)
+        missing = ea is None
         return (missing, 0.0 if missing else -ea)
 
     return sorted(rows, key=_key)
@@ -178,7 +193,7 @@ def selectivity(graph: dict[str, Any], root: str, target: str) -> list[dict[str,
         out.append(
             {
                 "entry_step": f"{e['source']}→{e['target']}",
-                "entry_ea": e.get("barrier"),
+                "entry_ea": _finite_or_none(e.get("barrier")),
                 "on_target_path": (e["source"], e["target"]) in on_path,
             }
         )
@@ -215,7 +230,7 @@ def profile_positions(
                         "pos": f"‡{i + 1}",
                         "kind": "ts",
                         "label": f"{s}→{path[i + 1]}",
-                        "value": e.get("barrier"),
+                        "value": _finite_or_none(e.get("barrier")),
                         "low_confidence": bool(e.get("low_confidence")),
                     }
                 )
