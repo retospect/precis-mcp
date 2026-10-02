@@ -23,13 +23,12 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/taxonomy-bootstrap.md §Resume (2026-10-01)** — the metered
+1. **backlog/taxonomy-bootstrap.md §Resume (2026-10-02)** — the metered
    re-probe ran 2026-09-30 22:00 UTC: `probe criterion FAIL` by 0.008
    (0.58 of the ceiling vs 0.60) with a first-measured per-mention noise of
-   0.32, six calls lost to the 120 s tail, and the metering that decides
-   the route: pack hubs per call, not a thread pool. Retry shipped; the
-   packing slice is the next build (unpaid), then a packed 300-row probe
-   (paid, Reto's go) reads the bar outside the noise.
+   0.32, six calls lost to the 120 s tail. Retry and packing (`--pack 4`)
+   shipped; the next act is the packed 300-row probe (paid, ~$6, waits on
+   Reto's go — see Waiting on Reto).
 2. **backlog/relation-constraints.md** — status ready, no blocker, small.
    Domain/range kinds, functional and acyclic as columns on `relations`,
    one validator in both link doors. Above the measures chain because it
@@ -113,11 +112,10 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Waiting on Reto
 
-- nothing open. The six 2026-09-30 rulings (fold-in, mirror first,
-  render-only, this rename — asked as its own question after the pillar
-  review's general "we don't rename the threads" and answered "rename" —
-  memory-lint repo-local, one resident block) are recorded in their
-  items; the re-probe (Do-next 2) got its go the same day.
+- **go for the packed 300-row probe** (Do-next 1; ~75 calls, ~$6,
+  ~1.5 h). The build it waited on shipped 2026-10-02. The six 2026-09-30
+  rulings (fold-in, mirror first, render-only, this rename, memory-lint
+  repo-local, one resident block) are recorded in their items.
 
 ## Parked
 

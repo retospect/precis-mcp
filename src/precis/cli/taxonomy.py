@@ -72,6 +72,22 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Snapshot field the join sides are read from (default: mode).",
     )
     parser.add_argument(
+        "--pack",
+        type=int,
+        default=1,
+        help="Hubs per discovery call (default 1, the single-hub prompt the "
+        "probes measured). Each claude -p call carries ~21k tokens of "
+        "harness overhead against ~1k of prompt, so 4 cuts cost and wall "
+        "per hub ~3.5x; the call timeout scales with it.",
+    )
+    parser.add_argument(
+        "--call-timeout",
+        type=float,
+        default=None,
+        help="Per-call wall clock in seconds. Default: the transport's own "
+        "at --pack 1, 120 s per hub above that.",
+    )
+    parser.add_argument(
         "--freeze",
         action="store_true",
         help="Write the next list.vN.yaml. Refuses if A/B stability is below "
@@ -148,14 +164,22 @@ def run(args: argparse.Namespace) -> None:
             )
             handle.write("\n")
 
+    if args.pack < 1:
+        raise SystemExit("--pack must be at least 1")
+    timeout_s = (
+        args.call_timeout
+        if args.call_timeout is not None
+        else discovery.call_timeout_s(args.pack)
+    )
     result = pipeline.run_pipeline(
         config,
-        discovery.router_client(),
+        discovery.router_client(timeout_s=timeout_s),
         salt=salt,
         limit=args.limit,
         join_sides=join_sides,
         side_field=args.side_field,
         on_call=append_response,
+        pack=args.pack,
     )
     paths = pipeline.write_stage_outputs(result, out)
     print(result.summary())

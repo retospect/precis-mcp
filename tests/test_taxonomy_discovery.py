@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,12 +19,19 @@ import pytest
 from precis.taxonomy.config import CampaignConfig
 from precis.taxonomy.discovery import (
     _MEASURAND_MAX_WORDS,
+    _ROW_KEY_LINES,
+    _SHAPE_LINES,
+    PACKED_TIMEOUT_PER_HUB_S,
     CallRecord,
     Reply,
     _RouterDiscoveryClient,
+    build_packed_prompt,
     build_prompt,
+    call_timeout_s,
     discover,
+    parse_packed_response,
     parse_response,
+    router_client,
     split_halves,
 )
 from precis.taxonomy.types import (
@@ -572,6 +580,7 @@ def test_call_record_to_json_carries_every_field() -> None:
         "cache_creation_tokens",
         "terms",
         "warnings",
+        "pack_size",
     }
     assert json.loads(json.dumps(data)) == data
 
@@ -652,3 +661,184 @@ def test_router_adapter_raises_after_the_retry_budget() -> None:
     with pytest.raises(RuntimeError, match="timed out"):
         _RouterDiscoveryClient(strict, retries=0).complete_json("p")
     assert strict.calls == 1
+
+
+# ── packing: several hubs per call (taxonomy-bootstrap.md §Third probe) ──
+
+
+def _hub_payload(*ref_ids: int) -> str:
+    return json.dumps(
+        {
+            str(ref_id): [{"index": 0, "measurand": f"quantity {ref_id}"}]
+            for ref_id in ref_ids
+        }
+    )
+
+
+def test_build_packed_prompt_labels_every_claim_and_keeps_the_field_rules() -> None:
+    hubs = [
+        (11, "first sentence", [_mention(ref_id=11)]),
+        (12, "second sentence", [_mention(ref_id=12, literal="5 mA")]),
+    ]
+    packed = build_packed_prompt(hubs, _config())
+    single = build_prompt("first sentence", hubs[0][2], _config())
+    assert "Claim 11:" in packed and "Claim 12:" in packed
+    assert (
+        "Sentence: first sentence" in packed and "Sentence: second sentence" in packed
+    )
+    assert "literal='5 mA'" in packed
+    # The field rules three probes tuned are the same text in both shapes.
+    for line in _SHAPE_LINES + _ROW_KEY_LINES:
+        if line:
+            assert line in packed and line in single
+    assert "JSON object" in packed and "claim ids above, as strings" in packed
+
+
+def test_parse_packed_response_splits_per_hub_and_each_slice_replays() -> None:
+    m11, m12 = [_mention(ref_id=11)], [_mention(ref_id=12)]
+    payload = _hub_payload(11, 12)
+    per_ref, call_warnings = parse_packed_response(
+        payload, [(11, m11, "A"), (12, m12, "B")]
+    )
+    assert call_warnings == ()
+    terms11, warnings11, slice11 = per_ref[11]
+    assert [t.measurand for t in terms11] == ["quantity 11"] and warnings11 == ()
+    assert [t.half for t in per_ref[12][0]] == ["B"]
+    # A packed row's payload goes through the single-hub parser unchanged.
+    assert parse_response(slice11, m11, "A") == (terms11, warnings11)
+
+
+def test_parse_packed_response_missing_and_unknown_claims_are_warnings() -> None:
+    m = [_mention()]
+    payload = _hub_payload(11, 99)
+    per_ref, call_warnings = parse_packed_response(
+        payload, [(11, m, "A"), (12, m, "A")]
+    )
+    assert len(per_ref[11][0]) == 1
+    assert per_ref[12][0] == ()
+    assert per_ref[12][1] == ("claim not addressed in the packed reply",)
+    assert per_ref[12][2] == payload, "no slice: the row keeps the whole raw reply"
+    assert len(call_warnings) == 1 and "'99'" in call_warnings[0]
+
+
+def test_parse_packed_response_malformed_reply_warns_on_every_hub() -> None:
+    m = [_mention()]
+    for payload in ("not json", "[]"):
+        per_ref, _ = parse_packed_response(payload, [(11, m, "A"), (12, m, "B")])
+        assert set(per_ref) == {11, 12}
+        for terms, warnings, slice_ in per_ref.values():
+            assert terms == () and len(warnings) == 1 and slice_ == payload
+
+
+def _packed_rows(
+    *ref_ids: int,
+) -> tuple[list[dict[str, object]], dict[int, list[Mention]]]:
+    rows: list[dict[str, object]] = [
+        {"ref_id": ref_id, "text": f"sentence {ref_id}"} for ref_id in ref_ids
+    ]
+    return rows, {ref_id: [_mention(ref_id=ref_id)] for ref_id in ref_ids}
+
+
+class _PackedClient:
+    """Answers each packed prompt for the claim ids it names, metered."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete_json(self, prompt: str) -> Reply:
+        self.calls.append(prompt)
+        ids = [
+            int(line.split()[1].rstrip(":"))
+            for line in prompt.splitlines()
+            if line.startswith("Claim ")
+        ]
+        return Reply(
+            text=_hub_payload(*ids),
+            cost_usd=0.09,
+            input_tokens=5,
+            output_tokens=601,
+            cache_read_tokens=8518,
+            cache_creation_tokens=None,
+        )
+
+
+def test_discover_packs_hubs_and_apportions_the_metering() -> None:
+    rows, mentions_by_ref = _packed_rows(1, 2, 3)
+    client = _PackedClient()
+    records: list[CallRecord] = []
+    terms, warnings = discover(
+        rows,
+        mentions_by_ref,
+        _config(),
+        client,
+        halves={1: "A", 2: "B", 3: "A"},
+        on_call=records.append,
+        pack=2,
+    )
+    assert warnings == ()
+    assert len(client.calls) == 2, "3 hubs at pack=2 is a full call plus a remainder"
+    assert sorted(t.measurand for t in terms) == [
+        "quantity 1",
+        "quantity 2",
+        "quantity 3",
+    ]
+    assert [r.ref_id for r in records] == [1, 2, 3]
+    assert [r.pack_size for r in records] == [2, 2, 1]
+    first, second, last = records
+    assert first.prompt_sha256 == second.prompt_sha256 != last.prompt_sha256
+    # Per-hub shares sum back to each call's totals; unreported stays None.
+    assert first.cost_usd == pytest.approx(0.045)
+    assert last.cost_usd == pytest.approx(0.09)
+    assert (first.output_tokens, second.output_tokens) == (301, 300)
+    assert (first.input_tokens or 0) + (second.input_tokens or 0) == 5
+    assert first.cache_creation_tokens is None
+    assert json.loads(first.payload or "") == [{"index": 0, "measurand": "quantity 1"}]
+
+
+def test_discover_packed_call_failure_is_one_failed_row_per_hub() -> None:
+    rows, mentions_by_ref = _packed_rows(1, 2)
+    records: list[CallRecord] = []
+    terms, warnings = discover(
+        rows,
+        mentions_by_ref,
+        _config(),
+        RaisingClient(),
+        halves={1: "A", 2: "B"},
+        on_call=records.append,
+        pack=4,
+    )
+    assert terms == ()
+    assert [w.split(":")[0] for w in warnings] == ["ref 1", "ref 2"]
+    assert [r.error for r in records] == ["model unavailable"] * 2
+    assert all(r.payload is None and r.pack_size == 2 for r in records)
+
+
+def test_discover_pack_one_sends_the_single_hub_prompt() -> None:
+    rows, mentions_by_ref = _packed_rows(1)
+    client = FakeClient(payload="[]")
+    discover(rows, mentions_by_ref, _config(), client, halves={1: "A"}, pack=1)
+    assert client.calls == [build_prompt("sentence 1", mentions_by_ref[1], _config())]
+
+
+def test_discover_rejects_a_pack_below_one() -> None:
+    with pytest.raises(ValueError, match="pack"):
+        discover([], {}, _config(), FakeClient(payload="[]"), halves={}, pack=0)
+
+
+def test_call_timeout_scales_with_the_pack_and_reaches_the_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert call_timeout_s(1) is None, "pack=1 keeps the transport default"
+    assert call_timeout_s(4) == 4 * PACKED_TIMEOUT_PER_HUB_S
+
+    from precis.utils.llm import router
+
+    seen: list[Any] = []
+
+    def fake_route(req: Any) -> Any:
+        seen.append(req)
+        return SimpleNamespace(error=None, paused=False, text="[]")
+
+    monkeypatch.setattr(router, "route", fake_route)
+    router_client(timeout_s=480.0).complete_json("p")
+    assert seen[0].timeout_s == 480.0

@@ -91,6 +91,10 @@ def metering_line(responses: Sequence[CallRecord]) -> str:
     """
     failed = sum(1 for r in responses if r.error is not None)
     wall = sum(r.duration_s for r in responses)
+    # One row per hub; a packed call's rows each carry 1/pack_size of it,
+    # so this sum is the number of calls actually made.
+    calls = round(sum(1 / r.pack_size for r in responses))
+    packed = "" if calls == len(responses) else f" for {len(responses)} hubs"
 
     def total(values: Sequence[float]) -> str:
         return "?" if not values else f"{sum(values):g}"
@@ -114,7 +118,7 @@ def metering_line(responses: Sequence[CallRecord]) -> str:
     )
     tokens = " / ".join(f"{name} {total(values)}" for name, values in fields)
     return (
-        f"discovery calls {len(responses)} ({failed} failed), "
+        f"discovery calls {calls}{packed} ({failed} failed), "
         f"cost ${total(cost)}, tokens {tokens}, wall {wall:.0f} s"
     )
 
@@ -281,12 +285,13 @@ def run_pipeline(
     join_sides: tuple[str, str] | None = None,
     side_field: str = "mode",
     on_call: Callable[[CallRecord], None] | None = None,
+    pack: int = 1,
 ) -> RunResult:
     """Stages 1-4. Freezing is a separate, explicit act (see :func:`freeze_run`).
 
     ``on_call`` is forwarded to :func:`discovery.discover` so a caller can
     stream the call records to disk as they arrive; the result carries the
-    full tuple regardless.
+    full tuple regardless. ``pack`` is hubs per discovery call.
     """
     rows, mentions, digest = run_census(config, limit=limit)
     by_ref = mentions_by_ref(mentions)
@@ -299,7 +304,7 @@ def run_pipeline(
             on_call(record)
 
     terms, warnings = discovery.discover(
-        rows, by_ref, config, client, halves=halves, on_call=collect
+        rows, by_ref, config, client, halves=halves, on_call=collect, pack=pack
     )
     registry = census.build_registry(config)
     nodes, suggestions = normalise.normalise(terms, registry, config)

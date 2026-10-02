@@ -106,6 +106,11 @@ class CallRecord:
     failed call has ``payload=None`` and ``error`` set — it still cost time
     and possibly money, so it is still a row. ``terms``/``warnings`` count
     what :func:`parse_response` made of the payload.
+
+    ``pack_size`` > 1 marks a hub that shared its call with others
+    (:func:`build_packed_prompt`): the rows of one call share
+    ``prompt_sha256``, the metering is that hub's share of the call, and
+    ``payload`` is the hub's own slice of the reply.
     """
 
     ref_id: int
@@ -123,6 +128,7 @@ class CallRecord:
     cache_creation_tokens: int | None = None
     terms: int = 0
     warnings: int = 0
+    pack_size: int = 1
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -141,6 +147,7 @@ class CallRecord:
             "cache_creation_tokens": self.cache_creation_tokens,
             "terms": self.terms,
             "warnings": self.warnings,
+            "pack_size": self.pack_size,
         }
 
 
@@ -219,90 +226,166 @@ def build_prompt(text: str, mentions: Sequence[Mention], config: CampaignConfig)
         f"Sentence: {text}",
         "",
         "Mentions:",
+        *_mention_lines(mentions),
+        "",
+        *_hint_lines(config),
+        *_SHAPE_LINES,
+        "Reply with a JSON array and nothing else — no prose, no "
+        "markdown fence. One object per mention, with exactly these "
+        "keys:",
+        *_ROW_KEY_LINES,
+        "Every mention index above must appear exactly once.",
     ]
+    return "\n".join(lines)
+
+
+def build_packed_prompt(
+    hubs: Sequence[tuple[int, str, Sequence[Mention]]], config: CampaignConfig
+) -> str:
+    """Build one stage-2 prompt for several hub sentences at once.
+
+    ``hubs`` is ``(ref_id, sentence, mentions)`` per hub, in call order.
+    ``taxonomy-bootstrap.md`` §Third probe: each ``claude -p`` call carried
+    ~21 000 tokens of per-process harness prefix against a ~1 000-token
+    prompt, so one hub per call pays that overhead once per hub. Packing K
+    hubs pays it once per K.
+
+    The instructions are :func:`build_prompt`'s, word for word — the field
+    rules, the worked example and the decline are what three probes tuned,
+    and a packed run that reworded them would measure the rewording, not
+    the packing. What changes is the framing: each sentence is labelled with
+    its claim id and read on its own, and the reply is a JSON object keyed
+    by claim id whose values are exactly the per-hub arrays
+    :func:`build_prompt` asks for, so :func:`parse_packed_response` hands
+    each value to the same row parser.
+    """
+    lines = [
+        f"You are reading {len(hubs)} sentences, each from a different "
+        "scientific claim and each labelled with its claim id. For each "
+        "numbered mention under a sentence, name the quantity the number "
+        "measures. Read every claim on its own: a mention's quantity comes "
+        "from its own sentence, never from another claim's.",
+        "",
+    ]
+    for ref_id, text, mentions in hubs:
+        lines.extend(
+            [
+                f"Claim {ref_id}:",
+                f"Sentence: {text}",
+                "Mentions:",
+                *_mention_lines(mentions),
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            *_hint_lines(config),
+            *_SHAPE_LINES,
+            "Reply with a JSON object and nothing else — no prose, no "
+            "markdown fence. Its keys are the claim ids above, as strings; "
+            "each value is an array with one object per mention of that "
+            "claim, with exactly these keys:",
+            *_ROW_KEY_LINES,
+            "Every claim id above must appear exactly once as a key, and "
+            "every mention index under a claim must appear exactly once in "
+            "that claim's array.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _mention_lines(mentions: Sequence[Mention]) -> list[str]:
+    lines = []
     for index, mention in enumerate(mentions):
         unit = mention.raw_unit if mention.raw_unit is not None else "(no unit)"
         lines.append(
             f"  [{index}] literal={mention.literal!r} kind={mention.kind} "
             f"unit={unit} context={mention.context!r}"
         )
+    return lines
+
+
+def _hint_lines(config: CampaignConfig) -> list[str]:
+    if not (config.categorical_qualifiers or config.site_classes):
+        return []
+    lines = [
+        "Vocabulary hints for QUALIFIER fields only — never use these "
+        "to name the measurand itself:"
+    ]
+    for key, values in config.categorical_qualifiers.items():
+        lines.append(f"  {key}: {', '.join(values)}")
+    if config.site_classes:
+        lines.append(f"  site_class: {', '.join(config.site_classes)}")
     lines.append("")
-    if config.categorical_qualifiers or config.site_classes:
-        lines.append(
-            "Vocabulary hints for QUALIFIER fields only — never use these "
-            "to name the measurand itself:"
-        )
-        for key, values in config.categorical_qualifiers.items():
-            lines.append(f"  {key}: {', '.join(values)}")
-        if config.site_classes:
-            lines.append(f"  site_class: {', '.join(config.site_classes)}")
-        lines.append("")
-    lines.extend(
-        [
-            "The measurand is the NAME OF THE QUANTITY AND NOTHING ELSE. "
-            f"Write it as a short noun phrase of at most {_MEASURAND_MAX_WORDS} "
-            "words — the way a table column header or a figure axis label "
-            "reads, not the way a sentence reads. Use your own words; there "
-            "is no list to pick from. Two mentions of the same quantity, in "
-            "different papers and different sentences, must come back as the "
-            "same string.",
-            "",
-            "Everything that is not the quantity's name has its own field:",
-            "  - the conditions the value was measured at, and any clause "
-            "that picks this value out from other values of the same quantity "
-            "-> required_conditions",
-            "  - what the value is per / divided by / normalised to "
-            "-> normalisation_basis",
-            "  - what a potential or energy is measured against -> reference_state",
-            "  - the sign or direction convention -> convention",
-            "  - the material, electrode, site or structure the value belongs "
-            "to -> subject_label",
-            "",
-            'So the measurand contains no parentheses, no "at which ...", '
-            'no "of the ... that ...", no "normalized to ...", and no '
-            "clause saying which of several compared cases this one is. Do "
-            "include the chemical species when the quantity is "
-            "species-specific: that is part of which quantity it is, not a "
-            "condition.",
-            "",
-            "If the number is a difference or a change between two cases "
-            "rather than a value, name the quantity with one leading word "
-            '("change in ...", "difference in ...") and put the two cases '
-            "being compared in required_conditions.",
-            "",
-            "Example of the shape (a different field, so do not reuse these "
-            'words). For the sentence "the thermal conductivity of the '
-            "annealed film reached 42 W/m/K at 300 K, referenced to the "
-            'as-grown film", the mention 42 gives measurand "thermal '
-            'conductivity", required_conditions ["temperature 300 K"], '
-            'reference_state "as-grown film", subject_label "annealed film" '
-            '— and NOT "thermal conductivity of the annealed film at 300 K".',
-            "",
-            "Not every number measures a quantity. If a mention is an "
-            "identifier or a label rather than a measurement — a "
-            "crystallographic facet index, a composition subscript standing "
-            "for a series member, a sample or figure number, a count of "
-            "samples — do not invent a quantity for it. Return that mention "
-            'as {"index": N, "measurand": null, "skip_reason": "<why>"}.',
-            "",
-            "Reply with a JSON array and nothing else — no prose, no "
-            "markdown fence. One object per mention, with exactly these "
-            "keys:",
-            "  index (integer, matching a mention above)",
-            "  measurand (string — required, or null with a skip_reason)",
-            "  dimension_text (string or null — what kind of quantity this "
-            'is, in words, e.g. "potential" or "mass per time per area"; '
-            "recorded for audit only, the unit above is what is parsed)",
-            "  reference_state (string or null)",
-            "  convention (string or null)",
-            "  normalisation_basis (string or null)",
-            "  subject_label (string or null)",
-            "  required_conditions (array of strings, may be empty)",
-            "  skip_reason (string, only on a null measurand)",
-            "Every mention index above must appear exactly once.",
-        ]
-    )
-    return "\n".join(lines)
+    return lines
+
+
+#: The field rules every discovery prompt carries — single-hub and packed
+#: alike. :func:`build_prompt`'s docstring has the probe evidence for each
+#: sentence; change them there, in one place, or a packed run and a
+#: single-hub run stop being comparable.
+_SHAPE_LINES: Final[tuple[str, ...]] = (
+    "The measurand is the NAME OF THE QUANTITY AND NOTHING ELSE. "
+    f"Write it as a short noun phrase of at most {_MEASURAND_MAX_WORDS} "
+    "words — the way a table column header or a figure axis label "
+    "reads, not the way a sentence reads. Use your own words; there "
+    "is no list to pick from. Two mentions of the same quantity, in "
+    "different papers and different sentences, must come back as the "
+    "same string.",
+    "",
+    "Everything that is not the quantity's name has its own field:",
+    "  - the conditions the value was measured at, and any clause "
+    "that picks this value out from other values of the same quantity "
+    "-> required_conditions",
+    "  - what the value is per / divided by / normalised to -> normalisation_basis",
+    "  - what a potential or energy is measured against -> reference_state",
+    "  - the sign or direction convention -> convention",
+    "  - the material, electrode, site or structure the value belongs "
+    "to -> subject_label",
+    "",
+    'So the measurand contains no parentheses, no "at which ...", '
+    'no "of the ... that ...", no "normalized to ...", and no '
+    "clause saying which of several compared cases this one is. Do "
+    "include the chemical species when the quantity is "
+    "species-specific: that is part of which quantity it is, not a "
+    "condition.",
+    "",
+    "If the number is a difference or a change between two cases "
+    "rather than a value, name the quantity with one leading word "
+    '("change in ...", "difference in ...") and put the two cases '
+    "being compared in required_conditions.",
+    "",
+    "Example of the shape (a different field, so do not reuse these "
+    'words). For the sentence "the thermal conductivity of the '
+    "annealed film reached 42 W/m/K at 300 K, referenced to the "
+    'as-grown film", the mention 42 gives measurand "thermal '
+    'conductivity", required_conditions ["temperature 300 K"], '
+    'reference_state "as-grown film", subject_label "annealed film" '
+    '— and NOT "thermal conductivity of the annealed film at 300 K".',
+    "",
+    "Not every number measures a quantity. If a mention is an "
+    "identifier or a label rather than a measurement — a "
+    "crystallographic facet index, a composition subscript standing "
+    "for a series member, a sample or figure number, a count of "
+    "samples — do not invent a quantity for it. Return that mention "
+    'as {"index": N, "measurand": null, "skip_reason": "<why>"}.',
+    "",
+)
+
+#: The per-mention row keys, shared by both prompt shapes.
+_ROW_KEY_LINES: Final[tuple[str, ...]] = (
+    "  index (integer, matching a mention above)",
+    "  measurand (string — required, or null with a skip_reason)",
+    "  dimension_text (string or null — what kind of quantity this "
+    'is, in words, e.g. "potential" or "mass per time per area"; '
+    "recorded for audit only, the unit above is what is parsed)",
+    "  reference_state (string or null)",
+    "  convention (string or null)",
+    "  normalisation_basis (string or null)",
+    "  subject_label (string or null)",
+    "  required_conditions (array of strings, may be empty)",
+    "  skip_reason (string, only on a null measurand)",
+)
 
 
 def _strip_fences(payload: str) -> str:
@@ -335,7 +418,70 @@ def parse_response(
         return (), (f"malformed JSON reply: {exc}",)
     if not isinstance(rows, list):
         return (), (f"reply is not a JSON array (got {type(rows).__name__})",)
+    return _parse_rows(rows, mentions, half)
 
+
+def parse_packed_response(
+    payload: str, hubs: Sequence[tuple[int, Sequence[Mention], Half]]
+) -> tuple[
+    dict[int, tuple[tuple[DiscoveredTerm, ...], tuple[str, ...], str]], tuple[str, ...]
+]:
+    """Split one packed reply (:func:`build_packed_prompt`) per hub.
+
+    ``hubs`` is ``(ref_id, mentions, half)`` per hub in the call. Returns
+    ``(per_ref, call_warnings)``: ``per_ref[ref_id]`` is that hub's terms,
+    warnings and *payload slice* — the hub's own JSON array re-serialised,
+    which is exactly what :func:`parse_response` would accept, so a
+    ``responses.jsonl`` row from a packed run replays through the single-hub
+    parser. Where there is no slice (the whole reply is malformed, or the
+    model left this claim out) the slice is the whole raw reply, so a replay
+    sees what actually came back. ``call_warnings`` are about the call, not
+    any one hub: a key that names no claim in the call.
+
+    Same contract as :func:`parse_response` — never raises, never fabricates.
+    A whole-reply failure is a warning on every hub in the call, because
+    every one of them got nothing.
+    """
+    text = _strip_fences(payload)
+    try:
+        reply = json.loads(text)
+    except json.JSONDecodeError as exc:
+        failure = f"malformed JSON reply: {exc}"
+        return {ref_id: ((), (failure,), payload) for ref_id, _m, _h in hubs}, ()
+    if not isinstance(reply, dict):
+        failure = f"packed reply is not a JSON object (got {type(reply).__name__})"
+        return {ref_id: ((), (failure,), payload) for ref_id, _m, _h in hubs}, ()
+
+    by_key = {str(key).strip(): value for key, value in reply.items()}
+    expected = {str(ref_id) for ref_id, _m, _h in hubs}
+    call_warnings = tuple(
+        f"packed reply names claim {key!r}, which is not in this call"
+        for key in by_key
+        if key not in expected
+    )
+    per_ref: dict[int, tuple[tuple[DiscoveredTerm, ...], tuple[str, ...], str]] = {}
+    for ref_id, mentions, half in hubs:
+        if str(ref_id) not in by_key:
+            per_ref[ref_id] = (
+                (),
+                ("claim not addressed in the packed reply",),
+                payload,
+            )
+            continue
+        rows = by_key[str(ref_id)]
+        slice_ = json.dumps(rows, ensure_ascii=False)
+        if not isinstance(rows, list):
+            failure = f"claim value is not a JSON array (got {type(rows).__name__})"
+            per_ref[ref_id] = ((), (failure,), slice_)
+            continue
+        terms, warnings = _parse_rows(rows, mentions, half)
+        per_ref[ref_id] = (terms, warnings, slice_)
+    return per_ref, call_warnings
+
+
+def _parse_rows(
+    rows: list[Any], mentions: Sequence[Mention], half: Half
+) -> tuple[tuple[DiscoveredTerm, ...], tuple[str, ...]]:
     warnings: list[str] = []
     terms: list[DiscoveredTerm] = []
     seen: set[int] = set()
@@ -411,24 +557,42 @@ def _record(
     error: str | None = None,
     terms: int = 0,
     warnings: int = 0,
+    payload: str | None = None,
+    share: tuple[int, int] = (0, 1),
 ) -> CallRecord:
+    """One :class:`CallRecord`; ``share=(i, k)`` is hub ``i`` of a ``k``-hub call.
+
+    A packed call's metering is apportioned so a column summed over
+    ``responses.jsonl`` is still the run's total: cost and duration divide
+    evenly, a token count splits with the remainder on the first hubs, and
+    an unreported field stays ``None`` (never ``0``). ``payload`` overrides
+    the reply text — a packed hub's row stores its own slice of the reply.
+    """
     metered = reply if reply is not None else Reply(text="")
+    index, size = share
+
+    def tokens(total: int | None) -> int | None:
+        if total is None:
+            return None
+        return total // size + (1 if index < total % size else 0)
+
     return CallRecord(
         ref_id=ref_id,
         half=half,
         prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         prompt_chars=len(prompt),
-        duration_s=duration_s,
-        payload=reply.text if reply is not None else None,
+        duration_s=duration_s / size,
+        payload=payload if payload is not None else (reply.text if reply else None),
         error=error,
         model=metered.model,
-        cost_usd=metered.cost_usd,
-        input_tokens=metered.input_tokens,
-        output_tokens=metered.output_tokens,
-        cache_read_tokens=metered.cache_read_tokens,
-        cache_creation_tokens=metered.cache_creation_tokens,
+        cost_usd=None if metered.cost_usd is None else metered.cost_usd / size,
+        input_tokens=tokens(metered.input_tokens),
+        output_tokens=tokens(metered.output_tokens),
+        cache_read_tokens=tokens(metered.cache_read_tokens),
+        cache_creation_tokens=tokens(metered.cache_creation_tokens),
         terms=terms,
         warnings=warnings,
+        pack_size=size,
     )
 
 
@@ -440,6 +604,7 @@ def discover(
     *,
     halves: Mapping[int, Half],
     on_call: Callable[[CallRecord], None] | None = None,
+    pack: int = 1,
 ) -> tuple[tuple[DiscoveredTerm, ...], tuple[str, ...]]:
     """Run stage 2 over a snapshot's rows.
 
@@ -455,11 +620,78 @@ def discover(
     ``on_call`` receives one :class:`CallRecord` per client call, failed
     calls included, *as each call completes* — a sink that appends to disk
     keeps the metering of a run that is killed at hour nine of eleven.
+
+    ``pack`` > 1 sends ``pack`` hubs per call (:func:`build_packed_prompt`,
+    the last call takes the remainder) and still emits one record per hub,
+    with the call's metering apportioned (see :func:`_record`). ``pack=1``
+    is the single-hub prompt, byte for byte, so earlier probes reproduce.
     """
+    if pack < 1:
+        raise ValueError(f"pack must be at least 1, got {pack}")
     ref_field = config.snapshot.ref_field
     text_field = config.snapshot.text_field
     terms: list[DiscoveredTerm] = []
     warnings: list[str] = []
+    group: list[tuple[int, Half, str, Sequence[Mention]]] = []
+
+    def emit(record: CallRecord) -> None:
+        if on_call is not None:
+            on_call(record)
+
+    def flush() -> None:
+        if not group:
+            return
+        prompt = build_packed_prompt(
+            [(ref_id, text, mentions) for ref_id, _h, text, mentions in group], config
+        )
+        size = len(group)
+        started = time.monotonic()
+        try:
+            raw = client.complete_json(prompt)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            for i, (ref_id, half, _t, _m) in enumerate(group):
+                warnings.append(f"ref {ref_id}: discovery call failed: {exc}")
+                emit(
+                    _record(
+                        ref_id,
+                        half,
+                        prompt,
+                        elapsed,
+                        None,
+                        error=str(exc),
+                        share=(i, size),
+                    )
+                )
+            group.clear()
+            return
+        elapsed = time.monotonic() - started
+        reply = raw if isinstance(raw, Reply) else Reply(text=raw)
+        per_ref, call_warnings = parse_packed_response(
+            reply.text,
+            [(ref_id, mentions, half) for ref_id, half, _t, mentions in group],
+        )
+        refs = ", ".join(str(ref_id) for ref_id, _h, _t, _m in group)
+        warnings.extend(f"packed call [{refs}]: {w}" for w in call_warnings)
+        for i, (ref_id, half, _t, _m) in enumerate(group):
+            hub_terms, hub_warnings, slice_ = per_ref[ref_id]
+            terms.extend(hub_terms)
+            warnings.extend(f"ref {ref_id}: {warning}" for warning in hub_warnings)
+            emit(
+                _record(
+                    ref_id,
+                    half,
+                    prompt,
+                    elapsed,
+                    reply,
+                    terms=len(hub_terms),
+                    warnings=len(hub_warnings),
+                    payload=slice_,
+                    share=(i, size),
+                )
+            )
+        group.clear()
+
     for row in rows:
         ref_raw = row.get(ref_field)
         if ref_raw is None:
@@ -479,6 +711,11 @@ def discover(
         text_raw = row.get(text_field)
         if text_raw is None:
             warnings.append(f"ref {ref_id}: row missing {text_field!r} — skipped")
+            continue
+        if pack > 1:
+            group.append((ref_id, half, str(text_raw), mentions))
+            if len(group) == pack:
+                flush()
             continue
         prompt = build_prompt(str(text_raw), mentions, config)
         started = time.monotonic()
@@ -507,6 +744,7 @@ def discover(
                     warnings=len(row_warnings),
                 )
             )
+    flush()
     return tuple(terms), tuple(warnings)
 
 
@@ -557,7 +795,25 @@ class _RouterDiscoveryClient:
         )
 
 
-def router_client(*, source: str = "taxonomy_discovery") -> DiscoveryClient:
+#: Wall-clock allowance per hub in a packed call. The third probe's 120 s
+#: hard tail is ``claude -p``'s own default timeout
+#: (``claude_p._DEFAULT_TIMEOUT_S``) against a 74 s single-hub median, so a
+#: K-hub call left on that default would time out on output length alone.
+PACKED_TIMEOUT_PER_HUB_S: Final[float] = 120.0
+
+
+def call_timeout_s(pack: int) -> float | None:
+    """The per-call timeout for ``pack`` hubs per call.
+
+    ``None`` at ``pack=1`` leaves the transport default in force, so a
+    single-hub run is the run the three probes measured.
+    """
+    return None if pack <= 1 else PACKED_TIMEOUT_PER_HUB_S * pack
+
+
+def router_client(
+    *, source: str = "taxonomy_discovery", timeout_s: float | None = None
+) -> DiscoveryClient:
     """Build a production :class:`DiscoveryClient` on the repo's LLM router.
 
     ``Tier.BIG`` — sonnet-class — not ``Tier.MEDIUM`` (haiku-class): the
@@ -566,20 +822,27 @@ def router_client(*, source: str = "taxonomy_discovery") -> DiscoveryClient:
     classification pass was ~50% wrong and was discarded). Reading
     ``MEDIUM`` as "the middle rung" would silently put discovery back on
     that model — do not "optimise" this tier down.
+
+    ``timeout_s`` is the per-call wall clock (:func:`call_timeout_s`);
+    ``None`` keeps the transport's default.
     """
     from precis.utils.llm.router import DispatchClient, Tier
 
     return _RouterDiscoveryClient(
-        DispatchClient(tier=Tier.BIG, source=source, log_call=True)
+        DispatchClient(tier=Tier.BIG, source=source, log_call=True, timeout_s=timeout_s)
     )
 
 
 __all__ = [
+    "PACKED_TIMEOUT_PER_HUB_S",
     "CallRecord",
     "DiscoveryClient",
     "Reply",
+    "build_packed_prompt",
     "build_prompt",
+    "call_timeout_s",
     "discover",
+    "parse_packed_response",
     "parse_response",
     "router_client",
     "split_halves",

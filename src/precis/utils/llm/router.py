@@ -2415,6 +2415,9 @@ class DispatchClient:
     #: True, log_blobs=False`` so the mineable metadata (chars / cost / duration /
     #: ref_id) is kept without a per-call blob explosion.
     log_blobs: bool = True
+    #: Per-call wall clock (see :attr:`LlmRequest.timeout_s`); ``None`` leaves
+    #: the transport's own default in force.
+    timeout_s: float | None = None
 
     def complete(
         self,
@@ -2447,6 +2450,7 @@ class DispatchClient:
                 source=self.source,
                 log_call=self.log_call,
                 log_blobs=self.log_blobs,
+                timeout_s=self.timeout_s,
             )
         )
         if res.error is not None:

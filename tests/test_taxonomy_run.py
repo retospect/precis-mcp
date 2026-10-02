@@ -304,6 +304,15 @@ def test_metering_line_sums_reported_fields_and_marks_unreported() -> None:
     assert line.endswith("wall 4 s")
 
 
+def test_metering_line_counts_packed_calls_not_hub_rows() -> None:
+    # Two calls: one of 4 hubs, one remainder of 2 — six rows.
+    rows = [_record(i, pack_size=4, duration_s=1.0) for i in range(4)]
+    rows += [_record(i, pack_size=2, duration_s=1.0) for i in range(4, 6)]
+    line = run.metering_line(rows)
+    assert line.startswith("discovery calls 2 for 6 hubs (0 failed)")
+    assert line.endswith("wall 6 s")
+
+
 def test_metering_line_with_no_calls_is_all_unreported() -> None:
     assert run.metering_line([]) == (
         "discovery calls 0 (0 failed), cost $?, tokens in ? / out ? / "

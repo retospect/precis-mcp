@@ -531,12 +531,14 @@ processes. Cost and latency are the harness, not the hubs.
    `claude -p` processes pays that overhead N times per hub; packing 4 hubs
    per prompt (≈4k tokens of hub text against 21k of overhead) cuts cost
    and wall per hub by ~3.5× and keeps the per-hub JSON contract (one array
-   per hub, keyed by ref id). Implementation is a `build_prompt` variant and
-   a parse that splits by ref id; filed as the next slice below, not built.
-3. **The 120 s tail is the router's stream-idle timeout**
-   (`utils/llm/router.py::_STREAM_IDLE_TIMEOUT_S`), not a discovery
-   setting; with a 74 s median a packed prompt will need it raised for this
-   source. Left to the packing slice.
+   per hub, keyed by ref id). Shipped 2026-10-02 as `--pack K`
+   (`discovery.build_packed_prompt` / `parse_packed_response`).
+3. **The 120 s tail is `claude -p`'s own default wall clock**
+   (`utils/claude_p.py::_DEFAULT_TIMEOUT_S`, env
+   `PRECIS_CLAUDE_TIMEOUT_S`) — corrected 2026-10-02; this line first
+   blamed the router's stream-idle timeout, which only applies to streamed
+   OpenAI-compatible calls. `--pack K` now passes 120 s × K through
+   `DispatchClient.timeout_s`.
 
 **What this probe settles about the bar.** At n=100 the 0.60 criterion is
 one noise-floor away from the measurement: the honest reads are the ratio
@@ -546,27 +548,27 @@ packed, retrying run over a larger slice (300 rows, ~75 packed calls, ~$6),
 where the ceiling rises and the ratio is readable outside the noise; the
 0.60 bar stays as stated and is read there.
 
-## Resume (2026-10-01)
+## Resume (2026-10-02)
 
 State: three probes on the same 100 rows; every vocabulary and census
 blocker closed; metering on and read (§Third probe). The probe criterion
 reads 0.58 of the ceiling against a 0.60 bar with a measured per-mention
-noise of 0.32, so the bar is inside the noise at this n. The retry is
-shipped; the packing slice is the one unbuilt thing between here and a
-readable verdict. Detail is in the three probe sections above; this section
-is only the order.
+noise of 0.32, so the bar is inside the noise at this n. The retry and the
+packing slice are shipped; nothing unbuilt stands before the next paid run.
+Detail is in the three probe sections above; this section is only the
+order.
 
-1. **Packing slice** (unpaid, Sonnet-sized): `build_prompt` for K hubs
-   per call (K=4), the reply keyed by ref id, `parse_response` split per
-   hub, the per-hub `CallRecord` metering kept (one record per hub with the
-   call's cost divided by K), a `--pack` CLI flag, and the source's idle
-   timeout raised. Decided by §Third probe's metering: ~21k tokens of
-   per-process harness overhead against ~1k of prompt.
-2. **Packed 300-row probe** — PAID (~75 calls, ~$6, ~1.5 h), Reto's go
-   required. Reads the 0.60 criterion where the unit-key ceiling is above
-   the 0.32 per-mention noise; a FAIL there is a real prompt or vocabulary
-   finding. Full run only after it passes.
-3. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
+1. **Packed 300-row probe** — PAID (~75 calls, ~$6, ~1.5 h), Reto's go
+   required. `precis taxonomy-bootstrap --stage all --limit 300 --pack 4`.
+   Reads the 0.60 criterion where the unit-key ceiling is above the 0.32
+   per-mention noise; a FAIL there is a real prompt or vocabulary finding.
+   Full run only after it passes. Packing is itself unmeasured: the field
+   rules are the single-hub text word for word, but four sentences in one
+   context is a new input, so before reading the bar compare its
+   test-retest against probe 3 on the hubs both runs cover
+   (`compare_runs.py`); a packing-made drop in naming agreement is a
+   finding about packing, not about the vocabulary.
+2. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by
    catalyst family) ⇒ quantbind round ⇒ triple count + gold set (Reto
    adjudicates) ⇒ one figure.
