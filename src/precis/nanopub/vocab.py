@@ -50,7 +50,7 @@ SEC_ACCESSION = PRECIS["secAccession"]
 
 #: Artifact types (rdf:type of the claim node in the assertion graph).
 ATOMIC_CLAIM = PRECIS["AtomicClaim"]
-COMPOUND_CLAIM = PRECIS["CompoundClaim"]
+COMPOSITE_CLAIM = PRECIS["CompositeClaim"]
 HYPOTHESIS = PRECIS["Hypothesis"]
 
 #: Quantity bound semantics (review feedback 2026-08-15: a quantity claim

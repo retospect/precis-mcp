@@ -2,19 +2,19 @@ nanopub-example/ — the 2026-08-14 publication wargame, on real prod data.
 Design of record: docs/backlog/claim-publication-nanopub-ots.md (the
 "Composition model" + "Mint gates" sections came out of this exercise).
 
-Set 1 — hub fi176435 rejiggered (atoms + prose join, no compound):
+Set 1 — hub fi176435 rejiggered (atoms + prose join, no composite):
   claim-1-flexible-mof-anisotropy-400.trig
   claim-2-flexible-mof-softest-direction-below-1gpa.trig
   claim-3-rigid-mof-low-asymmetry.trig
   passage.txt   — the prose paragraph that joins them; documents why no
-                  compound was minted (single-paper restatement)
+                  composite was minted (single-paper restatement)
 Quotes verbatim from prod chunks of ref 3025 (Ortiz/Boutin/Fuchs/Coudert,
 PRL 109, 195502 (2012), doi 10.1103/PhysRevLett.109.195502).
 
-Set 2 — hub fi177584, the compound wargame (2 cross-paper atoms + merge):
+Set 2 — hub fi177584, the composite wargame (2 cross-paper atoms + merge):
   qi-atom-a-mechanical-tuning.trig   (Zhu et al., Angew 2023)
   qi-atom-b-scaling.trig             (Yang et al., PNAS 2022)
-  qi-merge-scalable-switching.trig   (the compound — REJECTED, ledger #1)
+  qi-merge-scalable-switching.trig   (the composite — REJECTED, ledger #1)
   qi-hypothesis-scaled-switching.trig (its honest replacement: typed
                   Hypothesis; atoms as motivation not evidence;
                   testableBy names the discriminating experiment)
@@ -38,7 +38,7 @@ DEFECT LEDGER — kept deliberately; each defect became a mint gate:
      signatures) applied to "switching" (earned by atom A, different
      molecular family). Every clause maps, the BINDING is unearned —
      no paper shows mechanical QI switching at scale. → commensurability
-     gate; this merge does not survive it as a fact-grade compound.
+     gate; this merge does not survive it as a fact-grade composite.
      RESOLVED: re-minted as qi-hypothesis-scaled-switching.trig — the
      transfer stated as a typed Hypothesis (declarative sentence, status
      in the type, motivation not evidence, testableBy experiment).

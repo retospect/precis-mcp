@@ -62,7 +62,7 @@ class TestCompositePapersRow:
         )
         bundle = _bundle(conjunct_atoms=[(1, "atom one"), (2, "atom two")])
 
-        g = nanopub_render._graph(_Store(), bundle, None, "compound", blocked=False)
+        g = nanopub_render._graph(_Store(), bundle, None, "composite", blocked=False)
 
         paper_nodes = [n for n in g["nodes"] if n["id"] == "pc563"]
         assert len(paper_nodes) == 1
@@ -81,7 +81,7 @@ class TestCompositePapersRow:
         # atom aggregation (both edges when the same paper grounds both).
         bundle = _bundle(sources=[_src(563)], conjunct_atoms=[(1, "atom one")])
 
-        g = nanopub_render._graph(_Store(), bundle, None, "compound", blocked=False)
+        g = nanopub_render._graph(_Store(), bundle, None, "composite", blocked=False)
 
         assert len([n for n in g["nodes"] if n["id"] == "pc563"]) == 1
         assert {e["dst"] for e in g["edges"] if e["src"] == "pc563"} == {

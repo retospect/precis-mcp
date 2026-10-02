@@ -6,7 +6,7 @@ proof store), so every action here is a thin interactive door onto those
 functions with ``interactive=True`` (a person clicked).
 
 * ``GET /nanopub`` — the one working surface: the claim forest
-  (compounds nest conjunct atoms, evidence as leaves) beside a review
+  (composites nest conjunct atoms, evidence as leaves) beside a review
   pane (``/claim/fi<id>`` framed with ``?embed=1`` — the review-and-sign
   section lives on the claim page now, see below) and a paper pane, with
   draggable dividers. The **disputed** strip sits on top sorted by
@@ -88,7 +88,7 @@ def _parse_draft_ref_id(value: str) -> int | None:
 
 
 def _index_context(request: Request) -> dict[str, Any]:
-    """The workbench page context: the claim forest (compounds nest
+    """The workbench page context: the claim forest (composites nest
     conjunct atoms, refined claims nest under what they refine, evidence
     as leaves) beside a review pane (the claim page, review section
     included, framed) and a paper pane. The old queue table folded in as
@@ -129,7 +129,7 @@ def _index_context(request: Request) -> dict[str, Any]:
     rows = overview.hub_rows(store)
     if cited is not None:
         # Tally over the DISPLAYED set (pruned subtrees), not the literal
-        # cite targets: a cited compound's conjunct atoms are real sign
+        # cite targets: a cited composite's conjunct atoms are real sign
         # work (atoms publish first), so the "N claims" chip and the
         # state strip must count what the tree shows.
         roots = overview.prune_tree(roots, cited)

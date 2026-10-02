@@ -144,7 +144,7 @@ def test_unknown_artifact_type_fails_closed() -> None:
     # type must opt in to an exemption, never inherit one by omission.
     for code in ("no-epistemic-mode", "no-evidence-verb"):
         sentence = _ONE_VIOLATION_PER_CODE[code]
-        for artifact_type in ("claim", "compound", "something-new"):
+        for artifact_type in ("claim", "composite", "something-new"):
             assert (
                 gates.check_claim_sentence(sentence, artifact_type=artifact_type) != []
             ), (code, artifact_type)
@@ -155,7 +155,7 @@ def test_resolve_artifact_type_reads_hypothesis_from_the_payload() -> None:
     # the payload is the only place that shape is recorded. Three call
     # sites share this resolver (gate scoping, the stored publish-row type,
     # the preflight header) precisely so they cannot drift apart.
-    for edge_derived in ("claim", "compound"):
+    for edge_derived in ("claim", "composite"):
         bundle = ev.HubBundle(
             hub_ref_id=1,
             sentence="s",

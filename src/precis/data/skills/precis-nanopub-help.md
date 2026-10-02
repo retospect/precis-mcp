@@ -68,7 +68,7 @@ stays authoritative; the nanopub is the frozen published form.
 ## Hypothesis — the artifact type an agent can originate
 
 Three artifact types exist: `claim` (an atomic finding, grounded in a
-verbatim passage), `compound` (a conjunction of already-signed atoms),
+verbatim passage), `composite` (a conjunction of already-signed atoms),
 and `hypothesis`. A hypothesis asserts a **conjecture**, so by
 definition it has no supporting passage — the gates reject a hypothesis
 that arrives carrying one. What it carries instead is `motivation`
@@ -78,7 +78,7 @@ discriminating experiment, *"what separates a conjecture from vibes"*.
 Reach for it when two findings suggest a binding nobody has
 demonstrated. The worked example
 (`docs/reference/nanopub-example/qi-hypothesis-scaled-switching.trig`)
-came from a compound that **failed** its commensurability gate: every
+came from a composite that **failed** its commensurability gate: every
 clause mapped but the binding was unearned, so it was re-minted
 honestly as a typed Hypothesis. A signed, timestamped hypothesis is a
 priority claim on an idea. The sentence stays declarative and unhedged
@@ -181,8 +181,8 @@ failures an extraction agent can avoid up front:
 - **Structured fields must be quote-contained** — a
   material/method/quantity value the quotes don't state is an
   overclaim.
-- **Compounds are derivations** — conjunct-of atoms minted first; the
-  compound cites atoms, never papers. Cross-binding (a property from
+- **Composites are derivations** — conjunct-of atoms minted first; the
+  composite cites atoms, never papers. Cross-binding (a property from
   system B on a phenomenon from system A) is new content: it needs its
   own evidence or mints as a `precis:Hypothesis` (declarative sentence,
   type carries the epistemic status, `testableBy` names the
@@ -372,7 +372,7 @@ link framing it):
   the literal sign-off stays human-only.
 - **Trust allowlist** — only pinned (identity, key-fingerprint) pairs
   are trusted, and publishing requires the *attesting* (human) entry.
-- **Order** — atoms publish before the compounds citing them; hanging
+- **Order** — atoms publish before the composites citing them; hanging
   claims never publish; a drifted or disputed hub is blocked.
 
 ## Content review is a separate axis from gate admissibility
@@ -440,7 +440,7 @@ per class — do not mutate the hub, its edges, or its sources:
 - `[quote-verbatim]` / `[snip]` → the payload needs a human re-trim;
   point at the chunk, don't rewrite the quote yourself.
 
-Quote-trimming, claim restructuring (atom vs compound), and every
+Quote-trimming, claim restructuring (atom vs composite), and every
 approve/sign/signoff click stay out of scope for this triage.
 
 ## Registry mirror (read-only sidecar)

@@ -87,14 +87,14 @@ class HubOverviewRow:
     #: above, which count the adjudicated, blocking `contradicts` shape.
     #: Appended last for the same reason as `tagline` — see its note.
     open_disputes_count: int = 0
-    #: The staged publish row's artifact type (``claim``/``compound``/
+    #: The staged publish row's artifact type (``claim``/``composite``/
     #: ``hypothesis``, ``nanopub_publish.artifact_type``), or ``None`` for
     #: an unminted hub. Scopes which blocking lint codes apply — see
     #: ``precis.nanopub.stale.candidate_stale_reason``. Appended last for
     #: the same reason as `tagline` — see its note.
     artifact_type: str | None = None
     #: Live atoms linked ``atom --conjunct-of--> this hub`` — non-zero iff
-    #: the hub is a compound. A compound carries no evidence edges of its
+    #: the hub is a composite. A composite carries no evidence edges of its
     #: own (they hang off its atoms), so :attr:`supported_count` reads 0
     #: for it by construction; the three ``conjunct*`` fields are the
     #: additive roll-up posture readers use instead of redefining that
@@ -115,7 +115,7 @@ class HubOverviewRow:
 
     @property
     def atoms_all_supported(self) -> bool:
-        """A compound whose every live atom is supported and none is
+        """A composite whose every live atom is supported and none is
         contradicted — the roll-up counterpart of ``supported_count > 0``
         for a hub that has no evidence edges of its own."""
         return (
@@ -172,7 +172,7 @@ class HubTreeNode:
 
 def hub_tree(store: Store) -> list[HubTreeNode]:
     """Every live claim hub as a forest for the ``/nanopub`` browse
-    view: a compound nests its conjunct atoms, a refined claim nests
+    view: a composite nests its conjunct atoms, a refined claim nests
     under what it refines, and each node carries its evidence sources as
     leaves. Roots = hubs that are nobody's atom/refinement; a hub linked
     into several parents appears under each (the links form a DAG); a
@@ -314,13 +314,13 @@ def draft_cited_hub_ids(store: Store, draft_ref_id: int) -> set[int]:
 def prune_tree(roots: list[HubTreeNode], cited: set[int]) -> list[HubTreeNode]:
     """Filter a :func:`hub_tree` forest to roots whose subtree touches
     ``cited`` — the ``/nanopub?draft=`` scoping. A kept root retains its
-    **full** subtree unmodified: a compound's conjunct atoms stay visible
-    even when only the compound itself (or a sibling atom) is directly
+    **full** subtree unmodified: a composite's conjunct atoms stay visible
+    even when only the composite itself (or a sibling atom) is directly
     cited, since the point is reviewing everything under what the draft
     invokes, not pruning down to the literal cite targets. Callers that
     tally "what's left to sign" should count :func:`tree_ids` of the
     pruned forest, not ``cited`` — the retained atoms are real sign work
-    (atoms publish before their compound)."""
+    (atoms publish before their composite)."""
     return [r for r in roots if tree_ids([r]) & cited]
 
 
@@ -421,7 +421,7 @@ def hub_rows(
                      WHERE l.dst_ref_id = r.ref_id
                        AND l.relation IN ('establishes', 'corroborates')
               ) w ON TRUE
-              -- A compound's roll-up: its live conjunct atoms (src of an
+              -- A composite's roll-up: its live conjunct atoms (src of an
               -- inbound `conjunct-of`), how many carry a supporting edge
               -- (same predicate as `w.s`), how many a live `contradicts`
               -- edge either direction (same shape as `d`).

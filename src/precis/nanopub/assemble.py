@@ -10,11 +10,11 @@ applied:
   not mint two identities for one fact. The claim node carries its
   canonical AIDA URI (``precis:aidaUri``) so the content address is
   inside the signed artifact.
-* **Compound assertions name their atoms by AIDA URI**
+* **Composite assertions name their atoms by AIDA URI**
   (``<atom-aida> precis:conjunctOf sub:claim`` — semantic,
   supersede-stable); provenance ``prov:wasDerivedFrom`` the atom
   nanopubs' **trusty** URIs, hash-chaining the merge to the atoms' exact
-  content. A compound cites no paper directly.
+  content. A composite cites no paper directly.
 * **Hypotheses carry motivation, never evidence**: ``precis:motivation``
   prose + ``precis:motivatedBy``/``prov:wasDerivedFrom`` trusty URIs,
   ``precis:testableBy`` the discriminating experiment; no quote, no
@@ -50,7 +50,7 @@ from precis.nanopub.vocab import (
     BOT_AGENT,
     CC_BY,
     CITO,
-    COMPOUND_CLAIM,
+    COMPOSITE_CLAIM,
     DCT,
     HYPOTHESIS,
     PRECIS,
@@ -118,7 +118,7 @@ class GroundingInput:
 
 @dataclass(frozen=True, slots=True)
 class ConjunctInput:
-    """One atom of a compound: its AIDA URI (assertion edge) and its
+    """One atom of a composite: its AIDA URI (assertion edge) and its
     minted artifact's trusty URI (provenance hash-chain)."""
 
     aida_uri: str
@@ -129,7 +129,7 @@ class ConjunctInput:
 class MintInput:
     """Everything one artifact says, decoupled from the DB."""
 
-    artifact_type: str  # 'claim' | 'compound' | 'hypothesis'
+    artifact_type: str  # 'claim' | 'composite' | 'hypothesis'
     sentence: str  # canonical form (aida.canonical_sentence)
     aida_uri: str
     hub_ref_id: int
@@ -159,7 +159,7 @@ def build_graphs(inp: MintInput, ns: Namespace) -> tuple[Graph, Graph, Graph]:
 def _type_uri(artifact_type: str) -> URIRef:
     return {
         "claim": ATOMIC_CLAIM,
-        "compound": COMPOUND_CLAIM,
+        "composite": COMPOSITE_CLAIM,
         "hypothesis": HYPOTHESIS,
     }[artifact_type]
 
@@ -194,9 +194,9 @@ def _provenance(inp: MintInput, ns: Namespace) -> Graph:
             g.add((assertion, PRECIS["motivation"], Literal(inp.motivation, lang="en")))
         return g
 
-    if inp.artifact_type == "compound":
+    if inp.artifact_type == "composite":
         # Hash-chain to the atoms' exact content; no paper is cited —
-        # the compound's trust derives worst-of-atoms, never serialized.
+        # the composite's trust derives worst-of-atoms, never serialized.
         for conj in inp.conjuncts:
             if conj.trusty_uri:
                 g.add((assertion, PROV.wasDerivedFrom, URIRef(conj.trusty_uri)))

@@ -20,7 +20,7 @@ What holds where:
 
   - Published surface: the three claim nanopubs (tight, one assertion
     each, each carrying its own verbatim quote) + prose passages like the
-    one above. No compound nanopub — a compound restates the atoms and,
+    one above. No composite nanopub — a composite restates the atoms and,
     as fi176435 demonstrated, tends to smuggle in unearned extras.
   - Internal DB: the hub keeps its conjunct-of edges grouping the three
     claims, trust stays worst-of-atoms, drafts render the passage from

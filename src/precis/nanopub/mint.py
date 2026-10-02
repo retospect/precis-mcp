@@ -417,7 +417,7 @@ def sign(
     whose identity is the fixed agent URI.
 
     Gates re-run (state may have moved since approval) plus the drift
-    check; a compound resolves its atoms' trusty codes into
+    check; a composite resolves its atoms' trusty codes into
     ``dependency_codes`` (a later change of any code is the dirty signal
     that flips this row back to ``reviewed`` for the topo re-mint).
 
@@ -495,7 +495,7 @@ def sign(
 def check_dependency_drift(store: Store, row: PublishRow) -> bool:
     """Topo re-mint dirty signal: has any dependency's artifact code
     changed since this row signed? True = flipped back to ``reviewed``
-    (the mint pass regenerates the closure atoms → compounds → citers)."""
+    (the mint pass regenerates the closure atoms → composites → citers)."""
     if not row.dependency_codes or row.state != "signed":
         return False
     for dep_ref_id, frozen_code in row.dependency_codes.items():

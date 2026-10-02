@@ -134,7 +134,7 @@
         {{ state_badge(n.row, stale_reasons) }}
         {% if n.relation %}
         <span class="text-xs text-slate-400 shrink-0 cursor-help"
-              title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the compound claim above — atoms mint and publish first; the compound cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
+              title="{% if n.relation == 'conjunct-of' %}Conjunct atom of the composite claim above — atoms mint and publish first; the composite cites their artifacts, not papers.{% else %}Refines the claim above — a narrower, sharper restatement.{% endif %}">{{ 'conjunct' if n.relation == 'conjunct-of' else n.relation }}</span>
         {% endif %}
         {# href = the workbench deep link (/nanopub/fi<id> — cmd-click /
            copy-link gets the full workbench, nav + tree included);

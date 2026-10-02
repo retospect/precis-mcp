@@ -162,9 +162,10 @@ hierarchical shape inline rather than repoint at `unicycle-c1`.
     for claims-and-evidence's edgar/datasheet evidence widening. Taproot
     half shipped 2026-10-02 (extraction JSON key, `ClaimExtraction.composite`,
     cohort `likely-composite`, trust status `hub-composite`, glossary).
-    Left for the nanopub half: `artifact_type='compound'` and the strings
-    that name it (`precis-taproot-mint-help.md`, `precis-nanopub-help.md`,
-    `nanopub_render`, `docs/reference/nanopub-example/`).
+    The nanopub half is built (migration 0181, IRI `precis:CompositeClaim`,
+    `artifact_type='composite'`, skills, `nanopub_render`,
+    `docs/reference/nanopub-example/`), shipping through the orchestrator's
+    gate.
   - `fidelity ladder` → `fidelity levels`: `meta.fidelity_ladder` is a prod
     quest meta key (itself renamed from `tier_ladder` by 0145), read in
     `quest/{compute,graduate,catalyst_seed,frontier}.py`, code the

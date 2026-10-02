@@ -24,8 +24,8 @@ clever:
 * **State/identity checks** — state must be ``anchored`` (a terminal
   post-publish state yields a non-blocking note instead — drift/trust keep
   running as post-publish health signals); live title must still hash to
-  the frozen ``claim_sha``; a compound's dependency codes must be
-  unchanged and every dependency already ``published`` (atoms → compounds
+  the frozen ``claim_sha``; a composite's dependency codes must be
+  unchanged and every dependency already ``published`` (atoms → composites
   → citers); a hanging claim (``grounding.hanging``) is mintable, never
   publishable; an unresolved ``contradicts`` edge blocks exactly as at
   mint.
@@ -376,7 +376,7 @@ def _dependency_issues(store: Store, row: PublishRow) -> list[PreflightIssue]:
                     check="dependency-unpublished",
                     message=(
                         f"dependency fi{dep_ref_id} is {dep.state!r} — atoms "
-                        "publish before the compounds that cite them"
+                        "publish before the composites that cite them"
                     ),
                     subject_id=int(dep_ref_id),
                 )

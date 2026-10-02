@@ -104,12 +104,12 @@ def hub_context(
         else None
     )
     # `load_bundle` fetches this same ref internally but doesn't carry its
-    # meta out on the bundle (`bundle.artifact_type` is claim/compound only —
+    # meta out on the bundle (`bundle.artifact_type` is claim/composite only —
     # see `_suggested_payload`/`_graph`), so one extra fetch here is what
     # both the prefill and the state-header branches need.
     hub_ref = store.fetch_refs_by_ids([hub_id]).get(hub_id)
     hub_meta = (hub_ref.meta or {}) if hub_ref is not None else {}
-    # A hypothesis never has a `claim`/`compound` bundle.artifact_type
+    # A hypothesis never has a `claim`/`composite` bundle.artifact_type
     # (load_bundle can only ever set one of those) — the durable meta marker
     # is what actually says "hypothesis", and a publish row's own frozen
     # artifact_type (set at approve) always wins once one exists.
@@ -420,8 +420,11 @@ _MINT_GATES: list[tuple[str, str]] = [
     ("quantity-bound", "quantities sit within the vocabulary's physical bounds"),
     ("pdf-sha", "each passage pins the exact source PDF by sha256"),
     ("llm-attribution", "an agent-prepared payload names its authoring model(s)"),
-    ("compound-shape", "a compound cites its conjunct atoms' artifacts, not papers"),
-    ("mint-order", "conjunct atoms carry signed artifacts before their compound mints"),
+    ("composite-shape", "a composite cites its conjunct atoms' artifacts, not papers"),
+    (
+        "mint-order",
+        "conjunct atoms carry signed artifacts before their composite mints",
+    ),
     ("rejected-memo", "the sentence is not a previously rejected claim string"),
 ]
 
@@ -891,7 +894,7 @@ def _graph(
 
     ``display_artifact_type`` labels the hub node instead of
     ``bundle.artifact_type``: :func:`~precis.nanopub.evidence.load_bundle`
-    can only ever set the bundle's own field to ``claim``/``compound``, so
+    can only ever set the bundle's own field to ``claim``/``composite``, so
     it alone can never say ``hypothesis`` — see :func:`hub_context`.
 
     ``blocked`` is the D1 gate-parity flag (live
@@ -913,8 +916,8 @@ def _graph(
 
     papers = list(bundle.sources) + list(bundle.contradicts)
     hub_paper_ids = {p.ref_id for p in papers}
-    # A compound's grounding lives on its conjunct atoms (the compound-shape
-    # gate: "a compound cites its conjunct atoms' artifacts, not papers"),
+    # A composite's grounding lives on its conjunct atoms (the composite-shape
+    # gate: "a composite cites its conjunct atoms' artifacts, not papers"),
     # so the hub's own evidence list is empty by design and the papers row
     # rendered nothing (fi211522). Aggregate the atoms' evidence instead —
     # deduped across atoms — and remember which atom(s) each paper grounds

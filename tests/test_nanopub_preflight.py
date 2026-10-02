@@ -200,7 +200,7 @@ def test_hanging_claim_is_unpublishable(store: Any, monkeypatch: Any) -> None:
     assert "hanging" in _checks(publish_preflight(store, hub))
 
 
-def test_compound_dependency_must_be_published(store: Any, monkeypatch: Any) -> None:
+def test_composite_dependency_must_be_published(store: Any, monkeypatch: Any) -> None:
     priv, _pub = generate_keypair(2048)
     monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
     paper, chunk, sha = _seed_paper(store)
@@ -208,11 +208,11 @@ def test_compound_dependency_must_be_published(store: Any, monkeypatch: Any) -> 
     from precis.taproot.canon import CanonicalClaim
     from precis.taproot.hub import link_claims, mint_hub
 
-    compound = mint_hub(
-        store, CanonicalClaim(sentence="DFT finds the compound whole holds.", scope={})
+    composite = mint_hub(
+        store, CanonicalClaim(sentence="DFT finds the composite whole holds.", scope={})
     )
     link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
     with store.pool.connection() as conn:
         conn.execute(
@@ -222,11 +222,11 @@ def test_compound_dependency_must_be_published(store: Any, monkeypatch: Any) -> 
         )
     mint.approve(store, atom, payload=_payload(chunk, sha), interactive=True)
     mint.sign(store, atom, llm_models=[])
-    mint.approve(store, compound, payload={"passages": []}, interactive=True)
-    mint.sign(store, compound, llm_models=[])
-    _anchor(store, _refresh(store, compound))
-    _allow_signer(store, _refresh(store, compound))
-    checks = _checks(publish_preflight(store, compound))
+    mint.approve(store, composite, payload={"passages": []}, interactive=True)
+    mint.sign(store, composite, llm_models=[])
+    _anchor(store, _refresh(store, composite))
+    _allow_signer(store, _refresh(store, composite))
+    checks = _checks(publish_preflight(store, composite))
     assert "dependency-unpublished" in checks
 
 

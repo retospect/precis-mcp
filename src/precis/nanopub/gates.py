@@ -4,7 +4,7 @@ The spec's gate checklist, mechanical subset (each docstring cites its
 entry): contradicts-edge; primary-source hearsay (:func:`check_primary_source`
 — unheld/awaiting/declared source, needs-acquisition body prose, review-title
 by genre); quote verbatim-containment; snip uniqueness; structured-field
-containment; schema lint (claim/compound/hypothesis shape,
+containment; schema lint (claim/composite/hypothesis shape,
 :func:`check_claim_sentence`); quantity-bound presence; llm-attribution;
 ``pdf_sha256`` uniqueness; publish-row cardinality; drift
 (:func:`check_drift`); topo/mint-order (:func:`check_mint_order`).
@@ -145,12 +145,12 @@ _BLOCKING_LINT_CODES: frozenset[str] = frozenset(
 #: switching.trig``, this repo's own reference hypothesis, fails the gate
 #: today on ``no-epistemic-mode`` alone.
 #:
-#: ``compound`` is deliberately NOT listed. It has the same shape of
-#: argument (a compound cites no paper — its trust derives worst-of-atoms,
-#: and the ``compound-shape`` gate already requires the ``conjunct-of``
+#: ``composite`` is deliberately NOT listed. It has the same shape of
+#: argument (a composite cites no paper — its trust derives worst-of-atoms,
+#: and the ``composite-shape`` gate already requires the ``conjunct-of``
 #: atoms that carry the modes), so exempting it from ``no-epistemic-mode``
 #: is a one-line addition here. It is left strict pending a decision,
-#: because unlike a hypothesis a compound *does* assert something
+#: because unlike a hypothesis a composite *does* assert something
 #: established, and the failure mode of exempting it — a conjunction that
 #: names no mode at all — has not been measured against the corpus.
 _ARTIFACT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
@@ -160,10 +160,10 @@ _ARTIFACT_LINT_EXEMPTIONS: dict[str, frozenset[str]] = {
 
 def resolve_artifact_type(bundle: ev.HubBundle, payload: dict[str, Any]) -> str:
     """Which of the three artifact types this mint is —
-    ``'claim' | 'compound' | 'hypothesis'``.
+    ``'claim' | 'composite' | 'hypothesis'``.
 
     :attr:`~precis.nanopub.evidence.HubBundle.artifact_type` only ever says
-    ``claim`` or ``compound``: those are derived from the hub's edges
+    ``claim`` or ``composite``: those are derived from the hub's edges
     (``conjunct-of`` or not). ``hypothesis`` is a mint-time shape with no
     edge to derive it from, so it is known only from the payload.
 
@@ -196,8 +196,8 @@ def run_mint_gates(
     list; mint proceeds only on an empty return.
 
     ``at_sign`` adds the mint-order gate (#15): approval order is free
-    (a compound's text can freeze before its atoms sign), only *mint*
-    order is constrained — a compound signs after its atoms.
+    (a composite's text can freeze before its atoms sign), only *mint*
+    order is constrained — a composite signs after its atoms.
 
     ``provenance_body`` overrides ``bundle.body`` for the acquisition
     gate's prose arm ONLY (:func:`check_primary_source` — the one check
@@ -280,20 +280,20 @@ def run_mint_gates(
                     "it until the original-paper hunt lands)",
                 )
             )
-    elif artifact_type == "compound":
+    elif artifact_type == "composite":
         if passages:
             violations.append(
                 GateViolation(
                     "schema-lint",
-                    "compound with direct grounding passages — a compound "
+                    "composite with direct grounding passages — a composite "
                     "cites no paper; its trust derives worst-of-atoms",
                 )
             )
         if not bundle.conjunct_atoms:
             violations.append(
                 GateViolation(
-                    "compound-shape",
-                    "compound with no conjunct-of atoms — a compound claim "
+                    "composite-shape",
+                    "composite with no conjunct-of atoms — a composite claim "
                     "is expressed as its derivation "
                     "(atom ∧ atom → claim), never a flat sentence",
                 )
@@ -371,9 +371,9 @@ def run_mint_gates(
                 )
             )
 
-    # 15 — mint-order: a compound SIGNS only after its atoms are signed
+    # 15 — mint-order: a composite SIGNS only after its atoms are signed
     # (approval order stays free).
-    if at_sign and artifact_type == "compound":
+    if at_sign and artifact_type == "composite":
         violations += check_mint_order(store, bundle)
 
     return violations
@@ -661,7 +661,7 @@ def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]
     never reaches this gate — it is a non-blocking open question by
     construction, so it produces zero violations here regardless of who
     filed it or which claim it touches. Worst-of: one contradicted member
-    atom blocks a compound (fi189542 is the precedent case)."""
+    atom blocks a composite (fi189542 is the precedent case)."""
     out: list[GateViolation] = []
     for edge in ev.live_contradicts(store, bundle.hub_ref_id):
         out.append(
@@ -681,7 +681,7 @@ def check_contradicts(store: Store, bundle: ev.HubBundle) -> list[GateViolation]
                     "contradicts",
                     f"conjunct atom fi{atom_id} carries a live contradicts "
                     f"edge {edge.direction} {edge.kind} {edge.ref_id} — "
-                    "worst-of blocks the compound",
+                    "worst-of blocks the composite",
                 )
             )
     return out
@@ -900,8 +900,8 @@ def _check_passage(
 
 
 def check_mint_order(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:
-    """Gate #15: a compound mints only after every conjunct atom carries
-    a signed artifact (its trusty URI is what the compound's provenance
+    """Gate #15: a composite mints only after every conjunct atom carries
+    a signed artifact (its trusty URI is what the composite's provenance
     hash-chains to)."""
     out: list[GateViolation] = []
     for atom_id, sentence in bundle.conjunct_atoms:
@@ -920,7 +920,7 @@ def check_mint_order(store: Store, bundle: ev.HubBundle) -> list[GateViolation]:
                 GateViolation(
                     "mint-order",
                     f"conjunct atom fi{atom_id} ({sentence[:50]}…) has no "
-                    "signed artifact yet — atoms mint before compounds "
+                    "signed artifact yet — atoms mint before composites "
                     "(topo order)",
                 )
             )

@@ -79,7 +79,7 @@ loosening. A `hypothesis`
 does not face `no-epistemic-mode`/`no-evidence-verb`: that pair asks how
 a finding was established and a conjecture was established by nothing
 yet, so its mode lives in the type plus the mandatory `testable_by`.
-`claim` and `compound` face the full set, and an unlisted type inherits
+`claim` and `composite` face the full set, and an unlisted type inherits
 it — the default is strict, so a new artifact type fails closed.
 
 **Expect refusal at approve, not malfunction.** A legacy hub failing

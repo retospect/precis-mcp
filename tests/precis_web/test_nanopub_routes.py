@@ -481,7 +481,7 @@ def test_approve_prefill_frozen_payload_wins_over_proposed(
 def test_claim_page_labels_a_proposed_hub_hypothesis(
     client: TestClient, runtime_with_store
 ) -> None:
-    """`bundle.artifact_type` can only ever be ``claim``/``compound``
+    """`bundle.artifact_type` can only ever be ``claim``/``composite``
     (:func:`precis.nanopub.evidence.load_bundle`) — the DAG's hub-node
     label reads the durable meta marker instead, so a proposed hypothesis
     with no publish row yet still shows up as one."""
@@ -787,7 +787,7 @@ def test_evidence_add_and_remove_doors(client: TestClient, runtime_with_store) -
         assert resp.status_code == 400
 
 
-def test_tree_nests_conjunct_atom_under_compound(
+def test_tree_nests_conjunct_atom_under_composite(
     client: TestClient, runtime_with_store
 ) -> None:
     from precis.nanopub.overview import hub_tree
@@ -795,17 +795,17 @@ def test_tree_nests_conjunct_atom_under_compound(
 
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
-    compound = _seed_hub(store, "A compound tree claim.", paper, chunk)
+    composite = _seed_hub(store, "A composite tree claim.", paper, chunk)
     paper2, chunk2, _sha2 = _seed_paper(store)
     atom = _seed_hub(store, "An atomic tree claim.", paper2, chunk2)
     assert link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
 
     roots = hub_tree(store)
     root_ids = {n.row.ref_id for n in roots}
-    assert compound in root_ids and atom not in root_ids  # atom is nested
-    node = next(n for n in roots if n.row.ref_id == compound)
+    assert composite in root_ids and atom not in root_ids  # atom is nested
+    node = next(n for n in roots if n.row.ref_id == composite)
     assert [c.row.ref_id for c in node.children] == [atom]
     assert node.children[0].relation == "conjunct-of"
     # Evidence papers hang as leaves on both nodes.
@@ -814,14 +814,14 @@ def test_tree_nests_conjunct_atom_under_compound(
 
     resp = client.get("/nanopub")
     assert resp.status_code == 200
-    assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
-    assert "A compound tree claim." in resp.text
+    assert f"fi{composite}" in resp.text and f"fi{atom}" in resp.text
+    assert "A composite tree claim." in resp.text
     # Evidence leaves target the paper pane via the paper reader, not the
     # kindless /refs/<id> shape (which 400s).
     assert f'data-src="/papers/{paper}"' in resp.text
     assert f"/refs/{paper}" not in resp.text
     # Both hubs load the review pane.
-    assert f'data-src="/claim/fi{compound}"' in resp.text
+    assert f'data-src="/claim/fi{composite}"' in resp.text
     assert f'data-src="/claim/fi{atom}"' in resp.text
 
 
@@ -873,30 +873,30 @@ def test_draft_filter_scopes_forest_and_tally(
     assert f"fi{cited}" in bare.text and f"fi{uncited}" not in bare.text
 
 
-def test_draft_filter_keeps_full_subtree_of_a_cited_compound(
+def test_draft_filter_keeps_full_subtree_of_a_cited_composite(
     client: TestClient, runtime_with_store
 ) -> None:
     from precis.taproot.hub import link_claims
 
     store = _store(runtime_with_store)
     paper, chunk, _sha = _seed_paper(store)
-    compound = _seed_hub(store, "A cited compound claim.", paper, chunk)
+    composite = _seed_hub(store, "A cited composite claim.", paper, chunk)
     paper2, chunk2, _sha2 = _seed_paper(store)
     atom = _seed_hub(store, "Its uncited-directly atom.", paper2, chunk2)
     assert link_claims(
-        store, from_hub_ref_id=atom, to_hub_ref_id=compound, relation="conjunct-of"
+        store, from_hub_ref_id=atom, to_hub_ref_id=composite, relation="conjunct-of"
     )
     draft = _seed_draft(store)
-    # The draft cites only the compound — never the atom directly.
-    store.add_link(src_ref_id=draft, dst_ref_id=compound, relation="cites")
+    # The draft cites only the composite — never the atom directly.
+    store.add_link(src_ref_id=draft, dst_ref_id=composite, relation="cites")
 
     resp = client.get(f"/nanopub?draft=dr{draft}")
     assert resp.status_code == 200
-    # The compound's full subtree stays visible — reviewing everything
+    # The composite's full subtree stays visible — reviewing everything
     # under what the draft invokes, not just the literal cite target.
-    assert f"fi{compound}" in resp.text and f"fi{atom}" in resp.text
+    assert f"fi{composite}" in resp.text and f"fi{atom}" in resp.text
     # And the tally counts the DISPLAYED set: the retained atom is real
-    # sign work (atoms publish before their compound), so the chip says
+    # sign work (atoms publish before their composite), so the chip says
     # 2 claims, not 1.
     assert "— 2 claims" in resp.text
 

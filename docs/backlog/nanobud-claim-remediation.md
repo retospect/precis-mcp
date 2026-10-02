@@ -395,14 +395,14 @@ its four evidence chunks was read, and that one was procedural. Read
 ## The artifact-exemption route is bigger than one line
 
 `resolve_artifact_type` returns a closed set of three
-(`claim | compound | hypothesis`); `claim`/`compound` derive from edges,
+(`claim | composite | hypothesis`); `claim`/`composite` derive from edges,
 `hypothesis` from the mint payload. A new `definition`/`context` type
 needs: the exemption entry, `resolve_artifact_type` support, a persisted
 marker, `reword.py::_blocking_codes` to stop hardcoding
 `artifact_type="claim"`, and a cohort-SQL exclusion beside
 `_NOT_HYPOTHESIS_SQL`.
 
-The gates docstring also sets a bar: `compound` was deliberately left
+The gates docstring also sets a bar: `composite` was deliberately left
 strict "pending a decision, because ... the failure mode of exempting it
 has not been measured against the corpus." A new type inherits that bar —
 measure first, then ship. It is its own change, not part of this pass.

@@ -1104,7 +1104,7 @@ def test_approve_reword_survives_a_failed_flip_as_a_candidate(
     assert row.claim_sha is None and row.approved_title is None
 
 
-def test_compound_requires_signed_atoms_then_chains_them(
+def test_composite_requires_signed_atoms_then_chains_them(
     store: Any, monkeypatch: Any
 ) -> None:
     priv, _pub = generate_keypair(2048)
@@ -1112,40 +1112,40 @@ def test_compound_requires_signed_atoms_then_chains_them(
 
     paper, chunk, sha = _seed_paper(store)
     atom = _seed_hub(store, "DFT shows atom A holds.", paper, chunk)
-    compound = mint_hub(
+    composite = mint_hub(
         store, CanonicalClaim(sentence="DFT shows atom A holds and matters.", scope={})
     )
     link_claims(
         store,
         from_hub_ref_id=atom,
-        to_hub_ref_id=compound,
+        to_hub_ref_id=composite,
         relation="conjunct-of",
     )
 
-    # Approval order is free: the compound's text freezes even though its
+    # Approval order is free: the composite's text freezes even though its
     # atom is unsigned — only SIGNING is topo-constrained.
-    row = mint.approve(store, compound, payload={"passages": []}, interactive=True)
+    row = mint.approve(store, composite, payload={"passages": []}, interactive=True)
     with pytest.raises(mint.MintGateError) as exc:
-        mint.sign(store, compound)
+        mint.sign(store, composite)
     assert any(v.gate == "mint-order" for v in exc.value.violations)
 
     mint.approve(store, atom, payload=_payload(chunk), interactive=True)
     atom_row = mint.sign(store, atom)
 
-    signed = mint.sign(store, compound)
+    signed = mint.sign(store, composite)
     assert signed.dependency_codes == {str(atom): atom_row.trusty_uri}
     trig = store.nanopub_artifact(signed.artifact_id).trig_bytes.decode()
     assert atom_row.trusty_uri in trig  # provenance hash-chain
     assert atom_row.aida_uri in trig  # assertion names the atom semantically
-    assert row.artifact_type == "compound"
+    assert row.artifact_type == "composite"
 
-    # Re-mint cascade: atom re-signs → compound flips signed → reviewed.
+    # Re-mint cascade: atom re-signs → composite flips signed → reviewed.
     assert store.nanopub_reopen(atom_row.id)
     mint.approve(store, atom, payload=_payload(chunk), interactive=True)
     new_atom_row = mint.sign(store, atom)
     assert new_atom_row.trusty_uri != atom_row.trusty_uri
-    assert mint.check_dependency_drift(store, store.nanopub_publish_row(compound))
-    assert store.nanopub_publish_row(compound).state == "reviewed"
+    assert mint.check_dependency_drift(store, store.nanopub_publish_row(composite))
+    assert store.nanopub_publish_row(composite).state == "reviewed"
 
 
 def test_attesting_key_needs_the_interactive_door(store: Any, monkeypatch: Any) -> None:

@@ -461,12 +461,12 @@ class HubBundle:
 
     hub_ref_id: int
     sentence: str
-    #: 'claim' (atomic) or 'compound' (has conjunct-of atoms).
+    #: 'claim' (atomic) or 'composite' (has conjunct-of atoms).
     artifact_type: str
     sources: list[EvidenceSource]
     #: Resolved grounding chunks, one per inbound edge that pins one.
     grounding_chunks: list[ChunkInfo]
-    #: Atom hub ids (non-empty iff compound), with their sentences.
+    #: Atom hub ids (non-empty iff composite), with their sentences.
     conjunct_atoms: list[tuple[int, str]] = field(default_factory=list)
     #: Evidence sources whose stored relation is a live `contradicts`.
     contradicts: list[EvidenceSource] = field(default_factory=list)
@@ -602,7 +602,7 @@ def load_bundle(store: Store, hub_ref_id: int) -> HubBundle:
     return HubBundle(
         hub_ref_id=hub_ref_id,
         sentence=hub_ref.title,
-        artifact_type="compound" if atoms else "claim",
+        artifact_type="composite" if atoms else "claim",
         sources=sources,
         grounding_chunks=grounding_chunks,
         conjunct_atoms=atoms,

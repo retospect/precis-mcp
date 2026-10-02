@@ -75,10 +75,10 @@ def test_license_scoped_to_assertion_graph_not_this() -> None:
     assert lic == [assemble.DRAFT_NS["assertion"]]
 
 
-def test_compound_names_atoms_by_aida_uri_and_derives_from_trusty() -> None:
+def test_composite_names_atoms_by_aida_uri_and_derives_from_trusty() -> None:
     atom_a = aida_uri("A.")
     comp = assemble.MintInput(
-        artifact_type="compound",
+        artifact_type="composite",
         sentence=canonical_sentence("A and B jointly imply C"),
         aida_uri=aida_uri("A and B jointly imply C"),
         hub_ref_id=1,
@@ -94,7 +94,7 @@ def test_compound_names_atoms_by_aida_uri_and_derives_from_trusty() -> None:
     assert "https://w3id.org/np/RAx" not in a_text  # trusty never in assertion
     p_text = prov.serialize(format="nt")
     assert "https://w3id.org/np/RAx" in p_text
-    assert "doi.org" not in p_text  # a compound cites no paper
+    assert "doi.org" not in p_text  # a composite cites no paper
 
 
 def test_hypothesis_has_motivation_never_quotes() -> None:

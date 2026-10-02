@@ -100,20 +100,19 @@ def test_hub_rows_open_disputes_never_sets_disputed(store: Any) -> None:
     assert row.disputed_since is None
 
 
-# ── compound roll-up (docs/backlog/compound-hub-posture-ignores-conjunct-
-# evidence.md) — a compound hub carries no evidence edges of its own; its
-# atoms (``atom --conjunct-of--> compound``) do. ───────────────────────
+# ── composite roll-up: a composite hub carries no evidence edges of its own;
+# its atoms (``atom --conjunct-of--> composite``) do. ─────────────────────
 
 
-def _compound(store: Any, n_atoms: int = 3) -> tuple[int, list[int]]:
-    compound = mint_hub(store, CanonicalClaim(sentence="a compound claim", scope={}))
+def _composite(store: Any, n_atoms: int = 3) -> tuple[int, list[int]]:
+    composite = mint_hub(store, CanonicalClaim(sentence="a composite claim", scope={}))
     atoms = [
         mint_hub(store, CanonicalClaim(sentence=f"atom claim number {i}", scope={}))
         for i in range(n_atoms)
     ]
     for a in atoms:
-        store.add_link(src_ref_id=a, dst_ref_id=compound, relation="conjunct-of")
-    return compound, atoms
+        store.add_link(src_ref_id=a, dst_ref_id=composite, relation="conjunct-of")
+    return composite, atoms
 
 
 def _support(store: Any, atom: int, *, support: str = "yes") -> None:
@@ -130,14 +129,14 @@ def _row(store: Any, ref_id: int) -> Any:
     return next(r for r in hub_rows(store) if r.ref_id == ref_id)
 
 
-def test_compound_rolls_up_supported_atoms_and_passes_verified(store: Any) -> None:
+def test_composite_rolls_up_supported_atoms_and_passes_verified(store: Any) -> None:
     from precis.handlers.finding import _passes_trust
 
-    compound, atoms = _compound(store)
+    composite, atoms = _composite(store)
     for a in atoms:
         _support(store, a)
 
-    row = _row(store, compound)
+    row = _row(store, composite)
 
     assert row.supported_count == 0  # no direct edges — unchanged meaning
     assert (row.conjunct_count, row.conjuncts_supported) == (3, 3)
@@ -146,31 +145,31 @@ def test_compound_rolls_up_supported_atoms_and_passes_verified(store: Any) -> No
     assert _passes_trust(row, "verified")
 
 
-def test_compound_with_an_unsupported_atom_fails_verified(store: Any) -> None:
+def test_composite_with_an_unsupported_atom_fails_verified(store: Any) -> None:
     from precis.handlers.finding import _passes_trust
 
-    compound, atoms = _compound(store)
+    composite, atoms = _composite(store)
     _support(store, atoms[0])
     _support(store, atoms[1])
     _support(store, atoms[2], support="no")  # judged, supports nothing
 
-    row = _row(store, compound)
+    row = _row(store, composite)
 
     assert (row.conjunct_count, row.conjuncts_supported) == (3, 2)
     assert not row.atoms_all_supported
     assert not _passes_trust(row, "verified")
 
 
-def test_compound_with_a_contradicted_atom_fails_verified(store: Any) -> None:
+def test_composite_with_a_contradicted_atom_fails_verified(store: Any) -> None:
     from precis.handlers.finding import _passes_trust
 
-    compound, atoms = _compound(store)
+    composite, atoms = _composite(store)
     for a in atoms:
         _support(store, a)
     rival = seed_ref(store, title="a rival claim", kind="finding")
     store.add_link(src_ref_id=rival, dst_ref_id=atoms[0], relation="contradicts")
 
-    row = _row(store, compound)
+    row = _row(store, composite)
 
     assert row.conjuncts_supported == 3
     assert row.conjuncts_contradicted == 1
@@ -178,13 +177,13 @@ def test_compound_with_a_contradicted_atom_fails_verified(store: Any) -> None:
     assert not _passes_trust(row, "verified")
 
 
-def test_compound_roll_up_ignores_retired_atoms(store: Any) -> None:
-    compound, atoms = _compound(store)
+def test_composite_roll_up_ignores_retired_atoms(store: Any) -> None:
+    composite, atoms = _composite(store)
     _support(store, atoms[0])
     _support(store, atoms[1])
     store.retire_ref(atoms[2])  # the unsupported one is gone
 
-    row = _row(store, compound)
+    row = _row(store, composite)
 
     assert (row.conjunct_count, row.conjuncts_supported) == (2, 2)
     assert row.atoms_all_supported
@@ -206,14 +205,14 @@ def test_atomic_hub_has_no_roll_up_and_keeps_its_own_trust(store: Any) -> None:
     assert _passes_trust(row, "verified")
 
 
-def test_compound_posture_cells_show_the_atom_roll_up(store: Any) -> None:
+def test_composite_posture_cells_show_the_atom_roll_up(store: Any) -> None:
     from precis.handlers.finding import _posture_cells, _search_hit_posture
 
-    compound, atoms = _compound(store)
+    composite, atoms = _composite(store)
     for a in atoms:
         _support(store, a)
 
-    row = _row(store, compound)
+    row = _row(store, composite)
 
     assert _posture_cells(row)["support"] == "atoms 3/3✓"
     assert _posture_cells(row)["flags"] == ""
