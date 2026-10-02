@@ -17,14 +17,25 @@ packages its results.
 **Deadline above the ranking:** the catpath pathway-engine and trust-demo
 paper is November 2026's paper of the month (td459589, quest qu459585;
 Reto 2026-10-01). Skeleton draft `catpath-methods` exists, with a plan
-paragraph per section; next comes importing the missing methods papers. The trust
-demo needs the MPI image rebuilt on the node before
-`PRECIS_DFT_MPI_RANKS` is set. Ruled 2026-10-02 (chemistry-6, option 1):
-the orchestrator rebuilds it on the DFT node in the round-2 window, after a
-read-only MPI check. Chemistry then sets the variable and times one relax.
-The host is coordinated with local-compute, because spark's return may move
-the `dft` lane off pollux. Rank the items below by what that paper
-needs.
+paragraph per section; next comes importing the missing methods papers.
+**No GPAW relax has ever completed in prod** (the two DFT-rung jobs ever
+dispatched both failed; the 09-18 serial run measured 10–18 min per ionic
+step, gr346449). So the timed MPI run is also the first completion test: if
+it fails for any reason other than speed, chemistry reports and stops.
+Ruled 2026-10-02 (chemistry-6, option 1): the orchestrator rebuilds the MPI
+image on pollux in the round-2 window; pollux stays the `dft` host
+(local-compute). The pollux image (2026-06-21) has no MPI. Branch
+`chemistry-dft-mpi-env` (324559cda, with the orchestrator to gate) renders
+`PRECIS_DFT_MPI_RANKS`, `PRECIS_DFT_OMP_THREADS`, `PRECIS_DFT_CPUSET` and
+`PRECIS_DFT_PAW_DIR` from the dft role; all default to today's behaviour.
+Setting values on pollux (8 ranks, 1 thread, the fast cores, node-local
+scratch while `/mnt/cluster` is hung) is a prod config change the
+orchestrator takes with the round-2 deploy and lists for Reto. Before the
+build: the new Dockerfile bakes no PAW datasets and nothing mounts them, so
+copy them out of the June image first and point `dft_paw_dir` at them.
+Measure: wall per SCF iteration; one ionic step at 1 rank on the new image
+first, then 8 ranks (review note §5). Rank the items below by what that
+paper needs.
 
 1. **gr345366 dogfood + gr322060** — both gr345366 causes landed
    2026-10-02 and protect quests once deployed: the quota guard accepts
