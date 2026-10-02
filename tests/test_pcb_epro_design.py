@@ -318,7 +318,7 @@ def test_a_non_plated_free_pad_becomes_a_mounting_hole(design) -> None:
         if f["ftype"] == "mounting_hole" and "part" not in f["geom"]
     ]
     assert len(holes) == 1
-    assert holes[0]["geom"]["dia_mm"] == pytest.approx(6.0, abs=1e-5)
+    assert holes[0]["geom"]["diameter"] == pytest.approx(6.0, abs=1e-5)
     # No 'fixed': the column is inert (nothing reads pcb_features.fixed),
     # so writing one would claim a freeze that does not exist.
     assert "fixed" not in holes[0]

@@ -598,13 +598,13 @@ def test_a_multi_layer_fill_in_a_footprint_imports_as_a_hole_at_its_part(project
     design, _frame = epro.build_design(project, pcb)
     r1 = next(c for c in design.components if c["refdes"] == "R1")
     placed = [
-        f["geom"]
+        (f["x"], f["y"], f["geom"]["diameter"])
         for f in design.features
         if f["ftype"] == "mounting_hole" and f["geom"].get("part") == "R1"
     ]
     # Through the same transform as R1's pads, not a re-derivation of it.
     x, y = padplace.place_pad_point(hole, r1)
-    assert placed == [pytest.approx({"x": x, "y": y, "dia_mm": 0.508, "part": "R1"})]
+    assert placed == [pytest.approx((x, y, 0.508))]
     assert any("footprint hole(s) imported" in w for w in design.warnings)
 
 
@@ -628,7 +628,7 @@ def test_a_footprint_hole_follows_rotation_and_the_bottom_mirror():
         "layer": "bottom",
     }
     got = {
-        f["geom"]["part"]: (f["geom"]["x"], f["geom"]["y"])
+        f["geom"]["part"]: (f["x"], f["y"])
         for f in epro.footprint_hole_features([top90, bottom], fps)
     }
     assert got["A"] == pytest.approx(padplace.place_pad_point(hole, top90))

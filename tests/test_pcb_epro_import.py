@@ -27,7 +27,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.ingest import pcb_epro
-from precis.pcb import epro, padplace
+from precis.pcb import epro, padplace, session
 
 _FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
 
@@ -66,6 +66,17 @@ def test_counts_match_the_source(store, imported) -> None:
     assert set(members) == {("R1", "1"), ("U1", "VDD"), ("U1", "GND")}
 
 
+def test_imported_holes_reach_the_drill_and_drc_readers(pcb, store, imported) -> None:
+    """heater-base-test: the importer wrote ``geom: {x, y, dia_mm}``, a
+    shape no reader takes, so none of the board's 24 mounting holes
+    reached the drill file, DRC or the router, and nothing said so."""
+    holes = session.mounting_holes_from_features(
+        store.pcb_features_list(imported.ref_id)
+    )
+    assert sorted(round(h.drill_mm, 3) for h in holes) == [0.508, 6.0]
+    assert len(pcb._drc_drills(imported.ref_id)) == 2
+
+
 def test_the_outline_and_the_mounting_hole_land_as_features(store, imported) -> None:
     features = store.pcb_features_list(imported.ref_id)
     ftypes = [f["ftype"] for f in features]
@@ -87,7 +98,7 @@ def test_the_outline_and_the_mounting_hole_land_as_features(store, imported) -> 
     hole = next(
         f for f in features if f["ftype"] == "mounting_hole" and "part" not in f["geom"]
     )
-    assert hole["geom"]["dia_mm"] == pytest.approx(6.0, abs=1e-5)
+    assert hole["geom"]["diameter"] == pytest.approx(6.0, abs=1e-5)
     # NOT marked fixed: pcb_features.fixed is unconstrained text that
     # nothing reads, so a value there would claim a freeze that does not
     # exist. Asserted so a later "let's freeze the mechanicals" change

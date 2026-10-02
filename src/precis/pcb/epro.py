@@ -1356,10 +1356,17 @@ def extract_mounting_holes(
         # ftype='keepout'), so setting it would store a freeze that binds
         # nothing and reads as if it did. Mounting holes are already
         # immovable in practice — no placer or router touches features.
+        # Position on the feature row, drill as ``geom.diameter``: the
+        # shape every reader takes (session.mounting_holes_from_features,
+        # the gerber drill list, DRC). Until 2026-10-02 this wrote
+        # ``geom: {x, y, dia_mm}``, which every reader skipped, so no
+        # imported hole reached the drill file, DRC or the router.
         out.append(
             {
                 "ftype": "mounting_hole",
-                "geom": {"x": x, "y": y, "dia_mm": Frame.length(float(dia_mil))},
+                "x": x,
+                "y": y,
+                "geom": {"diameter": Frame.length(float(dia_mil))},
             }
         )
     if plated_free:
@@ -1390,10 +1397,10 @@ def footprint_hole_features(
             out.append(
                 {
                     "ftype": "mounting_hole",
+                    "x": round(x, 4),
+                    "y": round(y, 4),
                     "geom": {
-                        "x": round(x, 4),
-                        "y": round(y, 4),
-                        "dia_mm": round(hole["dia_mm"], 4),
+                        "diameter": round(hole["dia_mm"], 4),
                         "part": comp["refdes"],
                     },
                 }

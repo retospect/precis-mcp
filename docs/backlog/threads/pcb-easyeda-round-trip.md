@@ -29,7 +29,11 @@ refreshed a stored footprint. Both fixed; the board got 15 refreshed
 footprints and 8 footprint holes (CN1/2/5/6 Ø6.4, U32/U33 SATA pegs
 Ø1.6). A footprint hole is a `mounting_hole` feature (`geom.part`), so it
 does not follow a moved part — cutouts inside footprints need a real
-model before anything re-places those parts. `view='congestion'` now marks
+model before anything re-places those parts. Worse, found the same day:
+the importer had written every mounting hole as `geom: {x, y, dia_mm}`,
+a shape no reader takes, so the board's 24 Ø6 holes never reached the
+drill file, DRC or router keep-outs. Fixed: position on the feature row,
+`geom.diameter`. Prod rows rewritten in place. `view='congestion'` now marks
 a `last_route` digest STALE after `op='rip'`.
 **Trap:** `op='route'` runs the place anneal first and MOVES every
 unfrozen part; it re-placed 103 parts on this board once (restored with

@@ -118,10 +118,10 @@ def test_a_locked_part_is_moved_and_says_so() -> None:
 def test_a_changed_outline_is_counted_both_ways() -> None:
     old = {"ftype": "outline", "geom": {"path": [[0.0, 0.0], [10.0, 0.0]]}}
     new = {"ftype": "outline", "geom": {"path": [[0.0, 0.0], [12.0, 0.0]]}}
-    hole = {"ftype": "mounting_hole", "geom": {"x": 1.0, "y": 1.0, "dia_mm": 3.0}}
-    stored = [
+    hole = {"ftype": "mounting_hole", "x": 1.0, "y": 1.0, "geom": {"diameter": 3.0}}
+    stored: list[dict[str, Any]] = [
         {**old, "x": None, "y": None, "rot": 0.0, "feature_id": 1},
-        {**hole, "x": None, "y": None, "rot": 0.0, "feature_id": 2},
+        {**hole, "rot": 0.0, "feature_id": 2},
     ]
     plan = pcb_epro.plan_update(
         _graph([], {}), stored, _design([], features=[new, hole])
