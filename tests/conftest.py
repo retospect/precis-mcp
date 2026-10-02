@@ -782,6 +782,15 @@ def fresh_db() -> Iterator[str]:
             f"postgres unreachable at {PG_TEST_DSN}; set PRECIS_TEST_PG_URL "
             "or start a server to run db-tagged tests"
         )
+    # Resolve the restore's sources NOW, before the test body runs. Tests
+    # like test_migrate_plugin.py patch ``migrate._entry_points`` with a fake
+    # plugin list, and ``monkeypatch`` is undone only after this teardown
+    # (an autouse fixture sets it up before us). Discovering at teardown
+    # rebuilt the schema with the fake list, leaving every real plugin's
+    # tables and seed rows (se_blocks, chunk_kinds 'pathway_body') missing
+    # for the rest of the worker — hidden while each plugin test module
+    # re-ran its own SQL, red in CI's shard 4 once those seeders went.
+    restore_sources = Migrator.discover_sources(MIGRATIONS_DIR)
     _drop_all_public_objects(_active_dsn())
     yield _active_dsn()
     # Restore the schema for downstream tests in the same session.
@@ -795,7 +804,7 @@ def fresh_db() -> Iterator[str]:
     # test in this worker sees an empty vocab table (gr408184).
     # discover_sources: a bare Path is a core-only source, which left the
     # precis.migrations plugin tables (se, pathway, ...) unapplied (gr458360).
-    Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
+    Migrator(_active_dsn(), restore_sources).apply_all()
     _ensure_vocab_seeds(_active_dsn())
 
 
