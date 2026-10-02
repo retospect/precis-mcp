@@ -36,38 +36,23 @@ waited on happened 09-29 — note at the bottom)
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
    verdict (2026-10-02 14:55Z, `reviews/hexfold-toolkit.review.md`) sets
    the order:
-   - **Buds on flat hosts landed on the wrong face; the fix (3d17b6179)
-     is built and held for design review** (C4 in
-     `reviews/hexfold-toolkit.md`). Found by nanobuds-paper's hero
-     figure (`~/.claude/projects/-Users-reto-precis-mcp/hexfold-corner/hero3.hx`):
-     - a C60 on a flat `cap(12,0)` lid seeded inside the tube below it;
-     - a sheet's [2+2] C60 landed under the sheet.
-     The new `build._flat_bud_sides` takes the face from the host's
-     fuses. After it lands and deploys: tell nanobuds-paper the sha, and
-     regenerate prod `hexa-nanobud-pillar` (structure 459564, a C60 on a
-     flat lid, probably stored as the ball-in-tube).
+   - **After round 2 deploys** (C3 disclination seed 7a746e5cc; C4
+     flat-host bud face, `build._flat_bud_sides`, with the outer rim by
+     largest mean radius and `place.face_conflict` for a washer whose rims
+     disagree):
+     - nanobuds-paper regenerates prod `hexa-nanobud-pillar` (structure
+       459564, stored as a peapod) and reports the before/after z table;
+     - close gr462144 (`sheet_sw` stacked seed).
    - **Seed tier: built 2026-10-02.** `geom.seed_overlap` is an ERROR
      for seed pairs under 0.7 Å, and `geom.summary` gains
      `seed_clash_count`/`seed_clash_min`. Exactly the four seed-wrong
      examples raise it. The bud necks seed at 1.44–1.78 Å; stick is what
      squeezes them.
    - **Next, the seeds**, each measurable now by its seed numbers:
-     - **Sheets with authored ring defects: the disclination seed is built,
-       verdict LAND (C3, 2026-10-02 23:55Z).** It is held only because
-       3d17b6179 (C4, not yet reviewed) sits below it on the branch.
-       - Commits: bdf890728 (`build._disclination_seed`, charts in
-         `defects.Disclination`), 2dc06f8b1 (tests), 0b96a0dce (sw/57
-         glyphs resolved only near the lattice origin: mechanical).
-       - Measured, new seed vs flat (`hexfold-corner/c3_accept.py`):
-         - Seed pairs under 0.7 Å: none on any sheet (flat 28–344).
-         - No stick clash ERROR on any sheet.
-         - Stick bond deviation: lone heptagon 0.042 Å (0.362); two
-           heptagons 0.112 (0.354); the lone pentagon's seam now zips,
-           0.004 (0.469).
-         - Origin census: identical across five lattice shifts.
-         - Prod has no structure with an authored ring defect.
-         - gr462144 (`sheet_sw` seed 144 pairs at 0.002 Å) is fixed by it:
-           close it after the deploy.
+     - **Sheets with authored ring defects: the disclination seed shipped
+       (7a746e5cc).** No seed pair under 0.7 Å and no stick clash ERROR on
+       any defected sheet; numbers in `reviews/hexfold-toolkit.md` (C3
+       result).
        - **Next, the K = 0 (net-zero cluster) gap**, its own slice and
          design note:
          - Bond deviation is worse than the flat seed: `sheet_sw` 0.178

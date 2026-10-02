@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hexfold.build import Net, _flat_normals, build
+from hexfold.build import Net, Port, _flat_bud_sides, _flat_normals, build
 from hexfold.check import _clash_pairs
 from hexfold.report import Profile, Severity
 from hexfold.stick import stick
@@ -354,3 +354,50 @@ def test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves() -> None:
     cyc = [f for f in net.report.findings if f.code == "seam.cycle"]
     assert len(cyc) == 1, cyc
     assert cyc[0].severity in (Severity.INFO, Severity.WARN), cyc[0]
+
+
+def _washer(hole_ccw: bool) -> tuple[np.ndarray, list, dict, dict, tuple]:
+    """A flat washer ``w`` (outer rim r=10, hole rim r=3, z=0) fused
+    through both rims to a non-flat part ``t``."""
+    ang = np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)
+    outer = np.stack([10 * np.cos(ang), 10 * np.sin(ang), 0 * ang], axis=1)
+    hole = np.stack([3 * np.cos(ang), 3 * np.sin(ang), 0 * ang], axis=1)
+    other = np.array([[0.0, 0.0, 5.0], [1.0, 0.0, 5.0], [0.0, 1.0, 5.0]])
+    pos = np.vstack([outer, hole, other])
+    o_ords = tuple(range(12))
+    h_ords = tuple(range(12, 24)) if hole_ccw else tuple(range(23, 11, -1))
+    inst_of = {i: ("w" if i < 24 else "t") for i in range(27)}
+    inst_ords = {"w": list(range(24)), "t": [24, 25, 26]}
+    ports = (
+        ("w.in", Port("w.in", o_ords, o_ords, "", "0", 0)),
+        ("w.hole", Port("w.hole", h_ords, h_ords, "", "0", 0)),
+    )
+    frames = [
+        ("w.in", o_ords, "t.in", (24, 25, 26), 0, True, False),
+        ("w.hole", h_ords, "t.out", (24, 25, 26), 0, True, False),
+    ]
+    return pos, frames, inst_ords, inst_of, ports
+
+
+@pytest.mark.parametrize(("hole_ccw", "conflict"), [(False, False), (True, True)])
+def test_a_washer_fused_both_ways_must_agree_on_the_bud_face(
+    hole_ccw: bool, conflict: bool
+) -> None:
+    # a hole rim and an outer rim wind oppositely, so a part through the
+    # hole and a part on the rim put a bud on the same face; a washer whose
+    # rims wind alike would split them -- an ERROR, not "first rim wins"
+    pos, frames, inst_ords, inst_of, ports = _washer(hole_ccw)
+    findings: list = []
+    sides = _flat_bud_sides(pos, {"w"}, inst_ords, inst_of, frames, ports, findings)
+    assert "w" in sides
+    got = [f for f in findings if f.code == "place.face_conflict"]
+    assert bool(got) == conflict
+    assert all(f.severity == Severity.ERROR for f in got)
+
+
+def test_valve_shell_washers_agree() -> None:
+    # both washers are fused through hole and rim: the faces must match
+    net = build(
+        (_EXAMPLES / "valve_shell.hx").read_text(encoding="utf-8"), strict=False
+    )
+    assert not [f for f in net.report.findings if f.code == "place.face_conflict"]

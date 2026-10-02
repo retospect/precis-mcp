@@ -2801,6 +2801,77 @@ def _flat_normals(
     return out
 
 
+def _flat_bud_sides(
+    pos: np.ndarray,
+    flat: set[str],
+    inst_ords: dict[str, list[int]],
+    inst_of: dict[int, str],
+    fuse_frames: list[
+        tuple[str, tuple[int, ...], str, tuple[int, ...], int, bool, bool]
+    ],
+    ports: tuple[tuple[str, Port], ...],
+    findings: list[Finding],
+) -> dict[str, np.ndarray]:
+    """For each flat instance fused through a rim, the face an attached
+    bud belongs on (a unit normal in the instance's local seed frame).
+
+    A flat instance's centroid lies in its own plane, so "away from the
+    centroid" signs nothing: a [9-6] C60 on a ``cap(12,0)`` lid seeded
+    inside the tube under it, and a [2+2] C60 on a sheet landed under the
+    sheet while its pillar rose above (nanobuds-paper's hero figure,
+    2026-10-02).  The fuse already decides the faces:
+    :func:`_fuse_transform` puts a flat rim's partner along that rim's
+    :func:`_winding_normal`, and a flat instance's hole rims and outer
+    rim wind oppositely.  So a part fused through a *hole* rises from the
+    bud's face (a sheet's pillar), and a part fused through the *outer*
+    rim hangs from the other face (the tube under a lid).  The outer rim
+    is the instance's rim of largest mean radius, so a hole near the edge
+    cannot pass for it.  A washer fused through both must get the same
+    face from each; if not, ``place.face_conflict`` (ERROR) names them.
+    """
+    rims_of: dict[str, list[tuple[str, Port]]] = {}
+    for name, port in ports:
+        if port.atoms:
+            rims_of.setdefault(inst_of[port.atoms[0]], []).append((name, port))
+    faces: dict[str, list[tuple[str, np.ndarray]]] = {}
+    for _pn, p_dang, _qn, q_dang, _k, _real, kabsch in fuse_frames:
+        if kabsch:
+            continue
+        for dang in (p_dang, q_dang):
+            inst = inst_of[dang[0]]
+            if inst not in flat:
+                continue
+            idx = inst_ords[inst]
+            c = pos[idx].mean(axis=0)
+            rims = rims_of.get(inst, [])
+
+            def radius(port: Port, c: np.ndarray = c) -> float:
+                return float(np.linalg.norm(pos[list(port.atoms)] - c, axis=1).mean())
+
+            outer = max(rims, key=lambda np_: radius(np_[1]))[1] if rims else None
+            name = next((n for n, pt in rims if set(pt.dangling) == set(dang)), "?")
+            is_outer = outer is not None and set(outer.dangling) == set(dang)
+            n = _winding_normal(pos, dang)
+            faces.setdefault(inst, []).append((name, -n if is_outer else n))
+    out: dict[str, np.ndarray] = {}
+    for inst, got in faces.items():
+        first_name, first = got[0]
+        for name, face in got[1:]:
+            if float(face @ first) < 0.0:
+                findings.append(
+                    Finding(
+                        "place.face_conflict",
+                        Severity.ERROR,
+                        f"{inst}: its fused rims {first_name} and {name} put "
+                        "an attached bud on opposite faces",
+                        where=inst,
+                    )
+                )
+                break
+        out[inst] = first
+    return out
+
+
 def _rot_min(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Minimal rotation taking unit vector a to unit vector b."""
     v = np.cross(a, b)
@@ -2896,6 +2967,7 @@ def _fuse_transform_kabsch(
     k: int,
     sigma: float,
     inst_c_p: np.ndarray | None = None,
+    n_host: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """(R, t) via a full six-point rigid best fit (Kabsch/SVD), minimising
     sum-of-squares over the n matched pairs ``P.dangling[i]`` <->
@@ -2924,10 +2996,12 @@ def _fuse_transform_kabsch(
     does not decide the stick geometry: a 2 sigma offset measured within
     0.1 A of 1 sigma after ``stick()`` on every bud example (gr459567).
     Which side of the host the body lands on does: see
-    :func:`_kabsch_lands_inward`.
+    :func:`_kabsch_lands_inward`.  ``n_host`` forces the host's outward
+    normal (a flat host's, from :func:`_flat_bud_sides`); otherwise it is
+    the attach ring's covariance normal signed away from ``inst_c_p``.
     """
     n = len(p_dang)
-    _c_p, n_p = _frame(pos, p_dang, inst_c_p)
+    _c_p, n_p = _frame(pos, p_dang, inst_c_p, n_host)
     target = pos[list(p_dang)] + sigma * n_p
     src = pos[[q_dang[(k - i) % n] for i in range(n)]]
     src_c = src.mean(axis=0)
@@ -2948,6 +3022,7 @@ def _kabsch_lands_inward(
     sigma: float,
     inst_c_p: np.ndarray,
     q_ords: list[int],
+    n_host: np.ndarray | None = None,
 ) -> bool:
     """Whether :func:`_fuse_transform_kabsch` seats instance Q's body on
     the *inward* side of host P's attach site (behind P's rim normal).
@@ -2964,24 +3039,31 @@ def _kabsch_lands_inward(
     fullerene, before any edge transform is computed, so the result does
     not depend on which side the BFS reaches first.
     """
-    r, t = _fuse_transform_kabsch(pos, p_dang, q_dang, k, sigma, inst_c_p)
-    _c_p, n_p = _frame(pos, p_dang, inst_c_p)
+    r, t = _fuse_transform_kabsch(pos, p_dang, q_dang, k, sigma, inst_c_p, n_host)
+    _c_p, n_p = _frame(pos, p_dang, inst_c_p, n_host)
     host_c = pos[list(p_dang)].mean(axis=0)
     qc = pos[q_ords].mean(axis=0)
     return float((r @ qc + t - host_c) @ n_p) < 0.0
 
 
 def _surface_normal(
-    pos: np.ndarray, a_ord: int, a_nbrs: list[int], c_a: np.ndarray, sigma: float
+    pos: np.ndarray,
+    a_ord: int,
+    a_nbrs: list[int],
+    c_a: np.ndarray,
+    sigma: float,
+    side: np.ndarray | None = None,
 ) -> np.ndarray:
     """Unit normal to the surface at atom a: the least-variance axis of a
     and its in-instance neighbours, signed away from the instance centroid
-    ``c_a``.  On a flat instance that sign is seed noise, so below
-    ``0.1 sigma`` it falls back to largest-component-positive
-    (deterministic; either face of a sheet is a valid side)."""
+    ``c_a``.  On a flat instance that sign is seed noise, so ``side`` (the
+    flat instance's bud side, :func:`_flat_bud_sides`) signs it when
+    given; failing both, largest-component-positive (deterministic)."""
     pts = pos[[a_ord, *a_nbrs]]
     c = pts.mean(axis=0)
     n = np.linalg.eigh((pts - c).T @ (pts - c))[1][:, 0]
+    if side is not None:
+        return n if float(n @ side) >= 0.0 else -n
     s = float((pos[a_ord] - c_a) @ n)
     if abs(s) < 0.1 * sigma:
         s = float(n[int(np.argmax(np.abs(n)))])
@@ -2998,8 +3080,13 @@ def _bond_transform(
     a_nbrs: list[int],
     b_nbrs: list[int],
     partner: tuple[int, int] | None = None,
+    side_a: np.ndarray | None = None,
+    side_b: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """(R, t) placing instance B so atom b sits sigma outside atom a.
+
+    ``side_a``/``side_b`` sign a *flat* instance's surface normal (see
+    :func:`_flat_bud_sides`); a flat sheet's own centroid cannot.
 
     u is A's surface normal at a (:func:`_surface_normal`); B's own
     outward surface normal at b maps onto -u, so the two surfaces face
@@ -3019,8 +3106,8 @@ def _bond_transform(
     + C60: ball centre 8.6 A from the axis where 11.7 A clears it; 89
     bud/host pairs under 1.8 A after stick, min 0.85 A, gr459567).
     """
-    u = _surface_normal(pos, a_ord, a_nbrs, c_a, sigma)
-    r = _rot_min(_surface_normal(pos, b_ord, b_nbrs, c_b, sigma), -u)
+    u = _surface_normal(pos, a_ord, a_nbrs, c_a, sigma, side_a)
+    r = _rot_min(_surface_normal(pos, b_ord, b_nbrs, c_b, sigma, side_b), -u)
     if partner is not None:
         a2, b2 = partner
         want = pos[a2] - pos[a_ord]
@@ -3111,6 +3198,11 @@ def _place_seeds(
         inst_ords.setdefault(a.instance, []).append(a.ord)
 
     inst_cent = {k_: pos[v].mean(axis=0) for k_, v in inst_ords.items()}
+    flat = _flat_normals(pos, inst_ords, sigma)
+    # the face a bud belongs on, for each flat instance fused through a rim
+    bud_side = _flat_bud_sides(
+        pos, flat, inst_ords, inst_of, fuse_frames, net.ports, findings
+    )
 
     # A menu attach whose fit would seat the bud inside its host reflects
     # the bud's local seed first (_kabsch_lands_inward), in x about its
@@ -3138,7 +3230,14 @@ def _place_seeds(
     def _inward(frame: tuple[str, str, tuple[int, ...], tuple[int, ...], int]) -> bool:
         host, bud, h_dang, b_dang, kk = frame
         return _kabsch_lands_inward(
-            pos, h_dang, b_dang, kk, sigma, inst_cent[host], inst_ords[bud]
+            pos,
+            h_dang,
+            b_dang,
+            kk,
+            sigma,
+            inst_cent[host],
+            inst_ords[bud],
+            bud_side.get(host),
         )
 
     decided: set[str] = set()
@@ -3198,8 +3297,6 @@ def _place_seeds(
         # spring stage then telescoped the halves into each other.)
         edges.setdefault(inst_a, []).append((inst_b, r, t, real))
 
-    flat = _flat_normals(pos, inst_ords, sigma)
-
     # A flat instance's rim normal is z-noise either way (``_frame``'s
     # centroid sign reads the ±0.1 sigma seed perturbation), so it is taken
     # from the rim's own winding instead: ``_fuse_transform``'s pairing
@@ -3224,9 +3321,13 @@ def _place_seeds(
             continue
         c_a, c_b = inst_cent[ia], inst_cent[ib]
         if kabsch:
-            r, t = _fuse_transform_kabsch(pos, p_dang, q_dang, k, sigma, c_a)
+            r, t = _fuse_transform_kabsch(
+                pos, p_dang, q_dang, k, sigma, c_a, bud_side.get(ia)
+            )
             add(ia, ib, r, t, real)
-            r2, t2 = _fuse_transform_kabsch(pos, q_dang, p_dang, k, sigma, c_b)
+            r2, t2 = _fuse_transform_kabsch(
+                pos, q_dang, p_dang, k, sigma, c_b, bud_side.get(ib)
+            )
             add(ib, ia, r2, t2, real)
             continue
         n_p, n_q = _flat_sign(ia, p_dang), _flat_sign(ib, q_dang)
@@ -3259,7 +3360,10 @@ def _place_seeds(
             # so the normal sits square to the pair rather than tilted to a
             nb_a = sorted(({other[0], *nb_a, *same_nbrs.get(other[0], [])}) - {ai})
             nb_b = sorted(({other[1], *nb_b, *same_nbrs.get(other[1], [])}) - {bi})
-        r, t = _bond_transform(pos, ai, bi, sigma, c_a, c_b, nb_a, nb_b, other)
+        s_a, s_b = bud_side.get(ia), bud_side.get(ib)
+        r, t = _bond_transform(
+            pos, ai, bi, sigma, c_a, c_b, nb_a, nb_b, other, s_a, s_b
+        )
         add(ia, ib, r, t, True)
         r2, t2 = _bond_transform(
             pos,
@@ -3271,6 +3375,8 @@ def _place_seeds(
             nb_b,
             nb_a,
             (other[1], other[0]) if other else None,
+            s_b,
+            s_a,
         )
         add(ib, ia, r2, t2, True)
 

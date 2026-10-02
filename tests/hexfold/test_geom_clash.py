@@ -12,6 +12,7 @@ import pytest
 from hexfold.build import build
 from hexfold.check import _clash_pairs, check
 from hexfold.report import Profile, Severity
+from hexfold.stick import stick
 
 _EX = Path(__file__).resolve().parents[2] / "hexfold" / "examples"
 
@@ -148,6 +149,42 @@ def test_bond_pair_seats_both_bonds_whatever_order_they_are_written(
     ]
     assert len(lengths) == 2
     assert max(lengths) < 1.5, lengths
+
+
+#: sheet + pillar (hole -> tube -> flat cap(12,0) lid -> C60 [9-6]) + a
+#: C60 [2+2] on the sheet: the nanobuds hero figure's core (2026-10-02)
+_PILLAR_AND_SHEET_BUD = """hexfold 0.2
+origin s
+s: sheet(30,24) - hex(1)@(10,12,A):0
+t: tube(12,0, len=4)
+c: cap(12,0)
+b: fullerene(C60)
+d: fullerene(C60)
+s.hole --fuse k=0--> t.in
+t.out --fuse k=0--> c.in
+b @ c/(0,0,A):0 [9-6]
+d @ s/(22,16,A):0 [2+2]
+"""
+
+
+def test_buds_on_flat_hosts_sit_on_the_open_face() -> None:
+    # A flat lid's or sheet's centroid lies in its own plane, so it cannot
+    # say which face is outside: the lid's C60 seeded inside the tube under
+    # it (an endohedral peapod no clash check sees) and the sheet's C60
+    # landed under the sheet while the pillar rose above it.
+    net = build(_PILLAR_AND_SHEET_BUD, strict=False)
+    pos = stick(net)
+    inst = np.array([a.instance for a in net.atoms])
+    sheet = pos[inst == "s"]
+    c = sheet.mean(axis=0)
+    n = np.linalg.svd(sheet - c)[2][2]
+    if (pos[inst == "t"].mean(axis=0) - c) @ n < 0:
+        n = -n  # +z is the face the pillar rises from
+    z = {name: (pos[inst == name] - c) @ n for name in ("t", "c", "b", "d")}
+    # the lid's ball sits above the lid, not inside the tube below it
+    assert z["b"].min() > z["c"].max() - 0.5, (z["b"].min(), z["c"].max())
+    # the sheet's ball is on the pillar's face
+    assert z["d"].min() > 0.5, z["d"].min()
 
 
 def test_mirrored_bud_is_reported() -> None:
