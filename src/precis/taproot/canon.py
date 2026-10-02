@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from precis.embedder import EmbedderUnavailable
 from precis.errors import Upstream
+from precis.store._chunks_ops import _prepare_filtered_ann
 from precis.utils.llm.router import LlmRequest, Tier, route
 
 if TYPE_CHECKING:
@@ -911,6 +912,7 @@ def block(
         **CLAIM_HUB_PREDICATE_PARAMS,
     }
     with store.pool.connection() as conn:
+        _prepare_filtered_ann(conn, k)
         rows = conn.execute(sql, params).fetchall()
     return [
         MergeCandidate(hub_ref_id=int(r[0]), claim=str(r[1]), distance=float(r[2]))

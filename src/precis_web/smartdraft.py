@@ -48,6 +48,7 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS
+from precis.store._chunks_ops import _prepare_filtered_ann
 from precis.store._draft_ops import content_sha
 from precis.utils.figure_source import RenderSpec, resolve_figure_source
 from precis.utils.table_data import table_payload
@@ -910,6 +911,7 @@ def semantic_ranks(
     lit = "[" + ",".join(repr(float(x)) for x in query_vec) + "]"
     try:
         with store.pool.connection() as conn:
+            _prepare_filtered_ann(conn, k)
             rows = conn.execute(
                 "SELECT c.chunk_id FROM chunks c "
                 "JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id "

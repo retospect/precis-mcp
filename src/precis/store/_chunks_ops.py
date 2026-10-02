@@ -71,6 +71,72 @@ _MULTI_LEG_HARD_CAP = 32
 #: draft. Tune / disable via ``PRECIS_DREAM_DRAFT_BOOST_DAYS``.
 _DREAM_DRAFT_BOOST_DAYS_DEFAULT = 2.0
 
+#: pgvector's HNSW scan stops after ``hnsw.ef_search`` candidates; filtered ANN
+#: queries need it at least this wide (scaled by the LIMIT, below).
+_ANN_EF_SEARCH_MIN = 40
+#: Hard ceiling pgvector itself enforces on ``hnsw.ef_search``.
+_ANN_EF_SEARCH_MAX = 1000
+#: ``ef_search`` = this × the LIMIT (clamped) — headroom for the post-filter.
+_ANN_EF_SEARCH_PER_LIMIT = 4
+#: Bound on tuples an iterative HNSW scan may visit hunting for filtered rows.
+_ANN_MAX_SCAN_TUPLES = 200_000
+#: First pgvector release with ``hnsw.iterative_scan`` / ``hnsw.max_scan_tuples``.
+_ANN_ITERATIVE_MIN_VERSION = (0, 8, 0)
+
+#: Process-wide cache of "does the server's pgvector have the iterative-scan
+#: GUCs?" — ``None`` until the first :func:`_prepare_filtered_ann` call.
+_ann_iterative_supported: bool | None = None
+
+
+def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
+    """Make a *filtered* HNSW nearest-neighbour query return its full LIMIT.
+
+    Defect this guards: pgvector applies every predicate other than the
+    ORDER BY (``r.kind``, ref/tag/ord filters, distance floor) **after**
+    the HNSW scan, which yields only ``hnsw.ef_search`` candidates. Over
+    the single global index (millions of paper chunks) a rare kind's
+    nearest 40 chunks are all papers, so the filtered result is empty or
+    short — silently. ``strict_order`` iterative scan keeps scanning until
+    the LIMIT is met (bounded by ``max_scan_tuples``) and keeps the result
+    exactly ordered, so the caller's ORDER BY ... LIMIT needs no re-sort.
+
+    Call on the query's own connection immediately before the ANN
+    statement. ``set_config(..., true)`` is ``SET LOCAL``: it lasts for the
+    current transaction only, which is what pgbouncer's transaction mode
+    needs (a plain SET would leak to another client).
+
+    Version guard: pgvector < 0.8 has no such GUCs and a ``SET`` of them
+    errors (poisoning the transaction), so the installed extension version
+    is read once and cached; older servers get a no-op. (A savepoint-and-
+    catch alternative is wrong here: ``conn.transaction()`` on an idle
+    connection would COMMIT on exit and discard the ``SET LOCAL``.)
+    """
+    global _ann_iterative_supported
+    if _ann_iterative_supported is None:
+        row = conn.execute(
+            "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+        ).fetchone()
+        supported = False
+        if row is not None:
+            try:
+                parts = tuple(int(p) for p in str(row[0]).split(".")[:3])
+                supported = parts >= _ANN_ITERATIVE_MIN_VERSION
+            except ValueError:
+                supported = False
+        _ann_iterative_supported = supported
+    if not _ann_iterative_supported:
+        return
+    ef = min(
+        _ANN_EF_SEARCH_MAX,
+        max(_ANN_EF_SEARCH_MIN, _ANN_EF_SEARCH_PER_LIMIT * max(int(limit), 1)),
+    )
+    conn.execute(
+        "SELECT set_config('hnsw.iterative_scan', 'strict_order', true), "
+        "       set_config('hnsw.max_scan_tuples', %s, true), "
+        "       set_config('hnsw.ef_search', %s, true)",
+        (str(_ANN_MAX_SCAN_TUPLES), str(ef)),
+    )
+
 
 def _draft_dream_boost_seconds() -> float:
     """Draft dream over-weight in seconds, from ``PRECIS_DREAM_DRAFT_BOOST_DAYS``
@@ -932,6 +998,7 @@ class ChunkStore:
             "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s OFFSET %s"
         )
         with self.pool.connection() as conn:
+            _prepare_filtered_ann(conn, limit + offset)
             rows = conn.execute(sql, params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
@@ -1119,6 +1186,7 @@ class ChunkStore:
         full_params.append(offset)
 
         with self.pool.connection() as conn:
+            _prepare_filtered_ann(conn, inner_limit)
             rows = conn.execute(sql, full_params).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
@@ -2112,6 +2180,7 @@ class ChunkStore:
         )
         with self.pool.connection() as conn:
             embedder = self._default_embedder_name(conn)
+            _prepare_filtered_ann(conn, n)
             rows = conn.execute(
                 sql, (seed_vec, embedder, list(kinds), seed_vec, n)
             ).fetchall()
@@ -2285,6 +2354,7 @@ class ChunkStore:
             f"WHERE {' AND '.join(clauses)} "
             "ORDER BY ce.vector <=> %s::vector ASC LIMIT 1"
         )
+        _prepare_filtered_ann(conn, 1)
         row = conn.execute(sql, params).fetchone()
         if row is None:
             return None
