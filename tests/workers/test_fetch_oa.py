@@ -682,6 +682,102 @@ class TestTryUnpaywall:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _no_arxiv_metadata_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never hit OpenAlex for DOI->arXiv resolution unless a test opts in."""
+    monkeypatch.setattr(fetch_oa, "_query_openalex_arxiv_id", lambda doi, email: None)
+
+
+class TestResolveArxivFromDoi:
+    """gr453862: a DOI-only stub with an arXiv preprint tries arXiv."""
+
+    def test_openalex_locations_yield_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = {
+            "best_oa_location": None,
+            "locations": [
+                {"pdf_url": None, "landing_page_url": "https://doi.org/10.1103/x"},
+                {
+                    "pdf_url": "https://arxiv.org/pdf/1504.03028",
+                    "landing_page_url": None,
+                },
+            ],
+        }
+
+        class _Resp:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return payload
+
+        seen: list[str] = []
+
+        def _fake_get(client: Any, url: str, /, **kw: Any) -> _Resp:
+            seen.append(url)
+            return _Resp()
+
+        monkeypatch.undo()  # drop the autouse stub for this test
+        monkeypatch.setattr("precis.utils.safe_fetch.safe_get", _fake_get)
+        got = fetch_oa._query_openalex_arxiv_id(
+            "10.1103/physrevlett.115.036402", email=""
+        )
+        assert got == "1504.03028"
+        assert seen == [
+            "https://api.openalex.org/works/doi:10.1103/physrevlett.115.036402"
+        ]
+
+    def test_arxiv_issued_doi_needs_no_lookup(self) -> None:
+        stub = _stub(doi="10.48550/arXiv.2401.12345")
+        assert fetch_oa._resolve_arxiv_id(stub, email="") == "2401.12345"
+
+    def test_lookup_failure_is_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(doi: str, email: str) -> str | None:
+            raise httpx.ConnectTimeout("handshake")
+
+        monkeypatch.setattr(fetch_oa, "_query_openalex_arxiv_id", _boom)
+        assert fetch_oa._resolve_arxiv_id(_stub(), email="") is None
+
+    def test_cascade_tries_arxiv_for_doi_only_stub(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_arxiv_id", lambda doi, email: "1504.03028"
+        )
+        urls: list[str] = []
+
+        def _capture(url: str, target: Path) -> int:
+            urls.append(url)
+            return _write_synthetic_pdf(target, size=256)
+
+        monkeypatch.setattr(fetch_oa, "_download_pdf", _capture)
+        # Every earlier leg: closed.
+        for name in (
+            "_try_publisher",
+            "_try_unpaywall",
+            "_try_crossref",
+            "_try_openalex",
+            "_try_europepmc",
+        ):
+            monkeypatch.setattr(
+                fetch_oa,
+                name,
+                lambda *a, **k: fetch_oa.FetchOutcome("no_oa_version", {}, 0),
+            )
+        ref_id = _seed_paper_stub(store, doi="10.1103/physrevlett.115.036402")
+        stub = _stub(ref_id=ref_id, doi="10.1103/physrevlett.115.036402")
+        path = fetch_oa._run_cascade(
+            store,
+            stub,
+            tmp_path,
+            email="a@b.c",
+            api_key="",
+            wiley_token="",
+            core_key="",
+        )
+        assert path is not None
+        assert urls == ["https://arxiv.org/pdf/1504.03028.pdf"]
+
+
 class TestTryArxiv:
     def test_none_without_arxiv_id(self, tmp_path: Path) -> None:
         assert _try_arxiv(_stub(arxiv=None), inbox_dir=tmp_path) is None

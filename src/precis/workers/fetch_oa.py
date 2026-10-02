@@ -56,6 +56,7 @@ DB writes — coexists.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import os
@@ -1278,6 +1279,65 @@ def _try_unpaywall(
     )
 
 
+def _arxiv_id_from_url(url: str | None) -> str | None:
+    """Bare arXiv id out of an ``arxiv.org/abs|pdf/<id>`` URL, else ``None``."""
+    if not url:
+        return None
+    parts = urlsplit(url)
+    if (parts.hostname or "").lower() not in ("arxiv.org", "www.arxiv.org"):
+        return None
+    m = re.match(r"^/(?:abs|pdf)/(.+?)(?:\.pdf)?/?$", parts.path)
+    return _normalize_arxiv_id(m.group(1)) if m else None
+
+
+def _query_openalex_arxiv_id(doi: str, *, email: str) -> str | None:
+    """arXiv id of ``doi``'s preprint per OpenAlex location metadata, else ``None``.
+
+    Scans ``best_oa_location`` / ``locations`` for an ``arxiv.org``
+    ``pdf_url`` or ``landing_page_url``. Fixed-host API call through
+    :func:`safe_get`.
+    """
+    from precis.utils.http import http_client
+    from precis.utils.safe_fetch import safe_get
+
+    params = {"mailto": email} if email else {}
+    with http_client(
+        timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
+    ) as client:
+        resp = safe_get(
+            client, f"https://api.openalex.org/works/doi:{doi}", params=params
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    locs = [data.get("best_oa_location") or {}, *(data.get("locations") or [])]
+    for loc in locs:
+        for key in ("pdf_url", "landing_page_url"):
+            found = _arxiv_id_from_url(loc.get(key))
+            if found:
+                return found
+    return None
+
+
+def _resolve_arxiv_id(stub: StubRef, *, email: str) -> str | None:
+    """arXiv id for a DOI-only stub, from the DOI itself or OpenAlex metadata.
+
+    A stub registered with only a DOI can still have a free arXiv copy
+    (gr453862: SCAN, closed APS DOI, preprint 1504.03028). arXiv-issued
+    DOIs (``10.48550/arXiv.<id>``) carry the id directly; otherwise ask
+    OpenAlex. Never raises — a lookup failure just leaves the stub as is.
+    """
+    if stub.arxiv or not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    m = re.match(r"^10\.48550/arxiv\.(.+)$", stub.doi, re.IGNORECASE)
+    if m:
+        return _normalize_arxiv_id(m.group(1))
+    try:
+        return _query_openalex_arxiv_id(stub.doi, email=email)
+    except Exception as exc:
+        log.info("fetch_oa: arxiv id lookup failed for %s: %s", stub.doi, exc)
+        return None
+
+
 def _try_arxiv(
     stub: StubRef,
     *,
@@ -2279,6 +2339,13 @@ def _run_cascade(
         last so it only spends after every free leg fails. A low-balance alert
         (:func:`check_openalex_balance`) warns before the runway runs out.
     """
+    # A DOI-only stub may still have a free arXiv copy: resolve the id from
+    # metadata so the arxiv leg runs instead of the stub falling to
+    # ``no_oa_version`` (gr453862).
+    if not stub.arxiv:
+        resolved_arxiv = _resolve_arxiv_id(stub, email=email)
+        if resolved_arxiv:
+            stub = dataclasses.replace(stub, arxiv=resolved_arxiv)
     providers: list[tuple[str, Any]] = [
         (_SOURCE_PUBLISHER, lambda: _try_publisher(stub, inbox_dir=inbox_dir)),
     ]
