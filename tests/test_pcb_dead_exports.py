@@ -335,17 +335,22 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "as a real gap, not fixed here (realize.py is out of remit)"
     ),
     "src/precis/pcb/ir.py::PcbIR.pin_poly": (
-        "pcb-ewod-multitile Slice 1: the READ side is wired "
-        "(instance_courtyard_polygon prefers it over the pin_w/pin_h bbox "
-        "when set -- same module, so this gate's cross-module scan "
-        "correctly doesn't count it) but from_graph never WRITES a "
-        "non-None value yet -- the synthesized landpattern path has no "
-        "polygon family, and threading real per-pin footprint geometry "
-        "into IR position/size (closing the SAME gap pin_dx's own "
-        "docstring already flags) is deliberately out of pcb-ewod-"
-        "multitile Slice 1's scope (courtyard reservation is moot for the "
-        "array generator's fixed-grid placement, slice 2). A future slice "
-        "wiring a producer removes this entry."
+        "wired both ways, invisibly to this scan: the producer is "
+        "PcbIR.set_pin_pad (a subscript store, self.pin_poly[pid] = ..., "
+        "which _file_write_index does not count), called from "
+        "session.apply_real_pin_offsets on every build_ir with a cached "
+        "footprint (gr460567); the reader is ir.py's own "
+        "instance_courtyard_polygon, which this cross-module scan "
+        "correctly doesn't count -- DRC, silk and the placer reach it "
+        "through that function"
+    ),
+    "src/precis/pcb/ir.py::PcbIR.pin_extra_lands": (
+        "same shape as pin_poly above (gr460567): produced by "
+        "PcbIR.set_pin_pad's subscript store, called from "
+        "session.apply_real_pin_offsets; read by ir.py's own "
+        "instance_courtyard_polygon and instance_land_rects, which DRC, "
+        "silk and the placer call -- a split-tab connector's same-numbered "
+        "pads, live on every board with a cached footprint"
     ),
     # ---- class methods/properties: legitimately unwired ------------------
     "src/precis/pcb/jlc_api.py::JlcApiClient.component_info": (
