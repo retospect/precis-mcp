@@ -69,16 +69,26 @@ search(kind='taxon', under='measurand', q='charge')
 | `atoms:<block>[0,3,5-9]` | atom ordinals in the block's bound structure | not resolved yet |
 
 - `u` runs along the face's first in-plane axis: the block's local +x
-  projected onto the face (+y when the face is perpendicular to x).
-  `v` = normal × u. The patch moves with the block on `set_pose`.
+  projected onto the face, or local +y when the face normal is within 5°
+  of ±x (a face that near perpendicular to x has no stable +x
+  projection). `v` = normal × u. The patch moves with the block on
+  `set_pose`.
 - Face names are the envelope's own: `top`, `bottom`, `side0`… A patch
   centre outside the face's extent resolves to an error note.
+- Write numbers in metres. A patch larger than its face (`8x4` for
+  `8e-10x4e-10`) is noted, flagged `patch_exceeds_face`.
+- The face check uses its bounding rectangle. A face that is not a
+  rectangle (area off by more than 1 %, or a disc or other curved face)
+  gets "bounds approximate" in the note.
+- Block names may not contain `/`, `@`, `[` or `]` (selector delimiters;
+  `add_block`, `instance_block` and `array_block` refuse them). Dots are
+  fine.
 - The shape is checked when you write, existence when you read. A
   malformed selector is refused and the error lists the whole grammar;
   a well-formed one naming a face that is not there yet is accepted.
 - `sites:`/`atoms:` are accepted on a block bound to a structure design.
   Their coordinates are not loaded yet, so a read returns a note saying
-  so instead of a value.
+  so instead of a value. Both are pinned to a structure version (below).
 - `frame`, `port:<name>`, `face:<block>.<tag>`, `axis:<block>` and the
   `face:` predicates work too (`precis-se-help`).
 
@@ -110,6 +120,33 @@ edit(kind='se', id='rotor', ops=[{
   `block`, `name`. It drops the pocket only; its measures stay.
 - Pockets, like measures, live on a template block, never on an instance.
 
+## Pins: atom and site numbers belong to one structure version
+
+An atom ordinal means something only against one version of the bound
+structure design (its version rises on every save). Seam site numbers
+are pinned the same way, because a regeneration may renumber them.
+
+- Writing an `atoms:`/`sites:` measure (`add_measure`, `set_measure`,
+  inline pocket measures) stamps `datum_pin` = `<structure-slug>@v<n>`
+  from the block's bound structure. A block bound to nothing gets no pin.
+- If the block is later bound to another structure or a later version,
+  the read note says so, `view='drc'` warns `region_pin_stale`, and
+  `view='pockets'` marks the line STALE. Re-declare the region
+  (`set_measure datum=`) to pin it to the version now bound.
+- `datum_pin` is exported in `view='ops'` and kept on replay; do not
+  pass it by hand.
+
+## Region findings in view='drc'
+
+All warn, one per measure (subject `<block>.<measure>`):
+
+- `datum_unresolved` — the datum names a missing block, face or envelope,
+  or a patch centre off its face. The detail has the selector and the
+  resolver's error. `sites:`/`atoms:` on an existing block are exempt.
+- `patch_exceeds_face` — a patch rectangle reaches past its face.
+- `region_pin_stale` — see Pins.
+- `measurand_unchecked` — see the last section.
+
 ## Read regions back
 
 ```python
@@ -130,3 +167,6 @@ No property computer is live yet. Every measure whose measurand is not
 recorded, nothing computes a value to check it against, and DRC warns
 about each one instead of passing it silently. The `realised` column in
 `view='pockets'` stays `—` until a computer covers that measurand.
+
+A measure keeps the measurand's taxon id; the slug shown follows a
+rename of the taxon node.

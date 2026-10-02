@@ -35,8 +35,10 @@ from precis_se.atomic.vocab import check_dof_axis_ports
 from precis_se.chain.fold import op_fold_layout
 from precis_se.chain.protocol import op_make_steps
 from precis_se.chain.relax import op_relax_chain
+from precis_se.datums import snapshot_measure_datums, stamp_region_pins
 from precis_se.manufacture import ManufactureRequest, prepare_manufacture
 from precis_se.ops import OpError, SeTree, apply_ops, known_ops
+from precis_se.persist import structure_version_resolver
 from precis_se.properties.measurand import measurand_resolver
 from precis_se.realize import PendingRealize, finish_realize, prepare_realize
 from precis_se.simp_bridge import SimpRequest, prepare_simp
@@ -170,6 +172,9 @@ def apply_ops_with_atomic(
         # through the taxonomy — the one store read the pure measure ops
         # need, wired the ``tree.foreign`` way.
         tree.measurands = measurand_resolver(store)
+    # Baseline for the post-walk pin stamp: which atoms:/sites: measures
+    # this call writes (:func:`precis_se.datums.stamp_region_pins`).
+    datums_before = snapshot_measure_datums(tree)
     echoes: list[str] = []
     pending_generates: list[PendingGenerate] = []
     pending_joins: list[PendingJoin] = []
@@ -307,4 +312,9 @@ def apply_ops_with_atomic(
             check_dof_axis_ports(node, node.dof, block_name, what="add_block")
         except OpError as exc:
             raise BadInput(str(exc)) from exc
+    # After the finishers: a ``generate`` in this call has bound (and saved)
+    # its structure by now, so a region measure written beside it pins to
+    # the version it will actually be read against. A fresh resolver — the
+    # tree's own may have cached a version from before the save.
+    stamp_region_pins(tree, datums_before, structure_version_resolver(store))
     return "\n".join(echoes) if echoes else None

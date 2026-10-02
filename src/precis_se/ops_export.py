@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis_se.measures import measurand_name
 from precis_se.ops import SeTree
 
 #: The stated gaps, in the order the rendered header prints them. Kept
@@ -343,8 +344,13 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
                 # whenever it is outside the m|count|ratio|deg registry).
                 # The slug is the portable name; the ref id is re-resolved.
                 unit=m.unit if m.measurand is None else None,
-                measurand=m.measurand,
+                # the slug as the taxon reads NOW — the snapshot may have
+                # been renamed away, and replay re-resolves by name
+                measurand=measurand_name(m),
                 datum=m.datum,
+                # carried verbatim, so a replay keeps the indices' version
+                # (a copy bound to another structure shows region_pin_stale)
+                datum_pin=m.datum_pin,
             )
         )
     for b in tree.bom:

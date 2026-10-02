@@ -380,6 +380,35 @@ from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
 from precis_se.pockets import HULL, PocketSpec
 from precis_se.properties.measurand import Measurand, MeasurandResolver
 
+#: A structure design's slug → its current version (``None`` = no such
+#: design); see :attr:`SeTree.structure_versions`.
+StructureVersionResolver = Callable[[str], "int | None"]
+
+#: Characters a block name may not contain: the region selectors
+#: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
+#: ``[``/``]`` (``atoms:``) as delimiters, and a block name carrying one
+#: would parse as a different selector. ``.`` is NOT here — selectors split
+#: a block from its face/measure on the LAST dot, so dotted names (the
+#: layout_chain segments ``helix.s0``) stay legal.
+BLOCK_NAME_RESERVED = "/@[]"
+
+
+def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
+    """Refuse a block ``name`` carrying a selector delimiter
+    (:data:`BLOCK_NAME_RESERVED`) — at every place se mints a block name.
+    A missing/blank name falls through to the core's own ``needs 'name'``."""
+    name = str(op.get("name") or "").strip()
+    bad = sorted({c for c in name if c in BLOCK_NAME_RESERVED})
+    if bad:
+        raise OpError(
+            f"{opname} 'name' must not contain {' '.join(repr(c) for c in bad)}: "
+            f"{name!r} — region selectors (patch:b.top@u,v+wxh, "
+            "sites:b/seam/s0..s3, atoms:b[0,3]) use / @ [ ] as delimiters, "
+            "so a block named with one would be read as a different selector "
+            "(dots are fine)"
+        )
+
+
 #: What an L3 realization binding may point at — the *designed*
 #: realizations (a cad node set, an atomistic ``structure`` scene) and the
 #: two *bought* ones (an engineering-store component, a catalog part).
@@ -719,6 +748,15 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     measurands: MeasurandResolver | None = field(
         default=None, repr=False, compare=False
     )
+    #: Store-bound structure-version lookup
+    #: (:func:`precis_se.persist.structure_version_resolver`): a structure
+    #: design's slug → its current ``meta['version']``, ``None`` when the
+    #: design is gone. Wired by the loader like :attr:`measurands`; read by
+    #: the pin checks (:func:`precis_se.datums.pin_status`). ``None`` (a
+    #: bare tree) means "cannot tell", never "stale".
+    structure_versions: StructureVersionResolver | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -1019,6 +1057,7 @@ def _op_add_block(tree: SeTree, op: dict[str, Any]) -> None:
     owns no ports yet at this instant, so any ``add_port`` naming its axis
     necessarily comes later in the same call). A bad shape rolls the block
     back out rather than leaving a half-declared node behind."""
+    _check_block_name_chars(op, opname="add_block")
     blocktree.op_add_block(tree, op)
     _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
     dof_raw = op.get("dof")
@@ -1041,6 +1080,7 @@ def _op_instance_block(tree: SeTree, op: dict[str, Any]) -> None:
                 "for a patterned instance"
             )
     _reject_instance_dof(tree, op, opname="instance_block")
+    _check_block_name_chars(op, opname="instance_block")
     blocktree.op_instance_block(tree, op)
     _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
 
@@ -1133,6 +1173,7 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
 
 
 def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:
+    _check_block_name_chars(op, opname="array_block")
     template, name, parent = _instance_shared(tree, op, opname="array_block")
     _reject_instance_dof(tree, op, opname="array_block")
     spec = _parse_array_spec(op)
@@ -1669,7 +1710,31 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
         except MeasureError as exc:
             raise OpError(f"{opname}: {exc}") from exc
         out["datum"] = op["datum"].strip()
+    if op.get("datum_pin") is not None:
+        from precis_se.datums import parse_pin
+
+        pin = op["datum_pin"]
+        if not isinstance(pin, str) or parse_pin(pin) is None:
+            raise OpError(
+                f"{opname} 'datum_pin' must be '<structure-slug>@v<version>' "
+                f"(e.g. 'cnt-55@v3'), got {pin!r} — normally never passed: "
+                "the write stamps it from the block's bound structure"
+            )
+        out["datum_pin"] = pin.strip()
     return out
+
+
+def _check_pin_applies(datum: str | None, pin: str | None, *, opname: str) -> None:
+    """``datum_pin`` pins atom/site indices; any other datum has none."""
+    if pin is None:
+        return
+    from precis_se.datums import parse_selector
+
+    if datum is None or parse_selector(datum).kind not in ("atoms", "sites"):
+        raise OpError(
+            f"{opname}: 'datum_pin' pins atoms:/sites: indices to a structure "
+            f"version; datum {datum or 'frame'!r} has none"
+        )
 
 
 def _check_band(
@@ -1742,6 +1807,9 @@ def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
         fields.get("min_value"),
         fields.get("max_value"),
         opname="add_measure",
+    )
+    _check_pin_applies(
+        fields.get("datum"), fields.get("datum_pin"), opname="add_measure"
     )
     tree.measures.append(MeasureSpec(block=block, name=name, **fields))
 
@@ -1841,6 +1909,7 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         "unit",
         "datum",
         "measurand",
+        "datum_pin",
     )
     if not any(k in op for k in field_keys):
         raise OpError(
@@ -1883,6 +1952,18 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         opname="set_measure",
     )
     _check_band(merged_value, merged_min, merged_max, opname="set_measure")
+    if "datum" in fields:
+        from precis_se.datums import same_region
+
+        if not same_region(fields["datum"], m.datum) and "datum_pin" not in fields:
+            # New region, new indices: the old pin described the old one.
+            # The store-aware walker re-stamps it for an atoms:/sites: datum.
+            fields["datum_pin"] = None
+    _check_pin_applies(
+        fields.get("datum", m.datum),
+        fields.get("datum_pin", m.datum_pin),
+        opname="set_measure",
+    )
     if merged_min is not None and merged_max is not None and merged_min > merged_max:
         raise OpError(
             "set_measure: the merged 'min' exceeds the merged 'max' — "

@@ -11,28 +11,51 @@ resolver; the store tests seed the taxonomy (0174 + 0182) into the test DB —
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import numpy as np
 import pytest
 
+from precis.cad.primitives import Placed, PolyFrustum
+from precis.cad.vec import as_vec3
+from precis.cad.vec import pose as cad_pose
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.structure import StructureHandler
 from precis.reading.concepts import normalize_name
 from precis.store import Store
 from precis.taxonomy.nodes import slugify, taxon_card_text, validate_taxon_meta
 from precis_se import persist
 from precis_se.datums import (
+    U_FALLBACK_DEG,
     VOCABULARY,
     Selector,
+    _face_frame,
+    _polygon_is_rectangle,
     evaluate_measure,
+    parse_pin,
     parse_selector,
     resolve,
     same_region,
+    snapshot_measure_datums,
+    stale_pin_note,
+    stamp_region_pins,
 )
 from precis_se.drc import drc
-from precis_se.handler import SeHandler, _render_pockets
-from precis_se.measures import MeasureError, stackup
+from precis_se.handler import (
+    SeHandler,
+    _measure_row,
+    _region_pin_findings,
+    _render_pockets,
+)
+from precis_se.measures import (
+    MeasureError,
+    MeasureSpec,
+    is_geometric,
+    measurand_name,
+    stackup,
+)
 from precis_se.ops import OpError, SeTree, apply_ops
 from precis_se.ops_export import NOT_CARRIED, design_ops
 from precis_se.persist import tree_to_json
@@ -891,3 +914,693 @@ def test_pockets_survive_edit_and_remove_through_the_store(handler: SeHandler) -
     tree = _loaded(handler, "reg-edit")
     assert tree.blocks["b"].pockets == {}
     assert [m.name for m in tree.measures] == ["rim"]
+
+
+# ═══ review fixes (orchestrator verdict) ═════════════════════════════════════
+
+# ── fix 2: scientific notation vs the + / x separators ──────────────────────
+
+
+def test_patch_exponents_do_not_swallow_the_separators() -> None:
+    sel = parse_selector("patch:b.top@1e-9,-2e-10+8e-10x4e-10")
+    assert (sel.u, sel.v, sel.w, sel.h) == (1e-9, -2e-10, 8e-10, 4e-10)
+    # a signed exponent right before the '+' / 'x' separators
+    sel = parse_selector("patch:b.top@0,0+1e+0x1e+0")
+    assert (sel.u, sel.v, sel.w, sel.h) == (0.0, 0.0, 1.0, 1.0)
+    sel = parse_selector("patch:b.top@-1e-9,+2e-9+3e-9x4e-9")
+    assert (sel.u, sel.v, sel.w, sel.h) == (-1e-9, 2e-9, 3e-9, 4e-9)
+
+
+# ── fix 3: block names may not carry selector delimiters ────────────────────
+
+
+@pytest.mark.parametrize("bad", ["/", "@", "[", "]"])
+@pytest.mark.parametrize("opname", ["add_block", "instance_block", "array_block"])
+def test_block_names_refuse_selector_delimiters(bad: str, opname: str) -> None:
+    base = _tree(_BOX)
+    op: dict[str, Any] = {"op": opname, "name": f"a{bad}b", "template": "b"}
+    if opname == "add_block":
+        op = {"op": "add_block", "name": f"a{bad}b"}
+    if opname == "array_block":
+        op["linear"] = {"count": 2, "pitch": 0.2, "axis": [1, 0, 0]}
+    with pytest.raises(OpError) as exc:
+        apply_ops(base, [op])
+    assert repr(bad) in str(exc.value) and "selector" in str(exc.value)
+    assert f"a{bad}b" not in base.blocks  # nothing minted
+
+
+def test_block_names_still_take_dots_and_other_punctuation() -> None:
+    tree = _tree(
+        {"op": "add_block", "name": "helix.s0"},
+        {"op": "add_block", "name": "wheel-2_a"},
+    )
+    assert set(tree.blocks) == {"helix.s0", "wheel-2_a"}
+
+
+# ── fix 7: the u axis, exact on both sides of 5° ────────────────────────────
+
+
+def _sheared(deg: float) -> Placed:
+    """A parallelepiped whose +x side face leans ``deg`` degrees off the +x
+    axis (top ring shifted in x by tan(deg) over h=1)."""
+    ring = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+    top = [(x + math.tan(math.radians(deg)), y) for x, y in ring]
+    return Placed(
+        prim=PolyFrustum(ring, top, 1.0),
+        xform=cad_pose(as_vec3([0, 0, 0]), as_vec3([0, 0, 0])),
+    )
+
+
+def test_u_fallback_threshold_is_the_named_five_degrees() -> None:
+    assert U_FALLBACK_DEG == 5.0
+
+
+@pytest.mark.parametrize(("deg", "fallback"), [(4.9, True), (5.1, False)])
+def test_u_axis_falls_back_to_y_within_five_degrees_of_x(
+    deg: float, fallback: bool
+) -> None:
+    frame = _face_frame(_sheared(deg), "side1")
+    assert frame is not None
+    n = np.asarray(frame.normal)
+    assert math.degrees(math.acos(float(n[0]))) == pytest.approx(deg, abs=1e-6)
+    if fallback:
+        np.testing.assert_allclose(frame.u, [0, 1, 0], atol=1e-12)
+    else:
+        s, c = math.sin(math.radians(deg)), math.cos(math.radians(deg))
+        np.testing.assert_allclose(frame.u, [s, 0, c], atol=1e-9)
+    np.testing.assert_allclose(frame.v, np.cross(n, frame.u), atol=1e-12)
+    assert float(np.asarray(frame.u) @ n) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_u_axis_is_plus_x_projected_on_an_ordinary_face() -> None:
+    tree = _tree(_BOX)
+    r = resolve(tree, tree.blocks["b"], "patch:b.side0@0.01,0+0.001x0.001")
+    # side0 ⊥ y: u = +x, so the centre moves +0.01 in x
+    np.testing.assert_allclose(r.point, [0.01, -0.025, 0.005], atol=1e-12)
+
+
+# ── fix 5/6: patch vs its face ──────────────────────────────────────────────
+
+
+def test_a_patch_larger_than_its_face_is_noted_and_flagged() -> None:
+    tree = _tree(_BOX)
+    r = resolve(tree, tree.blocks["b"], "patch:b.top@0,0+8x4")  # 8 m, not 8e-10
+    assert r.error is None
+    assert r.flags == frozenset({"patch_exceeds_face"})
+    (note,) = r.notes
+    assert note == "patch 8 × 4 m extends past face b.top (100 × 50 mm) — units?"
+    # centre inside, one edge over: still flagged
+    over = resolve(tree, tree.blocks["b"], "patch:b.top@0.045,0+0.02x0.01")
+    assert "patch_exceeds_face" in over.flags
+    # an edge exactly on the face boundary is inside
+    edge = resolve(tree, tree.blocks["b"], "patch:b.top@0.04,0+0.02x0.01")
+    assert edge.flags == frozenset() and edge.notes == ()
+
+
+def test_a_patch_inside_a_rectangular_face_has_no_notes() -> None:
+    tree = _tree(_BOX)
+    r = resolve(tree, tree.blocks["b"], _PATCH)
+    assert r.notes == () and r.flags == frozenset()
+
+
+def test_non_rectangular_faces_say_bounds_approximate() -> None:
+    tree = _tree(
+        {"op": "add_block", "name": "c", "envelope": "cyl:r0.01h0.02"},
+        {"op": "add_block", "name": "h", "envelope": "hex:r0.01h0.02"},
+        {"op": "add_block", "name": "t", "envelope": "frustum:n4rb0.02rt0.01h0.02"},
+    )
+    cap = resolve(tree, tree.blocks["c"], "patch:c.top@0,0+0.001x0.001")
+    assert cap.error is None and "bounds_approximate" in cap.flags
+    assert cap.notes[0].startswith("bounds approximate")
+    hexcap = resolve(tree, tree.blocks["h"], "patch:h.top@0,0+0.001x0.001")
+    assert "bounds_approximate" in hexcap.flags
+    # a hex prism's rectangular side faces are rectangles
+    side = resolve(tree, tree.blocks["h"], "patch:h.side0@0,0+0.001x0.001")
+    assert side.error is None and side.flags == frozenset()
+    # a frustum's slanted side is a trapezoid
+    trap = resolve(tree, tree.blocks["t"], "patch:t.side0@0,0+0.001x0.001")
+    assert "bounds_approximate" in trap.flags
+
+
+def test_rectangle_test_is_one_percent_of_the_bounding_area() -> None:
+    def cut(c: float) -> list[list[float]]:
+        # unit square with the (1, 1) corner cut by a right isosceles triangle
+        # of leg c: area 1 - c²/2
+        return [[0, 0, 0], [1, 0, 0], [1, 1 - c, 0], [1 - c, 1, 0], [0, 1, 0]]
+
+    u, v = np.array([1.0, 0, 0]), np.array([0, 1.0, 0])
+    assert _polygon_is_rectangle(cut(0.1), u, v)  # 0.5 % off
+    assert not _polygon_is_rectangle(cut(0.2), u, v)  # 2 % off
+
+
+# ── fix 4: unresolved selectors in view='drc' ───────────────────────────────
+
+
+def test_datum_unresolved_warns_once_per_measure_with_the_resolver_text() -> None:
+    def m(name: str, datum: str, block: str = "b") -> dict[str, Any]:
+        return {
+            "op": "add_measure",
+            "block": block,
+            "name": name,
+            "datum": datum,
+            "value": 0.01,
+        }
+
+    tree = _tree(
+        _BOX,
+        {"op": "add_block", "name": "bare"},
+        m("nofac", "face:b.nope"),
+        m("offpatch", "patch:b.top@5,0+0.01x0.01"),
+        m("ghost", "atoms:ghost[1]"),
+        m("unbound", "atoms:b[1]"),  # lenient: expected until bound/computed
+        m("loaded", "sites:b/seamA/s0..s3"),
+        m("noenv", "frame", block="bare"),
+        m("fine", _PATCH),
+        {"op": "add_measure", "block": "b", "name": "nodatum", "value": 0.01},
+    )
+    tree.blocks["b"].bound_kind = "structure"
+    tree.blocks["b"].bound = "cnt-55"  # sites/atoms now hit the 'not loaded' note
+    rows = {f.subject: f for f in drc(tree).findings if f.rule == "datum_unresolved"}
+    assert set(rows) == {"b.nofac", "b.offpatch", "b.ghost", "bare.noenv"}
+    assert all(f.severity == "warn" for f in rows.values())
+    assert "'face:b.nope'" in rows["b.nofac"].detail
+    assert "no face tagged 'nope'" in rows["b.nofac"].detail
+    assert "lies off face b.top" in rows["b.offpatch"].detail
+    assert "no block 'ghost'" in rows["b.ghost"].detail
+    assert "no parseable envelope" in rows["bare.noenv"].detail
+
+
+def test_patch_exceeds_face_is_a_drc_warn() -> None:
+    tree = _tree(_BOX, _q(name="slip", datum="patch:b.top@0,0+8x4"), _q())
+    findings = drc(tree).findings
+    rows = [f for f in findings if f.rule == "patch_exceeds_face"]
+    assert [f.subject for f in rows] == ["b.slip"]
+    assert rows[0].severity == "warn" and "units?" in rows[0].detail
+    # a resolved patch is not an unresolved one
+    assert not any(f.rule == "datum_unresolved" for f in findings)
+
+
+# ── fix 1: atoms:/sites: pin to a structure version ─────────────────────────
+
+_ATOMS = "atoms:b[0-3]"
+_SITES = "sites:b/seamA/s0..s3"
+
+
+def _bound(*ops: dict[str, Any], slug: str | None = "cnt") -> SeTree:
+    tree = _tree(_BOX, *ops)
+    if slug is not None:
+        tree.blocks["b"].bound_kind = "structure"
+        tree.blocks["b"].bound = slug
+    return tree
+
+
+def _versions(table: dict[str, int]) -> Any:
+    return lambda slug: table.get(slug)
+
+
+def _add(name: str, datum: str, **kw: Any) -> dict[str, Any]:
+    return {"op": "add_measure", "block": "b", "name": name, "datum": datum, **kw}
+
+
+def test_stamp_pins_a_written_atoms_or_sites_measure_to_the_bound_version() -> None:
+    tree = _bound()
+    snap = snapshot_measure_datums(tree)
+    apply_ops(tree, [_add("a", _ATOMS), _add("s", _SITES), _add("f", "ring:b.top")])
+    stamp_region_pins(tree, snap, _versions({"cnt": 3}))
+    by = {m.name: m.datum_pin for m in tree.measures}
+    assert by == {"a": "cnt@v3", "s": "cnt@v3", "f": None}
+
+
+def test_stamp_keeps_an_explicit_pin_and_skips_untouched_measures() -> None:
+    tree = _bound(_add("old", _ATOMS))  # written before the baseline
+    snap = snapshot_measure_datums(tree)
+    apply_ops(tree, [_add("replay", _ATOMS, datum_pin="cnt@v1")])
+    stamp_region_pins(tree, snap, _versions({"cnt": 7}))
+    by = {m.name: m.datum_pin for m in tree.measures}
+    assert by == {"old": None, "replay": "cnt@v1"}  # never retro-pinned
+
+
+def test_no_bound_structure_means_no_pin() -> None:
+    tree = _bound(slug=None)
+    snap = snapshot_measure_datums(tree)
+    apply_ops(tree, [_add("a", _ATOMS)])
+    stamp_region_pins(tree, snap, _versions({"cnt": 3}))
+    assert tree.measures[0].datum_pin is None
+    # a structure the store cannot find (version None): no pin either
+    tree = _bound()
+    snap = snapshot_measure_datums(tree)
+    apply_ops(tree, [_add("a", _ATOMS)])
+    stamp_region_pins(tree, snap, _versions({}))
+    assert tree.measures[0].datum_pin is None
+
+
+def test_removing_and_readding_a_measure_in_one_call_is_a_fresh_write() -> None:
+    tree = _bound(_add("a", _ATOMS, datum_pin="cnt@v1"))
+    snap = snapshot_measure_datums(tree)
+    apply_ops(
+        tree,
+        [{"op": "remove_measure", "block": "b", "name": "a"}, _add("a", _ATOMS)],
+    )
+    stamp_region_pins(tree, snap, _versions({"cnt": 4}))
+    assert tree.measures[0].datum_pin == "cnt@v4"
+
+
+def test_set_measure_new_region_clears_the_pin_and_restamps() -> None:
+    tree = _bound(_add("a", _ATOMS, datum_pin="cnt@v1"))
+    snap = snapshot_measure_datums(tree)
+    apply_ops(
+        tree, [{"op": "set_measure", "block": "b", "name": "a", "datum": "atoms:b[9]"}]
+    )
+    assert tree.measures[0].datum_pin is None  # the old pin described the old region
+    stamp_region_pins(tree, snap, _versions({"cnt": 2}))
+    assert tree.measures[0].datum_pin == "cnt@v2"
+    # same region re-stated, other field changed: pin untouched
+    snap = snapshot_measure_datums(tree)
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_measure",
+                "block": "b",
+                "name": "a",
+                "datum": "atoms:b[9]",
+                "strength": "hard",
+            }
+        ],
+    )
+    stamp_region_pins(tree, snap, _versions({"cnt": 9}))
+    assert tree.measures[0].datum_pin == "cnt@v2"
+    # an explicit pin on set_measure is kept
+    apply_ops(
+        tree,
+        [
+            {
+                "op": "set_measure",
+                "block": "b",
+                "name": "a",
+                "datum": "atoms:b[1]",
+                "datum_pin": "cnt@v5",
+            }
+        ],
+    )
+    assert tree.measures[0].datum_pin == "cnt@v5"
+
+
+def test_datum_pin_is_vetted() -> None:
+    with pytest.raises(OpError, match="datum_pin"):
+        _bound(_add("a", _ATOMS, datum_pin="not a pin"))
+    with pytest.raises(OpError, match="pins atoms:/sites: indices"):
+        _bound(_add("a", "ring:b.top", datum_pin="cnt@v1"))
+    with pytest.raises(OpError, match="cannot clear datum_pin"):
+        apply_ops(
+            _bound(_add("a", _ATOMS)),
+            [{"op": "set_measure", "block": "b", "name": "a", "datum_pin": None}],
+        )
+    assert parse_pin("cnt-55@v12") == ("cnt-55", 12)
+    assert parse_pin("cnt@3") is None
+
+
+def _stale_msg(then: str, now: str) -> str:
+    return (
+        f"atoms: pinned to {then}, the block is now bound to {now} — "
+        "indices may name different atoms; re-declare the region"
+    )
+
+
+def test_stale_pin_note_names_both_versions() -> None:
+    tree = _bound(_add("a", _ATOMS, datum_pin="cnt@v3"))
+    (m,) = tree.measures
+    tree.structure_versions = _versions({"cnt": 3})
+    assert stale_pin_note(tree, m) is None  # current
+    tree.structure_versions = _versions({"cnt": 5})
+    assert stale_pin_note(tree, m) == _stale_msg("cnt@v3", "cnt@v5")
+    tree.blocks["b"].bound = "other"  # rebound to a different design
+    tree.structure_versions = _versions({"other": 1})
+    assert stale_pin_note(tree, m) == _stale_msg("cnt@v3", "other@v1")
+    tree.blocks["b"].bound = None  # unbound
+    assert "bound to no structure" in (stale_pin_note(tree, m) or "")
+    # cannot tell → never stale: no resolver, or the structure is gone
+    tree.blocks["b"].bound = "cnt"
+    tree.structure_versions = None
+    assert stale_pin_note(tree, m) is None
+    tree.structure_versions = _versions({})
+    assert stale_pin_note(tree, m) is None
+    # an unpinned measure has nothing to go stale
+    assert stale_pin_note(tree, MeasureSpec(block="b", name="x", datum=_ATOMS)) is None
+
+
+def test_sites_pins_go_stale_the_same_way() -> None:
+    tree = _bound(_add("s", _SITES, datum_pin="cnt@v1"))
+    tree.structure_versions = _versions({"cnt": 2})
+    assert (stale_pin_note(tree, tree.measures[0]) or "").startswith(
+        "sites: pinned to cnt@v1"
+    )
+
+
+def test_stale_note_replaces_the_usual_one_on_a_measure_row() -> None:
+    tree = _bound(
+        _add("len", _ATOMS, datum_pin="cnt@v3", value=1e-9),
+        _q(name="q", datum=_ATOMS, datum_pin="cnt@v3"),
+    )
+    by = {m.name: m for m in tree.measures}
+    for current, has_stale in ((3, False), (5, True)):
+        tree.structure_versions = _versions({"cnt": current})
+        # a length measure (evaluated) and a charge measure (not)
+        for name in ("len", "q"):
+            row = _measure_row(by[name], tree)["reason"]
+            assert ("pinned to cnt@v3" in row) is has_stale, (name, row)
+            assert ("does not load" in row) is (not has_stale), (name, row)
+
+
+def test_region_pin_stale_is_a_handler_side_warn() -> None:
+    tree = _bound(
+        _q(name="q", datum=_ATOMS, datum_pin="cnt@v3"),
+        _q(name="fresh", datum=_SITES, datum_pin="cnt@v5"),
+    )
+    tree.structure_versions = _versions({"cnt": 5})
+    rows = _region_pin_findings(None, tree)
+    assert [(f.rule, f.subject, f.severity) for f in rows] == [
+        ("region_pin_stale", "b.q", "warn")
+    ]
+    assert rows[0].detail == _stale_msg("cnt@v3", "cnt@v5")
+    # the store-free drc stays out of it, and a stale pin is not "unresolved"
+    assert not any(
+        f.rule in ("region_pin_stale", "datum_unresolved") for f in drc(tree).findings
+    )
+
+
+def test_pin_round_trips_through_the_ops_export() -> None:
+    original = _bound(_q(name="q", datum=_ATOMS, datum_pin="cnt@v3"))
+    exported = design_ops(original)
+    (op,) = [o for o in exported if o["op"] == "add_measure"]
+    assert op["datum_pin"] == "cnt@v3"
+    replay = SeTree()
+    replay.measurands = _stub
+    apply_ops(replay, exported)
+    assert replay.measures[0].datum_pin == "cnt@v3"
+
+
+def test_pockets_view_flags_a_stale_pinned_region() -> None:
+    tree = _bound(
+        _q(name="q", datum=_ATOMS, datum_pin="cnt@v3"),
+        {
+            "op": "add_pocket",
+            "block": "b",
+            "name": "p",
+            "regions": [{"selector": _ATOMS}],
+        },
+    )
+    tree.structure_versions = _versions({"cnt": 4})
+    assert "pin cnt@v3 STALE (region_pin_stale)" in _render_pockets(tree)
+    tree.structure_versions = _versions({"cnt": 3})
+    assert "STALE" not in _render_pockets(tree)
+
+
+# ── fix 8: the taxon ref id is the identity, the slug a refreshable name ────
+
+
+def test_displayed_slug_is_the_live_one_the_snapshot_keys_the_registries() -> None:
+    tree = _tree(_BOX, _q())
+    (m,) = tree.measures
+    assert measurand_name(m) == "surface-charge-density"
+    m.measurand_live = "sigma"  # the taxon was renamed
+    assert measurand_name(m) == "sigma"
+    assert m.measurand == "surface-charge-density"  # the snapshot is untouched
+    assert _measure_row(m, tree)["measure"] == "b.q [sigma]"
+    (finding,) = [f for f in drc(tree).findings if f.rule == "measurand_unchecked"]
+    assert "'sigma'" in finding.detail and "tn901" in finding.detail
+
+
+def test_pockets_view_shows_the_live_slug_and_groups_by_taxon_id() -> None:
+    tree = _tree(
+        _BOX,
+        _pocket(),
+        # a second measure on the same region, higher ref id, written later
+        {
+            "op": "add_measure",
+            "block": "b",
+            "name": "dq",
+            "measurand": "net partial charge",
+            "datum": _PATCH,
+        },
+        {"op": "add_measure", "block": "b", "name": "aa", "datum": _PATCH},
+    )
+    by = {m.name: m for m in tree.measures}
+    by["q"].measurand_live = "sigma"
+    body = _render_pockets(tree)
+    assert "measurand sigma (tn901)" in body
+    lines = [ln for ln in body.splitlines() if ln.startswith("  - b.")]
+    # legacy (no ref) first, then by taxon id: 901 < 902
+    assert [ln.split(" · ")[0] for ln in lines] == ["  - b.aa", "  - b.q", "  - b.dq"]
+
+
+def test_export_emits_the_live_slug_not_a_renamed_away_snapshot() -> None:
+    tree = _tree(_BOX, _q())
+    tree.measures[0].measurand_live = "sigma"
+    (op,) = [o for o in design_ops(tree) if o["op"] == "add_measure"]
+    assert op["measurand"] == "sigma"
+
+
+def test_tree_json_does_not_carry_the_derived_live_slug() -> None:
+    tree = _tree(_BOX, _q())
+    tree.measures[0].measurand_live = "sigma"
+    (row,) = tree_to_json(tree)["measures"]
+    assert "measurand_live" not in row and row["measurand"] == "surface-charge-density"
+
+
+def test_a_renamed_legacy_length_node_is_still_geometric() -> None:
+    tree = _tree(
+        _BOX, {"op": "add_measure", "block": "b", "name": "len", "measurand": "length"}
+    )
+    m = tree.measures[0]
+    m.measurand_live = "distance"
+    assert is_geometric(m)
+
+
+# ═══ review fixes through the store ═════════════════════════════════════════
+
+
+@pytest.fixture
+def structure_handler(store: Store) -> StructureHandler:
+    return StructureHandler(hub=Hub(store=store))
+
+
+def _put_structure(sh: StructureHandler, slug: str) -> None:
+    sh.put(
+        id=slug,
+        text=json.dumps(
+            {
+                "cell": {"a": 20.0, "b": 20.0, "c": 20.0, "pbc": [False] * 3},
+                "ops": [
+                    {"op": "add_atom", "element": "C", "cart": [0.0, 0.0, 0.0]},
+                    {"op": "add_atom", "element": "C", "cart": [1.3, 0.0, 0.0]},
+                ],
+            }
+        ),
+    )
+
+
+def _bump_structure(sh: StructureHandler, slug: str) -> None:
+    sh.edit(id=slug, ops=[{"op": "add_atom", "element": "C", "cart": [2.6, 0.0, 0.0]}])
+
+
+def _structure_version(store: Store, slug: str) -> int:
+    ref = store.get_ref(kind="structure", id=slug)
+    assert ref is not None
+    return int(ref.meta["version"])
+
+
+def test_pin_is_stamped_at_write_and_goes_stale_when_the_structure_is_saved(
+    handler: SeHandler, structure_handler: StructureHandler
+) -> None:
+    _put_structure(structure_handler, "cnt-pin")
+    v1 = _structure_version(handler.store, "cnt-pin")
+    _put(
+        handler,
+        "reg-pin",
+        [
+            _BOX,
+            {"op": "bind_structure", "block": "b", "design": "cnt-pin"},
+            _A1 | {"name": "q", "datum": "atoms:b[0-1]"},
+            {
+                "op": "add_pocket",
+                "block": "b",
+                "name": "p",
+                "regions": [
+                    {
+                        "selector": "sites:b/seamA/s0..s2",
+                        "measures": [{"name": "rim", "measurand": "contact angle"}],
+                    }
+                ],
+            },
+            {
+                "op": "add_measure",
+                "block": "b",
+                "name": "plain",
+                "datum": "ring:b.top",
+                "measurand": "contact angle",
+            },
+        ],
+    )
+    by = {m.name: m for m in _loaded(handler, "reg-pin").measures}
+    assert by["q"].datum_pin == f"cnt-pin@v{v1}"
+    assert by["rim"].datum_pin == f"cnt-pin@v{v1}"  # inline pocket measure
+    assert by["plain"].datum_pin is None
+    assert "region_pin_stale" not in handler.get(id="reg-pin", view="drc").body
+
+    _bump_structure(structure_handler, "cnt-pin")
+    v2 = _structure_version(handler.store, "cnt-pin")
+    assert v2 == v1 + 1
+    drc_body = handler.get(id="reg-pin", view="drc").body
+    assert drc_body.count("region_pin_stale") == 2  # q and rim, one warn each
+    assert f"pinned to cnt-pin@v{v1}, the block is now bound to cnt-pin@v{v2}" in (
+        drc_body
+    )
+    assert "datum_unresolved" not in drc_body  # stale is the pin's rule
+    assert f"pinned to cnt-pin@v{v1}" in handler.get(id="reg-pin", view="measures").body
+
+    # re-declaring the region pins it to the version it is read against now
+    handler.edit(
+        id="reg-pin",
+        ops=[
+            {"op": "set_measure", "block": "b", "name": "q", "datum": "atoms:b[0]"},
+            {
+                "op": "set_measure",
+                "block": "b",
+                "name": "rim",
+                "datum": "sites:b/seamA/s0..s1",
+            },
+        ],
+    )
+    by = {m.name: m for m in _loaded(handler, "reg-pin").measures}
+    assert by["q"].datum_pin == f"cnt-pin@v{v2}"
+    assert by["rim"].datum_pin == f"cnt-pin@v{v2}"
+    assert "region_pin_stale" not in handler.get(id="reg-pin", view="drc").body
+
+
+def test_a_block_with_no_structure_at_write_gets_no_pin(handler: SeHandler) -> None:
+    _put(handler, "reg-nopin", [_BOX, _A1 | {"datum": "atoms:b[0-1]"}])
+    (m,) = _loaded(handler, "reg-nopin").measures
+    assert m.datum_pin is None
+    body = handler.get(id="reg-nopin", view="drc").body
+    assert "region_pin_stale" not in body and "datum_unresolved" not in body
+
+
+def test_an_explicit_pin_survives_the_ops_export_replay(
+    handler: SeHandler, structure_handler: StructureHandler
+) -> None:
+    _put_structure(structure_handler, "cnt-replay")
+    _put(
+        handler,
+        "reg-r1",
+        [
+            _BOX,
+            {"op": "bind_structure", "block": "b", "design": "cnt-replay"},
+            _A1 | {"datum": "atoms:b[0-1]"},
+        ],
+    )
+    _bump_structure(structure_handler, "cnt-replay")  # the pin is now old
+    body = handler.get(id="reg-r1", view="ops").body
+    exported = json.loads(body.split("```json")[1].split("```")[0])["ops"]
+    _put(handler, "reg-r2", exported)  # no bind op in the export: unbound copy
+    src = [m.datum_pin for m in _loaded(handler, "reg-r1").measures]
+    copy = [m.datum_pin for m in _loaded(handler, "reg-r2").measures]
+    assert src == copy and src[0] is not None
+
+
+def test_drc_view_reports_unresolved_datums(handler: SeHandler) -> None:
+    _put(
+        handler,
+        "reg-unres",
+        [
+            _BOX,
+            {
+                "op": "add_measure",
+                "block": "b",
+                "name": "gone",
+                "datum": "face:b.nope",
+                "value": 0.01,
+            },
+            _A1 | {"datum": "patch:b.top@0,0+8x4"},
+        ],
+    )
+    body = handler.get(id="reg-unres", view="drc").body
+    assert "datum_unresolved" in body and "b.gone" in body
+    assert "no face tagged 'nope'" in body
+    assert "patch_exceeds_face" in body and "units?" in body
+
+
+def _rename_taxon(store: Store, ref_id: int, slug: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(meta, '{slug}', to_jsonb(%s::text)) "
+            "WHERE ref_id = %s",
+            (slug, ref_id),
+        )
+
+
+def test_a_renamed_taxon_slug_still_works_and_shows_the_new_name(
+    handler: SeHandler,
+) -> None:
+    _put(
+        handler,
+        "reg-rename",
+        [
+            _BOX,
+            _A1,
+            {"op": "add_measure", "block": "b", "name": "len", "measurand": "length"},
+            {
+                "op": "add_pocket",
+                "block": "b",
+                "name": "p",
+                "regions": [{"selector": _PATCH}],
+            },
+        ],
+    )
+    before = {m.name: m for m in _loaded(handler, "reg-rename").measures}
+    q_ref = before["q"].measurand_ref
+    len_ref = before["len"].measurand_ref
+    assert q_ref is not None and len_ref is not None
+    assert before["q"].measurand_live == "surface-charge-density"
+
+    _rename_taxon(handler.store, q_ref, "sigma-s")
+    _rename_taxon(handler.store, len_ref, "distance")
+    after = {m.name: m for m in _loaded(handler, "reg-rename").measures}
+    q, length = after["q"], after["len"]
+    assert (q.measurand_ref, q.unit) == (q_ref, "C/m^2")  # identity + unit intact
+    assert (q.measurand, q.measurand_live) == ("surface-charge-density", "sigma-s")
+    assert measurand_name(q) == "sigma-s"
+    assert not is_checked(q.measurand)  # still recognised: declared-but-unchecked
+    assert is_geometric(length) and length.unit == "m"  # still the legacy length
+
+    assert "measurand sigma-s (tn" in handler.get(id="reg-rename", view="pockets").body
+    drc_body = handler.get(id="reg-rename", view="drc").body
+    assert "measurand_unchecked" in drc_body and "'sigma-s'" in drc_body
+    assert "b.q [sigma-s]" in handler.get(id="reg-rename", view="measures").body
+
+    # re-saving writes the snapshot back unchanged, never the refreshed name
+    handler.edit(
+        id="reg-rename",
+        ops=[{"op": "set_measure", "block": "b", "name": "q", "reason": "r"}],
+    )
+    with handler.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT measurand FROM se_measures WHERE measurand_ref_id = %s "
+            "AND retired_at IS NULL",
+            (q_ref,),
+        ).fetchone()
+    assert row is not None and row[0] == "surface-charge-density"
+
+
+def test_a_retired_taxon_falls_back_to_the_snapshot(handler: SeHandler) -> None:
+    _put(handler, "reg-gone", [_BOX, _A1])
+    (m,) = _loaded(handler, "reg-gone").measures
+    assert m.measurand_ref is not None
+    with handler.store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retired_at = now() WHERE ref_id = %s", (m.measurand_ref,)
+        )
+    (gone,) = _loaded(handler, "reg-gone").measures
+    assert gone.measurand_live is None
+    assert measurand_name(gone) == "surface-charge-density"
+    assert (gone.measurand_ref, gone.unit) == (m.measurand_ref, "C/m^2")

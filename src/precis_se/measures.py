@@ -113,6 +113,31 @@ class MeasureSpec:
     #: The measurand's taxon ref id — identity; ``measurand`` is the
     #: portable name the ops export re-resolves.
     measurand_ref: int | None = None
+    #: The measurand node's slug as it reads NOW (:func:`measurand_name`):
+    #: refreshed by id on every load (:func:`precis_se.persist.load_tree`),
+    #: so a taxon slug rename shows without a rewrite. Derived, never
+    #: stored — ``measurand`` stays the write-time snapshot (the
+    #: registries in :mod:`precis_se.properties` are keyed by it, and it
+    #: is what a save writes back unchanged); ``None`` = not refreshed
+    #: (a bare tree) or the taxon is gone, and the snapshot stands.
+    measurand_live: str | None = None
+    #: Which version of the bound structure an ``atoms:``/``sites:``
+    #: datum's indices were declared against —
+    #: ``"<structure-slug>@v<version>"``, stamped at write by the
+    #: store-aware op walker (:func:`precis_se.datums.stamp_region_pins`),
+    #: ``None`` for any other datum or a block that bound no structure
+    #: then. An atom ordinal only means something against one structure
+    #: version (the version bumps on every save); a reader that finds the
+    #: block bound to a different slug/version says so
+    #: (:func:`precis_se.datums.pin_status`).
+    datum_pin: str | None = None
+
+
+def measurand_name(m: MeasureSpec) -> str | None:
+    """The measurand's slug to DISPLAY: the live taxon's, else the
+    write-time snapshot (module docstring on identity — ``measurand_ref``
+    is the identity, a slug is only a name for it)."""
+    return m.measurand_live or m.measurand
 
 
 def is_geometric(m: MeasureSpec) -> bool:
@@ -461,7 +486,7 @@ def _unit_label(m: MeasureSpec) -> str:
     unit a stack-up message compares, naming the measurand it came from."""
     if m.measurand is None:
         return repr(m.unit)
-    return f"{m.unit!r} (measurand {m.measurand})"
+    return f"{m.unit!r} (measurand {measurand_name(m)})"
 
 
 def _quantity(v: float, unit: str) -> str:

@@ -34,9 +34,16 @@ selectors (docs/backlog/se-region-property-layer.md slice A):
 - ``patch:<instance>.<tag>@<u>,<v>+<w>x<h>`` — a ``w``×``h`` rectangle on
   face ``tag``, centred ``(u, v)`` from the face centre (metres). ``u``
   runs along the face's first in-plane axis — block-local ``+x``
-  projected onto the face plane (``+y`` when the face is ⊥ x) — and
-  ``v = n × u``; so a ``set_pose`` carries the patch with the block.
-  Resolves to the patch centre with the face normal.
+  projected onto the face plane, or block-local ``+y`` when the face
+  normal is within :data:`U_FALLBACK_DEG` of ±x (a face that near ⊥ x
+  has no stable ``+x`` projection) — and ``v = n × u``; so a ``set_pose``
+  carries the patch with the block. Resolves to the patch centre with the
+  face normal. The check is against the face's bounding extent: a centre
+  off the face is an error; a rectangle reaching past it is flagged
+  ``patch_exceeds_face`` (usually a units slip — ``8`` for ``8e-10``);
+  a face that is not a rectangle (area off its bounding rectangle's by
+  more than 1 %, or a curved/non-polygon face) is flagged
+  ``bounds_approximate``.
 - ``ring:<instance>.<tag>`` — the boundary loop of face ``tag`` (a rim,
   an edge loop). Resolves to the loop's face-plane centre with the face
   normal as the loop axis.
@@ -48,7 +55,11 @@ selectors (docs/backlog/se-region-property-layer.md slice A):
 ``sites:``/``atoms:`` parse strictly but never resolve here: their
 coordinates live in the bound ``structure`` design, which this pure
 module does not load — :func:`resolve` checks the block exists and is
-bound, then returns the lenient unresolvable note. Tags are the cad
+bound, then returns the lenient unresolvable note. Their indices only mean
+something against ONE structure version, so a measure on one carries a
+**pin** (``MeasureSpec.datum_pin``, ``"<structure-slug>@v<n>"``, stamped at
+write by :func:`stamp_region_pins`); :func:`stale_pin_note` says when the
+block is bound to something else now. Tags are the cad
 kernel's own (``bottom``, ``top``, ``side<N>``, ``cut``). Compound
 predicates live in :func:`rank_datums`, not the grammar — ranking
 picks the default, the grammar only names an override.
@@ -68,8 +79,9 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -77,7 +89,14 @@ from precis.cad import dsl as cad_dsl
 from precis.cad.primitives import CircularFrustum, Placed, PolyFrustum
 from precis.cad.vec import aabb_corners, as_vec3
 from precis.cad.vec import pose as cad_pose
-from precis_se.measures import MeasureError, MeasureSpec, declared_band, is_geometric
+from precis.utils.units import format_quantity
+from precis_se.measures import (
+    MeasureError,
+    MeasureSpec,
+    declared_band,
+    is_geometric,
+    measurand_name,
+)
 from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 
 #: Default assembly/insertion direction when a caller supplies none —
@@ -92,6 +111,15 @@ VOCABULARY = (
     "patch:<instance>.<tag>@<u>,<v>+<w>x<h> | ring:<instance>.<tag> | "
     "sites:<block>/<seam>/s<i>..s<j> | atoms:<block>[<indices>]"
 )
+
+#: A face whose normal is within this many degrees of ±x takes block-local
+#: ``+y`` (not ``+x``) as its patch ``u`` axis: ``+x`` projected onto such a
+#: face is a near-zero vector whose direction is numerical noise.
+U_FALLBACK_DEG = 5.0
+_U_FALLBACK_COS = math.cos(math.radians(U_FALLBACK_DEG))
+#: A face counts as a rectangle when its polygon area is within this
+#: fraction of its bounding rectangle's.
+_RECT_AREA_TOL = 0.01
 
 _NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _PATCH_RE = re.compile(rf"^(?P<u>{_NUM}),(?P<v>{_NUM})\+(?P<w>{_NUM})x(?P<h>{_NUM})$")
@@ -143,6 +171,16 @@ class ResolvedDatum:
     normal: Any = None
     members: tuple[str, ...] = ()
     error: str | None = None
+    #: Honesty notes on a RESOLVED region (a patch past its face, an
+    #: approximate bound) and the matching machine ``flags``
+    #: (``patch_exceeds_face`` | ``bounds_approximate``).
+    notes: tuple[str, ...] = ()
+    flags: frozenset[str] = frozenset()
+    #: ``error`` is the lenient "expected until a computer exists" kind
+    #: (a ``sites:``/``atoms:`` selector on a bound block, an unbound one,
+    #: or a stale pin) — declared intent, not a broken reference, so
+    #: ``datum_unresolved`` stays quiet about it.
+    expected: bool = False
 
 
 @dataclass(frozen=True)
@@ -457,10 +495,14 @@ def resolve(
     *,
     assembly_dir: Any = None,
     env_override: dict[str, str] | None = None,
+    pin: str | None = None,
 ) -> ResolvedDatum:
     """Resolve a selector against the live tree. ``None``/``'frame'``
     is the NULL-datum default — the block's pose frame. Never raises on
-    existence; a miss comes back as ``error``."""
+    existence; a miss comes back as ``error``. ``pin`` is the measure's
+    ``datum_pin``: for a ``sites:``/``atoms:`` selector whose block is
+    bound to a different structure version now, the stale note replaces
+    the usual "not loaded" one."""
     node = tree.blocks[block] if isinstance(block, str) else block
     sel = parse_selector(selector) if isinstance(selector, str) else selector
     if sel is None:
@@ -525,7 +567,13 @@ def resolve(
             normal=placed.xform.apply_dir(np.array([0.0, 0.0, 1.0])),
         )
     if sel.kind in ("sites", "atoms"):
-        return err(_atomic_region_note(tree, sel))
+        note = _atomic_region_note(tree, sel, pin)
+        return ResolvedDatum(
+            selector=text,
+            kind=sel.kind,
+            error=note,
+            expected=_atomic_note_is_expected(tree, sel),
+        )
     if sel.kind in ("patch", "ring"):
         target = sel.instance or node.name
         placed = _placed(tree, target, env_override)
@@ -535,7 +583,7 @@ def resolve(
         if frame is None:
             tags = ", ".join(sorted(_face_geometry(placed))) or "none"
             return err(f"no face tagged {sel.tag!r} on block {target!r} (has: {tags})")
-        p_l, n_l, u_l, v_l, (u_lo, u_hi), (v_lo, v_hi) = frame
+        p_l, n_l, u_l, v_l, (u_lo, u_hi), (v_lo, v_hi), is_rect = frame
         if sel.kind == "ring":
             return ResolvedDatum(
                 selector=text,
@@ -556,12 +604,35 @@ def resolve(
                 "(the face's bounding extent)"
             )
         centre_l = p_l + u * u_l + v * v_l
+        notes: list[str] = []
+        flags: set[str] = set()
+        half_w, half_h = float(sel.w or 0.0) / 2.0, float(sel.h or 0.0) / 2.0
+        if (
+            u - half_w < u_lo - slack
+            or u + half_w > u_hi + slack
+            or v - half_h < v_lo - slack
+            or v + half_h > v_hi + slack
+        ):
+            notes.append(
+                f"patch {_fmt_pair(sel.w, sel.h)} extends past face "
+                f"{target}.{sel.tag} ({_fmt_pair(u_hi - u_lo, v_hi - v_lo)}) "
+                "— units?"
+            )
+            flags.add("patch_exceeds_face")
+        if not is_rect:
+            notes.append(
+                f"bounds approximate: face {target}.{sel.tag} is not a "
+                "rectangle, so the check uses its bounding extent"
+            )
+            flags.add("bounds_approximate")
         return ResolvedDatum(
             selector=text,
             kind="patch",
             resolved=_selector_text(replace(sel, instance=target)),
             point=placed.xform.R @ centre_l + placed.xform.t,
             normal=placed.xform.apply_dir(n_l),
+            notes=tuple(notes),
+            flags=frozenset(flags),
         )
     # face
     target = sel.instance or node.name
@@ -614,19 +685,47 @@ def resolve(
     )
 
 
-def _face_frame(
-    placed: Placed, tag: str
-) -> tuple[Any, Any, Any, Any, tuple[float, float], tuple[float, float]] | None:
+def _u_axis(n: Any) -> Any:
+    """The unit in-plane ``u`` axis of a face with local unit normal ``n``:
+    block-local ``+x`` projected onto the face, or ``+y`` projected when
+    ``n`` is within :data:`U_FALLBACK_DEG` of ±x (``|n·x̂| ≥ cos`` of it)."""
+    if abs(float(n[0])) >= _U_FALLBACK_COS:
+        u = np.array([0.0, 1.0, 0.0]) - float(n[1]) * n
+    else:
+        u = np.array([1.0, 0.0, 0.0]) - float(n[0]) * n
+    return u / float(np.linalg.norm(u))
+
+
+def _polygon_is_rectangle(ring: Any, u: Any, v: Any) -> bool:
+    """Is the face polygon ``ring`` (local vertices) a rectangle in the
+    ``u``/``v`` frame — its area within :data:`_RECT_AREA_TOL` of its
+    bounding rectangle's?"""
+    pts = np.asarray(ring, dtype=float)
+    us, vs = pts @ u, pts @ v
+    bbox = float(us.max() - us.min()) * float(vs.max() - vs.min())
+    if bbox <= 0.0:
+        return False
+    avec = np.zeros(3)
+    for j in range(len(pts)):
+        avec += np.cross(pts[j], pts[(j + 1) % len(pts)])
+    area = float(np.linalg.norm(avec)) / 2.0
+    return abs(area - bbox) <= _RECT_AREA_TOL * bbox
+
+
+def _face_frame(placed: Placed, tag: str) -> FaceFrame | None:
     """Face ``tag``'s block-LOCAL frame: plane point (the ray exit along
     the normal from the AABB centre — :func:`_face_geometry`'s point),
-    unit normal, the in-plane ``u``/``v`` axes (module docstring's
-    convention), and the face's bounding extent along each, measured from
-    the plane point over the local AABB corners. ``None`` when no planar
-    face carries the tag."""
+    unit normal, the in-plane ``u``/``v`` axes (:func:`_u_axis`, module
+    docstring's convention), the face's bounding extent along each,
+    measured from the plane point over the local AABB corners, and whether
+    the face is known to be a rectangle (only a ``PolyFrustum`` face
+    polygon can say so; a disc or any non-polygon face is not). ``None``
+    when no planar face carries the tag."""
     prim = placed.prim
     lo, hi = prim.aabb_local()
     centre = (as_vec3(lo) + as_vec3(hi)) / 2.0
-    for f in prim.faces_local():
+    polys = getattr(prim, "_face_polys", None)
+    for i, f in enumerate(prim.faces_local()):
         if f.tag != tag:
             continue
         n = as_vec3(f.normal)
@@ -635,22 +734,51 @@ def _face_frame(
         if not hits:
             return None
         p = centre + max(b for _a, b in hits) * n
-        u = np.array([1.0, 0.0, 0.0]) - float(n[0]) * n
-        if float(np.linalg.norm(u)) < 1e-9:
-            u = np.array([0.0, 1.0, 0.0]) - float(n[1]) * n
-        u = u / float(np.linalg.norm(u))
+        u = _u_axis(n)
         v = np.cross(n, u)
         corners = np.array(aabb_corners(lo, hi)) - p
         us, vs = corners @ u, corners @ v
-        return (
+        is_rect = (
+            isinstance(prim, PolyFrustum)
+            and polys is not None
+            and i < len(polys)
+            and _polygon_is_rectangle(polys[i][1], u, v)
+        )
+        return FaceFrame(
             p,
             n,
             u,
             v,
             (float(us.min()), float(us.max())),
             (float(vs.min()), float(vs.max())),
+            bool(is_rect),
         )
     return None
+
+
+class FaceFrame(NamedTuple):
+    """:func:`_face_frame`'s result: plane point, normal, ``u``, ``v``, the
+    bounding extent ``(lo, hi)`` along ``u`` and ``v``, ``is_rectangle``."""
+
+    point: Any
+    normal: Any
+    u: Any
+    v: Any
+    u_range: tuple[float, float]
+    v_range: tuple[float, float]
+    is_rectangle: bool
+
+
+def _fmt_pair(a: Any, b: Any) -> str:
+    """``8 × 4 m`` / ``0.8 × 0.4 nm`` — two metre lengths through the neat
+    formatter, the unit shown once when both share it."""
+    fa = format_quantity(float(a or 0.0), "length")
+    fb = format_quantity(float(b or 0.0), "length")
+    na, _, ua = fa.rpartition(" ")
+    nb, _, ub = fb.rpartition(" ")
+    if na and nb and ua == ub:
+        return f"{na} × {nb} {ua}"
+    return f"{fa} × {fb}"
 
 
 def _index_text(indices: tuple[int, ...]) -> str:
@@ -682,15 +810,133 @@ def same_region(a: str | None, b: str | None) -> bool:
         return a.strip() == b.strip()
 
 
-def _atomic_region_note(tree: SeTree, sel: Selector) -> str:
+def atomic_owner(tree: SeTree, sel: Selector) -> SeBlock | None:
+    """The block whose binding a ``sites:``/``atoms:`` selector indexes
+    into: the named block, or its template when it is an instance. ``None``
+    when the named block does not exist."""
+    node = tree.blocks.get(sel.instance or "")
+    if node is None:
+        return None
+    owner = tree.blocks.get(node.template) if node.template else node
+    return owner or node
+
+
+def _atomic_note_is_expected(tree: SeTree, sel: Selector) -> bool:
+    """Is :func:`_atomic_region_note`'s text the lenient kind (anything but
+    a missing block — an unbound or loaded-elsewhere region is declared
+    intent, not a broken reference)?"""
+    return atomic_owner(tree, sel) is not None
+
+
+_PIN_RE = re.compile(r"^(?P<slug>[^@\s]+)@v(?P<ver>\d+)$")
+
+
+def pin_text(slug: str, version: int) -> str:
+    """``"<structure-slug>@v<version>"`` — :attr:`MeasureSpec.datum_pin`."""
+    return f"{slug}@v{version}"
+
+
+def parse_pin(text: str) -> tuple[str, int] | None:
+    """A ``datum_pin`` back to ``(slug, version)``; ``None`` if malformed."""
+    m = _PIN_RE.match(text.strip())
+    return None if m is None else (m["slug"], int(m["ver"]))
+
+
+def stale_pin_note(tree: SeTree, spec: MeasureSpec) -> str | None:
+    """The note a measure's pinned ``sites:``/``atoms:`` datum earns when
+    its block is bound to a different structure (or a later version of it)
+    than the indices were declared against; ``None`` when the pin is
+    current, absent, not applicable, or cannot be checked (a bare tree
+    with no :attr:`SeTree.structure_versions`, or a structure gone from the
+    store — nothing to compare against, never a guess)."""
+    if spec.datum_pin is None or spec.datum is None:
+        return None
+    try:
+        sel = parse_selector(spec.datum)
+    except MeasureError:
+        return None
+    return _stale_for(tree, sel, spec.datum_pin)
+
+
+def _stale_for(tree: SeTree, sel: Selector, pin: str) -> str | None:
+    pinned = parse_pin(pin)
+    if pinned is None or sel.kind not in ("atoms", "sites"):
+        return None
+    owner = atomic_owner(tree, sel)
+    if owner is None:
+        return None  # a missing block is datum_unresolved's finding
+    pin_slug, pin_ver = pinned
+    cur = owner.bound if owner.bound_kind == "structure" and owner.bound else None
+    versions = tree.structure_versions
+    cur_ver = versions(cur) if (versions is not None and cur is not None) else None
+    if cur is None:
+        now = "the block is now bound to no structure"
+    elif cur != pin_slug:
+        label = pin_text(cur, cur_ver) if cur_ver is not None else cur
+        now = f"the block is now bound to {label}"
+    elif cur_ver is None or cur_ver == pin_ver:
+        return None
+    else:
+        now = f"the block is now bound to {pin_text(cur, cur_ver)}"
+    return (
+        f"{sel.kind}: pinned to {pin_text(pin_slug, pin_ver)}, {now} — "
+        "indices may name different atoms; re-declare the region"
+    )
+
+
+def snapshot_measure_datums(tree: SeTree) -> dict[int, tuple[MeasureSpec, str | None]]:
+    """``id(measure) → (measure, datum)`` before a batch of ops — the
+    baseline :func:`stamp_region_pins` compares against. Holds the measure
+    objects so ids cannot be reused by a measure minted mid-batch."""
+    return {id(m): (m, m.datum) for m in tree.measures}
+
+
+def stamp_region_pins(
+    tree: SeTree,
+    before: dict[int, tuple[MeasureSpec, str | None]],
+    version_of: Callable[[str], int | None],
+) -> None:
+    """Stamp ``datum_pin`` on every ``atoms:``/``sites:`` measure that was
+    written (minted, or its datum changed) since ``before`` and has no pin
+    yet, from the block's bound structure NOW. A block that binds no
+    structure (or one ``version_of`` cannot find) gets no pin — the
+    lenient note covers it. A pin the caller passed explicitly is kept
+    (an ops-export replay), and a measure nobody touched is never
+    re-pinned, so an old stale pin cannot be silently refreshed."""
+    for m in tree.measures:
+        if m.datum_pin is not None or not m.datum:
+            continue
+        try:
+            sel = parse_selector(m.datum)
+        except MeasureError:
+            continue
+        if sel.kind not in ("atoms", "sites"):
+            continue
+        prior = before.get(id(m))
+        if prior is not None and same_region(prior[1], m.datum):
+            continue
+        owner = atomic_owner(tree, sel)
+        if owner is None or owner.bound_kind != "structure" or not owner.bound:
+            continue
+        version = version_of(owner.bound)
+        if version is not None:
+            m.datum_pin = pin_text(owner.bound, version)
+
+
+def _atomic_region_note(tree: SeTree, sel: Selector, pin: str | None = None) -> str:
     """Why a ``sites:``/``atoms:`` selector does not resolve here — the
     lenient-existence note (module docstring): the block is missing, it
-    binds no structure, or (the normal case) its atom coordinates live in
-    the bound structure design this pure resolver does not load."""
+    binds no structure, its pin is stale (that note replaces the usual
+    one), or (the normal case) its atom coordinates live in the bound
+    structure design this pure resolver does not load."""
     name = sel.instance or ""
     node = tree.blocks.get(name)
     if node is None:
         return f"no block {name!r} — {sel.kind}: names the block that owns the atoms"
+    if pin is not None:
+        stale = _stale_for(tree, sel, pin)
+        if stale is not None:
+            return stale
     owner = tree.blocks.get(node.template) if node.template else node
     owner = owner or node
     if owner.bound_kind != "structure" or not owner.bound:
@@ -786,6 +1032,35 @@ def rank_datums(
     return out
 
 
+_REGION_KINDS = frozenset({"patch", "ring", "sites", "atoms"})
+
+
+def region_datum_notes(
+    tree: SeTree, block: SeBlock, spec: MeasureSpec
+) -> tuple[str, ...]:
+    """What a measure with NO derived number still has to say about a
+    region datum (``patch:``/``ring:``/``sites:``/``atoms:``): the
+    resolver's error (the stale-pin note takes the place of the usual
+    "not loaded" one) or its honesty notes (patch past its face, bounds
+    approximate). Other datum kinds say nothing — a count/ratio measure
+    on a face never evaluated them."""
+    if not spec.datum:
+        return ()
+    try:
+        sel = parse_selector(spec.datum)
+    except MeasureError as exc:
+        return (f"unresolvable datum selector {spec.datum!r}: {exc}",)
+    if sel.kind not in _REGION_KINDS:
+        return ()
+    try:
+        datum = resolve(tree, block, sel, pin=spec.datum_pin)
+    except MeasureError as exc:
+        return (f"unresolvable datum selector {spec.datum!r}: {exc}",)
+    if datum.error is not None:
+        return (f"datum {spec.datum!r}: {datum.error}",)
+    return datum.notes
+
+
 def _feature_of(spec: MeasureSpec) -> str | None:
     rel = spec.relation or {}
     f = rel.get("feature")
@@ -819,6 +1094,7 @@ def evaluate_measure(
             spec.unit,
             None,
             notes=(
+                *region_datum_notes(tree, block, spec),
                 f"measure unit is {spec.unit!r}; a feature measurement is a "
                 "length in m — nothing to derive",
             ),
@@ -831,13 +1107,16 @@ def evaluate_measure(
             spec.unit,
             None,
             notes=(
-                f"measurand {spec.measurand!r} is not a feature distance — "
+                *region_datum_notes(tree, block, spec),
+                f"measurand {measurand_name(spec)!r} is not a feature distance — "
                 "nothing to derive from geometry",
             ),
         )
     sel_text = spec.datum or "frame"
     try:
-        datum = resolve(tree, block, sel_text, env_override=env_override)
+        datum = resolve(
+            tree, block, sel_text, env_override=env_override, pin=spec.datum_pin
+        )
     except MeasureError as exc:
         return MeasureValue(
             None,
@@ -849,6 +1128,7 @@ def evaluate_measure(
         return MeasureValue(
             None, spec.unit, None, notes=(f"datum {sel_text!r}: {datum.error}",)
         )
+    notes.extend(datum.notes)
     resolved = datum.resolved
     if prev_resolved is not None and prev_resolved != resolved:
         notes.append(f"datum moved: {prev_resolved} → {resolved}")

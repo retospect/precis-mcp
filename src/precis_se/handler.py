@@ -157,7 +157,7 @@ from precis_se.chain.vocab import (
     group_domains,
 )
 from precis_se.identity import AmbiguousLabel, block_by_uid, resolve_block
-from precis_se.measures import LEGACY_MEASURANDS
+from precis_se.measures import LEGACY_MEASURANDS, measurand_name
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
     PortSpec,
@@ -3393,7 +3393,7 @@ def _measure_row(m: Any, tree: Any = None) -> dict[str, str]:
         # The measurand rides in the name cell only when there is one, so
         # a legacy measure's row stays byte-identical.
         "measure": f"{m.block}.{m.name}"
-        + (f" [{m.measurand}]" if getattr(m, "measurand", None) else ""),
+        + (f" [{measurand_name(m)}]" if getattr(m, "measurand", None) else ""),
         "value": _fmt_in_unit(m.value, m.unit),
         "band": _fmt_band(m),
         "relation": rel,
@@ -3568,11 +3568,12 @@ def _render_datums(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
-def _region_measure_line(m: Any) -> str:
+def _region_measure_line(m: Any, tree: SeTree | None = None) -> str:
     """One region measure as one line: measurand, unit, band/value,
-    strength, and whether anything computes it (slice B's computers)."""
+    strength, and whether anything computes it (slice B's computers) — and
+    a pinned ``atoms:``/``sites:`` region that has gone stale."""
     if m.measurand is not None:
-        what = f"measurand {m.measurand} (tn{m.measurand_ref})"
+        what = f"measurand {measurand_name(m)} (tn{m.measurand_ref})"
     else:
         legacy = LEGACY_MEASURANDS.get(m.unit)
         what = f"unit {m.unit}" + (f" (≙ measurand {legacy})" if legacy else "")
@@ -3588,6 +3589,8 @@ def _region_measure_line(m: Any) -> str:
         if is_checked(m.measurand)
         else "realised: — (no computer — measurand_unchecked)"
     )
+    if tree is not None and se_datums.stale_pin_note(tree, m) is not None:
+        parts.append(f"pin {m.datum_pin} STALE (region_pin_stale)")
     return "  - " + " · ".join(parts)
 
 
@@ -3621,9 +3624,14 @@ def _render_pockets(tree: SeTree) -> str:
             f"shape: {pocket.shape or '— (unshaped)'} · regions: {len(pocket.regions)}"
         )
         for selector in pocket.regions:
-            members = se_region_measures(tree, block, selector)
+            # Grouped by measurand identity (the taxon ref id — a slug is
+            # only its current name), legacy unit-only measures first.
+            members = sorted(
+                se_region_measures(tree, block, selector),
+                key=lambda m: (m.measurand_ref or 0, m.name),
+            )
             lines.append(f"- region {selector} — {len(members)} measure(s)")
-            lines.extend(_region_measure_line(m) for m in members)
+            lines.extend(_region_measure_line(m, tree) for m in members)
     return "\n".join(lines)
 
 
@@ -3763,6 +3771,31 @@ def _render_freedom(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
+def _region_pin_findings(store: Any, tree: SeTree) -> list[se_validate.ValidationIssue]:
+    """``region_pin_stale`` (warn): one per ``atoms:``/``sites:`` measure
+    whose block is bound to a different structure (or a later version of
+    it) than the one the indices were declared against
+    (:func:`precis_se.datums.stale_pin_note`). Store-aware — the current
+    version is a ``structure`` ref's ``meta['version']`` — so it lives
+    here, beside the other store-read passes, not in the store-free
+    ``se_drc.drc``."""
+    if tree.structure_versions is None:
+        tree.structure_versions = persist.structure_version_resolver(store)
+    out: list[se_validate.ValidationIssue] = []
+    for m in tree.measures:
+        note = se_datums.stale_pin_note(tree, m)
+        if note is not None:
+            out.append(
+                se_validate.ValidationIssue(
+                    rule="region_pin_stale",
+                    subject=f"{m.block}.{m.name}",
+                    detail=note,
+                    severity="warn",
+                )
+            )
+    return out
+
+
 def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
@@ -3792,6 +3825,7 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     report = se_drc.drc(tree)
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
     report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
+    report.findings.extend(_region_pin_findings(store, tree))
     chain_extra = se_chain_findings.findings(store, tree, ref_id)
     if chain_extra.supersedes:
         report.findings = [

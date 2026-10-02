@@ -14,6 +14,15 @@
 --   node), not only the closed registry's four. Both NULL = a legacy
 --   `unit=`-only measure — every pre-0018 row, byte-identical.
 --
+-- * `se_measures.datum_pin` — for an `atoms:`/`sites:` datum, the bound
+--   structure version its indices were declared against,
+--   `<structure-slug>@v<version>` (`precis_se.datums.stamp_region_pins`,
+--   written by the store-aware op walker). An atom ordinal only means
+--   something against one version of the structure (its `meta.version`
+--   bumps on every save); a read that finds the block bound to another
+--   slug/version says so. NULL = no pin: any other datum, a measure
+--   written while its block bound no structure, or a pre-0018 row.
+--
 -- * `se_pockets` — a pocket is a named set of region selectors plus a
 --   shape on one block (`precis_se.pockets`). Shaped exactly like
 --   `se_ports`: a row per (block row, name), written in lockstep with the
@@ -37,6 +46,8 @@ ALTER TABLE se_measures
     ADD COLUMN IF NOT EXISTS measurand_ref_id bigint
         REFERENCES refs (ref_id) ON DELETE SET NULL;
 
+ALTER TABLE se_measures ADD COLUMN IF NOT EXISTS datum_pin text;
+
 CREATE INDEX IF NOT EXISTS se_measures_measurand_ref_idx
     ON se_measures (measurand_ref_id) WHERE measurand_ref_id IS NOT NULL;
 
@@ -45,6 +56,9 @@ COMMENT ON COLUMN se_measures.measurand IS
     'measurand); NULL = a legacy unit=-only measure.';
 COMMENT ON COLUMN se_measures.measurand_ref_id IS
     'Measurand taxon ref id (identity); NULL with measurand NULL.';
+COMMENT ON COLUMN se_measures.datum_pin IS
+    '<structure-slug>@v<version> an atoms:/sites: datum was declared '
+    'against (precis_se.datums.stamp_region_pins); NULL = unpinned.';
 COMMENT ON COLUMN se_measures.unit IS
     'The measure''s unit: one of m | count | ratio | deg for a legacy '
     'measure, or the measurand''s se unit snapshotted at write ('''' for '

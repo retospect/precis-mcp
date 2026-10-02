@@ -141,7 +141,7 @@ _CONNECT_COLS = (
 )
 _MEASURE_COLS = (
     "block, block_uid, name, value, relation, strength, reason, min_value, "
-    "max_value, origin, unit, datum, measurand, measurand_ref_id"
+    "max_value, origin, unit, datum, measurand, measurand_ref_id, datum_pin"
 )
 #: ``se_pockets`` (migration ``0018_se_regions.sql``) — block-row keyed
 #: like ``se_ports``, written in lockstep with the fresh block ids.
@@ -273,6 +273,30 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                 (ref_id,),
             )
             measure_rows = cur.fetchall()
+            # Identity is the taxon ref id; the slug is a rename-able name
+            # (:func:`precis_se.measures.measurand_name`). ONE batched
+            # query refreshes every measure's displayed slug; a retired or
+            # deleted taxon simply has no row, and the snapshot stands.
+            measurand_ids = sorted(
+                {
+                    int(m["measurand_ref_id"])
+                    for m in measure_rows
+                    if m["measurand_ref_id"] is not None
+                }
+            )
+            live_slugs: dict[int, str] = {}
+            if measurand_ids:
+                cur.execute(
+                    "SELECT ref_id, meta->>'slug' AS slug FROM refs "
+                    "WHERE kind = 'taxon' AND retired_at IS NULL "
+                    "AND ref_id = ANY(%s)",
+                    (measurand_ids,),
+                )
+                live_slugs = {
+                    int(r["ref_id"]): str(r["slug"])
+                    for r in cur.fetchall()
+                    if r["slug"]
+                }
             cur.execute(
                 f"SELECT {_BOM_COLS} FROM se_bom "
                 "WHERE ref_id = %s AND retired_at IS NULL "
@@ -412,8 +436,13 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
                     if m["measurand_ref_id"] is not None
                     else None
                 ),
+                datum_pin=m["datum_pin"],
             )
         )
+    for taxon_id, live in live_slugs.items():
+        for spec in tree.measures:
+            if spec.measurand_ref == taxon_id:
+                spec.measurand_live = live
     for b in bom_rows:
         tree.bom.append(
             BomLine(
@@ -507,6 +536,7 @@ def load_tree(store: Any, ref_id: int, *, conn: Connection | None = None) -> SeT
     # Same reasoning for ``measurand=`` on a later measure op (the web
     # workbench's dry run applies pure ops to a loaded tree).
     tree.measurands = measurand_resolver(store)
+    tree.structure_versions = structure_version_resolver(store)
     return tree
 
 
@@ -562,7 +592,11 @@ def tree_to_json(tree: SeTree) -> dict[str, Any]:
         "format": TREE_JSON_FORMAT,
         "blocks": blocks,
         "connects": [asdict(c) for c in tree.connects],
-        "measures": [asdict(m) for m in tree.measures],
+        # ``measurand_live`` is derived (refreshed on load), not design data.
+        "measures": [
+            {k: v for k, v in asdict(m).items() if k != "measurand_live"}
+            for m in tree.measures
+        ],
         "bom": [asdict(b) for b in tree.bom],
         "notes": notes,
         "threading": [asdict(t) for t in tree.threading],
@@ -635,6 +669,7 @@ def tree_from_json(payload: dict[str, Any], *, store: Any = None) -> SeTree:
         attach_catalog(store, tree)
         tree.foreign = foreign_resolver(store)
         tree.measurands = measurand_resolver(store)
+        tree.structure_versions = structure_version_resolver(store)
     return tree
 
 
@@ -643,6 +678,25 @@ def _known(cls: type, d: dict[str, Any]) -> dict[str, Any]:
     forward/backward tolerance."""
     names = {f.name for f in fields(cls)}
     return {k: v for k, v in d.items() if k in names}
+
+
+def structure_version_resolver(store: Any) -> Callable[[str], int | None]:
+    """A structure design's slug → its CURRENT version
+    (``refs.meta['version']``, bumped by every save in
+    :mod:`precis.handlers.structure`), or ``None`` when no live design has
+    that slug. Memoized per returned closure — one lookup per slug per
+    call. Backs the ``datum_pin`` stamp at write and the stale-pin check at
+    read (:func:`precis_se.datums.stale_pin_note`)."""
+    cache: dict[str, int | None] = {}
+
+    def version_of(slug: str) -> int | None:
+        if slug not in cache:
+            ref = store.get_ref(kind="structure", id=slug)
+            meta = (ref.meta or {}) if ref is not None else {}
+            cache[slug] = int(meta.get("version", 0)) if ref is not None else None
+        return cache[slug]
+
+    return version_of
 
 
 def foreign_resolver(store: Any) -> Callable[[str], SeTree | None]:
@@ -1115,8 +1169,8 @@ def save_tree(
                 "INSERT INTO se_measures "
                 "(ref_id, block, block_uid, name, value, relation, strength, "
                 " reason, min_value, max_value, origin, unit, datum, "
-                " measurand, measurand_ref_id) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " measurand, measurand_ref_id, datum_pin) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     ref_id,
                     m.block,
@@ -1133,6 +1187,7 @@ def save_tree(
                     m.datum,
                     m.measurand,
                     m.measurand_ref,
+                    m.datum_pin,
                 ),
             )
         for note in tree.notes:

@@ -84,7 +84,8 @@ instead — including the block half of a `'block.port'` endpoint
 (`connect a='#41.bore'`). Use it when a label is ambiguous; the error
 then lists every matching uid. What gets *stored* is the block's label
 either way, so a design written by uid reads back the same as one
-written by name. (A block name may not be `'uid:…'` or contain `'#'`.)
+written by name. (A block name may not be `'uid:…'` or contain `'#'`, `'/'`, `'@'`, `'['` or `']'` —
+the last four delimit region selectors, `precis-se-regions-help`.)
 
 ## Ops — blocks and ports
 

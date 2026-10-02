@@ -561,9 +561,15 @@ _VERDICTS: dict[str, dict[str, str]] = {
     "MeasureSpec": {
         "block": "op",
         "datum": "op",
+        # add_measure accepts it; the export emits it so a replay keeps the
+        # structure version the atoms:/sites: indices were declared against
+        "datum_pin": "op",
         "max_value": "op",
         # emitted as the slug; replay re-resolves it (and re-derives unit)
         "measurand": "op",
+        # derived: the taxon's slug as it reads now, refreshed on load; the
+        # export emits that name (through ``measurand``), never this field
+        "measurand_live": "derived",
         # re-resolved from the slug on replay — the same node in the same
         # database; NOT_CARRIED names the cross-database caveat
         "measurand_ref": "op",
