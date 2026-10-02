@@ -67,12 +67,12 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    2026-10-02 (review item local-compute-4, ruled 21:03Z) reversed the
    2026-08-29 paper-box rule: castor, pollux and spark (all GB10) split
    into one exclusive big model, one local embeddings and one GPU science
-   lanes. Which host takes which role is review item **local-compute-5**
-   (recommended: castor big model, pollux science, spark embeddings); the
-   inventory overlay change follows that answer, as a branch for the
-   orchestrator. In order:
-   a. **backlog/serving-programme-followups.md items 1-2** — spark
-      `/mnt/cluster` NFS hang, spark host prep. Now duty prerequisites,
+   lanes. Ruled 22:03Z (local-compute-5): **castor big model, pollux
+   science, spark embeddings**. In order:
+   a. **backlog/serving-programme-followups.md items 1-2** — the
+      `/mnt/cluster` NFS hang is fleet-wide, not spark-only (2026-10-02
+      read: spark, castor and pollux all hang; the server is caspar). The
+      recovery is review item local-compute-6. Then spark host prep. Now duty prerequisites,
       not bench prep.
    b. **backlog/vllm-per-node-serving.md Slice 0** — gpt-oss 120B vs
       Nemotron 3 Super NVFP4, each on vLLM and SGLang, at 1/8/32 streams on
@@ -82,6 +82,13 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round
       deploy window (Reto's ruling 4).
+   d. **backlog/spark-fleet-embedder.md** — Reto ruled the split
+      2026-10-02 (local-compute-5, option 1): castor big model, pollux
+      science, spark embeddings. spark's role is a fleet LAN embedder that
+      replaces the per-node loopback copies, in a new `embedder` group, NOT
+      `inference` (which would bring the worker/watch/dft plays with it).
+      All six machines are in `llm-capacity-plan.md`. The Mac count and the
+      ad-hoc compute rule are review item local-compute-7.
 5. **backlog/local-rungs-small-medium.md** — blocked-by Slice 0 (4b); wires
    the model Slice 0 picks into the tier ladder.
 6. **backlog/llm-dispatch-feedback-controller.md** — ~32 running sequences

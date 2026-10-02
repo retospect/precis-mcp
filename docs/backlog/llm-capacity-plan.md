@@ -54,6 +54,25 @@ Planned additions, as rows with a status column:
 - spark stays **off** cluster duty (standing ruling); listed so nobody
   re-adds it from this table.
 
+### Six machines, roles ruled 2026-10-02
+
+Reto (review items local-compute-4 and local-compute-5, 21:03Z and 22:03Z):
+
+| box | kind | role | must not carry |
+|---|---|---|---|
+| castor | Spark (GB10) | exclusive big model (Slice 0 picks it) | anything else once the model serves; retrosynth moves to pollux |
+| pollux | Spark (GB10) | GPU science lanes: DFT, NEB/MACE, fold, retrosynth | LLM serving |
+| spark | Spark (GB10) | local embeddings | science lanes, until the `/mnt/cluster` hang is fixed |
+| melchior | Mac | dev + MCP server + gate containers | ad-hoc heavy compute (Reto: "don't wear it down") |
+| balthazar | Mac (small) | scheduler; small local model | heavy compute |
+| caspar | Mac | Postgres + NFS server | any compute (standing rule) |
+
+**Ad-hoc heavy compute** (one-off runs outside the job queue, e.g. the
+catalysis PBE single points) goes to **spark** while its embeddings role
+leaves the CPU mostly free, and to pollux only through the science lanes.
+Proposed cap: half spark's cores, no `/mnt/cluster` paths. The Mac count
+(three) and this rule are review item local-compute-7.
+
 ## Explicitly NOT in scope
 
 - Changing any placement, slot or chain row — the plan informs the three
