@@ -1676,6 +1676,9 @@ def check_synthesized_footprint(model: dict[str, Any]) -> list[DrcFinding]:
 #: it enforced a boundary that was not the one the placer respected or the
 #: one the silkscreen showed. See ``docs/backlog/pcb-courtyard-polygon.md``.
 Courtyard = tuple[str, list[tuple[float, float]]]
+#: ``(label, keep-out polygon, owner refdes or None)`` for
+#: :func:`check_courtyard_hole`.
+HoleKeepout = tuple[str, list[tuple[float, float]], str | None]
 
 
 def check_courtyard_overlap(
@@ -1763,28 +1766,36 @@ def check_courtyard_overlap(
 
 
 def check_courtyard_hole(
-    courtyards: list[Courtyard], holes: Sequence[tuple[str, list[tuple[float, float]]]]
+    courtyards: list[Courtyard], holes: Sequence[HoleKeepout]
 ) -> list[DrcFinding]:
     """A part's courtyard overlapping a mounting hole's keep-out is a hard
     error, on either side of the board — the hole and its hardware go
-    through it. ``holes`` are ``(label, polygon)`` pairs built by
+    through it. ``holes`` are ``(label, polygon, owner)`` triples, the
+    polygon built by
     :func:`precis.pcb.optimize.mounting_hole_keepout_polygon`, the shape the
     placer's ``_placement_is_legal`` already rejects against, so the placer
     and DRC hold the same rule. Without this a part whose courtyard covers a
     plated solder-nut hole while its pads miss it was DRC-clean:
     :func:`check_npth_clearance` tests copper, and only against unplated
-    holes."""
-    hole_geoms = [(label, Polygon(poly)) for label, poly in holes if len(poly) >= 3]
+    holes. ``owner`` is the refdes whose footprint the hole is cut from
+    (:attr:`precis.pcb.ir.MountingHole.part`): that part's own courtyard
+    covers it by design and is skipped; every other part is still
+    checked."""
+    hole_geoms = [
+        (label, Polygon(poly), owner) for label, poly, owner in holes if len(poly) >= 3
+    ]
     if not hole_geoms or not courtyards:
         return []
-    tree = STRtree([g for _, g in hole_geoms])
+    tree = STRtree([g for _, g, _ in hole_geoms])
     findings: list[DrcFinding] = []
     for refdes, poly in courtyards:
         if len(poly) < 3:
             continue
         gc = Polygon(poly)
         for c in tree.query(gc, predicate="intersects"):
-            label, gh = hole_geoms[int(c)]
+            label, gh, owner = hole_geoms[int(c)]
+            if owner is not None and owner == refdes:
+                continue
             overlap = gc.intersection(gh)
             if overlap.is_empty or overlap.area <= _EPS:
                 continue
@@ -2448,7 +2459,7 @@ def run_geometric_drc(
     net_voltages: dict[str, float] | None = None,
     unrouted: list[dict[str, Any]] | None = None,
     census: tuple[SilkPlacement, ...] | None = None,
-    holes: Sequence[tuple[str, list[tuple[float, float]]]] = (),
+    holes: Sequence[HoleKeepout] = (),
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.

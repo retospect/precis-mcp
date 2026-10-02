@@ -770,7 +770,17 @@ def _merge_pattern_clusters(ir: PcbIR, clusters: list[list[int]]) -> list[list[i
 _SEED_HOLE_SLIDE_TRIES = 8
 
 
-def _hole_blocking_slot(ir: PcbIR, x: float, y: float, r: float) -> float | None:
+def _hole_owned_by(ir: PcbIR, hole: MountingHole, inst: int) -> bool:
+    """True when ``hole`` is a cutout of ``inst``'s own footprint (a
+    connector standoff, a SATA peg): the part's courtyard covers it by
+    design, so no hole check applies to that pair. The same hole still
+    blocks every other part (:attr:`precis.pcb.ir.MountingHole.part`)."""
+    return hole.part is not None and hole.part == str(ir.instance_refdes[inst])
+
+
+def _hole_blocking_slot(
+    ir: PcbIR, x: float, y: float, r: float, inst: int | None = None
+) -> float | None:
     """The right-hand edge (``hole.x + keepout``) of the first mounting
     hole whose keep-out a part of radius ``r`` centred at ``(x, y)`` would
     intrude on, or ``None`` if the slot is clear.
@@ -787,6 +797,8 @@ def _hole_blocking_slot(ir: PcbIR, x: float, y: float, r: float) -> float | None
     worst: float | None = None
     for hole_idx in range(len(ir.mounting_holes)):
         hole = ir.mounting_holes[hole_idx]
+        if inst is not None and _hole_owned_by(ir, hole, inst):
+            continue
         sep = r + _hole_keepout_radius_mm(hole)
         if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep * sep:
             continue
@@ -1031,7 +1043,11 @@ def seed_placement(
         # stopped being true on 2026-09-30.
         for _ in range(_SEED_HOLE_SLIDE_TRIES):
             hit = _hole_blocking_slot(
-                ir, shelf_x + r + _SEED_EPSILON_MM, shelf_y + r + _SEED_EPSILON_MM, r
+                ir,
+                shelf_x + r + _SEED_EPSILON_MM,
+                shelf_y + r + _SEED_EPSILON_MM,
+                r,
+                inst=unit if isinstance(unit, int) else None,
             )
             if hit is None:
                 break
@@ -1413,6 +1429,8 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
         for i in placed:
             nx, ny = float(ir.inst_x[i]) + shift_x, float(ir.inst_y[i]) + shift_y
             for hole in ir.mounting_holes:
+                if _hole_owned_by(ir, hole, i):
+                    continue
                 sep = float(radii[i]) + _hole_keepout_radius_mm(hole)
                 if (nx - hole.x) ** 2 + (ny - hole.y) ** 2 < sep * sep:
                     return (0.0, 0.0)
@@ -2234,6 +2252,9 @@ class OptimizeEngine:
         # second cost shape for "too close to an obstacle".
         for hole_idx in range(len(self._hole_polys)):
             hole_key = ("courtyard_overlap", _pair_key(inst, _HOLE_KEY_BASE + hole_idx))
+            if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
+                self._margin.pop(hole_key, None)
+                continue
             corridor_mm = cfg.cost.default_pitch_mm
             separation_mm = convex_polygons_signed_separation(
                 self._world_courtyard(inst), self._hole_polys[hole_idx]
@@ -2768,6 +2789,8 @@ class OptimizeEngine:
                     return False
             for hole_idx, hole_poly in enumerate(self._hole_polys):
                 hole = ir.mounting_holes[hole_idx]
+                if _hole_owned_by(ir, hole, inst):
+                    continue
                 sep_h = keepout[inst] + self._hole_radius[hole_idx]
                 if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep_h * sep_h:
                     continue
@@ -2815,6 +2838,8 @@ class OptimizeEngine:
                 )
         for hole_idx, hole_poly in enumerate(self._hole_polys):
             hole = ir.mounting_holes[hole_idx]
+            if _hole_owned_by(ir, hole, inst):
+                continue
             sep_h = keepout[inst] + self._hole_radius[hole_idx]
             if (x - hole.x) ** 2 + (y - hole.y) ** 2 >= sep_h * sep_h:
                 continue

@@ -135,6 +135,7 @@ def mounting_holes_from_features(
                 ring_dia_mm=float(geom.get("ring_dia_mm") or 0.0),
                 head_dia_mm=float(geom.get("head_dia_mm") or 0.0),
                 plated=bool(geom.get("plated")),
+                part=str(geom["part"]) if geom.get("part") else None,
             )
         )
     return tuple(out)

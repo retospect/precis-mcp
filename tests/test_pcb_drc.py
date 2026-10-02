@@ -1206,7 +1206,7 @@ def test_check_courtyard_hole_flags_a_courtyard_over_a_plated_hole():
     from precis.pcb.optimize import mounting_hole_keepout_polygon
 
     nut = MountingHole(x=0.0, y=0.0, drill_mm=3.2, ring_dia_mm=6.0, plated=True)
-    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut))]
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut), None)]
     on_it = [("U1", _square(2.0, 0.0))]
     findings = drc.check_courtyard_hole(on_it, holes)
     assert [f.rule for f in findings] == ["courtyard_hole"]
@@ -1229,11 +1229,26 @@ def test_run_geometric_drc_threads_holes_into_the_courtyard_hole_rule():
         model,
         capability=_CAP4,
         courtyards=[("U1", _square(1.0, 0.0)), ("U2", _square(20.0, 0.0))],
-        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole))],
+        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)],
     )
     assert [f.where for f in findings if f.rule == "courtyard_hole"] == [
         "U1 <-> hole @ (0, 0)"
     ]
+
+
+def test_check_courtyard_hole_skips_a_parts_own_cutout_but_not_a_neighbour():
+    """heater-base-test (2026-10-02): CN1's footprint cuts its own Ø6.4
+    standoff hole, so CN1's courtyard covers it by design (8 false
+    courtyard_hole errors on prod). The same hole still errors against any
+    other part."""
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import mounting_hole_keepout_polygon
+
+    own = MountingHole(x=0.0, y=0.0, drill_mm=6.4, part="CN1")
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(own), "CN1")]
+    assert drc.check_courtyard_hole([("CN1", _square(0.0, 0.0))], holes) == []
+    findings = drc.check_courtyard_hole([("U9", _square(0.0, 0.0))], holes)
+    assert [f.where for f in findings] == ["U9 <-> hole @ (0, 0)"]
 
 
 def test_courtyards_that_merely_touch_are_not_an_overlap():

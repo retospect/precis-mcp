@@ -114,6 +114,12 @@ class MountingHole:
     #: stays keyed to drill/ring), only placement keep-out.
     head_dia_mm: float = 0.0
     plated: bool = False
+    #: Refdes of the part this hole belongs to (a footprint cutout such as
+    #: a connector's standoff or a SATA peg, imported with ``geom.part``),
+    #: or None for a board-level hole. A part's courtyard may cover its
+    #: own hole: the placer's legality check and DRC ``courtyard_hole``
+    #: skip that pair, and still flag the hole against every other part.
+    part: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1685,6 +1685,43 @@ def test_courtyard_overlapping_a_mounting_hole_is_illegal():
     assert engine._placement_is_legal(((0, 18.0, 18.0),))  # well clear of it
 
 
+def test_a_part_on_its_own_footprint_hole_is_legal_but_a_neighbour_is_not():
+    """heater-base-test (2026-10-02): CN1's footprint cuts its own standoff
+    hole. The placer must not call CN1 illegal at its own pose (legalize_start
+    would walk it off its hole), while the same hole still blocks U1."""
+    ir = from_graph(
+        {"instances": [{"refdes": "CN1"}, {"refdes": "U1"}], "nets": []},
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(MountingHole(x=10.0, y=10.0, drill_mm=6.4, part="CN1"),),
+    )
+    ir.inst_x[0], ir.inst_y[0] = 5.0, 5.0
+    ir.inst_x[1], ir.inst_y[1] = 25.0, 25.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    assert engine._placement_is_legal(((0, 10.0, 10.0),))
+    assert engine.pose_conflicts(0, 10.0, 10.0) == []
+    assert not engine._placement_is_legal(((1, 10.0, 10.0),))
+    assert [rule for rule, _ in engine.pose_conflicts(1, 10.0, 10.0)] == [
+        "courtyard_hole"
+    ]
+
+
+def test_mounting_holes_from_features_carries_the_owning_part():
+    from precis.pcb.session import mounting_holes_from_features
+
+    holes = mounting_holes_from_features(
+        [
+            {
+                "ftype": "mounting_hole",
+                "x": 1,
+                "y": 2,
+                "geom": {"diameter": 6.4, "part": "CN1"},
+            },
+            {"ftype": "mounting_hole", "x": 3, "y": 4, "geom": {"diameter": 3.2}},
+        ]
+    )
+    assert [h.part for h in holes] == ["CN1", None]
+
+
 def test_hole_keepout_radius_widens_for_an_authored_hardware_head():
     """The round-6 defect: a hole's copper annulus (Ø8mm) is not the
     board's actual keep-out — the physical screw head / solder-nut

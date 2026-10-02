@@ -2806,6 +2806,7 @@ class PcbHandler(Handler):
                 (
                     f"hole @ ({h.x:g}, {h.y:g})",
                     pcb_optimize.mounting_hole_keepout_polygon(h),
+                    h.part,
                 )
                 for h in ir.mounting_holes
             ],
