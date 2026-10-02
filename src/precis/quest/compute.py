@@ -3491,6 +3491,99 @@ def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
     return [i for i in ids if (r := refs.get(i)) is not None and r.kind == "structure"]
 
 
+#: A backfilled measure must be reproduced by its job's summary to within this
+#: (eV / V / dimensionless) — the harvest copies the value, so a real match is
+#: exact up to JSON float round-trip.
+_BACKFILL_MATCH_TOL = 1e-6
+
+
+def backfill_network_basis(
+    store: Store, quest_id: int, *, apply: bool = False
+) -> dict[str, Any]:
+    """Stamp ``network_basis_by_key`` on a quest's pre-stamp candidates, by
+    value match (Reto, review-queue ``catalysis-selectivity-14``).
+
+    For each candidate and each :data:`_NETWORK_BASIS_KEYS` measure it
+    carries with no stamp yet, every completed autocatpath job under it
+    (:func:`_fresh_autocatpath_jobs` from 0) is read through the harvest's
+    own mapping (:func:`_autocatpath_measures_from_job`). The key is stamped
+    with the job's pathway basis (:func:`_network_basis`) only when the
+    jobs reproducing the stored value (within :data:`_BACKFILL_MATCH_TOL`)
+    all name ONE network. No reproducing job → ``no_match``; reproducing
+    jobs on two networks → ``ambiguous``; both stay unstamped (legacy: never
+    demoted). Never by tier: a pruned neb run emits no margin, so a neb-tier
+    candidate can still carry a parked screening margin.
+
+    ``apply=False`` (the default) is a dry run: counts only, nothing written.
+    Idempotent: a stamped key is skipped on the next run.
+    """
+    from precis.quest.frontier import same_network_basis
+
+    counts: dict[str, Any] = {
+        "candidates": 0,
+        "candidates_with_unstamped": 0,
+        "keys_unstamped": 0,
+        "stamped": 0,
+        "no_match": 0,
+        "ambiguous": 0,
+        "candidates_written": 0,
+        "stamped_by_key": {},
+    }
+    sids = _candidate_struct_ids(store, quest_id)
+    refs = store.fetch_refs_by_ids(set(sids))
+    for sid in sorted(sids):
+        ref = refs.get(sid)
+        if ref is None:
+            continue
+        counts["candidates"] += 1
+        meta = dict(ref.meta or {})
+        prior = meta.get("network_basis_by_key")
+        by_key: dict[str, Any] = dict(prior) if isinstance(prior, dict) else {}
+        todo = [
+            k
+            for k in _NETWORK_BASIS_KEYS
+            if k not in by_key and _num_measure(meta.get(k)) is not None
+        ]
+        if not todo:
+            continue
+        counts["candidates_with_unstamped"] += 1
+        counts["keys_unstamped"] += len(todo)
+
+        jobs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for _job_id, jmeta in _fresh_autocatpath_jobs(store, sid, 0):
+            measures = _autocatpath_measures_from_job(jmeta)
+            pid = jmeta.get("pathway_ref")
+            if not measures or not isinstance(pid, int) or isinstance(pid, bool):
+                continue
+            pw = store.fetch_refs_by_ids({pid}).get(pid)
+            basis = _network_basis(pw.meta if pw is not None else None)
+            if basis is not None:
+                jobs.append((measures, basis))
+
+        new: dict[str, Any] = {}
+        for k in todo:
+            value = float(meta[k])
+            bases: list[dict[str, Any]] = []
+            for measures, basis in jobs:
+                v = _num_measure(measures.get(k))
+                if v is None or abs(v - value) > _BACKFILL_MATCH_TOL:
+                    continue
+                if not any(same_network_basis(basis, b) for b in bases):
+                    bases.append(basis)
+            if not bases:
+                counts["no_match"] += 1
+            elif len(bases) > 1:
+                counts["ambiguous"] += 1
+            else:
+                new[k] = bases[0]
+                counts["stamped"] += 1
+                counts["stamped_by_key"][k] = counts["stamped_by_key"].get(k, 0) + 1
+        if new and apply:
+            store.stamp_ref_meta(sid, {"network_basis_by_key": {**by_key, **new}})
+            counts["candidates_written"] += 1
+    return counts
+
+
 def redispatch_candidates(
     store: Store,
     quest_id: int,

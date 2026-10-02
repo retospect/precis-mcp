@@ -186,6 +186,18 @@ def add_parser(subparsers: Any) -> None:
     )
     rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    bf = qsub.add_parser(
+        "backfill-network-basis",
+        help="Stamp the reaction-network basis on pre-stamp candidate measures, "
+        "only where a completed pathway's summary reproduces the stored value. "
+        "Dry run unless --apply.",
+    )
+    bf.add_argument("id", type=int, help="Quest ref id.")
+    bf.add_argument(
+        "--apply", action="store_true", help="Write the stamps (default: dry run)."
+    )
+    bf.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     rc = qsub.add_parser(
         "reset-compute",
         help="Surgically wipe the barrier-lane compute history (stale measures, "
@@ -719,6 +731,23 @@ def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
     print(f"quest {args.id}: {note}")
 
 
+def _cmd_backfill_network_basis(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.compute import backfill_network_basis
+
+    c = backfill_network_basis(store, args.id, apply=args.apply)
+    verb = "stamped" if args.apply else "would stamp"
+    by_key = ", ".join(f"{k}={n}" for k, n in sorted(c["stamped_by_key"].items()))
+    print(
+        f"quest {args.id}: {'APPLIED' if args.apply else 'DRY RUN'} — "
+        f"{c['candidates']} candidates, {c['candidates_with_unstamped']} with "
+        f"unstamped measures ({c['keys_unstamped']} keys); {verb} "
+        f"{c['stamped']} ({by_key or 'none'}); left unstamped: "
+        f"{c['no_match']} no reproducing pathway, {c['ambiguous']} ambiguous "
+        f"(matched on two networks); candidates written: "
+        f"{c['candidates_written']}"
+    )
+
+
 def _cmd_reset_compute(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.compute import reset_compute
 
@@ -759,6 +788,8 @@ def run(args: argparse.Namespace) -> None:
             _cmd_figure(store, args)
         elif args.quest_cmd == "redispatch":
             _cmd_redispatch(store, args)
+        elif args.quest_cmd == "backfill-network-basis":
+            _cmd_backfill_network_basis(store, args)
         elif args.quest_cmd == "reset-compute":
             _cmd_reset_compute(store, args)
         elif args.quest_cmd == "status":

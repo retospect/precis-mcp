@@ -4617,6 +4617,93 @@ class TestTierLadderHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("network_basis") is None
 
+    def test_backfill_stamps_only_value_matched_keys(self, store: Any) -> None:
+        """Pre-stamp candidate (catalysis-selectivity-14): a key is stamped
+        only when the pathways reproducing its stored value name one network;
+        no match and a match on two networks both stay unstamped. Dry run
+        writes nothing; a second run finds nothing left to stamp."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+
+        def _pw(template: str, version: str) -> int:
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "tier": "neb",
+                    "config": {"network": "ammonia", "template": template},
+                    "autocatpath_version": version,
+                },
+                parent_id=sid,
+            ).id
+
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.5, "selectivity_margin": 0.4, "U_L": -0.5},
+                "pathway_ref": _pw("parked", "0.21.0"),
+            },
+        )
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.3, "U_L": -0.5},
+                "pathway_ref": _pw("coadsorbed", "0.22.0"),
+            },
+        )
+        # legacy candidate: values harvested before stamping existed
+        store.stamp_ref_meta(
+            sid,
+            {
+                "selectivity_margin": 0.4,  # only the parked run reproduces it
+                "barrier": 0.3,  # only the coadsorbed run reproduces it
+                "span": 9.9,  # no run reproduces it
+                "U_L": -0.5,  # both runs: ambiguous
+                "U_L_abs": 0.5,  # both runs: ambiguous
+            },
+        )
+        dry = compute_mod.backfill_network_basis(store, qid)
+        assert dry["keys_unstamped"] == 5
+        assert dry["stamped"] == 2
+        assert dry["stamped_by_key"] == {"barrier": 1, "selectivity_margin": 1}
+        assert dry["no_match"] == 1
+        assert dry["ambiguous"] == 2
+        assert dry["candidates_written"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "network_basis_by_key" not in meta
+
+        applied = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert applied["stamped"] == 2
+        assert applied["candidates_written"] == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"] == {
+            "selectivity_margin": {
+                "digest": None,
+                "template": "parked",
+                "version": "0.21.0",
+            },
+            "barrier": {"digest": None, "template": "coadsorbed", "version": "0.22.0"},
+        }
+        again = compute_mod.backfill_network_basis(store, qid)
+        assert again["keys_unstamped"] == 3
+        assert again["stamped"] == 0
+
+    def test_backfill_keeps_existing_stamps(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        mine = {"digest": "d", "template": "coadsorbed", "version": "0.23.0"}
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 0.3, "network_basis_by_key": {"barrier": mine}},
+        )
+        out = compute_mod.backfill_network_basis(store, qid, apply=True)
+        assert out["keys_unstamped"] == 0
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["network_basis_by_key"] == {"barrier": mine}
+
     def test_verify_supersedes_neb_moves_parked_value_to_barrier_screen(
         self, store: Any
     ) -> None:
