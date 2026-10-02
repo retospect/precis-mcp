@@ -500,6 +500,112 @@ class TestAttachOnlyGuard:
         assert pdf_sha is not None and pdf_sha[0] is None  # still chunks-only
 
 
+class TestUpgradeMergesIngestMeta:
+    """gr461607 — a body-populating stub upgrade persists the ingest's meta."""
+
+    def _seed_stub(self, store, meta: dict) -> int:
+        stub = PaperToWrite(
+            title="Stub",
+            authors=[{"name": "C, D"}],
+            year=2024,
+            paper_id="gm333333",
+            cite_key_prefix="glyph24",
+            doi="10.9/glyph",
+            provider="crossref",
+            meta=meta,
+            chunks=[
+                ChunkToWrite(ord=-1, chunk_kind="card_combined", text="Stub\nC, D"),
+            ],
+        )
+        with store.pool.connection() as conn:
+            res = write_paper(stub, conn=conn)
+            conn.commit()
+        return res.ref_id
+
+    def _upgrade(self, store, ref_id: int, meta: dict, *, has_pdf: bool) -> int:
+        paper = PaperToWrite(
+            title="Stub",
+            authors=[{"name": "C, D"}],
+            year=2024,
+            paper_id="gm333333",
+            cite_key_prefix="glyph24",
+            doi="10.9/glyph",
+            provider="embedded" if has_pdf else "markup",
+            pdf_sha256=("c" * 64) if has_pdf else None,
+            content_hash="cd" * 32,
+            meta=meta,
+            chunks=_body_chunks(),
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, paper, conn=conn)
+            conn.commit()
+        return written
+
+    def _meta(self, store, ref_id: int) -> dict:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta, provider FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+        assert row is not None
+        assert row[1] == "crossref"  # provider is the stub's metadata source
+        return row[0]
+
+    def test_pdf_upgrade_persists_glyph_health_and_fills_gaps_only(self, store):
+        ref_id = self._seed_stub(store, {"abstract": "S2 abstract", "s2_fields": []})
+        glyph = {"suspected": True, "modes": ["a"], "suspect_fonts": ["AdvP7DA6"]}
+        self._upgrade(
+            store,
+            ref_id,
+            {
+                "glyph_health": glyph,
+                "abstract": "scraped abstract",
+                "journal": "Scraped Journal",
+            },
+            has_pdf=True,
+        )
+        meta = self._meta(store, ref_id)
+        assert meta["glyph_health"] == glyph
+        assert meta["abstract"] == "S2 abstract"  # existing value wins
+        assert meta["journal"] == "Scraped Journal"  # gap filled
+        assert meta["s2_fields"] == []  # unrelated stub key untouched
+
+    def test_markup_upgrade_persists_source_format(self, store):
+        ref_id = self._seed_stub(store, {})
+        self._upgrade(
+            store,
+            ref_id,
+            {"source_format": "arxiv_html", "markup_source_url": "https://x/1"},
+            has_pdf=False,
+        )
+        meta = self._meta(store, ref_id)
+        assert meta["source_format"] == "arxiv_html"
+        assert meta["markup_source_url"] == "https://x/1"
+
+    def test_body_owned_keys_from_a_previous_body_are_dropped(self, store):
+        # A ref whose body is gone but whose meta still carries the old
+        # extraction's record: the new body's ingest owns those keys.
+        ref_id = self._seed_stub(
+            store, {"glyph_health": {"suspected": True}, "extract_used_fallback": True}
+        )
+        self._upgrade(store, ref_id, {"source_format": "jats"}, has_pdf=False)
+        meta = self._meta(store, ref_id)
+        assert "glyph_health" not in meta
+        assert "extract_used_fallback" not in meta
+        assert meta["source_format"] == "jats"
+
+    def test_attach_only_does_not_touch_meta(self, store):
+        ref_id = self._seed_stub(store, {})
+        self._upgrade(store, ref_id, {"source_format": "jats"}, has_pdf=False)
+        # A later PDF on a ref that now has a body: attach-only, no meta.
+        written = self._upgrade(
+            store, ref_id, {"glyph_health": {"suspected": True}}, has_pdf=True
+        )
+        assert written == 0
+        meta = self._meta(store, ref_id)
+        assert meta["source_format"] == "jats"
+        assert "glyph_health" not in meta
+
+
 class TestMarkupBackfillReplace:
     """register_aliases_and_maybe_upgrade — gr372781 item 3 gated replace."""
 

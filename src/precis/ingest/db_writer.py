@@ -783,9 +783,14 @@ def register_aliases_and_maybe_upgrade(
         )
         return 0
 
-    # No body yet — write this ingest's chunks (cards + body). Mirror the
-    # write_paper §5 code path so the upgraded row looks identical to one
-    # written fresh.
+    # No body yet — this ingest brings it, so its meta describes the
+    # body the ref now carries (gr461607: this branch used to drop
+    # paper.meta, so glyph_health and source_format never reached the
+    # ~99.7% of papers that arrive by stub upgrade).
+    _merge_ingest_meta(existing_ref_id, paper.meta, conn=conn)
+
+    # Write this ingest's chunks (cards + body). Mirror the write_paper §5
+    # code path so the upgraded row looks identical to one written fresh.
     chunk_rows: list[tuple[Any, ...]] = [
         (
             existing_ref_id,
@@ -838,6 +843,58 @@ def register_aliases_and_maybe_upgrade(
         bool(paper.pdf_sha256 and not already_has_pdf),
     )
     return len(chunk_rows)
+
+
+#: ``refs.meta`` keys that describe how the current body was extracted.
+#: They belong to whichever ingest wrote the body, so a body-populating
+#: upgrade replaces them wholesale — including dropping one the new ingest
+#: did not emit (a markup body replacing a glyph-flagged PDF body must not
+#: keep the PDF's ``glyph_health``).
+_BODY_OWNED_META_KEYS: frozenset[str] = frozenset(
+    {
+        "glyph_health",
+        "source_format",
+        "markup_source_url",
+        "extract_used_fallback",
+        "extract_fallback_reason",
+        "extract_fallback_empty",
+    }
+)
+
+
+def _merge_ingest_meta(
+    ref_id: int, incoming: dict[str, Any] | None, *, conn: Connection
+) -> None:
+    """Fold a body-populating ingest's ``meta`` into the existing ref.
+
+    Body-owned keys (:data:`_BODY_OWNED_META_KEYS`) are replaced. Every
+    other key (abstract, journal, keywords, ...) only fills a gap: a stub's
+    S2/Crossref metadata is richer than what Marker scrapes off a PDF, so
+    an existing non-empty value always wins.
+    """
+    incoming = incoming or {}
+    row = conn.execute(
+        "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+        (ref_id,),
+    ).fetchone()
+    if row is None:
+        return
+    existing = row[0] if isinstance(row[0], dict) else {}
+    patch = {
+        k: v
+        for k, v in incoming.items()
+        if k in _BODY_OWNED_META_KEYS or existing.get(k) in (None, "", [], {})
+    }
+    stale = sorted(
+        k for k in _BODY_OWNED_META_KEYS if k in existing and k not in incoming
+    )
+    if not patch and not stale:
+        return
+    conn.execute(
+        "UPDATE refs SET meta = (coalesce(meta, '{}'::jsonb) - %s::text[]) || %s "
+        "WHERE ref_id = %s AND retired_at IS NULL",
+        (stale, Jsonb(patch), ref_id),
+    )
 
 
 __all__ = [
