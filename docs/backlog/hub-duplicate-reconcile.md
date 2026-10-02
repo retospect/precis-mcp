@@ -68,5 +68,19 @@ path (item 5), `finding` refs and their `links`.
 ## Open questions / decisions log
 
 - Where the watermark lives (hub `meta` vs a column): decide at build.
+  A text hash (not a date) makes a reworded hub re-check by itself:
+  `refine_claim_sentence` replaces the `finding_body` chunk, so the hash
+  changes.
+- **[note 2026-10-02, knowledge-mesh]** Merge-into-winner already exists
+  on main: `taproot/hub.py::merge_hubs` (2026-08-20; refuses hubs past
+  `candidate` in `nanopub_publish`, idempotent, dry-run). If the bundle
+  cannot be recovered, keep the branch's winner selection and skip+log as
+  small rewrites over `merge_hubs` rather than a second merge path.
+- **[note 2026-10-02, knowledge-mesh]** Calibration positives beyond
+  fi176861/fi178714: every pair already collapsed by `merge_hubs` (its
+  `MERGE_COLLAPSE_RELATION` edges are labelled twins). Run the backfill
+  dry first: pair count, judge calls and proposed merges before any
+  write. Item 5 should refuse a publish that cites one hub of an
+  unmerged twin, naming both, rather than merge silently.
 - The branch must be recovered from the bundle on Reto's Mac before
   building.

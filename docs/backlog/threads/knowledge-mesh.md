@@ -29,20 +29,22 @@ graph-health-metrics, five parked gripes, and the seam with
    p10 0.489), and the ratio-to-unit-ceiling bar is shown not to be
    scale-free. No paid run until the orchestrator's verdict on
    `reviews/knowledge-mesh.md` §2 picks the replacement gate.
-2. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
+2. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
+   (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
+   re-check on embed, text-version watermark, a distance cutoff
+   calibrated on hand-merged twins, one backfill, a pre-publish check.
+   Above fisheye because duplicate hubs split live evidence that the
+   monthly papers (qu459585) and nanopub cites read now. Reuse waits on
+   stranded branch `gripe_180306` (bundle on Reto's Mac) reaching origin;
+   `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
+   (an errored dedup judgment read as "different") is owned by
+   claims-and-evidence.
+3. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
    (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
-   the answer to "a viewer for the memory" once 5 lands.
-3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
-   (td461151): file the cheap duplicate-hub reconcile (gr180306), in
-   order: re-check on embed, text-version watermark, a distance cutoff
-   calibrated on hand-merged twins, one backfill, a pre-publish check.
-   It reuses stranded branch `gripe_180306`. Ranked above the measures
-   chain because duplicate hubs split the evidence that the monthly
-   papers (qu459585) cite. Sibling gr462136 (an errored dedup judgment
-   is read as "different") is owned by claims-and-evidence.
+   the answer to "a viewer for the memory" once 6 lands.
 4. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
    taxon + reference + convention, and it unblocks
    knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
@@ -75,8 +77,8 @@ graph-health-metrics, five parked gripes, and the seam with
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
-   universal row) — waits on Do-next 3; its ladder item moved to Do-next 2.
-4. **backlog/experiment-loop.md** — waits on Do-next 3; hypothesis → todo
+   universal row) — waits on Do-next 4; its ladder item moved to Do-next 3.
+4. **backlog/experiment-loop.md** — waits on Do-next 4; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
 5. **backlog/graph-gardener.md** — waits on a populated mesh
@@ -92,15 +94,15 @@ graph-health-metrics, five parked gripes, and the seam with
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 5 gives the topic files a recall measurement, P2 ruled yes
+   Do-next 6 gives the topic files a recall measurement, P2 ruled yes
    2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
-    Do-next 3; sourced numeric triples bound to list entries.
+    Do-next 4; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 3;
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 4;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
     open contradiction it records: `measures-substrate.md` §3 owns an
@@ -111,7 +113,7 @@ graph-health-metrics, five parked gripes, and the seam with
 15. **backlog/capability-landscape-steals.md** — five externally sourced
     ideas (a ChemBench eval slice, categorizer rule distillation, and
     three more) from the capability-landscape comparison; sequenced behind
-    the substrate (Do-next 1-4) by choice, not blocked.
+    the substrate (Do-next 1-5) by choice, not blocked.
 
 ## Waiting on Reto
 
@@ -122,7 +124,7 @@ graph-health-metrics, five parked gripes, and the seam with
   `ref_identifiers('lcsc', …)`, chunkless), `component realized-by part`,
   design-internal items addressed through their design (`pcb contains
   part`, refdes in link meta); datasheet facts as `measures` rows on the
-  part ref, so they build after Do-next 3. Nothing builds until he rules.
+  part ref, so they build after Do-next 4. Nothing builds until he rules.
 - **reviews/knowledge-mesh.md §2 (orchestrator verdict):** the taxonomy
   probe gate; see Do-next 1.
 
@@ -134,14 +136,13 @@ items.
 
 - **gr445532** — experiment tracking needs multi-class context for
   qualitative terms ("low temperature" means opposite things in different
-  communities); unparks with Do-next 4, whose per-axis similarity spaces
+  communities); unparks with Do-next 5, whose per-axis similarity spaces
   are the natural home for a comparison class.
 - **gr449840** — precis-finding-help's admission criteria exclude the
   definitional/methodological claim classes a taxonomy or architecture
-  paper needs to cite; unparks with Do-next 4, which names a definitional
+  paper needs to cite; unparks with Do-next 5, which names a definitional
   claim class explicitly (membership yes/no/unknown).
-- **gr182230**, **gr180306** — taproot chase-trigger recall gap and a
-  claim-hub near-miss dedup (60 days old, both pre-enablement). Unparks
+- **gr182230** — taproot chase-trigger recall gap (60 days old, pre-enablement). Unparks
   when chase_trigger is enabled by default; inert until then.
 - **gr445531** — whether spectral graph theory buys anything on precis's
   graph structures; unparks when Horizon 3 gives it a populated graph
