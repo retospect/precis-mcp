@@ -6,16 +6,23 @@ reviewed ledger behind every tick. Today stages 1-4 are built, gated and
 on the fleet; the first live tick ran 2026-09-30 22:01 UTC on Reto's word
 (role demand, tier big): it wrote qu453869's first demand number,
 `placement_error_nm = 0.15` with a stated reason, minted no rung and no
-deed, and neither fail signal fired. Activation is the next prod write.
-**Last reviewed:** 2026-10-01 (quest-loop items ranked; gr458880 closed, a stale
-server; gr345366 moved to chemistry)
+deed, and neither fail signal fired. Four watched ticks ran; qu453863 was
+tagged `STATUS:active` 2026-10-02 ~02:00Z (no ask, thresholds.md) and now
+ticks unattended. Next evidence: the first unattended `supply` tick.
+**Last reviewed:** 2026-10-02 (tick 4 + activation; quest-loop items ranked
+10-01)
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **qu453863 activation** — no longer needs Reto's word
-   (docs/conventions/thresholds.md, 2026-10-01: ticks and activation are
-   go). The first live
+1. **Watch qu453863's first unattended ticks** — activated 2026-10-02
+   ~02:00Z (the tag call returned `tagged quest id=453863`; a follow-up
+   SQL read of its tags was refused by the session's permission check, so
+   confirm `STATUS:active` on resume). Check: the first `supply` tick logs
+   `local N>0` on queries the graph answers (proves ecefede3's embedder
+   fix live; the `lexical-only` clause must be absent); no rung without a
+   number; deeds do not climb on a flat ledger. If either fail signal
+   fires, tag it back to `STATUS:dormant` and file. History: the first live
    tick (2026-09-30 22:01 UTC, `scripts/prod-precis quest tick 453863`,
    exit 0) took the `demand` role at tier big on the `no-demand` gap and
    wrote `meta.demand.placement_error_nm = 0.15` on qu453869, reason "one
@@ -33,8 +40,13 @@ server; gr345366 moved to chemistry)
    qu453869 `meta.supply.placement_error_nm = 1.2` [fi460566], 3 papers
    linked, 1 ledger improvement — but every query logged `local 0`: the
    CLI tick built its search with no embedder, so the local leg was
-   lexical-only (fixed 2026-10-02; the worker path was unaffected). Tick
-   4 should show local hits on queries the graph answers. Then activation (no ask, `docs/conventions/thresholds.md`). Serves
+   lexical-only (fixed 2026-10-02; the worker path was unaffected). Tick 4
+   (2026-10-02 ~01:55Z, exit 0) took `bridge` @frontier and minted rung
+   td460713 "Port single-atom tip placement to liquid at room
+   temperature" (1.2 nm today vs 0.15 nm needed; cites fi460566,
+   fi176418; serves qu453867, qu453869; tagged `waiting-for:reto`); 0
+   ledger improvements, gaps [2, 1], both fail signals clear. Bridge does
+   no search, so local-first is still unproven live. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 5** — export `rungs_for`
@@ -48,9 +60,9 @@ server; gr345366 moved to chemistry)
 
 ## Horizon
 
-1. **qu453863 ticking cadence** — waits on three watched ticks (Do next
-   1-2); rungs that carry numbers, driving PRIO down through qu161906 to the
-   pathway quests.
+1. **qu453863 ticking cadence** — ticking unattended since 2026-10-02;
+   waits on Do next 1's watch; rungs that carry numbers, driving PRIO down
+   through qu161906 to the pathway quests.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 2-4 ruled** — waits on
    real ticks showing which capability the root picks; rulings replace the
    builder's readings.
