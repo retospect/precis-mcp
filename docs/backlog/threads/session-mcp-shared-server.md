@@ -112,8 +112,16 @@ capacity and isolation gaps.
    This first stop ran through the pre-drain supervisor; drains apply
    from the next recreate. The orchestrator's sweep counts the drops
    against a before-state of 5 DOWN.
-   **Still to do:** Reto's dev-Mac session installs the same script; keep
-   the scratch copy until then.
+   **Still to do:**
+   - Reto's dev-Mac session installs the same script; keep the scratch
+     copy until then.
+   - The ensure script is under no version control:
+     `~/work/infrastructure/precis-mcp/` is not a git repo, and its only
+     history is the scratch copies. Its live/test guard therefore has no
+     CI test (gr462596 diagnosis). The candidate home is
+     `scripts/precis-mcp-http-ensure.sh` here, with the SessionStart hook
+     pointing at the checkout's copy, but that entangles with Horizon 2
+     (mcps role vs hand-rolled wrapper). Decide with that item.
    **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the
    next. Fixed in 7f006bf09 (round 2); it loads at the first recreate
