@@ -1048,7 +1048,13 @@ def dedup_judge(a: str, b: str) -> Verdict:
     return _coerce_verdict(data, default_rationale="unparseable model output")
 
 
-JUDGE_MAX_WORKERS = 8
+# Prod MEDIUM dedup runs cloud haiku over the ``claude_p`` transport: one
+# ``claude -p`` subprocess per call, ~10 s, no resource slot. The cap bounds
+# that subprocess burst on the MCP host (two rounds for a typical k≈8)
+# rather than any slot count. A failed judgment does not raise — it
+# degrades to "different", so an overloaded burst would mint a duplicate
+# hub, not an error.
+JUDGE_MAX_WORKERS = 4
 
 
 def judge_candidates(

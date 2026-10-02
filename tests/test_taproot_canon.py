@@ -983,7 +983,7 @@ def test_judge_candidates_preserves_order_and_runs_concurrently() -> None:
         barrier.wait()
         return Verdict(verdict="different", confidence=0.9, rationale=b)
 
-    judged = canon.judge_candidates("query", cands, judge)
+    judged = canon.judge_candidates("query", cands, judge, max_workers=len(cands))
 
     assert [c.hub_ref_id for c, _ in judged] == [0, 1, 2, 3, 4]
     assert [v["rationale"] for _, v in judged] == [f"claim {i}" for i in range(5)]

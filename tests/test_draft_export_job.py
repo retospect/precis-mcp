@@ -315,6 +315,42 @@ def test_dispatch_succeeds_with_unsigned_hub_advisory_only(
     assert any("1 cited claim hub" in t for _k, t in ctx.events)
 
 
+def test_dispatch_resyncs_links_before_reading_edges(
+    hub: Hub, monkeypatch: Any
+) -> None:
+    """A chunk-scoped write can leave another chunk's edge stale; export
+    runs a full link sync first, so a cite whose edge is missing is still
+    seen by the edge-reading gates (here: the unsigned-hub advisory)."""
+    import precis.export.compile as _compile
+
+    monkeypatch.setattr(_compile, "have_latexmk", lambda: False)
+    _pid, slug = _make_project_and_draft(hub)
+    hub_id, _fi = _cite_hub_in_draft(hub, slug, "Graphene conducts heat well.")
+    ref = hub.live_store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    for link in hub.live_store.links_for(ref.id, direction="out", relation="cites"):
+        hub.live_store.remove_link(
+            src_ref_id=ref.id,
+            src_pos=link.src_ord,
+            dst_ref_id=link.dst_ref_id,
+            dst_pos=link.dst_ord,
+            relation="cites",
+        )
+
+    spec = get_job_type("draft_export")
+    ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": slug}})
+    assert spec is not None and spec.dispatch is not None
+    spec.dispatch(ctx, spec)
+
+    assert not ctx.failures, ctx.failures
+    assert any("1 cited claim hub" in t for _k, t in ctx.events)
+    dsts = {
+        link.dst_ref_id
+        for link in hub.live_store.links_for(ref.id, direction="out", relation="cites")
+    }
+    assert hub_id in dsts
+
+
 def test_dispatch_unstamped_cite_never_blocks(hub: Hub, monkeypatch: Any) -> None:
     """A pre-pin (unstamped) cite must never block an export — only true
     drift (a stamped version that has since moved) does."""

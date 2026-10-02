@@ -148,6 +148,17 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"draft_export: no draft {slug!r}")
         return
 
+    # Full link sync before the edge-reading gates below. Chunk-scoped
+    # writes carry other chunks' auto-mention edges without re-resolving
+    # them, so a mention that only now resolves (or one whose target was
+    # retired) is stale until an unscoped sync; the cite-drift gate and the
+    # unsigned-hub advisory read those edges as truth. Best-effort, like
+    # every other caller: a resolution failure never fails the export.
+    from precis.dispatch import Hub
+    from precis.handlers.draft import DraftHandler
+
+    DraftHandler(hub=Hub(store=ctx.store)).sync_draft_links(ref.id)
+
     # Figure clearance gate: an uncleared figure must not
     # ship, so it fails the export — the way a bare ``\cite`` fails review.
     # ``placeholder_figures`` waives only ASSET-LESS blocks (the export
