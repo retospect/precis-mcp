@@ -1964,3 +1964,36 @@ def test_reground_on_a_front_matter_only_paper_is_nomatch(
     assert result.plans[0].action == "reground-nomatch"
     assert result.rewritten_text is None
     assert _links_count(hub.live_store) == links_before
+
+
+def test_default_locate_proposes_table_chunk_holding_claim_numbers(monkeypatch):
+    """gripe 453835: a claim whose evidence is a benchmark-table row must reach
+    the confirm step with that table as the proposed chunk, not lose to prose
+    that merely shares the claim's vocabulary."""
+    import precis.workers._chase_llm as chase_llm
+    from precis.taproot.backfill import _default_locate
+
+    seen: dict = {}
+
+    def _fake(*, claim, proposed, alternates):
+        seen["proposed"] = proposed
+        return proposed
+
+    monkeypatch.setattr(chase_llm, "_locate_chunk_in_target", _fake)
+    prose = (
+        1,
+        0,
+        "Density functionals on the WATER27 benchmark spread widely in kcal/mol "
+        "across the same functional families.",
+    )
+    table = (
+        2,
+        1,
+        "| set | GGA | meta-GGA |\n|---|---|---|\n| WATER27 | 0.77 | 7.27 |",
+    )
+    got = _default_locate(
+        "on WATER27 the same functionals spread from 0.77 to 7.27 kcal/mol",
+        [prose, table],
+    )
+    assert got == table
+    assert seen["proposed"] == table

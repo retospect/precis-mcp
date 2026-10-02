@@ -288,6 +288,8 @@ LocateFn = Callable[[str, list[tuple[int, int, str]]], tuple[int, int, str] | No
 _MERGE_CONFIRM_DEFAULT = merge_confirm
 
 _TOKEN_RE = re.compile(r"\w+")
+#: A numeric literal kept whole (``7.27``, ``0.77``, ``-3``) for table matching.
+_NUMBER_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?![\w])")
 
 
 def _default_locate(
@@ -302,19 +304,28 @@ def _default_locate(
     if not chunks:
         return None
     tokens = {w.lower() for w in _TOKEN_RE.findall(span) if len(w) > 2}
-    if not tokens:
+    numbers = set(_NUMBER_RE.findall(span))
+    if not tokens and not numbers:
         return None  # empty/too-short span: nothing to ground against, don't guess
 
     def _overlap(text: str) -> int:
-        return len(tokens & {w.lower() for w in _TOKEN_RE.findall(text) if len(w) > 2})
+        words = len(tokens & {w.lower() for w in _TOKEN_RE.findall(text) if len(w) > 2})
+        # A benchmark-table cell ("7.27") carries none of the claim's topic words
+        # and ``\w+`` shreds it into short tokens the length filter drops, so
+        # match numeric literals whole and weight them above a topic word
+        # (gripe 453835) — otherwise the table that holds the claim's numbers
+        # loses to prose that merely shares its vocabulary.
+        nums = len(numbers & set(_NUMBER_RE.findall(text)))
+        return words + 5 * nums
 
     from precis.workers._chase_llm import _locate_chunk_in_target
 
-    best = max(chunks, key=lambda c: _overlap(c[2]))
+    ranked = sorted(chunks, key=lambda c: -_overlap(c[2]))
+    best = ranked[0]
     return _locate_chunk_in_target(
         claim=span,
         proposed=best,
-        alternates=[c for c in chunks if c[0] != best[0]][:3],
+        alternates=ranked[1:4],
     )
 
 

@@ -387,6 +387,39 @@ def literal_cite_hint(text: str) -> str:
     return ""
 
 
+#: A bibliographic identifier typed into prose (gripe 454749): an arXiv id
+#: (new ``2604.13729`` or old ``hep-th/9901001`` form, ``arXiv`` prefix
+#: required so a bare decimal never trips it) or a DOI.
+_BARE_ID_RE = re.compile(
+    r"\barxiv\s*:?\s*(?:\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7})"
+    r"|\b10\.\d{4,9}/[^\s\])>,;]+",
+    re.IGNORECASE,
+)
+
+
+def bare_identifier_hint(text: str) -> str:
+    """Advisory ⚠ for a raw arXiv id / DOI in draft prose. An identifier typed
+    inline is a dead string: it does not resolve, join the cite graph, follow a
+    preprint to its published version, or get caught by cite-drift detection —
+    the ``[pa<id>]``/``[pc<id>]`` handle does all four, and the export renders
+    the bibliography entry itself. A hint, never a refusal: a chunk *about*
+    identifier formats may quote one verbatim and can ignore it."""
+    found: list[str] = []
+    for m in _BARE_ID_RE.finditer(text):
+        ident = m.group(0).rstrip(".")
+        if ident not in found:
+            found.append(ident)
+    if not found:
+        return ""
+    shown = ", ".join(repr(f) for f in found[:5])
+    return (
+        f"\n\n⚠ bare identifier in prose: {shown}. Cite the paper by handle "
+        "([pa<id>] / [pc<id>]) instead — the export renders the identifier and "
+        "link, and a raw id never resolves or tracks the published version. "
+        "(Ignore if this chunk quotes an identifier format on purpose.)"
+    )
+
+
 def temperature_form_hint(text: str) -> str:
     r"""Nudge toward the canonical plain-text temperature/unit notation
     when the prose carries a malformed spelling: a superscript or

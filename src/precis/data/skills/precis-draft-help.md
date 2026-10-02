@@ -322,6 +322,14 @@ Same rule governs claim sentences (`precis-notation-canon`), so prose and
 claims cannot disagree. A malformed temperature trips a
 `⚠ temperature/unit formatting` hint on write.
 
+## Cite by handle, not by arXiv id or DOI
+
+Do not type an arXiv id or DOI into prose: cite `[pa<id>]` / `[pc<id>]`
+and the export renders the identifier and link. A raw id never resolves,
+joins the cite graph, or follows a preprint to its published version. A
+bare id trips a `⚠ bare identifier in prose` hint on write (a hint, not a
+refusal; ignore it when a chunk quotes an identifier format on purpose).
+
 ## Write a list — markdown bullets, converted on write
 
 Write the list as ordinary markdown. A paragraph `put` whose text is

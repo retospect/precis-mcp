@@ -2774,3 +2774,28 @@ def test_hygiene_view_on_heading_scopes_to_subtree_and_window_view_is_clear(
 
     with pytest.raises(BadInput, match="window"):
         draft.get(id=f"{intro_dc}-1..2", view="kwd")
+
+
+def test_bare_identifier_hint(draft: DraftHandler, hub: Hub) -> None:
+    """gripe 454749: a raw arXiv id / DOI in prose lands but warns; a plain
+    decimal is silent."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    title_h = _order(hub, "nt")[0].handle
+
+    for text in (
+        "The preprint arXiv:2604.13729 shows it.",
+        "See arXiv:hep-th/9901001 for details.",
+        "Measured in doi 10.1038/s41586-020-2649-2 originally.",
+    ):
+        r = draft.put(
+            id="nt", chunk_kind="paragraph", text=text, at={"after": "¶" + title_h}
+        )
+        assert "bare identifier in prose" in r.body, text
+    r = draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="The value rose to 2604.13729 units in 2024.",
+        at={"after": "¶" + title_h},
+    )
+    assert "bare identifier in prose" not in r.body
