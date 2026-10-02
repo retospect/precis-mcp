@@ -256,10 +256,13 @@ until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
 three 2026-10-01: "ingest must work. draft authoring must work. graph
 memory we want soon").
 
-Dormant (4, open at the next restart if named): `multiscale-design-core`
+Dormant (7, open at the next restart if named): `multiscale-design-core`
 · `factory` (2026-10-01, the agent-lane items moved from pillar 3) ·
 `pcb-platform` (created at the 09-30 review) · `serving-programme`
-(2026-10-01, Reto: until the session count nears the serve ceiling).
+(2026-10-01, Reto: until the session count nears the serve ceiling) ·
+`ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (platform bucket,
+2026-10-02, from the unowned platform items). Code-debt, db-schema and
+docs-audit items stay unthreaded.
 
 ## Retirement
 
@@ -288,6 +291,14 @@ than leaving it.
 ## Review log
 
 Newest first; one line per pass (`/pillar-review` writes it).
+
+- 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
+  dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
+  `security-hardening`) and the factory, session-mcp, chemistry, ingest,
+  roadmap-quest and monitors assignments made; code-debt, db-schema and
+  docs-audit left unthreaded; housekeeping deletions and the
+  kind-taxonomy-audit and dark-factory-arming rulings still open with Reto
+  (td461205).
 
 - 2026-10-01 — Reto's rulings, not a full pass: vocabulary tiers 2 and 3
   throughout code (td459590 done); December paper becomes a

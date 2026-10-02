@@ -176,6 +176,25 @@ capacity and isolation gaps.
    graph-memory-consumers, not this thread; pointer only. Precondition
    td458385 (sessions moving to this server) is this thread's own
    Do-next 1.
+8. **backlog/mcp-verb-kwarg-parity.md** — 71 handler kwargs are silently
+   dropped by put/edit; the verb signature is the MCP schema, so a dropped
+   kwarg is a silent no-op for every session. Platform pass 2026-10-02.
+9. **backlog/singleton-id-no-batch-form.md** — numeric-ref verbs take one
+   id; `id=[...]` crashes instead of batching.
+10. **backlog/gripe-comment-timeline-uncapped.md** — a bare get on a gripe
+    renders every comment; unbounded response on the shared server.
+11. **backlog/perplexity-block-handle-guard.md** — get on a perplexity kind
+    with a search block handle cost ~$0.50; a spend guard on the surface.
+12. **backlog/time-kind.md** — stateless time/date kind like calc; no
+    handler in src, still open.
+13. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
+    assert plus an MCP staleness banner; guards the stale-process class.
+14. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
+    with structured Response fields.
+15. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
+    miss live routing.
+16. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
+    FastMCP; still blocked, so last.
 
 ## Parked
 

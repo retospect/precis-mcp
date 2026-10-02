@@ -21,9 +21,10 @@ Each programme below serves one or more:
   serving: the summariser and the single-spark model, and what they do) +
   `serving` (owns the MCP ceiling and the eval spine).
 - **personal-integration** — HELD; no programme yet.
-- **platform** — `platform` (split, deploy, monitors) + `factory`
-  (dormant; agent execution lanes, budget, crash recovery); serves all four
-  indirectly (nothing ships without it).
+- **platform** — `plugin-split` + `monitors-that-go-quiet` + `factory`
+  (dormant; agent execution lanes, budget, crash recovery) +
+  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (all dormant,
+  created 2026-10-02); serves all four indirectly (nothing ships without it).
 
 ## Active / dormant
 
@@ -37,7 +38,7 @@ Each programme below serves one or more:
 **Dormant** (file exists, ranked, no session — opens at the next session
 restart if Reto names it): `graph-memory-consumers` · `draft-authoring` ·
 `multiscale-design-core` · `factory` ·
-`pcb-platform`.
+`pcb-platform` · `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening`.
 
 ## pcb — design, route, fabricate, order
 
@@ -197,9 +198,24 @@ Threads: `plugin-split.md` · `monitors-that-go-quiet.md` · `factory.md`
 (also ranks plan_tick health, the todo planner: plan-tick-health,
 plan-tick-context-cut)
 (dormant; agent execution lanes, budget, crash recovery — pillar platform,
-created 2026-10-01)
+created 2026-10-01) · `ship-gate-ci.md` (dormant; gate, CI lanes, worktree
+reaper) · `deploy-fleet-ops.md` (dormant; deploy script and fleet residue) ·
+`security-hardening.md` (dormant; leaked credentials, role and sandbox
+boundaries). The last three were created 2026-10-02 from the unowned
+platform items; code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:
+- `ship-gate-ci` ↔ `plugin-split` / `monitors-that-go-quiet` —
+  `backlog/pathway-plugin-ci-image.md` waits on plugin-split's image work;
+  monitors owns signals that lie, ship-gate-ci owns the gate and reaper that
+  produce them.
+- `deploy-fleet-ops` ↔ `session-mcp-shared-server` — both touch
+  `scripts/deploy` and the ensure script (`backlog/mcps-venv-deploy-gaps.md`);
+  shared-server owns the MCP's deploy shape, deploy-fleet-ops the script.
+  `ship-gate-ci` Do-next 3 and `deploy-fleet-ops` share the live render tree.
+- `security-hardening` ↔ `session-mcp-shared-server` —
+  `backlog/db-role-enforce-pgbouncer.md` and the shared-server's role
+  isolation (Horizon 1) are one boundary.
 - `scripts/deploy` — plugin-split's gr457894 (restart on installed-file
   change) and the deploy session's render-tree lock are the same script;
   no thread owns deploy, so gr457894 is ranked in plugin-split.

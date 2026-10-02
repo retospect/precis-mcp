@@ -93,6 +93,9 @@ gr346534, soft-deleted)
 4. **gr415963** — discuss: unify `/alerts`, `/gripes` and `/needs-you`
    into one triage surface (view-only merge, or leave as three). A design
    question, not a defect; no urgency driving it.
+5. **backlog/doctor-report-and-alert-channel-quality.md** — doctor and alert
+   output quality, agent-lane container env, worker_logs ts index; the
+   channel the detectors above report through. Platform pass 2026-10-02.
 
 ## Parked
 

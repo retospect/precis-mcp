@@ -116,6 +116,9 @@ it at five; engine-over-UI still holds.
 18. **backlog/chem-name-lookup-verb.md** — PubChem-backed
    formula/ID → common name; small, and a dependency of
    reaction-kind-and-synthesis-cost (13). From pillar 4, 2026-10-01.
+19. **backlog/catpath-wheel-version-reuse.md** — one catpath version across
+   many commits leaves a hand-passed wheel unidentifiable; deploy hygiene for
+   the engine this thread owns. Platform pass 2026-10-02.
 
 ## Parked
 

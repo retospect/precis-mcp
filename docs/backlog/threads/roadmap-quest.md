@@ -105,6 +105,9 @@ the chemistry thread's):
     checklist.
 14. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
+15. **backlog/todo-tree-plan.md** — remaining fold candidates of the
+    todo-tree plan; the todo tree is the quest loop's work substrate, so it
+    sequences after the loop ticks. Platform pass 2026-10-02.
 
 ## Parked
 

@@ -62,6 +62,9 @@ ranking below.
    gr228699, gr228594). Rank above Parked once triage confirms the pair.
 2. **backlog/ms-teams-paper-feed.md** — papers posted in Teams channels as an
    ingest source; from pillar 4, 2026-10-01.
+3. **backlog/april-corpus-nas-migration.md** — 5,335 April-era PDFs never
+   merged into the NAS corpus; a coverage gap in the pipeline's input, after
+   triage settles fidelity. Platform pass 2026-10-02.
 
 ## Parked
 

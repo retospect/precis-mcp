@@ -3,8 +3,8 @@
 **Status:** ends when the agent execution lanes never silently starve or
 halt, spend is bounded, and a crashed run is recoverable — the platform
 under every pillar's agent work (`docs/roadmap.md` platform bucket). Today
-fourteen filed items cover the starvation, halt, budget and crash gaps with no
-owner; the order is silent loss first (starved lanes and rescue passes,
+twenty filed items cover the starvation, halt, budget and crash gaps
+(six added by the 2026-10-02 platform pass); the order is silent loss first (starved lanes and rescue passes,
 terminal-silent halts), then bounded spend, then the quality-of-life and
 container items.
 **Last reviewed:** 2026-10-01
@@ -51,10 +51,22 @@ container items.
 9. **backlog/plan-tick-context-cut.md** — pre-fetch to shrink planner turns,
    exponential re-tick cooldown; overdue since 2026-08-24, needs one healthy
    baseline first (8).
+10. **backlog/fix-gripe-oauth-instead-of-api-key.md** — fix_gripe burns
+    metered API dollars; an OAuth path exists. Spend bound, so near 4.
+    Platform pass 2026-10-02.
+11. **backlog/llm-quota-failure-classification.md** — router-owned LLM failure
+    classification and deferred retry; the quota half of 3's outage class.
+12. **backlog/fixer-salvage-failed-builds.md** — push failed fixer build
+    branches instead of discarding them.
+13. **backlog/prioritization-auto-scoring.md** — severity x frequency
+    auto-score plus a human triage loop.
+14. **backlog/backlog-groomer-items-half.md** — groomer for work items;
+    blocked on two prereqs.
 
 ## Parked
 
-- (none)
+- **backlog/dark-factory-arming.md** — arming the gripe-fix loop dials;
+  unparks on Reto's ruling (td461205).
 
 ## No action needed
 
