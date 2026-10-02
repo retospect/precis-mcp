@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -92,8 +93,15 @@ def _start(
     env = {
         k: v for k, v in os.environ.items() if k != "PRECIS_MCP_TOKEN"
     }  # liveness off
+    # Own session, so _stop can kill the supervisor with every generation it
+    # left behind (they inherit the process group).
     return subprocess.Popen(
-        cmd, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env
+        cmd,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        start_new_session=True,
     )
 
 
@@ -122,12 +130,23 @@ def _wait_bound(port: int, timeout: float = 15.0) -> bool:
 
 
 def _stop(proc: subprocess.Popen[str]) -> str:
+    """SIGTERM the supervisor and collect stderr; never blocks forever.
+
+    A generation the supervisor failed to stop holds the stderr pipe open,
+    so killing only the supervisor left communicate() waiting for an EOF
+    that never came (gr462133: a 13-minute gate hang). On timeout, kill the
+    whole process group and fail with what stderr said.
+    """
     proc.send_signal(signal.SIGTERM)
     try:
         _, err = proc.communicate(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        _, err = proc.communicate()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _, err = proc.communicate(timeout=10)
+        pytest.fail(f"supervisor did not stop within 10 s of SIGTERM; stderr:\n{err}")
     return err
 
 
@@ -212,6 +231,66 @@ def test_a_child_killed_by_sigterm_is_a_restart_not_a_crash(tmp_path: Path) -> N
         err = _stop(proc)
     assert "was killed by signal 15" in err
     assert "crashed" not in err
+
+
+def test_a_stop_during_the_prepare_step_starts_no_new_generation(
+    tmp_path: Path,
+) -> None:
+    """gr462133: a SIGTERM while the next generation's prepare ran used to be
+    swallowed — the generation started anyway, nobody signalled it, and the
+    supervisor waited on it forever (in a container: `docker stop` never
+    drained, and the SIGKILL at its timeout took the in-flight calls)."""
+    port = _free_port()
+    marks = tmp_path / "prepared"
+    proc = _start(
+        tmp_path, port, "0", "0", "gen", prepare=f"echo x >> {marks}; sleep 2"
+    )
+    try:
+        _connect_and_read(port)  # generation 1 serves this, then exits 0
+        deadline = time.monotonic() + 10
+        while (
+            not marks.exists()
+            or len(marks.read_text(encoding="utf-8").splitlines()) < 2
+        ):
+            assert time.monotonic() < deadline, "generation 2's prepare never started"
+            time.sleep(0.02)
+    finally:
+        err = _stop(proc)  # lands inside the 2 s prepare
+    assert "stopped by signal 15 before generation 2" in err
+    assert "generation 2 started" not in err
+    assert proc.returncode == 0
+
+
+def test_a_stop_that_lands_during_the_spawn_reaches_the_new_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handler can run while Popen is mid-spawn, when ``self.child`` is
+    still the reaped generation: the stop must still reach the new child."""
+    sock = socket.socket()
+    sup = mcp_supervisor.Supervisor(
+        sock, [sys.executable, "-c", "import time; time.sleep(60)", "{fd}"], None
+    )
+    real_popen = subprocess.Popen
+
+    def popen_then_signal(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        sup._on_signal(signal.SIGTERM, None)  # before run() assigns self.child
+        return child
+
+    monkeypatch.setattr(mcp_supervisor.subprocess, "Popen", popen_then_signal)
+    monkeypatch.setattr(mcp_supervisor.signal, "signal", lambda *_: None)
+    result: list[int] = []
+    runner = threading.Thread(target=lambda: result.append(sup.run()), daemon=True)
+    runner.start()
+    runner.join(timeout=10)
+    try:
+        assert not runner.is_alive(), "the new child never got the stop"
+        # This child has no drain handler, so the forwarded SIGHUP kills it.
+        assert result == [128 + signal.SIGHUP]
+    finally:
+        if sup.child is not None and sup.child.returncode is None:
+            sup.child.kill()
+        sock.close()
 
 
 def test_a_crashing_child_is_restarted_after_a_backoff(tmp_path: Path) -> None:

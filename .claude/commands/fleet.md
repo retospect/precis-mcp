@@ -33,7 +33,11 @@ Note from the user: `$ARGUMENTS`
    <slug>", which makes it read its thread file and, where a tree is dirty,
    its own unlanded work (`docs/backlog/threads/README.md`). A dirty tree
    whose session died is the case to look at by hand before step 3: read
-   `scripts/inflight` for `DIRTY` rows.
+   `scripts/inflight` for `DIRTY` rows. It first waits (up to 10 min) for
+   the session MCP server to answer, because a session that starts while
+   the server is down gives up on it for good after ~7 s. The orchestrator
+   seat itself started before that check runs, so after a reboot check its
+   own `/mcp` once the server is up.
 
 3. **Standing instructions**, about a minute after the windows exist, to
    the windows `up` reported as created (not to ones that already had

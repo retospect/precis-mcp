@@ -48,74 +48,76 @@ capacity and isolation gaps.
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
-0. **gr460711 — a container recreate strands sessions; a supervisor respawn
-   does not.** The two `--recreate` runs at 2026-10-01 23:13Z (cache mount,
-   gr460339) left several sessions without the MCP until a manual /mcp, and
-   the four watchdog respawns before and after stranded nobody. A recreate
-   is `docker rm -f`: SIGKILL, open streams reset, the port dark ~9 s until
-   the new supervisor binds. It ranks first because every ensure-script edit
-   and every secret rotation triggers it at the next SessionStart anywhere.
-   Rig, 2026-10-02 (copy of the ensure script on 8767, real
-   `claude -p` client): one recreate, two recreates ~55 s apart, and a call
-   issued ~3 s into the dark window all re-initialized cleanly. So the
-   non-interactive client survives, and the stranding is specific to
-   long-lived interactive sessions — this session reconnected after both
-   prod recreates, deploy's and twinkly's did not. Leading hypothesis: the
-   interactive client does not reset its reconnect budget after a
-   successful reconnect, so a second drop soon after the first exhausts it.
-   That is client-side, so the server-side fix is fewer and shorter drops,
-   shipped as ONE ensure-script install (an edit is itself a recreate):
-   (a) a secret rotation rewrites the mounted files and respawns the child
-   instead of recreating; (b) `--recreate` uses `docker stop -t` and
-   drains; (c) the prepare step reinstalls `--no-deps -e /app` when
-   `pyproject.toml` differs from a stamp in the venv (see Runbook);
-   optionally (d) a holder container owns the port's network namespace.
-   Proving the hypothesis needs two interactive windows on the rig (a
-   human, or `claude` driven through tmux).
-   **Progress 2026-10-02 (melchior):** the rig showed SIGTERM cannot drain
-   — uvicorn's shutdown cancels the session manager's task group, so the
-   in-flight call returned an empty body. Landed in the repo: SIGHUP on a
-   supervised serve child runs the watchdog's high-water drain and exits 0
-   (`install_watchdog.install_drain_signal`), the supervisor forwards
-   `docker stop`'s SIGTERM as SIGHUP, and a child killed by SIGTERM/SIGHUP
-   is a restart, not a crash. Rig, on the worktree code: an in-flight 10 s
-   search survived both a SIGHUP respawn and a `docker stop` recreate.
-   The ensure-script half — (a) secrets hashed apart and respawned via
-   SIGHUP, (b) create-then-stop recreate, (c) the pyproject stamp, plus
-   the label hashing the container spec instead of the script file — is
-   staged at `~/.claude/projects/-Users-reto-precis-mcp/scratch/gr460711/ensure.sh`
-   on melchior and rig-verified; install it after the deploy that carries
-   the supervisor change, in one recreate.
-   **(d) not reproduced, 2026-10-02 11:08Z:** an interactive `claude`
-   (v2.1.285, haiku, driven through tmux) on the rig went through one
-   recreate, one respawn, then two hard `docker rm -f` recreates 55 s
-   apart, and answered a tool call from the new container each time. The
-   reconnect-budget hypothesis is unproven; the 10-01 stranding may have
-   needed an older client or a call in flight. The server-side fixes stand
-   on their own: fewer recreates, drained ones.
-   **(e) dependencies, added at the orchestrator's request:** the
-   numba crash (2026-10-02 ~10:25Z, fixed by a hand image rebuild) shows
-   the prepare step must also install new dependencies — (c)'s
-   `--no-deps` reinstall would not have caught it. Staged: when `uv.lock`
-   changes, dry-run the image's own sync (`uv sync --frozen
-   --no-install-project --all-extras --no-dev --inexact
-   --no-install-package autocatpath`) and run it only if the plan adds a
-   package or changes a version. Rig: numba uninstalled, one respawn,
-   `synced dependencies from uv.lock: numba==0.67.0`, child up 6 s later.
-   Still needs an image rebuild: a dep with no wheel, or an autocatpath
-   bump.
-   **Second gap, same day:** `scripts/deploy` moves the prod clone only on
-   the machine that runs it, so melchior's clone (made 10:01Z) never moved
-   while deploys ran elsewhere — the server served 06e3f3d7 under a
-   0dc5e6a0 prod. Moved by hand 10:54Z; the staged script's `follow_prod`
-   follows origin/prod itself (at most one fetch a minute, at SessionStart
-   only — a deploy from elsewhere lands at the next session start).
-   **Install plan (Reto, review items -1 and -2, 2026-10-02):** melchior
-   installs the staged script right after the round-1 deploy, in one
-   `--recreate`. The dev Mac's copy is installed afterwards by a session
-   Reto starts there (copy from melchior, merge local edits, one
-   `--recreate`, check the served sha) — keep
-   `scratch/gr460711/ensure.sh` on melchior until that is done.
+0. **gr460711 — any refused window longer than the client's retry budget
+   strands sessions; make the server's refused windows short.** Measured
+   2026-10-02 on Claude Code v2.1.285 (MCP client logs under
+   `~/Library/Caches/claude-cli-nodejs/<project>/mcp-logs-precis/`):
+   - **A connected session whose connection drops** makes 5 reconnect
+     attempts at 0/1/2/4/8 s, ~15 s in all, then logs "Max reconnection
+     attempts (5) reached, giving up" and never retries. Reproduced on
+     the rig: port down 25 s → gave up at 15 s; `/mcp` → precis →
+     Reconnect restores it.
+   - **A session that starts while the port is refused** retries 3 times
+     at 1/2/4 s, ~7 s, then gives up for its whole life. The orchestrator
+     started 11:34:21Z while melchior was still rebooting (server up
+     11:42Z) and never had precis. MCP connects run concurrently with
+     SessionStart hooks, so the ensure hook cannot cover it;
+     `scripts/fleet up` now waits for an HTTP answer before creating
+     windows (d82bb08f7). The seat that runs `/fleet` started earlier and
+     must check its own `/mcp`.
+   - **A dropped GET stream whose port is not refused** (a watchdog
+     bounce, 10:54Z) exhausts its own 2-attempt SSE budget and keeps the
+     transport up — POST still works. That is why respawns never
+     stranded anyone.
+   The 10-01 stranding fits the first point: a hard `docker rm -f`
+   recreate holds the port refused from the kill until the new
+   supervisor binds. It is consistent, not proven, since the 10-01 client
+   logs were not read. The server-side fix is fewer and shorter refused
+   windows, shipped as ONE ensure-script install (an edit is itself a
+   recreate). It is staged at
+   `~/.claude/projects/-Users-reto-precis-mcp/scratch/gr460711/ensure.sh`
+   on melchior:
+   - secret rotations SIGHUP the child instead of recreating;
+   - the label hashes the container spec, not the script file;
+   - recreate is create → `docker stop -t 45` (drains via the
+     supervisor's SIGTERM→SIGHUP, 8ebb9d785) → start, under
+     `trap '' HUP INT TERM`, so a killed hook cannot leave the port dark;
+   - `follow_prod` keeps the served clone on origin/prod (deploys move it
+     only on the deploying machine; melchior served 06e3f3d7 under a
+     0dc5e6a0 prod), at most one fetch a minute, at SessionStart;
+   - the prepare step syncs new or bumped dependencies from `uv.lock`
+     (a failed dry-run no longer stamps the lock) and reinstalls project
+     metadata when `pyproject.toml` changes. It logs per-phase seconds
+     and has uv's cache on a named volume — not a host bind, whose file
+     count on virtiofs is the panic risk.
+   Rig, staged script, 2026-10-02:
+   - idle recreate: refused 0.34 s;
+   - recreate with a 9 s search running on the old container: the stop
+     drained it, the interactive client got its answer, refused 0.43 s,
+     and its next call worked;
+   - fresh-container prepare: 6 s on an idle host (copy 2 / deps 3 /
+     metadata 1). The 40 s seen at 14:40Z was under six gate workers;
+     time it again on the real install.
+   - a client idle ~2 h (last call before 14:59:27Z) went through a
+     recreate at 17:01Z, and its next tool call reached the new server.
+   **Install plan (Reto, review items -1 and -2):**
+   - melchior installs after the round-1 deploy, in one `--recreate`.
+     **Timing is the orchestrator's**: it drops every session, so tell
+     the orchestrator first, take the before-state (who is already
+     disconnected), and count as stranded only a session whose next call
+     fails and fails again 60 s later.
+   - Reto's dev-Mac session installs the same script afterwards; keep the
+     scratch copy until then.
+   **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
+   SIGTERM that landed between reaping one generation and assigning the
+   next. Fixed in 7f006bf09 (round 2); it loads at the first recreate
+   after the deploy that carries it.
+   **Incident gr462598, 2026-10-02 15:04:13–15:04:54Z (this thread):** a test
+   harness for the fleet wait ran the live ensure script with test ports;
+   it removed the server, then recreated it on 8799. Restored on 8765 by
+   hand. 8765 was refused for 24 s, so every connected session on melchior
+   gave up at 15:04:29Z and needed `/mcp`. `wait_mcp` now takes
+   `PRECIS_MCP_ENSURE`, and its test never reaches the real script.
 1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
    capacity number and shared cache left — Reto's call, td461158.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache

@@ -185,7 +185,19 @@ class Supervisor:
 
     def _on_signal(self, signum: int, _frame: object) -> None:
         self.stopping = signum
-        child = self.child
+        self._forward_stop()
+
+    def _forward_stop(self) -> None:
+        """Pass the pending stop signal to the live child, as a drain for SIGTERM.
+
+        Called from the handler and again right after each spawn: a signal
+        that lands while Popen runs finds ``self.child`` still pointing at the
+        reaped generation, and would otherwise never reach the new one. A
+        repeat is harmless — the serve child ignores DRAIN_SIGNAL mid-drain.
+        """
+        signum, child = self.stopping, self.child
+        if signum is None:
+            return
         # os.kill, not Popen.send_signal: send_signal polls first, which can
         # reap the child behind _wait_child's back. Until _wait_child reaps
         # it, the pid is ours (at worst a zombie), so signalling it is safe.
@@ -227,10 +239,17 @@ class Supervisor:
                 crashes += 1
                 time.sleep(crash_backoff_s(crashes))
                 continue
+            if self.stopping is not None:
+                # Asked to stop while the prepare step ran (gr462133).
+                _log(
+                    f"stopped by signal {self.stopping} before generation {generation + 1}"
+                )
+                return 0
             generation += 1
             argv = child_argv(self.command, fd)
             started = time.monotonic()
             self.child = subprocess.Popen(argv, pass_fds=(fd,))
+            self._forward_stop()
             if self.detector is not None:
                 self.detector.child_started(time.monotonic())
             _log(f"generation {generation} started (pid {self.child.pid})")

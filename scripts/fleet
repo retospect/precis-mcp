@@ -55,10 +55,34 @@ send() { # send <window> <text>; refuses a window with a dialog open
   fi
 }
 
+# A session connects to the shared MCP server once, at start, and gives up for
+# its whole life after ~7 s of refused connects (3 retries at 1, 2, 4 s). After
+# a reboot the server is minutes away, so a window created first never has
+# precis (gr460711: the orchestrator, 2026-10-02 11:34Z). Start the server and
+# wait for a real HTTP answer — the supervisor accepts connects during its
+# prepare step, so a bare TCP connect is not ready.
+wait_mcp() {
+  local ensure="${PRECIS_MCP_ENSURE:-$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh}"
+  local port="${PRECIS_MCP_HTTP_PORT:-8765}" limit="${PRECIS_FLEET_MCP_WAIT:-600}"
+  local start=$SECONDS said=""
+  [ -x "$ensure" ] && [ "$limit" != 0 ] || return 0
+  bash "$ensure" || true
+  until [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -X POST "http://127.0.0.1:$port/mcp")" != 000 ]; do
+    if [ $((SECONDS - start)) -ge "$limit" ]; then
+      echo "scripts/fleet: no answer from the session MCP server on :$port after ${limit}s;" \
+        "starting windows anyway — run /mcp in each once it is up" >&2
+      return 0
+    fi
+    [ -n "$said" ] || { echo "waiting for the session MCP server on :$port (up to ${limit}s)"; said=1; }
+    sleep 5
+  done
+}
+
 cmd_up() {
   need_tmux
   local stagger=10
   [ "${1:-}" = "--stagger" ] && stagger="$2"
+  wait_mcp
   mkdir -p "$queue/open" "$queue/answered" "$reviews"
   if ! has_window review; then
     local prompt="You are the review session. Read $conf/review-protocol.md and follow it; the queue directory is $queue. Start with the gather step, then give Reto the status board and the first cluster."
