@@ -199,6 +199,70 @@ def test_detail3d_page_has_atoms_toggle_only_for_the_atomic_design(
     assert 'id="bt3d-atoms"' not in plain_page.text
 
 
+def test_atomic3d_json_strain_layers_on_c60(
+    atomic3d_client, runtime_with_store
+) -> None:
+    """The viewer's strain layers: one bond strain per bond and two
+    angle strains per atom. Ideal C60 pins both angle measures: θp is the
+    textbook 11.6°, and every atom's three bond angles are 108°, 120°,
+    120° (one pentagon, two hexagons), an RMS deviation of √48 ≈ 6.93°."""
+    _seed_c60_structure(runtime_with_store, "c60frag8")
+    _seed_atomic_se(runtime_with_store, slug="c60design8", structure_slug="c60frag8")
+    block = atomic3d_client.get("/se/c60design8/atomic3d.json").json()["blocks"][0]
+
+    assert len(block["bond_dev"]) == len(block["bonds"]) == 90
+    assert len(block["angle_strain_thetap"]) == 60
+    assert len(block["angle_strain_120"]) == 60
+    assert np.allclose(block["angle_strain_thetap"], 11.6, atol=0.2)
+    assert np.allclose(block["angle_strain_120"], 48**0.5, atol=0.3)
+    # C60's bonds are 1.40/1.45 Å around the 1.42 Å reference
+    assert max(block["bond_dev"]) < 0.06
+
+
+def _hexagon(
+    bond_A: float = 1.42,
+) -> tuple[list[str], np.ndarray, list[tuple[int, int]]]:
+    ang = np.radians(60.0 * np.arange(6))
+    cart = np.stack([bond_A * np.cos(ang), bond_A * np.sin(ang), np.zeros(6)], axis=1)
+    return ["C"] * 6, cart, [(k, (k + 1) % 6) for k in range(6)]
+
+
+def test_strain_arrays_ideal_bond_is_zero_and_non_carbon_is_omitted() -> None:
+    from precis_web.routes.blocktree_view import _strain_arrays
+
+    elements, cart, bonds = _hexagon()
+    out = _strain_arrays(elements, cart, bonds)
+    assert out["bond_dev"] == pytest.approx([0.0] * 6, abs=1e-12)
+    # a lone ring is 2-coordinated throughout: no angle strain applies
+    assert "angle_strain_thetap" not in out
+    assert "angle_strain_120" not in out
+
+    # a C–N bond has no reference length: None, the C–C bonds still scored
+    mixed = ["N"] + elements[1:]
+    dev = _strain_arrays(mixed, cart * (1.5 / 1.42), bonds)["bond_dev"]
+    assert dev[0] is None and dev[5] is None
+    assert dev[1] == pytest.approx(0.08)
+
+    assert _strain_arrays(["Si"] * 6, cart, bonds) == {}
+
+
+def test_detail3d_page_has_strain_layer_rows_for_the_atomic_design(
+    atomic3d_client, runtime_with_store
+) -> None:
+    _seed_c60_structure(runtime_with_store, "c60frag9")
+    _seed_atomic_se(runtime_with_store, slug="c60design9", structure_slug="c60frag9")
+    _seed_plain_se(runtime_with_store, "plain_se9")
+    page = atomic3d_client.get("/se/c60design9").text
+    for el in (
+        "bt3d-layer-bond",
+        "bt3d-layer-angle",
+        "bt3d-dev-threshold",
+        "bt3d-angle-measure",
+    ):
+        assert f'id="{el}"' in page
+    assert 'id="bt3d-layer-bond"' not in atomic3d_client.get("/se/plain_se9").text
+
+
 _CYL_MERIDIAN = [[0.0, -5.0], [10.0, -5.0], [10.0, 5.0], [0.0, 5.0]]
 
 

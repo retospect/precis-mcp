@@ -94,10 +94,38 @@
     </label>
     <input type="range" id="bt3d-smooth" min="0" max="100" value="0" step="1" class="w-32" />
   </div>
-  <div id="bt3d-smooth-legend" class="hidden items-center gap-1 text-[11px] text-slate-500">
+  {# Strain layers (Reto, 2026-10-02): one row per
+     measure, each on its own part of the picture with its own colour, all
+     usable at once. A threshold slider per row; only what sits at or above
+     it is coloured, default = the top 5%. Rows whose measure the structure
+     does not carry stay hidden. #}
+  <div id="bt3d-smooth-legend" class="hidden items-center gap-1 text-[11px] text-slate-500"
+       title="smoothed surface coloured by distance to the raw atoms; vertices below the threshold stay grey">
     <span>deviation</span>
+    <input type="range" id="bt3d-dev-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #e0f2fe, #1d4ed8, #7f1d1d);"></span>
-    <span id="bt3d-smooth-legend-min">0.00</span>–<span id="bt3d-smooth-legend-max">0.00</span> Å
+    ≥ <span data-role="value">0.00 Å</span>
+    (<span id="bt3d-smooth-legend-min" data-role="min">0.00</span>–<span id="bt3d-smooth-legend-max" data-role="max">0.00</span>)
+  </div>
+  <div id="bt3d-layer-bond" class="hidden items-center gap-1 text-[11px] text-slate-500"
+       title="C–C bonds coloured by |length − 1.42 Å|; bonds below the threshold stay grey">
+    <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-bond-strain" data-role="toggle" /> bond strain</label>
+    <input type="range" id="bt3d-bond-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
+    <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #22c55e, #16a34a, #14532d);"></span>
+    ≥ <span data-role="value">0.000 Å</span>
+    (<span data-role="min">0.000</span>–<span data-role="max">0.000</span>)
+  </div>
+  <div id="bt3d-layer-angle" class="hidden items-center gap-1 text-[11px] text-slate-500"
+       title="3-coordinated carbon atoms coloured by θp (out-of-plane pyramidalization, picks out pentagons and heptagons) or by the RMS deviation of their bond angles from 120° (in-plane distortion); atoms below the threshold keep their element colour">
+    <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-angle-strain" data-role="toggle" /> angle strain</label>
+    <select id="bt3d-angle-measure" data-role="measure" class="border border-slate-300 rounded px-1 py-0">
+      <option value="thetap" selected>θp</option>
+      <option value="120">120°</option>
+    </select>
+    <input type="range" id="bt3d-angle-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
+    <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #fb923c, #ea580c, #7c2d12);"></span>
+    ≥ <span data-role="value">0.0°</span>
+    (<span data-role="min">0.0</span>–<span data-role="max">0.0</span>)
   </div>
   {% endif %}
 </div>
@@ -279,6 +307,10 @@
       legendMax: document.getElementById("bt3d-smooth-legend-max"),
       targetToggle: document.getElementById("bt3d-target"),
       targetLabel: document.getElementById("bt3d-target-label"),
+    },
+    strainEls: {
+      bond: document.getElementById("bt3d-layer-bond"),
+      angle: document.getElementById("bt3d-layer-angle"),
     },
     {% endif %}
     onSelectBlock: (name) => { if (window.designChatAddHandle) window.designChatAddHandle(name); },

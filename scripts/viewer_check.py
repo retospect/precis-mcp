@@ -6,6 +6,7 @@ the requirements it encodes are in
 
     viewer_check.py seed <ops.json> <slug>       # needs PRECIS_DATABASE_URL
     viewer_check.py probe <base-url> <slug> <out-dir>
+    viewer_check.py strain <base-url> <slug> <out-dir>   # an atomic design
 
 Why it exists: explode, selection highlighting and the level control were
 each dead from the commit that introduced them, behind a green suite. A
@@ -54,6 +55,9 @@ LEVEL_CHANGED_MIN = 300
 #: camera: a 12 A cylinder around C60 inside a 5 nm sphere measured n=448
 #: (local run, headless Chrome), so it gets its own, lower floor.
 TARGET_CHANGED_MIN = 300
+#: A strain layer recolours a few percent of the atoms or bonds, not whole
+#: blocks; set from the first measured run on se:hexa-smooth-drum-v2.
+STRAIN_CHANGED_MIN = 300
 #: "Back to the base picture" — measured n=1 on the hand harness.
 RESTORED_MAX = 200
 #: Ceiling for any one wait on an observable condition.
@@ -101,6 +105,65 @@ def _diff(a: Any, b: Any) -> dict[str, Any]:
     }
 
 
+def _open(p: Any, out: pathlib.Path, console: list[str]) -> tuple[Any, ...]:
+    """A Chromium page on software WebGL, collecting console errors into
+    ``console``, plus its canvas ``shot`` (cropped) and ``settle``."""
+    import numpy as np
+    from PIL import Image
+
+    browser = p.chromium.launch(
+        args=[
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+        ]
+    )
+    page = browser.new_page(
+        viewport={"width": 1600, "height": 1000}, accept_downloads=True
+    )
+    page.on(
+        "console",
+        lambda m: console.append(f"{m.type}: {m.text}") if m.type == "error" else None,
+    )
+    page.on("pageerror", lambda e: console.append(f"pageerror: {e}"))
+    canvas = page.locator("#bt3d-viewer canvas").first
+
+    def shot(name: str) -> Any:
+        path = out / f"{name}.png"
+        canvas.screenshot(path=str(path))
+        a = np.asarray(Image.open(path).convert("RGB"), dtype=np.int16)
+        return a[TOP_CROP : max(TOP_CROP + 1, a.shape[0] - BOTTOM_CROP)]
+
+    def settle(name: str) -> Any:
+        """Shoot until two consecutive frames agree — the canvas has
+        stopped changing — and return the last one."""
+        prev = shot(name)
+        deadline = time.monotonic() + WAIT_S
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(500)
+            cur = shot(name)
+            if _diff(prev, cur)["n"] <= NOISE_MAX:
+                return cur
+            prev = cur
+        raise TimeoutError(f"canvas never settled for {name!r}")
+
+    return browser, page, canvas, shot, settle
+
+
+def _report(base_url: str, slug: str, out: pathlib.Path, checks: list[Check]) -> int:
+    report = {
+        "url": f"{base_url}/se/{slug}",
+        "passed": all(c.passed for c in checks),
+        "checks": [asdict(c) for c in checks],
+    }
+    (out / "report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
+    for c in checks:
+        print(f"{'PASS' if c.passed else 'FAIL'}  {c.name}  {json.dumps(c.detail)}")
+    return 0 if report["passed"] else 1
+
+
 def probe(base_url: str, slug: str, out_dir: str) -> int:
     import numpy as np
     from PIL import Image
@@ -113,43 +176,7 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
     console: list[str] = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            args=[
-                "--use-gl=angle",
-                "--use-angle=swiftshader",
-                "--enable-unsafe-swiftshader",
-            ]
-        )
-        page = browser.new_page(
-            viewport={"width": 1600, "height": 1000}, accept_downloads=True
-        )
-        page.on(
-            "console",
-            lambda m: (
-                console.append(f"{m.type}: {m.text}") if m.type == "error" else None
-            ),
-        )
-        page.on("pageerror", lambda e: console.append(f"pageerror: {e}"))
-        canvas = page.locator("#bt3d-viewer canvas").first
-
-        def shot(name: str) -> Any:
-            path = out / f"{name}.png"
-            canvas.screenshot(path=str(path))
-            a = np.asarray(Image.open(path).convert("RGB"), dtype=np.int16)
-            return a[TOP_CROP : max(TOP_CROP + 1, a.shape[0] - BOTTOM_CROP)]
-
-        def settle(name: str) -> Any:
-            """Shoot until two consecutive frames agree — the canvas has
-            stopped changing — and return the last one."""
-            prev = shot(name)
-            deadline = time.monotonic() + WAIT_S
-            while time.monotonic() < deadline:
-                page.wait_for_timeout(500)
-                cur = shot(name)
-                if _diff(prev, cur)["n"] <= NOISE_MAX:
-                    return cur
-                prev = cur
-            raise TimeoutError(f"canvas never settled for {name!r}")
+        browser, page, canvas, shot, settle = _open(p, out, console)
 
         def click_node(name: str) -> bool:
             return bool(
@@ -357,17 +384,166 @@ def probe(base_url: str, slug: str, out_dir: str) -> int:
         checks.append(Check("console_clean", not console, {"errors": console[:20]}))
         browser.close()
 
-    report = {
-        "url": f"{base_url}/se/{slug}",
-        "passed": all(c.passed for c in checks),
-        "checks": [asdict(c) for c in checks],
-    }
-    (out / "report.json").write_text(
-        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    return _report(base_url, slug, out, checks)
+
+
+def _set_range(page: Any, selector: str, value: int) -> None:
+    page.evaluate(
+        """([sel, v]) => {
+          const el = document.querySelector(sel);
+          el.value = String(v);
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+        }""",
+        [selector, value],
     )
-    for c in checks:
-        print(f"{'PASS' if c.passed else 'FAIL'}  {c.name}  {json.dumps(c.detail)}")
-    return 0 if report["passed"] else 1
+
+
+def _row_counts(page: Any, row_id: str) -> dict[str, int]:
+    return dict(
+        page.evaluate(
+            """(id) => {
+              const d = document.getElementById(id).dataset;
+              return {coloured: Number(d.coloured), total: Number(d.total)};
+            }""",
+            row_id,
+        )
+    )
+
+
+def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
+    """The strain layers (Reto, 2026-10-02) on an atomic
+    design: each layer's checkbox and threshold slider change the picture,
+    the default threshold colours the top 5%, and — from the payload, not
+    the page — every pentagon atom clears the default θp threshold."""
+    import numpy as np
+    from playwright.sync_api import sync_playwright
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    checks: list[Check] = []
+    console: list[str] = []
+
+    with sync_playwright() as p:
+        browser, page, _canvas, shot, settle = _open(p, out, console)
+        page.goto(f"{base_url}/se/{slug}", wait_until="networkidle", timeout=180000)
+        page.wait_for_selector("#bt3d-viewer canvas", timeout=int(WAIT_S * 1000))
+        # The overlay is built after the scene; its first paint stamps the
+        # deviation row's counts.
+        page.wait_for_function(
+            "() => document.getElementById('bt3d-smooth-legend')?.dataset.total",
+            timeout=int(WAIT_S * 3 * 1000),
+        )
+        base = settle("s00_base")
+        page.wait_for_timeout(600)
+        floor = _diff(base, shot("s01_noise"))
+        checks.append(Check("noise_floor", floor["n"] <= NOISE_MAX, floor))
+
+        for layer in ("bond", "angle"):
+            row = f"bt3d-layer-{layer}"
+            if not page.locator(f"#{row}").is_visible():
+                checks.append(Check(f"{layer}_row_shown", False, {}))
+                continue
+            page.check(f"#bt3d-{layer}-strain")
+            on_shot = settle(f"s_{layer}_on")
+            on = _diff(base, on_shot)
+            checks.append(
+                Check(f"{layer}_on_redraws", on["n"] >= STRAIN_CHANGED_MIN, on)
+            )
+            counts = _row_counts(page, row)
+            frac = counts["coloured"] / counts["total"] if counts["total"] else 0.0
+            checks.append(
+                Check(
+                    f"{layer}_default_colours_top_5pct",
+                    0.04 <= frac <= 0.06,
+                    {**counts, "frac": round(frac, 4)},
+                )
+            )
+            slider = f"#bt3d-{layer}-threshold"
+            pos = int(page.eval_on_selector(slider, "el => Number(el.value)"))
+            _set_range(page, slider, pos // 2)
+            moved = _diff(on_shot, settle(f"s_{layer}_threshold_down"))
+            checks.append(
+                Check(
+                    f"{layer}_threshold_redraws",
+                    moved["n"] >= STRAIN_CHANGED_MIN,
+                    {**moved, "slider": [pos, pos // 2]},
+                )
+            )
+            if layer == "angle":
+                before = settle("s_angle_before_switch")
+                page.select_option("#bt3d-angle-measure", "120")
+                switched = _diff(before, settle("s_angle_120"))
+                checks.append(
+                    Check(
+                        "angle_measure_switch_redraws",
+                        switched["n"] >= STRAIN_CHANGED_MIN,
+                        {**switched, "counts": _row_counts(page, row)},
+                    )
+                )
+                page.select_option("#bt3d-angle-measure", "thetap")
+            page.uncheck(f"#bt3d-{layer}-strain")
+            off = _diff(base, settle(f"s_{layer}_off"))
+            checks.append(Check(f"{layer}_off_restores", off["n"] <= RESTORED_MAX, off))
+
+        # Surface deviation: only drawn toward the smooth end of the slider.
+        _set_range(page, "#bt3d-smooth", 100)
+        smooth_shot = settle("s_smooth")
+        pos = int(
+            page.eval_on_selector("#bt3d-dev-threshold", "el => Number(el.value)")
+        )
+        _set_range(page, "#bt3d-dev-threshold", pos // 2)
+        moved = _diff(smooth_shot, settle("s_dev_threshold_down"))
+        checks.append(
+            Check(
+                "deviation_threshold_redraws",
+                moved["n"] >= STRAIN_CHANGED_MIN,
+                {**moved, "slider": [pos, pos // 2]},
+            )
+        )
+
+        # Pentagons vs the default θp threshold, computed here from the
+        # payload with numpy — not the page's own percentile code.
+        data = page.evaluate(
+            "(u) => fetch(u).then(r => r.json())", f"{base_url}/se/{slug}/atomic3d.json"
+        )
+        thetap = np.array(
+            [
+                v
+                for b in data["blocks"]
+                for v in b.get("angle_strain_thetap", [])
+                if v is not None
+            ]
+        )
+        if thetap.size:
+            thr = float(np.sort(thetap)[min(thetap.size - 1, int(0.95 * thetap.size))])
+            pent = {
+                (bi, a)
+                for bi, b in enumerate(data["blocks"])
+                for f in b.get("faces", [])
+                if len(f) == 5
+                for a in f
+            }
+            missed = [
+                (bi, a)
+                for bi, a in sorted(pent)
+                if (data["blocks"][bi]["angle_strain_thetap"][a] or 0.0) < thr
+            ]
+            checks.append(
+                Check(
+                    "pentagon_atoms_clear_default_thetap",
+                    bool(pent) and not missed,
+                    {
+                        "pentagon_atoms": len(pent),
+                        "missed": len(missed),
+                        "threshold_deg": round(thr, 2),
+                    },
+                )
+            )
+
+        checks.append(Check("console_clean", not console, {"errors": console[:20]}))
+        browser.close()
+
+    return _report(base_url, slug, out, checks)
 
 
 def main(argv: list[str]) -> int:
@@ -376,6 +552,8 @@ def main(argv: list[str]) -> int:
         return 0
     if len(argv) == 5 and argv[1] == "probe":
         return probe(argv[2], argv[3], argv[4])
+    if len(argv) == 5 and argv[1] == "strain":
+        return strain_probe(argv[2], argv[3], argv[4])
     print(__doc__, file=sys.stderr)
     return 2
 

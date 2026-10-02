@@ -8,7 +8,7 @@ that as the far end all three se threads serve. Today the affordances work
 and are verified by canvas pixel-diff at the deployed sha. As of 2026-09-30
 that is no longer only against local fixtures: prod's `unicycle-c1` was
 copied down and pixel-diffed, and every affordance held EXCEPT the live
-level change (gr458329, Do-next 3) — the first defect this thread found on
+level change (gr458329, since resolved as a measurement artifact) — the first defect this thread found on
 real data rather than by reasoning. The list is about making that
 verification repeatable by someone other than the author, then the deferred
 features. gr457931 shipped 2026-09-30 and changes the shape of that gap:
@@ -24,15 +24,14 @@ cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
 picture — suspect a stale server upstream before suspecting the data.
 gr458061 is another thread's item.
-**Last reviewed:** 2026-10-02 (handoff: Do-next 0 deployed and
-agent-verified on prod data; nothing landed-but-undeployed, nothing in
-flight)
+**Last reviewed:** 2026-10-02 (strain layers built and verified on prod's
+`hexa-smooth-drum-v2` data; the nightly viewer check's first scheduled run
+went green, so its item shrank to the atomic-fixture residual)
 **Worktree:** `se-3d-viewer`
 
-**Resume state (2026-10-02).** Everything this thread has built is
-deployed. Do-next 0 waits on Reto alone; Do-next 1 waits on GitHub's
-scheduler; Do-next 3 (level chips) is the next item an agent can start
-without anyone, and none has started it. Two traps for whoever picks this
+**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1
+(an atomic fixture for the nightly) and 3 (level chips) are the items an
+agent can start without anyone. Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
   credential: `scripts/guide-web --db prod --port 9110` (local
@@ -65,60 +64,47 @@ up:
      design (prod `dogfood-fold-3` is bound, so it renders there).
    Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
    no opaque-while-tinted change.
+   Added 2026-10-02, once deployed: the strain layers on
+   `hexa-smooth-drum-v2` — bond strain (green, on the bonds; a bond over
+   threshold is drawn twice as thick, or it hides between its atoms),
+   angle strain (orange, on the atoms, θp ↔ 120° switch), and the
+   deviation threshold slider. Defaults colour the top 5% (measured
+   457/9135 bonds, 302/6024 atoms), and all 60 pentagon atoms clear the
+   default θp threshold of 4.03°.
 
-1. **backlog/se-viewer-browser-level-check.md** — BUILT 2026-10-01
-   (viewer-check.yml, nightly); delete once a scheduled GitHub run is
-   green. As of 2026-10-02 07:30Z only the manual run exists: the
-   02:41Z schedule had not fired, which is GitHub's normal lag here
-   (check.yml's 05:23Z cron lands around 11:00Z), not a defect until
-   a full day passes with no scheduled run. Before it, no browser-level check
-   existed, so every correctness claim rests on a hand-built harness in a
-   worktree that will be reaped, including the scripts that resolved
-   gr458329. Leverage: makes 2–4 verifiable instead of assertable, and is
-   the only guard against the defect that started the thread (a dead viewer
-   behind a green suite). The item now carries three REQUIREMENTS the hand
-   harness paid for — a phase waits on an observable condition rather than
-   a fixed timeout, the noise floor is measured in the same run, and canvas
-   AND tree are both witnessed — the first of which is what a 2.7 s settle
-   on a 3.5 s swap cost (see below). SCOPE SETTLED (Reto, 2026-10-01):
-   **a nightly GitHub-hosted workflow against a local fixture, the
-   `unicycle-c1` design.** td458066 means agents touch prod data through
-   the MCP, not that testing is barred from prod — prod is ruled out here
-   for two other reasons: CI would have to hold the Basic credential, and
-   a prod run tests the deployed tree after the fact instead of `main`
-   before it ships. Prod DATA still reaches the fixture through
-   `view='ops'`.
-2. **backlog/se-viewer-strain-layers.md** — Reto 2026-10-02, "soon":
-   bond-length deviation on the bonds and pyramidalization on the atoms,
-   beside today's surface deviation, each with its own colour, checkbox
-   and threshold slider (default: top 5% coloured). Payload arrays plus
-   viewer controls; independent of the items below.
-3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
+1. **backlog/se-viewer-browser-level-check.md** — the nightly is green
+   but runs only the unicycle, which has no atoms, so the atomic overlay
+   (target surface, strain layers, atom pick and hover) has no CI check;
+   `viewer_check.py strain` has only been run by hand. Leverage: the
+   overlay is where most of 2026-10's viewer work landed, and it is the
+   one area a dead control would again sit behind a green suite. Needs a
+   structure-plus-se fixture and a `seed` that replays both.
+2. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
    No reproducer yet: gr458329 looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
-4. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
+3. **backlog/se-3d-viewer-ux-batch.md**, per-block level chips — new work is
    server-side: scene3d.json must carry, per block, which rungs differ.
    Rule settled (td458168): the literal rule wins over its worked example,
    and the shallowest member of an identical run keeps its letter.
-5. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
+4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
    bundle has no hover callback, so this needs an own throttled raycaster;
    the addressing half shipped. Last feature because no design is decided.
-6. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
+5. **backlog/se-mechanical-drc.md** — fastener_insertion_path, final-state
    only, rulings 1–7 in the file. Asks whether a fastener can REACH its
    seat; `toolaccess.access()` only ever asked whether a seated screw can
    be TURNED. Ruling 6 (Reto, 2026-09-30) puts the swept-volume RENDER in
    that item too, not here — this thread only consumes it — so the item is
    self-contained. Independent validator pass and the largest piece of
    work, hence last.
-7. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
+6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the
    DRC file, which deferred it in two rulings without giving it a home.
-   Blocked by 6 (ruling 2 intends the same per-tool-class
+   Blocked by 5 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
 
 ## Horizon
@@ -211,7 +197,7 @@ spinner, no disabled control and an empty console, and `loadScene`'s
 `reloading` guard dropped a second change inside the window without a
 trace. `#bt3d-busy` plus disabling `level`/`overrides` during a refetch
 closes it. The durable lesson — a browser phase must wait on an observable
-condition, never a timeout — is a requirement on Do-next 1 rather than a
+condition, never a timeout — is a requirement on the browser check (now built) rather than a
 line in a closed gripe.
 
 ## Selection highlighting never reached the screen (2026-10-01)

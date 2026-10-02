@@ -642,17 +642,67 @@ const _DEVIATION_STOPS = [
   [1.0, [0x7f, 0x1d, 0x1d]],
 ];
 
-function _deviationColor(t) {
+//: The strain layers' ramps (Reto, 2026-10-02): one
+//: colour family per layer, so all three read at once — green on the
+//: bonds, orange on the atoms. Same stops as the template's swatches.
+//: Every coloured element sits at or above the threshold, so the ramp's
+//: low end is already a hot spot and has to stand off the grey: a pale
+//: start (#bbf7d0) left thin bond cylinders unreadable on the drum.
+const _BOND_STRAIN_STOPS = [
+  [0.0, [0x22, 0xc5, 0x5e]],
+  [0.5, [0x16, 0xa3, 0x4a]],
+  [1.0, [0x14, 0x53, 0x2d]],
+];
+const _ANGLE_STRAIN_STOPS = [
+  [0.0, [0xfb, 0x92, 0x3c]],
+  [0.5, [0xea, 0x58, 0x0c]],
+  [1.0, [0x7c, 0x2d, 0x12]],
+];
+//: A surface vertex below its layer's threshold.
+const _BELOW_THRESHOLD_SURFACE = [0xd4 / 255, 0xd4 / 255, 0xd8 / 255];
+const _BOND_GREY = 0x808080;
+//: A bond at or above the bond-strain threshold is drawn this much fatter:
+//: at the legibility-floored atom radius, a plain-width bond is mostly
+//: hidden between its two atoms, colour or not (measured on
+//: se:hexa-smooth-drum-v2).
+const _HOT_BOND_SCALE = 2;
+
+function _rampColor(stops, t) {
   const clamped = Math.max(0, Math.min(1, t));
-  for (let i = 0; i < _DEVIATION_STOPS.length - 1; i++) {
-    const [t0, c0] = _DEVIATION_STOPS[i];
-    const [t1, c1] = _DEVIATION_STOPS[i + 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, c0] = stops[i];
+    const [t1, c1] = stops[i + 1];
     if (clamped >= t0 && clamped <= t1) {
       const f = t1 > t0 ? (clamped - t0) / (t1 - t0) : 0;
       return [0, 1, 2].map((k) => (c0[k] + (c1[k] - c0[k]) * f) / 255);
     }
   }
   return [1, 1, 1];
+}
+
+function _deviationColor(t) {
+  return _rampColor(_DEVIATION_STOPS, t);
+}
+
+//: Where a value sits on its layer's ramp: null below the threshold
+//: (uncoloured), else 0 at the threshold to 1 at the layer's max.
+function _aboveThreshold(v, thr, max) {
+  if (v === null || v === undefined || !(v >= thr)) return null;
+  return max > thr ? (v - thr) / (max - thr) : 1;
+}
+
+//: `{min, max, p95}` over a layer's applicable values, or null when the
+//: layer applies to nothing. p95 is the default threshold: the element at
+//: rank floor(0.95·n) of the sorted values, so ~5% sit at or above it.
+function _layerStats(values) {
+  const v = values.filter((x) => x !== null && x !== undefined && Number.isFinite(x));
+  if (!v.length) return null;
+  v.sort((a, b) => a - b);
+  return {
+    min: v[0],
+    max: v[v.length - 1],
+    p95: v[Math.min(v.length - 1, Math.floor(0.95 * v.length))],
+  };
 }
 
 //: A hidden-at-load, honest-absence overlay (module docstring): no atomic
@@ -823,6 +873,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
           transparent: true,
         });
         const mesh = new THREE.Mesh(sphereGeo, mat);
+        mesh.userData.cpk = colour;
         mesh.scale.setScalar(atomR);
         // What `pickAtom` hands back: the block's uid and the atom's
         // ordinal in this payload, which is the bound scene's own atom
@@ -837,12 +888,12 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       const bondMeshes = [];
       for (const [i, j] of b.bonds || []) {
         const mat = new THREE.MeshStandardMaterial({
-          color: 0x808080,
+          color: _BOND_GREY,
           transparent: true,
         });
         const mesh = new THREE.Mesh(cylGeo, mat);
         group.add(mesh);
-        bondMeshes.push({ mesh, i, j });
+        bondMeshes.push({ mesh, i, j, hot: false });
       }
 
       // The smoothed surface — fan-triangulated rings, coloured per vertex
@@ -878,6 +929,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
       group.add(surfMesh);
 
       blocks.push({
+        src: b,
         coords: b.coords,
         smooth: b.smooth,
         atomMeshes,
@@ -885,6 +937,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         bondR,
         surfMesh,
         surfPositions: positions,
+        surfColors: colors,
       });
     }
   } catch (err) {
@@ -912,8 +965,8 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
         surfPositions[i * 3 + 1] = y;
         surfPositions[i * 3 + 2] = z;
       }
-      for (const { mesh, i, j } of bondMeshes) {
-        orientBond(mesh, lerped[i], lerped[j], bondR);
+      for (const { mesh, i, j, hot } of bondMeshes) {
+        orientBond(mesh, lerped[i], lerped[j], hot ? bondR * _HOT_BOND_SCALE : bondR);
         mesh.material.opacity = 1 - t;
         mesh.visible = t < 0.999;
       }
@@ -1037,7 +1090,82 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes) {
     }
   }
 
-  return { applyT, setVisible, pickAtom, hasTarget, setTargetVisible };
+  // ── strain layers (Reto, 2026-10-02) ─────────────────
+  // Three measures on three parts of the picture, so one pixel never has
+  // to show two numbers: surface deviation on the smoothed surface, bond
+  // strain on the bond cylinders, angle strain (θp or the 120° RMS) on the
+  // atom spheres. Each colours only what sits at or above its threshold;
+  // the thresholds and on/off state live with the caller, which outlives
+  // this per-render overlay.
+  const _LAYER_FIELDS = {
+    deviation: "deviation",
+    bond: "bond_dev",
+    thetap: "angle_strain_thetap",
+    a120: "angle_strain_120",
+  };
+  const strainStats = {};
+  for (const [key, field] of Object.entries(_LAYER_FIELDS)) {
+    strainStats[key] = _layerStats(data.blocks.flatMap((b) => b[field] || []));
+  }
+
+  //: `state` = `{deviation: {thr}, bond: {on, thr}, angle: {on, key, thr}}`
+  //: with every `thr` already a number (the caller resolves defaults);
+  //: `angle.key` is `thetap` or `a120`. Returns, per layer, how many
+  //: elements it coloured out of how many it applies to.
+  function applyStrain(state) {
+    const dev = strainStats.deviation;
+    const bond = strainStats.bond;
+    const angle = strainStats[state.angle.key];
+    const counts = {
+      deviation: { coloured: 0, total: 0 },
+      bond: { coloured: 0, total: 0 },
+      angle: { coloured: 0, total: 0 },
+    };
+    const tally = (layer, v, t) => {
+      if (v === null || v === undefined) return;
+      counts[layer].total += 1;
+      if (t !== null) counts[layer].coloured += 1;
+    };
+    for (const blk of blocks) {
+      const b = blk.src;
+      const angleVals = b[_LAYER_FIELDS[state.angle.key]];
+      blk.atomMeshes.forEach((mesh, i) => {
+        const t = state.angle.on && angle && angleVals
+          ? _aboveThreshold(angleVals[i], state.angle.thr, angle.max)
+          : null;
+        if (angleVals) tally("angle", angleVals[i], t);
+        if (t === null) mesh.material.color.set(mesh.userData.cpk);
+        else mesh.material.color.setRGB(..._rampColor(_ANGLE_STRAIN_STOPS, t));
+      });
+      blk.bondMeshes.forEach((entry, k) => {
+        const { mesh } = entry;
+        const t = state.bond.on && bond && b.bond_dev
+          ? _aboveThreshold(b.bond_dev[k], state.bond.thr, bond.max)
+          : null;
+        if (b.bond_dev) tally("bond", b.bond_dev[k], t);
+        entry.hot = t !== null;
+        mesh.scale.x = mesh.scale.z = entry.hot ? blk.bondR * _HOT_BOND_SCALE : blk.bondR;
+        if (t === null) mesh.material.color.set(_BOND_GREY);
+        else mesh.material.color.setRGB(..._rampColor(_BOND_STRAIN_STOPS, t));
+      });
+      const n = blk.atomMeshes.length;
+      for (let i = 0; i < n; i++) {
+        const t = dev ? _aboveThreshold(b.deviation[i], state.deviation.thr, dev.max) : null;
+        tally("deviation", b.deviation[i], t);
+        const rgb = t === null ? _BELOW_THRESHOLD_SURFACE : _deviationColor(t);
+        blk.surfColors.set(rgb, i * 3);
+      }
+      blk.surfMesh.geometry.attributes.color.needsUpdate = true;
+    }
+    try {
+      viewer.update(true);
+    } catch (err) {
+      console.error("blocktree-3d: strain layer redraw failed", err);
+    }
+    return counts;
+  }
+
+  return { applyT, setVisible, pickAtom, hasTarget, setTargetVisible, strainStats, applyStrain };
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -1123,6 +1251,10 @@ export async function blocktreeViewer3D({
   sceneUrl,
   atomicUrl,
   smoothEls,
+  // Strain-layer rows `{bond, angle}` (the surface-deviation row is
+  // `smoothEls.legend`); each holds `data-role` children — toggle,
+  // threshold, value, min, max, and `measure` on the angle row. Optional.
+  strainEls,
   noteUrls,
   noteEls,
   // Design chat (design-workbench build, slice 3): called with the block
@@ -1760,7 +1892,129 @@ export async function blocktreeViewer3D({
     if (on) atomicOverlay.applyT(Number(smoothEls.slider.value) / 100);
     if (smoothEls.slider) smoothEls.slider.disabled = !on;
     if (smoothEls.legend) smoothEls.legend.style.display = on ? "flex" : "none";
+    applyStrainState();
+    fadeStrainRows(Number(smoothEls.slider.value) / 100);
     applyTargetState();
+  }
+
+  // ── strain-layer controls (Reto, 2026-10-02) ─────────
+  // State lives here, not in the overlay, so a level change's rebuild keeps
+  // what the user set. `thr: null` = the layer's default, the 95th
+  // percentile of the loaded structure (top 5% coloured); switching the
+  // angle measure resets it, since θp and the 120° RMS share no scale.
+  const _THRESHOLD_STEPS = 1000;
+  const strainState = {
+    deviation: { thr: null },
+    bond: { on: false, thr: null },
+    angle: { on: false, measure: "thetap", thr: null },
+  };
+  const strainRows = {
+    deviation: smoothEls && smoothEls.legend,
+    bond: strainEls && strainEls.bond,
+    angle: strainEls && strainEls.angle,
+  };
+  const _STRAIN_UNITS = {
+    deviation: { unit: " Å", digits: 2 },
+    bond: { unit: " Å", digits: 3 },
+    angle: { unit: "°", digits: 1 },
+  };
+  const _role = (row, role) => (row ? row.querySelector(`[data-role="${role}"]`) : null);
+  const _statsKey = (layer) =>
+    layer === "angle" ? (strainState.angle.measure === "120" ? "a120" : "thetap") : layer;
+
+  //: Reads the overlay's stats into the rows (hidden where a layer applies
+  //: to nothing, or atoms are off) and repaints with resolved thresholds.
+  function applyStrainState() {
+    if (!atomicOverlay || !atomicOverlay.strainStats) return;
+    const atomsOn = !atomsToggle || atomsToggle.checked;
+    const resolved = {};
+    for (const layer of ["deviation", "bond", "angle"]) {
+      const row = strainRows[layer];
+      const stats = atomicOverlay.strainStats[_statsKey(layer)];
+      const st = strainState[layer];
+      const thr = stats ? (st.thr ?? stats.p95) : 0;
+      resolved[layer] = {
+        on: !!(st.on ?? true),
+        thr,
+        key: _statsKey(layer),
+      };
+      if (!row) continue;
+      if (layer !== "deviation") {
+        const show = !!stats && atomsOn;
+        row.classList.toggle("hidden", !show);
+        row.style.display = show ? "flex" : "none";
+      }
+      if (!stats) continue;
+      const { unit, digits } = _STRAIN_UNITS[layer];
+      const span = stats.max - stats.min;
+      const slider = _role(row, "threshold");
+      if (slider) {
+        slider.max = String(_THRESHOLD_STEPS);
+        slider.value = String(
+          span > 0 ? Math.round(((thr - stats.min) / span) * _THRESHOLD_STEPS) : _THRESHOLD_STEPS
+        );
+      }
+      const put = (role, text) => {
+        const el = _role(row, role);
+        if (el) el.textContent = text;
+      };
+      put("value", thr.toFixed(digits) + unit);
+      put("min", stats.min.toFixed(digits));
+      put("max", stats.max.toFixed(digits) + unit);
+      const toggle = _role(row, "toggle");
+      if (toggle) toggle.checked = !!st.on;
+    }
+    // Each row carries what its layer coloured (`data-coloured` of
+    // `data-total`), so a check can read the top-5% rule off the page.
+    const counts = atomicOverlay.applyStrain(resolved);
+    for (const [layer, row] of Object.entries(strainRows)) {
+      if (!row || !counts[layer]) continue;
+      row.dataset.coloured = String(counts[layer].coloured);
+      row.dataset.total = String(counts[layer].total);
+    }
+  }
+
+  //: Atoms and bonds fade out toward the smooth end of the slider, and the
+  //: two layers drawn on them fade with them.
+  function fadeStrainRows(t) {
+    for (const layer of ["bond", "angle"]) {
+      const row = strainRows[layer];
+      if (row) row.style.opacity = String(Math.max(0.35, 1 - t));
+    }
+  }
+
+  for (const [layer, row] of Object.entries(strainRows)) {
+    if (!row) continue;
+    const toggle = _role(row, "toggle");
+    if (toggle) {
+      toggle.addEventListener("change", () => {
+        strainState[layer].on = toggle.checked;
+        applyStrainState();
+      });
+    }
+    const slider = _role(row, "threshold");
+    if (slider) {
+      let raf = null;
+      slider.addEventListener("input", () => {
+        if (raf !== null) return;
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          const stats = atomicOverlay && atomicOverlay.strainStats[_statsKey(layer)];
+          if (!stats) return;
+          strainState[layer].thr =
+            stats.min + ((stats.max - stats.min) * Number(slider.value)) / _THRESHOLD_STEPS;
+          applyStrainState();
+        });
+      });
+    }
+    const measure = _role(row, "measure");
+    if (measure) {
+      measure.addEventListener("change", () => {
+        strainState.angle.measure = measure.value;
+        strainState.angle.thr = null;
+        applyStrainState();
+      });
+    }
   }
   //: The target-surface checkbox only exists when some block carries a
   //: target; it is independent of the atoms toggle.
@@ -2042,7 +2296,9 @@ export async function blocktreeViewer3D({
       if (sliderRAF !== null) return;
       sliderRAF = requestAnimationFrame(() => {
         sliderRAF = null;
-        if (atomicOverlay) atomicOverlay.applyT(Number(smoothEls.slider.value) / 100);
+        const t = Number(smoothEls.slider.value) / 100;
+        if (atomicOverlay) atomicOverlay.applyT(t);
+        fadeStrainRows(t);
       });
     });
   }

@@ -117,6 +117,7 @@ from precis_se import stability as se_stability
 from precis_se import validate as se_validate
 from precis_se.ops import effective_envelope as se_effective_envelope
 from precis_se.pick import atom_hover_names
+from precis_surface.relax import angle_dev_by_atom, theta_p_by_atom
 from precis_surface.revolution import revolve
 from precis_web import design_chat, design_turn
 from precis_web.blocktree_3d import (
@@ -1224,6 +1225,45 @@ def _target_surface(
     return {"verts": world.tolist(), "tris": np.asarray(tris).tolist()}
 
 
+#: Reference C–C bond length for the bond-strain layer (graphene, Å). The
+#: only pair with a reference today: a non-carbon atomic block's bonds get
+#: no bond strain until it needs a per-pair table.
+_CC_BOND_A = 1.42
+
+
+def _strain_arrays(
+    elements: list[str], cart_A: Any, bond_idx: list[tuple[int, int]]
+) -> dict[str, list[float | None]]:
+    """The viewer's strain layers for one atomic block: ``bond_dev`` per
+    bond (``|l − 1.42| Å``, C–C only) and, per atom, ``angle_strain_thetap``
+    (POAV pyramidalisation) and ``angle_strain_120`` (RMS bond-angle
+    deviation from 120°), both for 3-coordinated carbon only, in degrees.
+    Elements a measure does not apply to are ``None``; a measure that
+    applies to nothing in the block is left out, so its control stays
+    hidden."""
+    out: dict[str, list[float | None]] = {}
+    xyz = np.asarray(cart_A, dtype=np.float64)
+    carbon = np.array([e == "C" for e in elements], dtype=bool)
+    if bond_idx:
+        pairs = np.asarray(bond_idx, dtype=np.int64)
+        length = np.linalg.norm(xyz[pairs[:, 0]] - xyz[pairs[:, 1]], axis=1)
+        cc = carbon[pairs[:, 0]] & carbon[pairs[:, 1]]
+        if cc.any():
+            dev = np.abs(length - _CC_BOND_A)
+            out["bond_dev"] = [
+                float(d) if ok else None for d, ok in zip(dev, cc, strict=True)
+            ]
+        for key, measure in (
+            ("angle_strain_thetap", theta_p_by_atom),
+            ("angle_strain_120", angle_dev_by_atom),
+        ):
+            vals = measure(xyz, pairs)
+            vals[~carbon] = np.nan
+            if not np.isnan(vals).all():
+                out[key] = [None if np.isnan(v) else float(v) for v in vals]
+    return out
+
+
 def _atomic_block_payload(
     store: Store, node: Any, *, block_uid: int, name: str, scale: float
 ) -> dict[str, Any] | None:
@@ -1285,6 +1325,8 @@ def _atomic_block_payload(
         "bonds": [list(pair) for pair in bond_idx],
         "faces": [list(ring) for ring in faces],
         "units": "scene",
+        # Strain layers, in Å / degrees like `deviation` (_strain_arrays).
+        **_strain_arrays(elements, cart_A, bond_idx),
     }
     target = _target_surface(struct_ref, xf, scale)
     if target is not None:

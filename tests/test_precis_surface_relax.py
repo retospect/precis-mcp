@@ -103,6 +103,34 @@ def test_theta_p_of_planar_net_is_zero_and_of_a_pyramid_is_not() -> None:
     assert float(relax.theta_p_deg(lifted, bonds).max()) > 10.0
 
 
+def test_per_atom_strain_is_nan_off_the_three_coordinated_atoms() -> None:
+    """The viewer's angle-strain layers index by atom, so the per-atom
+    forms keep every atom: NaN for the patch's 2-coordinated rim, a value
+    for each 3-coordinated atom, and theta_p_deg is exactly the non-NaN
+    part."""
+    atoms, bonds = _patch()
+    nbr = relax._neighbours(len(atoms), bonds)
+    three = np.array([len(ns) == 3 for ns in nbr])
+    assert 0 < three.sum() < len(atoms)
+    for per_atom in (relax.theta_p_by_atom, relax.angle_dev_by_atom):
+        vals = per_atom(atoms, bonds)
+        assert vals.shape == (len(atoms),)
+        assert np.array_equal(np.isnan(vals), ~three)
+    tp = relax.theta_p_by_atom(atoms, bonds)
+    assert np.array_equal(relax.theta_p_deg(atoms, bonds), tp[~np.isnan(tp)])
+
+
+def test_angle_dev_is_zero_on_flat_graphene_and_sees_in_plane_shear() -> None:
+    atoms, bonds = _patch()
+    dev = relax.angle_dev_by_atom(atoms, bonds)
+    assert float(np.nanmax(dev)) < 1e-6
+    # shear in the plane: theta_p stays 0, the 120-degree measure does not
+    sheared = atoms.copy()
+    sheared[:, 0] += 0.3 * sheared[:, 1]
+    assert float(np.nanmax(relax.theta_p_by_atom(sheared, bonds))) < 1e-6
+    assert float(np.nanmax(relax.angle_dev_by_atom(sheared, bonds))) > 5.0
+
+
 def test_surface_tether_gradient_and_pull() -> None:
     atoms, bonds = _patch()
     rng = np.random.default_rng(2)

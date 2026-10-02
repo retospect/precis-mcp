@@ -15,7 +15,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-__all__ = ["energy_grad", "relax_net", "theta_p_deg"]
+__all__ = [
+    "angle_dev_by_atom",
+    "energy_grad",
+    "relax_net",
+    "theta_p_by_atom",
+    "theta_p_deg",
+]
 
 _F = NDArray[np.float64]
 _I = NDArray[np.int64]
@@ -227,19 +233,27 @@ def relax_net(
     return x, info
 
 
-def theta_p_deg(xyz: _F, bonds: _I) -> _F:
-    """POAV1 pyramidalisation (deg) per 3-coordinated atom, in atom-index
-    order of those atoms. The POAV axis ``v`` makes equal angles with the
-    three bond unit vectors ``u`` (``u @ v = 1`` up to scale); theta_p is
-    the angle between ``v`` and a bond minus 90 deg. Collinear triples are
-    skipped."""
+def _umbrella_units(xyz: _F, bonds: _I) -> tuple[_I, _F]:
+    """The 3-coordinated atoms and, per atom, its three bond unit vectors
+    (shape ``(m, 3, 3)``)."""
     b = np.asarray(bonds, dtype=np.int64).reshape(-1, 2)
-    nbr = _neighbours(len(xyz), b)
-    centres, around = _umbrella_sets(nbr)
+    centres, around = _umbrella_sets(_neighbours(len(xyz), b))
     if not len(centres):
-        return np.zeros(0, dtype=np.float64)
+        return centres, np.zeros((0, 3, 3), dtype=np.float64)
     d = xyz[around] - xyz[centres][:, None, :]
-    u = d / np.linalg.norm(d, axis=2, keepdims=True)
+    return centres, d / np.linalg.norm(d, axis=2, keepdims=True)
+
+
+def theta_p_by_atom(xyz: _F, bonds: _I) -> _F:
+    """POAV1 pyramidalisation (deg) for every atom, NaN where the atom is
+    not 3-coordinated or its three bonds are collinear. The POAV axis ``v``
+    makes equal angles with the three bond unit vectors ``u`` (``u @ v = 1``
+    up to scale); theta_p is the angle between ``v`` and a bond minus 90
+    deg."""
+    out = np.full(len(xyz), np.nan, dtype=np.float64)
+    centres, u = _umbrella_units(xyz, bonds)
+    if not len(centres):
+        return out
     # Cramer on u @ v = 1: v is proportional to n = u1 x u2 + u2 x u0 + u0 x u1
     # (the plane normal when the three bonds are coplanar), so a planar atom
     # needs no special case. theta_p = |angle(u0, v) - 90| = asin|u0 . n_hat|.
@@ -251,4 +265,35 @@ def theta_p_deg(xyz: _F, bonds: _I) -> _F:
     norm = np.linalg.norm(n, axis=1)
     ok = norm > 1e-12
     cosang = np.abs((u[ok, 0, :] * n[ok]).sum(axis=1)) / norm[ok]
-    return np.degrees(np.arcsin(np.clip(cosang, 0.0, 1.0)))
+    out[centres[ok]] = np.degrees(np.arcsin(np.clip(cosang, 0.0, 1.0)))
+    return out
+
+
+def theta_p_deg(xyz: _F, bonds: _I) -> _F:
+    """POAV1 pyramidalisation (deg) per 3-coordinated atom, in atom-index
+    order of those atoms; collinear triples are skipped
+    (:func:`theta_p_by_atom` without its NaNs)."""
+    t = theta_p_by_atom(xyz, bonds)
+    return t[~np.isnan(t)]
+
+
+def angle_dev_by_atom(xyz: _F, bonds: _I, ideal_deg: float = 120.0) -> _F:
+    """RMS deviation (deg) of each 3-coordinated atom's three bond angles
+    from ``ideal_deg``, NaN for every other atom. The in-plane counterpart
+    of :func:`theta_p_by_atom`: a flat but distorted hexagon scores here and
+    not there."""
+    out = np.full(len(xyz), np.nan, dtype=np.float64)
+    centres, u = _umbrella_units(xyz, bonds)
+    if not len(centres):
+        return out
+    cos = np.stack(
+        [
+            (u[:, 0] * u[:, 1]).sum(axis=1),
+            (u[:, 1] * u[:, 2]).sum(axis=1),
+            (u[:, 2] * u[:, 0]).sum(axis=1),
+        ],
+        axis=1,
+    )
+    ang = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    out[centres] = np.sqrt(((ang - ideal_deg) ** 2).mean(axis=1))
+    return out

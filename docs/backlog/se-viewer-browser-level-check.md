@@ -3,27 +3,26 @@ status: idea
 pillar: 3d-design
 ---
 
-# se 3D viewer: no browser-level check exists for it at all
+# se 3D viewer: the nightly browser check never sees an atomic design
 
 IDEA (2026-09-29), filed from the live verification of the id/name path
-unification.
+unification. The nightly half is BUILT and green:
+`.github/workflows/viewer-check.yml` runs `scripts/viewer_check.py probe`
+over the committed `tests/fixtures/viewer_check/unicycle-c1.ops.json`
+(11 checks; first scheduled run green 2026-10-02 08:58Z), and
+`scripts/main-ci-status` reports it.
 
-BUILT 2026-10-01, awaiting its first scheduled run on GitHub:
-`.github/workflows/viewer-check.yml` runs `scripts/viewer_check.py` over
-the committed `tests/fixtures/viewer_check/unicycle-c1.ops.json`, and
-`scripts/main-ci-status` reports it. Local run on the same fixture: all 7
-checks green (noise n=0, select n=6725, reselect n=1, explode held at
-n=32909 across three samples, unexplode n=1, level n=643, console clean);
-control run with the explode fix removed failed `explode_moves_and_holds`
-at n=1. First GitHub run (manual dispatch) green with the same numbers.
-The pick render half then grew it to 9 checks (the selection is tinted
-too, so "restored" is now measured against the same block selected from
-a clean slate; the pick panel must list `<se:…>` tokens), the scroll
-fix to 10 (`page_scrolls_to_chat`: a wheel off the canvas must bring the
-design chat on screen), and the view export to 11
-(`export_matches_screen`: the PNG equals a canvas shot within 1%, the
-SVG carries the on-screen scale-bar label). Delete this
-item once a scheduled run on GitHub has gone green.
+**Open: the atomic overlay has no nightly coverage.** The unicycle has no
+structure-bound block, so `probe` skips its target-surface checks and
+never builds the atomic overlay, and `viewer_check.py strain` (the strain
+layers: checkbox, threshold slider, top-5% count, θp/120° switch,
+pentagons vs the default θp threshold — 13 checks) has only been run by
+hand, against prod's `hexa-smooth-drum-v2` through
+`scripts/guide-web --db prod`. Closing it needs a second fixture: a small
+sp² structure with pentagons (a capped tube or a C60 inside an envelope)
+plus the se ops that bind it, seeded by `viewer_check.py seed` — which
+today seeds se ops only, so it also has to replay a `structure` design.
+Then the workflow runs `strain` over it beside `probe`.
 
 Every test over the 3D viewer asserts the SHAPE of the emitted scene JSON.
 That is exactly the assertion class that let every visibility toggle in the
