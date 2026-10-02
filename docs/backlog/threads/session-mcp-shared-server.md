@@ -46,6 +46,16 @@ server-side-session-context Horizon pointer)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
+0. **gr460711 — a container recreate strands sessions; a supervisor respawn
+   does not.** The two `--recreate` runs at 2026-10-01 23:13Z (cache mount,
+   gr460339) left several sessions without the MCP until a manual /mcp, and
+   the four watchdog respawns before and after stranded nobody. A recreate
+   is `docker rm -f`: SIGKILL, open streams reset, the port dark ~9 s until
+   the new supervisor binds. It ranks first because every ensure-script edit
+   and every secret rotation triggers it at the next SessionStart anywhere.
+   Next: on the rig, tell the dark window from the reset streams with a real
+   client, then make `--recreate` drain (`docker stop` with a timeout) and
+   shrink the bind gap.
 1. **backlog/embedder-capacity-ownership.md — admission answered; owner,
    capacity number and shared cache left.** gr459088 and gr457326 are CLOSED, verified on the shared
    server 2026-10-01 03:00Z: **1% → 84% of blocks indexed**, cache
