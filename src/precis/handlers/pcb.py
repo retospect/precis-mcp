@@ -70,7 +70,7 @@ import math
 import re
 import tempfile
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
@@ -231,6 +231,69 @@ def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
     return (
         f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
     )
+
+
+#: A pose conflict the move deepens by more than this is a new fault (mm²;
+#: the via-keepout shortfall is a length, same threshold).
+_POSE_DEPTH_EPS = 1e-6
+
+
+def _pose_delta(
+    before: Sequence[tuple[tuple[Any, int, str], tuple[float, float, float]]],
+    after: Sequence[tuple[tuple[Any, int, str], tuple[float, float, float]]],
+    *,
+    skip: dict[str, set[str]],
+) -> tuple[list[tuple[str, str, str, str]], list[tuple[str, str, str, str]]]:
+    """The pose half of a move as a DELTA, like the carried-copper half:
+    conflicts keyed by identity (never coordinates), a standing one may
+    stay or shrink, a new or deeper one is refused.
+
+    ``before`` / ``after`` hold one ``((engine, instance index, refdes),
+    (x, y, rot))`` per moved part: the engine built over that side's
+    board and the pose to judge the part at. Returns ``(problems, standing)`` as ``(rule, refdes, other, suffix)``.
+
+    Keys: ``courtyard_overlap`` is the unordered refdes pair (seen once
+    from either end when both are moved); ``courtyard_hole``,
+    ``via_pad_keepout`` and ``outline`` are per part (hole id /
+    ``via`` / ``board outline``). ``skip[refdes]`` is the part's own rigid
+    group, whose members never conflict with each other."""
+
+    def collect(
+        side: Sequence[tuple[tuple[Any, int, str], tuple[float, float, float]]],
+    ) -> dict[tuple[Any, ...], tuple[float, str, str, str]]:
+        found: dict[tuple[Any, ...], tuple[float, str, str, str]] = {}
+        for (engine, inst, rd), (x, y, r) in side:
+            for rule, other, depth in engine.pose_conflict_depths(inst, x, y, r):
+                if other in skip.get(rd, ()):
+                    continue
+                if rule == "courtyard_overlap":
+                    key: tuple[Any, ...] = (rule, frozenset((rd, other)))
+                else:
+                    key = (rule, rd, "via" if rule == "via_pad_keepout" else other)
+                found.setdefault(key, (depth, rule, rd, other))
+        return found
+
+    old = collect(before)
+    problems: list[tuple[str, str, str, str]] = []
+    standing: list[tuple[str, str, str, str]] = []
+    for key, (depth, rule, rd, other) in collect(after).items():
+        prev = old.get(key)
+        unit = "mm" if rule == "via_pad_keepout" else "mm\u00b2"
+        if prev is None:
+            problems.append((rule, rd, other, ""))
+        elif depth > prev[0] + _POSE_DEPTH_EPS:
+            problems.append(
+                (
+                    rule,
+                    rd,
+                    other,
+                    f" (worse: {depth:.4f} {unit} vs {prev[0]:.4f} {unit} "
+                    "before the move)",
+                )
+            )
+        else:
+            standing.append((rule, rd, other, ""))
+    return problems, standing
 
 
 def _finding_identity(f: pcb_drc.DrcFinding) -> tuple[Any, ...]:
@@ -720,11 +783,19 @@ class PcbHandler(Handler):
             group_body = self._move_poses(ref, [(refdes, kwargs)], single_form=True)
             if group_body is not None:
                 return Response(body=group_body)
-            self._refuse_illegal_pose(ref, refdes, kwargs)
+            standing = self._refuse_illegal_pose(ref, refdes, kwargs)
+        else:
+            standing = []
         ok = self.store.pcb_move_instance(ref.id, refdes, **kwargs)
         if not ok:
             raise NotFound(f"pcb instance {refdes!r} not found in {ref.slug!r}")
-        return Response(body=f"# {refdes} moved — {kwargs}")
+        body = f"# {refdes} moved — {kwargs}"
+        if standing:
+            body += (
+                f"\nboard still has {len(standing)} pre-existing DRC error(s) the "
+                "move did not add: " + "; ".join(standing[:5])
+            )
+        return Response(body=body)
 
     def _move_poses(
         self,
@@ -907,14 +978,39 @@ class PcbHandler(Handler):
         # this IR: they travel with the lands, so their relation is rigid —
         # only authored vias a member could newly land on are the placer's.
         ir_pose = self._build_ir(ref.id, graph_new, fixed_copper=foreign)
+        ir_pose.outline = self._move_outline(ref.id)
         engine = pcb_optimize.OptimizeEngine(ir_pose, pcb_optimize.OptimizeConfig())
         idx = {str(r): i for i, r in enumerate(ir_pose.instance_refdes)}
+        # The same rule as a DELTA (a standing overlap must be repairable
+        # by the move): judge every moved part on the board before and
+        # after, refuse only a conflict that is new or deeper.
+        ir_pose_old = self._build_ir(ref.id, graph, fixed_copper=foreign)
+        ir_pose_old.outline = ir_pose.outline
+        engine_old = pcb_optimize.OptimizeEngine(
+            ir_pose_old, pcb_optimize.OptimizeConfig()
+        )
+        idx_old = {str(r): i for i, r in enumerate(ir_pose_old.instance_refdes)}
+        before_side: list[tuple[tuple[Any, int, str], tuple[float, float, float]]] = []
+        after_side: list[tuple[tuple[Any, int, str], tuple[float, float, float]]] = []
         for p in plans:
             for rd, x, y, r in p["poses"]:
-                for rule, other in engine.pose_conflicts(idx[rd], x, y, r):
-                    if other in p["members"]:
-                        continue  # one rigid body: its own relations do not change
-                    problems.append(f"{rule}: {rd} with {other}")
+                after_side.append(((engine, idx[rd], rd), (x, y, r)))
+                o = by_refdes[rd]
+                if o["x"] is not None and o["y"] is not None:
+                    before_side.append(
+                        (
+                            (engine_old, idx_old[rd], rd),
+                            (float(o["x"]), float(o["y"]), float(o["rot"] or 0.0)),
+                        )
+                    )
+        pose_problems, pose_standing = _pose_delta(
+            before_side,
+            after_side,
+            skip={rd: p["members"] for p in plans for rd in p["members"]},
+        )
+        problems.extend(
+            f"{rule}: {rd} with {other}{sfx}" for rule, rd, other, sfx in pose_problems
+        )
 
         # (b) the carried copper and the moved lands against everything
         # else, by the route gate's rule. Only findings the move ADDS or
@@ -925,7 +1021,9 @@ class PcbHandler(Handler):
         # measured margin must not get worse (a deeper overlap is a new
         # fault). What the move leaves standing is reported, not refused.
         ir_new = self._build_ir(ref.id, graph_new, fixed_copper=foreign + carried_new)
-        standing: list[str] = []
+        standing: list[str] = [
+            f"{rule}: {rd} with {other}" for rule, rd, other, _ in pose_standing
+        ]
         if carried_old:
 
             def keyed(
@@ -1070,7 +1168,18 @@ class PcbHandler(Handler):
             )
         return body
 
-    def _refuse_illegal_pose(self, ref: Any, refdes: str, pose: dict[str, Any]) -> None:
+    def _move_outline(self, ref_id: int) -> list[tuple[float, float]] | None:
+        """The authored board outline for a move's pose judgement (the IR
+        ``_build_ir`` returns carries none; attaching it there would move
+        the placer's bounds for every other view)."""
+        outline = self._outline_from_features(ref_id)
+        if not outline or len(outline) < 3:
+            return None
+        return [(float(p[0]), float(p[1])) for p in outline]
+
+    def _refuse_illegal_pose(
+        self, ref: Any, refdes: str, pose: dict[str, Any]
+    ) -> list[str]:
         """docs/backlog/pcb-always-valid-board-invariant.md: a move that
         would put ``refdes``'s courtyard on another part or a mounting hole,
         or a solder land on an authored via, is refused with the rule and
@@ -1081,26 +1190,44 @@ class PcbHandler(Handler):
         move's to refuse."""
         graph = self.store.pcb_graph(ref.id)
         ir = self._build_ir(ref.id, graph, with_fixed_copper=True)
+        ir.outline = self._move_outline(ref.id)
         idx = {str(r): i for i, r in enumerate(ir.instance_refdes)}.get(refdes)
         if idx is None:
-            return  # pcb_move_instance reports the missing refdes
+            return []  # pcb_move_instance reports the missing refdes
         x = float(pose.get("x", ir.inst_x[idx]))
         y = float(pose.get("y", ir.inst_y[idx]))
         if math.isnan(x) or math.isnan(y):
-            return  # unplaced: a rotation alone has no geometry to judge
+            return []  # unplaced: a rotation alone has no geometry to judge
         rot = float(pose.get("rot", ir.inst_rot[idx]))
         engine = pcb_optimize.OptimizeEngine(ir, pcb_optimize.OptimizeConfig())
-        conflicts = engine.pose_conflicts(idx, x, y, None if math.isnan(rot) else rot)
-        if conflicts:
+        old_x, old_y = float(ir.inst_x[idx]), float(ir.inst_y[idx])
+        old_rot = float(ir.inst_rot[idx])
+        before_side: list[tuple[tuple[Any, int, str], tuple[float, float, float]]] = []
+        if not (math.isnan(old_x) or math.isnan(old_y)):
+            before_side.append(
+                (
+                    (engine, idx, refdes),
+                    (old_x, old_y, 0.0 if math.isnan(old_rot) else old_rot),
+                )
+            )
+        problems, standing = _pose_delta(
+            before_side,
+            [((engine, idx, refdes), (x, y, 0.0 if math.isnan(rot) else rot))],
+            skip={},
+        )
+        if problems:
             raise BadInput(
                 f"pcb: moving {refdes} to ({x:g}, {y:g}) would leave an invalid "
                 "board: "
-                + "; ".join(f"{rule} with {other}" for rule, other in conflicts),
+                + "; ".join(
+                    f"{rule} with {other}{sfx}" for rule, _rd, other, sfx in problems
+                ),
                 next=(
                     "pick a pose clear of these, or run put(args={'op':'place'}) "
                     "to let the placer find one"
                 ),
             )
+        return [f"{rule} with {other}" for rule, _rd, other, _s in standing]
 
     def _op_rip(self, ref: Any, args: dict[str, Any]) -> Response:
         net = str(args.get("net") or "").strip()

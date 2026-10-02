@@ -25,14 +25,24 @@ Do-next renumbered)
    are chosen in the board frame, and an aligned row or column of
    identical parts shares one spot. What is left is small: a courtyard
    break that did not reproduce on the real pads (re-check on the next
-   render), and EasyEDA designator poses not imported.
+   render), and EasyEDA designator poses not imported. **New on prod
+   2026-10-02 (dogfood after the round-1 deploy, route job 462600):**
+   ewod-dogfood-6 reports `silk_missing` for ARR1_SINK_0's bottom refdes
+   ("every candidate placement overlaps a pad, a via, or silk already
+   committed"); it read 0 geometric errors before. Check whether the
+   shared-label-spot change (c24c2db8, live in that deploy) or the run's
+   new placement caused it.
 1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02
    (all undeployed): the route job DRCs its own router copper and strips a
    violating net (`drc:<rule>`); `op='move'` on a generator member moves
    the whole group with its fixed copper and rips the router nets it
    strands; `ewod_pad_array` v4 emits its copper at the array anchor. The
    13 strips on pcb 460559 were router faults, fixed by
-   pcb-easyeda-round-trip (0 strips after). The multi-pose `op='move'`
+   pcb-easyeda-round-trip (0 strips after). **Next after the pose delta:
+   gripe 462607** — the anneal returns its last state, not its best; both
+   prod route runs on dogfood-6 ended ~1.1 cost worse than they started
+   and the job stored that. Fix in `optimize()`/`anneal()` (best-state
+   snapshot + restore), plus a job-level determinism test. The multi-pose `op='move'`
    (ruling 2) is built too. **Next:** the remaining mutation paths in the
    item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);
    the pose half of the move check is still a resulting-state check, on

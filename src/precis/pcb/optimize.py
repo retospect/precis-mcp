@@ -2850,6 +2850,51 @@ class OptimizeEngine:
             conflicts.append(("via_pad_keepout", f"authored via, gap {gap:.3f}mm"))
         return conflicts
 
+    def pose_conflict_depths(
+        self, inst: int, x: float, y: float, rot: float | None = None
+    ) -> list[tuple[str, str, float]]:
+        """``(rule, other, depth)`` for every obstacle :meth:`pose_conflicts`
+        names, plus the outline, each with a measure of HOW MUCH — what a
+        move's delta check compares before and after (``op='move'``: a
+        standing conflict may stay or shrink, never appear or deepen).
+
+        Depths: ``courtyard_overlap`` and ``courtyard_hole`` are the
+        intersection area, mm², of the two polygons the placer's legality
+        test judges; ``outline`` (only when the board has one) is the
+        part courtyard's area OUTSIDE the outline polygon, mm² — the one
+        rule :meth:`pose_conflicts` does not report, listed only here, as
+        ``("outline", "board outline", area)`` when the area exceeds
+        1e-9; ``via_pad_keepout`` is the clearance shortfall in mm
+        (``_FIXED_VIA_CLEARANCE_MM`` minus the land-to-annulus gap), the
+        only depth that is a length."""
+        from shapely.geometry import Polygon
+
+        ir = self.ir
+        poly = self._world_courtyard(inst, x, y, rot)
+        mine = Polygon(poly)
+        by_name = {str(r): i for i, r in enumerate(ir.instance_refdes)}
+        holes = {
+            f"hole @ ({h.x:g}, {h.y:g})": self._hole_polys[i]
+            for i, h in enumerate(ir.mounting_holes)
+        }
+        out: list[tuple[str, str, float]] = []
+        for rule, other in self.pose_conflicts(inst, x, y, rot):
+            if rule == "courtyard_overlap":
+                theirs = self._world_courtyard(by_name[other])
+                depth = mine.intersection(Polygon(theirs)).area
+            elif rule == "courtyard_hole":
+                depth = mine.intersection(Polygon(holes[other])).area
+            else:
+                gap = self._fixed_via_gap(inst, x, y, rot)
+                depth = max(0.0, _FIXED_VIA_CLEARANCE_MM - gap)
+                other = "authored via"
+            out.append((rule, other, float(depth)))
+        if ir.outline and len(ir.outline) >= 3:
+            outside = mine.difference(Polygon(ir.outline)).area
+            if outside > 1e-9:
+                out.append(("outline", "board outline", float(outside)))
+        return out
+
     def legalize_start(self) -> tuple[str, ...]:
         """Move every movable rigid body whose CURRENT pose is illegal to
         the nearest legal one, before the anneal starts. Returns the

@@ -1148,6 +1148,114 @@ def test_op_move_onto_a_mounting_hole_is_refused(pcb):
         )
 
 
+def _two_parts(ax: float, ay: float, bx: float = 10.0, by: float = 10.0):
+    return {
+        "components": [
+            {"refdes": "A", "label": "ic", "x": ax, "y": ay, "pins": [{"name": "1"}]},
+            {"refdes": "B", "label": "ic", "x": bx, "y": by, "pins": [{"name": "1"}]},
+        ],
+        "nets": [],
+        "connections": [],
+    }
+
+
+def _move_a(pcb, slug, x, y, **extra):
+    return pcb.put(id=slug, args={"op": "move", "refdes": "A", "x": x, "y": y, **extra})
+
+
+_STANDING = "pre-existing DRC error"
+
+
+def test_op_move_delta_courtyard_overlap_standing_may_shrink_never_grow(pcb, store):
+    """A standing courtyard overlap is repairable: a move that shrinks it
+    passes and is reported, one that grows it is refused with the depth,
+    one that clears it passes with no report."""
+    slug = "mv-delta-pair"
+    pcb.put(id=slug, args=_two_parts(0.0, 0.0, 0.3, 0.0))
+    with pytest.raises(BadInput, match=r"courtyard_overlap with B \(worse: "):
+        _move_a(pcb, slug, 0.2, 0.0)
+    assert _xy(store, slug, "A") == (0.0, 0.0)
+    resp = _move_a(pcb, slug, -0.1, 0.0)
+    assert _STANDING in resp.body and "courtyard_overlap with B" in resp.body
+    resp = _move_a(pcb, slug, 20.0, 20.0)
+    assert "moved" in resp.body and _STANDING not in resp.body
+
+
+def test_op_move_delta_list_form_reports_standing_overlap(pcb):
+    slug = "mv-delta-pair-list"
+    pcb.put(id=slug, args=_two_parts(0.0, 0.0, 0.3, 0.0))
+    resp = pcb.put(
+        id=slug,
+        args={"op": "move", "moves": [{"refdes": "A", "x": -0.1, "y": 0.0}]},
+    )
+    assert _STANDING in resp.body and "courtyard_overlap: A with B" in resp.body
+    with pytest.raises(BadInput, match="worse"):
+        pcb.put(
+            id=slug,
+            args={"op": "move", "moves": [{"refdes": "A", "x": 0.1, "y": 0.0}]},
+        )
+
+
+def test_op_move_delta_outline_part_outside_may_move_in_never_further_out(pcb, store):
+    slug = "mv-delta-outline"
+    design = _two_parts(0.2, 20.0)
+    design["features"] = [
+        {
+            "ftype": "outline",
+            "geom": {"path": [[0, 0], [40, 0], [40, 40], [0, 40], [0, 0]]},
+        }
+    ]
+    pcb.put(id=slug, args=design)
+    with pytest.raises(BadInput, match=r"outline with board outline \(worse: "):
+        _move_a(pcb, slug, -0.3, 20.0)
+    resp = _move_a(pcb, slug, 0.35, 20.0)
+    assert _STANDING in resp.body and "outline with board outline" in resp.body
+    resp = _move_a(pcb, slug, 20.0, 20.0)
+    assert "moved" in resp.body and _STANDING not in resp.body
+    # negative control: from fully inside, a move partly out is NEW, refused
+    with pytest.raises(BadInput, match="outline with board outline"):
+        _move_a(pcb, slug, 0.2, 20.0)
+
+
+def test_op_move_delta_mounting_hole_standing_may_shrink_never_grow(pcb, store):
+    slug = "mv-delta-hole"
+    pcb.put(id=slug, args=_two_parts(31.5, 30.0))
+    pcb.put(
+        id=slug,
+        args={
+            "features": [
+                {
+                    "ftype": "mounting_hole",
+                    "x": 30.0,
+                    "y": 30.0,
+                    "geom": {"diameter": 3.2},
+                }
+            ]
+        },
+    )
+    with pytest.raises(
+        BadInput, match=r"courtyard_hole with hole @ \(30, 30\) \(worse: "
+    ):
+        _move_a(pcb, slug, 31.0, 30.0)
+    resp = _move_a(pcb, slug, 31.8, 30.0)
+    assert _STANDING in resp.body and "courtyard_hole with hole @ (30, 30)" in resp.body
+    resp = _move_a(pcb, slug, 20.0, 20.0)
+    assert "moved" in resp.body and _STANDING not in resp.body
+
+
+def test_op_move_delta_new_overlap_with_an_untouched_part_still_refused(pcb):
+    """Negative control: a standing overlap A/B does not excuse a NEW one
+    with C."""
+    slug = "mv-delta-new"
+    design = _two_parts(0.0, 0.0, 0.3, 0.0)
+    design["components"].append(
+        {"refdes": "C", "label": "ic", "x": -6.0, "y": 0.0, "pins": [{"name": "1"}]}
+    )
+    pcb.put(id=slug, args=design)
+    with pytest.raises(BadInput, match="courtyard_overlap with C"):
+        _move_a(pcb, slug, -6.1, 0.0)
+
+
 def test_op_move_unknown_instance_not_found(pcb):
     pcb.put(id="op-move-404", args=_CROSSED)
     with pytest.raises(NotFound):
