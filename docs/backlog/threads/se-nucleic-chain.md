@@ -23,12 +23,10 @@ blocked.
 **Last reviewed:** 2026-10-02 (handoff)
 **Worktree:** `se-nucleic-chain`
 
-**Resume (handoff 2026-10-02, held for Reto's demo):** staple-sequence
-fill QLANDED 2c560a0f5 (pytest-ungated; its CI test was red on the tab-
-separated agent table, fixed in that same ship but never re-run — the
-orchestrator's integrated gate is its first run). Not deployed; dogfood
-it on prod after the round's deploy. Do-next 1 is blocked on
-hexfold-integration. Traps: a chain design laid out before the
+**Resume (handoff 2026-10-02):** staple-sequence fill is deployed (round 1,
+567f207f) and dogfooded on prod. Do-next 1 is blocked on
+hexfold-integration; review item se-nucleic-chain-1 asks Reto whether the
+orderable strand list (Horizon 5) is next. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
@@ -58,7 +56,10 @@ worktree's code against the prod DB (not the deployed code).
    stretched step across a deleted base).
 4. **caDNAno round trip** (unfiled) — settle the handedness reflection
    against a real file; waits on a file to compare.
-5. **orderable strand list** (unfiled) — `fill_complement` now writes every
+5. **orderable strand list** (unfiled; review item se-nucleic-chain-1) —
+   the prod dogfood showed no view prints a strand's letters (only
+   `view='export'` scadnano/caDNAno, which drops the strand names), and the
+   edit echo does not say what the fill wrote. `fill_complement` now writes every
    staple's sequence; what's left is the order-form output (one row per
    strand, 5'→3', name + sequence, as a view or export format). File it
    when a design is headed for an order.
@@ -88,7 +89,13 @@ worktree's code against the prod DB (not the deployed code).
   single-stranded or unpaired offset, or an unsequenced partner refuses
   by name; `loops={ord: letters}` supplies loops, `unknown='N'` writes N.
   `chain_sequence_length` (error) checks every sequenced routed strand
-  against `strand_length_nt`. Not dogfooded on prod yet. The chain skill
+  against `strand_length_nt`. Dogfooded on prod 2026-10-02
+  (`dogfood-staple-fill-1`, 4 × 16-bp square tile, 64-nt scaffold, 5
+  staples): `strand=` then bulk fill, 64/64 complementary, every staple
+  checked by hand against the scaffold from the scadnano export;
+  overwrite refusal names `overwrite=true`; a 12-nt sequence on an 8-nt
+  route fires `chain_sequence_length` with the fix, and `overwrite=true`
+  repairs it. The chain skill
   is 79 bytes under its 32 KiB hard cap — the next addition needs a split.
 - **insertions/deletions, atoms** — shipped 2026-10-01 in the commit that
   added this line (backlog item deleted): `realize_chain` builds a region
