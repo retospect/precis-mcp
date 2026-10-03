@@ -30,7 +30,26 @@ waited on happened 09-29 — note at the bottom)
 
 ## Do next
 
-1. **gr459567 family: overlaps the clash check now reports.** The bud
+1. **backlog/hexfold-ideal-surface-then-tile.md — ideal smooth surface
+   first, then tile it** (Reto 2026-10-03, via nanobuds-paper-25; the
+   nanobuds hero dr173020 waits on it).
+   - The ask: author the ideal surface (flat sheet, a fillet of chosen
+     radius into the tube, a chosen radius into the ball or cap), then
+     tile that fixed surface. The tiling must not bend it.
+   - Why today's drum looks co-optimised:
+     - its catenoids and table-snapped fillet radius come from the tiler's
+       needs, not from authored radii;
+     - its weak relax tether (0.01) leaves atoms a mean 0.7 Å off the
+       target.
+   - Stages, each through a design note:
+     - S1, surface spec + deviation metric, measured on hero5 and
+       `hexa-smooth-drum-v2`;
+     - S2, Gauss–Bonnet defect rows;
+     - S3, tile and pin one feature;
+     - S4, the hero scene.
+   - Review-queue hexfold-toolkit-2 has the ETA.
+
+2. **gr459567 family: overlaps the clash check now reports.** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
    and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
@@ -147,7 +166,7 @@ waited on happened 09-29 — note at the bottom)
      32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
      only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
      14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
-2. **gr459928 — graded bends, re-ranked behind item 1 on 2026-10-02**
+3. **gr459928 — graded bends, re-ranked behind the gr459567 family on 2026-10-02**
    (C2 verdict). The far-rims-pinned relax put the graded corner one ring
    row ahead of the baseline, which is the resolution of the measurement:
 
@@ -179,7 +198,7 @@ waited on happened 09-29 — note at the bottom)
      (a) Authoring, this item: the author places each defect explicitly,
      on any patch (sheet, tube wall, cap). This is exact and reproducible,
      and it is what a hand-designed graded bend uses.
-     (b) Solving, Horizon 11: the author gives a smooth target shape, and
+     (b) Solving, Horizon 12 and Do-next 1: the author gives a smooth target shape, and
      §22's budget and distribution places the defects. (b) emits (a)'s
      defect lists, so (a) is also (b)'s output format and test oracle.
      Do (a) first.
@@ -246,7 +265,7 @@ waited on happened 09-29 — note at the bottom)
      - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
      ports.py, seams.py, meridian.py, f3.hx, f33.hx).
-3. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
+4. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
    built. The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier
    visible in the viewer. Reto asked for mean/extreme C–C bond lengths per build
@@ -260,7 +279,7 @@ waited on happened 09-29 — note at the bottom)
      bond-angle deviation, plus POAV θp, with mean, p95 and max. Second,
      the se 3D viewer colours each atom by its strain, as a toggle next
      to the tier badge.
-4. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
+5. **backlog/se-join-observability.md**, **slice 1** (`view='report'`) —
    a join's findings live only in the minted structure's meta and there is
    no `view='catalogue'` despite §25.3 specifying one. The dogfood spent
    six SQL queries and a container exec on "which row governed this
@@ -270,11 +289,11 @@ waited on happened 09-29 — note at the bottom)
    lives on `se` addressed by block. Slice 1 ships alone and is the
    unblocker; slice 3 (the join dry-run) goes last, when there is a
    reading surface to prove it wrote nothing with.
-5. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
+6. **backlog/se-join-observability.md slices 2 and 3** — `view='catalogue'`
    (SPEC §25.3) then the join dry-run, after slice 1. Slice 3
    goes last by the file's own decision: a dry-run needs a reading
    surface to prove it wrote nothing with.
-6. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
+7. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
    gripe): a design retire **cascades** to the structures its blocks
    minted, except structures promoted to building-block status, and
    (no ruling needed) except any structure another live design still
@@ -282,7 +301,7 @@ waited on happened 09-29 — note at the bottom)
    (structure has no `tag()` today), folder placement, or a component
    row. Fix site: `persist.retire_design` + the se `delete` message.
    **td458221** closes with it.
-7. **gr456641 + gr457997** — one root cause: `EnvKey` records no
+8. **gr456641 + gr457997** — one root cause: `EnvKey` records no
    measurement extent, so the seam radius and the armchair leak threshold
    (2.9° against zigzag's 0.025°) are both tube-length artefacts keyed as
    rim-type properties. Do them together. Precondition for
@@ -304,18 +323,25 @@ waited on happened 09-29 — note at the bottom)
      design call, not a one-liner.
    - Second, larger slice: the `EnvKey` extent field, shared with
      gr457997.
-8. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
+9. **gr346966** — stick-rung seam-adjacent angles relax to 82–93° on every
    cap fuse. Independent of everything above, and it caps how far any
    stick-rung number can be believed — including 7’s re-measurements and
    the valve's Q4 clearance stub, which is explicitly gated on it.
 
 ## Horizon
 
-1. **`spec.md` §28.3 armchair lids** — the flat-lid family is done for
+1. **backlog/hexfold-fullerene-from-sphere.md — standard fullerenes from a
+   sphere** (Reto 2026-10-03). A diameter in, the canonical cage out:
+   C60-Ih, C70-D5h, C80-Ih and the other named IPR isomers, via the
+   Fowler–Manolopoulos spiral, with spirals taken from the Atlas. Hero
+   generation stops hand-building balls. It is independent of Do-next 1
+   and can be picked up between its review gates.
+
+2. **`spec.md` §28.3 armchair lids** — the flat-lid family is done for
    zigzag `(6k,0)`; the armchair half is open. Delivers caps for
    armchair-rim parts, and the valve rotor is a lid pair, so the valve
    test piece waits on it.
-2. **`spec.md` §28.3 `opening(port=)` + `junction(3)`** — solve a host hole
+3. **`spec.md` §28.3 `opening(port=)` + `junction(3)`** — solve a host hole
    from a target rim, then opening + fuse as a tee. Delivers the tilted
    pill (`geom.join.angle`) and the first branching topology. Also what a
    sheet-with-a-hole needs before a non-zigzag tube can protrude from it:
@@ -326,41 +352,41 @@ waited on happened 09-29 — note at the bottom)
    or a Goldberg `fullerene(N)` minus a patch, and neither exists
    (`fullerene` is C60-only). se `hexa-nanobud-drum` is the stand-in — a
    2.9 nm washer-capped drum, flat-ended.
-3. **`spec.md` §28.3 elbow + closure → genus-1 torus, then genus-N** — the
+4. **`spec.md` §28.3 elbow + closure → genus-1 torus, then genus-N** — the
    first real `registry.closure` test; delivers the junction/tube algebra
    the periodic cell and schwarzite nets reuse.
-4. **`spec.md` §28.3 box + valve test pieces** — the ~4 nm pillbox and the
+5. **`spec.md` §28.3 box + valve test pieces** — the ~4 nm pillbox and the
    radius-changing shell with a two-lid rotor, each as separate blocks with
    a revolute joint. The acceptance artefacts for the whole discrete half;
    waits on 1.
    The box test piece (`spec.md` §28 step 3, `src/hexfold/spec.md`) has no
    backlog file; it is ranked here, and the file is filed when it starts.
-5. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
+6. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
-6. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 7, since a
+7. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
+   catalogue's third row type exists for. Waits on Do-next 8, since a
    motif measured at one extent has the same defect the radius had.
-7. **`spec.md` §28.8 valve tool set** (checklist in
+8. **`spec.md` §28.8 valve tool set** (checklist in
    backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
    audit → drag-vs-torque. Delivers the valve's design surface; its Q4
-   clearance stub is gated on Do-next 8.
-8. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
+   clearance stub is gated on Do-next 9.
+9. **rotary-ratchet-valve.md Q2** — scrubber cadence per poison species,
    decided by instrumenting the first lining, so it waits on 7.
-9. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
+10. **backlog/hexfold-sp3-seam.md + backlog/hexfold-sp3-isolation-band.md**
    (§28.7) — three- and four-sheet joins at an atom, and the valve's sp³
    isolation loops. Sequenced here by choice, not blocked: §28 lists it as
    unblocked since step 2 landed. `JOINERS` is already keyed on a lattice
    *pair* for it.
-10. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
-    lining rotary-ratchet-valve.md Q2 (item 8) needs to decide scrubber
+11. **backlog/hexfold-instrumentation-leg.md** — the instrumented first
+    lining rotary-ratchet-valve.md Q2 (item 9) needs to decide scrubber
     cadence; sequenced right after the seam it instruments.
-11. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by
+12. **`spec.md` §28.5–28.6 smooth solve + direction field** — owned by
     **backlog/precis-surface-kernel.md** (its checklist carries §28.5,
     §28.6 and §28.8); this thread ranks them, that item holds the
     spec. Discrete-mesh smooth solve, curvature bound, bent collar;
     delivers the tapered (collar-driven) shell the discrete washer step
-    stands in for. This is the "solving" capability of Do-next 1's split:
+    stands in for. This is the "solving" capability of Do-next 3's split:
     a smooth profile in (sheet → catenoid foot → tube → flare → drum →
     rounded lid), and distributed defects out. It emits authored-defect
     lists (gr459928). The smooth-drum slice there (Reto 2026-10-01) has
@@ -370,18 +396,20 @@ waited on happened 09-29 — note at the bottom)
     `hexa-smooth-drum-v2`. Next after it:
     **backlog/smooth-drum-engineered-mode.md** (Reto 2026-10-02): an exact
     nanotube stalk with rotationally symmetric collars, beside today's
-    organic loft.
-12. **backlog/global-structure-search-slices.md** — variable-composition
+    organic loft. Do-next 1 (ideal surface first) is the first concrete
+    slice of this item, with authored radii in place of catenoids and
+    table fillets.
+13. **backlog/global-structure-search-slices.md** — variable-composition
     (`add` ranges) and surrogate warm-start from a prior AGOX database;
     structure-kind search work homed here by Reto's pillar-2 ruling
     (2026-10-01). Waits on nothing; sequenced after the test pieces by
     choice.
-13. **backlog/structure-kind-demotion.md** — `ready`; se is the origin of
+14. **backlog/structure-kind-demotion.md** — `ready`; se is the origin of
     atoms (Reto, 2026-09-14), structure becomes an import filter with no
     direct agent access. Staged, independent of the §28 pieces; ranked
     here because hexfold builds are where the structure-kind gripes
-    (Do-next 2) bite.
-14. **td344088** — the se + hexfold paper. The thread's end state; it
+    (Do-next 4) bite.
+15. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
 
 ## Parked
@@ -482,7 +510,7 @@ waited on happened 09-29 — note at the bottom)
   the structures it left live and the `delete(kind='structure', …)` call
   for each. One test pins the leak itself, so a later cascade fix has to
   update the message in the same change rather than quietly making it a
-  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 6.
+  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 7.
 - **gr454488** — CLOSED 2026-10-02. All eight residuals were fixed on
   2026-09-28 by 1a5475438 (in prod), with regression tests in
   `tests/test_se_hexfold_dogfood2.py`; this file had it ranked at 7 for
