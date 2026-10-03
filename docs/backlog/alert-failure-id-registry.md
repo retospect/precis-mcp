@@ -375,7 +375,7 @@ stamping `resolved_at` and re-paging as a fresh `is_new` row — precisely the
 failure this item exists to remove — or (ii) raises `UniqueViolation` inside
 the nursery pass. Making it work means widening ~10 reader predicates and
 teaching a two-state boolean three states, while growing the `alert-state:`
-open namespace that `open-namespace-teardown` plans to remove. A real column
+open namespace that the OPEN-namespace teardown (`greenfield-schema-review.md`) plans to remove. A real column
 costs a migration + `store/types.py` + three mapper SELECT lists + baseline
 regen, and buys nothing: no read path needs it indexed. *Implementer must:*
 ack via `update_ref(meta_patch=…)`, never via `tag`; never add

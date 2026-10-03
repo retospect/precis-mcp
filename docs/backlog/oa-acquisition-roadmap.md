@@ -22,5 +22,5 @@ J-STAGE. §E embed-prioritization deliberately unsolved: bulk chunks must
 trickle behind live traffic — no bulk pass without a queue policy. Also
 built unshipped: `precis enrich-openalex` §G metadata enrichment (edge
 materialization rides the provider fan-out; topics→tags waits on
-open-namespace-teardown), `precis fetch-openalex`, /papers-needed
+the OPEN-namespace teardown in greenfield-schema-review), `precis fetch-openalex`, /papers-needed
 failure-reason surfacing. Owner `src/precis/workers/fetch_oa.py`, `ingest/`.

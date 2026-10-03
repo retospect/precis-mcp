@@ -141,7 +141,10 @@ graph-health-metrics, five parked gripes, and the seam with
     knowledge-mesh-6); the pin table feeds gr458878's pad-map check.
 17. **backlog/greenfield-schema-review.md** — file only (Reto,
     knowledge-mesh-6): what the schema would be designed today and the
-    migration path there. A review, not a refactor; any time.
+    migration path there. A review, not a refactor; any time. It now
+    also holds the OPEN-namespace teardown section: a GO (Reto
+    2026-10-03, td345843), not started by any thread. Machine writers
+    move first, then the exact-match folksonomy cull.
 ## Waiting on Reto
 
 
