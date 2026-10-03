@@ -85,3 +85,7 @@ deploy role from Slice 1.
 - PID on running sequences vs bang-bang on waiting/KV thresholds. Start
   with the threshold loop the admission prototype describes, and add the
   integral term only if the box oscillates.
+- **[2026-10-03]** The deferrable feed's per-action eligibility comes from
+  `local-mesh-upkeep.md`. Its review lane is cloud spend, budgeted on its
+  own line; the "deferrable work never overflows to cloud" rule covers
+  the maintenance units only.

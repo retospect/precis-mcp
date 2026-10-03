@@ -30,7 +30,16 @@ graph-health-metrics, five parked gripes, and the seam with
    local-vs-local against the 0.711 bar (cross-run folded agreement,
    knowledge-mesh-7); if it clears, the full run goes local ($0).
    `--placement local` shipped (fdfae5c5c).
-2. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
+2. **backlog/local-mesh-upkeep.md** — draft (Reto 2026-10-03, tier 2,
+   co-owned with local-compute): what local models can do for upkeep
+   (categorise, link, finding extraction, merge), measured per action
+   against an auto-apply bar and a reviewed-by-a-bigger-model bar; one
+   `reviews` ledger (actor, model, version, content sha) that an edit
+   makes stale; fed through graph-maintenance-queue and the dispatch
+   controller. Its slice 0 categorise set is 1's test, run once for both
+   threads. Design verdict asked in review item knowledge-mesh-10; the
+   ledger migration goes to the orchestrator as a branch.
+3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
    calibrated on hand-merged twins, one backfill, a pre-publish check.
@@ -40,39 +49,39 @@ graph-health-metrics, five parked gripes, and the seam with
    `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
    (an errored dedup judgment read as "different") is owned by
    claims-and-evidence.
-3. **Part refs post-deploy** (shipped 2026-10-02, undeployed; design in
+4. **Part refs post-deploy** (shipped 2026-10-02, undeployed; design in
    the `precis.handlers.part` docstring): lazy part refs on first link,
    `pn` handles, datasheet `datasheet-of` dual-write, component `link`,
    and board `contains` part edges reconciled by every `pcb_apply`. After
    the round deploys: `precis pcb link-parts --dry-run` on prod
    (read-only), then hand Reto the real run as a command; then read one
    board's part in `get(kind='part')`.
-4. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
+5. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
    (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
-   the answer to "a viewer for the memory" once 7 lands.
-5. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
+   the answer to "a viewer for the memory" once 8 lands.
+6. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
    taxon + reference + convention, and it unblocks
    knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
    (Reto: `component_spec_values` joins `measures` in the same
    migration).
-6. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
+7. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
    roles, curves/fits/laws — Reto's sourced-KG design notes, folded in at
-   the pillar review). Right after 5 because it builds on the same taxon
+   the pillar review). Right after 6 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-7. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+8. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
    after its recall AC. Readiness vet the same day: needs-work, four
-   blockers folded into the item, re-vet before build. Below 6 only
+   blockers folded into the item, re-vet before build. Below 7 only
    because its recall AC is cheap to run at any time.
-8. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
+9. **backlog/norr-her-meta.md** — the consumer of list.v1.yaml (20-paper
    round, gold set, figure). Starts on a frozen list.
 
 ## Horizon
@@ -85,8 +94,8 @@ graph-health-metrics, five parked gripes, and the seam with
    the thread's answer to "hierarchies over links": axis hierarchy, not
    relation specialisation.
 3. **backlog/knowledge-mesh.md** (walk, numeric conflicts, quest_mesh,
-   universal row) — waits on Do-next 5; its ladder item moved to Do-next 4.
-4. **backlog/experiment-loop.md** — waits on Do-next 5; hypothesis → todo
+   universal row) — waits on Do-next 6; its ladder item moved to Do-next 5.
+4. **backlog/experiment-loop.md** — waits on Do-next 6; hypothesis → todo
    `tests` → measure → ruling → refuted, walked end to end through the
    verbs, plus the skill that teaches it.
 5. **backlog/graph-gardener.md** — waits on a populated mesh
@@ -102,15 +111,15 @@ graph-health-metrics, five parked gripes, and the seam with
    2026-09-30.
 9. **backlog/context-memory-hierarchy.md** — the resident/discovered split
    for the harness memory; P0 is repo-only and can go any time, P1 after
-   Do-next 7 gives the topic files a recall measurement, P2 ruled yes
+   Do-next 8 gives the topic files a recall measurement, P2 ruled yes
    2026-09-30 (one resident identity + style block).
 10. **backlog/corpus-quantitative-extraction.md** — waits on Horizon 1 and
-    Do-next 5; sourced numeric triples bound to list entries.
+    Do-next 6; sourced numeric triples bound to list entries.
 11. **backlog/norr-her-meta.md steps 3-5** (20-paper round, gold set,
     figure, draft) — waits on Horizon 1; the paper's spine.
 12. **backlog/dreaming.md** — the consolidation pass over memory nodes;
     revisit once 5 and 7 exist, since both replace hand consolidation.
-13. **backlog/first-party-experiment-records.md** — waits on Do-next 5;
+13. **backlog/first-party-experiment-records.md** — waits on Do-next 6;
     our own runs (a job, a quest tick, an se design) need the same measure
     identity as a paper's before they can be stored honestly. Note the
     open contradiction it records: `measures-substrate.md` §3 owns an
@@ -121,9 +130,9 @@ graph-health-metrics, five parked gripes, and the seam with
 15. **backlog/capability-landscape-steals.md** — five externally sourced
     ideas (a ChemBench eval slice, categorizer rule distillation, and
     three more) from the capability-landscape comparison; sequenced behind
-    the substrate (Do-next 1-6) by choice, not blocked.
+    the substrate (Do-next 1-7) by choice, not blocked.
 
-16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 5 (its part
+16. **backlog/datasheet-facts-mesh.md** — waits on Do-next 6 (its part
     ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
     knowledge-mesh-6); the pin table feeds gr458878's pad-map check.
@@ -141,11 +150,11 @@ items.
 
 - **gr445532** — experiment tracking needs multi-class context for
   qualitative terms ("low temperature" means opposite things in different
-  communities); unparks with Do-next 6, whose per-axis similarity spaces
+  communities); unparks with Do-next 7, whose per-axis similarity spaces
   are the natural home for a comparison class.
 - **gr449840** — precis-finding-help's admission criteria exclude the
   definitional/methodological claim classes a taxonomy or architecture
-  paper needs to cite; unparks with Do-next 6, which names a definitional
+  paper needs to cite; unparks with Do-next 7, which names a definitional
   claim class explicitly (membership yes/no/unknown).
 - **gr182230** — taproot chase-trigger recall gap (60 days old, pre-enablement). Unparks
   when chase_trigger is enabled by default; inert until then.

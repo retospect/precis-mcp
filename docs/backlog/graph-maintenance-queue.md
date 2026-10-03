@@ -87,6 +87,11 @@ feeds capacity to, unmodified in their own logic).
   but needs the queue to be host-aware, which the current standing-daemon
   model may not support cleanly.
 
+- **[2026-10-03]** `local-mesh-upkeep.md` (draft) decides which actions
+  this queue may give a local model, and at which bar (auto-apply or
+  reviewed by a bigger model). Its `reviews` ledger is the review gate
+  named in scope above.
+
 Closest existing items: `cluster-scheduling.md` (the policy this item
 narrows — supersession noted above), `knowledge-mesh.md`, `graph-gardener.md`,
 `dreaming.md`, `curation-gate.md`, `local-summarizer.md`.
