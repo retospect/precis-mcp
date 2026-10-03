@@ -139,6 +139,27 @@ def _residue_rows(record: Mapping[str, Any]) -> dict[tuple[str, int], Sequence[A
     return {(str(r[0]), int(r[1])): r for r in record.get("residues") or []}
 
 
+#: PDB nucleotide residue names, spelled out for a reader: the label says
+#: ``DG 1 = deoxyguanosine`` so ``DG1`` does not read as an opaque code.
+_RESIDUE_WORDS = {
+    "DA": "deoxyadenosine",
+    "DC": "deoxycytidine",
+    "DG": "deoxyguanosine",
+    "DT": "deoxythymidine",
+    "A": "adenosine",
+    "C": "cytidine",
+    "G": "guanosine",
+    "U": "uridine",
+}
+
+
+def residue_label(resname: str, resseq: int) -> str:
+    """``DG 1 = deoxyguanosine`` for a nucleotide, ``<resname> <resseq>``
+    for anything else."""
+    word = _RESIDUE_WORDS.get(resname)
+    return f"{resname} {resseq} = {word}" if word else f"{resname} {resseq}"
+
+
 def _resname(record: Mapping[str, Any], chain: str, resseq: int) -> str | None:
     chain_ids = record.get("chain_ids") or []
     seqs = record.get("resseq") or []
@@ -209,7 +230,7 @@ def _bare_residue_level(
         return None
     return PickLevel(
         "residue",
-        f"{name} {resseq} (chain {chain}; {_NO_RESIDUE_ROWS})",
+        f"{residue_label(name, resseq)} (chain {chain}; {_NO_RESIDUE_ROWS})",
         format_token(_uid(node), region=f"{chain}.{resseq}"),
     )
 
@@ -247,7 +268,7 @@ def _residue_levels(
     out = [
         PickLevel(
             "residue",
-            f"{name} {resseq} ({where})",
+            f"{residue_label(name, resseq)} ({where})",
             format_token(_uid(node), region=f"{chain}.{resseq}"),
         )
     ]
@@ -303,24 +324,71 @@ def atom_levels(
     return out + _block_levels(tree, node)
 
 
-def atom_hover_names(
-    labels: Sequence[str], record: Mapping[str, Any] | None = None
-) -> list[str]:
-    """One short name per atom, in scene order, for the 3D viewer's hover
-    readout: ``O3' · DG 4 (A)`` when ``record`` (a ``realize_chain``
-    ``chain_atoms`` record) has columns aligned with ``labels``, the scene
-    label otherwise — the same fallback :func:`atom_levels` takes."""
+def _aligned_columns(
+    labels: Sequence[str], record: Mapping[str, Any] | None
+) -> list[Sequence[Any]] | None:
+    """The record's ``names``/``resnames``/``resseq``/``chain_ids``
+    columns, or ``None`` when there is no record or they do not line up
+    with the scene (a structure edited after it was realized)."""
     columns = [
         (record or {}).get(k) or []
         for k in ("names", "resnames", "resseq", "chain_ids")
     ]
     if not record or any(len(col) != len(labels) for col in columns):
+        return None
+    return columns
+
+
+def atom_name(
+    labels: Sequence[str], record: Mapping[str, Any] | None, ordinal: int
+) -> str:
+    """Atom ``ordinal``'s PDB name (``N9``) when the record lines up with
+    the scene, its scene label otherwise."""
+    columns = _aligned_columns(labels, record)
+    return str(columns[0][ordinal] if columns else labels[ordinal])
+
+
+def atom_hover_names(
+    labels: Sequence[str], record: Mapping[str, Any] | None = None
+) -> list[str] | dict[str, Any]:
+    """What the 3D viewer's hover table shows per atom, in scene order.
+
+    Without a lined-up ``realize_chain`` ``chain_atoms`` record: the scene
+    labels, one string per atom (the fallback :func:`atom_levels` takes).
+    With one, the table's rows in columns, so a residue is sent once and
+    not per atom::
+
+        {"atom": ["N9", …], "residue": [0, …],
+         "residues": [["DG 1 = deoxyguanosine", "A", "hp"], …]}
+
+    ``residue`` indexes ``residues``; a residue row is its label, its chain
+    id and the strand block it belongs to (``None`` when the record
+    predates residue rows). The viewer renders ``atom N9 (N)`` /
+    ``residue DG 1 = deoxyguanosine`` / ``chain A = strand hp`` (Reto,
+    2026-10-03: name each field)."""
+    columns = _aligned_columns(labels, record)
+    if columns is None:
         return [str(label) for label in labels]
+    assert record is not None
     names, resnames, resseq, chain_ids = columns
-    return [
-        f"{names[i]} · {resnames[i]} {resseq[i]} ({chain_ids[i]})"
-        for i in range(len(labels))
-    ]
+    rows = _residue_rows(record)
+    index: dict[tuple[str, int], int] = {}
+    residues: list[list[Any]] = []
+    per_atom: list[int] = []
+    for i in range(len(labels)):
+        key = (str(chain_ids[i]), int(resseq[i]))
+        if key not in index:
+            row = rows.get(key)
+            index[key] = len(residues)
+            residues.append(
+                [
+                    residue_label(str(resnames[i]), key[1]),
+                    key[0],
+                    str(row[2]) if row is not None else None,
+                ]
+            )
+        per_atom.append(index[key])
+    return {"atom": [str(n) for n in names], "residue": per_atom, "residues": residues}
 
 
 def resolve_token(

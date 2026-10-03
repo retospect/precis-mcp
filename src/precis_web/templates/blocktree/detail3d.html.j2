@@ -80,6 +80,11 @@
     <input type="checkbox" id="bt3d-connections" checked />
     connections
   </label>
+  <label class="flex items-center gap-1 text-xs text-slate-600"
+         title="the x/y/z orientation marker in the corner of the 3D view; PNG/SVG export includes it only while this is on">
+    <input type="checkbox" id="bt3d-axes" checked />
+    axes
+  </label>
   <label class="flex items-center gap-1 text-xs text-slate-600">
     containers
     <select id="bt3d-container-mode" class="border border-slate-300 rounded px-1 py-0.5"
@@ -112,8 +117,8 @@
      it is coloured, default = the top 5%. Rows whose measure the structure
      does not carry stay hidden. #}
   <div id="bt3d-smooth-legend" class="hidden items-center gap-1 text-[11px] text-slate-500"
-       title="smoothed surface coloured by distance to the raw atoms; vertices below the threshold stay grey">
-    <span>deviation</span>
+       title="each atom's distance from its own smoothed position (the structure smoothed over its bonds, the far end of the atomic ↔ smooth slider); vertices below the threshold stay grey">
+    <span>deviation from smoothed</span>
     <input type="range" id="bt3d-dev-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #e0f2fe, #1d4ed8, #7f1d1d);"></span>
     ≥ <span data-role="value">0.00 Å</span>
@@ -121,7 +126,7 @@
   </div>
   <div id="bt3d-layer-bond" class="hidden items-center gap-1 text-[11px] text-slate-500"
        title="C–C bonds coloured by |length − 1.42 Å|; bonds below the threshold stay grey">
-    <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-bond-strain" data-role="toggle" /> bond strain</label>
+    <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-bond-strain" data-role="toggle" /> bond strain vs 1.42 Å</label>
     <input type="range" id="bt3d-bond-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #22c55e, #16a34a, #14532d);"></span>
     ≥ <span data-role="value">0.000 Å</span>
@@ -131,8 +136,8 @@
        title="3-coordinated carbon atoms coloured by θp (out-of-plane pyramidalization, picks out pentagons and heptagons) or by the RMS deviation of their bond angles from 120° (in-plane distortion); atoms below the threshold keep their element colour">
     <label class="flex items-center gap-1"><input type="checkbox" id="bt3d-angle-strain" data-role="toggle" /> angle strain</label>
     <select id="bt3d-angle-measure" data-role="measure" class="border border-slate-300 rounded px-1 py-0">
-      <option value="thetap" selected>θp</option>
-      <option value="120">120°</option>
+      <option value="thetap" selected>θp vs planar</option>
+      <option value="120">vs 120°</option>
     </select>
     <input type="range" id="bt3d-angle-threshold" data-role="threshold" min="0" max="1000" value="950" step="1" class="w-20" />
     <span class="inline-block w-16 h-2 rounded" style="background: linear-gradient(to right, #fb923c, #ea580c, #7c2d12);"></span>
@@ -306,6 +311,7 @@
     topologyEl: document.getElementById("bt3d-topology"),
     explodeButton: document.getElementById("bt3d-explode"),
     connectionsToggle: document.getElementById("bt3d-connections"),
+    axesToggle: document.getElementById("bt3d-axes"),
     containerModeSelect: document.getElementById("bt3d-container-mode"),
     levelSelect: document.getElementById("bt3d-level"),
     isolateSelect: document.getElementById("bt3d-isolate"),

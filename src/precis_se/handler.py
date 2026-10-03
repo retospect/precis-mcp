@@ -5368,7 +5368,8 @@ def pick_levels(
             levels = se_pick.atom_levels(
                 tree, node, ordinal, labels=labels, record=record
             )
-            subject = f"atom {ordinal} ({labels[ordinal]}) of {node.name!r}"
+            name = se_pick.atom_name(labels, record, ordinal)
+            subject = f"atom {ordinal} ({name}) of {node.name!r}"
     except (se_pick.PickError, AmbiguousLabel) as exc:
         raise BadInput(f"view='pick': {exc}") from exc
     return subject, levels

@@ -747,6 +747,23 @@ function _rampColor(stops, t) {
   return [1, 1, 1];
 }
 
+//: The hover table's [field, value] rows for atom `i` of payload block
+//: `b` (`pick.atom_hover_names`): for a realized chain the atom name with
+//: its element, the residue spelled out, and the chain with its strand;
+//: otherwise the scene label with its element.
+function _hoverRows(b, i) {
+  const el = b.elements[i];
+  const h = b.hover;
+  if (h && !Array.isArray(h) && h.atom) {
+    const [residue, chain, strand] = h.residues[h.residue[i]] || [];
+    const rows = [["atom", `${h.atom[i]} (${el})`]];
+    if (residue) rows.push(["residue", residue]);
+    if (chain) rows.push(["chain", strand ? `${chain} = strand ${strand}` : chain]);
+    return rows;
+  }
+  return [["atom", `${(Array.isArray(h) && h[i]) || `#${i}`} (${el})`]];
+}
+
 function _deviationColor(t) {
   return _rampColor(_DEVIATION_STOPS, t);
 }
@@ -1312,13 +1329,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     if (!hit || hit.instanceId === undefined) return null;
     const b = blocks[hit.object.userData.blockIndex].src;
     const i = hit.instanceId;
-    // The hover readout: element, then the atom's name (residue and chain
-    // for a realized chain, the scene label otherwise).
-    return {
-      block: b.uid,
-      atom: i,
-      hover: `${b.elements[i]} · ${(b.hover && b.hover[i]) || `#${i}`}`,
-    };
+    return { block: b.uid, atom: i, hover: _hoverRows(b, i) };
   }
 
   // ── target surface (smooth_drum's surface_meridian, revolved server-side)
@@ -1517,6 +1528,7 @@ export async function blocktreeViewer3D({
   topologyEl,
   explodeButton,
   connectionsToggle,
+  axesToggle,
   containerModeSelect,
   // The three scene-shaping controls. They were a plain GET form until
   // the live-scene slice; now the page drives them without a reload —
@@ -2140,8 +2152,8 @@ export async function blocktreeViewer3D({
     true
   );
 
-  // Atom hover readout: the atom under the pointer (element, then its
-  // residue and chain or scene label), the way the vendored viewer
+  // Atom hover readout: the atom under the pointer as a field | value
+  // table (_hoverRows), the way the vendored viewer
   // already reads out an edge's length. One raycast per animation frame
   // at most, none while a button is held (that is an orbit).
   // Attached on first show, and again if a render emptied the shell.
@@ -2161,7 +2173,15 @@ export async function blocktreeViewer3D({
     }
     if (!hoverTip.isConnected) viewerEl.appendChild(hoverTip);
     const box = viewerEl.getBoundingClientRect();
-    hoverTip.textContent = hit.hover;
+    const table = document.createElement("table");
+    for (const [field, value] of hit.hover) {
+      const tr = table.insertRow();
+      const th = document.createElement("th");
+      th.textContent = field;
+      tr.appendChild(th);
+      tr.insertCell().textContent = value;
+    }
+    hoverTip.replaceChildren(table);
     hoverTip.style.left = `${at[0] - box.left + 12}px`;
     hoverTip.style.top = `${at[1] - box.top + 12}px`;
     hoverTip.hidden = false;
@@ -2432,6 +2452,7 @@ export async function blocktreeViewer3D({
         }
       }
     }
+    applyAxes();
     // A fresh scene is never exploded — the animation lived on the
     // Viewer's previous `_rendered`. Say so on the button rather than
     // leaving it reading "un-explode" over an un-exploded scene.
@@ -2584,6 +2605,23 @@ export async function blocktreeViewer3D({
       }
     });
   }
+
+  // ── axes toggle (Reto, 2026-10-03) ───────────────────────────────────
+  // The x/y/z marker in the canvas corner is the vendored viewer's
+  // orientation marker, drawn into the same WebGL canvas, so the PNG/SVG
+  // export (which copies that canvas) carries it exactly while it shows.
+  // The vendored viewer re-shows it on a render and with its tools panel,
+  // hence applyUiState calls this after every render too.
+  function applyAxes() {
+    if (!axesToggle || !viewer || !viewer.ready) return;
+    try {
+      viewer.orientationMarker.setVisible(axesToggle.checked);
+      viewer.update(true);
+    } catch (err) {
+      console.error("blocktree-3d: axes toggle failed", err);
+    }
+  }
+  if (axesToggle) axesToggle.addEventListener("change", applyAxes);
 
   // ── container envelope mode select (viewer fix) ──────────────────────
   // No page reload — same pattern as connectionsToggle above, just

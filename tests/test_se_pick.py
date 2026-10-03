@@ -110,7 +110,10 @@ def test_a_stem_atom_resolves_through_residue_pair_domain_strand_and_blocks(
         "helix",
     ]
     assert rows[0][1:] == ("O3' of DG 4", f"<se:{uid['stem.s0']}#{ordinal}>")
-    assert rows[1][1:] == ("DG 4 (chain A)", f"<se:{uid['stem.s0']}/A.4>")
+    assert rows[1][1:] == (
+        "DG 4 = deoxyguanosine (chain A)",
+        f"<se:{uid['stem.s0']}/A.4>",
+    )
     assert rows[2][1:] == (
         "stem@3 (G·C, paired: hp.0 / hp.1)",
         f"<se:{uid['stem']}@3>",
@@ -149,7 +152,7 @@ def test_a_loop_nucleotide_has_no_pair_row(handler: SeHandler, store: Store) -> 
     )
     # In no domain either: the loop sits between hp.0 and hp.1.
     assert [r[0] for r in rows] == ["atom", "residue", "strand", "segment", "helix"]
-    assert rows[1][1] == "DA 6 (loop nucleotide after hp.0)"
+    assert rows[1][1] == "DA 6 = deoxyadenosine (loop nucleotide after hp.0)"
 
 
 def test_a_record_without_residue_rows_says_why_pair_and_domain_are_missing(
@@ -208,14 +211,31 @@ def test_pick_refusals_say_what_would_resolve(handler: SeHandler, store: Store) 
 
 
 def test_atom_hover_names_read_the_record_or_fall_back_to_labels() -> None:
-    labels = ["aP1", "aO2"]
+    labels = ["aP1", "aO2", "aN3"]
     record = {
-        "names": ["P", "OP1"],
-        "resnames": ["DG", "DG"],
-        "resseq": [4, 4],
-        "chain_ids": ["A", "A"],
+        "names": ["P", "OP1", "N9"],
+        "resnames": ["DG", "DG", "DA"],
+        "resseq": [4, 4, 5],
+        "chain_ids": ["A", "A", "A"],
+        "residues": [["A", 4, "hp", 0, 3, "G", 0]],
     }
-    assert pick.atom_hover_names(labels, record) == ["P · DG 4 (A)", "OP1 · DG 4 (A)"]
+    assert pick.atom_hover_names(labels, record) == {
+        "atom": ["P", "OP1", "N9"],
+        "residue": [0, 0, 1],
+        "residues": [
+            ["DG 4 = deoxyguanosine", "A", "hp"],
+            # no residue row for DA 5: the strand is unknown, not guessed
+            ["DA 5 = deoxyadenosine", "A", None],
+        ],
+    }
+    assert pick.atom_name(labels, record, 2) == "N9"
     # No record, or columns that do not line up with the scene: labels.
     assert pick.atom_hover_names(labels) == labels
     assert pick.atom_hover_names(labels, {**record, "names": ["P"]}) == labels
+    assert pick.atom_name(labels, None, 2) == "aN3"
+
+
+def test_residue_label_spells_out_nucleotides_only() -> None:
+    assert pick.residue_label("DG", 1) == "DG 1 = deoxyguanosine"
+    assert pick.residue_label("U", 7) == "U 7 = uridine"
+    assert pick.residue_label("ALA", 3) == "ALA 3"
