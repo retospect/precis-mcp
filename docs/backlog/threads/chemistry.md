@@ -11,6 +11,14 @@ packages its results.
 **Last reviewed:** 2026-10-02 (every item triaged against the code and commit history)
 **Worktree:** `chemistry`
 **Active:** yes — Reto, 2026-10-01.
+**Resume (2026-10-03 20:40Z):** round 3 (929107f32) carries only the
+cpuset plumbing (044378f9), which runs only inside a seed, so its dogfood is
+the verify run. Branch `worktree-agent-a49ea425aa7c73281` (e45e31063: verify
+wall 28800, seed cpuset 0-4,10-14, runner affinity fallback) rides the
+follow-up deploy. After it: confirm new verify seeds for the 9 qu164903
+(NO→NH3 on Pd(111)) candidates carry `resources.wall_seconds=28800` +
+`cpuset`, the child runs under `taskset` on castor/pollux, and the
+pre-stamp September kills re-dispatch too (Do next 3).
 
 ## Do next
 
