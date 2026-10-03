@@ -23,3 +23,4 @@ local-compute	medium	no
 roadmap-quest	high	no
 monitors-that-go-quiet	medium	no
 plugin-split	medium	no
+ship-gate-ci	high	yes

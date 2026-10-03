@@ -267,10 +267,11 @@ and the owner is expected to move it. **Dormant** means ranked and filed
 against, nobody works it. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (19; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
+Active (20; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
 plus seven on 2026-10-01, minus serving-programme, plus
-`catalysis-selectivity` on 2026-10-02; `.claude/fleet/threads.tsv` is the
-same set as the sessions `/fleet` opens, changed in the same commit):
+`catalysis-selectivity` on 2026-10-02, plus `ship-gate-ci` on 2026-10-03;
+`.claude/fleet/threads.tsv` is the same set as the sessions `/fleet` opens,
+changed in the same commit):
 `catalysis-selectivity` ·
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
 `nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (lands its
@@ -283,13 +284,14 @@ module moves, which feed the catpath paper due in November — Reto
 2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01) ·
 `ingest-and-fetch` · `draft-authoring` · `graph-memory-consumers` (all
 three 2026-10-01: "ingest must work. draft authoring must work. graph
-memory we want soon").
+memory we want soon") · `ship-gate-ci` (2026-10-03, Reto: "push should not
+break build" — `backlog/release-candidate-verdicts.md` as p1).
 
-Dormant (7, open at the next restart if named): `multiscale-design-core`
+Dormant (6, open at the next restart if named): `multiscale-design-core`
 · `factory` (2026-10-01, the agent-lane items moved from pillar 3) ·
 `pcb-platform` (created at the 09-30 review) · `serving-programme`
 (2026-10-01, Reto: until the session count nears the serve ceiling) ·
-`ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (platform bucket,
+`deploy-fleet-ops` · `security-hardening` (platform bucket,
 2026-10-02, from the unowned platform items). Code-debt, db-schema and
 docs-audit items stay unthreaded.
 
@@ -321,6 +323,12 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-03 — not a full pass: `ship-gate-ci` activated (Reto: "push
+  should not break build"); main's CI runs cancelled each other at ~8
+  qlands/hour, the drift guard was blind, and the round's local gate held
+  the ship lock — `backlog/release-candidate-verdicts.md` is its p1, after
+  an independent critique replaced a release-branch design with
+  "every main sha gets a verdict; deploy the newest green one".
 - 2026-10-03 — not a full pass: follow-up to the priority review (Reto):
   `plugin-split` is not open-ended tier-3 work — it lands its slice,
   idles until the 2026-10-16 hold expires, then resumes the module moves

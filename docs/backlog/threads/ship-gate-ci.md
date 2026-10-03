@@ -7,31 +7,44 @@ delete a live session's tree — the path every pillar's work ships through
 the order is data loss first (live-worktree deletion), then fleet-wide
 stalls (slot and lock holds, hangs), then verdict honesty (red that reads as
 green or the reverse), then tuning and residue.
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-03
 **Worktree:** `ship-gate-ci`
-**Active:** no — opens at the next session restart if Reto names it.
+**Active:** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
 
 ## Do next
 
-1. **backlog/reap-live-worktree-incident.md** — auto-reap deleted a live
+1. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
+   CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
+   the drift guard is blind (25-commit walk); the round's local full gate
+   holds the ship lock. Ship the hygiene-tests-into-pre-qland-lint slice
+   first and alone, then no-cancel on main, the time-bounded
+   `last-gated-main-sha`, and `scripts/round gate|deploy` on the newest
+   green main sha. Review item organizer-release-branch-1 (v2) has the
+   critique and Reto's two open decisions; design-bearing changes go to the
+   orchestrator as a design note before they land.
+2. **backlog/fleet-orchestrator-verbs.md** — the orchestrator's repeated
+   hand sequences as `scripts/fleet` verbs (verdict, say -m/--when-clear,
+   peek/dialogs, compact --at-idle, mcp-check, one watcher, refs). Mined
+   from its transcript 2026-10-03; builds after 1.
+3. **backlog/reap-live-worktree-incident.md** — auto-reap deleted a live
    session's tree twice, killing in-flight prod runs; data loss outranks
    every stall below. Overlaps 2: settle which one survives before fixing.
-2. **backlog/reaper-removed-live-session-worktree.md** — the same
+4. **backlog/reaper-removed-live-session-worktree.md** — the same
    lock-silently-released failure, fixes 1–3 shipped, harness-event root
    cause open; read with 1.
-3. **backlog/inflight-lists-the-live-deploy-render-tree-as-removable.md** —
+5. **backlog/inflight-lists-the-live-deploy-render-tree-as-removable.md** —
    inflight tells agents to delete the tree a deploy reads; same blast
    class as 1.
-4. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-5. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+7. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
    gate serialises the fleet for up to 1h43m; 4's sibling on the lock.
-6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+8. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
    container; the tooling that makes 4 and 5 diagnosable.
-7. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+9. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+10. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon
