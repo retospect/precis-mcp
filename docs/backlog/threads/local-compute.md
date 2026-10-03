@@ -102,8 +102,11 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       - **vLLM × Nemotron done 2026-10-03:** 14 / 56 / 108 / 142 out tok/s
         at 1 / 8 / 32 / 64 streams; 3.5 tok/s per stream at 32; KV 50% at
         64 (table in the item).
-      - vLLM × gpt-oss: first start failed (no `config.json`); re-run in
-        flight.
+      - **vLLM × gpt-oss done 2026-10-03:** 32 / 144 / 290 / 400 out
+        tok/s at 1 / 8 / 32 / 64; 9.6 tok/s per stream at 32; KV 20% at
+        64. About 2.8× Nemotron throughout. Needs the harmony vocab staged
+        offline (item has the recipe). Next: C above 64, then a quality
+        check.
       - SGLang has no image route yet (ghcr only).
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,

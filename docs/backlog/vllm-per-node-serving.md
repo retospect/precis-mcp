@@ -194,9 +194,33 @@ TPOT.
 - 3.5 tok/s per stream at the 32-stream target is slow for interactive use;
   acceptable only for bulk work where aggregate counts.
 - C=1 TTFT p95 7.8 s is likely first-request warm-up (p50 0.9 s).
-- Raw results: castor `/home/deploy/slice0/results/`. gpt-oss 120B failed to
-  start (its folder lacked `config.json`); re-run pending. SGLang arm: no
-  image route yet (ghcr only).
+- Raw results: castor `/home/deploy/slice0/results/`.
+
+**Slice 0 result, vLLM arm, gpt-oss 120B MXFP4 on castor (2026-10-03).**
+Same run script and settings (max-model-len 16384, max-num-seqs 64,
+gpu-memory-utilization 0.8); server start 505 s; 0 failed requests; no
+`precis-aizynth` container during any level. vLLM's gpt-oss path loads the
+harmony tokenizer vocab from the internet at startup and the container
+cannot reach it: stage `o200k_base.tiktoken` and `cl100k_base.tiktoken` on
+the host, mount them read-only, set `TIKTOKEN_ENCODINGS_BASE` (castor:
+`/home/deploy/slice0/tiktoken/`). Any serving role for gpt-oss needs the
+same.
+
+| C | out tok/s | per-stream tok/s | TTFT p50 / p95 (ms) | peak KV % |
+|---|---|---|---|---|
+| 1 | 32.3 | 33.6 | 524 / 1017 | 0.3 |
+| 8 | 143.5 | 18.6 | 406 / 3221 | 2.5 |
+| 32 | 290.1 | 9.6 | 1520 / 12475 | 10.2 |
+| 64 | 399.8 | 6.7 | 917 / 23560 | 20.5 |
+
+- gpt-oss gives 2.7–2.9× Nemotron's aggregate at every level and 2.7× its
+  per-stream rate at 32 (9.6 vs 3.5 tok/s), with a fifth of the KV use.
+- Still climbing at 64 (×1.4 from 32 to 64) with 80% of KV free, so
+  `max-num-seqs` above 64 is the next measurement before a plateau is
+  claimed.
+- Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
+  speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
+  and a quality check on the target workloads.
 
 **Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
 world (`eval-run-spine.md`) run there, not on a serving box. It is the same
