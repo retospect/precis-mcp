@@ -201,16 +201,36 @@ What this build decides:
   `run_key` one to one when it ships. A kind that owns one paper's runs
   is a separate design and isn't needed to store these numbers.
 - **The evidence edge gets a new relation, `quantifies`.** It runs
-  from the paper (with `src_chunk_id` set) to the measurand taxon,
-  with edge `meta = {anchor_scheme, span}`.
+  from the paper (with `src_chunk_id` set) to the measurand taxon. Its
+  inverse is `quantified-by`.
   - Why the taxon as the target: "this chunk of this paper quantifies
     this measurand" is true of every row. A taxon's fisheye then lists
     the papers that measure it, which is the census.
-  - It is inserted outside `add_link`, as in-scope 2 says.
-  - The insert bypasses `add_link`, so `quantifies` must be registered
-    wherever the relation vocabulary is checked: the `Relation`
-    literal, the relations table if there is one, the walker's
+  - **Revised at build time (2026-10-03): the edge is an ordinary,
+    deduplicated `add_link` edge, and the anchor lives on the measure
+    row.**
+    - The row carries `anchor_scheme text` and `span jsonb` next to
+      `primary_link_id`. Two measures on the same chunk and measurand
+      share one link and keep their own spans. Further anchors go in
+      `meta.extra_anchors`.
+    - Why: the earlier plan (span in edge meta, a non-deduping insert)
+      cannot work. `links` has a UNIQUE index on (src_ref_id,
+      src_chunk_id, dst_ref_id, dst_chunk_id, relation), so a second
+      measure on the same chunk raises a unique violation.
+    - The rejected alternative was a partial index excluding
+      `quantifies`. It would have meant rebuilding the hot links index
+      and editing every `ON CONFLICT` site, and code running between
+      migrate and restart would have failed `add_link`.
+    - The anchor is still the anchor's own record: it lives on the row
+      that cites it, and the fields are frozen and hashed into the
+      review sha. AC 4 now reads: each measure keeps its own span; they
+      share one link; neither inherits the other's.
+  - `quantifies` is registered wherever the relation vocabulary is
+    checked: the `Relation` literal, the relations table, the walker's
     allow-lists and the `precis-relations` skill table.
+  - A paper merge whose losing ref holds live measures is refused,
+    naming the count. Moving those measures across by supersession is
+    a follow-up.
   - Input rows carry their own `primary_link_id` too, since a stated
     temperature is a sourced claim. AC 2's refusal covers
     `tier='measured'` inputs.
