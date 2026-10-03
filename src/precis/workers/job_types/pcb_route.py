@@ -32,6 +32,7 @@ import logging
 from collections import Counter
 from typing import TYPE_CHECKING, Any
 
+from precis.pcb import DANGLING_NET_NOTE
 from precis.pcb import pinswap as pcb_pinswap
 from precis.pcb import realize as pcb_realize
 from precis.pcb import session as pcb_session
@@ -308,7 +309,6 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         fixed_copper=ctx.store.pcb_fixed_copper_list(int(board_id)),
     )
     routes_by_net = ctx.store.pcb_routes_get(pcb_ref_id)
-    pcb_session.apply_route_overrides(ir, routes_by_net)
 
     # ``ir.pin_net`` right after a fresh build IS ``pcb_netconns``'s
     # authored wiring — the baseline every persisted pin-swap override is
@@ -329,6 +329,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # un-swapped IR realizes another).
     pin_swaps = ctx.store.pcb_pin_swaps_list(pcb_ref_id)
     pcb_session.apply_pin_swap_overrides(ir, pin_swaps)
+    # Sketch AFTER the swaps: stored segment keys are endpoint pins of the
+    # POST-swap IR (``extract_sketch``), so on the un-swapped build every
+    # segment touching a swapped pin missed and kept an UNSET layer.
+    unmatched_sketch = pcb_session.apply_route_overrides(ir, routes_by_net)
     authored_pin_keys = {
         (row["refdes"], row["pin"])
         for row in pin_swaps
@@ -707,7 +711,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             if member_counts.get(net_id, 0) < 2:
                 rows[net_name] = {
                     "status": "realized",
-                    "note": "dangling net (<2 members) — nothing to route",
+                    "note": DANGLING_NET_NOTE,
                 }
                 n_dangling += 1
             continue
@@ -891,6 +895,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         },
     )
     pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
+    if unmatched_sketch:
+        pin_swap_summary += (
+            f"\nwarning: {unmatched_sketch} stored layer/side sketch "
+            "entr(ies) matched no segment and were not restored"
+        )
     # The pre-route DRC gate's own account, ahead of the routing digest — an
     # illegal placement is the FIRST thing this summary should say, since
     # (gr451052) it is the thing that made the routing below meaningless.

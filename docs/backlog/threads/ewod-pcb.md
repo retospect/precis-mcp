@@ -29,9 +29,13 @@ Do-next renumbered)
    2026-10-02 (dogfood after the round-1 deploy, route job 462600):**
    ewod-dogfood-6 reports `silk_missing` for ARR1_SINK_0's bottom refdes
    ("every candidate placement overlaps a pad, a via, or silk already
-   committed"); it read 0 geometric errors before. Check whether the
-   shared-label-spot change (c24c2db8, live in that deploy) or the run's
-   new placement caused it.
+   committed"); it read 0 geometric errors before. **Root-caused
+   2026-10-02:** not the silk commits (reproduced on code before both);
+   the run moved the sink's courtyard to 1.385 mm from a bottom-side
+   furniture rect, and `_board_furniture`'s `court_margin` (silk clearance
+   + 1.0 = 1.375 mm) leaves less than the ~1.75 mm a below-box refdes needs.
+   Fixed 2026-10-03: `silk.refdes_label_slot_mm` (text height + 2 ×
+   clearance + inset) sets the furniture margin's floor.
 1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02
    (all undeployed): the route job DRCs its own router copper and strips a
    violating net (`drc:<rule>`); `op='move'` on a generator member moves
@@ -40,8 +44,16 @@ Do-next renumbered)
    13 strips on pcb 460559 were router faults, fixed by
    pcb-easyeda-round-trip (0 strips after). Gripe 462607 fixed 2026-10-02: the anneal restores its best state
    (judged at the reporting schedule), so `cost_after <= cost_before`
-   always; job summaries show `best_at=N/M`. Still owed: a job-level
-   determinism test for `pcb_route`. The pose half of the move check is a
+   always; job summaries show `best_at=N/M`. It changes route output for
+   the same seed. **Do not re-route prod boards for dogfood until it
+   deploys** (orchestrator, 2026-10-02): until then every prod route job
+   stores a placement worse than it found. Still owed: a job-level
+   determinism test for `pcb_route` — **built 2026-10-03**, together with the
+   fix for a second defect: the job restored the per-segment layer/side
+   sketch BEFORE pin swaps, so every segment on a swapped pin restarted
+   unlayered (the 1.08 cost gap between runs). Pin swaps now restore first,
+   unmatched sketch entries are reported in the job summary, and a test
+   holds run 2's `before` equal to run 1's `after`. The pose half of the move check is a
    delta now too (verdict 2026-10-02). The multi-pose `op='move'`
    (ruling 2) is built too. **Next:** the remaining mutation paths in the
    item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);

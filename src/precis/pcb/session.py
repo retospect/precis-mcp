@@ -613,31 +613,43 @@ def segment_key(ir: pcb_ir.PcbIR, seg_id: int) -> str:
 
 def apply_route_overrides(
     ir: pcb_ir.PcbIR, routes_by_net: dict[str, dict[str, Any]]
-) -> None:
+) -> int:
     """Re-apply a design's previously-PERSISTED sketch (pinned side
     choices + layer assignments, ``pcb_routes.topology``/``layer_assign``)
     onto a freshly-built IR, matched via :func:`segment_key`. A segment
     named in the persisted sketch that no longer exists (the netlist
-    changed under it) is silently skipped — never an error, since the
-    optimizer will just re-decide it fresh."""
+    changed under it) is skipped — never an error, since the optimizer
+    will just re-decide it fresh — but COUNTED: the return value is how
+    many stored entries matched no segment, and a nonzero count logs a
+    warning. The stored keys come from the POST-pin-swap IR, so callers
+    must run :func:`apply_pin_swap_overrides` first; a silent skip here
+    is how the wrong order hid."""
     seg_by_key = {segment_key(ir, s): s for s in range(ir.n_segments)}
+    unmatched = 0
     for row in routes_by_net.values():
         if not row:
             continue
-        for entry in row.get("topology") or []:
-            seg_id = seg_by_key.get(
-                "|".join(sorted((entry.get("a", ""), entry.get("b", ""))))
-            )
-            side = entry.get("side")
-            if seg_id is not None and side is not None:
-                ir.set_side(seg_id, int(side))
-        for entry in row.get("layer_assign") or []:
-            seg_id = seg_by_key.get(
-                "|".join(sorted((entry.get("a", ""), entry.get("b", ""))))
-            )
-            layer = entry.get("layer")
-            if seg_id is not None and layer is not None:
-                ir.set_layer(seg_id, int(layer))
+        for field, setter in (("topology", "side"), ("layer_assign", "layer")):
+            for entry in row.get(field) or []:
+                seg_id = seg_by_key.get(
+                    "|".join(sorted((entry.get("a", ""), entry.get("b", ""))))
+                )
+                value = entry.get(setter)
+                if seg_id is None:
+                    unmatched += 1
+                elif value is not None:
+                    if setter == "side":
+                        ir.set_side(seg_id, int(value))
+                    else:
+                        ir.set_layer(seg_id, int(value))
+    if unmatched:
+        log.warning(
+            "pcb: %d stored sketch entr%s matched no segment (stale netlist, "
+            "or pin swaps not applied first)",
+            unmatched,
+            "y" if unmatched == 1 else "ies",
+        )
+    return unmatched
 
 
 def apply_pin_swap_overrides(ir: pcb_ir.PcbIR, overrides: list[dict[str, Any]]) -> None:

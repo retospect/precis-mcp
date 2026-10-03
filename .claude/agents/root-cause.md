@@ -68,5 +68,10 @@ q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
 and is the only prod write you may make.
 
+Read-only against prod means `scripts/prod-psql --ro` (agent_ro, inside
+`BEGIN READ ONLY`). Never a session-level `SET`/`RESET` through the prod
+DSN: pgbouncer pools by transaction, so it sticks to shared connections and
+breaks every other client's writes (2026-10-02).
+
 Read-only except for filing your own gripes. You return the dossier; the
 caller decides the fix and dispatches `coder`/`test-author` to build it.

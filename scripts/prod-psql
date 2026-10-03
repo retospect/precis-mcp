@@ -14,10 +14,27 @@
 #   echo "SELECT ..." | scripts/prod-psql              # piped SQL (stdin)
 #   scripts/prod-psql                                  # interactive shell
 #
+#   scripts/prod-psql --ro "SELECT ..."               # read-only: agent_ro role,
+#                                                      # wrapped in BEGIN READ ONLY
+#
+# ⚠ Never `SET` a session setting here (`SET default_transaction_read_only`,
+# `SET SESSION …`, `RESET …`). pgbouncer runs transaction pooling: a
+# session-level SET stays on the SHARED server connection and every later
+# client inherits it — on 2026-10-02 one such "read-only guard" made every
+# agent_rw write fleet-wide fail until pgbouncer was reconnected. This script
+# refuses those statements. For a read-only guard use --ro; inside your own
+# transaction, `SET LOCAL` is fine (scripts/guide-web's comment says the same).
+#
 # Overrides (env):
 #   PRECIS_PROD_SSH_HOST=melchior     # default caspar
 #   PRECIS_PROD_PSQL_OPTS="-At"       # extra psql flags (e.g. terse -At, -x)
 set -euo pipefail
+
+RO=0
+if [[ "${1:-}" == "--ro" ]]; then
+    RO=1
+    shift
+fi
 
 HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
 # Resolved from the gitignored cluster overlay — the address must not live in
@@ -26,6 +43,11 @@ HOST="${PRECIS_PROD_SSH_HOST:-caspar}"
 PGB_HOST="$(resolve_pgb_host)"
 PGB_PORT=6432
 PGUSER=agent_rw
+# --ro: the grants-based read-only role (SELECT-only; enforced per statement
+# server-side, so pooling-proof — the same choice scripts/guide-web makes).
+if [[ $RO -eq 1 ]]; then
+    PGUSER=agent_ro
+fi
 PGDB=precis_prod
 OPTS="${PRECIS_PROD_PSQL_OPTS:-}"
 
@@ -41,14 +63,49 @@ REMOTE="psql -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off 
 # branch below deliberately keeps ~/.psqlrc — that's a human at a prompt.
 REMOTE_SCRIPTED="psql -X -h ${PGB_HOST} -p ${PGB_PORT} -U ${PGUSER} -d ${PGDB} -P pager=off -v ON_ERROR_STOP=1 ${OPTS}"
 
+# Refuse a session-level SET / RESET (see the ⚠ above). Statement-level, so
+# `UPDATE … SET col = …` passes; `SET LOCAL`, `SET TRANSACTION` and
+# `SET CONSTRAINTS` are transaction-scoped and pass too.
+refuse_session_set() {
+    if printf '%s' "$1" | perl -0777 -ne '
+        s{--[^\n]*}{}g; s{/\*.*?\*/}{}gs;
+        for my $st (split /;/) {
+            next unless $st =~ /^\s*(SET|RESET)\b/i;
+            next if $st =~ /^\s*SET\s+(LOCAL|TRANSACTION|CONSTRAINTS)\b/i;
+            exit 1;
+        }
+        exit 0;'; then
+        return 0
+    fi
+    echo "prod-psql: refused — a session-level SET/RESET through pgbouncer (transaction pooling) sticks to the shared server connection and poisons every later client. Use --ro for a read-only guard, or SET LOCAL inside BEGIN … COMMIT." >&2
+    exit 2
+}
+
+# --ro wraps the input in one read-only transaction (belt to agent_ro's
+# braces). A COMMIT inside the input would end it early; that is the
+# caller's business, the role still refuses writes.
+wrap_ro() {
+    if [[ $RO -eq 1 ]]; then
+        printf 'BEGIN READ ONLY;\n%s\nCOMMIT;\n' "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
 if [[ $# -gt 0 ]]; then
     # One-shot: the SQL goes over ssh via psql's STDIN, never interpolated into
     # the remote command line — so any quotes/`$`/`;` in the SQL are safe.
-    printf '%s\n' "$*" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
+    SQL="$*"
+    refuse_session_set "$SQL"
+    wrap_ro "$SQL" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
 elif [[ ! -t 0 ]]; then
-    # Piped SQL on stdin.
-    ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
+    # Piped SQL on stdin — read it whole so it can be checked first.
+    SQL="$(cat)"
+    refuse_session_set "$SQL"
+    wrap_ro "$SQL" | ssh -o IdentityAgent=none "$HOST" "$REMOTE_SCRIPTED"
 else
+    # Interactive: nothing to pre-check; the ⚠ above applies to what you type.
+    # With --ro the session is agent_ro, which cannot write at all.
     # No args, interactive terminal → interactive psql (allocate a tty).
     exec ssh -t -o IdentityAgent=none "$HOST" "$REMOTE"
 fi

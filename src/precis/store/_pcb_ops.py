@@ -29,7 +29,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.errors import NotFound
-from precis.pcb import DEFAULT_STACKUP
+from precis.pcb import DEFAULT_STACKUP, route_summary_status
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb.capabilities import capability_for
@@ -1205,18 +1205,16 @@ class PcbMixin:
             # counts as 'unrouted'. So the headline a caller sees first and
             # the detailed view disagreed in BOTH directions. One rule, two
             # call sites, drifted — this module's standing defect.
-            route_status = {
-                str(r[0]): int(r[1])
-                for r in conn.execute(
-                    "SELECT COALESCE(rt.status, 'unrouted'), count(*) "
-                    "FROM pcb_nets n "
-                    "LEFT JOIN pcb_routes rt "
-                    "  ON rt.net_id = n.net_id AND rt.board_id = %s "
-                    "WHERE n.ref_id = %s AND n.retired_at IS NULL "
-                    "GROUP BY COALESCE(rt.status, 'unrouted')",
-                    (board["board_id"], ref_id),
-                ).fetchall()
-            }
+            for st, note in conn.execute(
+                "SELECT rt.status, rt.note "
+                "FROM pcb_nets n "
+                "LEFT JOIN pcb_routes rt "
+                "  ON rt.net_id = n.net_id AND rt.board_id = %s "
+                "WHERE n.ref_id = %s AND n.retired_at IS NULL",
+                (board["board_id"], ref_id),
+            ).fetchall():
+                key = route_summary_status(st, note)
+                route_status[key] = route_status.get(key, 0) + 1
         return board, net_classes, route_status
 
     # -- read -----------------------------------------------------------
