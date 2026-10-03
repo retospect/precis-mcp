@@ -11,9 +11,23 @@
 #   scripts/fleet up [--stagger N]   create every missing window (idempotent)
 #   scripts/fleet status             window · index · ctx% · busy/idle/dialog
 #   scripts/fleet say <file> [win…]  send one message; skips open dialogs
+#   scripts/fleet say -m "<text>" [win…]   same, inline text (no file)
+#       --when-clear (either form): a window with a dialog open gets the message
+#       held in <state>/fleet-queue/<win>/ (prints HELD) instead of skipped
+#   scripts/fleet queue              list held messages: window · age · text
+#   scripts/fleet deliver            send held messages to windows with no dialog
+#   scripts/fleet verdict <slug> [--file f | -]   append a review verdict
+#       (stdin by default) to <reviews>/<slug>.review.md under a `date -u`
+#       stamped heading, then tell window <slug> (--when-clear semantics)
+#   scripts/fleet peek <win> [-n N]  last N (default 25) non-empty pane lines
+#   scripts/fleet dialogs            windows with a dialog: window · type · command
+#   scripts/fleet refs               origin main/gated/prod shas + ages, newest green main
 #   scripts/fleet effort             send each window its /effort level
 #   scripts/fleet watch-ctx          emit a line as a window crosses 30/40/50/…% ctx (PRECIS_FLEET_CTX_FLOOR)
 #   scripts/fleet queue-dir          print the review-queue directory
+#
+# Test seams: PRECIS_FLEET_TMUX_SOCKET (private tmux server, tmux -L),
+# PRECIS_FLEET_STATE (state dir), PRECIS_FLEET_REVIEWS (reviews dir).
 set -euo pipefail
 
 common=$(git rev-parse --path-format=absolute --git-common-dir)
@@ -21,15 +35,19 @@ root=$(dirname "$common")
 conf="$(git rev-parse --show-toplevel)/.claude/fleet"
 table="$conf/threads.tsv"
 # Outside any worktree, so a reaped tree cannot take the queue with it.
-state="$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')"
+state="${PRECIS_FLEET_STATE:-$HOME/.claude/projects/$(printf '%s' "$root" | tr '/.' '--')}"
 queue="$state/review-queue"
-reviews="$state/reviews"
+reviews="${PRECIS_FLEET_REVIEWS:-$state/reviews}"
+held="$state/fleet-queue"
 model="${PRECIS_FLEET_MODEL:-opus}"
 
+tmux() { command tmux ${PRECIS_FLEET_TMUX_SOCKET:+-L "$PRECIS_FLEET_TMUX_SOCKET"} "$@"; }
 threads() { grep -v -e '^#' -e '^[[:space:]]*$' "$table"; }
 windows() { tmux list-windows -F '#{window_name}'; }
 has_window() { windows | grep -q -x -- "$1"; }
-has_dialog() { tmux capture-pane -p -t "$1" | grep -q -e 'Enter to select' -e 'Do you want to'; }
+# Every dialog marker this build shows; status, send, dialogs and the drain all key on it.
+dialog_re='Enter to select|Do you want to|Do you trust the files'
+has_dialog() { tmux capture-pane -p -t "$1" | grep -q -E "$dialog_re"; }
 need_tmux() { [ -n "${TMUX:-}" ] || { echo "scripts/fleet: run inside tmux" >&2; exit 2; }; }
 
 fill() { # substitute {slug} {queue} {reviews} in a message file, one line out
@@ -123,7 +141,7 @@ cmd_status() {
   tmux list-windows -F '#{window_index} #{window_name} #{pane_id}' | while read -r idx w pid; do
     pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
     pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 || true)
-    if printf '%s\n' "$pane" | grep -q -e 'Enter to select' -e 'Do you want to'; then st=DIALOG
+    if printf '%s\n' "$pane" | grep -q -E "$dialog_re"; then st=DIALOG
     elif printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy
     else st=idle; fi
     m=$(printf '%s\n' "$mcp" | awk -v p="$pid" '$1 == p {print $2; exit}')
@@ -131,17 +149,249 @@ cmd_status() {
   done
 }
 
+# A held message is one line of final text (placeholders already filled), so
+# `deliver` needs no knowledge of which form it came from.
+hold_msg() { # hold_msg <window> <text>
+  local d="$held/$1" stamp n=1 f
+  mkdir -p "$d"
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  f=$(printf '%s/%s-%03d.msg' "$d" "$stamp" "$n")
+  while [ -e "$f" ]; do
+    n=$((n + 1))
+    f=$(printf '%s/%s-%03d.msg' "$d" "$stamp" "$n")
+  done
+  printf '%s\n' "$2" > "$f"
+}
+
+say_one() { # say_one <window> <text> <hold: 1|0>
+  has_window "$1" || { echo "no window: $1"; return 0; }
+  if [ "$3" = 1 ] && has_dialog "$1"; then
+    hold_msg "$1" "$2"
+    echo "HELD: $1"
+    return 0
+  fi
+  send "$1" "$2"
+}
+
+blank() { [ -z "$(printf '%s' "$1" | tr -d '[:space:]')" ]; }
+
 cmd_say() {
   need_tmux
-  local file="$1"; shift
-  # An unreadable file would send an empty message, i.e. a bare Enter.
-  [ -s "$file" ] || { echo "scripts/fleet say: no such message file: $file" >&2; exit 2; }
-  local wins
-  if [ $# -gt 0 ]; then wins="$*"; else wins=$(threads | cut -f1); fi
-  for w in $wins; do
-    has_window "$w" || { echo "no window: $w"; continue; }
-    send "$w" "$(fill "$file" "$w")"
+  local text="" inline=0 hold=0 file="" wins=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m) [ $# -ge 2 ] || { echo "scripts/fleet say: -m needs a text argument" >&2; exit 2; }
+          text="$2"; inline=1; shift 2 ;;
+      --when-clear) hold=1; shift ;;
+      *) if [ -z "$file" ]; then file="$1"; else wins="$wins $1"; fi
+         shift ;;
+    esac
   done
+  if [ "$inline" = 1 ]; then
+    # With -m there is no file: the first positional was a window.
+    [ -z "$file" ] || wins="$file$wins"
+    # An empty message would be a bare Enter, which can answer a dialog.
+    ! blank "$text" || { echo "scripts/fleet say: empty -m text" >&2; exit 2; }
+    # A newline would submit mid-message; flatten like `fill` does for files.
+    text=$(printf '%s' "$text" | tr '\n' ' ')
+  else
+    # An unreadable file would send an empty message, i.e. a bare Enter.
+    [ -n "$file" ] && [ -s "$file" ] || { echo "scripts/fleet say: no such message file: $file" >&2; exit 2; }
+  fi
+  [ -n "$wins" ] || wins=$(threads | cut -f1)
+  local w
+  for w in $wins; do
+    if [ "$inline" = 1 ]; then say_one "$w" "$text" "$hold"
+    else say_one "$w" "$(fill "$file" "$w")" "$hold"; fi
+  done
+}
+
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; } # GNU, then BSD
+
+fmt_age() { # fmt_age <seconds> -> 45s / 12m / 3h / 2d
+  local s=$1
+  [ "$s" -ge 0 ] || s=0
+  if [ "$s" -lt 60 ]; then echo "${s}s"
+  elif [ "$s" -lt 3600 ]; then echo "$((s / 60))m"
+  elif [ "$s" -lt 86400 ]; then echo "$((s / 3600))h"
+  else echo "$((s / 86400))d"; fi
+}
+
+cmd_queue() {
+  need_tmux
+  local d w f text note now; now=$(date +%s)
+  for d in "$held"/*/; do
+    [ -d "$d" ] || continue
+    w=$(basename "$d")
+    note=""
+    has_window "$w" || note=" (no window)"
+    for f in "$d"*.msg; do
+      [ -e "$f" ] || continue
+      text=$(head -n 1 "$f")
+      printf '%s %s%s %s\n' "$w" "$(fmt_age $((now - $(mtime "$f"))))" "$note" "${text:0:60}"
+    done
+  done
+}
+
+cmd_deliver() {
+  need_tmux
+  local d w f text out
+  for d in "$held"/*/; do
+    [ -d "$d" ] || continue
+    w=$(basename "$d")
+    has_window "$w" || continue
+    for f in "$d"*.msg; do # glob order is the stamp order: oldest first
+      [ -e "$f" ] || continue
+      # Stop at the first dialog: later messages must not overtake this one.
+      ! has_dialog "$w" || break
+      text=$(cat "$f")
+      out=$(send "$w" "$text")
+      echo "$out"
+      case "$out" in SKIPPED*) break ;; esac
+      rm -f "$f"
+      echo "delivered: $w"
+    done
+  done
+  return 0
+}
+
+cmd_verdict() {
+  need_tmux
+  local slug="${1:-}" src=- body first rest f
+  [ -n "$slug" ] || { echo "usage: scripts/fleet verdict <slug> [--file f | -]" >&2; exit 2; }
+  case "$slug" in */*|.*) echo "scripts/fleet verdict: bad slug: $slug" >&2; exit 2 ;; esac
+  shift
+  case "${1:-}" in
+    --file) [ $# -ge 2 ] || { echo "scripts/fleet verdict: --file needs a path" >&2; exit 2; }
+            src="$2" ;;
+    -|"") src=- ;;
+    *) echo "usage: scripts/fleet verdict <slug> [--file f | -]" >&2; exit 2 ;;
+  esac
+  if [ "$src" = - ]; then
+    [ ! -t 0 ] || { echo "scripts/fleet verdict: no body on stdin" >&2; exit 2; }
+    body=$(cat)
+  else
+    [ -r "$src" ] || { echo "scripts/fleet verdict: cannot read $src" >&2; exit 2; }
+    body=$(cat "$src")
+  fi
+  ! blank "$body" || { echo "scripts/fleet verdict: empty body" >&2; exit 2; }
+  body=$(printf '%s\n' "$body" | sed '/[^[:space:]]/,$!d') # drop leading blank lines
+  first=$(printf '%s\n' "$body" | head -n 1 | sed -E 's/^#+[[:space:]]*//')
+  rest=$(printf '%s\n' "$body" | sed '1d')
+  # The stamp comes from this tool only: a hand stamp in the heading is refused.
+  if printf '%s\n' "$first" | grep -q -E '\(orchestrator, [^)]*Z\)'; then
+    echo "scripts/fleet verdict: the first line already carries an (orchestrator, …Z) stamp — drop it, the tool stamps" >&2
+    exit 2
+  fi
+  mkdir -p "$reviews"
+  f="$reviews/$slug.review.md"
+  [ -e "$f" ] || printf '# %s — review (orchestrator)\n' "$slug" > "$f"
+  [ -z "$(tail -c1 "$f")" ] || printf '\n' >> "$f"
+  {
+    printf '\n## %s (orchestrator, %s)\n' "$first" "$(date -u +'%Y-%m-%d %H:%MZ')"
+    if ! blank "$rest"; then printf '\n%s\n' "$rest"; fi
+  } >> "$f"
+  echo "written: $f"
+  say_one "$slug" "verdict written: $f, newest section at the end" 1
+}
+
+# Dialog classification. The markers are $dialog_re (has_dialog);
+# the type patterns are best effort and await live samples (2026-10-03):
+#   hook        "PreToolUse hook"-style or "hook … blocked" wording; checked
+#               first. A bare "hook" is not enough: a command naming
+#               scripts/hooks/ would read as one.
+#   trust       "Do you trust the files in this folder" (a fresh worktree session)
+#   permission  the dialog text has "Do you want to"
+#   question    the dialog text has "Enter to select" (and no "Do you want")
+#   unknown     any other marker (none today; reserved for new has_dialog markers)
+# "Dialog text" is the pane from 30 lines above the last marker line to its end.
+hook_re='(pre|post)tooluse[^ ]* hook|hook.*(block|refus)'
+box='^([[:space:]]|│|┃|║|╭|╮|╰|╯|─|━|═|┌|┐|└|┘|├|┤|┬|┴|┼)*$'
+side='^([[:space:]]|│|┃|║)+|([[:space:]]|│|┃|║)+$'
+
+dialog_text() { # the dialog's lines out of a whole pane
+  printf '%s\n' "$1" | awk -v re="$dialog_re" '
+    { l[NR] = $0 }
+    $0 ~ re { m = NR }
+    END { s = m - 30; if (s < 1) s = 1; for (i = s; i <= NR; i++) print l[i] }'
+}
+
+dialog_type() { # dialog_type <dialog text>
+  if printf '%s\n' "$1" | grep -q -i -E "$hook_re"; then echo hook
+  elif printf '%s\n' "$1" | grep -q 'Do you trust the files'; then echo trust
+  elif printf '%s\n' "$1" | grep -q 'Do you want to'; then echo permission
+  elif printf '%s\n' "$1" | grep -q 'Enter to select'; then echo question
+  else echo unknown; fi
+}
+
+# The nearest non-empty, non-box line above the first marker. For a question
+# (AskUserQuestion, sampled live 2026-10-03) the text sits in `│`-prefixed lines
+# above numbered options: take the first of those, else the last line ending
+# in `?`, else the nearest line that is not an option (`❯ 1. …`, `  5. …`).
+dialog_command() { # dialog_command <dialog text> <type>
+  local above cand
+  above=$(printf '%s\n' "$1" | awk -v re="$dialog_re" '$0 ~ re { exit } { print }' |
+    grep -v -E "$box" | sed -E "s/$side//g" || true)
+  cand=""
+  if [ "$2" = question ]; then
+    cand=$(printf '%s\n' "$1" | grep -E '^[[:space:]]*│' | head -n 1 | sed -E "s/$side//g" || true)
+    [ -n "$cand" ] || cand=$(printf '%s\n' "$above" | grep '?$' | tail -n 1 || true)
+    [ -n "$cand" ] || cand=$(printf '%s\n' "$above" | grep -v -E '^(❯[[:space:]]*)?[0-9]+\.' | tail -n 1 || true)
+  fi
+  [ -n "$cand" ] || cand=$(printf '%s\n' "$above" | tail -n 1)
+  printf '%s' "${cand:0:100}"
+}
+
+cmd_dialogs() {
+  need_tmux
+  local w pane text type
+  for w in $(windows); do
+    # -J joins wrapped lines, so a long command is one line, not its tail.
+    pane=$(tmux capture-pane -p -J -t "$w" 2>/dev/null) || continue
+    printf '%s\n' "$pane" | grep -q -E "$dialog_re" || continue
+    text=$(dialog_text "$pane")
+    type=$(dialog_type "$text")
+    printf '%s %s %s\n' "$w" "$type" "$(dialog_command "$text" "$type")"
+  done
+}
+
+cmd_peek() {
+  need_tmux
+  local w="${1:-}" n=25
+  [ -n "$w" ] || { echo "usage: scripts/fleet peek <win> [-n N]" >&2; exit 2; }
+  shift
+  if [ "${1:-}" = -n ]; then n="${2:-}"; fi
+  case "$n" in ''|*[!0-9]*) echo "scripts/fleet peek: -n wants a number" >&2; exit 2 ;; esac
+  has_window "$w" || { echo "no window: $w" >&2; exit 1; }
+  tmux capture-pane -p -J -S -200 -t "$w" | grep -v '^[[:space:]]*$' | tail -n "$n" || true
+}
+
+ref_line() { # ref_line <name> -> `name sha9 age [N behind main]`
+  local name="$1" sha ts age behind
+  sha=$(git rev-parse --verify -q "origin/$name^{commit}") || { echo "$name missing"; return 0; }
+  ts=$(git log -1 --format=%ct "$sha")
+  age=$(fmt_age $(($(date +%s) - ts)))
+  if [ "$name" = main ]; then echo "$name ${sha:0:9} $age"; return 0; fi
+  behind=$(git rev-list --count "$sha..origin/main" 2>/dev/null) || behind="?"
+  echo "$name ${sha:0:9} $age $behind behind main"
+}
+
+cmd_refs() {
+  git fetch -q origin 2>/dev/null || echo "scripts/fleet refs: fetch failed — showing the local origin/* refs" >&2
+  ref_line main
+  ref_line gated
+  ref_line prod
+  # last-gated-main-sha: exit 0 + sha = found; exit 0 + empty = unknowable;
+  # exit 2 = looked and found none. Exit 2 is an answer, not a crash.
+  local helper green rc=0 ts
+  helper="$(dirname "$0")/last-gated-main-sha"
+  [ -x "$helper" ] || { echo "green unknown"; return 0; }
+  green=$("$helper" --start origin/main 2>/dev/null) || rc=$?
+  if [ "$rc" = 2 ]; then echo "green none in 48h"
+  elif [ "$rc" != 0 ] || [ -z "$green" ]; then echo "green unknown"
+  elif ts=$(git log -1 --format=%ct "$green" 2>/dev/null); then
+    echo "green ${green:0:9} $(fmt_age $(($(date +%s) - ts)))"
+  else echo "green ${green:0:9} ?"; fi
 }
 
 cmd_effort() {
@@ -179,8 +429,14 @@ case "${1:-}" in
   up) shift; cmd_up "$@" ;;
   status) cmd_status ;;
   say) shift; cmd_say "$@" ;;
+  queue) cmd_queue ;;
+  deliver) cmd_deliver ;;
+  verdict) shift; cmd_verdict "$@" ;;
+  peek) shift; cmd_peek "$@" ;;
+  dialogs) cmd_dialogs ;;
+  refs) cmd_refs ;;
   effort) cmd_effort ;;
   watch-ctx) cmd_watch_ctx ;;
   queue-dir) echo "$queue" ;;
-  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

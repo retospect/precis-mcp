@@ -41,8 +41,9 @@ it is.
    queue: `search(kind='todo', tags=['waiting-for:reto'], status='open',
    page_size=100)`; treat each as an item with `source: precis`. Also check
    each thread window for an open question dialog
-   (`tmux capture-pane -p -t <window>`); a dialog is an item even if no file
-   was written.
+   (`scripts/fleet dialogs` lists every window with one, its type and the
+   command line; `scripts/fleet peek <window>` shows more); a dialog is an
+   item even if no file was written.
 2. **Cluster by work area**, and order the clusters by what blocks a live
    session now: paper (October slot) first, then anything a session is
    stopped on, then security and backup chores, then the rest. Inside a
@@ -80,11 +81,11 @@ of a sitting, between clusters when it changed, and whenever he asks
 
 - **Round.** `scripts/round status` (run from `/Users/reto/precis-mcp`):
   round number, who is in, who is pending, who gave an eta. Then
-  `git fetch -q origin main gated prod` and the three short shas, so he sees
-  what is landed, gated and live.
+  `scripts/fleet refs`: the main, gated and prod short shas with ages and
+  the newest green main, so he sees what is landed, gated and live.
 - **Stuck.** One line per thread window that is not moving, worst first.
   `scripts/fleet status` gives index, context and busy/idle/DIALOG per
-  window; read a suspect one with `tmux capture-pane -p -t <window>`. Stuck means: an open
+  window; read a suspect one with `scripts/fleet peek <window>`. Stuck means: an open
   question dialog; idle at the prompt with work still owed; the same spinner
   line for more than ~15 minutes; a red gate or failed deploy on screen; a
   permission prompt. Say what it is stuck on in a clause.
