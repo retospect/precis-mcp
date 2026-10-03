@@ -45,10 +45,15 @@ waited on happened 09-29 — note at the bottom)
      - S1, surface spec + deviation metric, measured on hero5 and
        `hexa-smooth-drum-v2`;
      - S2, Gauss–Bonnet defect rows;
-     - S3, tile and pin one feature: the opt-in tether in `stick` is
-       built (see the backlog item's acceptance); next is the planner
-       `foot(R, (n,0), split)` that picks the frustum width k per R;
-     - S4, the hero scene.
+     - S3, tile and pin one feature: the tether and the planner
+       `plan_foot` are built (see the backlog item's acceptance). The
+       pillar (6,0) R = 3 and the pill (24,0) R = 5/8 are inside the
+       bars; (18,0) is an open row;
+     - **S4, the hero scene: next.** Send nanobuds-paper a spec to render
+       with figs/render_hero.py;
+     - next rung after S4: per-annulus Gauss–Bonnet rows (2+2+2 / 1×6:
+       irregular hole + tube-wall surgery, gr459928), the route to
+       R ≳ 12 Å.
    - Review-queue hexfold-toolkit-2 has the ETA.
 
 2. **gr459567 family: overlaps the clash check now reports.** The bud

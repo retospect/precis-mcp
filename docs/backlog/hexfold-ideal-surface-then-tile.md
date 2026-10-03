@@ -107,16 +107,38 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
   - The pillar (6,0), R = 3, k_t = 1.0, which is 3 heptagons on a 6-atom
     rim: bonds 1.366–1.467 Å, angle rms 1.70°, pyramidalisation 7.9°,
     deviation 0.042 / 0.169 Å.
-  - Two rows miss only the bond floor at k_t = 1.0: (12,0) at R = 8 with
-    1.355 Å, and (6,0) at R = 5 with 1.317 Å. The hypothesis, still
-    unverified, is that k fits R poorly. The planner, which picks k per R,
-    must lift both before it ships, and its table carries
-    pyramidalisation and the heptagon-corrected angle max as columns.
-- S3 on one feature (sheet → `R_f` fillet → (12,0) tube → cap):
+- S3 planner, **built** (`precis_se.atomic.generators.authored_foot.plan_foot`).
+  - k is not chosen by fitting R. The narrowest frustum that builds wins
+    at every R tried, `k_min(n)` = the smallest even k ≥ n/3 + 2, and
+    R is carried by the hexagons outside the outer heptagon row.
+  - The planner still measures each candidate from k_min to k_min + 6.
+  - Regression anchors, all meeting every bar:
+    - (12,0) R = 8 → k = 6;
+    - (6,0) R = 3 → k = 4 (pillar);
+    - (24,0) R = 8 → k = 10 (pill).
+  - At k_min, R reaches about 3–8 Å inside the bars. Past about 12 Å the
+    outer hexagons stretch past 1.50 Å.
+  - **(18,0) is an open row, cause unknown.** It crumples (pyramidalisation
+    > 88°) at k = 8, 10 and 14. k = 12 at R = 8 comes closest, with bonds
+    1.345–1.512. The next probe re-seeds the relax from a different
+    phase, to separate a seam-phase fault from a folded minimum.
+- S3 on one feature (sheet → `R_f` fillet → (n,0) tube):
   - atom-to-surface mean ≤ 0.10 Å, max ≤ 0.3 Å;
   - bonds 1.36–1.50 Å;
-  - census matches Gauss–Bonnet per annulus;
+  - the census integrates to −2π per foot, and the rows sit where the
+    build can place them (3+3, narrowest frustum). The bars, plus the
+    ring-ideal angle and pyramidalisation columns, judge the result.
+    This replaces "census matches Gauss–Bonnet per annulus", which a 3+3
+    foot cannot meet (orchestrator, planner verdict, 2026-10-03). The
+    per-annulus form is the next rung below; it has been moved, not
+    dropped;
   - defects C_k symmetric within 0.1 Å.
+- Next rung: per-annulus Gauss–Bonnet rows.
+  - 2+2+2 or 1×6 rows placed where the curvature accumulates.
+  - This needs the irregular hole (3,3,6,3,3,6) and tube-wall surgery
+    (Risks, gr459928).
+  - It is the route to R ≳ 12 Å, where the narrowest 3+3 frustum
+    stretches bonds past the bar.
 - Changing `R_f` changes the built shape, and the deviation stays within
   the bar. That is the "tiler follows the surface" test.
 - S4: the hero scene builds with no `geom.seed_overlap`, no ERROR
