@@ -35,6 +35,16 @@ spin-paired energy (§22i), so the table stands. Catpath
 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
+**Round 2 dogfood (deployed 63301c5c, 2026-10-03):**
+- Diagram (item 22): pw455722, rendered from prod with the deployed code
+  and drawn by the test harness, has 12 angled H⁺+e⁻ arrows, each on its
+  hydrogenation product, and no ghost or dashed overlay. Reto has not yet
+  looked at it in the browser.
+- Engine-version guard (item 24): `precis quest status 164903` runs
+  clean and marks no margin older-network. That is expected: all three
+  prod network stamps are catpath 0.22.0. The guard has nothing to act on
+  until a 0.23.0 margin lands; check it then.
+
 **Worktree:** `catalysis-selectivity`
 **Active:** yes — Reto, 2026-10-02 ("high up").
 
