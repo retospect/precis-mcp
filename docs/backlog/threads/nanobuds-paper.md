@@ -67,7 +67,7 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    - **Item 29 answered 16:06Z, applied 16:10Z.**
      - Item 26's pins are restored: dc2445860 `[fi189535>pc209495,pc209502,pc209505]` and dc2445859 `[fi189527>pc452187,pc452198]`. All pinned passages are linked.
      - Pin rule: a pin stays within the signed grounding's papers and names the passage that carries the sentence.
-     - Reto's follow-up, how to stop this recurring and catch it automatically: claims-and-evidence owns the grounding/signing side and is filing that item. I sent the case facts plus three proposals:
+     - Reto's follow-up, how to stop this recurring and catch it automatically, is filed as **claims-and-evidence-9** (`review-queue/open/claims-and-evidence-9.md`), owned by claims-and-evidence. My three proposals are in it as G3, G1 and G5; the pin rule is G4. I sent:
        - (f) pin-vs-sentence term coverage and a narrowing warning;
        - (g) a sign-time check for evidence edges added after review;
        - (h) absence-claim search discipline.
