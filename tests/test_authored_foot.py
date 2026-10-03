@@ -3,6 +3,9 @@ S3): k by measurement, bars on every row."""
 
 from __future__ import annotations
 
+import dataclasses
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -50,7 +53,7 @@ def test_angle_stats_are_zero_on_a_flat_sheet_and_see_a_pucker() -> None:
 
 
 def _row(k: int, **kw: float) -> af.FootRow:
-    base = dict(
+    base: dict[str, Any] = dict(
         fillet_mean=0.02,
         fillet_p95=0.04,
         fillet_max=0.05,
@@ -83,9 +86,7 @@ def test_excess_is_zero_inside_the_bars_and_sums_the_overshoot() -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    ("n", "radius", "k"), [(12, 8.0, 6), (6, 3.0, 4), (24, 8.0, 10)]
-)
+@pytest.mark.parametrize(("n", "radius", "k"), [(12, 8.0, 6), (6, 3.0, 4)])
 def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
     # the regression anchors the planner verdict set (the pillar is (6,0)
     # R=3, the pill (24,0)): the narrowest frustum meets every bar where
@@ -97,6 +98,30 @@ def test_plan_reproduces_the_s3_sweep(n: int, radius: float, k: int) -> None:
     c = plan.chosen
     assert c.pyramid_max < 12.0  # under C60's
     assert plan.positions.shape == (len(build(plan.text, strict=False).atoms), 3)
+
+
+@pytest.mark.slow
+def test_a_row_with_an_error_finding_does_not_meet_the_bars() -> None:
+    # the (24,0) R=8 k=10 cell used to read as meeting every bar; the
+    # frustum is seeded onto the sheet (gr464358), so hexfold's geometry
+    # tier reports geom.seed_overlap (an ERROR) on the tethered coordinates.
+    # The bars alone pass (misses == ()), the row does not.
+    plan = af.plan_foot(24, 8.0, candidates=(10, 12))
+    row = next(r for r in plan.rows if r.k == 10)
+    assert row.misses == () and row.errors == ("geom.seed_overlap",)
+    assert not row.meets and not plan.meets
+    # no candidate is clean, so the fallback ranks by (has errors, excess):
+    # k=12 also errors and misses every bar, so k=10 is still the pick
+    assert plan.k == 10
+
+
+def test_a_row_with_errors_never_meets_and_ranks_behind_a_clean_miss() -> None:
+    clean = _row(8, bond_min=1.355)
+    assert clean.errors == () and not clean.meets
+    flagged = dataclasses.replace(_row(6), errors=("geom.clash",))
+    assert flagged.misses == () and not flagged.meets and flagged.excess == 0.0
+    ranked = min((flagged, clean), key=lambda r: (bool(r.errors), r.excess))
+    assert ranked is clean
 
 
 _PILLAR = af.SceneFeature("t", (13, 15), 6, 3.0, 5, "ball")

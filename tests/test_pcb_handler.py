@@ -2801,3 +2801,153 @@ def test_footprint_names_other_designs_using_the_part(pcb, store):
     assert (
         f"1 other design(s) use {_FP_P2}: fpj-b — check view='drc' there" in resp.body
     )
+
+
+# ── always-valid board: outline containment is a delta with real identity ──
+_OUTLINE_FEATURE = {
+    "ftype": "outline",
+    "geom": {"path": [[-5.0, -3.0], [8.0, -3.0], [8.0, 3.0], [-5.0, 3.0]]},
+}
+_SMALL_PATH = [[-5.0, -5.0], [10.0, -5.0], [10.0, 2.0], [-5.0, 2.0]]
+_SMALL_OUTLINE = {"ftype": "outline", "geom": {"path": _SMALL_PATH}}
+
+
+def _outline_board(pcb, store, slug, *, poses):
+    """P1/P2 (1 mm pads) inside an outline of x -5..8, y -3..3; ``poses`` is
+    then planted straight into the store (a put refuses to create a violation)."""
+    ref, board_id = _judge_board(pcb, store, slug, p2_x=3.0)
+    pcb.put(id=slug, args={"features": [_OUTLINE_FEATURE]})
+    store.pcb_set_pose(ref.id, {k: (x, y, 0.0) for k, (x, y) in poses.items()})
+    return ref, board_id
+
+
+def _put_poses(pcb, store, slug, **poses):
+    """Move parts through the judge (a batch put never re-poses an existing
+    part, so the pose write is the mutation handed to ``_judged_mutation``)."""
+    ref = store.get_ref(kind="pcb", id=slug)
+
+    def apply(conn):
+        for refdes, (x, y) in poses.items():
+            store.pcb_move_instance(ref.id, refdes, x=x, y=y, conn=conn)
+
+    return pcb._judged_mutation(ref.id, apply)[1]
+
+
+def test_outline_shrunk_under_router_track_rips_the_net(pcb, store):
+    _, board_id = _judge_board(pcb, store, "oc-rip", p2_x=3.0, routed=True)
+    # the track sits at x = 3 + 0.5 + 0.4 + 0.1 = 4.0, y -3..3
+    resp = pcb.put(id="oc-rip", args={"features": [_SMALL_OUTLINE]})
+    assert "A ripped: " in resp.body  # edge clearance may name it first
+    assert store.pcb_nets_with_router_copper(board_id) == set()
+    # the outline finding alone carries the router tag (the fixed defect)
+    from precis.pcb import drc
+
+    (f,) = drc.check_outline_containment(
+        {
+            "copper": [
+                {
+                    "ctype": "track",
+                    "layer": "F.Cu",
+                    "net": "A",
+                    "derived": True,
+                    "segments": [
+                        {"shape": "line", "start": [4.0, -3.0], "end": [4.0, 3.0]}
+                    ],
+                    "width_mm": 0.2,
+                }
+            ]
+        },
+        outline=_SMALL_PATH,
+    )
+    assert f.objects[0]["derived"] is True
+
+
+def test_outline_shrunk_under_authored_copper_is_refused(pcb, store):
+    ref, board_id = _judge_board(pcb, store, "oc-fixed", p2_x=3.0)
+    store.pcb_fixed_copper_put(
+        ref.id,
+        board_id,
+        "g",
+        "g",
+        "1",
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net": "A",
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [4.0, -3.0], "end": [4.0, 3.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
+    with pytest.raises(BadInput, match="outline_containment"):
+        pcb.put(id="oc-fixed", args={"features": [_SMALL_OUTLINE]})
+
+
+def test_outline_swap_of_which_part_overhangs_is_refused_naming_the_new_one(pcb, store):
+    _outline_board(pcb, store, "oc-swap", poses={"P1": (-5.0, 0.0), "P2": (3.0, 0.0)})
+    with pytest.raises(BadInput, match=r"outline_containment: part P2"):
+        _put_poses(pcb, store, "oc-swap", P1=(0.0, 0.0), P2=(8.0, 0.0))
+
+
+def test_outline_overhang_deepening_is_refused_as_worse(pcb, store):
+    _outline_board(pcb, store, "oc-deep", poses={"P1": (-5.0, 0.0), "P2": (3.0, 0.0)})
+    with pytest.raises(BadInput, match=r"outline_containment: part P1.*worse"):
+        _put_poses(pcb, store, "oc-deep", P1=(-5.5, 0.0))
+
+
+def test_outline_overhang_shrinking_is_standing_not_refused(pcb, store):
+    _outline_board(pcb, store, "oc-less", poses={"P1": (-5.0, 0.0), "P2": (3.0, 0.0)})
+    report = _put_poses(pcb, store, "oc-less", P1=(-4.8, 0.0))
+    assert report.standing >= 1 and not report.visible
+    assert _xy(store, "oc-less", "P1")[0] == -4.8
+
+
+def test_outline_partial_overhang_margin_is_a_negative_depth_in_mm():
+    from precis.pcb import drc
+
+    model = {
+        "pads": [
+            {
+                "refdes": "U1",
+                "pin": "1",
+                "net": "N",
+                "layer": "F.Cu",
+                "shape": "rect",
+                "x": 0.0,
+                "y": 0.0,
+                "w": 2.0,
+                "h": 2.0,
+            }
+        ]
+    }
+    (f,) = drc.check_outline_containment(
+        model, outline=[[-5, -5], [0.5, -5], [0.5, 5], [-5, 5]]
+    )
+    assert f.margin_mm == pytest.approx(-0.5)
+    assert f.objects[0]["refdes"] == "U1" and f.objects[0]["pin"] == "1"
+
+
+def test_footprint_judge_crash_still_stores_the_footprint(pcb, store, monkeypatch):
+    _fp_board(pcb, store, "fpj-crash")
+
+    def boom(_ref_id):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr(pcb, "_validity_findings", boom)
+    resp = _author_fp(
+        pcb,
+        "fpj-crash",
+        _FP_P2,
+        {"pads": [{"pin": "1", "shape": "rect", "x": 0, "y": 0, "w": 3.0, "h": 1.0}]},
+    )
+    assert (
+        "could not judge this design after the footprint change: "
+        "RuntimeError: judge exploded" in resp.body
+    )
+    row = store.part_footprint_get(_FP_P2)
+    assert row is not None and row["pads"][0]["w"] == 3.0

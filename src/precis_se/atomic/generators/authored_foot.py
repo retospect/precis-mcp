@@ -89,10 +89,14 @@ class FootRow:
     rim_r: float  # where the outer heptagon row landed
     passes: int
     misses: tuple[str, ...]  # failing bar columns; empty = meets every bar
+    # ERROR finding codes of hexfold's geometry tier on the tethered
+    # coordinates (``geom.seed_overlap``, ``geom.clash``); a foot row only.
+    # Scene rows leave it empty: the scene's errors live in ``ScenePlan``.
+    errors: tuple[str, ...] = ()
 
     @property
     def meets(self) -> bool:
-        return not self.misses
+        return not self.misses and not self.errors
 
     @property
     def excess(self) -> float:
@@ -241,11 +245,20 @@ def _measure(
         foot, nrm = surface_foot(pos * _FLIP, feat, ds=_DS)
         return foot * _FLIP, nrm * _FLIP
 
-    pos, _force, passes = _tethered_relax(
+    pos, force, passes = _tethered_relax(
         net,
         tether,
         k_tether,
         lambda q: float(surface_distance(q * _FLIP, feat, ds=_DS)[0].mean()),
+    )
+    errors = tuple(
+        sorted(
+            {
+                f.code
+                for f in geometry_findings(net, relaxed=Relaxed(pos, force, "tethered"))
+                if f.severity.name == "ERROR"
+            }
+        )
     )
     d, _ = surface_distance(pos * _FLIP, feat, ds=_DS)
     b = np.array([(i, j) for i, j, *_ in net.bonds])
@@ -287,6 +300,7 @@ def _measure(
         rim_r=float(rad[rim].mean()),
         passes=passes,
         misses=misses,
+        errors=errors,
     )
     return row, pos, centre, text
 
@@ -302,7 +316,9 @@ def plan_foot(
 
     Tries ``candidates`` (default: even k from :func:`k_min` to k_min + 6),
     keeps the candidate that meets every bar with the smallest ring-ideal
-    angle max, else the smallest bar excess (``meets`` is then False)."""
+    angle max, else the smallest bar excess, a row without ERROR findings
+    ahead of one with (``meets`` is then False).  A row meets only with no
+    bar missed and no ERROR finding on its tethered coordinates."""
     if radius <= 0.0:
         raise ValueError(f"fillet radius must be positive; got {radius}")
     ks = (
@@ -316,7 +332,7 @@ def plan_foot(
     best = (
         min(passing, key=lambda m: m[0].angle_max)
         if passing
-        else min(measured, key=lambda m: m[0].excess)
+        else min(measured, key=lambda m: (bool(m[0].errors), m[0].excess))
     )
     row, pos, centre, text = best
     return FootPlan(

@@ -409,6 +409,8 @@ _GENERATED_RECORD_KEYS = (
     "surface_meridian",
     "fillet_radius_A",
     "theta_p_max_deg",
+    "scene",
+    "plan",
 )
 
 

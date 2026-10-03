@@ -38,8 +38,8 @@ from typing import Any
 import numpy as np
 
 import hexfold
+from hexfold.build import Net, build
 from hexfold.build import Port as HxPort
-from hexfold.build import build
 from hexfold.canon import canonical_json
 from hexfold.check import check, geometry_findings
 from hexfold.extent import measures as hx_measures
@@ -257,12 +257,33 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     except (ValueError, KeyError, IndexError) as exc:
         raise GeneratorError(_internal_message(exc)) from exc
 
-    coords, envelope = _canonical_frame(stick(net))
     # The persisted record carries the same geometry tier the check echo
     # shows (bond/angle deviations, geom.summary) — a reader of
     # ``## generated`` could not otherwise tell whether the minted
     # geometry is sane (gr454488 residual 3).
     report = net.report.merge(Report(tuple(geometry_findings(net))))
+    return _block_from_net(net, stick(net), spec=spec, report=report, fidelity=fidelity)
+
+
+def _block_from_net(
+    net: Net,
+    raw_coords: np.ndarray,
+    *,
+    spec: str,
+    report: Report,
+    fidelity: str,
+    extra_topology: dict[str, Any] | None = None,
+    provenance_tail: str = "",
+) -> GeneratedBlock:
+    """Mint the block from a built ``net`` and its coordinates: the
+    canonical frame and envelope, bond orders/kinds, ports, rings, length
+    measures, the topology record and the provenance line. Shared by
+    :func:`build_hexfold` (``stick(net)`` coordinates) and
+    :mod:`~precis_se.atomic.generators.hexfold_scene` (tethered ones);
+    ``report`` is the caller's merged findings, ``extra_topology`` extra
+    topology keys, and ``provenance_tail`` is appended to the provenance
+    line."""
+    coords, envelope = _canonical_frame(np.asarray(raw_coords, dtype=float))
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
@@ -342,10 +363,13 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
         "rings": rings,
         "measures": [m.to_dict() for m in hx_measures(net)],
     }
+    if extra_topology:
+        topology.update(extra_topology)
     provenance = (
         f"hexfold {hexfold.__version__} spec ({len(net.atoms)} atoms, "
         f"{len(net.bonds)} bonds; rings {rings}); fidelity={fidelity} "
         f"seed={net.seed_kind}; coordinates derived, not part of the format"
+        f"{provenance_tail}"
     )
     return GeneratedBlock(
         envelope=envelope,

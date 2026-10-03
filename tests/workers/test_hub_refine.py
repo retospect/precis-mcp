@@ -366,6 +366,167 @@ def test_claim_source_text_reaches_the_widen_verifier(store: Any) -> None:
         assert call.kwargs["claim_source_text"] == "ORIGIN: measured at 300 K"
 
 
+def _add_context_to_paper(
+    store: Any, ref_id: int, chunk_id: int, *, abstract: str | None
+) -> None:
+    """Give a one-chunk seeded paper a year, an optional abstract, a section
+    path and live ``ord`` 1 / ``ord`` 2 siblings around its ``ord`` 0 chunk —
+    here ``ord`` 1 is the chunk under test's neighbour via ``ord`` 0."""
+    store.chunks.insert_chunks(
+        ref_id,
+        [
+            ChunkInsert(ord=1, text="NEXT NEIGHBOUR TEXT", meta={}),
+        ],
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET year = 2011, meta = CASE WHEN %s::text IS NULL "
+            "THEN '{}'::jsonb ELSE jsonb_build_object('abstract', %s::text) END "
+            "WHERE ref_id = %s",
+            (abstract, abstract, ref_id),
+        )
+        conn.execute(
+            "UPDATE chunks SET section_path = ARRAY['Intro', 'Background'] "
+            "WHERE chunk_id = %s",
+            (chunk_id,),
+        )
+        conn.commit()
+
+
+def test_widen_verifier_gets_section_neighbours_and_identity(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    _seed_hub(store, sentence="A claim about C20-C40 fullerene stability.")
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="ctx", text="A background recitation of ref [6]."
+    )
+    _add_context_to_paper(store, paper, chunk_id, abstract="DFT of C60 nanobuds.")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    calls = [c for c in mock_verify.call_args_list if c.kwargs["target_chunk_ord"] == 0]
+    assert calls
+    for call in calls:
+        assert call.kwargs["section_path"] == "Intro > Background"
+        assert call.kwargs["neighbours"] == ["NEXT NEIGHBOUR TEXT"]
+        ident = call.kwargs["source_identity"]
+        assert (ident.title, ident.year) == ("Test paper ctx", 2011)
+        assert ident.abstract == "DFT of C60 nanobuds."
+
+
+_SETUPS = {
+    "claim_setup": "claim: CNT FET, extension doping. " + "c" * 400,
+    "passage_setup": "passage: nanotube array, gate stack. " + "p" * 400,
+}
+
+
+def _assert_setups_capped(d: dict[str, Any]) -> None:
+    assert d["claim_setup"] == _SETUPS["claim_setup"][:300]
+    assert d["passage_setup"] == _SETUPS["passage_setup"][:300]
+
+
+def test_widen_arm_stores_verifier_reasoning_on_memo_edge_and_disputes(
+    store: Any,
+) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A claim about CNT FET extension doping.")
+    yes_paper, _c1 = _seed_paper_chunk(
+        store, embedder, cite_key="wy", text="A supporting statement."
+    )
+    no_paper, _c2 = _seed_paper_chunk(
+        store, embedder, cite_key="wn", text="An unrelated statement."
+    )
+    dis_paper, _c3 = _seed_paper_chunk(
+        store, embedder, cite_key="wd", text="A conflicting measurement statement."
+    )
+    h = {"_llm_request_hash": "w" * 64}
+    by_text = {
+        "A supporting statement.": {
+            **_VERIFY_YES,
+            "same_setup": True,
+            **_SETUPS,
+            **h,
+        },
+        "An unrelated statement.": {
+            **_VERIFY_NO,
+            "same_setup": False,
+            **_SETUPS,
+            **h,
+        },
+        "A conflicting measurement statement.": {
+            **_VERIFY_NO,
+            "contradicts": True,
+            "same_setup": True,
+            **_SETUPS,
+            **h,
+        },
+    }
+
+    def _fake_verify(**kw: Any) -> dict[str, Any] | None:
+        return by_text.get(kw["target_chunk_text"])
+
+    with (
+        patch(_VERIFY_PATH, side_effect=_fake_verify),
+        patch("precis.workers.hub_refine.run_demotions", lambda _s, _r: []),
+    ):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    rejected = _hub_meta(store, hub)["taproot_rejected"]
+    _assert_setups_capped(rejected[str(no_paper)])
+    assert rejected[str(no_paper)]["llm_request_hash"] == "w" * 64
+    assert rejected[str(no_paper)]["same_setup"] is False
+    _assert_setups_capped(rejected[str(dis_paper)])
+
+    (_d, rel, meta), *_ = _edges_from(store, yes_paper)
+    assert rel == "corroborates"
+    _assert_setups_capped(meta["widen"])
+    assert meta["widen"]["same_setup"] is True
+    assert meta["widen"]["terminal"] is True
+    assert meta["widen"]["llm_request_hash"] == "w" * 64
+    assert meta["widen"]["sha"] == claim_sha("A claim about CNT FET extension doping.")
+
+    (_d, rel, meta), *_ = _edges_from(store, dis_paper)
+    assert rel == "disputes"
+    _assert_setups_capped(meta["widen"])
+    assert meta["widen"]["llm_request_hash"] == "w" * 64
+
+
+def test_widen_verifier_identity_without_abstract(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    _seed_hub(store, sentence="A claim about C20-C40 fullerene stability.")
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="noabs", text="A background recitation of ref [6]."
+    )
+    _add_context_to_paper(store, paper, chunk_id, abstract=None)
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    calls = [c for c in mock_verify.call_args_list if c.kwargs["target_chunk_ord"] == 0]
+    assert calls
+    assert all(c.kwargs["source_identity"].abstract is None for c in calls)
+
+
+def test_reverify_verifier_gets_section_neighbours_and_identity(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="The coating survives 1000 thermal cycles.")
+    paper, chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="rv-ctx", text="A cycling measurement statement."
+    )
+    _add_context_to_paper(store, paper, chunk_id, abstract="Coatings under cycling.")
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk_id}"},
+        set_by="agent",
+    )
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mock_verify.call_count == 1
+    kw = mock_verify.call_args.kwargs
+    assert kw["section_path"] == "Intro > Background"
+    assert kw["neighbours"] == ["NEXT NEIGHBOUR TEXT"]
+    assert kw["source_identity"].abstract == "Coatings under cycling."
+
+
 def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
     """Convergence: a memoed contradicting ``partial`` is precheck-skipped on
     the next (DUE-retriggered) pass -- never a repeat LLM verify, and never a

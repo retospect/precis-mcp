@@ -29,6 +29,11 @@
 # parallelism is -n6 (the measured sweet spot); pass your own -n0/-nN to
 # override for a single fast test.
 #
+# PRECIS_TEST_KEEP_DB=1 : in a subagent worktree (basename `agent-*`) this
+# script `compose down -v`s the tree's compose project at exit, so an idle
+# subagent test-db stops holding one of docker's ~31 network address pools
+# (see agent_db_teardown below). Set it to keep the warm db between runs.
+#
 # --impacted (-i): impact selection via pytest-testmon. Runs only the tests
 # affected by your working-tree changes — the inner-loop accelerator when the
 # full 140s suite is mostly per-worker DB-clone setup for tests you didn't
@@ -77,6 +82,9 @@ Usage:
 Everything after the script name (other than the flags above) is passed
 straight to pytest. Default parallelism is -n6; pass your own -n0/-nN to
 override for a single fast test.
+
+Env: PRECIS_TEST_KEEP_DB=1 keeps the test-db up after the run. Without it, a
+subagent worktree (basename agent-*) tears its compose project down at exit.
 
 Two-call background protocol for capped foreground shells: `--bg <args>`
 detaches the run and prints its run-id; poll with `--await <run-id>`
@@ -194,7 +202,33 @@ source "${WORKTREE}/scripts/lib/gate-slot.sh"
 # then (see the testmon-exit-guard block near the bottom for why impacted
 # mode captures pytest's output to a file instead of streaming it raw).
 TESTMON_LOG=""
+# Subagent trees (basename `agent-*`, the key compose-project.sh uses) never
+# resume, and every compose project holds one docker network address pool
+# (~31 on this host) for as long as its test-db exists — idle subagent dbs ran
+# the pool dry fleet-wide on 2026-10-03. So tear the project down at exit
+# unless PRECIS_TEST_KEEP_DB=1 (keep the warm db) or another container of the
+# project (a concurrent scripts/test run, a gate) is still RUNNING — the same
+# guard scripts/reap-test-dbs uses. Best-effort: never fails, and cleanup()
+# re-raises the script's real exit status around it.
+agent_db_teardown() {
+    [[ "$FAST" == "1" ]] && return 0
+    [[ -n "${PRECIS_TEST_KEEP_DB:-}" ]] && return 0
+    case "${WORKTREE##*/}" in agent-*) ;; *) return 0 ;; esac
+    local svc services
+    services="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" \
+        --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null)" || return 0
+    while IFS= read -r svc; do
+        [[ -z "$svc" || "$svc" == "precis-test-db" ]] && continue
+        return 0
+    done <<<"$services"
+    env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" \
+        -p "$COMPOSE_PROJECT" --profile dev down -v >/dev/null 2>&1 || true
+    return 0
+}
 cleanup() {
+    # Capture the real exit status up front and re-raise it at the end: the
+    # best-effort teardown below must never change what the caller sees.
+    local rc=$?
     gate_slot_release
     # `if`, not `[[ ]] && …`: an EXIT trap's own exit status becomes the
     # script's exit status, and `&&` on a false test would silently turn
@@ -202,6 +236,8 @@ cleanup() {
     if [[ -n "$TESTMON_LOG" ]]; then
         rm -f "$TESTMON_LOG"
     fi
+    agent_db_teardown || true
+    exit "$rc"
 }
 trap cleanup EXIT
 compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }

@@ -56,6 +56,10 @@ Round 6: ``smooth_drum`` (:mod:`precis_se.atomic.generators.smooth_drum`) —
 a sheet-stalk-drum carbon wrapper on a smooth surface of revolution with
 exactly 12 pentagons and 12 heptagons, spring-relaxed and gated on
 pyramidalisation.
+Round 7: ``hexfold_scene`` (:mod:`precis_se.atomic.generators.hexfold_scene`)
+-- several authored fillet feet on one sheet, planned by
+:func:`precis_se.atomic.generators.authored_foot.plan_scene` and minted
+tethered, with the planner's misses and top-joint caveats as findings.
 """
 
 from __future__ import annotations
@@ -68,6 +72,7 @@ from precis_se.atomic.generators._types import (
     GeneratedPort,
     GeneratorError,
 )
+from precis_se.atomic.generators.hexfold_scene import build_hexfold_scene
 from precis_se.atomic.generators.hexfold_spec import build_hexfold
 from precis_se.atomic.generators.smooth_drum import build_smooth_drum
 from precis_se.atomic.generators.sp2 import build_cnt, build_cone, build_fullerene
@@ -86,6 +91,7 @@ GENERATORS: dict[str, Generator] = {
     "cone": build_cone,
     "cyclodextrin": build_cyclodextrin,
     "hexfold": build_hexfold,
+    "hexfold_scene": build_hexfold_scene,
     "tpms": build_tpms,
     "smooth_drum": build_smooth_drum,
     #: alias -- schwarzite-class carbon nets are the tpms family's whole

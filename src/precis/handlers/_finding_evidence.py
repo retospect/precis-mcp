@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis.handlers._finding_judgments import judging_summary
 from precis.store.types import Ref
 from precis.taproot import seniority
 from precis.utils.authors import author_names
@@ -88,6 +89,9 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
             header += _falsification_section(store, ref)
         else:
             header.append("no evidence edges yet for this claim hub")
+            judging = judging_summary(ref.meta)
+            if judging:
+                header += ["", judging]
         return Response(body="\n".join(header))
 
     refs_by_id = store.fetch_refs_by_ids({e.paper_ref_id for e in all_edges})
@@ -142,6 +146,9 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         summary += f"; {excluded} non-supporting {noun} excluded"
     summary += ")"
     lines += ["", summary]
+    judging = judging_summary(ref.meta)
+    if judging:
+        lines.append(judging)
 
     lines += _citation_fallback_section(store, evidence, refs_by_id)
 

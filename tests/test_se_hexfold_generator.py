@@ -7,6 +7,10 @@ hexfold is vendored at ``src/hexfold/`` — no import skip needed.
 
 from __future__ import annotations
 
+import hashlib
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -274,6 +278,149 @@ lattice: element=C sigma=1.42
 
 s: sheet(25A, 12)
 """
+
+
+def _sha(text: str | bytes) -> str:
+    raw = text.encode("utf-8") if isinstance(text, str) else text
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _golden_fingerprint(block: GeneratedBlock) -> dict[str, object]:
+    """The post-processed output a refactor must not move: rounded coords
+    (6 dp, so last-bit float noise across CPUs cannot redden it), the
+    canonical topology JSON, the envelope, port names + atom indices,
+    bonds (order and kind included), the length anchors, the topology key
+    set and the provenance text (both coordinate-independent)."""
+    return {
+        "n_atoms": len(block.elements),
+        "coords": _sha(np.round(block.coords, 6).astype("<f8").tobytes()),
+        "canonical_json": _sha(str(block.topology["canonical_json"])),
+        "envelope": block.envelope,
+        "ports": [(p.name, p.atom_index) for p in block.ports],
+        "bonds": _sha(repr(block.bonds)),
+        "measures": _sha(
+            repr([(m.name, m.value_A, m.min_A, m.max_A) for m in block.measures])
+        ),
+        "topology_keys": sorted(block.topology),
+        "provenance": _sha(block.provenance),
+    }
+
+
+_PILLAR_HX = Path(__file__).resolve().parents[1] / "hexfold" / "examples" / "pillar.hx"
+
+_GOLDEN_SPECS = {
+    "tube": TUBE_SPEC,
+    "nanobud": NANOBUD_SPEC,
+    "sheet": SHEET_A_SPEC,
+    # A sheet hole fused to a tube: canonical frame + (terminated) ports.
+    "pillar": _PILLAR_HX.read_text(encoding="utf-8"),
+    # Fused multi-part with surviving ports. ``fit in {...}`` makes the
+    # coordinates platform-sensitive beyond 6 dp (macOS digests differ from
+    # Linux); the Linux container values are pinned.
+    "sheet_tube_cap": (
+        "hexfold 0.2\nlattice: element=C sigma=1.42\n\ns: sheet(25A, 12)\n"
+        "t: tube(fit in {(5,5),(6,6)}, len=3)\nc: cap(5,5)\n"
+        "t.out --fuse k=0--> c.in\n"
+    ),
+}
+
+_GOLDEN_TOPOLOGY_KEYS = [
+    "canonical_json",
+    "hexfold",
+    "measures",
+    "n_atoms",
+    "n_bonds",
+    "ports",
+    "regions",
+    "report",
+    "rings",
+    "seed_kind",
+    "spec",
+]
+
+_GOLDEN: dict[str, dict[str, object]] = {
+    "tube": {
+        "n_atoms": 80,
+        "coords": "09d0a14564f9228d7d7a07efae0e05e169cc33ca4da6e8efb74d75d40a412bbc",
+        "canonical_json": "101eee8e489258b025478bf4dc08143a107e425b061f54e354730412ecacae7d",
+        "envelope": "cyl:r5.1492Åh11.999Å",
+        "ports": [("in", 0), ("out", 79)],
+        "bonds": "1f4e1bd69c50d4442ee7ecb75d8db9b512080a85ab6146929642ad01b977c6f2",
+        "measures": "5285d138cf0f585d6d86e922b040fd45ad9958b950d878544d43a18f30791f33",
+        "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
+        "provenance": "0ee0ed53bfd7b64b379c3e420d6db60924dfd02e1c54db3301cf9949196834a9",
+    },
+    "nanobud": {
+        "n_atoms": 460,
+        "coords": "e1dacd77a1008cb072253d1ef44bb7b7f7d11106208799c995963405c955850f",
+        "canonical_json": "7dc5e93ae5dd55561d7ed31b9a43d25815a9b5c32146431f3a65bf7e32cacee4",
+        "envelope": "cyl:r16.7786Åh16.9395Å",
+        "ports": [("h_in", 60), ("h_out", 85)],
+        "bonds": "cfe212fc407a8934b362a5fa64bbc027c5f73767b42249726a83dcca719389f4",
+        "measures": "4cdf0586c43c1a10762d94da35c5b44e2e23ce81a69351aa3b48986473680879",
+        "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
+        "provenance": "ea04c0818b2031d9a3b2725568fa6a1d2df06b4e6a575fb7e1be7180a3c5eafb",
+    },
+    "sheet": {
+        "n_atoms": 240,
+        "coords": "fef0d679b06c9f389ad8de80006b905e41269d9a3bc1ea34031753d643d979ef",
+        "canonical_json": "1e477fe7ec10211e8fc4b010163ed279b7d406947fe42be6ceea7dba42b51f58",
+        "envelope": "cyl:r23.7426Åh3.5399Å",
+        "ports": [("rim", 2)],
+        "bonds": "a0ad85716b042fa848d77ffd99d507d62eee86cb28c77027fe79e596c07e972a",
+        "measures": "86b0d23f4b3e9be3b6bfbe8698d430367fa965924b016ab749b06610399c5ea8",
+        "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
+        "provenance": "cbbe71cea2fca41400e01bc952ce9d67a396679ead1059f60016a4fcfc480499",
+    },
+    "pillar": {
+        "n_atoms": 972,
+        "coords": "4f5d896bf8354a545010fbd68c34ebffd56735e862f981f72500c1039843d9d8",
+        "canonical_json": "398e9fe24d61191ff5dd68bf9d90acde7e8da694bc06a5ff26b52a91d36eb198",
+        "envelope": "cyl:r43.0831Åh21.9105Å",
+        "ports": [],
+        "bonds": "d6a47a0cc4d34c5f761b724db4c0255ece9a248685fa426f3864a389ef4b5240",
+        "measures": "c915f64651e03e526dc153dd76a67155f9d9807a77733f248b0f7bd4fc269265",
+        "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
+        "provenance": "5ab02a432ee45bb27273e1c9ac0162e15a773b70f4858e7770acee15aff57d10",
+    },
+    "sheet_tube_cap": {
+        "n_atoms": 350,
+        "coords": "dbca6defb3aabf65d08588734830df2ba3d9029aa9ddf1fff52b4fd8c8e2ad92",
+        "canonical_json": "a6d669121d332f7b2aca3cd30a3b3766158cc3eb05d110f8276b6c76d087019f",
+        "envelope": "cyl:r13.7248Åh50.1512Å",
+        "ports": [("s_rim", 52), ("t_in", 290)],
+        "bonds": "9ca866d58dc55d22061d5e38e0c61355189e5e1a1c6f4fda4d3096d429c083ea",
+        "measures": "ad0f997d7453cc1d15f375c85d154fe856c88e55d7c5dd829bcf5d0df030a590",
+        "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
+        "provenance": "4d982d52a749f42a974ea412d3f6045bb527228a640a97f5444c1d577c72b246",
+    },
+}
+
+
+# Golden: pins today's hexfold generator output (orchestrator S4b verdict,
+# 2026-10-03). Re-pin only with a hexfold __version__ bump (gr464341 rule),
+# never to make a refactor pass.
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(
+            n,
+            marks=pytest.mark.skipif(
+                sys.platform != "linux",
+                reason=(
+                    "gr464502: stick relax of this fit spec differs across "
+                    "platforms; Linux values pinned"
+                ),
+            ),
+        )
+        if n == "sheet_tube_cap"
+        else n
+        for n in sorted(_GOLDEN_SPECS)
+    ],
+)
+def test_hexfold_output_is_pinned_golden(name: str) -> None:
+    block = _build(_GOLDEN_SPECS[name])
+    assert _golden_fingerprint(block) == _GOLDEN[name]
 
 
 def test_hexfold_block_carries_length_anchors_with_snap_bands() -> None:

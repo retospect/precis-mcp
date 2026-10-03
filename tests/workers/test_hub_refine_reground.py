@@ -31,6 +31,7 @@ from precis.taproot.hub import (
     reattach_as_disputes,
     remove_evidence,
 )
+from precis.workers._chase_llm import SourceIdentity
 from precis.workers.hub_refine import (
     DEPTH_ABSTRACT_OK,
     DEPTH_BODY_REQUIRED,
@@ -40,7 +41,10 @@ from precis.workers.hub_refine import (
     RegroundPlan,
     RegroundPrune,
     StrictVerdict,
+    _chunk_neighbours,
+    _chunk_section_path,
     _claim_source_passage,
+    _source_identity,
     apply_reground_plan,
     claim_depth_policy,
     is_front_matter,
@@ -127,6 +131,15 @@ def _link_exists(store: Any, *, src: int, dst: int, relation: str) -> bool:
     return row is not None
 
 
+def _edges_from(store: Any, src: int) -> list[tuple[int, str, dict[str, Any]]]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id, relation, meta FROM links WHERE src_ref_id = %s",
+            (src,),
+        ).fetchall()
+    return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+
 def _hub_meta(store: Any, hub: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (hub,)).fetchone()
@@ -146,9 +159,15 @@ class _ScriptedJudge:
         *,
         same_setup: bool | str | None = True,
         primary: bool | None = True,
+        claim_setup: str = "",
+        passage_setup: str = "",
+        request_hash: str | None = None,
     ) -> None:
         self.rules = rules
         self.default = default
+        self.request_hash = request_hash
+        self.claim_setup = claim_setup
+        self.passage_setup = passage_setup
         # What a CONTRADICTS verdict says about setup/primacy: the control
         # default is "shown same + primary" (disputes allowed).
         self.same_setup = same_setup
@@ -161,6 +180,9 @@ class _ScriptedJudge:
         return StrictVerdict(
             verdict=verdict,
             reason=f"scripted:{verdict}",
+            claim_setup=self.claim_setup,
+            passage_setup=self.passage_setup,
+            request_hash=self.request_hash,
             same_setup=self.same_setup,
             primary=self.primary,
         )
@@ -998,6 +1020,270 @@ def test_audit_contradicts_with_primary_false_is_logged_not_converted(
     assert len(withheld) == 1 and withheld[0]["src_ref_id"] == paper
 
 
+_LONG_CLAIM_SETUP = "claim-side CNT FET, extension doping. " + "c" * 400
+_LONG_PASSAGE_SETUP = "passage-side nanotube array, gate stack. " + "p" * 400
+
+
+def _assert_judge_fields(entry: dict[str, Any], *, same_setup: Any, primary: Any):
+    """The judge's reasoning rides on ``entry``: both setup texts capped at
+    300 chars, plus ``same_setup`` / ``primary`` as returned."""
+    assert entry["claim_setup"] == _LONG_CLAIM_SETUP[:300]
+    assert entry["passage_setup"] == _LONG_PASSAGE_SETUP[:300]
+    assert len(entry["claim_setup"]) == 300 and len(entry["passage_setup"]) == 300
+    assert entry["same_setup"] == same_setup
+    assert entry["primary"] == primary
+
+
+def test_candidate_judge_reasoning_is_stored_on_memo_log_and_disputes_link(
+    store: Any,
+) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-reason")
+    judge = _ScriptedJudge(
+        [("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")],
+        claim_setup=_LONG_CLAIM_SETUP,
+        passage_setup=_LONG_PASSAGE_SETUP,
+    )
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, _queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    meta = _hub_meta(store, hub)
+    # (a) the memo
+    _assert_judge_fields(
+        meta["reground_seen"][f"{paper}:{chunks[1]}"], same_setup=True, primary=True
+    )
+    # (c) the log entry
+    added = [e for e in meta[META_REGROUND_LOG] if e.get("action") == "added"]
+    assert len(added) == 1
+    _assert_judge_fields(added[0], same_setup=True, primary=True)
+    # (d) the filed disputes link
+    disputes = [m for _d, rel, m in _edges_from(store, paper) if rel == "disputes"]
+    assert len(disputes) == 1
+    _assert_judge_fields(disputes[0]["reground"], same_setup=True, primary=True)
+
+
+def test_withheld_judge_reasoning_is_stored_on_memo_and_log(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-reason2")
+    judge = _ScriptedJudge(
+        [("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")],
+        same_setup=False,
+        claim_setup=_LONG_CLAIM_SETUP,
+        passage_setup=_LONG_PASSAGE_SETUP,
+    )
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, _queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    meta = _hub_meta(store, hub)
+    _assert_judge_fields(
+        meta["reground_seen"][f"{paper}:{chunks[1]}"], same_setup=False, primary=True
+    )
+    withheld = [
+        e
+        for e in meta[META_REGROUND_LOG]
+        if e.get("action") == "withheld (setup not shown same)"
+    ]
+    assert len(withheld) == 1
+    _assert_judge_fields(withheld[0], same_setup=False, primary=True)
+
+
+def test_audit_judge_reasoning_reaches_the_reattach_log_and_disputes_link(
+    store: Any,
+) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="The opening angle is 85 degrees.")
+    paper, chunks = _seed_paper(
+        store,
+        embedder,
+        cite_key="pa-reason3",
+        texts=["AGAINST: the formula gives 83.6"],
+    )
+    other, other_chunks = _seed_paper(
+        store, embedder, cite_key="pa-reason4", texts=["neutral"]
+    )
+    _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
+    _attach(store, hub=hub, paper=other, chunk_id=other_chunks[0], role="corroborates")
+    judge = _ScriptedJudge(
+        [("AGAINST", "CONTRADICTS")],
+        claim_setup=_LONG_CLAIM_SETUP,
+        passage_setup=_LONG_PASSAGE_SETUP,
+    )
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, _queued = _capture_demotions()
+    with patcher:
+        res = reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+    assert res.contradicts_reattached == 1
+
+    meta = _hub_meta(store, hub)
+    _assert_judge_fields(
+        meta["reground_seen"][f"{paper}:{chunks[0]}"], same_setup=True, primary=True
+    )
+    reattached = [
+        e
+        for e in meta[META_REGROUND_LOG]
+        if str(e.get("action")).startswith("reattached-disputes")
+    ]
+    assert len(reattached) == 1
+    _assert_judge_fields(reattached[0], same_setup=True, primary=True)
+    disputes = [m for _d, rel, m in _edges_from(store, paper) if rel == "disputes"]
+    assert len(disputes) == 1
+    _assert_judge_fields(disputes[0]["reground"], same_setup=True, primary=True)
+
+
+def test_llm_request_hash_reaches_memo_log_and_disputes_link(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-hash")
+    judge = _ScriptedJudge(
+        [("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")], request_hash="h" * 64
+    )
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, _queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    meta = _hub_meta(store, hub)
+    assert meta["reground_seen"][f"{paper}:{chunks[1]}"]["llm_request_hash"] == "h" * 64
+    added = [e for e in meta[META_REGROUND_LOG] if e.get("action") == "added"]
+    assert [e["llm_request_hash"] for e in added] == ["h" * 64]
+    (disputes,) = [m for _d, rel, m in _edges_from(store, paper) if rel == "disputes"]
+    assert disputes["reground"]["llm_request_hash"] == "h" * 64
+
+
+def test_no_llm_request_hash_when_nothing_was_logged(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-nohash")
+    judge = _ScriptedJudge([("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")])
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, _queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    meta = _hub_meta(store, hub)
+    assert "llm_request_hash" not in meta["reground_seen"][f"{paper}:{chunks[1]}"]
+    assert all("llm_request_hash" not in e for e in meta[META_REGROUND_LOG])
+
+
+def test_judge_and_verifier_carry_the_request_hash() -> None:
+    from precis.workers._chase_llm import _verify_support_with_caveats
+
+    reply = {"verdict": "KEEP", "reason": "r"}
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        cite_key="pa1",
+        chunk_ord=3,
+        chunk_text="We measured 4 nm by TEM.",
+    )
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply, "abc123")):
+        v = judge_edge_strict(**kwargs)
+        assert v is not None and v.request_hash == "abc123"
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply)):
+        v = judge_edge_strict(**kwargs)
+        assert v is not None and v.request_hash is None
+
+    vkwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        target_cite_key="pa1",
+        target_chunk_ord=1,
+        target_chunk_text="chunk",
+    )
+    path = "precis.workers._chase_llm.route"
+    data = {"supports": "no"}
+    with patch(path, return_value=_Res(data, "abc123")):
+        # default: the returned shape is unchanged
+        assert _verify_support_with_caveats(**vkwargs) == data
+        got = _verify_support_with_caveats(with_request_hash=True, **vkwargs)
+    assert got == {"supports": "no", "_llm_request_hash": "abc123"}
+    assert data == {"supports": "no"}  # the router's dict is not mutated
+    with patch(path, return_value=_Res(data)):
+        assert _verify_support_with_caveats(with_request_hash=True, **vkwargs) == data
+
+
+def test_judgement_fields_normalise_the_flags() -> None:
+    from precis.taproot.hub import judgement_fields
+
+    ok = judgement_fields(same_setup=" Unclear ", primary=False, terminal=True)
+    assert ok == {"same_setup": "unclear", "primary": False, "terminal": True}
+    assert judgement_fields(same_setup=True)["same_setup"] is True
+    # anything that is not a bool / "unclear" is dropped, never guessed at
+    bad: dict[str, Any] = {"same_setup": "true", "primary": "yes", "terminal": 1}
+    assert judgement_fields(**bad) == {}
+    nope: dict[str, Any] = {"same_setup": "nope"}
+    assert judgement_fields(**nope) == {}
+
+
+def test_braces_in_abstract_and_neighbours_render_literally() -> None:
+    from precis.workers._chase_llm import _verify_support_with_caveats
+
+    ident = SourceIdentity(title="T {x}", year=2011, abstract="abstract {x} {0} {{y}}")
+    nb = ["neighbour {x} {0}"]
+    path = "precis.workers._chase_llm.route"
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(
+            claim="c",
+            scope={},
+            target_cite_key="pa1",
+            target_chunk_ord=1,
+            target_chunk_text="chunk {x}",
+            neighbours=nb,
+            source_identity=ident,
+            section_path="S {x}",
+        )
+    prompt = r.call_args[0][0].prompt
+    for literal in ("T {x}", "abstract {x} {0} {{y}}", "neighbour {x} {0}", "S {x}"):
+        assert literal in prompt
+
+    with patch(
+        "precis.workers.hub_refine.route", return_value=_Res({"verdict": "KEEP"})
+    ) as r:
+        judge_edge_strict(
+            claim="c",
+            scope={},
+            cite_key="pa1",
+            chunk_ord=1,
+            chunk_text="chunk",
+            neighbours=nb,
+            source_identity=ident,
+        )
+    prompt = r.call_args[0][0].prompt
+    for literal in ("T {x}", "abstract {x} {0} {{y}}", "neighbour {x} {0}"):
+        assert literal in prompt
+
+
+def test_reground_log_entry_fields_are_optional_and_capped() -> None:
+    from precis.taproot.hub import reground_log_entry
+
+    base: dict[str, Any] = dict(
+        src_ref_id=1,
+        src_chunk_id=2,
+        relation="corroborates",
+        verdict="PRUNE",
+        reason="r",
+        action="removed",
+    )
+    old_shape = reground_log_entry(**base)
+    assert not {"claim_setup", "passage_setup", "same_setup", "primary", "terminal"} & (
+        old_shape.keys()
+    )
+    entry = reground_log_entry(
+        **base,
+        claim_setup="x" * 500,
+        passage_setup="",
+        same_setup=False,
+        primary=None,
+        terminal=True,
+    )
+    assert entry["claim_setup"] == "x" * 300
+    assert "passage_setup" not in entry and "primary" not in entry  # empty / None
+    assert entry["same_setup"] is False  # a real False is kept
+    assert entry["terminal"] is True
+
+
 def test_claim_source_passage_reads_the_establishes_chunk(store: Any) -> None:
     embedder = make_mock_bge_m3()
     hub = _seed_hub(store, sentence="A claim with an originating passage.")
@@ -1034,10 +1320,11 @@ def test_claim_source_passage_reaches_the_judge(store: Any) -> None:
 
 
 class _Res:
-    def __init__(self, data: Any = None) -> None:
+    def __init__(self, data: Any = None, request_hash: str | None = None) -> None:
         self.data = data
         self.text = ""
         self.error = ""
+        self.request_hash = request_hash
 
 
 def test_judge_prompt_carries_claim_source_and_parses_setup_fields() -> None:
@@ -1100,12 +1387,174 @@ def test_verify_prompt_carries_claim_source_and_setup_fields() -> None:
 
     with patch(path, return_value=_Res({"supports": "no"})) as r:
         _verify_support_with_caveats(**kwargs)
-    assert "(not available)" in r.call_args[0][0].prompt
+    assert "SOURCE PASSAGE (what the claim was measured on):\n(not available)" in (
+        r.call_args[0][0].prompt
+    )
 
     with patch(path, return_value=_Res({"supports": "no"})) as r:
         _verify_support_with_caveats(claim_source_text="z" * 5000, **kwargs)
     assert "z" * 3000 in r.call_args[0][0].prompt
     assert "z" * 3001 not in r.call_args[0][0].prompt
+
+
+_IDENT = SourceIdentity(
+    title="C60 nanobuds studied by DFT",
+    year=2011,
+    abstract="We study fullerene nanobuds. " + "q" * 800,
+)
+_ABSTRACT_HEAD = "We study fullerene nanobuds. "
+
+
+def test_verify_prompt_shows_section_neighbours_and_identity() -> None:
+    from precis.workers._chase_llm import _verify_support_with_caveats
+
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        target_cite_key="pa1",
+        target_chunk_ord=1,
+        target_chunk_text="chunk",
+    )
+    path = "precis.workers._chase_llm.route"
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(
+            section_path="Intro > Background",
+            neighbours=["PREV BODY", "NEXT BODY"],
+            source_identity=_IDENT,
+            **kwargs,
+        )
+    prompt = r.call_args[0][0].prompt
+    assert "chunk ord 1, section Intro > Background" in prompt
+    assert "PREV BODY" in prompt and "NEXT BODY" in prompt
+    assert "NEIGHBOURING CHUNKS" in prompt and "never judged off a neighbour" in prompt
+    assert "C60 nanobuds studied by DFT (2011)" in prompt
+    assert "which system the paper studies; it is not evidence" in prompt
+    assert _ABSTRACT_HEAD in prompt
+    # abstract cap: 600 chars of abstract, no more
+    assert "q" * (600 - len(_ABSTRACT_HEAD)) in prompt
+    assert "q" * (600 - len(_ABSTRACT_HEAD) + 1) not in prompt
+    assert "(no abstract on record)" not in prompt
+
+    # a neighbour is capped like the strict judge's
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(neighbours=["n" * 900], **kwargs)
+    assert "n" * 600 in r.call_args[0][0].prompt
+    assert "n" * 601 not in r.call_args[0][0].prompt
+
+
+def test_verify_prompt_absent_context_renders_placeholders() -> None:
+    from precis.workers._chase_llm import _verify_support_with_caveats
+
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        target_cite_key="pa1",
+        target_chunk_ord=1,
+        target_chunk_text="chunk",
+    )
+    path = "precis.workers._chase_llm.route"
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(**kwargs)
+    prompt = r.call_args[0][0].prompt
+    assert "section (not available)" in prompt
+    assert "has no live neighbours" not in prompt  # unknown, not known-empty
+    assert prompt.count("(not available)") >= 3  # claim source, section, neighbours
+    assert "(title not available) (year unknown)" in prompt
+    assert "(no abstract on record)" in prompt
+
+    # known-empty neighbours is a different statement from unknown
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(
+            neighbours=[],
+            source_identity=SourceIdentity(title="T", year=None, abstract=None),
+            **kwargs,
+        )
+    prompt = r.call_args[0][0].prompt
+    assert "has no live neighbours" in prompt
+    assert "T (year unknown)" in prompt
+    assert "(no abstract on record)" in prompt
+
+
+def test_judge_prompt_shows_source_identity_and_caps_abstract() -> None:
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        cite_key="pa1",
+        chunk_ord=3,
+        chunk_text="We measured 4 nm by TEM.",
+    )
+    reply = {"verdict": "KEEP", "reason": "r"}
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply)) as r:
+        judge_edge_strict(source_identity=_IDENT, **kwargs)
+    prompt = r.call_args[0][0].prompt
+    assert "C60 nanobuds studied by DFT (2011)" in prompt
+    assert _ABSTRACT_HEAD in prompt
+    assert "which system the paper studies; it is not evidence" in prompt
+    assert "q" * (600 - len(_ABSTRACT_HEAD)) in prompt
+    assert "q" * (600 - len(_ABSTRACT_HEAD) + 1) not in prompt
+
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply)) as r:
+        judge_edge_strict(**kwargs)
+    prompt = r.call_args[0][0].prompt
+    assert "(title not available) (year unknown)" in prompt
+    assert "(no abstract on record)" in prompt
+
+
+def test_source_identity_and_chunk_context_helpers(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    paper, chunks = _seed_paper(
+        store, embedder, cite_key="pa-ident", texts=["a", "b", "c"]
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET year = 2011, "
+            "meta = jsonb_build_object('abstract', %s::text) WHERE ref_id = %s",
+            ("A" * 900, paper),
+        )
+        conn.execute(
+            "UPDATE chunks SET section_path = ARRAY['Intro', 'Background'] "
+            "WHERE chunk_id = %s",
+            (chunks[1],),
+        )
+        conn.commit()
+        cache: dict[int, SourceIdentity] = {}
+        ident = _source_identity(conn, paper, cache)
+        assert (ident.title, ident.year) == ("Test paper pa-ident", 2011)
+        assert ident.abstract == "A" * 600  # capped at fetch
+        assert cache == {paper: ident}
+        # served from the cache: the row changes but the answer stands
+        conn.execute("UPDATE refs SET title = 'changed' WHERE ref_id = %s", (paper,))
+        assert _source_identity(conn, paper, cache) is ident
+        # no abstract on record
+        conn.execute("UPDATE refs SET meta = '{}'::jsonb WHERE ref_id = %s", (paper,))
+        assert _source_identity(conn, paper).abstract is None
+
+        assert _chunk_neighbours(conn, paper, 1) == ["a", "c"]
+        assert _chunk_neighbours(conn, paper, 0) == ["b"]
+        assert _chunk_neighbours(conn, paper, None) == []
+        assert _chunk_section_path(conn, chunks[1]) == "Intro > Background"
+        assert _chunk_section_path(conn, chunks[0]) is None
+
+
+def test_source_identity_reaches_the_audit_and_candidate_judge(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-ident2")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET year = 2011, "
+            "meta = jsonb_build_object('abstract', 'ABSTRACT OF IDENT2') "
+            "WHERE ref_id = %s",
+            (paper,),
+        )
+        conn.commit()
+    judge = _ScriptedJudge([], default="KEEP")
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+    assert len(judge.kwargs_seen) >= 2  # the audited edge and the deeper candidate
+    for kw in judge.kwargs_seen:
+        ident = kw["source_identity"]
+        assert (ident.title, ident.year) == ("Test paper pa-ident2", 2011)
+        assert ident.abstract == "ABSTRACT OF IDENT2"
 
 
 def test_zero_supporters_needs_no_schema_change(store: Any) -> None:

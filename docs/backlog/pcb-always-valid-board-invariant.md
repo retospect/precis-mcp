@@ -360,9 +360,13 @@ extracted *affinity*, which is a different fact.
   other designs using the part are named). Still open: `view='route'`
   (`backlog/pcb-freerouting-view-replaces-without-legality.md`); rulings 1
   and 2 are built.
-- On put and class_rules, courtyard/outline findings carry no margin, so a
-  deepened standing overlap counts as standing, not worse; `op='move'`
-  measures it by area.
+- On put and class_rules, courtyard findings carry no margin, so a
+  deepened standing courtyard overlap counts as standing, not worse;
+  `op='move'` measures it by area. Outline-containment findings do carry one
+  (the farthest vertex outside the outline, in mm) and are keyed per part /
+  pad / copper item, so a deeper or swapped overhang is refused.
+- `op='footprint'` judges only the calling design; other designs using the
+  part get a "check view='drc'" pointer, not a rip.
 - Negative control: a legal mutation is NOT refused. Without it the refusal
   path can be vacuously "always refuse". (Has a test for `op='move'`.)
 - An incumbent-invalid board is reported as invalid rather than silently

@@ -1,12 +1,13 @@
 ---
 id: precis-hexfold-help
 title: precis — the hexfold generator (curved sp² carbon from a .hx spec)
-summary: generate atomic se blocks — sheets, tubes, cones, fullerenes, holes, fused joints, nanobuds — from a topology-only .hx spec text via generator='hexfold'; coordinates are derived, the spec is the regeneration input; fidelity='check' returns the check report without minting
+summary: generate atomic se blocks — sheets, tubes, cones, fullerenes, holes, fused joints, nanobuds — from a topology-only .hx spec text via generator='hexfold'; coordinates are derived, the spec is the regeneration input; fidelity='check' returns the check report without minting; generator='hexfold_scene' tiles an authored smooth surface (sheet + fillet/tube/lid features) tethered to it
 answers:
   - how do I generate a nanotube/cone/fullerene/nanobud block from a hexfold spec?
   - what does a .hx spec look like and which nanobud menus exist?
   - how do I check a hexfold spec without minting a block?
   - what do the hexfold check codes mean?
+  - how do I tile an authored smooth surface (sheet with tube features) with carbon?
 applies-to: put/edit (kind='se', op='generate')
 status: active
 tags: verbs, design
@@ -296,6 +297,61 @@ the tolerance up: the `status` column says `ok`, or that the declared
 value disagrees with the derived one beyond the accumulated tolerance;
 `view='drc'` reports the same as a `tolerance_mismatch` warning. A `tol`
 tighter than the snap delta is exactly that case.
+
+## Authored-surface scenes — `generator='hexfold_scene'`
+
+Tiles a *drawn* smooth surface with carbon: the surface is fixed, the
+atoms follow it. A flat sheet carries features; each is a fillet of
+`radius` Å into an `(n,0)` zigzag tube of `tube_len` periods, then a
+`top`. Plain `hexfold` is unchanged and relaxes untethered.
+
+```json
+{"op": "generate", "generator": "hexfold_scene", "name": "scene",
+ "params": {"sheet": [30, 24],
+  "features": [
+   {"name": "t", "at": [13, 15], "n": 6,  "radius": 3.0, "tube_len": 5, "top": "lid"},
+   {"name": "q", "at": [20, 6],  "n": 12, "radius": 5.0, "tube_len": 1, "top": "lid"}]}}
+```
+
+- `sheet` `[w, h]`; `at` `[i, j]` = the sheet cell of the feature's hole;
+  `n` the tube's `(n,0)`; `top` = `open` | `lid` (flat `cap(n,0)`, `n` a
+  multiple of 6) | `ball` (C60 fused through a hexagon hole, `(6,0)` only).
+- Instances: `name` is the tube, `<name>f` the frustum, `<name>c` the top;
+  the sheet is `s`. `extra` (optional) = verbatim `.hx` lines, e.g. buds:
+  `"extra": "d: fullerene(C60)\nd @ s/(32,22,A):0 [2+2]"`.
+- `k_tether` (default 1.0): normal-tether stiffness to the surface.
+- Each foot is a 3+3 heptagon foot; the planner measures the frustum
+  width `k` (narrowest that meets the bars), then relaxes under the tether.
+- One synchronous call, ~35 s for 3 features / ~2.9k atoms: one scene per
+  call.
+
+Read in the result: `plan` (ks, per-feature rows, tops), `scene` (the
+params — the regeneration input), `geom.summary.relax = "tethered"`.
+Judged per feature: fillet-zone deviation (mean <= 0.10 Å, max <= 0.3 Å),
+bonds 1.36–1.50 Å, ring-ideal angles, pyramidalisation. **Read bonds,
+angles and pyramidalisation first** — deviation is small by construction
+(tether and judge target the same surface), not independent evidence. A
+missed bar mints with WARN `scene.bar` naming the feature; ERROR
+`geom.clash`/`geom.seed_overlap` stay ERROR.
+
+Refused (`GeneratorError`): a hole cell whose sheet seam is not the planned
+three heptagons (hexfold fuse-phase fault, gr464341 — move the hole one
+cell, esp. away from the 9→10 index boundary); features whose discs
+overlap (reach = tube radius + `radius` + 1.5 Å); build errors.
+
+Limits:
+
+- `top="ball"` always carries WARN `scene.top.joint`: the fused (6,0)→C60
+  neck is stick geometry only; MACE-MP small and GFN2-xTB both open 4 of
+  its 6 seam bonds (gr464391). Bonded alternative (checked under both
+  relaxers): a `(12,0)` feature with `top="lid"` and the C60 as a sidewall
+  `[2+2]` bud just under the lid, via `extra`:
+  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"`. The `(4,-7,A)` site
+  is for `tube_len=4`; it moves with the tube length.
+- `(18,0)` feet crumple (an open row). `k=10` frustums (e.g. `(24,0)`) seed
+  3 atoms onto the sheet: ERROR `geom.seed_overlap` (gr464358).
+- Fillet `radius` reaches ~3–8 Å at the narrowest frustum; beyond ~12 Å
+  bonds stretch past 1.50.
 
 ## Rules
 

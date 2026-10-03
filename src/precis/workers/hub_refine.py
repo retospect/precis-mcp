@@ -209,10 +209,13 @@ from precis.taproot.canon import (
 )
 from precis.taproot.hub import (
     HUB_ROLES,
+    META_REGROUND_SEEN,
+    META_REJECTED,
     EvidenceHandle,
     WouldStrandHub,
     append_reground_log,
     attach_evidence,
+    judgement_fields,
     live_evidence_handles,
     reattach_as_disputes,
     reground_log_entry,
@@ -232,7 +235,15 @@ from precis.taproot.verify_edges import (
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.llm.router import LlmRequest, Tier, route
-from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
+from precis.workers._chase_llm import (
+    ABSTRACT_CHARS,
+    NEIGHBOUR_CHARS,
+    SOURCE_IDENTITY_NOTE,
+    SourceIdentity,
+    _verify_support_with_caveats,
+    is_corroborating,
+    render_source_identity,
+)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -310,6 +321,7 @@ def _attach_disputes(
     sha: str,
     via: str,
     pending_demotions: list[DemotionRequest] | None,
+    judged: dict[str, Any] | None = None,
 ) -> None:
     """File one plain source ``--disputes-->`` hub open-question link from
     the enrichment arm, and queue the hub's demotion.
@@ -345,7 +357,12 @@ def _attach_disputes(
             "support_reason": reason,
             "caveats": caveats,
             "source_handle": handle,
-            "widen": {"verdict": "CONTRADICTS", "sha": sha, "via": via},
+            "widen": {
+                "verdict": "CONTRADICTS",
+                "sha": sha,
+                "via": via,
+                **(judged or {}),
+            },
         },
         set_by="system",
         conn=conn,
@@ -372,7 +389,7 @@ _META_LAST_REFINED_SHA = "last_refined_sha"
 #: lazily re-verifies, with no backfill script. Same lever as
 #: ``chase_trigger.CHASETRIG_VERSION``, one level up.
 _META_LAST_REFINED_VERSION = "last_refined_version"
-_META_REJECTED = "taproot_rejected"
+_META_REJECTED = META_REJECTED
 #: Citation-following (citation-taproot-resolve, shipped — git history): a
 #: ``supports=no`` verdict against a paper reached by *following a claim's
 #: own inline citation* is recorded here as ``{marker, cited_ref,
@@ -978,7 +995,7 @@ def _drop_patent_claim_blocks(
 #: edited claim genuinely reopens every verdict. Without this memo the
 #: audit stage would re-judge every edge every pass, which is exactly the
 #: unbounded re-scan the additive invariant existed to prevent.
-_META_REGROUND_SEEN = "reground_seen"
+_META_REGROUND_SEEN = META_REGROUND_SEEN
 #: The last external-escalation report (stage 5): mined reference DOIs we
 #: do NOT hold, plus whatever the S2/Perplexity probe returned. Display +
 #: worklist material, never itself evidence.
@@ -1091,6 +1108,8 @@ class StrictVerdict:
     passage_setup: str = ""
     same_setup: bool | str | None = None
     primary: bool | None = None
+    #: ``llm_call_log.request_hash`` of the judge call (``None`` if not logged).
+    request_hash: str | None = None
 
     @property
     def disputes_ok(self) -> bool:
@@ -1102,6 +1121,32 @@ class StrictVerdict:
             and self.same_setup is True
             and self.primary is True
         )
+
+
+def _strict_fields(verdict: StrictVerdict) -> dict[str, Any]:
+    """The strict judge's reasoning (setups, ``same_setup``, ``primary``) as
+    the optional keys a memo / log entry / edge meta stores beside the
+    verdict — see :func:`~precis.taproot.hub.judgement_fields`. The keys are
+    also ``reground_log_entry``'s kwarg names."""
+    return judgement_fields(
+        claim_setup=verdict.claim_setup,
+        passage_setup=verdict.passage_setup,
+        same_setup=verdict.same_setup,
+        primary=verdict.primary,
+        llm_request_hash=verdict.request_hash,
+    )
+
+
+def _verify_fields(verification: dict[str, Any]) -> dict[str, Any]:
+    """The widen verifier's reasoning (setups, ``same_setup``, ``terminal``),
+    the :func:`_strict_fields` counterpart."""
+    return judgement_fields(
+        claim_setup=verification.get("claim_setup"),
+        passage_setup=verification.get("passage_setup"),
+        same_setup=verification.get("same_setup"),
+        terminal=verification.get("terminal"),
+        llm_request_hash=verification.get("_llm_request_hash"),
+    )
 
 
 #: Grounding-depth policy (fi189527, folded into this spec): what counts
@@ -1202,6 +1247,9 @@ GROUNDING-DEPTH POLICY for this claim:
 
 SOURCE: {source_kind} {cite_key}, chunk ord {chunk_ord}{section_note}
 
+SOURCE IDENTITY ({identity_note}):
+{source_identity}
+
 PASSAGE (the edge's grounding chunk):
 {chunk_text}
 
@@ -1283,7 +1331,7 @@ another work's.)
 #: the same 4000-char budget ``_chase_llm._verify_support_with_caveats``
 #: uses; a neighbour is context only and gets far less.
 _JUDGE_PASSAGE_CHARS = 4000
-_JUDGE_NEIGHBOUR_CHARS = 600
+_JUDGE_NEIGHBOUR_CHARS = NEIGHBOUR_CHARS
 #: The claim's own source passage is context only, capped like the verify
 #: hook's ``claim_source_text``.
 _CLAIM_SOURCE_CHARS = 3000
@@ -1301,6 +1349,7 @@ def judge_edge_strict(
     section_path: str | None = None,
     neighbours: list[str] | None = None,
     claim_source_text: str | None = None,
+    source_identity: SourceIdentity | None = None,
 ) -> StrictVerdict | None:
     """The strict judge — stage 2's verdict on ONE passage.
 
@@ -1335,6 +1384,8 @@ def judge_edge_strict(
         section_note=section_note,
         chunk_text=chunk_text[:_JUDGE_PASSAGE_CHARS],
         neighbours=neighbour_text,
+        identity_note=SOURCE_IDENTITY_NOTE,
+        source_identity=render_source_identity(source_identity),
         claim_source_text=(claim_source_text or "")[:_CLAIM_SOURCE_CHARS]
         or "(not available)",
     )
@@ -1374,6 +1425,11 @@ def judge_edge_strict(
             else None
         ),
         primary=primary if isinstance(primary, bool) else None,
+        request_hash=(
+            res.request_hash
+            if isinstance(getattr(res, "request_hash", None), str)
+            else None
+        ),
     )
 
 
@@ -1577,6 +1633,8 @@ class RegroundPrune:
     verdict: str = "PRUNE"
     handle: str | None = None
     requires_replacement: bool = True
+    #: The judge's reasoning (:func:`_strict_fields`), carried to the log.
+    judged: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1592,6 +1650,8 @@ class RegroundContradict:
     reason: str
     handle: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    #: The judge's reasoning (:func:`_strict_fields`), carried to the log.
+    judged: dict[str, Any] = field(default_factory=dict)
 
 
 #: :attr:`RegroundPlan.verdict` values. ``supportable`` — the hub holds
@@ -1801,14 +1861,7 @@ def _fisheye_edges(conn: Connection, hub_ref_id: int) -> list[_FisheyeEdge]:
     ).fetchall()
     out: list[_FisheyeEdge] = []
     for src_ref_id, src_chunk_id, relation, ord_, text, section, kind, slug in rows:
-        neighbours: list[str] = []
-        if ord_ is not None:
-            nb_rows = conn.execute(
-                "SELECT text FROM chunks WHERE ref_id = %s AND ord = ANY(%s) "
-                "AND retired_at IS NULL AND ord >= 0 ORDER BY ord",
-                (int(src_ref_id), [int(ord_) - 1, int(ord_) + 1]),
-            ).fetchall()
-            neighbours = [str(r[0] or "") for r in nb_rows]
+        neighbours = _chunk_neighbours(conn, int(src_ref_id), ord_)
         out.append(
             _FisheyeEdge(
                 src_ref_id=int(src_ref_id),
@@ -1823,6 +1876,59 @@ def _fisheye_edges(conn: Connection, hub_ref_id: int) -> list[_FisheyeEdge]:
             )
         )
     return out
+
+
+def _chunk_neighbours(conn: Connection, ref_id: int, ord_: int | None) -> list[str]:
+    """Texts of the live ``ord - 1`` / ``ord + 1`` chunks of the same source
+    (body chunks only, ``ord >= 0``), in ord order. The one neighbour query
+    shared by the fisheye audit, the reground verify and the widen arm."""
+    if ord_ is None:
+        return []
+    rows = conn.execute(
+        "SELECT text FROM chunks WHERE ref_id = %s AND ord = ANY(%s) "
+        "AND retired_at IS NULL AND ord >= 0 ORDER BY ord",
+        (int(ref_id), [int(ord_) - 1, int(ord_) + 1]),
+    ).fetchall()
+    return [str(r[0] or "") for r in rows]
+
+
+def _chunk_section_path(conn: Connection, chunk_id: int) -> str | None:
+    """``' > '``-joined ``section_path`` of one chunk (``None`` if unset)."""
+    row = conn.execute(
+        "SELECT array_to_string(section_path, ' > ') FROM chunks WHERE chunk_id = %s",
+        (int(chunk_id),),
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def _source_identity(
+    conn: Connection,
+    ref_id: int,
+    cache: dict[int, SourceIdentity] | None = None,
+) -> SourceIdentity:
+    """Title, year and the first :data:`ABSTRACT_CHARS` of
+    ``refs.meta['abstract']`` for a candidate source, shown to the verifier
+    and judge so a chunk is never read without knowing which system its
+    paper studies. ``cache`` is the per-hub-pass dict: each source ref is
+    fetched once however many of its passages are judged."""
+    if cache is not None and ref_id in cache:
+        return cache[ref_id]
+    row = conn.execute(
+        "SELECT title, year, left(meta->>'abstract', %s) FROM refs WHERE ref_id = %s",
+        (ABSTRACT_CHARS, int(ref_id)),
+    ).fetchone()
+    ident = (
+        SourceIdentity(
+            title=str(row[0]) if row[0] else None,
+            year=int(row[1]) if row[1] else None,
+            abstract=str(row[2]) if row[2] else None,
+        )
+        if row
+        else SourceIdentity()
+    )
+    if cache is not None:
+        cache[ref_id] = ident
+    return ident
 
 
 def _claim_source_passage(conn: Connection, hub_ref_id: int) -> str | None:
@@ -1869,6 +1975,7 @@ def _audit_edges(
     seen: dict[str, Any],
     plan: RegroundPlan,
     claim_source_text: str | None = None,
+    identity_cache: dict[int, SourceIdentity] | None = None,
 ) -> None:
     """Stage 2 — strict-judge every current supporter, memoing each
     verdict at the current ``claim_sha``.
@@ -1904,17 +2011,20 @@ def _audit_edges(
             section_path=edge.section_path,
             neighbours=edge.neighbours,
             claim_source_text=claim_source_text,
+            source_identity=_source_identity(conn, edge.src_ref_id, identity_cache),
         )
         if verdict is None:
             # No verdict (dispatch failure / unparseable) — deliberately
             # NOT memoed, so the edge is re-judged next pass rather than
             # being silently frozen at an accident.
             continue
+        fields = _strict_fields(verdict)
         seen[key] = {
             "sha": plan.claim_sha,
             "verdict": verdict.verdict,
             "reason": verdict.reason,
             "at": datetime.now(UTC).isoformat(),
+            **fields,
         }
         if verdict.verdict == "KEEP":
             continue
@@ -1938,6 +2048,7 @@ def _audit_edges(
                         action="withheld (setup not shown same)",
                         sha=plan.claim_sha,
                         handle=edge.handle,
+                        **fields,
                     )
                 )
                 continue
@@ -1956,8 +2067,10 @@ def _audit_edges(
                             "verdict": "CONTRADICTS",
                             "reason": verdict.reason,
                             "sha": plan.claim_sha,
+                            **fields,
                         },
                     },
+                    judged=fields,
                 )
             )
             continue
@@ -1976,6 +2089,7 @@ def _audit_edges(
                     action="withheld (prune stage disabled)",
                     sha=plan.claim_sha,
                     handle=edge.handle,
+                    **fields,
                 )
             )
             continue
@@ -1986,6 +2100,7 @@ def _audit_edges(
                 relation=edge.relation,
                 reason=verdict.reason,
                 handle=edge.handle,
+                judged=fields,
             )
         )
 
@@ -2324,6 +2439,7 @@ def apply_reground_plan(
                 handle=c.handle,
                 meta=c.meta,
                 set_by=set_by,
+                judged=c.judged,
             )
         except Exception:
             log.warning(
@@ -2394,6 +2510,7 @@ def apply_reground_plan(
                 action="withheld (no confirmed replacement add)",
                 sha=plan.claim_sha,
                 handle=p.handle,
+                **p.judged,
             )
         )
 
@@ -2416,6 +2533,7 @@ def apply_reground_plan(
                     action="withheld (would strand hub at zero edges)",
                     sha=plan.claim_sha,
                     handle=p.handle,
+                    **p.judged,
                 )
             )
         eligible = []
@@ -2433,6 +2551,7 @@ def apply_reground_plan(
                 verdict=p.verdict,
                 claim_sha=plan.claim_sha,
                 handle=p.handle,
+                judged=p.judged,
             )
         except WouldStrandHub:
             withheld += 1
@@ -2691,6 +2810,7 @@ def _reground_verify_candidate(
     pending_checks: list[int] | None,
     pending_demotions: list[DemotionRequest] | None = None,
     claim_source_text: str | None = None,
+    identity_cache: dict[int, SourceIdentity] | None = None,
 ) -> None:
     """Judge ONE reground candidate with the strict judge and write the
     consequence. The reground counterpart of the Verify→Write tail above.
@@ -2745,14 +2865,7 @@ def _reground_verify_candidate(
     section_path = str(row[0]) if row and row[0] else None
     n_body_chunks = int(row[1]) if row else 0
     # prev/next neighbours — the same query ``_fisheye_edges`` uses.
-    neighbours: list[str] = []
-    if block.ord is not None:
-        nb_rows = conn.execute(
-            "SELECT text FROM chunks WHERE ref_id = %s AND ord = ANY(%s) "
-            "AND retired_at IS NULL AND ord >= 0 ORDER BY ord",
-            (int(source_ref_id), [int(block.ord) - 1, int(block.ord) + 1]),
-        ).fetchall()
-        neighbours = [str(r[0] or "") for r in nb_rows]
+    neighbours = _chunk_neighbours(conn, int(source_ref_id), block.ord)
     verdict = cfg.judge_fn(
         claim=claim_sentence,
         scope=scope,
@@ -2764,13 +2877,16 @@ def _reground_verify_candidate(
         section_path=section_path,
         neighbours=neighbours,
         claim_source_text=claim_source_text,
+        source_identity=_source_identity(conn, int(source_ref_id), identity_cache),
     )
     if verdict is None:
         return  # no verdict — no memo, retried next pass
+    fields = _strict_fields(verdict)
     seen[_seen_key(source_ref_id, chunk_id)] = {
         "sha": plan.claim_sha,
         "verdict": verdict.verdict,
         "at": datetime.now(UTC).isoformat(),
+        **fields,
     }
     if verdict.verdict == "CONTRADICTS" and not verdict.disputes_ok:
         # Cross-setup / recitation CONTRADICTS (review item
@@ -2786,6 +2902,7 @@ def _reground_verify_candidate(
                 "supports": "no",
                 "contradicts": False,
                 "via": "reground-judge",
+                **fields,
             }
         plan.log.append(
             reground_log_entry(
@@ -2797,6 +2914,7 @@ def _reground_verify_candidate(
                 action="withheld (setup not shown same)",
                 sha=plan.claim_sha,
                 handle=handle,
+                **fields,
             )
         )
         return
@@ -2807,6 +2925,7 @@ def _reground_verify_candidate(
                 "supports": "no",
                 "contradicts": False,
                 "via": "reground-judge",
+                **fields,
             }
         return
     if (
@@ -2828,6 +2947,7 @@ def _reground_verify_candidate(
                     action="withheld (depth policy)",
                     sha=plan.claim_sha,
                     handle=handle,
+                    **fields,
                 )
             )
             return
@@ -2842,6 +2962,7 @@ def _reground_verify_candidate(
             "reason": verdict.reason,
             "sha": plan.claim_sha,
             "via": cand.via,
+            **fields,
         },
     }
     if is_keep:
@@ -2920,6 +3041,7 @@ def _reground_verify_candidate(
             action="added",
             sha=plan.claim_sha,
             handle=handle,
+            **fields,
         )
     )
 
@@ -2955,6 +3077,7 @@ def _reverify_pinned_edges(
     seen: dict[str, Any],
     sha: str,
     claim_source_text: str | None = None,
+    identity_cache: dict[int, SourceIdentity] | None = None,
 ) -> bool:
     """Certify this hub's attached-but-unverified evidence for the publish
     gate — the module docstring's re-verify-pinned-edges step.
@@ -3033,6 +3156,10 @@ def _reverify_pinned_edges(
             target_chunk_text=edge.chunk_text,
             source_kind=edge.source_kind,
             claim_source_text=claim_source_text,
+            section_path=_chunk_section_path(conn, edge.chunk_id),
+            neighbours=_chunk_neighbours(conn, edge.source_ref_id, edge.chunk_ord),
+            source_identity=_source_identity(conn, edge.source_ref_id, identity_cache),
+            with_request_hash=True,
         )
         if verdict is None:
             continue  # LLM failure — no memo, retried next pass
@@ -3054,6 +3181,7 @@ def _reverify_pinned_edges(
             "verdict": "NO-CORROBORATION",
             "at": datetime.now(UTC).isoformat(),
             "via": "reverify",
+            **_verify_fields(verdict),
         }
         memoed = True
     return memoed
@@ -3141,6 +3269,9 @@ def _refine_one_hub(
     # What the claim was measured on — read once per hub per pass and shown
     # to every verify/judge call below.
     claim_source_text = _claim_source_passage(conn, hub_ref_id)
+    # Source identity (title/year/abstract opening), fetched once per source
+    # ref for this hub's pass and shown to every verify/judge call below.
+    identity_cache: dict[int, SourceIdentity] = {}
     if reground is not None:
         depth_policy = claim_depth_policy(claim_sentence)
         attached_keys = _attached_edge_keys(conn, hub_ref_id)
@@ -3159,6 +3290,7 @@ def _refine_one_hub(
             seen=reground_seen,
             plan=plan,
             claim_source_text=claim_source_text,
+            identity_cache=identity_cache,
         )
 
     # Publish-gate re-verify (always on, embedder-independent): certify
@@ -3175,6 +3307,7 @@ def _refine_one_hub(
             seen=reground_seen,
             sha=new_sha,
             claim_source_text=claim_source_text,
+            identity_cache=identity_cache,
         )
 
     # Citation-miss / unresolved-cite records accumulate across passes
@@ -3449,6 +3582,7 @@ def _refine_one_hub(
                     pending_checks=pending_checks,
                     pending_demotions=pending_demotions,
                     claim_source_text=claim_source_text,
+                    identity_cache=identity_cache,
                 )
                 if _seen_key(source_ref_id, chunk_id) in reground_seen:
                     resolved_cov.add(cov_id)  # judge returned a verdict
@@ -3461,6 +3595,10 @@ def _refine_one_hub(
                 target_chunk_text=block.text,
                 source_kind=ref.kind,
                 claim_source_text=claim_source_text,
+                section_path=_chunk_section_path(conn, cov_id),
+                neighbours=_chunk_neighbours(conn, source_ref_id, block.ord),
+                source_identity=_source_identity(conn, source_ref_id, identity_cache),
+                with_request_hash=True,
             )
             if verification is None:
                 # Transient LLM/dispatch failure — no verdict recorded,
@@ -3496,6 +3634,13 @@ def _refine_one_hub(
                         "source_handle": handle_registry.try_format(
                             ref.kind, block.id, chunk=True
                         ),
+                        # Provenance + the verifier's reasoning, mirroring
+                        # the ``widen`` block ``_attach_disputes`` writes.
+                        "widen": {
+                            "sha": new_sha,
+                            "via": cand.via,
+                            **_verify_fields(verification),
+                        },
                         **_verified_stamp(new_sha),
                     },
                     set_by="system",
@@ -3513,6 +3658,7 @@ def _refine_one_hub(
                     "terminal": verification.get("terminal"),
                     "same_setup": verification.get("same_setup"),
                     "support_reason": verification.get("support_reason"),
+                    **_verify_fields(verification),
                 }
                 # Cross-setup / recitation disputes are not filed (review
                 # item claims-and-evidence-4): only a same-setup, terminal
@@ -3542,6 +3688,7 @@ def _refine_one_hub(
                         sha=new_sha,
                         via=cand.via,
                         pending_demotions=pending_demotions,
+                        judged=_verify_fields(verification),
                     )
                     # No ``attached_this_pass`` bookkeeping here: this arm
                     # only runs with ``reground is None``, where ``slot`` is
