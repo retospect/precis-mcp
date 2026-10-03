@@ -460,6 +460,32 @@ class TestClaimStubs:
         # Re-queued `old` first, then the newer `new` — priority beats recency.
         assert [s.ref_id for s in stubs] == [old, new]
 
+    def test_markup_refetch_pin_sorts_ahead_of_requeued_newer(
+        self, store: Store
+    ) -> None:
+        # An operator's markup_refetch pin outranks a re-queued newer stub
+        # at the same prio; otherwise an old re-fetch batch sits behind the
+        # whole acquire backlog (td461154: 0 of 37 tried in 2 h).
+        old = _seed_paper_stub(store, cite_key="oldpin2024", doi="10.1/oldpin")
+        new = _seed_paper_stub(store, cite_key="newreq2024", doi="10.1/newreq")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET prio = 1, meta = meta || "
+                '\'{"markup_refetch": {}, "oa_requeued": {}}\'::jsonb '
+                "WHERE ref_id = %s",
+                (old,),
+            )
+            conn.execute(
+                "UPDATE refs SET prio = 1, meta = meta || "
+                "'{\"oa_requeued\": {}}'::jsonb WHERE ref_id = %s",
+                (new,),
+            )
+            conn.commit()
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10, explore_fraction=0.0)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [old, new]
+
     def test_orders_by_prio_ascending(self, store: Store) -> None:
         # 1=hottest .. 10=coldest — ascending prio outranks the re-queue /
         # newest-first tiebreak entirely.
