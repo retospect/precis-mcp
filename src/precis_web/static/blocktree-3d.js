@@ -875,12 +875,25 @@ const _ATOMIC_STALL_TEXT =
 const _ATOMIC_TIMEOUT_TEXT =
   "The atom view timed out: no answer from the server after 2 min. Showing the 2D view instead.";
 
+//: The page's inline script starts the scene and atom fetches before this
+//: module loads (detail3d.html.j2). Returns that `{url, resp, ctl}` once,
+//: when it was started for `url`; null otherwise (a re-render's refetch,
+//: another rev), and the caller fetches as before.
+function _takePrefetch(key, url) {
+  const all = window.__bt3dPrefetch;
+  const pre = all && all[key];
+  if (!pre || pre.url !== url) return null;
+  delete all[key];
+  return pre;
+}
+
 //: Fetch atomic3d.json as a stream so the bar can show real downloaded MB
 //: (Content-Length is the gzip size while the stream yields decoded bytes,
 //: so no percentage is computed). Aborts at 2 min; the thrown error then
 //: has `.timedOut` set. `progress` may be null (a re-render's refetch).
 async function _fetchAtomicPayload(url, progress) {
-  const ctl = new AbortController();
+  const pre = _takePrefetch("atomic", url);
+  const ctl = pre ? pre.ctl : new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -890,7 +903,7 @@ async function _fetchAtomicPayload(url, progress) {
     if (progress) {
       progress.waiting("server", "building atom view on the server", _ATOMIC_STALL_S, _ATOMIC_STALL_TEXT);
     }
-    const r = await fetch(url, { signal: ctl.signal });
+    const r = await (pre ? pre.resp : fetch(url, { signal: ctl.signal }));
     if (!r.ok) throw new Error(`atomic3d fetch failed (${r.status})`);
     const chunks = [];
     let bytes = 0;
@@ -1630,7 +1643,8 @@ export async function blocktreeViewer3D({
   if (progress) progress.set("scene", "loading design…");
   let data;
   try {
-    const resp = await fetch(sceneUrl);
+    const pre = _takePrefetch("scene", sceneUrl);
+    const resp = await (pre ? pre.resp : fetch(sceneUrl));
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}));
       if (progress) progress.hide();

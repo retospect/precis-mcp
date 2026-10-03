@@ -106,10 +106,11 @@ up:
    because a nanometre structure can sit a metre from the origin.
    On prod data the drum's `atomic3d.json` went from 1090 KB to 241 KB
    gzip (3.86 MB → 0.73 MB raw).
-   Left, in Reto's order (se-3d-viewer-6, 2026-10-03):
-   - Start the `scene3d`/`atomic3d` fetches from an inline script before
-     the module bundle parses (verdict 1c: note it, not now). Reto's
-     reading puts this at ~0.6 s.
+   The early fetch SHIPPED too: an inline script starts `scene3d` and
+   `atomic3d` before mermaid and the module bundle load
+   (`_takePrefetch`). On prod data the atom request now starts at 155 ms,
+   where it used to wait for the bundle (436–705 ms) and the scene fetch.
+   Left (se-3d-viewer-6, 2026-10-03):
    - **Two three.js copies on the page.** Safari warns "Multiple instances
      of Three.js being imported": the overlay's r160
      `/static/three/three.module.min.js` (166 KB gzip extra) sits beside

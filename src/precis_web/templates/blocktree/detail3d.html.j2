@@ -302,6 +302,26 @@
 
 {% endblock %}
 {% block scripts %}
+{# Start the scene and atom fetches before mermaid and the module bundle
+   load (~0.6 s on Reto's Safari reading, se-3d-viewer-6); blocktree-3d.js
+   takes these responses when the URLs match (_takePrefetch). The no-op
+   catch keeps a failed fetch from logging as unhandled before the module
+   reads it. #}
+<script>
+  (() => {
+    const start = (url) => {
+      const ctl = new AbortController();
+      const resp = fetch(url, { signal: ctl.signal });
+      resp.catch(() => {});
+      return { url, resp, ctl };
+    };
+    performance.mark("bt3d-prefetch-start");
+    window.__bt3dPrefetch = {
+      scene: start({{ scene_url | tojson }}),
+      {% if has_atomic %}atomic: start({{ atomic3d_url | tojson }}),{% endif %}
+    };
+  })();
+</script>
 <script src="/static/mermaid/mermaid.min.js"></script>
 <script type="module">
   import { blocktreeViewer3D } from "/static/blocktree-3d.js";
