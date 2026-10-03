@@ -157,6 +157,16 @@ states that count a paper as usable when it is not, then metadata.
 
 ## Seam
 
+- **gr463966** (session advisory locks under pgbouncer transaction
+  pooling, a blocker for the Stage B DISCARD ALL): claims-and-evidence
+  owns the fix for all three sites. That includes this pipeline's
+  `ingest/claim.py` (`Claim`, the per-PDF Marker claim) and
+  `workers/chunk_keywords.py`. The lock held right now is chunk_keywords'
+  `_LOCK_KEY`, on pooled backend pid 11267, measured 2026-10-03. Deploying
+  the fix does not release it; the backend has to recycle or be
+  terminated. The `Claim` leak means two hosts can run Marker on the
+  same PDF until the fix deploys.
+
 - `local-compute` parks the **embed-drain** half of what was one cluster
   (gr456034, gr454865). That is throughput, this thread is fidelity; they
   touch different code and neither sequences the other.
