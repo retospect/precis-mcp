@@ -58,6 +58,14 @@ sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
+**Parked 2026-10-03 (TIER 3, Reto's priority review):** start no new
+slice until the organizer reopens the thread. Last landed: 27f5d78f1
+(alignment candidate list in the import report + the `align` measure),
+marked in round 2. Waiting, not owned by this session:
+heater-base-test's prod route (job 462706, idempotent re-`put`
+`op='route', seed=1`) is held until prod writes are back after the
+pgbouncer incident; review-queue `pcb-easyeda-round-trip-2` (Reto opens
+the look-at in Pro). On reopen, resume at Do next 1.
 **Last reviewed:** 2026-10-02 (negotiated congestion landed DARK
 825e451aa; the real-board number still waits on review-queue
 `pcb-easyeda-round-trip-1`. Export slice 2b's writer landed after design
