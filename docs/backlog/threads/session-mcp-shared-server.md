@@ -100,8 +100,12 @@ check their state first.
   days before were clean too. The gate now logs `claude gate: precis connected after Ns`
   (landed with this entry, round 3). Close the gripe after that line
   shows on a structural pass and the passes stay free of tool-starved
-  alerts for a day. Step 3, an image rebuild with a current CLI, belongs
-  to the orchestrator or Reto (review item session-mcp-shared-server-8).
+  alerts for a day. Step 3, the `precis-agent` rebuild at the current CLI,
+  is the organizer's (Reto, 15:07Z, review item
+  session-mcp-shared-server-8). Whether to profile `precis serve` startup
+  is in review item session-mcp-shared-server-9. My recommendation: no
+  profile until the gate's "connected after" numbers show a pass refused
+  or a 95th percentile above 10 s.
 - **Round-2 dogfood, melchior's shared server (13:52Z):** the checkout
   watchdog drained generation 1 (0 in-flight calls) and generation 2
   started at 13:50:16Z on 63301c5c, migration 0181. Session tools work
