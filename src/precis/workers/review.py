@@ -478,7 +478,7 @@ def _tool_starved_evidence(res: LlmResult) -> str:
     declined them — a prompt problem), the unscoped tool-call total (built-in
     tools used, precis not?), turns/cost, and the head of what it wrote.
     """
-    from precis.utils.claude_agent import stream_mcp_server_status
+    from precis.utils.claude_agent import stream_init_tools, stream_mcp_server_status
 
     servers = stream_mcp_server_status(res.raw_text or "")
     if servers is None:
@@ -487,9 +487,22 @@ def _tool_starved_evidence(res: LlmResult) -> str:
         mcp = "mcp init: NO servers listed — mcp_config not applied"
     else:
         mcp = "mcp init: " + ", ".join(f"{k}={v}" for k, v in sorted(servers.items()))
+    # gr463517: whether the first turn was OFFERED precis tools, which the
+    # server status cannot say — listed, deferred behind ToolSearch, or absent.
+    tools = stream_init_tools(res.raw_text or "")
+    if tools is None:
+        offered = "init tools: not reported"
+    else:
+        n_precis = sum(1 for t in tools if t.startswith("mcp__precis__"))
+        offered = (
+            f"init tools: precis={n_precis}, "
+            f"ToolSearch={'yes' if 'ToolSearch' in tools else 'no'}, "
+            f"total={len(tools)}"
+        )
     head = " ".join((res.text or "").split())[:200]
     return (
-        f"{mcp}; tool_calls(all)={res.tool_calls}; turns={res.turns_used}; "
+        f"{mcp}; {offered}; tool_calls(all)={res.tool_calls}; "
+        f"turns={res.turns_used}; "
         f"cost=${res.cost_usd if res.cost_usd is not None else '?'}; "
         f'text head: "{head}"'
     )

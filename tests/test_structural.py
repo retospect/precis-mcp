@@ -540,6 +540,7 @@ def test_tool_starved_pass_raises_alert_not_digest(
                 "type": "system",
                 "subtype": "init",
                 "mcp_servers": [{"name": "precis", "status": "failed"}],
+                "tools": ["Read", "ToolSearch"],
             },
             _assistant_tool_use("Read"),
         ),
@@ -556,6 +557,8 @@ def test_tool_starved_pass_raises_alert_not_digest(
     # total, turns/cost, and the head of what the pass wrote.
     detail = str(alerts[0]["detail"])
     assert "mcp init: precis=failed" in detail
+    # gr463517: what the first turn was offered — no precis tools listed.
+    assert "init tools: precis=0, ToolSearch=yes, total=2" in detail
     assert "tool_calls(all)=1; turns=4; cost=$0.11" in detail
     assert 'text head: "No structural issues found this pass."' in detail
 

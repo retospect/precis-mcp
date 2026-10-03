@@ -1042,6 +1042,29 @@ def test_stream_mcp_server_status_reads_the_init_event() -> None:
     assert stream_mcp_server_status("") is None
 
 
+def test_stream_init_tools_reads_the_offered_names() -> None:
+    """gr463517: ``pending`` at init cannot say whether the first turn was
+    offered precis tools; the init event's ``tools`` list can."""
+    import json
+
+    from precis.utils.claude_agent import stream_init_tools
+
+    init = {
+        "type": "system",
+        "subtype": "init",
+        "mcp_servers": [{"name": "precis", "status": "pending"}],
+        "tools": ["Read", "ToolSearch", "mcp__precis__get"],
+    }
+    assert stream_init_tools(json.dumps(init)) == [
+        "Read",
+        "ToolSearch",
+        "mcp__precis__get",
+    ]
+    # An init event without a tools list, or no init event, reports nothing.
+    assert stream_init_tools(json.dumps({"type": "system", "subtype": "init"})) is None
+    assert stream_init_tools("plain text") is None
+
+
 def test_stream_usage_reads_trailing_result_event_only() -> None:
     """The trailing ``result`` event's ``usage`` is already a cumulative
     total for the whole run (empirically confirmed), so an earlier

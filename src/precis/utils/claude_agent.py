@@ -1286,6 +1286,40 @@ def stream_mcp_server_status(stdout: str) -> dict[str, str] | None:
     is a config/credential defect on the host, ``precis=connected`` with
     zero ``mcp__precis__*`` calls is the model declining tools it had.
     """
+    ev = _stream_init_event(stdout)
+    if ev is None:
+        return None
+    servers = ev.get("mcp_servers")
+    if not isinstance(servers, list):
+        return {}
+    return {
+        str(s.get("name")): str(s.get("status") or "?")
+        for s in servers
+        if isinstance(s, dict) and s.get("name")
+    }
+
+
+def stream_init_tools(stdout: str) -> list[str] | None:
+    """Tool names the stream's ``system``/``init`` event offered the model,
+    or ``None`` when there is no init event or it carries no ``tools`` list.
+
+    The server status alone cannot say whether the first turn could call
+    precis: ``pending`` at init does not mean the tools were missing when
+    the model ran (gr463517). The offered names can — ``mcp__precis__*``
+    entries mean the tools were listed, a ``ToolSearch`` entry means they
+    may have been deferred behind tool search instead.
+    """
+    ev = _stream_init_event(stdout)
+    if ev is None:
+        return None
+    tools = ev.get("tools")
+    if not isinstance(tools, list):
+        return None
+    return [str(t) for t in tools if isinstance(t, str)]
+
+
+def _stream_init_event(stdout: str) -> dict[str, Any] | None:
+    """The first ``{"type":"system","subtype":"init"}`` event in a stream."""
     import json as _json
 
     for line in (stdout or "").splitlines():
@@ -1297,19 +1331,11 @@ def stream_mcp_server_status(stdout: str) -> dict[str, str] | None:
         except _json.JSONDecodeError:
             continue
         if (
-            not isinstance(ev, dict)
-            or ev.get("type") != "system"
-            or ev.get("subtype") != "init"
+            isinstance(ev, dict)
+            and ev.get("type") == "system"
+            and ev.get("subtype") == "init"
         ):
-            continue
-        servers = ev.get("mcp_servers")
-        if not isinstance(servers, list):
-            return {}
-        return {
-            str(s.get("name")): str(s.get("status") or "?")
-            for s in servers
-            if isinstance(s, dict) and s.get("name")
-        }
+            return ev
     return None
 
 
