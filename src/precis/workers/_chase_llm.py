@@ -70,6 +70,9 @@ CLAIM:
 SETUP (structured):
 {scope_json}
 
+CLAIM'S OWN SOURCE PASSAGE (what the claim was measured on):
+{claim_source_text}
+
 SOURCE: {source_kind} {target_cite_key}, chunk ord {target_chunk_ord}
 
 CHUNK TEXT:
@@ -96,6 +99,15 @@ Definitions:
                           a result that runs COUNTER to the claim.
   caveats               : conditions, regimes, applicability limits that
                           qualify genuine support.
+  claim_setup           : the system/sample, material, method and
+                          conditions the claim is about (read it off the
+                          claim and its own source passage above).
+  passage_setup         : the same for the result THIS chunk reports.
+  same_setup            : true iff claim_setup and passage_setup are the
+                          same system, material, method and conditions;
+                          false iff they differ; "unclear" when the chunk
+                          does not say enough to tell. Decide this BEFORE
+                          contradicts.
   contradicts           : true iff the chunk reports, for the SAME quantity
                           in the SAME system under comparable conditions
                           and method, a result or tendency OPPOSITE to the
@@ -119,18 +131,24 @@ Definitions:
                           A chunk that supports PART of the claim and is
                           merely SILENT on the rest (no opposite result)
                           stays "partial" with contradicts=false.
+                          contradicts may be true ONLY when same_setup is
+                          true; otherwise contradicts=false.
   cited_others          : inline citation tokens that the chase
                           should follow (e.g. "[12]", "(Lin 1998)").
                           Empty if the chunk is the original source.
   terminal              : true iff the chunk DESCRIBES the
                           measurement itself; false if it merely
-                          restates a value from elsewhere.
+                          restates a value from elsewhere. A recitation
+                          of another work's result is terminal=false.
 
 Respond with EXACTLY ONE JSON object, nothing else:
 {{
   "supports": "yes" | "partial" | "no",
   "support_reason": "<one sentence>",
   "caveats": ["<caveat 1>", ...],
+  "claim_setup": "<system/sample, material, method, conditions the claim is about>",
+  "passage_setup": "<the same for the result this chunk reports>",
+  "same_setup": true | false | "unclear",
   "contradicts": true | false,
   "cited_others": ["<token 1>", ...],
   "terminal": true | false
@@ -146,8 +164,13 @@ def _verify_support_with_caveats(
     target_chunk_ord: int,
     target_chunk_text: str,
     source_kind: str = "paper",
+    claim_source_text: str | None = None,
 ) -> dict[str, Any] | None:
     """Run the verifier LLM hook. Returns the parsed JSON dict or None.
+
+    ``claim_source_text`` is the passage the claim itself was established
+    from (capped at 3000 chars); the verifier compares the candidate's
+    setup against it. ``None`` renders as "(not available)".
 
     ``source_kind`` names the candidate source ref's kind (``"paper"`` or
     ``"patent"``) — when it's a patent, :data:`_PATENT_VERIFY_NOTE` is
@@ -163,6 +186,7 @@ def _verify_support_with_caveats(
         target_cite_key=target_cite_key,
         target_chunk_ord=target_chunk_ord,
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
+        claim_source_text=(claim_source_text or "")[:3000] or "(not available)",
         patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
     )
     res = route(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:verify"))

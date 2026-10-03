@@ -59,6 +59,8 @@ class FakeConn:
             hub_ref_id = params[0]
             ids = self.attached_by_hub.get(hub_ref_id, set())
             return FakeResult(fetchall_value=[(pid,) for pid in ids])
+        if "relation = 'establishes'" in s:
+            return FakeResult()  # claim-source passage: hub has no establishes link
         if "select count(*) from links" in s:
             hub_ref_id = params[0]
             return FakeResult(
@@ -125,6 +127,7 @@ def _stub_verify(calls: list[str]):
         target_cite_key: str,
         target_chunk_ord: int,
         target_chunk_text: str,
+        claim_source_text: str | None = None,
     ) -> dict[str, Any] | None:
         calls.append(target_cite_key)
         if target_chunk_text == "SUPPORTS":

@@ -16,13 +16,24 @@ off that gap until it closes.
 ## Resume state (2026-10-03)
 
 - **Region slice A** (Do next 1): built and CI-green, and NOT in round 2
-  (prod 63301c5c has neither core 0182 nor se 0018). Landing is held:
-  the classifier refused the orchestrator's quick-land and the decision
-  waits on Reto. Branch `worktree-agent-a48fe82af9f90530b`, tip
-  f330ca43e; migrations core `0182_se_measurand_seed.sql` and se
-  `0018_se_regions.sql`. Grammar and review verdicts:
+  (prod 63301c5c has neither core 0182 nor se 0018). The orchestrator took
+  it for round 3: it squashed tip f330ca43e as f497c89f5 and is landing it
+  through the remote gate with migrations core
+  `0182_se_measurand_seed.sql` and se `0018_se_regions.sql` (verdict §13).
+  When it shows on main, mark it here; `round in` for that sha is the
+  orchestrator's. Dogfood it on prod after the round 3 deploy. Grammar and
+  review verdicts are in
   `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`
-  §3–§5. Dogfood it on prod in the round that deploys it.
+  §3–§5.
+- **Organic print** (Do next 2; Reto 2026-10-03: "I'd like that to
+  progress"): the Slice 4 bridge ran on prod for the first time
+  (note §14). `realize(strategy='simp')` gives a watertight 3MF in mm,
+  but the shape is a 1 mm voxel staircase, and the smoothing ops are wrong
+  in two ways: gr464340 (open/close half-pitch bias) and gr464343
+  (`open=` erased the load point and still bound the result). The
+  throwaway design `se-simp-dogfood-1003` and its two cad designs stay on
+  prod as the gr464343 repro; retire them when it closes. The proposed
+  first test piece is review-queue item se-machine-design-3.
 - **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
   (round 2): a throwaway design gave `joint_sweep_interference` at 90° as
   specified, and was then retired (note §12a). Residual gr462067: rigidly
@@ -50,21 +61,61 @@ off that gap until it closes.
 1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
    axes (charge, field, optical); the peer session (unicycle) is already
    the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
-   (measurands, selectors, pockets) built, landing in round 2 (Resume state); B waits on
+   (measurands, selectors, pockets) built, landing in round 3 (Resume state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
-2. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
+2. **Organic print: backlog/structural-solution-space.md §Slice 4
+   bridge** (Reto 2026-10-03). The next build item. Note §14 lists it as
+   O1–O4, none with a migration:
+   - O1: gr464340 and gr464343.
+   - O2: `realize(min_member=)` mapped to the filter radius, a pitch guard
+     at min_member/3, and a `min_member` capability field.
+   - O3: default rounding at min_member/3.
+   - O4: optimiser convergence.
+   Then the first test piece, once Reto answers review-queue item
+   se-machine-design-3.
+3. **backlog/flatpack-furniture-generator.md** (Reto 2026-10-03; on the
+   orchestrator's branch until its next ship). Stays `draft` until Reto
+   answers review-queue item se-machine-design-4 on machine and plywood.
+   The open questions are argued below under "Flat-pack open questions".
+4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
-3. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 2.
-4. **backlog/pcb-se-binding.md** — the mm→m crossing; a producer exists,
+5. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 4.
+6. **backlog/pcb-se-binding.md** — the mm→m crossing; a producer exists,
    a consumer was never built. Peer session EWOD found this the same day.
    Vet round 3 folded 2026-10-02; two passes (pcb side first), both
    carry migrations. Reto accepted the five v1 calls 2026-10-02.
-5. **pcb-se-binding v2** — section "Follow-up v2" in
+7. **pcb-se-binding v2** — section "Follow-up v2" in
    `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
-   with real heights and subtracted mounting holes. Blocked-by 4.
-6. **backlog/pcb-argue-with-design.md**
-7. **backlog/cross-scale-single-assembly.md** — blocked-by 4
+   with real heights and subtracted mounting holes. Blocked-by 6.
+8. **backlog/pcb-argue-with-design.md**
+9. **backlog/cross-scale-single-assembly.md** — blocked-by 6
    (pcb-se-binding).
+
+## Flat-pack open questions (argued 2026-10-03, for Do next 3)
+
+- **Joinery default:** finger joints on the carcass corners, and through-tabs
+  (tab-and-slot) for the shelves, on both machines. A laser cannot cut a
+  dado (a pocket), and one joinery family keeps the cut file to a single
+  through-cut layer for both machines. Dadoes become a Maslow-only option
+  later.
+- **Which machine first:** Reto decides. I recommend the laser at toy
+  scale (W 200 mm, 3 mm ply), because it makes the item's own physical fit
+  check cheap. Because `kerf`, `fit`, `cutter_d` and the sheet are
+  parameters, the Maslow then needs only its own fit test.
+- **se-first or 2-D-first:** neither on its own. The source of truth is a
+  2-D panel model: each panel's rectilinear outline with its tabs, slots
+  and dog-bones, plus its 3-D placement. Two things derive from it:
+  - the SVG/DXF;
+  - the se design: one block per panel, bound to a cad design built from
+    a box, `add` tabs, `cut` slots and `cut` dog-bone cylinders, all
+    primitives that already exist.
+  Deriving cut outlines from a 3-D solid would need a section-to-polygon
+  extractor that cad does not have. With this design, se's existing
+  interference check validates every tab-in-slot fit in 3-D for free, and
+  the solid still composes with machine design (the item's reason for
+  se-first).
+- **DXF:** the tree has no writer. Write a minimal ASCII DXF (LINE and
+  POLYLINE entities, units mm) by hand, without adding a dependency.
 
 ## Horizon
 
@@ -74,7 +125,7 @@ off that gap until it closes.
 2. **backlog/ts-stabilizing-pocket.md** — transition-state pocket
    (Reto 2026-10-01): derive an se pocket spec from a reaction's
    transition state and realise it as a backboned scaffold. Blocked
-   on Do next 1 and 3; the chemistry thread consumes it and measures
+   on Do next 1 and 5; the chemistry thread consumes it and measures
    the barrier. Unparks when the realize loop lands.
 3. **backlog/se-atomic-round2.md**
 4. **backlog/design-workbench-realize.md** — blocked-by 3 (se-atomic-round2).
@@ -113,7 +164,7 @@ off that gap until it closes.
 
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
-  (Do-next 6) rather than as its own entry.
+  (Do-next 9) rather than as its own entry.
 - **gr451270** — se atomic tpms/schwarzite generator: family aliases
   rejected by the error message that names them, serial required-param
   discovery, inconsistent defaults. Unparks alongside gr451269 (same

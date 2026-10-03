@@ -285,6 +285,19 @@ def _verified_stamp(sha: str) -> dict[str, Any]:
     }
 
 
+def _disputes_allowed(verification: dict[str, Any]) -> bool:
+    """The widen arm's deterministic write gate for a ``disputes`` filing
+    (and its queued hub demotion): the verifier must say ``contradicts``
+    AND that claim and passage are the same setup (``same_setup is True``;
+    ``"unclear"``/missing do not count) AND that the passage is terminal
+    (reports its own result, not a recitation). Anything less is memo-only."""
+    return (
+        bool(verification.get("contradicts"))
+        and verification.get("same_setup") is True
+        and verification.get("terminal") is True
+    )
+
+
 def _attach_disputes(
     store: Store,
     conn: Connection,
@@ -1072,6 +1085,23 @@ class StrictVerdict:
 
     verdict: str
     reason: str
+    # Setup comparison + primacy, decided before a CONTRADICTS may become a
+    # ``disputes`` filing. ``None`` = missing/unparseable = not shown.
+    claim_setup: str = ""
+    passage_setup: str = ""
+    same_setup: bool | str | None = None
+    primary: bool | None = None
+
+    @property
+    def disputes_ok(self) -> bool:
+        """A CONTRADICTS verdict may file/convert to ``disputes`` only when
+        the passage is shown to report its own result (``primary``) on the
+        claim's own setup (``same_setup``) — anything else is withheld."""
+        return (
+            self.verdict == "CONTRADICTS"
+            and self.same_setup is True
+            and self.primary is True
+        )
 
 
 #: Grounding-depth policy (fi189527, folded into this spec): what counts
@@ -1164,6 +1194,9 @@ CLAIM:
 SETUP (structured):
 {scope_json}
 
+CLAIM'S OWN SOURCE PASSAGE (what the claim was measured on):
+{claim_source_text}
+
 GROUNDING-DEPTH POLICY for this claim:
 {depth_note}
 
@@ -1216,6 +1249,11 @@ Answer with exactly one verdict:
                 measurement; a value under an applied field vs the pristine
                 value). That passage does not substantiate THIS claim ->
                 PRUNE, never CONTRADICTS.
+                Also NOT CONTRADICTS: a passage that merely RECITES
+                someone else's result (background, review, related work)
+                rather than reporting its own -> PRUNE.
+                CONTRADICTS requires same_setup=true AND primary=true
+                below; decide those two fields first.
 
 RULES:
   - Judge the claim EXACTLY AS STATED, never a looser or more general
@@ -1230,9 +1268,15 @@ RULES:
 
 Respond with EXACTLY ONE JSON object, nothing else:
 {{
+  "claim_setup": "<system/sample, material, method, conditions the claim is about>",
+  "passage_setup": "<the same for the result this passage reports>",
+  "same_setup": true | false | "unclear",
+  "primary": true | false,
   "verdict": "KEEP" | "PRUNE" | "CONTRADICTS",
   "reason": "<one sentence>"
 }}
+(primary = the passage reports its OWN result, not a recitation of
+another work's.)
 """
 
 #: Per-passage excerpt caps in the judge prompt — the passage itself gets
@@ -1240,6 +1284,9 @@ Respond with EXACTLY ONE JSON object, nothing else:
 #: uses; a neighbour is context only and gets far less.
 _JUDGE_PASSAGE_CHARS = 4000
 _JUDGE_NEIGHBOUR_CHARS = 600
+#: The claim's own source passage is context only, capped like the verify
+#: hook's ``claim_source_text``.
+_CLAIM_SOURCE_CHARS = 3000
 
 
 def judge_edge_strict(
@@ -1253,6 +1300,7 @@ def judge_edge_strict(
     depth_policy: str = DEPTH_BODY_REQUIRED,
     section_path: str | None = None,
     neighbours: list[str] | None = None,
+    claim_source_text: str | None = None,
 ) -> StrictVerdict | None:
     """The strict judge — stage 2's verdict on ONE passage.
 
@@ -1287,6 +1335,8 @@ def judge_edge_strict(
         section_note=section_note,
         chunk_text=chunk_text[:_JUDGE_PASSAGE_CHARS],
         neighbours=neighbour_text,
+        claim_source_text=(claim_source_text or "")[:_CLAIM_SOURCE_CHARS]
+        or "(not available)",
     )
     res = route(
         LlmRequest(
@@ -1309,8 +1359,21 @@ def judge_edge_strict(
     if verdict not in STRICT_VERDICTS:
         log.warning("hub_refine: strict judge returned verdict %r — ignored", verdict)
         return None
+    same = data.get("same_setup")
+    primary = data.get("primary")
     return StrictVerdict(
-        verdict=str(verdict), reason=str(data.get("reason") or "").strip()
+        verdict=str(verdict),
+        reason=str(data.get("reason") or "").strip(),
+        claim_setup=str(data.get("claim_setup") or "").strip(),
+        passage_setup=str(data.get("passage_setup") or "").strip(),
+        same_setup=(
+            same
+            if isinstance(same, bool)
+            else "unclear"
+            if isinstance(same, str) and same.strip().lower() == "unclear"
+            else None
+        ),
+        primary=primary if isinstance(primary, bool) else None,
     )
 
 
@@ -1762,6 +1825,39 @@ def _fisheye_edges(conn: Connection, hub_ref_id: int) -> list[_FisheyeEdge]:
     return out
 
 
+def _claim_source_passage(conn: Connection, hub_ref_id: int) -> str | None:
+    """The text the claim itself was established from — the chunk behind the
+    hub's earliest ``establishes`` link — so the verifier/judge can compare a
+    candidate's setup against what the claim was actually measured on.
+
+    Resolved from the link's ``meta.source_handle`` (the grounding chunk the
+    mint pinned), falling back to ``links.src_chunk_id``; retired chunks are
+    skipped (the next-earliest ``establishes`` link is tried). ``None`` when
+    the hub has no such passage. Computed once per hub per pass by the
+    caller."""
+    rows = conn.execute(
+        "SELECT meta->>'source_handle', src_chunk_id FROM links "
+        "WHERE dst_ref_id = %s AND relation = 'establishes' "
+        "ORDER BY created_at, link_id",
+        (hub_ref_id,),
+    ).fetchall()
+    for source_handle, src_chunk_id in rows:
+        chunk_ids: list[int] = []
+        parsed = handle_registry.parse(source_handle) if source_handle else None
+        if parsed is not None and parsed[1]:
+            chunk_ids.append(parsed[2])
+        if src_chunk_id is not None and int(src_chunk_id) not in chunk_ids:
+            chunk_ids.append(int(src_chunk_id))
+        for chunk_id in chunk_ids:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE chunk_id = %s AND retired_at IS NULL",
+                (chunk_id,),
+            ).fetchone()
+            if row and (row[0] or "").strip():
+                return str(row[0])
+    return None
+
+
 def _audit_edges(
     conn: Connection,
     hub_ref_id: int,
@@ -1772,6 +1868,7 @@ def _audit_edges(
     cfg: RegroundConfig,
     seen: dict[str, Any],
     plan: RegroundPlan,
+    claim_source_text: str | None = None,
 ) -> None:
     """Stage 2 — strict-judge every current supporter, memoing each
     verdict at the current ``claim_sha``.
@@ -1806,6 +1903,7 @@ def _audit_edges(
             depth_policy=depth_policy,
             section_path=edge.section_path,
             neighbours=edge.neighbours,
+            claim_source_text=claim_source_text,
         )
         if verdict is None:
             # No verdict (dispatch failure / unparseable) — deliberately
@@ -1823,6 +1921,26 @@ def _audit_edges(
         if verdict.verdict == "CONTRADICTS":
             if edge.relation == "contradicts":
                 continue  # already recorded as a contradictor
+            if not verdict.disputes_ok:
+                # Cross-setup / recitation CONTRADICTS (review item
+                # claims-and-evidence-4): the supporter stays, nothing is
+                # converted to ``disputes`` and no demotion is queued.
+                seen[key].update(
+                    {"same_setup": verdict.same_setup, "primary": verdict.primary}
+                )
+                plan.log.append(
+                    reground_log_entry(
+                        src_ref_id=edge.src_ref_id,
+                        src_chunk_id=edge.src_chunk_id,
+                        relation=edge.relation,
+                        verdict="CONTRADICTS",
+                        reason=verdict.reason,
+                        action="withheld (setup not shown same)",
+                        sha=plan.claim_sha,
+                        handle=edge.handle,
+                    )
+                )
+                continue
             plan.contradicts.append(
                 RegroundContradict(
                     src_ref_id=edge.src_ref_id,
@@ -2572,6 +2690,7 @@ def _reground_verify_candidate(
     attached_this_pass: set[int],
     pending_checks: list[int] | None,
     pending_demotions: list[DemotionRequest] | None = None,
+    claim_source_text: str | None = None,
 ) -> None:
     """Judge ONE reground candidate with the strict judge and write the
     consequence. The reground counterpart of the Verify→Write tail above.
@@ -2594,7 +2713,10 @@ def _reground_verify_candidate(
       candidate was never previously attached, so there is no prior
       evidence edge to convert, unlike :func:`apply_reground_plan`'s own
       contradicts->disputes conversion of an *already-attached*
-      supporter). A primary-against passage is information, not noise.
+      supporter). A primary-against passage is information, not noise —
+      but only when the judge showed the passage is ``primary`` and on the
+      claim's ``same_setup``; otherwise it is withheld like a not-attached
+      ``PRUNE`` (memoed, logged, no link, no demotion).
     * ``PRUNE`` → memo. For a source we do NOT already hold an edge on,
       that memo is the ordinary ``taproot_rejected`` entry (which also
       excludes it from future discovery slots). For a source we DO hold an
@@ -2622,6 +2744,15 @@ def _reground_verify_candidate(
     ).fetchone()
     section_path = str(row[0]) if row and row[0] else None
     n_body_chunks = int(row[1]) if row else 0
+    # prev/next neighbours — the same query ``_fisheye_edges`` uses.
+    neighbours: list[str] = []
+    if block.ord is not None:
+        nb_rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord = ANY(%s) "
+            "AND retired_at IS NULL AND ord >= 0 ORDER BY ord",
+            (int(source_ref_id), [int(block.ord) - 1, int(block.ord) + 1]),
+        ).fetchall()
+        neighbours = [str(r[0] or "") for r in nb_rows]
     verdict = cfg.judge_fn(
         claim=claim_sentence,
         scope=scope,
@@ -2631,7 +2762,8 @@ def _reground_verify_candidate(
         source_kind=ref.kind,
         depth_policy=depth_policy,
         section_path=section_path,
-        neighbours=None,
+        neighbours=neighbours,
+        claim_source_text=claim_source_text,
     )
     if verdict is None:
         return  # no verdict — no memo, retried next pass
@@ -2640,6 +2772,34 @@ def _reground_verify_candidate(
         "verdict": verdict.verdict,
         "at": datetime.now(UTC).isoformat(),
     }
+    if verdict.verdict == "CONTRADICTS" and not verdict.disputes_ok:
+        # Cross-setup / recitation CONTRADICTS (review item
+        # claims-and-evidence-4): treated like a not-attached "no" — memoed
+        # (and rejected from discovery for a source we hold no edge on),
+        # logged, never a ``disputes`` link or a queued demotion.
+        seen[_seen_key(source_ref_id, chunk_id)].update(
+            {"same_setup": verdict.same_setup, "primary": verdict.primary}
+        )
+        if source_ref_id not in attached:
+            rejected[str(source_ref_id)] = {
+                "at": datetime.now(UTC).isoformat(),
+                "supports": "no",
+                "contradicts": False,
+                "via": "reground-judge",
+            }
+        plan.log.append(
+            reground_log_entry(
+                src_ref_id=source_ref_id,
+                src_chunk_id=chunk_id,
+                relation=_ROLE,
+                verdict="CONTRADICTS",
+                reason=verdict.reason,
+                action="withheld (setup not shown same)",
+                sha=plan.claim_sha,
+                handle=handle,
+            )
+        )
+        return
     if verdict.verdict == "PRUNE":
         if source_ref_id not in attached:
             rejected[str(source_ref_id)] = {
@@ -2794,6 +2954,7 @@ def _reverify_pinned_edges(
     *,
     seen: dict[str, Any],
     sha: str,
+    claim_source_text: str | None = None,
 ) -> bool:
     """Certify this hub's attached-but-unverified evidence for the publish
     gate — the module docstring's re-verify-pinned-edges step.
@@ -2871,6 +3032,7 @@ def _reverify_pinned_edges(
             target_chunk_ord=edge.chunk_ord,
             target_chunk_text=edge.chunk_text,
             source_kind=edge.source_kind,
+            claim_source_text=claim_source_text,
         )
         if verdict is None:
             continue  # LLM failure — no memo, retried next pass
@@ -2976,6 +3138,9 @@ def _refine_one_hub(
     plan: RegroundPlan | None = None
     depth_policy = DEPTH_ABSTRACT_OK
     attached_keys: set[str] = set()
+    # What the claim was measured on — read once per hub per pass and shown
+    # to every verify/judge call below.
+    claim_source_text = _claim_source_passage(conn, hub_ref_id)
     if reground is not None:
         depth_policy = claim_depth_policy(claim_sentence)
         attached_keys = _attached_edge_keys(conn, hub_ref_id)
@@ -2993,6 +3158,7 @@ def _refine_one_hub(
             cfg=reground,
             seen=reground_seen,
             plan=plan,
+            claim_source_text=claim_source_text,
         )
 
     # Publish-gate re-verify (always on, embedder-independent): certify
@@ -3003,7 +3169,12 @@ def _refine_one_hub(
     reverify_memoed = False
     if claim_sentence:
         reverify_memoed = _reverify_pinned_edges(
-            conn, store, hub_ref_id, seen=reground_seen, sha=new_sha
+            conn,
+            store,
+            hub_ref_id,
+            seen=reground_seen,
+            sha=new_sha,
+            claim_source_text=claim_source_text,
         )
 
     # Citation-miss / unresolved-cite records accumulate across passes
@@ -3277,6 +3448,7 @@ def _refine_one_hub(
                     attached_this_pass=attached_this_pass,
                     pending_checks=pending_checks,
                     pending_demotions=pending_demotions,
+                    claim_source_text=claim_source_text,
                 )
                 if _seen_key(source_ref_id, chunk_id) in reground_seen:
                     resolved_cov.add(cov_id)  # judge returned a verdict
@@ -3288,6 +3460,7 @@ def _refine_one_hub(
                 target_chunk_ord=block.ord,
                 target_chunk_text=block.text,
                 source_kind=ref.kind,
+                claim_source_text=claim_source_text,
             )
             if verification is None:
                 # Transient LLM/dispatch failure — no verdict recorded,
@@ -3335,8 +3508,16 @@ def _refine_one_hub(
                     "at": datetime.now(UTC).isoformat(),
                     "supports": supports,
                     "contradicts": contradicts,
+                    # Kept on record so a real contradiction found in a
+                    # background recitation / other setup stays a note.
+                    "terminal": verification.get("terminal"),
+                    "same_setup": verification.get("same_setup"),
+                    "support_reason": verification.get("support_reason"),
                 }
-                if contradicts:
+                # Cross-setup / recitation disputes are not filed (review
+                # item claims-and-evidence-4): only a same-setup, terminal
+                # contradiction links + queues a demotion.
+                if _disputes_allowed(verification):
                     # A primary-against passage is information, not noise —
                     # the same call ADR 0073 makes on the reground path
                     # (:func:`_reground_verify_candidate`). Until 2026-08 the

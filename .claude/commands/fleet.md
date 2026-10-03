@@ -1,5 +1,5 @@
 ---
-description: Bring up (or recover) the thread-session fleet in tmux and take the orchestrator seat — one window per active thread, a review window for Reto, context and design-review watchers, and the release rounds. Idempotent; run it after a crash. Run from the orchestrator's worktree, inside tmux.
+description: Bring up (or recover) the thread-session fleet in tmux and take the orchestrator seat — one window per active thread, a review window for Reto, one `scripts/fleet watch` watcher, and the release rounds. Idempotent; run it after a crash. Run from the orchestrator's worktree, inside tmux.
 argument-hint: "[optional note, e.g. 'after crash' or a thread to leave out]"
 allowed-tools: Bash(scripts/fleet:*), Bash(scripts/round:*), Bash(scripts/inflight:*), Bash(tmux:*), Bash(git:*), Monitor, Read, Write
 ---
@@ -58,10 +58,18 @@ Note from the user: `$ARGUMENTS`
    leaves the message unsent in an idle session's box. Never send a bare
    Enter to a window by hand: it can answer a dialog.
 
-4. **Arm the watchers** (Monitor, 30-minute maximum; re-arm each expiry):
-   - `scripts/fleet watch-ctx` — context thresholds, see *Compaction*.
-   - the design-note directory (`<queue-dir>/../reviews/`) for new or
-     changed `<slug>.md`.
+4. **Arm the watcher** (Monitor, 30-minute maximum; re-arm on expiry only;
+   a re-arm replays nothing):
+   `scripts/fleet watch`. One watcher, typed lines on transition only:
+   `ctx <win> <pct>% <state>` (see *Compaction*), `note <slug> new|changed`
+   (design notes), `dialog <win> <type>`, `ci main <sha9> <conclusion>` (a
+   completed check.yml run on main: the conclusion is gh's, read the run
+   before acting on it), `mcp <win> dead`, and `delivered <win>` for a held
+   message it sent. It persists what it has seen, so a re-arm replays
+   nothing and a first start announces nothing that already exists; it also
+   drains the held queue each tick. `scripts/fleet mcp-check [--fix]` is the
+   by-hand version of the `mcp` line (`--fix` reconnects idle windows only).
+   `watch-ctx` remains as the old ctx-only loop.
 
 5. **Round.** `scripts/round status` and `scripts/fleet refs` (main / gated /
    prod shas with ages, and the newest green main). No round open → open one and send
@@ -102,12 +110,16 @@ Note from the user: `$ARGUMENTS`
 
 On a `ctx <window> <pct>% <state>` event:
 
-- 30% and up, idle: send `/next` (it persists state: WIP commit, thread
-  file, resume pointer), then `/compact` with the retention argument it
-  printed. Reto's rule (2026-10-02): a long context costs more per turn
-  than a compaction costs in lost detail, so compact early and persist
-  what matters in files.
-- 30% and up, busy: leave it; act at its next idle.
+- 30% and up, idle: `scripts/fleet compact <win>` (refuses a busy or
+  dialog window; `--at-idle` waits for idle instead): it sends `/next` (it
+  persists state: WIP commit, thread file, resume pointer), waits out a
+  90 s grace and two idle polls, then sends a bare `/compact`. Reto's rule
+  (2026-10-02): a long context costs more per turn than a compaction costs
+  in lost detail, so compact early and persist what matters in files.
+  `compact` refuses window 0, `claude`, `organizer` and the caller's own
+  window (exit 3); the orchestrator's own `/compact` stays by hand, below.
+- 30% and up, busy: `scripts/fleet compact --at-idle <win>` waits for its
+  next idle and then does the same.
 - 50% and up, busy: `say` it to commit WIP, update its thread file and run
   `/next` at the next stopping point; compact when it goes idle.
 - Never while its dialog is open.

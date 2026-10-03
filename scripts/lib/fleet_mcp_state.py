@@ -12,11 +12,19 @@ Joins two files Claude Code writes per session:
   one JSON line per event, each carrying its ``sessionId``.
 
 A session's state is its last decisive log line: ``ok`` after a successful
-connect or tool call, ``DOWN`` after a give-up, ``-`` with no event yet.
+connect or tool call, ``DOWN`` after a give-up, an expired HTTP session
+("Session not found") or a stdio child that went away ("Connection failed …
+Connection closed"), ``-`` with no event yet.
 
     python3 scripts/lib/fleet_mcp_state.py [--server precis]
     → %3 ok
       %7 DOWN
+
+    python3 scripts/lib/fleet_mcp_state.py --servers precis,claude-context
+    → %3 precis=ok claude-context=-
+      %7 precis=DOWN claude-context=ok
+
+`scripts/fleet mcp-check` and `watch` use the second form.
 """
 
 from __future__ import annotations
@@ -29,12 +37,22 @@ from pathlib import Path
 
 # A dropped connection exhausting its retries, or a startup connect on its
 # last retry (a later success line flips it back).
-DOWN_MARKERS = ("giving up", "retry 3/3")
+DOWN_MARKERS = ("giving up", "retry 3/3", "Session not found")
 OK_MARKERS = (
     "Connection established",
     "Successfully connected",
     "completed successfully",
+    "reconnection successful",
+    "Reconnected",
 )
+
+
+def is_down(text: str) -> bool:
+    if any(m in text for m in DOWN_MARKERS):
+        return True
+    # A stdio server whose process is gone (claude-context): the client logs
+    # "Connection failed …: MCP error -32000: Connection closed".
+    return "Connection failed" in text and "Connection closed" in text
 
 
 def sessions_dir() -> Path:
@@ -89,7 +107,7 @@ def states(
             if sid not in wanted:
                 continue
             text = ev.get("debug") or ev.get("error") or ""
-            if any(m in text for m in DOWN_MARKERS):
+            if is_down(text):
                 state = "DOWN"
             elif any(m in text for m in OK_MARKERS):
                 state = "ok"
@@ -104,10 +122,21 @@ def states(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--server", default="precis")
+    parser.add_argument(
+        "--servers", help="comma-separated; one `<pane> <server>=<state> …` line each"
+    )
     args = parser.parse_args(argv)
     wanted = panes(sessions_dir())
+    ordered = sorted(wanted.items(), key=lambda kv: kv[1][0])
+    if args.servers:
+        names = [n for n in args.servers.split(",") if n]
+        per = {n: states(cache_dir(), n, wanted) for n in names}
+        for sid, (pane, _) in ordered:
+            cols = " ".join(f"{n}={per[n].get(sid, '-')}" for n in names)
+            print(pane, cols)
+        return 0
     found = states(cache_dir(), args.server, wanted)
-    for sid, (pane, _) in sorted(wanted.items(), key=lambda kv: kv[1][0]):
+    for sid, (pane, _) in ordered:
         print(pane, found.get(sid, "-"))
     return 0
 

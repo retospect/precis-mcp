@@ -61,11 +61,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - fi192819: the matched-mat comparison went in as the bare cite [pc209519]; no hub carries it.
      - fi189527 and fi189535 are re-pinned to their signed groundings.
      - fi458948 now says "argues against".
-     - claims-and-evidence was asked by `fleet say` to re-run its cite-fallback pass.
-   - **Item 29 filed 15:11Z (decide):** fi189535's anchored claim is not fully carried by its grounding.
-     - The graphene half rests only on pa1120's definition.
-     - "Scanning tunnelling spectroscopy" does not appear in any source; the grounding has STM.
-     - Recommended: narrow dc2445860 to TEM + STM and pin it to pc209495 and pc32632, then supersede the claim once the door exists.
+     - claims-and-evidence re-ran its cite-fallback pass: printed pairs went from 114 to 107, all expected (`scratch/cite-standard/dr173020-printed-pairs-apply28-diff.tsv`).
+     - fi191144 no longer appears in the draft because A2 deleted it.
+     - fi189548's two bare uses are now pinned inside its signed grounding: dc2445881 >pc40252, dc2445916 >pc40243,pc40252.
+   - **Item 29 (decide, open), corrected 15:39Z after Reto pushed back.** fi189535's claim is supported by its papers; no supersede is needed.
+     - STS is in pa2069: pc209508 and pc209509, and pc209505 (Fig. 2e). TEM is in pa2069 pc209502 (Fig. 1). The graphene buds are shown by HRTEM in pa1120 pc99780.
+     - The signed grounding picked an abstract and a definition instead of these passages.
+     - My first search needed the literal phrase "tunnelling spectroscopy"; pa2069 writes "microscopy (STM) and spectroscopy (STS)". Log: `printed-read/sts-recheck-29.out`.
+     - Item 28 extra 2 (my proposal) removed the TEM/STS passages from the fi189535 pin and "for the first time" from fi189527.
+     - Recommended: restore item 26's pins. The rule becomes that a pin stays within the grounding's papers, not its exact passages.
 0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
    pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
    verified; citekey still `wang22c`, no rename door on paper edit). (fi189540, the SI-only hub, was retired 08-28 and dr173020 does not cite it. The only draft hub on pa2615 is fi190976, which also has pa1483 and pa2069.)
