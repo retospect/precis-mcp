@@ -56,11 +56,30 @@ check their state first.
   organizer-mcp-2 (steps in `deploy/mcp-http/README.md`); he runs
   `--migrate` in his own window, and the orchestrator does the
   `/mcp reconnect` sweep afterwards.
-- **Branch `pgbouncer-reset-readonly` @ 5fcb38b71** (organizer-pgbouncer-1):
-  Stage A, `track_extra_parameters`. Held for Reto. Stage B, DISCARD ALL,
-  waits on gr463966 and gr463967. The two-stage proposal is in
-  `reviews/session-mcp-shared-server.md` ("pgbouncer: whole-class
-  re-proposal").
+- **pgbouncer, two stages** (organizer-pgbouncer-1, Reto accepted
+  2026-10-03 14:40Z; proposal in `reviews/session-mcp-shared-server.md`,
+  "pgbouncer: whole-class re-proposal"):
+  - **Stage A** (`track_extra_parameters`, branch
+    `pgbouncer-reset-readonly` @ 5fcb38b71): the orchestrator lands it and
+    restarts pgbouncer in round 3's restart window. This thread does not
+    `round in` it.
+  - **Stage B** (`DISCARD ALL` + `server_reset_query_always = 1`): this
+    thread owns the switch, in the restart window after gr463966 is on
+    main. gr463966 owners: `src/precis/ingest/claim.py` →
+    claims-and-evidence; `src/precis/workers/chunk_keywords.py` →
+    ingest-and-fetch. Each tells this thread when its fix lands.
+  - **The leaked lock is chunk_keywords' `_LOCK_KEY`** (pg_locks classid
+    3815272043, objid 1600878336). At 14:44Z it was held on pooled backend
+    15730, born 14:14Z. Backend 11267, named at 12:38Z, has since been
+    recycled, so the leak recurs.
+  - **gr463967 closed, not a blocker:** asa_bot's LISTEN already goes over
+    the direct 5433 tunnel (`PRECIS_NOTIFY_DATABASE_URL` in
+    `deploy/roles/asa_bot/templates/com.asa.bot.plist.j2`). The LISTEN
+    backend had been idle 57 min at 14:44Z; pgbouncer closes a pooled
+    server after 600 s idle.
+  - **Measurement** (before/after `maxwait`, `cl_waiting`, `avg_wait_time`,
+    a day each side) needs td458386 (Do-next 4) first. Stage B does not
+    start without the "before" day.
 - **gr463517** (structural review ran without precis): the fail-closed
   gate (eebbb9a9f) and the container's blocking MCP wait (3ac3c25d6) are
   live in round 2 (63301c5c, 13:49Z). First structural pass after the
