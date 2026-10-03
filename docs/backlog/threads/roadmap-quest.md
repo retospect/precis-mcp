@@ -12,7 +12,17 @@ ticks unattended. The unattended ticks (04:24–09:57Z 10-02) proved the
 embedder fix live but exposed a supply defect: both cited supply numbers
 are one misread value (see Do next 1). Next evidence: a supply tick after
 the extraction-window fix deploys.
-**Last reviewed:** 2026-10-02 (hold lifted; fix + Do-next residual 5 landing)
+**Resume (parked 2026-10-03, TIER 3 per Reto's priority review):** start no
+new slice until the organizer reopens this thread. Landed, not yet deployed:
+round 2, c12912cb5 (verbatim-quote check, text-less papers dropped) and
+38a575586 (dry-tick escalation). Prod ran round 1, 567f207f, at park time.
+No review-queue item, background job or held prod write is open. On reopen,
+check first whether round 2 is deployed (`origin/prod`). If it is, read
+qu453869 (positional accuracy capability) supply ticks since the deploy for
+Do next 1's quote check and Do next 2's first `(escalated)` query line.
+qu453863 (Bootstrap roadmap root) keeps ticking unattended while parked;
+Do next 3's fail signals are the only reason to act before reopen.
+**Last reviewed:** 2026-10-03 (parked at TIER 3; round 2 landed, undeployed)
 **Worktree:** `roadmap-quest`
 
 ## Do next
@@ -30,7 +40,11 @@ the extraction-window fix deploys.
    `review:supply-held`, not refused. Text-less papers are dropped from the
    findings prompt. The repair is DONE
    2026-10-02 ~12:15Z (Reto approved review item roadmap-quest-1):
-   `meta.supply = {}`, rungs td460713 + td460923 `STATUS:won't-do`. If a
+   `meta.supply = {}`, rungs td460713 + td460923 `STATUS:won't-do`. The
+   two recalled hubs fi460566 + fi460856 cannot be deleted, because
+   write-once logbook cites them. Reto ruled them marked unsupported
+   (review item roadmap-quest-2, 2026-10-02); claims-and-evidence picks and
+   applies the status. If a
    tick re-cites pa459574's 1.2 nm before the deploy, clear `meta.supply`
    again after it. After the deploy, read every stored `meta.supply` value
    against its finding's source passage. The tick only writes a supply value
@@ -148,6 +162,15 @@ the chemistry thread's):
 15. **backlog/todo-tree-plan.md** — remaining fold candidates of the
     todo-tree plan; the todo tree is the quest loop's work substrate, so it
     sequences after the loop ticks. Platform pass 2026-10-02.
+16. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
+    has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.
+    So a refuted hub, such as fi460566 or fi460856 (marked 2026-10-02 by
+    claims-and-evidence with a `support: "no"` edge verdict), can still
+    count toward `LOCAL_ENOUGH` and be linked to a quest with `serves`. It
+    cannot reach supply, because extraction reads paper servers only. Fix:
+    skip a hub whose posture is refuted, reusing whatever the
+    `trust='verified'` search filter uses. Low rank: it only matters once
+    refuted hubs are common.
 
 ## Parked
 
