@@ -50,9 +50,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      fi189535, fi189536, fi190976, fi191314, fi191016, fi191021, fi191123, fi191164 and fi272040.
      fi190976 is already known (pa2615 SI vs pa2069). Under the adopted rule a non-originator pin is fine when it supports the sentence.
      Checked: one real case, fi191314 in dc2445942 ("the original synthesis" pinned to pa1483, not pa2069). Filed as item 28 §A7. The rest are fine.
+   - **Frozen hubs (14:42Z, at the review session's request):** dr173020 cites 15 hubs whose nanopub is `anchored` (td345840 done). A reword of one of those hubs needs a supersede, and the supersede door is unbuilt.
+     - Item 28 touches three: A3 fi191270, B1 fi189544 and B10 fi189548.
+     - A3 and B1 change draft prose only.
+     - B10 is re-proposed as B10′, which uses bare pc cites so that no link is added to the anchored hub.
+     - Item 26 added pins on anchored fi189527 and fi189535 that fall outside their signed groundings. Item 28's frozen-hub note offers re-pinning them.
+     - Check script: `nanobud-fidelity/printed-read/frozen_check_28.py`. Before applying any edit to a cited hub, re-run it; a fix that touches an anchored hub's claim sentence waits for the supersede door.
 0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
    pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
-   verified; citekey still `wang22c`, no rename door on paper edit). pa2615 (the Nasibulin SI) is still the ONLY support of fi189540 (junction-geometry transmission hub): re-ground it on the main paper pa2069 before signing.
+   verified; citekey still `wang22c`, no rename door on paper edit). (fi189540, the SI-only hub, was retired 08-28 and dr173020 does not cite it. The only draft hub on pa2615 is fi190976, which also has pa1483 and pa2069.)
    `nanobud-review-figs` regenerated with the placement fix (old
    structures retired): closest non-bonded pair 1.34–1.38 Å, none
    < 1.25 Å; only the two [9-6] necks carry geom.clash WARNs (1.49–1.72
@@ -109,8 +115,7 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    figures put into the draft as `original` (`figs/render_final.py`,
    `upload_own.py`): dc4300876 tubes (camera c, bud22/87/96 = st462601-3)
    replaced placeholder dc3015720; dc4300877 sheets after dc2445859.
-   dc3015729 (magnetic seam cases A–D) stays a placeholder until the 2D
-   sublattice schematic is drawn. 24: wider necks + rounder transitions →
+   dc3015729 (magnetic seam cases A–D) is replaced by dc4306940 (item 27). 24: wider necks + rounder transitions →
    hexfold-toolkit sent hero5/hero5a (`figs/specs-hero/`, compare
    `figs/render/hero5-compare.png`; necks only come in (6k,0) steps, so
    pill/bump went (6,0)→(12,0)).
@@ -159,18 +164,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
 1. **Figures** (items 5/6): the five kept third-party figures are in
    (dc4291496–dc4291500, permission `requested`, Reto files RightsLink at
    submission; image door = `put(args={'image': b64, …})`, scripts in
-   `nanobud-fidelity/figs/`). Own redraws drawn 2026-10-03 and filed as
-   look-at item 27; nothing goes into the draft before Reto's ok:
-   - dc3015729: the source's bond-formation rule for the four seam cases
-     (`figs/draw_sublattice.py`). The A–D layouts are only in pa3322's
-     Fig. 1 image.
-   - dc3015722: the energy diagram, drawn as a matplotlib image
-     (`figs/draw_pathways.py`), not `own_graph`, so no table chunk is
-     needed. The source's own figures are inconsistent: "0.46 eV lower"
-     vs 0.40 from its stated barriers.
+   `nanobud-fidelity/figs/`). **Item 27 answered 14:46Z (10-03): both redraws, with the proposed captions.** They went in at 14:47Z as `original` figures through `figs/upload_own.py sublattice|pathways` (log `upload-27.log`):
+   - dc4306940, the sublattice bond-formation rule, after dc3015729;
+   - dc4306941, the cap vs sidewall paths, after dc3015722. The source itself is inconsistent here: it says "0.46 eV lower", but its stated barriers give 0.40.
+
+   **Reto-run (classifier denied the delete):** retire the two placeholders, so the export does not print each figure twice:
+   `scripts/prod-precis tools delete --kind draft --id dc3015729`, then the same for `dc3015722`.
    dc3015723 (pyrene-tethered C60) and dc3015730 (MD laddering) are images
    of computed structures, outside hexfold, so they stay reproduced
-   unless Reto drops them. dc3015720 is done (dc4300876). The
+   unless Reto drops them (item 27 proposed keeping them; the answer did not object). dc3015720 is done (dc4300876). The
    dc2445940 NLO clause now cites the new hub fi463611>pc1050540 (pa5887
    hyperpolarizability, highest in configuration F).
 2. **Citations** (items 7/14, done 2026-10-02 14:40Z except item 15):
@@ -241,10 +243,13 @@ td173019.
 3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
    2026-10-01; the auto-mode classifier still blocks the session's direct
    prod-DB script (re-tried 2026-10-01 after Reto's "prod is authorized"),
-   so Reto runs it: the script staged at
-   `/tmp/nanobuds-merge-1181-claude.py` on melchior was LOST in the 2026-10-02 11:31Z reboot and needs restaging (rehearsal rolls back,
-   `--apply` commits; runs `merge_duplicate`, adds a correct cite_key
-   alias beside humphreys99a, sets journal Nature).
+   so Reto runs it. **Restaged 2026-10-03 14:50Z** at
+   `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge-1181/merge_1181.py`. Run it from this worktree:
+   - `uv run python <path>` rehearses and rolls back; adding `--apply` commits.
+   - It runs `merge_duplicate`, moves 42560's cite_key aliases to pa1181 and adds a `yao99…` alias.
+   - The docstring gives the follow-up command that sets the journal to Nature.
+   - Both refs were still live at 14:45Z (42560: 6 inlinks, 8 held bib entries).
+   - It gates the export.
 4. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
