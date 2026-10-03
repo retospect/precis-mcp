@@ -78,17 +78,15 @@ paper needs.
    ever completed in prod** — the paper's authoritative pass. Shipped
    2026-10-03: `PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS` (unset = general
    wall) and the harvest holds a timed-out seed instead of re-running it at
-   the same wall. **Running:** timing seed job 464221 (td464220; pathway
-   449732 seed 0, verify config, pollux, 7 h lease) started
-   2026-10-03T13:57:55Z, unpinned per verdict §10. First sample: about
-   10 of 20 CPUs, GPU 13 %. Kill it if local-compute sees serving latency
-   rise or the MPI DFT image lands on pollux. `params.resources.cpuset`
-   (a `taskset -c` wrapper on the seed child) shipped 2026-10-03, so the
-   2× sizing run can be pinned. Left: read 464221's runtime → name the wall
-   value (2 × runtime, cap 8 h) via `scripts/round eta` for the
-   orchestrator's template line → file the Reto item (re-dispatch the 9
-   qu164903 (NO→NH3 on Pd(111)) candidates: 3 seeds / 2 seeds / best_first
-   kept, GPU-hours each).
+   the same wall. **Measured 2026-10-03:** verify seed job 464221
+   (pathway 449732 seed 0, pollux, unpinned) ran 13:57:55Z–19:03:04Z =
+   **5 h 05 m**, 50 states; the child grows to ~76 GB GPU memory, so
+   budget one whole GPU per seed. Wall value 28800 (2× = 36618 s, cap
+   binds; margin 1.57×) sent via `scripts/round eta`. **Waiting on Reto:**
+   review-queue `chemistry-8` — 3 seeds (~137 GPU-h) / 2 seeds (~92) /
+   best_first kept (~16) for the 9 qu164903 (NO→NH3 on Pd(111))
+   candidates. Nothing re-dispatches before the answer; the run then
+   sets `params.resources.cpuset` (shipped 2026-10-03).
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into
