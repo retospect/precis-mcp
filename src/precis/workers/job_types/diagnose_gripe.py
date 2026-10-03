@@ -306,6 +306,10 @@ def _spawn_claude(
         # No MCP server — diagnose_gripe never reaches the precis DB; its
         # only output channel is the returned text.
         mcp_config=None,
+        # Cost, turns and tokens come only from stream-json's result event;
+        # the text default left _record_agent_cost writing nulls (job
+        # 464075, the first post-deploy run, 2026-10-03).
+        output_format="stream-json",
     )
 
 

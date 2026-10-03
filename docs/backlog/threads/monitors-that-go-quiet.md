@@ -19,7 +19,7 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-03 (round-2 dogfood: gr248866 verified, diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
@@ -37,45 +37,34 @@ gr346534, soft-deleted)
    `doctor_ask_refs` existed is now matched on the handle in its title:
    td462461 was minted while td456667 on gr456034 was open. Second, a
    "No queryable surface" tool-gap bullet stays in the report as a
-   non-ask instead of minting (td455178). Check after deploy: doctor
-   ticks mint no todo naming an open `gr`/`al`/`td`. Still owed: items
+   non-ask instead of minting (td455178). Deployed in round 2
+   (63301c5c, 13:49Z 2026-10-03); 0 waiting-for:reto todos minted since.
+   Check the first post-deploy doctor tick (due about 17:52Z): it mints
+   no todo naming an open `gr`/`al`/`td`. Still owed: items
    (1) and (2) of that analysis arrived cut off. Get them resent and fix
    them at source. The dedupe agent closes existing duplicates; this
    thread does not. Of its two hand-offs, td455178 is now gr463592 and
    td345821 is closed (caspar runs no daemons by design).
-2. **Verify gr248866 after deploy.** Each long-running NAS-touching process
-   now lists `/opt/nas` on boot and every
-   `PRECIS_NAS_ATTEST_INTERVAL_SECONDS` (600) and writes
-   `host_heartbeat.meta.nas_ok_by_process[<process>]` with its own resolved
-   `exe`. The writers are web (lifespan), `precis serve` (`main`), and the
-   worker/heartbeat (`_collect_and_upsert`). `_detect_nas_denied` alerts per
-   (host, process) on a fresh (30 min) `ok=false` entry. The legacy top-level
-   `nas_ok` check remains only for rows with no attestations. Check: after
-   the deploy, every Mac's row carries `precis-web`/worker keys with recent
-   `ts` and `ok=true`. Three known gaps are recorded on the gripe (comment 7)
-   and in `precis.workers.heartbeat`'s docstring: one-shot timer
-   interpreters never attest, caspar has no row to land on, and stdio serves
-   share one key. The remedy text follows `launched_by`: the macOS
-   responsible process, read via `responsibility_get_pid_responsible_for_pid`.
-   That is launchd for the python, ssh for the Remote Login setting, terminal
-   for the `.app`, and container processes don't attest. Reto's open call on
-   the reconcile-sweep design (gripe_180306) is td461151.
-3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
+2. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
    `worktree-agent-a8ce270a39be79437` @ `2443c04d` adds `*Hung`
    (`node_filesystem_device_error == 1`) and `*Absent` (an up node with no
    avail series) rules for /mnt/cluster and the NAS. It is with the
-   orchestrator to land in round 2. Expect it to page at once on the known
+   orchestrator; it did not make round 2 (not in origin/prod
+   63301c5c), so it rides round 3 or later. Expect it to page at once on the known
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-4. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
-   to the job meta and one `llm_call_log` row (`source='diagnose_gripe'`).
-   Reto turned the automatic `diagnose_scan` off 2026-10-02, so rows now come
-   only from hand-submitted jobs. fix_gripe has the same gap, but its lane is
-   off.
-5. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+3. **diagnose_gripe's cost ledger, second try** (round 3). Round 2's
+   dogfood (job 464075 on gr463592, td464074) wrote the `llm_call_log`
+   row but every usage field was null: `cost_usd`, turns and tokens.
+   `_spawn_claude` used the text output format, which carries no result
+   event. It now asks for `stream-json`, as every other agent caller does.
+   After the round-3 deploy, hand-submit one more diagnose job and check
+   that `cost_usd` and `input_tokens` are set. fix_gripe has the same gap,
+   but its lane is off.
+4. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
@@ -113,6 +102,13 @@ gr346534, soft-deleted)
 - (none)
 
 ## No action needed
+
+- **gr248866 verified on prod after round 2** (2026-10-03 13:51Z). melchior
+  carries per-process NAS attestations, all `ok=true` with fresh `ts`:
+  precis-web, precis-worker, both drain workers and the agent lane
+  (`launched_by=launchd`), plus asa-bot and asa-slack (`terminal`).
+  balthazar carries precis-worker. castor and pollux are Linux, so they
+  attest nothing, as designed. Reto's reconcile-sweep call stays td461151.
 
 - **the fix_gripe self-repair lane** (gr458326, gr452384, gr456240) — closed
   by Reto's ruling 2026-10-02 (td460703, "Drop the lane, we run locally

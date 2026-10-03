@@ -490,6 +490,19 @@ class TestSpawnAuth:
         assert (clone / "CLAUDE.md").exists()
         assert (clone / ".claude").exists()
 
+    def test_spawn_asks_for_stream_json_so_cost_is_ledgered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The text format carries no result event, so cost/turns/tokens
+        reached llm_call_log as nulls (job 464075)."""
+        clone = self._clone_with_project_config(tmp_path)
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-TEST")
+        seen = self._capture(monkeypatch)
+
+        dg._spawn_claude(model="m", clone_dir=clone, prompt="p", timeout_s=1.0)
+
+        assert seen["output_format"] == "stream-json"
+
     def test_no_credential_at_all_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
