@@ -831,6 +831,16 @@ def register_aliases_and_maybe_upgrade(
             )
     n_body = sum(1 for c in paper.chunks if c.ord >= 0)
     n_cards = len(chunk_rows) - n_body
+    # A pinned ref that was bodiless (the td461154 bodiless re-fetch pins
+    # these too) spends its one shot here once a body lands; left in
+    # place, the pin keeps the now-bodied ref claimable by fetch_oa. A
+    # body-less attach (printable_only companion) keeps the pin, as above.
+    if n_body > 0:
+        conn.execute(
+            "UPDATE refs SET meta = meta - 'markup_refetch' "
+            "WHERE ref_id = %s AND meta ? 'markup_refetch'",
+            (existing_ref_id,),
+        )
     log.info(
         "register_aliases_and_maybe_upgrade: populated ref_id=%s from provider=%s "
         "(submitted=%d: %d body + %d cards, cards deduped on conflict; "

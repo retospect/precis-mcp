@@ -52,9 +52,27 @@ states that count a paper as usable when it is not, then metadata.
    - 43 corrupt PDFs.
    - 20 PDF files missing on disk.
    - 5 scanned.
-   Reto will not rule per paper. The policy is proposed in review item
-   ingest-and-fetch-4: capture fixes, a terminal/transient table, OCR the
-   scanned ones, an automatic heal. Build after he rules. Evidence is in
+   Reto approved the policy (review item ingest-and-fetch-4, 10-02) with
+   one step first: re-fetch all 947 through the current pipeline, then
+   apply the policy to what remains. Re-fetch = `meta.markup_refetch` pin
+   + `oa_requeued` backoff bypass + a `meta.bodiless_refetch.batch` mark,
+   with fetch history kept. A byte-identical re-fetch skips Marker
+   (`add.py` fast path), so only a new source (markup, a different PDF)
+   heals. Canary batch 1 (50 Elsevier + 50 other) went out 2026-10-03
+   06:53Z. At 08:44Z, 18 had been tried:
+   - Other: 13 tried, 9 gained a full body, all from arXiv (28–356
+     chunks).
+   - Elsevier: 5 tried, 4 gained only the preview again (8–12 chunks,
+     stopping after the introduction).
+   Re-fetching Elsevier turns a bodiless paper into a preview-body paper,
+   so the 45 untried Elsevier papers in batch 1 were unpinned
+   (`bodiless_refetch.outcome='held_elsevier_preview'`). The 814 Elsevier
+   papers wait for the vault key (td462729) and are not re-fetched. The
+   no-body ingest branch now clears the pin once a body lands (round 2,
+   this commit). Until that deploys, clear pins by hand after each batch.
+   Next: let the 32 pinned "other" papers finish, then queue the other
+   ~83 non-Elsevier papers. Throughput is about 9 tried per hour. Vault-key
+   follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
 3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
@@ -74,8 +92,9 @@ states that count a paper as usable when it is not, then metadata.
    `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
    call covers 500 ids. Re-arm runs in batches of 500 at least an hour
    apart, each row stamped `meta.s2_rearm.batch` (which also stops a
-   re-enriched-but-still-venueless row being re-armed). Batch 1 went out
-   13:23Z. Next batch only after batch 1's yield is checked. Open: the
+   re-enriched-but-still-venueless row being re-armed). Batch 1 (13:23Z):
+   58% gained a venue. Batches 2-3 done; 4-7 run 2 h apart from a
+   detached `s2-rearm.sh` (Reto: ample breaks). Open: the
    1,200 *held* venue-less papers no lane re-enriches — Crossref fallback
    (`backlog/crossref-enrichment.md`) or a held-paper S2 pass.
 

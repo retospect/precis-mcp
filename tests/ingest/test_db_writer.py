@@ -850,6 +850,54 @@ class TestMarkupBackfillReplace:
         assert body_count is not None and body_count[0] == 40
         assert event is not None and event[0] == "body_replaced"
 
+    def test_bodiless_pinned_ref_spends_pin_when_body_lands(self, store):
+        """td461154: a bodiless ref pinned for re-fetch takes the no-body
+        branch; the pin must still clear once a body arrives, or fetch_oa
+        keeps claiming the now-bodied ref."""
+        ref_id = self._seed_pinned_ref(store, n_old_body=0)
+
+        printable = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="fetcher:unpaywall",
+            pdf_sha256="1" * 64,
+            content_hash="c" * 64,
+            chunks=[],
+        )
+        with store.pool.connection() as conn:
+            register_aliases_and_maybe_upgrade(ref_id, printable, conn=conn)
+            conn.commit()
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        assert ref is not None
+        assert "markup_refetch" in (ref.meta or {})  # body-less attach keeps it
+
+        arxiv = PaperToWrite(
+            title="Preview Paper",
+            authors=[{"name": "E, F"}],
+            year=2024,
+            paper_id="pv333333",
+            cite_key_prefix="preview24",
+            doi="10.1016/preview",
+            provider="markup",
+            content_hash="d" * 64,
+            chunks=[
+                ChunkToWrite(ord=i, chunk_kind="paragraph", text=f"Body {i}.")
+                for i in range(5)
+            ],
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, arxiv, conn=conn)
+            conn.commit()
+
+        assert written == 5
+        ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        assert ref is not None
+        assert "markup_refetch" not in (ref.meta or {})
+
 
 def _make_paper(
     *,
