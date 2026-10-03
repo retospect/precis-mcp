@@ -996,8 +996,8 @@ class PcbMixin:
             """
             INSERT INTO pcb_measures
                 (ref_id, metric, direction, goal, strength, weight, operands,
-                 reason)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 reason, meta)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 ref_id,
@@ -1008,6 +1008,9 @@ class PcbMixin:
                 m.get("weight"),
                 Jsonb(list(m.get("operands") or [])),
                 m.get("reason"),
+                # `align`'s axis/offset ride here (precis-measures-help);
+                # `snapped` is job-written, never authored.
+                Jsonb(dict(m.get("meta") or {})),
             ),
         )
 
@@ -2667,10 +2670,14 @@ class PcbMixin:
         )
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Live measures of a design."""
+        """Live measures of a design. ``measure_id`` and ``meta`` ride along
+        for `align` (axis/offset authored in ``meta``; ``meta.snapped`` is
+        stamped by :meth:`pcb_measures_mark_snapped`)."""
         with self.pool.connection() as conn:
             return [
                 {
+                    "measure_id": int(r[7]),
+                    "meta": dict(r[8] or {}),
                     "metric": r[0],
                     "direction": r[1],
                     "goal": r[2],
@@ -2681,11 +2688,36 @@ class PcbMixin:
                 }
                 for r in conn.execute(
                     "SELECT metric, direction, goal, strength, weight, operands, "
-                    "       reason FROM pcb_measures "
+                    "       reason, measure_id, meta FROM pcb_measures "
                     "WHERE ref_id = %s AND retired_at IS NULL ORDER BY measure_id",
                     (ref_id,),
                 ).fetchall()
             ]
+
+    def pcb_measures_mark_snapped(self, ref_id: int, snapped: Iterable[int]) -> int:
+        """Stamp ``meta.snapped = true`` on exactly the live `align` measures
+        in ``snapped`` and clear it from every other live `align` measure of
+        the design — called by the place/route jobs after each optimize, so
+        the flag always describes the LAST run (a measure the snap pass did
+        not touch this time is not "snapped"). Returns rows now flagged."""
+        ids = [int(i) for i in snapped]
+        with self.pool.connection() as conn:
+            conn.execute(
+                "UPDATE pcb_measures SET meta = meta - 'snapped' "
+                "WHERE ref_id = %s AND metric = 'align' AND retired_at IS NULL "
+                "  AND meta ? 'snapped'",
+                (ref_id,),
+            )
+            if not ids:
+                return 0
+            cur = conn.execute(
+                "UPDATE pcb_measures "
+                "SET meta = meta || jsonb_build_object('snapped', true) "
+                "WHERE ref_id = %s AND metric = 'align' AND retired_at IS NULL "
+                "  AND measure_id = ANY(%s)",
+                (ref_id, ids),
+            )
+            return int(cur.rowcount)
 
     def pcb_features_list(self, ref_id: int) -> list[dict[str, Any]]:
         """Live non-electrical features of a design — the

@@ -203,7 +203,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # this engine can't express as a two-instance distance bound (a
     # `height`/connectivity metric, a role-based operand, a `gauge`
     # strength) — those stay eyes.py-evaluated only, same as before.
-    measures = resolve_measures(ctx.store.pcb_measures_list(pcb_ref_id))
+    measures = resolve_measures(
+        ctx.store.pcb_measures_list(pcb_ref_id), features=features
+    )
 
     config = OptimizeConfig(
         iters=iters, seed=seed, schedule=_PLACE_ONLY_SCHEDULE, measures=measures
@@ -222,6 +224,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             }
         },
     )
+
+    # A hard align the optimizer's snap pass closed is flagged on its row
+    # (`meta.snapped`, shown as `detail` by view='measures'); cleared for
+    # every align the snap did not close this run.
+    if any(spec.metric == "align" for spec in measures):
+        ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
 
     # Pre-route DRC gate at the END of place (the bug this closes): nothing
     # ran a geometric check between placement and routing, so an already-

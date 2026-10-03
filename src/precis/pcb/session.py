@@ -1159,6 +1159,15 @@ def placement_drc_report(findings: list[DrcFinding]) -> tuple[int, str | None]:
     return len(errors), "\n".join(lines)
 
 
+def _authored_measure_meta(m: dict[str, Any]) -> tuple[str, ...]:
+    """The hash element for a measure row's AUTHORED ``meta`` keys (``()``
+    when there are none, so rows without meta hash exactly as before)."""
+    authored = {k: v for k, v in (m.get("meta") or {}).items() if k != "snapped"}
+    if not authored:
+        return ()
+    return (json.dumps(authored, sort_keys=True, default=str),)
+
+
 def content_hash(
     graph: dict[str, Any],
     params: dict[str, Any],
@@ -1266,6 +1275,9 @@ def content_hash(
             for p in state.get("planes") or []
             if p.get("source", "authored") == "authored"
         )
+        # `meta` is hashed only for its AUTHORED keys (align's axis/offset)
+        # and only when there are any: `snapped` is job-written, and an
+        # empty meta must leave every pre-align row's digest unchanged.
         measures = sorted(
             (
                 m.get("metric"),
@@ -1275,6 +1287,7 @@ def content_hash(
                 m.get("weight"),
                 tuple(m.get("operands") or []),
                 m.get("reason"),
+                *_authored_measure_meta(m),
             )
             for m in state.get("measures") or []
         )

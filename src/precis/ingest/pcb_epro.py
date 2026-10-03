@@ -32,6 +32,7 @@ the outline — is reported and left alone (:class:`UpdatePlan` says why).
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -68,6 +69,89 @@ class ImportResult:
     stats: dict[str, int] = field(default_factory=dict)
     copper: copper_report.CopperReport | None = None
     update: UpdatePlan | None = None
+    #: ``(refdes, why)`` for parts that look alignment-critical
+    #: (:func:`alignment_candidates`). Listed, never locked.
+    alignment_candidates: list[tuple[str, str]] = field(default_factory=list)
+
+
+#: Refdes prefixes of parts a user sees or touches through an enclosure:
+#: an LED, a switch or a display usually sits under a hole or light pipe.
+_USER_FACING_PREFIXES = frozenset(
+    {"LED", "DS", "SW", "BTN", "S", "K", "DISP", "LCD", "OLED", "BZ", "BUZ"}
+)
+#: The same, read off the footprint name when the refdes is generic.
+_USER_FACING_FOOTPRINT_WORDS = ("LED", "SWITCH", "BUTTON", "TACT", "DISPLAY", "OLED")
+#: Connector prefixes; one near the board edge mates with something outside.
+_CONNECTOR_PREFIXES = frozenset({"J", "CN", "P", "USB", "X", "CON"})
+#: A connector whose origin is within this of the outline polygon's
+#: boundary counts as an edge connector.
+_EDGE_CONNECTOR_MM = 5.0
+
+
+def _refdes_prefix(refdes: str) -> str:
+    out = ""
+    for ch in refdes:
+        if not ch.isalpha():
+            break
+        out += ch
+    return out.upper()
+
+
+def _distance_to_outline(x: float, y: float, path: list[list[float]]) -> float:
+    """Distance from ``(x, y)`` to the closed polyline ``path`` (the board
+    edge, inner edges of a cut-out included)."""
+    best = float("inf")
+    for i, (ax, ay) in enumerate(path):
+        bx, by = path[(i + 1) % len(path)]
+        dx, dy = float(bx) - float(ax), float(by) - float(ay)
+        seg2 = dx * dx + dy * dy
+        t = 0.0 if seg2 == 0.0 else ((x - ax) * dx + (y - ay) * dy) / seg2
+        t = min(1.0, max(0.0, t))
+        best = min(best, math.hypot(x - (ax + t * dx), y - (ay + t * dy)))
+    return best
+
+
+def alignment_candidates(design: epro.Design) -> list[tuple[str, str]]:
+    """Parts that LOOK alignment-critical, for the import report: user-facing
+    parts (LED/switch/display, by refdes prefix or footprint name), parts
+    that carry their own holes, and connectors near the board edge. Parts
+    the source already locked are left out (they are locked anyway).
+
+    A heuristic list, never a lock (Reto 2026-10-02, review-queue
+    pcb-easyeda-round-trip-5): which parts really are aligned to something
+    takes the author's knowledge. The author confirms one by locking it
+    (``op='move'`` ``fixed=``) or with an ``align`` measure."""
+    holed = {
+        str(f["geom"]["part"])
+        for f in design.features
+        if f.get("ftype") == "mounting_hole" and (f.get("geom") or {}).get("part")
+    }
+    outline = next(
+        (f["geom"]["path"] for f in design.features if f.get("ftype") == "outline"),
+        None,
+    )
+    out: list[tuple[str, str]] = []
+    for comp in sorted(design.components, key=lambda c: str(c["refdes"])):
+        if comp.get("fixed") is not None:
+            continue
+        refdes = str(comp["refdes"])
+        prefix = _refdes_prefix(refdes)
+        fp = str(comp.get("footprint") or "").upper()
+        why: list[str] = []
+        if prefix in _USER_FACING_PREFIXES or any(
+            w in fp for w in _USER_FACING_FOOTPRINT_WORDS
+        ):
+            why.append("user-facing (LED/switch/display)")
+        if refdes in holed:
+            why.append("has its own hole(s)")
+        if prefix in _CONNECTOR_PREFIXES and outline:
+            x, y = float(comp.get("x") or 0.0), float(comp.get("y") or 0.0)
+            edge = _distance_to_outline(x, y, outline)
+            if edge <= _EDGE_CONNECTOR_MM:
+                why.append(f"connector {edge:.1f} mm from the board edge")
+        if why:
+            out.append((refdes, "; ".join(why)))
+    return out
 
 
 #: Below these a pose is unchanged. EasyEDA stores mils as floats, so a
@@ -515,6 +599,7 @@ def import_epro(
         planes=planes,
         warnings=warnings,
         stats=dict(design.stats),
+        alignment_candidates=alignment_candidates(design),
     )
     if dry_run:
         # The pads a real import would write, placed in memory: the same

@@ -28,7 +28,13 @@ import random
 from dataclasses import dataclass
 
 from precis.pcb import ratsnest
-from precis.pcb.eyes import measure_bound
+from precis.pcb.eyes import (
+    AlignSpec,
+    align_residual,
+    bind_feature_operands,
+    measure_bound,
+    parse_align,
+)
 from precis.pcb.geom import Point, bbox, bboxes_disjoint, dist, segments_cross
 
 # Objective weights: a crossing is expensive (it's the headline), length is the
@@ -59,6 +65,9 @@ class _MeasureSpec:
     bound: str  # lower | upper | target (eyes.measure_bound)
     goal: float
     weight: float
+    #: set for an `align` measure: `refs` is then ``(a,)`` (aligned to the
+    #: fixed datum in `align`) or ``(a, b)``; `goal` is its tolerance.
+    align: AlignSpec | None = None
 
 
 def _measure_specs(
@@ -71,6 +80,20 @@ def _measure_specs(
         if (m.get("strength") or "gauge") == "gauge":
             continue
         metric = (m.get("metric") or "").lower()
+        if metric == "align":
+            al = parse_align(m)
+            if al is None or al.ref_a not in positions:
+                continue
+            if al.ref_b is not None and al.ref_b not in positions:
+                continue
+            refs_al = (al.ref_a,) if al.ref_b is None else (al.ref_a, al.ref_b)
+            w_al = 1.0 if m.get("weight") is None else float(m["weight"])
+            out.append(
+                _MeasureSpec(
+                    refs=refs_al, bound="upper", goal=al.tol_mm, weight=w_al, align=al
+                )
+            )
+            continue
         if metric not in ("separation", "proximity"):
             continue
         goal = m.get("goal")
@@ -96,6 +119,13 @@ def _measure_specs(
 def _spec_penalty(spec: _MeasureSpec, positions: dict[str, Point]) -> float:
     """Continuous penalty for one measure: 0 when satisfied, grows with the
     violation. The binding pair follows the bound (eyes._judge semantics)."""
+    al = spec.align
+    if al is not None:
+        pb = positions[al.ref_b] if al.ref_b is not None else al.datum
+        if pb is None:
+            return 0.0
+        res = align_residual(positions[al.ref_a], pb, al.offset, al.axis)
+        return spec.weight * max(0.0, res - spec.goal)
     refs = spec.refs
     gaps = [
         dist(positions[refs[i]], positions[refs[j]])
@@ -116,7 +146,7 @@ def _measure_penalty(
     roles: dict[str, set[str]],
 ) -> float:
     """Continuous penalty for violated `soft`/`hard` placement measures
-    (separation / proximity). 0 when satisfied; grows with the violation."""
+    (separation / proximity / align). 0 when satisfied; grows with the violation."""
     specs = _measure_specs(measures, positions, roles)
     return sum(_spec_penalty(s, positions) for s in specs)
 
@@ -169,14 +199,17 @@ def autoplace(
     measures: list[dict] | None = None,
     iters: int = 1500,
     seed: int = 0,
+    features: list[dict] | None = None,
 ) -> PlaceResult:
     """Place the non-`fixed` instances to minimize crossings + length + soft
     measures. ``instances`` rows carry ``refdes, x, y, fixed, roles``.
+    ``features`` (``Store.pcb_features_list`` rows) resolve an `align`
+    measure's ``feature_id`` operand.
 
     Returns a :class:`PlaceResult` with the new positions (for *all* movable
     instances) + before/after metrics. Deterministic given ``seed``.
     """
-    measures = measures or []
+    measures = bind_feature_operands(measures or [], features)
     rng = random.Random(seed)
     roles = {i["refdes"]: set(i.get("roles") or []) for i in instances}
     fixed = {i["refdes"] for i in instances if (i.get("fixed") or "") in ("xy", "both")}

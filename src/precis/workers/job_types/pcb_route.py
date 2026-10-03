@@ -374,7 +374,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # this, the route job's re-place pass would silently undo whatever a
     # proximity/separation measure had just pulled into shape (one rule,
     # one call site short).
-    measures = resolve_measures(ctx.store.pcb_measures_list(pcb_ref_id))
+    measures = resolve_measures(
+        ctx.store.pcb_measures_list(pcb_ref_id), features=features
+    )
     # part_lcsc -> Store.pcb_footprints_for (LCSC-keyed) -> refdes-keyed,
     # via PcbIR.instance_part_lcsc (the join pcb_graph/from_graph now
     # carry). Without it every pad on every routed board reads as a
@@ -585,6 +587,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         pcb_ref_id, int(board_id), pin_swap_overrides
     )
     ctx.store.pcb_set_pose(pcb_ref_id, pcb_session.positions(ir))
+    if any(spec.metric == "align" for spec in measures):
+        ctx.store.pcb_measures_mark_snapped(pcb_ref_id, result.snapped)
     fixed_realized_net_ids = {int(ir.seg_net[s]) for s in rres.fixed_realized}
     plane_net_ids = {n for n in range(ir.n_nets) if int(ir.net_plane_layers[n]) != 0}
     crossing_fail = _residual_crossings(ir, plane_net_ids)

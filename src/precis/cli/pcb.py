@@ -302,6 +302,14 @@ def _import_epro(args: argparse.Namespace) -> None:
     # cannot see which will assume it came across.
     for w in result.warnings:
         print(f"  warn: {w}")
+    if result.alignment_candidates:
+        print(
+            f"  {len(result.alignment_candidates)} part(s) look alignment-critical "
+            "(listed, NOT locked; lock with op='move' fixed=, or add an 'align' "
+            "measure):"
+        )
+        for refdes, why in result.alignment_candidates:
+            print(f"    {refdes}: {why}")
     if result.update is not None:
         for line in result.update.lines():
             print(f"  {line}")

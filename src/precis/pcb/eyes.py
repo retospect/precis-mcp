@@ -18,6 +18,8 @@ instead. This module keeps ratsnest/crossings/proximity/measures only.
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from typing import Any
 
 from precis.pcb.geom import Point, dist
@@ -52,6 +54,153 @@ def _placed(graph: dict[str, Any]) -> dict[str, Point]:
         for i in graph["instances"]
         if i.get("x") is not None and i.get("y") is not None
     }
+
+
+# ── align measure ────────────────────────────────────
+# `align`: pos_b - pos_a == offset on the constrained axes, within a
+# tolerance. The evaluator (here), the annealer (optimize.py) and the quick
+# placer (place.py) all parse one measure row through parse_align() and score
+# it through align_residual(), so the three cannot disagree about what a row
+# means.
+ALIGN_DEFAULT_TOL_MM = 0.05
+_ALIGN_AXES = frozenset({"xy", "x", "y"})
+
+
+@dataclass(frozen=True, slots=True)
+class AlignSpec:
+    """One resolved `align` row. ``ref_b`` names a second part; otherwise
+    ``datum`` is a fixed absolute point (a ``point`` operand, or a
+    ``feature_id`` already bound to its feature's x/y)."""
+
+    ref_a: str
+    ref_b: str | None
+    datum: Point | None
+    offset: Point
+    axis: str
+    tol_mm: float
+
+
+def bind_feature_operands(
+    measures: list[dict[str, Any]], features: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Rewrite every ``{"feature_id": n}`` operand to ``{"point": [x, y]}``
+    from ``features`` (features never move, so the lookup is a constant).
+    An unknown id — or a feature with no x/y — is left as ``feature_id`` so
+    :func:`parse_align` reports it unresolved. Returns ``measures`` itself
+    when there is nothing to bind."""
+    by_id = {
+        int(f["feature_id"]): (float(f["x"]), float(f["y"]))
+        for f in features or []
+        if f.get("feature_id") is not None
+        and f.get("x") is not None
+        and f.get("y") is not None
+    }
+    out: list[dict[str, Any]] = []
+    changed = False
+    for m in measures:
+        ops = m.get("operands") or []
+        if not any(isinstance(o, dict) and "feature_id" in o for o in ops):
+            out.append(m)
+            continue
+        new_ops: list[Any] = []
+        for o in ops:
+            if isinstance(o, dict) and "feature_id" in o:
+                try:
+                    pt = by_id.get(int(o["feature_id"]))
+                except (TypeError, ValueError):
+                    pt = None
+                if pt is not None:
+                    o = {k: v for k, v in o.items() if k != "feature_id"}
+                    o["point"] = [pt[0], pt[1]]
+            new_ops.append(o)
+        out.append({**m, "operands": new_ops})
+        changed = True
+    return out if changed else measures
+
+
+def _num(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return f if math.isfinite(f) else None
+
+
+def _operand(op: Any) -> tuple[str, Any] | None:
+    """One align operand -> ``("inst", refdes)`` / ``("datum", (x, y))``;
+    ``None`` when it does not resolve (a ``feature_id`` reaching here was
+    never bound — an unknown id; ``role`` operands are unsupported)."""
+    if not isinstance(op, dict):
+        return None
+    ref = op.get("instance")
+    if isinstance(ref, str) and ref:
+        return ("inst", ref)
+    pt = op.get("point")
+    if isinstance(pt, (list, tuple)) and len(pt) == 2:
+        x, y = _num(pt[0]), _num(pt[1])
+        if x is not None and y is not None:
+            return ("datum", (x, y))
+    return None
+
+
+def parse_align(m: dict[str, Any]) -> AlignSpec | None:
+    """An `align` measure row -> :class:`AlignSpec`, or ``None`` when it does
+    not resolve: not exactly two operands, an operand that is not an
+    ``instance`` / ``point`` / (bound) ``feature_id``, two datums (nothing
+    to move), an instance aligned to itself, a malformed ``meta`` axis /
+    offset, or a non-numeric or negative goal.
+
+    ``axis`` (``x|y|xy``) and ``offset`` (``[dx, dy]`` mm) live in the row's
+    ``meta``; the operands keep the proximity shape. The offset is operand 2
+    relative to operand 1 (``pos_2 - pos_1 == offset``), so swapping the two
+    operands means negating the offset — a zero-offset align is symmetric.
+    The returned spec is normalised so ``ref_a`` is always an instance: a
+    ``[datum, instance]`` row comes back as ``(instance, datum)`` with the
+    offset negated, which has the identical residual magnitude."""
+    ops = m.get("operands") or []
+    if len(ops) != 2:
+        return None
+    first, second = _operand(ops[0]), _operand(ops[1])
+    if first is None or second is None:
+        return None
+    meta = m.get("meta") or {}
+    if not isinstance(meta, dict):
+        return None
+    axis = str(meta.get("axis") or "xy").strip().lower()
+    if axis not in _ALIGN_AXES:
+        return None
+    off = meta.get("offset")
+    ox = oy = 0.0
+    if off is not None:
+        if not isinstance(off, (list, tuple)) or len(off) != 2:
+            return None
+        vx, vy = _num(off[0]), _num(off[1])
+        if vx is None or vy is None:
+            return None
+        ox, oy = vx, vy
+    goal = m.get("goal")
+    tol = ALIGN_DEFAULT_TOL_MM if goal is None else _num(goal)
+    if tol is None or tol < 0:
+        return None
+    if first[0] == "inst" and second[0] == "inst":
+        if first[1] == second[1]:
+            return None
+        return AlignSpec(first[1], second[1], None, (ox, oy), axis, tol)
+    if first[0] == "inst":  # (instance, datum)
+        return AlignSpec(first[1], None, second[1], (ox, oy), axis, tol)
+    if second[0] == "inst":  # (datum, instance): normalise, negate the offset
+        return AlignSpec(second[1], None, first[1], (-ox, -oy), axis, tol)
+    return None  # two datums
+
+
+def align_residual(pa: Point, pb: Point, offset: Point, axis: str) -> float:
+    """Euclidean norm of ``pb - pa - offset`` over the constrained axes."""
+    rx = pb[0] - pa[0] - offset[0]
+    ry = pb[1] - pa[1] - offset[1]
+    if axis == "x":
+        return abs(rx)
+    if axis == "y":
+        return abs(ry)
+    return math.hypot(rx, ry)
 
 
 def proximity(graph: dict[str, Any], a: str, b: str) -> dict[str, Any]:
@@ -141,7 +290,9 @@ def _judge(values: list[float], bound: str, goal: Any) -> tuple[float, bool]:
 
 
 def evaluate_measures(
-    graph: dict[str, Any], measures: list[dict[str, Any]]
+    graph: dict[str, Any],
+    measures: list[dict[str, Any]],
+    features: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate stored measures against the current placement.
 
@@ -151,8 +302,12 @@ def evaluate_measures(
     side of ``goal`` is ok (:func:`measure_bound`); without one each metric
     keeps its natural sense. The connectivity metrics (parallelism /
     supply-path / topology / plane-continuity) are stored and reported as
-    ``pending`` until their evaluators land.
+    ``pending`` until their evaluators land. ``align`` (a part and a part /
+    ``point`` / ``feature_id``) reads ``features`` — the
+    ``Store.pcb_features_list`` rows — to resolve a ``feature_id`` operand;
+    the graph itself carries none.
     """
+    measures = bind_feature_operands(measures, features)
     placed = _placed(graph)
     roles = {i["refdes"]: set(i.get("roles") or []) for i in graph["instances"]}
 
@@ -193,6 +348,33 @@ def evaluate_measures(
             row["value"] = round(val, 3)
             row["verdict"] = "ok" if ok else "VIOLATED"
             row["over"] = ", ".join(refs)
+        elif metric == "align":
+            spec = parse_align(m)
+            pa = placed.get(spec.ref_a) if spec is not None else None
+            pb = None
+            over = ""
+            if spec is not None:
+                if spec.ref_b is not None:
+                    pb = placed.get(spec.ref_b)
+                    over = f"{spec.ref_a}, {spec.ref_b}"
+                elif spec.datum is not None:
+                    pb = spec.datum
+                    over = f"{spec.ref_a}, ({spec.datum[0]:g}, {spec.datum[1]:g})"
+            if spec is None or pa is None or pb is None:
+                row["verdict"] = "pending"  # unresolved operand: never ok
+            else:
+                val = align_residual(pa, pb, spec.offset, spec.axis)
+                row["goal"] = spec.tol_mm
+                row["value"] = round(val, 3)
+                row["verdict"] = "ok" if val <= spec.tol_mm else "VIOLATED"
+                row["over"] = over
+                # `meta.snapped` is stamped by the place/route job when the
+                # optimizer's deterministic snap pass closed the last
+                # sub-step residual (optimize.py); only an `ok` row can
+                # claim it — a snap the placement has since drifted from
+                # is not one.
+                if row["verdict"] == "ok" and (m.get("meta") or {}).get("snapped"):
+                    row["detail"] = "snapped"
         elif metric == "height" and refs:
             heights = [
                 float(i.get("height_mm") or 0.0)

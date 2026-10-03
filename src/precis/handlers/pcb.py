@@ -608,6 +608,7 @@ class PcbHandler(Handler):
             measures=measures,
             iters=iters,
             seed=seed,
+            features=self.store.pcb_features_list(ref_id),
         )
         moved = self.store.pcb_set_placement(
             ref_id,
@@ -1765,7 +1766,9 @@ class PcbHandler(Handler):
                 "'separation','operands':[{'role':'sensitive'},{'role':'noisy'}],"
                 "'goal':10,'strength':'soft','reason':'keep the opamp off the FET'}]})"
             )
-        results = eyes.evaluate_measures(graph, measures)
+        results = eyes.evaluate_measures(
+            graph, measures, self.store.pcb_features_list(ref_id)
+        )
         rows = [
             {
                 "metric": r["metric"],
@@ -1774,15 +1777,16 @@ class PcbHandler(Handler):
                 "value": "" if r["value"] is None else f"{r['value']:g}",
                 "verdict": r["verdict"],
                 "reason": (r["reason"] or "")[:40],
+                "detail": r.get("detail", ""),
             }
             for r in results
         ]
+        schema = ["metric", "strength", "goal", "value", "verdict", "reason"]
+        if any(r["detail"] for r in rows):  # e.g. an align the snap pass closed
+            schema.append("detail")
         return Response(
             body=f"# measures — {len(results)}\n"
-            + render_agent_table(
-                rows,
-                schema=["metric", "strength", "goal", "value", "verdict", "reason"],
-            )
+            + render_agent_table(rows, schema=schema)
         )
 
     # ── exporters ──────────────────────────────────────

@@ -124,7 +124,11 @@ disqualified regardless of cost. This module never calls
   ``_money_measures`` channel. Never a legality rejection: the penalty is
   linear in violation distance with no ceiling, so a badly-seeded pair
   always has a gradient walking it toward its goal, at every schedule
-  stage.
+  stage. ``align`` measures ride the same channel as ordinary pair terms
+  (instance↔instance, or instance↔a fixed pseudo-instance for a
+  ``point``/``feature_id`` datum). The anneal's translate step is floored
+  at 0.5 mm, so a ``hard`` align's last sub-step residual is closed by
+  :meth:`OptimizeEngine.snap_hard_aligns`, a deterministic post-anneal pass.
 
 **Not claimed local**: :func:`precis.pcb.cost.aggregate_margin`'s max is a
 linear scan over cached per-item penalties, O(cached entries) not
@@ -172,7 +176,12 @@ from precis.pcb.cost import (
     outline_bbox,
     routing_area_term,
 )
-from precis.pcb.eyes import measure_bound
+from precis.pcb.eyes import (
+    align_residual,
+    bind_feature_operands,
+    measure_bound,
+    parse_align,
+)
 from precis.pcb.geom import (
     convex_polygons_overlap,
     convex_polygons_signed_separation,
@@ -397,13 +406,20 @@ _MEASURE_SOFT_USD_PER_MM = 1.0
 #: out.
 _MEASURE_HARD_USD_PER_MM = 40.0
 
+#: Largest residual, mm, :meth:`OptimizeEngine.snap_hard_aligns` will close
+#: by a direct move — the anneal's TRANSLATE step floor (``max(0.5, ...)``
+#: in :func:`_gen_translate`). A residual at or beyond a step is the
+#: anneal's to walk down, not a snap's to jump.
+_SNAP_MAX_MM = 0.5
+
 #: :meth:`OptimizeEngine.digest`'s hand-built justification for the
 #: "measures" row — there is no `cost.py` :class:`~precis.pcb.cost.TermSpec`
 #: to read one from (:data:`_MEASURE_SOFT_USD_PER_MM`'s own docstring), so
 #: this is the one place that text lives.
 _MEASURES_JUSTIFICATION = (
     "author-stated placement intent (put(args={'measures':[...]})) — a "
-    "proximity/separation goal between two named instances, priced as a "
+    "proximity/separation/align goal between two named instances (align: "
+    "or one instance and a fixed datum), priced as a "
     "linear-in-violation-mm penalty so the anneal steers toward it; "
     "'hard' measures are priced decisively above 'soft' ones, never as a "
     "legality rejection (precis-measures-help)"
@@ -427,6 +443,18 @@ class MeasureSpec:
     does not steer this module's placement — a documented gap, not a
     silent one.
 
+    `align` (``metric == "align"``) rides the same dataclass: ``goal_mm`` is
+    its tolerance, ``bound`` is always ``"upper"`` and the penalty is on the
+    constrained-axes residual :func:`precis.pcb.eyes.align_residual`. It is
+    a PAIR term exactly like proximity; its second end is either another
+    instance (``refdes_b``) or a FIXED PSEUDO-INSTANCE — ``datum``, a
+    ``point`` operand or a ``feature_id`` bound to its feature's x/y
+    (``refdes_b == ""``) — that never moves, the same way a ``fixed`` part
+    already makes a proximity pair one-sided. The pseudo end has no engine
+    index (``ib = -1``), so it is never in ``_measures_by_inst`` and the
+    delta machinery is the unchanged pair machinery. ``measure_id`` is the
+    ``pcb_measures`` row id, so a snapped result can be stamped back on it.
+
     ``refdes_a``/``refdes_b`` are resolved to instance ids at
     :meth:`OptimizeEngine.__init__` time (a design's refdes are stable
     strings; instance ids are engine-internal), so this dataclass itself
@@ -438,9 +466,17 @@ class MeasureSpec:
     goal_mm: float
     hard: bool
     weight: float
+    metric: str = "dist"  # "dist" (proximity/separation) | "align"
+    axis: str = "xy"  # align only
+    offset: tuple[float, float] = (0.0, 0.0)  # align only: pos_b - pos_a target
+    datum: tuple[float, float] | None = None  # align only: fixed pseudo-instance
+    measure_id: int | None = None  # align only: the pcb_measures row
 
 
-def resolve_measures(measures: list[dict[str, Any]] | None) -> tuple[MeasureSpec, ...]:
+def resolve_measures(
+    measures: list[dict[str, Any]] | None,
+    features: list[dict[str, Any]] | None = None,
+) -> tuple[MeasureSpec, ...]:
     """Raw `pcb_measures` rows (`store.pcb_measures_list`'s own shape) ->
     the pair-distance bounds this engine can enforce. Mirrors
     :func:`precis.pcb.place._measure_specs`'s own filtering — skip
@@ -451,13 +487,38 @@ def resolve_measures(measures: list[dict[str, Any]] | None) -> tuple[MeasureSpec
     docstring for why role operands can't resolve at this layer) and keeps
     EXACTLY two distinct refdes — a measure naming more or fewer operands
     doesn't name a pair-distance bound this engine's move-local delta
-    machinery can express."""
+    machinery can express. `align` rows resolve through
+    :func:`precis.pcb.eyes.parse_align` (instance↔instance, or
+    instance↔``point``/``feature_id`` — ``features`` are the
+    ``Store.pcb_features_list`` rows a ``feature_id`` is looked up in; an
+    unknown id drops the measure) and a null goal means the 0.05 mm default
+    tolerance rather than "skip"."""
     out: list[MeasureSpec] = []
-    for m in measures or []:
+    for m in bind_feature_operands(list(measures or []), features):
         strength = str(m.get("strength") or "gauge").strip().lower()
         if strength == "gauge":
             continue
         metric = str(m.get("metric") or "").strip().lower()
+        if metric == "align":
+            al = parse_align(m)
+            if al is None:
+                continue
+            out.append(
+                MeasureSpec(
+                    refdes_a=al.ref_a,
+                    refdes_b=al.ref_b or "",
+                    bound="upper",
+                    goal_mm=al.tol_mm,
+                    hard=(strength == "hard"),
+                    weight=1.0 if m.get("weight") is None else float(m["weight"]),
+                    metric="align",
+                    axis=al.axis,
+                    offset=al.offset,
+                    datum=al.datum,
+                    measure_id=m.get("measure_id"),
+                )
+            )
+            continue
         if metric not in ("proximity", "separation"):
             continue
         goal = m.get("goal")
@@ -497,9 +558,23 @@ def _measure_pair_usd(ir: PcbIR, ia: int, ib: int, spec: MeasureSpec) -> float:
     it back toward ``goal_mm``, at every distance, so a badly-seeded pair
     can always walk in."""
     xa, ya = float(ir.inst_x[ia]), float(ir.inst_y[ia])
-    xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
+    if spec.datum is not None:  # align: the other end is the fixed pseudo-instance
+        xb, yb = spec.datum
+    else:
+        xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
     if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
         return 0.0
+    if spec.metric == "align":
+        # `ib` is -1 for a datum end (the fixed pseudo-instance); the same
+        # residual and the same linear-above-tolerance shape as proximity.
+        violation_mm = max(
+            0.0,
+            align_residual((xa, ya), (xb, yb), spec.offset, spec.axis) - spec.goal_mm,
+        )
+        if violation_mm <= 0.0:
+            return 0.0
+        scale = _MEASURE_HARD_USD_PER_MM if spec.hard else _MEASURE_SOFT_USD_PER_MM
+        return spec.weight * scale * violation_mm
     dist_mm = math.hypot(xa - xb, ya - yb)
     if spec.bound == "lower":  # separation: keep apart, penalise being too close
         violation_mm = max(0.0, spec.goal_mm - dist_mm)
@@ -651,6 +726,10 @@ class OptimizeResult:
     #: best state was restored to, or None when the final state was best.
     #: The start state is index 0.
     restored_best_at: int | None = None
+    #: ``pcb_measures.measure_id`` of every ``hard`` align that
+    #: :meth:`OptimizeEngine.snap_hard_aligns` closed (so the caller can
+    #: stamp ``meta.snapped`` on the row; a lucky anneal is not in here).
+    snapped: tuple[int, ...] = ()
 
 
 # ── constructive seed: connectivity clustering + cluster drop ───────────
@@ -1923,14 +2002,22 @@ class OptimizeEngine:
         self._measure_pairs: list[tuple[int, int, MeasureSpec]] = []
         for spec in config.measures:
             mia = refdes_to_inst.get(spec.refdes_a)
+            if mia is None:
+                continue
+            if spec.datum is not None:
+                # fixed pseudo-instance end: ib = -1 is never read (the
+                # datum is on the spec) nor indexed into `_measures_by_inst`.
+                self._measure_pairs.append((mia, -1, spec))
+                continue
             mib = refdes_to_inst.get(spec.refdes_b)
-            if mia is None or mib is None or mia == mib:
+            if mib is None or mia == mib:
                 continue
             self._measure_pairs.append((mia, mib, spec))
         self._measures_by_inst: dict[int, list[int]] = {}
         for idx, (mia, mib, _spec) in enumerate(self._measure_pairs):
             self._measures_by_inst.setdefault(mia, []).append(idx)
-            self._measures_by_inst.setdefault(mib, []).append(idx)
+            if mib >= 0:
+                self._measures_by_inst.setdefault(mib, []).append(idx)
         self._measure_usd: dict[int, float] = {}
         self._money_measures: float = 0.0
 
@@ -2463,6 +2550,65 @@ class OptimizeEngine:
             self._measure_usd[idx] = usd
             total += usd
         self._money_measures = total
+
+    def snap_hard_aligns(self) -> tuple[int, ...]:
+        """Deterministic post-anneal SNAP of every ``hard`` `align` measure.
+
+        The anneal's TRANSLATE step is floored at ``0.5`` mm, so it can
+        walk a part to within a step of an alignment but not onto a 0.05 mm
+        tolerance. For each steering (``weight > 0``) hard align whose
+        residual is above its tolerance but BELOW that floor
+        (:data:`_SNAP_MAX_MM`) and that has EXACTLY ONE free operand (a
+        datum end counts as fixed; a part is free iff it is x/y-movable),
+        move that operand — with its rigid-group members, by the same
+        delta, as every TRANSLATE does — by exactly the constrained-axes
+        residual, then keep the move only if :meth:`_placement_is_legal`
+        (outline bounds, courtyards, holes, authored vias) still holds.
+        An illegal snap target is not forced: the part stays put and the
+        measure stays VIOLATED with its residual. Measures are processed in
+        row order and each sees the placement the earlier ones left.
+        Returns the ``measure_id`` of every measure that was snapped (rows
+        with no id cannot be reported and are skipped for the report only —
+        they are still snapped)."""
+        movable = frozenset(self._movable_xy)
+        ir = self.ir
+        snapped: list[int] = []
+        for mia, mib, spec in self._measure_pairs:
+            if spec.metric != "align" or not spec.hard or spec.weight <= 0.0:
+                continue
+            xa, ya = float(ir.inst_x[mia]), float(ir.inst_y[mia])
+            if spec.datum is not None:
+                if mia not in movable:
+                    continue
+                xb, yb = spec.datum
+                free, sign = mia, 1.0  # moving a by +r closes pb - pa - off
+            else:
+                xb, yb = float(ir.inst_x[mib]), float(ir.inst_y[mib])
+                a_free, b_free = mia in movable, mib in movable
+                if a_free == b_free:  # both free (anneal's job) or both locked
+                    continue
+                free, sign = (mia, 1.0) if a_free else (mib, -1.0)
+            if not all(math.isfinite(v) for v in (xa, ya, xb, yb)):
+                continue
+            rx = xb - xa - spec.offset[0] if spec.axis != "y" else 0.0
+            ry = yb - ya - spec.offset[1] if spec.axis != "x" else 0.0
+            resid = math.hypot(rx, ry)
+            if resid <= spec.goal_mm or resid >= _SNAP_MAX_MM:
+                continue
+            dx, dy = sign * rx, sign * ry
+            members = self._rigid_members(free)
+            old = tuple(
+                (float(ir.inst_x[m]), float(ir.inst_y[m]), float(ir.inst_rot[m]))
+                for m in members
+            )
+            new = tuple((x + dx, y + dy, rot) for x, y, rot in old)
+            proposals = [(m, x, y) for m, (x, y, _r) in zip(members, new)]
+            if not self._placement_is_legal(proposals):
+                continue
+            self.apply_move(Move(MoveKind.TRANSLATE, members, old, new))
+            if spec.measure_id is not None:
+                snapped.append(int(spec.measure_id))
+        return tuple(snapped)
 
     # -- board-edge-clearance delta (O(1) per instance) -------------------
     def _refresh_board_edge(self, inst: int) -> None:
@@ -3929,12 +4075,22 @@ def optimize(
     engine.schedule = 0.0
     engine.anneal(rng)
     engine.schedule = report_schedule
+    # The snap is part of the placement, not cosmetic: it runs BEFORE
+    # `cost_after` so the reported cost is the cost of the returned board.
+    snapped = engine.snap_hard_aligns()
     cost_after = engine.total()
     # Cosmetic, post-measurement: `cost_before`/`cost_after` grade the
     # anneal's own work; the rigid recentre below changes absolute
     # coordinates only (routing is translation-invariant, the engine is
-    # not consulted again).
-    recentre_in_outline(ir)
+    # not consulted again). Skipped when a steering align names a fixed
+    # datum (a `point`/`feature_id`): that datum is fixed to the BOARD like
+    # a locked part, and a rigid shift of the pack would walk the part off
+    # the alignment the anneal and the snap just achieved.
+    if not any(
+        spec.datum is not None and spec.weight > 0.0
+        for _a, _b, spec in engine._measure_pairs
+    ):
+        recentre_in_outline(ir)
     positions = {
         str(ir.instance_refdes[i]): (
             float(ir.inst_x[i]),
@@ -3959,6 +4115,7 @@ def optimize(
         ),
         legalized=legalized,
         restored_best_at=engine.restored_best_at,
+        snapped=snapped,
     )
 
 

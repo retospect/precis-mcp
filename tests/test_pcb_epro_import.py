@@ -58,6 +58,69 @@ def test_by_default_only_source_locked_parts_are_locked(store, imported) -> None
     assert not any("imported LOCKED" in w for w in imported.warnings)
 
 
+def test_alignment_candidates_are_listed_not_locked() -> None:
+    """Reto, 2026-10-02 (pcb-easyeda-round-trip-5): the import lists parts
+    that look alignment-critical; it locks none of them."""
+    from precis.pcb import epro
+
+    design = epro.Design(
+        components=[
+            {"refdes": "LED3", "x": 50.0, "y": 30.0, "footprint": "0603"},
+            {"refdes": "D7", "x": 40.0, "y": 30.0, "footprint": "LED_0805"},
+            {"refdes": "SW1", "x": 60.0, "y": 30.0, "footprint": "TS-1187"},
+            {"refdes": "CN1", "x": 12.0, "y": 47.0, "footprint": "STANDOFF"},
+            {"refdes": "J2", "x": 98.0, "y": 30.0, "footprint": "USB_C"},
+            {"refdes": "J3", "x": 50.0, "y": 30.0, "footprint": "HDR"},
+            {"refdes": "R1", "x": 20.0, "y": 20.0, "footprint": "0402"},
+            {"refdes": "SW9", "x": 70.0, "y": 30.0, "footprint": "X", "fixed": "both"},
+        ],
+        features=[
+            {
+                "ftype": "outline",
+                "geom": {"path": [[0, 0], [100, 0], [100, 60], [0, 60]]},
+            },
+            {
+                "ftype": "mounting_hole",
+                "x": 12.0,
+                "y": 47.0,
+                "geom": {"diameter": 6.4, "part": "CN1"},
+            },
+        ],
+    )
+    got = dict(pcb_epro.alignment_candidates(design))
+    assert set(got) == {"LED3", "D7", "SW1", "CN1", "J2"}
+    assert "user-facing" in got["D7"]  # footprint name, not refdes
+    assert "own hole" in got["CN1"]
+    assert "board edge" in got["J2"]
+    assert "J3" not in got and "R1" not in got  # mid-board header, a resistor
+    assert "SW9" not in got  # the source already locked it
+    assert all(c.get("fixed") in (None, "both") for c in design.components)
+
+
+def test_edge_connector_uses_the_outline_polygon_not_its_bbox() -> None:
+    """An L-shaped board: a connector on the inner edge of the notch is an
+    edge connector; one in the notch near the bounding-box corner is not."""
+    from precis.pcb import epro
+
+    design = epro.Design(
+        components=[
+            {"refdes": "J5", "x": 52.0, "y": 45.0, "footprint": "HDR"},
+            {"refdes": "J6", "x": 98.0, "y": 58.0, "footprint": "HDR"},
+        ],
+        features=[
+            {
+                "ftype": "outline",
+                "geom": {
+                    "path": [[0, 0], [100, 0], [100, 30], [50, 30], [50, 60], [0, 60]]
+                },
+            },
+        ],
+    )
+    got = dict(pcb_epro.alignment_candidates(design))
+    assert set(got) == {"J5"}
+    assert "2.0 mm from the board edge" in got["J5"]
+
+
 def test_freeze_import_locks_every_part(store) -> None:
     result = pcb_epro.import_epro(
         store, _zip(), slug="epro-import-frozen", title="Tiny", freeze=True

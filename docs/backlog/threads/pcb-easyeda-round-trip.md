@@ -47,9 +47,12 @@ test piece, the anneal may move its 103 unlocked parts, and it gets
 routed on prod as is. Import locks only the parts the source locked
 (`--freeze` locks all). A same-day freeze-all default was reverted: it
 contradicted his 09-30 "only freeze when needed"
-(`pcb-freeze-mechanicals-and-parts.md`). Which parts are alignment-critical
-needs author annotations; the proposal is review-queue
-`pcb-easyeda-round-trip-5`.
+(`pcb-freeze-mechanicals-and-parts.md`). Per Reto's ruling on review-queue
+`pcb-easyeda-round-trip-5`, the import report lists likely alignment-critical
+parts without locking them, and the author pins one with the `align` measure
+(within one board; hard align snaps after the anneal; precis-measures-help).
+The cross-design half (a part aligned to another design's feature) rides
+pcb-se-binding.
 Collides with ewod-pcb on generator/DRC/realizer files:
 sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
