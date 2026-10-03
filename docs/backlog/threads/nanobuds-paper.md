@@ -84,7 +84,10 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    `nanobud-fidelity/pillar/ztable.py <new id> after`, and fill the "After
    (prod)" table in `reviews/nanobuds-paper.md` (release item). Before
    table recorded: ball 19.5–25.6 Å under a 26.1–27.3 Å lid; expected
-   after: ball 27.9–33.7 Å on the lid.
+   after: ball 27.9–33.7 Å on the lid. Orchestrator accepted the tables
+   as release-2 evidence (12:05Z, 10-03). If prod relaxation drops the
+   ball more than ~1 Å toward the lid, report it to hexfold-toolkit as a
+   finding; it is not a regeneration error.
    **Items 23/24 answered 06:44Z (10-03).** 23: camera d (el 18°), 55 Å
    sheet kept → done: gsheet22/96 regenerated on prod (st463286/7; round-1
    prod hexfold builds them identically to main, so no wait on round 2;
@@ -169,17 +172,34 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    review-queue answered/reto-cite-standard-1.md). Item 15 open: HOMA/NICS
    primaries not held, ref 893 (Tans 1998 inside an issue scan), the
    phosphorene preprint, and the td450082 script restage.
-   **Printed-source read: DONE 2026-10-03 ~07:40Z.** 61 of 159
-   printed sources do not carry their sentence on their linked passages.
-   26 of 120 hubs have no carrying source. 15-row hand-check: 13 agree.
-   Cost: ~610K sonnet tokens. Report: `~/.claude/projects/
-   -Users-reto-precis-mcp/nanobud-fidelity/printed-read/REPORT.md`. Noted
-   under §1 of reviews/nanobuds-paper.md. Wrong-paper ingest: gr463414.
-   Orchestrator 08:40Z accepted 61 as a floor. The pre-removal in-paper
-   search flipped 0 of 15 (1 raw flip overruled, cites [28]). Item
-   nanobuds-paper-26 was rewritten per claim: the 16 removals, plus picks
-   for 26 claims (R 18 / S 4 / H 4). Then re-read the touched hubs.
-   fi449540 stays provisional until its re-ground lands.
+   **Printed-source read: DONE 2026-10-03 ~07:40Z.** For 61 of 159
+   printed sources, no single linked passage individually carries the
+   full sentence. This is not a miscitation count (Reto 11:56Z ruling).
+   Report: `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/
+   printed-read/REPORT.md`. Wrong-paper ingest: gr463414.
+   **Item 26 ruled 11:56Z after a Fable audit**
+   (`reviews/citation-rigour-audit-2026-10-03.md`). Adopted citation rule:
+   - support is judged against the paper's full text, and passages may
+     combine;
+   - the pin is provenance, not the test;
+   - polarity is a separate verdict;
+   - secondary sources are allowed for background, primary preferred;
+   - a finding credited to a group cites that group.
+   **Item 26 applied on prod, done by 12:10Z:**
+   - backup taken;
+   - 24 links removed (the 16 removals, the 4 swaps, and the fi236137,
+     fi191317 and fi192819 misstatements);
+   - 15 evidence links added;
+   - 22 hubs pinned;
+   - fi191152 softened and the fi189535 edit made;
+   - polarity pass run: 88 agree, 10 overstated.
+   Log: `printed-read/APPLY-26.md`.
+   **Open: review item nanobuds-paper-28** (filed 12:10Z): 15 wording
+   fixes. §A: 5 held hubs. fi189545 swaps to Baowan pa692; fi191144,
+   fi191270, fi449588 and fi449580 lose a clause. §B: the 10 overstatements.
+   Then the fi192819 Nasibulin yes/no. After the answer, apply it.
+   Then re-read the pairs that claims-and-evidence's re-run of
+   measure.py/pairs.py touches; "link set final" was sent 12:11Z.
 3. **Reground batches: DONE 2026-10-02 ~20:15Z** (461608, 461803,
    462063, 462112 … 462390). Cited hubs now: 168, 696 evidence edges, 61
    still withheld on 56 hubs. OPEN.md items 5 and 7 settled: dc2445904
