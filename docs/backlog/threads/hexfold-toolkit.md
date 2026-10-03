@@ -88,8 +88,8 @@ waited on happened 09-29 — note at the bottom)
          `Patch.rotate_bond`, `GLYPHS` construction table). The old wedge
          footprint was a 5577 dislocation dipole (pentagons adjacent, net
          b = a), removed. Measured on sw30: circuit 0, seed far field
-         1.420–1.422 Å, plateau worst 0.028 Å. Review-queue item
-         hexfold-toolkit-1 asks Reto whether it rides round 2. The
+         1.420–1.422 Å, plateau worst 0.028 Å. Reto ruled 2026-10-03
+         (hexfold-toolkit-1): it ships in round 2. The
          stacked-seed ERROR test's only fixture is now a flat-seeded
          `57@(4,4,A):1`; if the 57 seed is ever de-stacked too, find it
          another.

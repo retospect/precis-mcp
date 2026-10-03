@@ -84,8 +84,17 @@ the tiling by how closely it follows that surface, with no trade-off knob.
 
 ## Acceptance criteria
 
-- S1: hero5 and `hexa-smooth-drum-v2` have per-region deviation numbers
-  against an authored surface.
+Every deviation bar is measured after removing a rigid z-offset and
+nothing else. There is no fitted rotation or scale, which would let the
+judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
+
+- S1, **built** (`revolution.authored_meridian`, `arc_curvature`,
+  `precis_surface.deviation`; the judge is exact on lines and arcs to 1e-9):
+  - `hexa-smooth-drum-v2` is a mean 0.70 Å off its own target. The flats
+    are 0.14–0.28 Å off, the bends 0.67–1.10 Å, and the flare max is
+    4.96 Å.
+  - hero5a's feet are 0.16–0.30 Å rms off a best-fit fillet of
+    1.25–3.0 Å. They are faithful to a one-ring turn Reto ruled out.
 - S3 on one feature (sheet → `R_f` fillet → (12,0) tube → cap):
   - atom-to-surface mean ≤ 0.10 Å, max ≤ 0.3 Å;
   - bonds 1.36–1.50 Å;

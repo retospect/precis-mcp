@@ -53,11 +53,17 @@ _DENSE = 2049
 class Segment:
     """One analytic meridian piece, traversed from ``start`` to ``end``."""
 
-    kind: str  # flat | catenoid | cylinder | fillet
+    kind: str  # flat | catenoid | cylinder | cone | fillet
     name: str
     param: _Param = field(repr=False, compare=False)
     #: defect sign along this piece: -1 concave, +1 convex, 0 none
     sign: int = 0
+    #: closed form of a circular arc, ``(centre r, centre z, radius, phi0,
+    #: phi1)`` with ``(r, z) = centre + radius (cos phi, sin phi)``; lets
+    #: distance and curvature be exact instead of sampled
+    arc: tuple[float, float, float, float, float] | None = field(
+        default=None, compare=False
+    )
 
     def at(self, t: NDArray[np.float64]) -> NDArray[np.float64]:
         r, z = self.param(np.asarray(t, dtype=np.float64))
@@ -184,7 +190,9 @@ def _fillet(
         phi = phi0 + (phi1 - phi0) * t
         return centre[0] + rho * np.cos(phi), centre[1] + rho * np.sin(phi)
 
-    return Segment("fillet", name, f, sign=+1)
+    return Segment(
+        "fillet", name, f, sign=+1, arc=(centre[0], centre[1], rho, phi0, phi1)
+    )
 
 
 # ---------- the drum ----------
@@ -291,6 +299,126 @@ def drum_meridian(
         )
     rows.sort(key=lambda d: ([s.name for s in segs].index(d.segment), d.k))
     return Meridian(segs, tuple(rows), rho, max(h_corner, 1.0 / a))
+
+
+# ---------- the authored surface ----------
+
+
+@dataclass(frozen=True)
+class ArcCurvature:
+    """Principal curvatures of one revolved arc (1/length).
+
+    ``k1 = 1/radius`` along the meridian; ``k2 = n_r / r`` along the
+    parallel, ``n_r`` the radial part of the unit normal, over the arc as
+    ``k2_min..k2_max``. Gaussian curvature ``K = sign * k1 * k2``: negative
+    on a concave arc (the sheet-to-tube fillet, heptagon rows), positive on
+    a convex one (a cap, pentagon rows). S2 places rows on both.
+    """
+
+    name: str
+    sign: int
+    k1: float
+    k2_min: float
+    k2_max: float
+
+    @property
+    def k_sum_max(self) -> float:
+        return self.k1 + self.k2_max
+
+    @property
+    def gaussian_range(self) -> tuple[float, float]:
+        a, b = self.sign * self.k1 * self.k2_min, self.sign * self.k1 * self.k2_max
+        return (min(a, b), max(a, b))
+
+
+def arc_curvature(seg: Segment, n: int = 257) -> ArcCurvature:
+    """Signed principal curvatures of an arc segment (``seg.arc`` set)."""
+    if seg.arc is None:
+        raise ValueError(f"segment {seg.name} is not an arc")
+    cr, _cz, rho, phi0, phi1 = seg.arc
+    phi = np.linspace(phi0, phi1, n)
+    r = cr + rho * np.cos(phi)
+    nr = np.abs(np.cos(phi))
+    ok = r > 1e-12
+    k2 = nr[ok] / r[ok]
+    return ArcCurvature(
+        seg.name,
+        seg.sign,
+        1.0 / rho,
+        float(k2.min()) if k2.size else 0.0,
+        float(k2.max()) if k2.size else 0.0,
+    )
+
+
+def authored_meridian(
+    r0: float, pieces: Sequence[tuple[str, float] | tuple[str, float, float]]
+) -> Meridian:
+    """A meridian written down rather than derived: the ideal surface the
+    tiler must follow (docs/backlog/hexfold-ideal-surface-then-tile.md, S1).
+
+    Starts on the sheet at ``(r0, 0)`` heading toward the axis, then walks
+    ``("line", length)`` and ``("arc", radius, turn_deg)`` pieces in order.
+    A turn is counter-clockwise in the ``(r, z)`` half-plane, so heading in
+    and turning -90 rises into a tube along +z; +90 at the tube top bends
+    toward the axis (a lid or cap). Every radius is the author's: nothing is
+    snapped to a table or replaced by a catenoid. An arc whose centre lies
+    farther from the axis than the arc is concave (``K < 0``, sign -1, the
+    sheet-to-tube fillet); nearer, convex (sign +1, a cap). ``rows`` is
+    empty: placing defect rows on this surface is the next stage.
+    ``max_curvature_sum`` is the largest ``k1 + k2`` over the convex arcs,
+    the number the curvature bound is checked against (as in
+    :func:`drum_meridian`); every arc's signed curvatures, concave ones
+    included, come from :func:`arc_curvature`.
+
+    Raises ``ValueError`` for a non-positive length or radius, or a piece
+    that crosses the axis.
+    """
+    p = (float(r0), 0.0)
+    heading = math.pi
+    segs: list[Segment] = []
+    kappa = 0.0
+    for i, piece in enumerate(pieces):
+        kind = piece[0]
+        if kind == "line":
+            length = float(piece[1])
+            if length <= 0.0:
+                raise ValueError(f"piece {i}: line length {length:g} must be > 0")
+            q = (
+                p[0] + length * math.cos(heading),
+                p[1] + length * math.sin(heading),
+            )
+            dr, dz = q[0] - p[0], q[1] - p[1]
+            shape = (
+                "flat"
+                if abs(dz) < 1e-9 * length
+                else "cylinder"
+                if abs(dr) < 1e-9 * length
+                else "cone"
+            )
+            segs.append(_line(shape, f"{shape}{i}", p, q))
+            p = q
+        elif kind == "arc" and len(piece) == 3:
+            rho, turn = float(piece[1]), math.radians(float(piece[2]))
+            if rho <= 0.0 or turn == 0.0:
+                raise ValueError(f"piece {i}: arc needs radius > 0 and a turn")
+            side = heading + math.copysign(math.pi / 2.0, turn)
+            c = (p[0] + rho * math.cos(side), p[1] + rho * math.sin(side))
+            phi0 = math.atan2(p[1] - c[1], p[0] - c[0])
+            seg = _fillet(f"arc{i}", c, rho, phi0, phi0 + turn)
+            mid = seg.at(np.array([0.5]))[0]
+            sign = -1 if c[0] > mid[0] else +1
+            seg = Segment("fillet", seg.name, seg.param, sign=sign, arc=seg.arc)
+            segs.append(seg)
+            if sign > 0:
+                kappa = max(kappa, arc_curvature(seg).k_sum_max)
+            p = seg.end
+            heading += turn
+        else:
+            raise ValueError(f"piece {i}: expected ('line', L) or ('arc', R, deg)")
+        lo = float(segs[-1].at(np.linspace(0.0, 1.0, 65))[:, 0].min())
+        if lo < -1e-9:
+            raise ValueError(f"piece {i} crosses the axis (r = {lo:.4g})")
+    return Meridian(tuple(segs), (), None, kappa)
 
 
 # ---------- revolve ----------
