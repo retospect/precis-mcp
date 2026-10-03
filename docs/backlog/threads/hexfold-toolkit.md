@@ -53,19 +53,25 @@ waited on happened 09-29 — note at the bottom)
        (7a746e5cc).** No seed pair under 0.7 Å and no stick clash ERROR on
        any defected sheet; numbers in `reviews/hexfold-toolkit.md` (C3
        result).
-       - **Next, the K = 0 (net-zero cluster) gap**, its own slice and
-         design note:
-         - Bond deviation is worse than the flat seed: `sheet_sw` 0.178
-           vs 0.123, `57@(15,15):0` 0.213 vs 0.154.
-         - The far field fails the 5% bar: one row of 2.56 Å bonds runs
-           from the core to the edge, the dislocation's whole Burgers
-           vector on one cut.
-         - Fix per the verdict: measure b as the closure failure of a
-           Burgers circuit around the cluster in the seeded positions; add
-           u(θ) = b·(θ − θ₀)/2π with the branch cut along the open row.
-           Check: the circuit then closes to under 0.1 Å.
-         - Add a bud-on-defected-sheet test: `_flat_normals` now sees a
-           heptagon sheet as non-flat, and nothing covers a bud there.
+       - **K = 0 clusters, 57 (one dislocation): shipped**
+         (`build._volterra`, K0 note + verdict 2026-10-03). The cut is
+         read off the cluster seed's turn boundary, J is a truncated
+         least-squares fit, and one Laplacian solve spreads it. The far
+         field is 1.40–1.44 Å and the snapped circuit reads a = 2.46 Å.
+         At plateau the worst bond is no worse than C3: 0.0426 vs 0.0450
+         Å on g57.
+       - **Next, SW (commit 2 of the K0 slice):** one shared cut ray for
+         every member of a K = 0 cluster, so the two halves' jumps cancel.
+         Bars: snapped circuit 0 round the SW and ±a round each half; no
+         bond over 1.6 Å beyond 10 Å; far field 1.40–1.44 Å. Today sw30's
+         far field is 0.58–2.07 Å. Same commit: `geom.seed_overlap` gains
+         a WARN for bonded pairs under 1.0 Å; C3 seeded 0.36 Å bonded
+         pairs on sw30 and nothing flagged them.
+       - **Later:** compare the planar relaxed 5-7 core (fix seed, 0.042
+         Å worst bond) with the buckled one (flat seed, 0.029) by MACE
+         energy once the science lane is back. If buckled wins, the seed
+         tier should offer an out-of-plane core perturbation as an
+         option.
      - **gr462074** `tube_ring_closure`: seed 212 pairs, 0.00 Å. **Not a
        placement bug.** Two straight rigid tubes cannot close a ring, so
        the joint cycle solve stacks `b` exactly on `a` (centroid distance

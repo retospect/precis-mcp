@@ -695,7 +695,9 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
     on surgery order.  On top, a charged cluster's lift -- the isometric
     saddle (K > 0) or cone (K < 0) minus the flat point -- is blended out
     between 1/4 and 1/2 of the distance to the nearest other cluster; a
-    lone cluster keeps it to the sheet edge.
+    lone cluster keeps it to the sheet edge.  A K = 0 cluster is an edge
+    dislocation: its turns leave the Burgers vector open on one row of
+    bonds, which :func:`_volterra` closes.
     """
     recs = patch.discl
     clusters: list[list[int]] = []
@@ -716,6 +718,10 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
         ]
         reach.append(0.5 * min(ds) if ds else None)
     refs = [_clear_direction([recs[j] for j in c]) for c in clusters]
+    # net-zero clusters: the turn each vertex got, to label the cut after
+    turns: dict[int, dict[Vid, float]] = {
+        ci: {} for ci, c in enumerate(clusters) if sum(recs[j].k for j in c) == 0
+    }
 
     def flat_deg(v: np.ndarray, o: np.ndarray) -> float:
         return math.degrees(math.atan2(float(v[1] - o[1]), float(v[0] - o[0])))
@@ -725,7 +731,9 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
         xy = np.asarray(p, dtype=float)[:2]
         disp = np.zeros(2)
         lift = np.zeros(3)
-        for c, centre, ref, h in zip(clusters, centres, refs, reach, strict=True):
+        for ci, (c, centre, ref, h) in enumerate(
+            zip(clusters, centres, refs, reach, strict=True)
+        ):
             rel = xy - centre
             s = float(np.linalg.norm(rel))
             if s < 1e-9:
@@ -776,6 +784,7 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
             else:
                 e = math.radians(phi_tot)
                 loc = np.zeros(3)
+                turns[ci][v] = phi_tot - off
             dt = e - math.radians(off)
             cs, sn = math.cos(dt), math.sin(dt)
             disp += (
@@ -791,6 +800,14 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
                     [cr * loc[0] - sr * loc[1], sr * loc[0] + cr * loc[1], loc[2]]
                 )
         out[v] = np.array([xy[0] + disp[0], xy[1] + disp[1], 0.0]) + lift
+    if turns:
+        cores = [
+            v
+            for ci in turns
+            for v, p in patch.flatpos.items()
+            if float(np.linalg.norm(np.asarray(p)[:2] - centres[ci][:2])) <= link
+        ]
+        _volterra(patch, out, list(turns.values()), cores)
     return out
 
 
@@ -808,6 +825,192 @@ def _clear_direction(members: list[Any]) -> float:
         if gap > best_gap + 1e-9:
             best, best_gap = a, gap
     return best
+
+
+def _cut_jump(vs: np.ndarray, steps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The one vector J that brings the cut bond vectors v to ideal lattice
+    steps (v - sign*J ~ s), and each bond's sign.
+
+    Truncated least squares at half a bond: each bond's possible
+    J = v - s seeds a candidate; under it every bond takes the sign and
+    nearest step that fit best and costs min(residual^2, (b/2)^2), so a
+    bond the jump cannot reach -- the compressed bond shared by the core
+    rings, labelled because it straddles the turn boundary -- costs a
+    constant and does not pull J.  The sign is per bond because the turned
+    strip a cluster seed opens has two sides: the row to the edge, and a
+    bond at the core that crosses the strip the other way.  The winner is
+    refined to the mean of sign*(v - s) over the bonds it closes (residual
+    under b/2).  Returns (J, sign), sign 0 for a bond J does not close.
+    """
+    half = 0.5 * float(np.linalg.norm(steps[0]))
+    best_cost, best_size = math.inf, math.inf
+    best_j, best_sign = np.zeros(2), np.zeros(len(vs))
+
+    def fit(j0: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        # per bond: sign and nearest step of v - sign*J, and the residual
+        d = np.stack(
+            [
+                np.linalg.norm((vs - sg * j0)[:, None, :] - steps[None, :, :], axis=2)
+                for sg in (1.0, -1.0)
+            ]
+        )
+        k = np.argmin(d.transpose(1, 0, 2).reshape(len(vs), -1), axis=1)
+        sign = np.where(k < len(steps), 1.0, -1.0)
+        pick = steps[k % len(steps)]
+        res = np.linalg.norm(vs - sign[:, None] * j0 - pick, axis=1)
+        return sign, pick, res
+
+    for j0 in (v - s for v in vs for s in steps):
+        for _ in range(2):
+            sign, pick, res = fit(j0)
+            ok = res < half
+            if not ok.any():
+                break
+            j0 = (sign[ok, None] * (vs[ok] - pick[ok])).mean(axis=0)
+        sign, pick, res = fit(j0)
+        cost = float(np.minimum(res, half) @ np.minimum(res, half))
+        size = float(np.linalg.norm(j0))
+        if cost < best_cost - 1e-9 or (
+            abs(cost - best_cost) <= 1e-9 and size < best_size
+        ):
+            best_cost, best_size, best_j = cost, size, j0
+            best_sign = np.where(res < half, sign, 0.0)
+    return best_j, best_sign
+
+
+_DENSE_MAX = 3000
+
+
+def _laplace_solve(
+    n: int, edges: np.ndarray, rhs: np.ndarray, gauge: list[int]
+) -> np.ndarray:
+    """Solve the graph Laplacian system L w = rhs (rhs (n, d)) on a
+    connected graph, gauge: mean of w over ``gauge`` is 0.
+
+    Dense ``numpy.linalg.solve`` with the gauge replacing one row up to
+    3000 vertices (exact); above that, conjugate gradients on the
+    mean-free system -- relative residual 1e-10, at most 10 n iterations --
+    then the gauge shift.  rhs must sum to zero per column (it does: it is
+    an incidence transpose).
+    """
+    i, j = edges[:, 0], edges[:, 1]
+    if n <= _DENSE_MAX:
+        lap = np.zeros((n, n))
+        np.add.at(lap, (i, j), -1.0)
+        np.add.at(lap, (j, i), -1.0)
+        np.add.at(lap, (i, i), 1.0)
+        np.add.at(lap, (j, j), 1.0)
+        lap[0, :] = 0.0
+        lap[0, gauge] = 1.0 / len(gauge)
+        b = rhs.copy()
+        b[0, :] = 0.0
+        return np.asarray(np.linalg.solve(lap, b))
+    deg = np.bincount(np.concatenate([i, j]), minlength=n).astype(float)
+
+    def apply(x: np.ndarray) -> np.ndarray:
+        y = deg[:, None] * x
+        np.add.at(y, i, -x[j])
+        np.add.at(y, j, -x[i])
+        return y
+
+    b = rhs - rhs.mean(axis=0)
+    x = np.zeros_like(b)
+    r = b.copy()
+    p = r.copy()
+    rr = (r * r).sum(axis=0)
+    tol = 1e-20 * max(float((b * b).sum()), 1e-300)
+    for _ in range(10 * n):
+        if float(rr.sum()) <= tol:
+            break
+        ap = apply(p)
+        alpha = rr / np.maximum((p * ap).sum(axis=0), 1e-300)
+        x += alpha * p
+        r -= alpha * ap
+        rr_new = (r * r).sum(axis=0)
+        p = r + (rr_new / np.maximum(rr, 1e-300)) * p
+        rr = rr_new
+    return x - x[gauge].mean(axis=0)
+
+
+def _volterra(
+    patch: Patch,
+    out: dict[Vid, np.ndarray],
+    turns: list[dict[Vid, float]],
+    cores: list[Vid],
+) -> None:
+    """Close the open cut of each net-zero cluster (an edge dislocation) by
+    the discrete Volterra field, in place on ``out``.
+
+    The cluster seed turns each vertex by a piecewise-constant angle; the
+    bonds whose two ends got different turns are the cut it opened (one
+    group per pair of turns), so the cut set is read off the seed, not
+    inferred from bond lengths.  Each group's jump J is the least-squares
+    vector that brings its bonds to ideal steps (:func:`_cut_jump`).  The
+    correction w minimises sum |w_j - w_i - t_ij|^2 over all bonds, with
+    t = -J on a cut bond (oriented from the lower turn to the higher) and 0
+    elsewhere, gauged to zero mean over the cluster cores: the jump closes
+    on the cut and spreads harmonically about the core, with no centre,
+    branch angle or tip to choose.
+    """
+    verts = list(patch.flatpos)
+    index = {v: k for k, v in enumerate(verts)}
+    edges = np.array([[index[a] for a in e] for e in patch.edges if len(e) == 2])
+    if len(edges) == 0:
+        return
+    lat = patch.lat
+    s0 = Site(0, 0, 0)
+    nn = [lat.cart(b) - lat.cart(s0) for b in neighbors(s0)]
+    steps = np.array([d[:2] for d in nn] + [-d[:2] for d in nn], dtype=float)
+    pos = np.array([out[v][:2] for v in verts], dtype=float)
+    target = np.zeros((len(edges), 2))
+    for turn in turns:
+        groups: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
+        for k, (a, b) in enumerate(edges):
+            ta, tb = turn.get(verts[a]), turn.get(verts[b])
+            if ta is None or tb is None:
+                continue
+            d = (tb - ta + 180.0) % 360.0 - 180.0
+            if abs(d) < 1e-3:
+                continue
+            lo, hi = (a, b) if d > 0 else (b, a)
+            key = (round(turn[verts[lo]]) % 360, round(turn[verts[hi]]) % 360)
+            groups.setdefault(key, []).append((k, lo, hi))
+        for members in groups.values():
+            vs = np.array([pos[hi] - pos[lo] for _k, lo, hi in members])
+            jump, sign = _cut_jump(vs, steps)
+            for (k, lo, _hi), sg in zip(members, sign, strict=True):
+                target[k] -= sg * jump if edges[k, 0] == lo else -sg * jump
+    if not target.any():
+        return
+    rhs = np.zeros((len(verts), 2))
+    np.add.at(rhs, edges[:, 1], target)
+    np.add.at(rhs, edges[:, 0], -target)
+    core_set = {index[v] for v in cores}
+    # one solve per connected component (overlapping glyphs can split the
+    # patch graph), gauged on its cores, or on its own mean if it has none
+    parent = list(range(len(verts)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        parent[find(int(a))] = find(int(b))
+    comps: dict[int, list[int]] = {}
+    for k in range(len(verts)):
+        comps.setdefault(find(k), []).append(k)
+    w = np.zeros((len(verts), 2))
+    for comp in comps.values():
+        if len(comp) < 2 or not rhs[comp].any():
+            continue
+        local = {g: k for k, g in enumerate(comp)}
+        sub = np.array([[local[a], local[b]] for a, b in edges if int(a) in local])
+        gauge = [local[g] for g in comp if g in core_set] or list(range(len(comp)))
+        w[comp] = _laplace_solve(len(comp), sub, rhs[comp], gauge)
+    for v, k in index.items():
+        out[v] = out[v] + np.array([w[k, 0], w[k, 1], 0.0])
 
 
 def _cone_seed(patch: Patch, lat: Lattice) -> dict[Vid, np.ndarray]:
