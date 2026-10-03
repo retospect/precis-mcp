@@ -117,7 +117,9 @@ confirmed the target: ask it with the Slice 0 result.**
       - **vLLM × gpt-oss done 2026-10-03:** 32 / 144 / 290 / 400 out
         tok/s at 1 / 8 / 32 / 64; 9.6 tok/s per stream at 32; KV 20% at
         64. About 2.8× Nemotron throughout. Needs the harmony vocab staged
-        offline (item has the recipe). Next: C above 64, then the quality
+        offline (item has the recipe). Above 64: ceiling about 450 out
+        tok/s (443 at 192, 450 at 256); the knee is at 64. SGLang arm
+        running (Docker Hub reachable from castor 2026-10-03). Next: the quality
         check on knowledge-mesh's task set (km-8 taxonomy first; Reto
         2026-10-03, co-owned with knowledge-mesh). Spec:
         `backlog/local-mesh-upkeep.md` slice 0; its categorise task IS

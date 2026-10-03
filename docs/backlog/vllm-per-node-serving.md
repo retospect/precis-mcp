@@ -215,9 +215,21 @@ same.
 
 - gpt-oss gives 2.7–2.9× Nemotron's aggregate at every level and 2.7× its
   per-stream rate at 32 (9.6 vs 3.5 tok/s), with a fifth of the KV use.
-- Still climbing at 64 (×1.4 from 32 to 64) with 80% of KV free, so
-  `max-num-seqs` above 64 is the next measurement before a plateau is
-  claimed.
+- **Above 64 (same settings, `--max-num-seqs 256`, 0 failed):**
+
+  | C | out tok/s | per-stream tok/s | TTFT p50 / p95 (ms) | peak KV % |
+  |---|---|---|---|---|
+  | 96 | 393.2 | 4.4 | 2223 / 40676 | 29.0 |
+  | 128 | 410.1 | 3.5 | 2362 / 54561 | 38.5 |
+  | 192 | 443.3 | 2.5 | 3176 / 86045 | 57.0 |
+  | 256 | 450.3 | 1.9 | 3477 / 119898 | 75.1 |
+
+  **Measured ceiling on vLLM: about 450 out tok/s.** The curve flattens
+  at 64 (400, 89% of ceiling): from 64 to 256, 4× the streams adds 13%
+  throughput while per-stream drops from 6.7 to 1.9 tok/s and TTFT p95
+  grows fivefold. KV is not the limit (75% at 256); decode compute is.
+  The 32-stream setpoint gets 65% of the ceiling at 9.6 tok/s per stream;
+  64 gets 89% at 6.7. The setpoint choice is between these two.
 - Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
   speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
   and a quality check on the target workloads.
