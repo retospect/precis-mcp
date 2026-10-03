@@ -44,7 +44,17 @@ prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
    URLs through the same API and will mostly record `jlc_api_error`
    until this is fixed. Probe the first-page payload by hand (one
    API call), then fix it. This comes first after build 5 deploys.
-5. gr464529: re-putting an outline feature appends a second outline.
+5. **Judge cost (round-3 diff review, 2026-10-03).** `_judged_mutation`
+   runs the validity DRC twice, plus pcb_load, _build_ir and a copper
+   listing, on every judged put, class_rules and footprint call.
+   Measured 0.9 s per DRC call on an 8-part fixture. Measure it on
+   ewod-dogfood-6 during the post-deploy dogfood. Above about 3 s per
+   put, cache the "before" report keyed on the board's content hash
+   (the previous judged mutation's "after" is the next one's
+   "before"). The contract (first put judged, rip at any severity,
+   class_rules lists pad shortfalls without refusing) is written
+   into precis-pcb-help.
+6. gr464529: re-putting an outline feature appends a second outline.
    Small; decide replace-or-refuse when Do-next 2 allows.
 Reto approved se-machine-design-7 option 1 (2026-10-03): the shared 2-D
 sheet job lives under flat-pack; pcb only emits into it. This thread builds

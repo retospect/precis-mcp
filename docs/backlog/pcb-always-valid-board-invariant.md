@@ -365,6 +365,8 @@ extracted *affinity*, which is a different fact.
   `op='move'` measures it by area. Outline-containment findings do carry one
   (the farthest vertex outside the outline, in mm) and are keyed per part /
   pad / copper item, so a deeper or swapped overhang is refused.
+- From commit 796fc1b4d, `outline_containment` findings are keyed per part/pad/silk and carry
+  `margin_mm = -gap`; comparing against DRC findings stored before it reads every outline finding as new once.
 - `op='footprint'` judges only the calling design; other designs using the
   part get a "check view='drc'" pointer, not a rip.
 - Negative control: a legal mutation is NOT refused. Without it the refusal

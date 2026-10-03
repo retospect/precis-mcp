@@ -286,8 +286,29 @@ and where to check before trusting a `view='drc'` pass on that part.
 
 ## Place and route it — `put(args={'op':'place'|'route', …})`
 
-A put whose authored x/y overlap other parts, holes or copper is refused and
-stores nothing: omit x/y and run `op='place'`, or give clear poses.
+### The judged-mutation gate
+
+A batch `put`, `op='class_rules'` and `op='footprint'` on a design with placed
+parts are checked before and after in one transaction. A design's first put
+counts when it carries x/y: its board is checked against an empty "before".
+Judged: pads, authored copper, courtyards, holes, the outline. Parts with only
+a synthesized (guessed) footprint are not.
+
+- **Refused:** a new or worse error between pads and authored copper stores
+  nothing. On a first put any overlap among the authored poses refuses; omit
+  x/y and run `op='place'`, or give clear poses.
+- **Router copper yields:** any new or worse finding that names routed copper
+  rips that net (it becomes unrouted), at any severity, including a class
+  requirement tighter than the fab minimum. The design's own rules outrank
+  existing routes. The reply lists `<net> ripped: <rule> … re-route`; re-run
+  `op='route'`.
+- **`op='class_rules'`** never refuses over pads: a shortfall between pads
+  against the new requirement is listed as `now visible (class requirement,
+  not refused)`.
+- **`op='footprint'`** always stores the real footprint; collisions it reveals
+  stay as errors until a re-place. Only the calling design is judged; other
+  designs using the part get a `check view='drc'` pointer.
+- **Standing** findings (present before, not made worse) are only counted.
 
 Placement and routing run as **enqueued worker jobs** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a

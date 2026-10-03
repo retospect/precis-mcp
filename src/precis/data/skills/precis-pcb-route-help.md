@@ -226,11 +226,24 @@ members of one group, is refused; nothing is written on any refusal):
 
 `op='class_rules'` upserts one net class's rules (`{name, rules}` — same
 shape as `put(args={'net_classes': {...}})` at design-authoring time, just
-scoped to one class). **Honest limit:** the stored rules are not yet READ
-by the realizer or the optimizer — no term consumes `clearance_mm` /
-`track_width_mm` from here yet. Storing them is real (they round-trip and
-appear in the design TOC); using them to size traces or set clearance is
-a documented gap, not a current effect.
+scoped to one class). It is judged: router copper the new rules no longer admit is ripped
+(re-run `op='route'`); pads never refuse it. Contract in [[precis-pcb-help]]
+("The judged-mutation gate").
+
+**Who reads a class's `clearance_mm` / `track_width_mm` / `via_dia_mm` /
+`via_drill_mm`:**
+
+- Read: the realizer (each track's width and via size come from its net's
+  class; the route job passes the stored classes in); the router's maze grid
+  (one board-wide clearance, the largest any net's class resolves to, not a
+  per-net value); the route job's post-route DRC gate (a net-class-aware
+  clearance check strips violating router nets); `view='drc'`; the judged
+  mutation gate.
+- Not read: the annealer/optimizer cost. Its `class_rules` input is never fed
+  from the store, so placement is scored with default via counts and a generic
+  gap pitch.
+
+Class clearance is clamped up to the fab minimum, never below it.
 
 **Net-class `layers` IS consumed (Rulings 2026-09-19 item 7, gr347037).**
 A class's `rules` may name `"layers": ["B.Cu", ...]` (stackup layer names)
@@ -240,9 +253,7 @@ those names with the board's own routable signal layers
 the full set. A net whose lock resolves to nothing routable (a name
 absent from the stackup, or one with no routable member at all) fails
 with `UnroutedReason.kind == "layer_lock"`, naming the class and the
-offending layer(s), rather than routing anyway. This is the one net-class
-key the realizer reads today; `clearance_mm`/`track_width_mm` remain the
-documented gap above.
+offending layer(s), rather than routing anyway.
 
 ## Inert (or conditional) move classes — say so plainly
 
