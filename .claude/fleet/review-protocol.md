@@ -35,6 +35,12 @@ alike. Reto reads items by quest, not by number (his rule, 2026-10-02);
 the same goes for a draft or paper id when the item turns on which one
 it is.
 
+Distances are in builds or dev cycles, never calendar dates: "S4: one
+build plus a render round trip", not "~10-09". Reto, 2026-10-03, on
+hexfold-toolkit-2: date estimates are time wasted; how many builds out it
+may be is the answer he wants. This applies to review items, design notes,
+`scripts/round eta` text and the Resume block of a thread file.
+
 ## The review session's job
 
 1. **Gather.** Read every file in `open/`. Also pull Reto's own precis
