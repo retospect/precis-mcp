@@ -19,7 +19,7 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-03 (round-2 dogfood: gr248866 verified, diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: gr248866 verified, diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
@@ -61,22 +61,14 @@ gr346534, soft-deleted)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-3. **diagnose_gripe's cost ledger, second try** (round 3). Round 2's
-   dogfood (job 464075 on gr463592, td464074) wrote the `llm_call_log`
-   row but every usage field was null: `cost_usd`, turns and tokens.
-   `_spawn_claude` used the text output format, which carries no result
-   event. It now asks for `stream-json`, as every other agent caller does.
-   After the round-3 deploy, hand-submit one more diagnose job and check
-   that `cost_usd` and `input_tokens` are set. fix_gripe has the same gap,
-   but its lane is off.
-4. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+3. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
-5. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
+4. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
    orchestrator; draft, do not build yet). The nightly B2 sync failed on
    every run for 7 weeks into a log nobody reads. The fix is a
    `health_digest` check on the log, because the DB node has no tick of
