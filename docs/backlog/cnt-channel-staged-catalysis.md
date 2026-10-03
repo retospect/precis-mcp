@@ -115,6 +115,55 @@ First pass, 2026-10-03, over the 4 papers held by 14:40Z:
 - The other 14 were re-queued at 10:40Z and are still unfetched. Run a
   second pass when they land.
 
+Second pass, 2026-10-03 16:53Z (4 more papers fetched):
+- Green-light HTI state motor (pa463581): fi464417–fi464420.
+  - The four states can be isolated and are frozen at 25 °C.
+  - 520 nm light turns B into D with 92% selectivity.
+  - At 60 °C the C→B step takes 120 min against 3 min for D→A.
+  - 63% of molecules complete a full cycle.
+  - The ΔG‡ values appear only in figures, which the chunk text does not
+    render.
+- Klok 2009 kinetic model (pa463582): fi464421–fi464424.
+  - The fastest motor has a 3 MHz theoretical maximum (kΔ 6.3×10⁶ s⁻¹ at
+    20 °C).
+  - The rate is capped at kΔ/2 above an intensity breakpoint.
+  - Light intensity, the thermal rate and concentration govern the rate,
+    not quantum yields.
+  - Directionality collapses near the thermal limit, so pushing more light
+    through a gate costs it directionality.
+  - The source is glyph-damaged. Exponent-bearing numbers that could not
+    be cross-checked were left unminted.
+- Miles 1999 (pa463573) and Mueller & Dunn 2022 (pa463576) are reviews,
+  so they ground no hub. Design numbers they attribute to primaries:
+  - The carbamoyl phosphate synthetase (CPS) tunnel is ≥96 Å long, 45 Å
+    plus 35 Å between its sites. Its mean minimum radius is 3.2–3.5 Å, with
+    2.1–2.5 Å constrictions. The segment carrying carbamate has few charged
+    residues.
+  - The glutamine PRPP amidotransferase (GPATase) NH₃ tunnel is 20 Å long
+    and exists only once a C-terminal loop closes on activation.
+  - The tryptophan synthase (TS) tunnel is 25–30 Å long, in two parts: a
+    hydrophilic, water-filled T1 and a hydrophobic, dewetted T2. Closure
+    happens at the portal: the COMM domain moves 2.6–4.5 Å and narrows the
+    β-site cleft to about 3 Å.
+  - The βC170F/W mutants partly block the TS tunnel and indole builds up.
+    This is the clogging case.
+  - The two reviews disagree on whether βPhe280 gates the tunnel. Miles
+    1999 says it does, citing Rhee 1996. Mueller 2022 says it does not,
+    citing Hilario 2016. Settle this at the primary papers.
+  - Primaries stubbed and pinned:
+    - pa464425, Anderson 1995: the channel-impaired mutants, the
+      clogging numbers;
+    - pa464426, Hilario 2016: tunnel sections and the gating dispute;
+    - pa464427, Ghosh 2021: the 3 Å aperture;
+    - pa464428, Harris 2005: escape from the closed complex;
+    - pa464429, Anderson 1991: indole transfer above 1000 s⁻¹.
+  - Krahn 1997 (GPATase) and Knighton 1994 (the 40 Å electrostatic
+    channel in dihydrofolate reductase–thymidylate synthase, DHFR-TS) have
+    no DOI in either review. Not yet stubbed.
+- Still unfetched (10): pa179415, pa265225, pa463574, pa463575, pa463577,
+  pa463578, pa463579, pa463580, pa463583, pa463587. The KcsA (pa463587)
+  and CPS (pa463578–80) papers carry the remaining design numbers.
+
 ## Explicitly NOT in scope
 
 - Minting a quest (held by Reto until the cross-section can be built).
