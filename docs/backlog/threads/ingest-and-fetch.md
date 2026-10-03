@@ -12,7 +12,18 @@ states that count a paper as usable when it is not, then metadata.
 
 ## Do next
 
-1. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
+1. **`backlog/si-attachments.md`** — supplementary-information PDFs
+   are found where attention is, always fetched, and ingested as their
+   own ref linked to the parent paper and cited as the parent. Reto
+   ruled 2026-10-03 (review session 20:02Z). Blocks quest qu164903
+   (NO→NH3 on Pd(111)) through catalysis-selectivity-17. Build 1: discovery
+   (Crossref relation/component entries plus publisher link patterns,
+   through `safe_get`), fetch and linked-ref ingest, with an explicit
+   `fetch-si` trigger. Run it on pa5303 and pa166889 at deploy and write
+   the result into catalysis-selectivity-17. Build 2: the attention trigger
+   (web open, MCP `get`, walker touch; one check per paper, a miss
+   recorded on the ref) and `fetch_oa` lane priority for those fetches.
+2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
    papers; fixed alongside this re-rank). Reto ruled
@@ -49,10 +60,10 @@ states that count a paper as usable when it is not, then metadata.
      or an orphan-count threshold, and keep the flag stored.
    - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
-2. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured
+3. **gr453860** / td461154 — 947 papers have a PDF and no body. Measured
    2026-10-02:
    - 814 Elsevier not-entitled: the XML has no body and the PDF is the
-     1-page preview. This is the same gap as item 4, now bodiless instead
+     1-page preview. This is the same gap as item 5, now bodiless instead
      of truncated.
    - 65 have no ingest trace at all.
    - 43 corrupt PDFs.
@@ -93,19 +104,19 @@ states that count a paper as usable when it is not, then metadata.
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
-3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
+4. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
    (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
    acquire re-stamp guard (`ACQUIRE_REARM_DAYS`). Still open: the /drive
    "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
    set in, and gr453862's stub-readout remainder.
-4. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
+5. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
    body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.
-5. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
+6. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
-6. **gr456181** — 4,313 S2-enriched papers have no venue. Reto approved
+7. **gr456181** — 4,313 S2-enriched papers have no venue. Reto approved
    the re-arm 2026-10-02 on condition of gentleness. The enrich lane
    (`stub_rank`) claims stubs only, so it reaches 3,119 of them; the live
    `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
@@ -132,7 +143,7 @@ states that count a paper as usable when it is not, then metadata.
 5. **`backlog/acquisition-marker-lives-in-the-wrong-place.md`** — backfill
    done; the prose-grep cleanup remains.
 6. **`backlog/oa-acquisition-roadmap.md`** — new OA legs and bulk arms,
-   after the counting bugs (2, 3) make the yield measurable.
+   after the counting bugs (3, 4) make the yield measurable.
 7. **`backlog/ms-teams-paper-feed.md`** — Teams channels as an ingest
    source; pillar 4, 2026-10-01.
 8. **`backlog/april-corpus-nas-migration.md`** — 5,335 April-era PDFs never
