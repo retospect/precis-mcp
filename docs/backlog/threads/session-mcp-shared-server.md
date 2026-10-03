@@ -120,7 +120,7 @@ capacity and isolation gaps.
      history is the scratch copies. Its live/test guard therefore has no
      CI test (gr462596 diagnosis). The candidate home is
      `scripts/precis-mcp-http-ensure.sh` here, with the SessionStart hook
-     pointing at the checkout's copy, but that entangles with Horizon 2
+     pointing at the checkout's copy, but that entangles with Horizon 1
      (mcps role vs hand-rolled wrapper). Decide with that item.
    **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the
@@ -157,7 +157,8 @@ capacity and isolation gaps.
    server stays interactive-only at `agent_rw`. Its reopen trigger is in
    Parked. Fairness is built: permits go round-robin by session
    (`server._FairSemaphore`). It loads at the next drained respawn after
-   a deploy. Left: the pool-storm test.
+   a deploy. The pool-storm test is built (`tests/test_mcp_pool_storm.py`).
+   Left: the supervision acceptance bullet, then delete the item.
 
 ## Runbook
 
@@ -179,45 +180,43 @@ capacity and isolation gaps.
 
 ## Horizon
 
-1. **backlog/mcp-shared-transport-concurrency.md**, fairness — sizing the
-   semaphore is not fairness; one session's burst holds every permit while
-   another's cheap read queues, and it gets reported as "the MCP is slow".
-2. **backlog/mcps-venv-deploy-gaps.md** — the shared server is a hand-rolled
+1. **backlog/mcps-venv-deploy-gaps.md** — the shared server is a hand-rolled
    dev-machine service by decision (Reto, 2026-09-29); whether the fleet
    mcps role adopts this shape decides if the ensure script stays a wrapper
    or becomes an Ansible role. Until then the two must not entangle.
-3. **backlog/mcp-shared-server-multiprocess.md** — `--workers 1` is correct
+2. **backlog/mcp-shared-server-multiprocess.md** — `--workers 1` is correct
    and is the ceiling; the inventory of what must leave process memory
    first. Arc, not work: 12 concurrent searches finish in 4.78 s against a
    2.06 s single call.
-4. **K-parallel exercise-mcp on dev** (unfiled) — the acceptance gate that
-   proves 1 and 2 worked; earlier it measures an idle server.
-6. **pgbouncer cl_waiting observability** (td458386) — granted by Reto
+3. **K-parallel exercise-mcp on dev** (unfiled) — the acceptance gate for
+   fairness and the pool sizing; before fairness deploys it measures an
+   idle server.
+4. **pgbouncer cl_waiting observability** (td458386) — granted by Reto
    2026-09-30, not yet wired; prerequisite for every future claim about
-   pool headroom, because without it entry 5 cannot tell "pool starved"
+   pool headroom, because without it entry 3 cannot tell "pool starved"
    from "something else slow".
-7. **backlog/server-side-session-context.md** — owned by
+5. **backlog/server-side-session-context.md** — owned by
    graph-memory-consumers, not this thread; pointer only. Precondition
    td458385 (sessions moving to this server) is this thread's own
    Do-next 1.
-8. **backlog/mcp-verb-kwarg-parity.md** — 71 handler kwargs are silently
+6. **backlog/mcp-verb-kwarg-parity.md** — 71 handler kwargs are silently
    dropped by put/edit; the verb signature is the MCP schema, so a dropped
    kwarg is a silent no-op for every session. Platform pass 2026-10-02.
-9. **backlog/singleton-id-no-batch-form.md** — numeric-ref verbs take one
+7. **backlog/singleton-id-no-batch-form.md** — numeric-ref verbs take one
    id; `id=[...]` crashes instead of batching.
-10. **backlog/gripe-comment-timeline-uncapped.md** — a bare get on a gripe
+8. **backlog/gripe-comment-timeline-uncapped.md** — a bare get on a gripe
     renders every comment; unbounded response on the shared server.
-11. **backlog/perplexity-block-handle-guard.md** — get on a perplexity kind
+9. **backlog/perplexity-block-handle-guard.md** — get on a perplexity kind
     with a search block handle cost ~$0.50; a spend guard on the surface.
-12. **backlog/time-kind.md** — stateless time/date kind like calc; no
+10. **backlog/time-kind.md** — stateless time/date kind like calc; no
     handler in src, still open.
-13. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
+11. **backlog/mcp-staleness-title-roundtrip-guards.md** — title round-trip
     assert plus an MCP staleness banner; guards the stale-process class.
-14. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
+12. **backlog/improve-ack-scrape-eradication.md** — replace regex-on-ack
     with structured Response fields.
-15. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
+13. **backlog/cli-bind-store-audit.md** — CLI entrypoints without bind_store
     miss live routing.
-16. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
+14. **backlog/serverinfo-title.md** — serverInfo.title blocked upstream on
     FastMCP; still blocked, so last.
 
 ## Parked
@@ -236,8 +235,8 @@ capacity and isolation gaps.
   reading and every other pool-headroom statement stay inference from
   backend counts and should be re-derived, not inherited.
 - **K-parallel exercise-mcp load harness** — specced inside
-  backlog/mcp-shared-transport-concurrency.md; unparks when the role and
-  fairness gaps in Do-next 6 are closed, before that it measures an idle server.
+  backlog/mcp-shared-transport-concurrency.md; the role gap is decided and
+  fairness is built; unparks once the round-2 deploy loads fairness.
 - **live cross-session serve-ledger check** — unfiled; unparks when a second
   session can fetch a slug this one just fetched and report full-serve vs
   stub.

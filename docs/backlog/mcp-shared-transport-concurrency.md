@@ -38,11 +38,16 @@ serve ledger does not leak between sessions.
 
 The open work is the tier that needs a real database:
 
-- **Pool behaviour under a session storm.** N concurrent sessions × M
-  calls against the per-pytest-session `precis_test_<uuid>` clone
-  (`tests/conftest.py`): no `PoolTimeout`, bounded wait, no deadlock,
-  clean teardown. Watch for the suite's lock-holding-connection leak
-  hard-fail, which a connection storm is the most likely test to trip.
+- **Pool behaviour under a session storm — built 2026-10-03**
+  (`tests/test_mcp_pool_storm.py`, against the test clone, no pgbouncer).
+  With tool concurrency under pool max, 24 calls from 4 sessions never
+  wait on the pool. With the pool narrower than the semaphore, calls wait
+  on the pool and finish without a `PoolTimeout`. Closing the pool leaves
+  no backend. One trap for anyone reading pool stats in prod:
+  psycopg_pool's `requests_queued` also counts a request that waits while
+  a pool below `max_size` opens a new connection. The shared server runs
+  min 4 / max 16, so `requests_queued` > 0 there does not mean contention
+  until the pool has grown to max.
 - **Role isolation under one process — DECIDED, closed (Reto,
   2026-10-02T20:57Z, review item session-mcp-shared-server-5, option 3):
   coding jobs never leave containers; the shared server stays
@@ -80,9 +85,8 @@ stdio callers; the shared server sets its own via env.
 ## Acceptance criteria
 - ~~A decision, recorded here, on whether coding jobs can ever leave
   containers~~ — recorded 2026-10-02: they do not (role-isolation bullet).
-- The pool-storm and role-isolation tests exist and are honest about
-  what they show (the role one is expected to document a gap, not a
-  passing property).
+- ~~The pool-storm test exists~~ — built 2026-10-03 (pool bullet). The
+  role-isolation test is moot: the role bullet is closed by decision.
 - ~~A fairness policy between sessions~~ — round-robin by session,
   built 2026-10-03 (fairness bullet). Supervision: one shared
   process means one crash, or one image rebuild, takes every session
