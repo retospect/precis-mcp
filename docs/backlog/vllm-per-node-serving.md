@@ -233,6 +233,39 @@ same.
 - Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
   speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
   and a quality check on the target workloads.
+**Slice 0 result, SGLang arm on castor (2026-10-03).** `lmsysorg/sglang:latest-cu130`
+(v0.5.21, pulled on castor directly after 7 TLS-timeout retries; Docker
+Hub is flaky from the LAN, not blocked). Same prompts and client as vLLM;
+`--mem-fraction-static 0.8 --max-running-requests 256`, defaults otherwise;
+0 failed requests, no aizynth contamination.
+
+| model | C | out tok/s | per-stream | TTFT p50 / p95 (ms) | peak KV % |
+|---|---|---|---|---|---|
+| gpt-oss 120B | 1 | 30.9 | 31.9 | 484 / 831 | 2 |
+| gpt-oss 120B | 8 | 107.5 | 13.9 | 1632 / 2609 | 13 |
+| gpt-oss 120B | 32 | 198.5 | 6.5 | 3687 / 9435 | 52 |
+| gpt-oss 120B | 64 | 236.6 | 4.3 | 10839 / 19600 | 100 |
+| gpt-oss 120B | 128 | 240.0 | 4.1 | 138633 / 150711 | 100 |
+| Nemotron 3 Super | 1 | 15.8 | 16.5 | 1033 / 2052 | 6 |
+| Nemotron 3 Super | 8 | 59.1 | 7.8 | 3220 / 6591 | 50 |
+| Nemotron 3 Super | 32 | 62.2 | 6.2 | 182802 / 188235 | 69 |
+| Nemotron 3 Super | 64 | 64.1 | 6.4 | 435123 / 444673 | 69 |
+
+- gpt-oss on SGLang reaches 68% of vLLM's aggregate at 32 streams (198 vs
+  290) while its KV pool is only half used, so the gap is decode speed, not
+  memory. Its KV pool fills at 64 (vLLM: 20%), capping it near 240 tok/s.
+- Nemotron on SGLang stops admitting at 11 running requests (likely the
+  default Mamba state pool), so its 32/64 rows are queueing, not load.
+- Untuned defaults on both servers; tuning SGLang's pool sizes could lift
+  its ceiling but not its 32-stream decode rate, which is already below
+  vLLM's with memory to spare.
+- Not diagnosed: the metrics show more running requests than C at some
+  levels (12 at C=8, 117 at C=64).
+
+**Server picked: vLLM** (2026-10-03). It leads on both models at every
+level that matters, and gpt-oss on vLLM leads everything (ceiling about
+450 out tok/s). The model pick waits on the quality check below.
+
 - **SGLang deadline** (Reto 2026-10-03, local-compute-13): if no SGLang
   image route turns up by about 2026-10-04, the server is picked on vLLM
   alone, and the pick says so.
