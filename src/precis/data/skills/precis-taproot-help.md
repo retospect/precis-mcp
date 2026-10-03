@@ -127,9 +127,19 @@ caveat — a downgrade signal, never a hard exclusion.
 
 A bare `[fi<id>]` resolves, in a draft, the fisheye reference ring,
 and the draft export, to the hub's **current** derived `establishes`
-originator(s) — falling back to corroborators, then in-flight — freshly
-re-derived on every render (ADR 0074). A later-discovered originator or
-a hub merge improves the cite on the next render; no re-cite.
+originator(s) — freshly re-derived on every render (ADR 0074). A
+later-discovered originator or a hub merge improves the cite on the next
+render; no re-cite.
+
+With no derived originator it follows the citation standard (cite the
+originating primary plus up to 2 independent confirmations, never every
+paper that mentions the result): among corroborators that are
+passage-grounded, `support: yes` and integrity-clean, the earliest
+non-review (title/journal heuristic) plus up to 2 later ones sharing no
+author with it; a review only when no primary exists; with nothing
+grounded and verified, the single earliest corroborator (noted
+unverified); no supporter at all stays in-flight. `get(id="fi42",
+view="evidence")` shows which tier fired under "citation fallback".
 `precis resolve` (the standalone `.tex`/`.md` CLI, not draft export)
 still keys on the content-hash `[<pub_id>]` form instead — same
 resolution, different token.
@@ -172,7 +182,7 @@ never a claim — mint a proper hub on the grounding passage
 
 Evidence beyond what's agent-minted stays sparse for now — the
 forward-chase passes that auto-discover corroborators run dark by
-default; hub mint, evidence attach, reword-in-place, seniority
+default; hub mint, evidence attach, reword- and rescope-in-place, seniority
 derivation, living-citation resolve, and the fisheye Claims ring are
 all live today. See [[precis-taproot-mint-help]] for the write
 contracts and [[precis-taproot-backfill-help]] for bulk `[pc]`/`[pa]`

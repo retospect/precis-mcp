@@ -1799,7 +1799,7 @@ def _run_lint_fix(
     if normalize is None:
         return False
 
-    from precis.taproot.hub import refine_claim_sentence
+    from precis.taproot.hub import HubFrozenError, refine_claim_sentence
 
     for ref_id, title, _meta, _body in cohort:
         new_title, notes = normalize(title)
@@ -1816,7 +1816,13 @@ def _run_lint_fix(
         # in the partial report as `applied: False`.
         results.append(entry)
         if changed and apply:
-            refine_claim_sentence(store, ref_id, new_title, set_by=set_by)
+            try:
+                refine_claim_sentence(store, ref_id, new_title, set_by=set_by)
+            except HubFrozenError as exc:
+                # An anchored/published hub is never edited by a sweep —
+                # skip it and report it (supersede is a human door).
+                entry["skipped"] = str(exc)
+                continue
             entry["applied"] = True
     return True
 
@@ -1849,6 +1855,9 @@ def _print_lint_fix(
 
     tag = "" if applied else "  [DRY-RUN]"
     for r in changed:
+        if r.get("skipped"):
+            print(f"fi{r['hub_ref_id']}: SKIPPED — {r['skipped']}")
+            continue
         verb = "applied" if r["applied"] else "would apply"
         print(f"fi{r['hub_ref_id']}: {verb}{tag}")
         print(f"  - {r['old_title']}")

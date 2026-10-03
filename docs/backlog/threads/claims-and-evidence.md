@@ -16,10 +16,12 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-1. **Scope chain** — `taproot-hub-scope-no-edit-door` (in flight 10-02:
-   `edit(kind='finding', meta={'scope': …})` through
-   `refine_claim_sentence`, which already re-derives `pub_id` and keeps the
-   old as alias — a scope edit is an identity edit like a retitle) ·
+0. **Round 2 queue (10-02 ~22:40Z).**
+   - Committed here, unlanded: the scope edit door, the anchored/published refusal (orchestrator: land early in round 2), and the cite-standard fallback (079e07f16 + d9a287074). The fallback waits on the orchestrator's sample check (reviews/claims-and-evidence.md §3); after that, send nanobuds-paper the dr173020 (nanobuds review) before/after key set.
+   - In flight: the report/definition types + web anchor, with migration 0183 going to the orchestrator's gate.
+1. **Scope chain** — (edit door shipped 10-02: `edit(kind='finding',
+   meta={'scope': …})`; `refine_claim_sentence` now refuses an anchored/published
+   hub — `HubFrozenError`; the notation sweep skips + reports it) ·
    `scope-key-vocabulary-registry` (two hardcoded key sets,
    `sentence_lint.SCOPE_KEYS` and `canon._SCOPE_KEYS`) — **blocked on
    knowledge-mesh's `term-taxonomy` v1.5 `axis` start node**: Reto ruled
@@ -44,6 +46,10 @@ defect and follow-on cluster below is owned here.
    demotion triage, the extract_claim outage audit in `chase.py` and the
    `hub_refine` paths) ·
    `taproot-claim-quality` (§a mostly superseded by the hearsay gate) ·
+   hub_refine prune stage stays disabled until the judge re-judges against
+   the CURRENT hub sentence and skips an edge that is the sole support for a
+   clause of a citing draft sentence (dr173020: 100 votes = 53 bad · 25
+   redundant · 21 needed; review item `nanobuds-paper-21`, awaiting Reto) ·
    `taproot-inbound-grounding` · `computed-pathways-cannot-be-cited-as-
    claim-evidence` (open: magnitude re-check, re-dispatch of a `ready`
    pathway, nanopub visibility, web attach form).

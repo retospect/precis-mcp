@@ -452,8 +452,18 @@ def test_hub_stays_clean_when_one_supporter_is_acquirable(store: Any) -> None:
     hub = mint_hub(store, _CLAIM)
     unacq = _paper(store, cite_key="una01a")
     readable = _paper(store, cite_key="rd01a")
-    attach_evidence(store, hub_ref_id=hub, paper_ref_id=unacq, role="corroborates")
-    attach_evidence(store, hub_ref_id=hub, paper_ref_id=readable, role="corroborates")
+    # Both grounded + verified, so both reach the print citation (an
+    # unverified-only hub would print just the single earliest corroborator).
+    grounded = {"support": "yes", "source_handle": "pc1"}
+    for p in (unacq, readable):
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=p,
+            role="corroborates",
+            meta=grounded,
+            check_retraction=False,
+        )
     store.update_ref(unacq, meta_patch={"unacquirable_override": _unacq()})
 
     result = claim_trust(store, hub)

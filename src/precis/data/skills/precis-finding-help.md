@@ -385,11 +385,16 @@ no resolvable inline citation. Mark it terminal with
 run `precis worker --only fetch`.
 
 **`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
-(above) | `title=` | `unacquirable_note=` | `testable_by=`/`motivation=`
-— passing more than one errors (`testable_by=`/`motivation=` may combine
-with each other). `title=` retitles a `TAPROOT:claim` hub in place
-(rejects a plain finding); see `precis-taproot-mint-help`'s "Reword a hub
-in place". `testable_by=`/`motivation=` sharpen a still-`candidate`
+(above) | `title=` | `meta={'scope': {...}}` | `unacquirable_note=` |
+`testable_by=`/`motivation=` — passing more than one errors
+(`testable_by=`/`motivation=` may combine with each other, and
+`meta={'scope': …}` with `title=`). `title=` retitles a `TAPROOT:claim`
+hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
+"Reword a hub in place". `meta={'scope': {...}}` replaces a hub's scope
+(`{}` clears it; only the `scope` key is accepted; `dry_run=True`
+previews) — scope is part of the hub's identity, so it re-derives the
+`pub_id` and keeps the old one as an alias, like a retitle; see
+`precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=` sharpen a still-`candidate`
 hypothesis's falsification terms (rejected on any other finding, or once
 a human has reviewed it) — see `precis-nanopub-help`'s "Sharpening".
 `unacquirable_note=`

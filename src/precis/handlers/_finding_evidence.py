@@ -143,6 +143,8 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
     summary += ")"
     lines += ["", summary]
 
+    lines += _citation_fallback_section(store, evidence, refs_by_id)
+
     lines += ["", "## contradicts", ""]
     lines.append(_table(evidence.contradictors) if evidence.contradictors else "(none)")
 
@@ -150,6 +152,52 @@ def render_evidence_view(store: Store, ref: Ref) -> Response:
         lines += ["", "support outcomes are populated by chase (Phase 3)"]
 
     return Response(body="\n".join(lines))
+
+
+def _citation_fallback_section(
+    store: Store,
+    evidence: seniority.HubEvidence,
+    refs_by_id: dict[int, Ref],
+) -> list[str]:
+    """The "citation fallback" block: when the hub has no derived originator
+    with a cite_key, what a bare ``[fi<id>]`` cites instead and why — the
+    tier that fired and the review heuristic's verdict on every candidate
+    (:class:`~precis.taproot.cite.FallbackDecision`, recomputed read-only).
+    Empty for a hub whose originators resolve (nothing fell back)."""
+    from precis.format import render_agent_table
+    from precis.taproot.cite import resolve_hub_print
+
+    supporters = [*evidence.originators, *evidence.corroborators]
+    printed = resolve_hub_print(
+        store,
+        evidence,
+        cite_key_map=store.ref_cite_keys_bulk([e.paper_ref_id for e in supporters]),
+        paper_refs=refs_by_id,
+    )
+    decision = printed.decision
+    if decision is None:
+        return []
+    out = [
+        "",
+        "## citation fallback",
+        "",
+        f"no derived originator — a bare [fi{evidence.hub_ref_id}] cites "
+        f"{', '.join(printed.cite_keys)} ({decision.tier} tier). "
+        f"{decision.rule}. Review heuristic patterns {decision.patterns_version}.",
+    ]
+    rows = [
+        {
+            "key": c.cite_key,
+            "year": str(c.year) if c.year is not None else "—",
+            "verdict": "primary"
+            if c.review_reason is None
+            else f"review-like: {c.review_reason}",
+            "outcome": c.outcome,
+        }
+        for c in decision.candidates
+    ]
+    out += ["", render_agent_table(rows, schema=["key", "year", "verdict", "outcome"])]
+    return out
 
 
 def _motivation_section(store: Store, hub_ref_id: int) -> list[str]:

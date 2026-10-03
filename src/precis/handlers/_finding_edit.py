@@ -1,7 +1,8 @@
-"""``edit(kind='finding', ...)`` — pick_candidate / title / unacquirable_note.
+"""``edit(kind='finding', ...)`` — pick_candidate / title / meta={'scope'} /
+unacquirable_note.
 
 Split out of ``finding.py`` (docs/backlog/codereview-residuals.md):
-this state machine (~350 lines across three mutually-exclusive ops) only
+this state machine (~350 lines across the mutually-exclusive ops) only
 ever touched ``self.store``/``self.kind``, never any other handler state,
 so it moves as free functions taking the store (and the finding kind
 string) explicitly. ``FindingHandler.edit`` calls :func:`edit` directly.
@@ -15,15 +16,24 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.handlers import _finding_hypothesis
 from precis.handlers._finding_common import fetch_ref_any_kind
+from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
 from precis.store.types import Tag
 from precis.taproot import authoring, hub
+from precis.taproot.sentence_lint import lint_scope
 
 if TYPE_CHECKING:
     from precis.store import Store
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
+
+#: ``next=`` for a retitle/rescope refused on an anchored/published hub
+#: (:class:`precis.taproot.hub.HubFrozenError`).
+_FROZEN_NEXT = (
+    "the hub's nanopub is anchored/published, so its identity is frozen — "
+    "supersede the nanopub (a human door) and edit the successor instead"
+)
 
 
 def edit(
@@ -37,6 +47,7 @@ def edit(
     unacquirable_mode: str | None = None,
     testable_by: str | None = None,
     motivation: str | None = None,
+    meta: dict[str, Any] | None = None,
     dry_run: bool | str | None = None,
 ) -> Response:
     """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
@@ -77,6 +88,39 @@ def edit(
     reworded (fixing a claim-quality issue, e.g. a dangling
     demonstrative). A plain (non-hub) finding has no ``edit(title=…)``
     door — mutate its claim via a fresh ``put()``.
+
+    **Rescope a hub.** ``meta={'scope': {...}}`` is the write door for a
+    claim hub's ``refs.meta.scope`` (only the ``scope`` key is accepted in
+    ``meta=`` here — any other key is a ``BadInput`` naming the accepted
+    set). Same single write door as ``title=`` — a scope edit **is** an
+    identity edit: ``scope`` is part of the content-derived ``pub_id``
+    (:func:`~precis.identity.make_taproot_hub_paper_id`) and of the
+    ``(sentence, scope)`` dedup key, so changing it moves the claim's
+    identity exactly as a retitle does, and it goes through
+    :func:`~precis.taproot.hub.refine_claim_sentence` (``scope=`` replaces
+    ``meta.scope``, it does not merge) rather than a bare meta patch: the
+    ``pub_id`` is re-derived and the old one kept as an alias, so
+    existing ``[handle]`` cites still resolve, and a new ``pub_id`` that
+    collides with a *different* live hub raises (a merge candidate — never
+    merged silently). A scope left stale after a retitle is a hub the
+    dedup key no longer matches, so a later mint of the same claim forks a
+    duplicate hub instead of converging.
+
+        edit(kind='finding', id='fi<N>', meta={'scope': {'material': 'C60'}})
+        edit(kind='finding', id='fi<N>', meta={'scope': {}})   # clear scope
+        edit(kind='finding', id='fi<N>', title='<reworded>',
+             meta={'scope': {...}})                            # both at once
+
+    ``scope`` must be a dict of str -> str; ``{}`` clears it. Scope lint
+    (:func:`~precis.taproot.sentence_lint.lint_scope`) is **advisory**
+    here exactly as at mint — free-text values and keys outside
+    ``SCOPE_KEYS`` are reported in the response, never refused (a refusal
+    would make a hub the mint path accepts impossible to correct).
+    ``dry_run=True`` previews old -> new scope and old -> new ``pub_id`` and
+    writes nothing. Like ``title=``, not gated on the nanopub publish
+    state: a hub past ``candidate`` is rescoped just as it is retitled.
+    Mutually exclusive with ``pick_candidate=`` / ``unacquirable_note=`` /
+    ``testable_by=`` / ``motivation=``; combinable with ``title=``.
 
     **Unacquirable override.** A print-only / undigitized source is
     legitimately citeable even when no digital copy is obtainable.
@@ -137,8 +181,10 @@ def edit(
     was cryptographically attested. Mint a fresh hypothesis and link it to
     this one instead.
 
-    No op here supports ``dry_run`` (see below).
+    Only the ``meta={'scope': …}`` door supports ``dry_run`` (see above);
+    every other op rejects it.
     """
+    meta_scope = _scope_from_meta(meta) if meta is not None else None
     given = [
         name
         for name, value in (
@@ -151,17 +197,24 @@ def edit(
     sharpening = testable_by is not None or motivation is not None
     if sharpening:
         given.append("testable_by/motivation")
-    if len(given) > 1:
+    rescoping = meta_scope is not None
+    if rescoping:
+        given.append("meta['scope']")
+    # ``title`` + ``meta['scope']`` is the one allowed pairing: both reword
+    # the same hub through a single ``refine_claim_sentence`` call.
+    exclusive = [g for g in given if not (rescoping and g == "title")]
+    if len(exclusive) > 1:
         raise BadInput(
             "edit(kind='finding') accepts exactly one of pick_candidate, "
-            "title, unacquirable_note, or testable_by=/motivation= — got "
-            f"{', '.join(given)}",
+            "title (optionally with meta={'scope': …}), unacquirable_note, "
+            f"or testable_by=/motivation= — got {', '.join(given)}",
             next=(
                 "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
                 "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
                 "edit(kind='finding', id=<N>, unacquirable_note='<why>') / "
                 "edit(kind='finding', id='fi<N>', testable_by='<sharpened "
-                "experiment>')"
+                "experiment>') / "
+                "edit(kind='finding', id='fi<N>', meta={'scope': {...}})"
             ),
         )
     if unacquirable_mode is not None and unacquirable_note is None:
@@ -172,6 +225,11 @@ def edit(
                 "edit(kind='finding', id=<N>, unacquirable_note='<why>', "
                 "unacquirable_mode='abstract')"
             ),
+        )
+    if rescoping:
+        assert meta_scope is not None
+        return _rescope_hub(
+            store, id=id, title=title, scope=meta_scope, dry_run=bool(dry_run)
         )
     if title is not None:
         if dry_run:
@@ -326,6 +384,161 @@ def edit(
     )
 
 
+#: The only ``meta=`` key the finding edit handler accepts — the hub
+#: ``scope`` write door. Anything else is a BadInput naming this set.
+_META_KEYS = frozenset({"scope"})
+
+
+def _scope_from_meta(meta: dict[str, Any]) -> dict[str, str]:
+    """Validate ``meta=`` for ``edit(kind='finding')`` and return the
+    ``scope`` dict. Only ``scope`` is accepted; it must be a dict of
+    str -> str (``{}`` clears it)."""
+    extra = sorted(set(meta) - _META_KEYS)
+    if extra or "scope" not in meta:
+        raise BadInput(
+            f"edit(kind='finding') meta= accepts only {sorted(_META_KEYS)!r} "
+            f"— got {sorted(meta)!r}",
+            next="edit(kind='finding', id='fi<N>', meta={'scope': {'material': '…'}})",
+        )
+    scope = meta["scope"]
+    if not isinstance(scope, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in scope.items()
+    ):
+        raise BadInput(
+            "edit(kind='finding') meta['scope'] must be a dict of str -> str "
+            f"(got {scope!r}); {{}} clears the scope",
+            next="edit(kind='finding', id='fi<N>', meta={'scope': {'material': 'C60'}})",
+        )
+    return dict(scope)
+
+
+def _resolve_claim_hub(store: Store, id: int | str) -> int | None:
+    """Resolve ``id`` to a live ``TAPROOT:claim`` hub ref_id, else ``None``."""
+    try:
+        return authoring.resolve_hub_ref_id(store, id)
+    except BadInput:
+        return None
+
+
+def _rescope_hub(
+    store: Store,
+    *,
+    id: int | str | None,
+    title: str | None,
+    scope: dict[str, str],
+    dry_run: bool,
+) -> Response:
+    """``edit(kind='finding', meta={'scope': …}[, title=…])`` — replace a
+    claim hub's scope through :func:`~precis.taproot.hub.refine_claim_sentence`
+    (see the module's "Rescope a hub" docstring for why a scope edit is an
+    identity edit). ``title=None`` keeps the current sentence."""
+    if id is None:
+        raise BadInput(
+            "edit(kind='finding', meta={'scope': …}) requires id=<hub ref_id, "
+            "fi<id> handle, or pub_id>",
+            next="edit(kind='finding', id='fi<N>', meta={'scope': {...}})",
+        )
+    hub_ref_id = _resolve_claim_hub(store, id)
+    if hub_ref_id is None:
+        raise BadInput(
+            f"edit(kind='finding', meta={{'scope': …}}) only rescopes a "
+            f"TAPROOT:claim hub — id={id!r} does not resolve to one",
+            next=(
+                "a plain (non-hub) finding has no scope-edit door — "
+                "record a fresh put(kind='finding', title=…, scope=…) instead"
+            ),
+        )
+    ref = store.get_ref(kind="finding", id=hub_ref_id)
+    assert ref is not None
+    old_title = str(ref.title or "")
+    old_scope = dict((ref.meta or {}).get("scope") or {})
+    new_title = title.strip() if title is not None else old_title
+    # Advisory exactly as at mint (authoring.seed_claim_hub's ``scope_lint``):
+    # free text / unknown keys warn, never refuse. A deliberate clear is not
+    # linted ("scope-empty" would nag the caller who just asked for it).
+    lints = lint_scope(scope) if scope else []
+    old_pub_id = make_pub_id(make_taproot_hub_paper_id(old_title, old_scope))
+    if dry_run:
+        if not new_title:
+            raise BadInput("edit(kind='finding', title=…) requires a non-empty title")
+        new_pub_id = make_pub_id(make_taproot_hub_paper_id(new_title, scope))
+        with store.pool.connection() as conn:
+            owner = conn.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'pub_id' AND id_value = %s",
+                (new_pub_id,),
+            ).fetchone()
+        if owner is not None and int(owner[0]) != hub_ref_id:
+            raise BadInput(
+                f"dry-run: new pub_id={new_pub_id} already belongs to "
+                f"ref_id={int(owner[0])} — this looks like a dedup/merge "
+                "candidate; the real edit would refuse",
+                next="pick a different scope/title, or resolve the dup by hand",
+            )
+        return Response(
+            body=_rescope_body(
+                f"dry-run: would rescope claim hub fi{hub_ref_id} (nothing written)",
+                old_title,
+                new_title,
+                old_scope,
+                scope,
+                f"pub_id: {old_pub_id} -> {new_pub_id}",
+                lints,
+            )
+        )
+    try:
+        result = hub.refine_claim_sentence(
+            store, hub_ref_id, new_title, scope=scope, set_by="agent"
+        )
+    except ValueError as exc:
+        raise BadInput(
+            f"edit(kind='finding', id='fi{hub_ref_id}', meta={{'scope': …}}) "
+            f"failed: {exc}",
+            next=_FROZEN_NEXT
+            if isinstance(exc, hub.HubFrozenError)
+            else (
+                "the rescoped claim's pub_id collides with a different hub — "
+                "resolve the dedup by hand (link_claims / delete one hub) "
+                "before rescoping"
+            ),
+        ) from exc
+    alias_note = (
+        " (old pub_id kept as an alias — existing [handle] cites still resolve)"
+        if result["pub_id_alias_kept"]
+        else ""
+    )
+    return Response(
+        body=_rescope_body(
+            f"rescoped claim hub fi{hub_ref_id}",
+            old_title,
+            result["new_title"],
+            old_scope,
+            scope,
+            f"pub_id: {old_pub_id} -> {result['pub_id']}{alias_note}",
+            lints,
+        )
+    )
+
+
+def _rescope_body(
+    head: str,
+    old_title: str,
+    new_title: str,
+    old_scope: dict[str, Any],
+    new_scope: dict[str, Any],
+    pub_line: str,
+    lints: list[str],
+) -> str:
+    lines = [head, f"scope: {old_scope!r} -> {new_scope!r}"]
+    if new_title != old_title:
+        lines += [f"old: {old_title}", f"new: {new_title}"]
+    lines.append(pub_line)
+    if lints:
+        lines.append("lint (advisory):")
+        lines += [f"  - {w}" for w in lints]
+    return "\n".join(lines)
+
+
 def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
     """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
 
@@ -340,10 +553,7 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             "fi<id> handle, or pub_id>",
             next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
         )
-    try:
-        hub_ref_id = authoring.resolve_hub_ref_id(store, id)
-    except BadInput:
-        hub_ref_id = None
+    hub_ref_id = _resolve_claim_hub(store, id)
     if hub_ref_id is None:
         raise BadInput(
             f"edit(kind='finding', title=…) only retitles a TAPROOT:claim "
@@ -358,7 +568,9 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
     except ValueError as exc:
         raise BadInput(
             f"edit(kind='finding', id='fi{hub_ref_id}', title=…) failed: {exc}",
-            next=(
+            next=_FROZEN_NEXT
+            if isinstance(exc, hub.HubFrozenError)
+            else (
                 "the reworded sentence's pub_id collides with a different "
                 "hub — pick distinct wording, or resolve the dedup by hand "
                 "(link_claims / delete one hub) before retitling"

@@ -4,8 +4,9 @@ shared authorial-pin overlay.
 Both ``precis resolve`` (:mod:`precis.cli.resolve`) and the draft export
 (:mod:`precis.export.latex` / :mod:`precis.export.docx`) resolve a
 ``TAPROOT:claim`` hub's ``[<pub_id>]`` / ``[fi<id>]`` cite to the SAME
-derived ``establishes`` originator(s) — falling back to corroborators,
-then to in-flight when the hub has no supporting evidence at all. That
+derived ``establishes`` originator(s) — falling back to the citation
+standard over the corroborators (:func:`hub_cite_keys`), then to in-flight
+when the hub has no supporting evidence at all. That
 policy is locked here, once, and imported by both surfaces so they can
 never quietly diverge (that divergence was the exact bug Phase 1 fixes).
 
@@ -20,9 +21,12 @@ author writes it.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from precis.taproot.review_like import PATTERNS_VERSION, review_reason
 from precis.taproot.seniority import (
     EvidenceEdge,
     HubEvidence,
@@ -34,18 +38,17 @@ if TYPE_CHECKING:
     from precis.store.protocols import ClaimTrustStore, PinStore
 
 
-def _cite_keys_for_group(
+def _keyed_edges(
     store: ClaimTrustStore,
     edges: list[EvidenceEdge],
     *,
     cite_key_map: dict[int, list[str]] | None = None,
-) -> tuple[list[str], list[int]]:
-    """Resolve each edge's paper to its (oldest) ``cite_key`` alias.
+) -> tuple[list[tuple[EvidenceEdge, str]], list[int]]:
+    """Pair each edge with its paper's (oldest) ``cite_key`` alias.
 
-    Returns ``(cite_keys, skipped_ref_ids)`` — a paper with no
-    ``cite_key`` alias at all is dropped from the render rather than
-    failing the whole hub, and its ``ref_id`` is reported back so the
-    caller can warn about it.
+    Returns ``(keyed, skipped_ref_ids)`` — a paper with no ``cite_key``
+    alias at all is dropped rather than failing the whole hub, and its
+    ``ref_id`` is reported back so the caller can warn about it.
 
     ``cite_key_map`` — a pre-fetched ``{paper_ref_id: aliases}`` map
     (:func:`~precis.store.Store.ref_cite_keys_bulk`) — skips the
@@ -54,7 +57,7 @@ def _cite_keys_for_group(
     ``claim_trust`` re-derived the same hub — see :mod:`precis.taproot.trust`).
     ``None`` (the default) preserves the old per-edge query behaviour.
     """
-    cite_keys: list[str] = []
+    keyed: list[tuple[EvidenceEdge, str]] = []
     skipped: list[int] = []
     for edge in edges:
         aliases = (
@@ -63,37 +66,162 @@ def _cite_keys_for_group(
             else store.ref_cite_keys(edge.paper_ref_id)
         )
         if aliases:
-            cite_keys.append(aliases[0])
+            keyed.append((edge, aliases[0]))
         else:
             skipped.append(edge.paper_ref_id)
-    return cite_keys, skipped
+    return keyed, skipped
 
 
-def hub_cite_keys(
+def _cite_keys_for_group(
+    store: ClaimTrustStore,
+    edges: list[EvidenceEdge],
+    *,
+    cite_key_map: dict[int, list[str]] | None = None,
+) -> tuple[list[str], list[int]]:
+    """:func:`_keyed_edges` reduced to ``(cite_keys, skipped_ref_ids)``."""
+    keyed, skipped = _keyed_edges(store, edges, cite_key_map=cite_key_map)
+    return [key for _edge, key in keyed], skipped
+
+
+def _year_order(edge: EvidenceEdge) -> tuple[bool, int, int]:
+    """Earliest-published first: year asc, ties by ref_id asc, no year last."""
+    return (edge.year is None, edge.year or 0, edge.paper_ref_id)
+
+
+def _norm_family(raw: str) -> str:
+    """Accent-folded, lower-cased, letters-only family name (``"Müller-Lee"``
+    → ``"mullerlee"``) so spelling/punctuation variants of one surname match."""
+    folded = unicodedata.normalize("NFKD", raw).casefold()
+    return re.sub(r"[^a-z]", "", folded.encode("ascii", "ignore").decode("ascii"))
+
+
+def _author_families(ref: Any) -> frozenset[str]:
+    """The normalised family names of a paper's ``refs.authors``.
+
+    The real shape is a list of dicts: ``{"given", "family", "orcid"?, …}``,
+    or ``{"name": "…"}`` for an unsplit byline — for those the family is the
+    part before a comma, else the last whitespace token. Empty when the ref
+    is missing or has no (usable) authors."""
+    out: set[str] = set()
+    for entry in getattr(ref, "authors", None) or []:
+        if not isinstance(entry, dict):
+            continue
+        family = str(entry.get("family") or "")
+        if not family:
+            name = str(entry.get("name") or "").strip()
+            if "," in name:
+                family = name.split(",", 1)[0]
+            elif name:
+                family = name.split()[-1]
+        fam = _norm_family(family)
+        if fam:
+            out.add(fam)
+    return frozenset(out)
+
+
+@dataclass(frozen=True)
+class CandidateVerdict:
+    """One fallback candidate's row in the decision record: what the
+    review heuristic said (and which pattern fired) and what happened to it."""
+
+    paper_ref_id: int
+    cite_key: str
+    year: int | None
+    title: str
+    #: ``None`` = research-like ("primary"); else the pattern that fired
+    #: (:func:`~precis.taproot.review_like.review_reason`).
+    review_reason: str | None
+    #: Why it was / wasn't printed — one of the ``OUTCOME_*`` strings.
+    outcome: str
+
+
+OUTCOME_FIRST = "printed: earliest primary"
+OUTCOME_CONFIRMATION = "printed: independent confirmation"
+OUTCOME_SHARED_AUTHOR = "not printed: shares an author with the first primary"
+OUTCOME_CAP = "not printed: cap of 3 reached"
+OUTCOME_REVIEW_PRINTED = "printed: earliest review (no primary)"
+OUTCOME_REVIEW_HELD = "not printed: review, a primary exists"
+OUTCOME_REVIEW_LATER = "not printed: review, an earlier review is printed"
+OUTCOME_UNVERIFIED = "printed: earliest corroborator (nothing grounded + verified)"
+
+
+@dataclass(frozen=True)
+class FallbackDecision:
+    """The decision record for a hub's no-originator fallback — which tier
+    fired, why, and the heuristic's verdict on every candidate. Computed
+    in memory from what the resolver already read (no DB write: the export
+    and ``precis resolve`` paths are read-only); rendered by
+    ``get(kind='finding', view='evidence')``."""
+
+    #: ``'primary'`` | ``'review'`` | ``'unverified'``.
+    tier: str
+    #: One-line statement of the rule that fired.
+    rule: str
+    #: Corroborators with a cite_key that were considered (grounded or not).
+    n_corroborators: int
+    #: Every grounded + verified + clean candidate (for ``'unverified'``: the
+    #: one printed corroborator, since there are no candidates), in
+    #: earliest-first order.
+    candidates: list[CandidateVerdict]
+    #: :data:`precis.taproot.review_like.PATTERNS_VERSION` the verdicts were
+    #: computed under.
+    patterns_version: str = PATTERNS_VERSION
+
+    def summary(self) -> str:
+        """Compact one-line form for a caller's warning log."""
+        rows = "; ".join(
+            f"{c.cite_key} ({c.year or 'n.d.'}) "
+            f"{'PRIMARY' if c.review_reason is None else f'REVIEW[{c.review_reason}]'}"
+            f" -> {c.outcome}"
+            for c in self.candidates
+        )
+        return (
+            f"{self.rule} [review patterns {self.patterns_version}]; candidates: {rows}"
+        )
+
+
+@dataclass(frozen=True)
+class HubPrint:
+    """What a claim hub prints, and which rule produced it."""
+
+    #: The printed papers' edges, in print order (parallel to ``cite_keys``).
+    edges: list[EvidenceEdge]
+    cite_keys: list[str]
+    #: ``(status, detail)`` diagnostics for the caller's warning log.
+    notes: list[tuple[str, str]]
+    #: ``'originator'`` | ``'primary'`` | ``'review'`` | ``'unverified'`` |
+    #: ``'none'`` (in-flight) — which tier of the policy fired.
+    tier: str
+    #: Set only when the corroborator fallback fired (not for originators).
+    decision: FallbackDecision | None = None
+
+
+def _refs_for(
+    store: ClaimTrustStore,
+    ref_ids: list[int],
+    paper_refs: dict[int, Any] | None,
+) -> dict[int, Any]:
+    """``{ref_id: Ref}`` for ``ref_ids`` — from a bulk caller's pre-fetched
+    ``paper_refs`` where present, the rest in ONE ``fetch_refs_by_ids``."""
+    out = {i: paper_refs[i] for i in ref_ids if paper_refs and i in paper_refs}
+    missing = [i for i in ref_ids if i not in out]
+    if missing:
+        out.update(store.fetch_refs_by_ids(missing))
+    return out
+
+
+def resolve_hub_print(
     store: ClaimTrustStore,
     evidence: HubEvidence,
     *,
     cite_key_map: dict[int, list[str]] | None = None,
-) -> tuple[list[str], list[tuple[str, str]]]:
-    """Locked resolution policy for a claim hub's living citation.
-
-    1. Derived ``establishes`` originators, if any have a cite_key.
-    2. Else ``corroborators``, if any have a cite_key (best-available
-       fallback — the caller's warnings note these aren't derived
-       originators yet).
-    3. Else empty — the caller treats the hub as in-flight.
-
-    Returns ``(cite_keys, notes)`` where ``notes`` are ``(status,
-    detail)`` diagnostic pairs meant for a caller's warning/summary log
-    (skipped no-cite_key papers, the corroborator-fallback flag).
-
-    ``cite_key_map`` threads through to :func:`_cite_keys_for_group` — a
-    bulk caller resolving many hubs at once passes one pre-fetched map
-    covering every supporter across every hub instead of paying a query
-    per supporter here.
-    """
+    paper_refs: dict[int, Any] | None = None,
+) -> HubPrint:
+    """The body of :func:`hub_cite_keys`, returning the printed *edges* too —
+    surfaces that mirror the print set (the web ★, the trust harden rule)
+    read ``.edges`` so they cannot drift from what the export cites."""
     notes: list[tuple[str, str]] = []
-    originator_keys, skipped = _cite_keys_for_group(
+    originators, skipped = _keyed_edges(
         store, evidence.originators, cite_key_map=cite_key_map
     )
     for ref_id in skipped:
@@ -103,10 +231,15 @@ def hub_cite_keys(
                 f"originator paper ref_id={ref_id} has no cite_key — skipped",
             )
         )
-    if originator_keys:
-        return originator_keys, notes
+    if originators:
+        return HubPrint(
+            [e for e, _k in originators],
+            [k for _e, k in originators],
+            notes,
+            "originator",
+        )
 
-    corroborator_keys, skipped = _cite_keys_for_group(
+    corroborators, skipped = _keyed_edges(
         store, evidence.corroborators, cite_key_map=cite_key_map
     )
     for ref_id in skipped:
@@ -116,16 +249,183 @@ def hub_cite_keys(
                 f"corroborator paper ref_id={ref_id} has no cite_key — skipped",
             )
         )
-    if corroborator_keys:
-        notes.append(
-            (
-                "established",
-                "resolved via corroborator(s) — no derived originator yet",
-            )
-        )
-        return corroborator_keys, notes
+    if not corroborators:
+        return HubPrint([], [], notes, "none")
+    corroborators.sort(key=lambda ek: _year_order(ek[0]))
 
-    return [], notes
+    # Candidates: passage-grounded (the edge's own source_handle, or a
+    # grounding pointer for the paper that supports rather than contradicts),
+    # verified, and not retracted/corrected.
+    grounded_ids = {
+        g.paper_ref_id
+        for g in evidence.grounding
+        if g.relation in ("establishes", "corroborates")
+    }
+    candidates = [
+        (e, k)
+        for e, k in corroborators
+        if e.support == "yes"
+        and e.integrity == "clean"
+        and (e.source_handle or e.paper_ref_id in grounded_ids)
+    ]
+    if not candidates:
+        # Nothing grounded + verified: never the whole list — the single
+        # earliest corroborator, flagged as unverified.
+        edge, key = corroborators[0]
+        detail = (
+            "resolved via 1 unverified corroborator — no grounded verified supporter"
+        )
+        decision = FallbackDecision(
+            tier="unverified",
+            rule=detail,
+            n_corroborators=len(corroborators),
+            candidates=[
+                CandidateVerdict(
+                    edge.paper_ref_id,
+                    key,
+                    edge.year,
+                    edge.title,
+                    None,
+                    OUTCOME_UNVERIFIED,
+                )
+            ],
+        )
+        notes.append(("established", detail))
+        notes.append(("cite-fallback", decision.summary()))
+        return HubPrint([edge], [key], notes, "unverified", decision)
+
+    refs = _refs_for(store, [e.paper_ref_id for e, _k in candidates], paper_refs)
+
+    def _reason(edge: EvidenceEdge) -> str | None:
+        ref = refs.get(edge.paper_ref_id)
+        journal = (getattr(ref, "meta", None) or {}).get("journal")
+        return review_reason(
+            getattr(ref, "title", None) or edge.title,
+            journal if isinstance(journal, str) else None,
+        )
+
+    reasons = {e.paper_ref_id: _reason(e) for e, _k in candidates}
+    primaries = [(e, k) for e, k in candidates if reasons[e.paper_ref_id] is None]
+    outcomes: dict[int, str] = {}
+    if not primaries:
+        picked = [candidates[0]]
+        tier = "review"
+        rule = (
+            "resolved via corroborator(s) — no derived originator yet "
+            "(no grounded verified primary; earliest grounded verified review)"
+        )
+        for i, (e, _k) in enumerate(candidates):
+            outcomes[e.paper_ref_id] = (
+                OUTCOME_REVIEW_PRINTED if i == 0 else OUTCOME_REVIEW_LATER
+            )
+    else:
+        first, first_key = primaries[0]
+        first_authors = _author_families(refs.get(first.paper_ref_id))
+        picked = [(first, first_key)]
+        outcomes[first.paper_ref_id] = OUTCOME_FIRST
+        for edge, key in primaries[1:]:
+            if len(picked) == 3:
+                outcomes[edge.paper_ref_id] = OUTCOME_CAP
+                continue
+            authors = _author_families(refs.get(edge.paper_ref_id))
+            if not first_authors or not authors:
+                # No authorship to compare: counted as independent, but say so.
+                notes.append(
+                    (
+                        "established",
+                        f"corroborator paper ref_id={edge.paper_ref_id} counted as "
+                        "an independent confirmation without an author check — "
+                        "authors missing",
+                    )
+                )
+            elif first_authors & authors:
+                outcomes[edge.paper_ref_id] = OUTCOME_SHARED_AUTHOR
+                continue
+            picked.append((edge, key))
+            outcomes[edge.paper_ref_id] = OUTCOME_CONFIRMATION
+        for e, _k in candidates:
+            outcomes.setdefault(e.paper_ref_id, OUTCOME_REVIEW_HELD)
+        extra = len(picked) - 1
+        tier = "primary"
+        rule = (
+            "resolved via corroborator(s) — no derived originator yet "
+            f"(earliest grounded verified primary + {extra} independent "
+            f"confirmation{'' if extra == 1 else 's'})"
+        )
+    decision = FallbackDecision(
+        tier=tier,
+        rule=rule,
+        n_corroborators=len(corroborators),
+        candidates=[
+            CandidateVerdict(
+                e.paper_ref_id,
+                k,
+                e.year,
+                e.title,
+                reasons[e.paper_ref_id],
+                outcomes[e.paper_ref_id],
+            )
+            for e, k in candidates
+        ],
+    )
+    notes.append(("established", rule))
+    notes.append(("cite-fallback", decision.summary()))
+    return HubPrint(
+        [e for e, _k in picked], [k for _e, k in picked], notes, tier, decision
+    )
+
+
+def hub_cite_keys(
+    store: ClaimTrustStore,
+    evidence: HubEvidence,
+    *,
+    cite_key_map: dict[int, list[str]] | None = None,
+    paper_refs: dict[int, Any] | None = None,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Locked resolution policy for a claim hub's living citation.
+
+    1. Derived ``establishes`` originators, if any have a cite_key.
+    2. Else the citation standard over the corroborators (Reto's ruling,
+       2026-10-02): *cite the originating primary source plus up to 2
+       independent confirmations; reviews only for claims about the field;
+       never a list of every paper that mentions a result.* Concretely, among
+       corroborators with a cite_key that are **candidates** — passage-grounded
+       (edge ``source_handle`` or a grounding pointer), verified
+       (``support == 'yes'``) and integrity-clean:
+
+       a. the earliest-published **primary** (not
+          :func:`~precis.taproot.review_like.is_review_like`; year asc, ties
+          by ref_id, no year last), plus up to 2 more primaries in year order
+          that share no author (normalised family name) with the first — a
+          paper or first-primary with no authors is counted independent, with
+          a note;
+       b. else the single earliest review-like candidate. Reviews are only
+          ever printed when there is no primary: there is no survey-claim
+          detector yet, so a field-level claim gets its review only by that
+          fallback or a pin;
+       c. else (nothing grounded + verified) the single earliest corroborator
+          with a cite_key, noted as unverified.
+    3. Else empty — the caller treats the hub as in-flight.
+
+    "Primary" is a title/journal heuristic today (there is no review flag);
+    it tightens to "states it as its own result" when
+    ``evidence-edge-verification`` lands. A pin (``[fi…>pc…]`` /
+    :func:`apply_pin`) overrides all of this.
+
+    Returns ``(cite_keys, notes)`` where ``notes`` are ``(status,
+    detail)`` diagnostic pairs meant for a caller's warning/summary log
+    (skipped no-cite_key papers, which fallback tier fired).
+
+    ``cite_key_map`` threads through to :func:`_keyed_edges` — a bulk
+    caller resolving many hubs at once passes one pre-fetched map covering
+    every supporter across every hub instead of paying a query per supporter
+    here. ``paper_refs`` is its twin for the candidates' title/journal/
+    authors; any candidate it lacks is fetched in one ``fetch_refs_by_ids``.
+    """
+    result = resolve_hub_print(
+        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+    )
+    return result.cite_keys, result.notes
 
 
 @dataclass(frozen=True)
@@ -354,10 +654,14 @@ def apply_pin(
 
 
 __all__ = [
+    "CandidateVerdict",
+    "FallbackDecision",
     "FindingCite",
+    "HubPrint",
     "PinResult",
     "apply_pin",
     "finding_cite_keys",
     "hub_cite_keys",
+    "resolve_hub_print",
     "resolve_pin_handle",
 ]

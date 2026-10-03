@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from markupsafe import Markup
 
-from precis.taproot.cite import hub_cite_keys
+from precis.taproot.cite import resolve_hub_print
 from precis.taproot.seniority import (
     CiterEdge,
     ComputedEdge,
@@ -649,9 +649,12 @@ def _render_one(
     caller's default) falls back to their old per-call query behaviour."""
     claim = " ".join((getattr(hub_ref, "title", None) or "").split()) if hub_ref else ""
 
-    # Print set (★): originators when derived, else corroborators as the
-    # fallback — the same policy `finding_cite_keys` prints from.
-    corroborators_print = not evidence.originators
+    # Print set (★): exactly the papers `hub_cite_keys` prints — originators
+    # when derived, else the citation-standard pick among the corroborators.
+    hub_print = resolve_hub_print(
+        store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+    )
+    printed_ids = {e.paper_ref_id for e in hub_print.edges}
     # The hub-derived trust label (trust-surfaces editor badges): empty print
     # set → "unverified", any print-visible supporter → "clean" (hub
     # "unsupported" is deferred — see `claim_trust`'s hub arm). Was a
@@ -692,7 +695,7 @@ def _render_one(
     corroborators = [
         _edge_row(
             e,
-            starred=corroborators_print,
+            starred=e.paper_ref_id in printed_ids,
             paper_ref=refs_map.get(e.paper_ref_id),
             unacq=unacq_by_paper.get(e.paper_ref_id),
         )
@@ -756,7 +759,7 @@ def _render_one(
         _grounding.append((sort_key, grow, label))
     _grounding.sort(key=lambda t: t[0])
     grounding_rows = [(grow, label) for _, grow, label in _grounding]
-    cite_keys, _notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
+    cite_keys = hub_print.cite_keys
     return {
         "head": head,
         "hub_ref_id": ref_id,

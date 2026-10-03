@@ -81,6 +81,30 @@ export** until the passage is re-checked and rewritten. The old
 visible. Reword freely; just expect the citing prose to need a look,
 and prefer one deliberate reword over several cosmetic ones.
 
+## Rescope a hub
+
+A hub's `scope` (`material`, `method`, …) is part of its identity — the
+`pub_id` and the `(sentence, scope)` dedup key hash it — so a retitle
+that fixes the wording but leaves a stale scope term behind leaves the
+hub unfindable by a later mint of the corrected claim (which then forks a
+duplicate). Fix the scope through the same door:
+
+```python
+edit(kind="finding", id="fi42", meta={"scope": {"material": "C60", "method": "cage-cage"}})
+edit(kind="finding", id="fi42", meta={"scope": {}})        # clear it
+edit(kind="finding", id="fi42", title="…reworded…", meta={"scope": {...}})
+edit(kind="finding", id="fi42", meta={"scope": {...}}, dry_run=True)   # preview
+```
+
+`scope` is **replaced**, not merged; values must be strings; only the
+`scope` key is accepted in `meta=`. Same effects as a retitle: the
+`pub_id` is re-derived and the **old one kept as an alias**, a `pub_id`
+that collides with a *different* live hub raises (duplicate-hub signal —
+see "Merge duplicate hubs"), and a non-hub finding is rejected. Scope lint
+(free-text values, keys outside the controlled set) is advisory, as at
+mint: it shows in the response, never blocks. `dry_run=True` previews old
+-> new scope and old -> new `pub_id` and writes nothing.
+
 **Not this door for a materially sharper/narrower claim** — that's a new
 mint + `refines` link, below, not a retitle.
 

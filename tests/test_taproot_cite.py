@@ -17,7 +17,20 @@ from typing import Any
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.cite import apply_pin, finding_cite_keys, resolve_pin_handle
+from precis.taproot.cite import (
+    OUTCOME_CAP,
+    OUTCOME_CONFIRMATION,
+    OUTCOME_FIRST,
+    OUTCOME_REVIEW_HELD,
+    OUTCOME_REVIEW_LATER,
+    OUTCOME_REVIEW_PRINTED,
+    OUTCOME_SHARED_AUTHOR,
+    apply_pin,
+    finding_cite_keys,
+    hub_cite_keys,
+    resolve_hub_print,
+    resolve_pin_handle,
+)
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.taproot.seniority import derive_evidence
 from precis.utils import handle_registry
@@ -273,3 +286,360 @@ def test_apply_pin_supplement_never_diverges_even_when_differing(store: Any) -> 
 
     assert result.diverged is False
     assert result.divergence is None
+
+
+# ── hub fallback: the citation standard over corroborators ──────────────
+#
+# No derived originator (no intra-set `cites` edge) → `hub_cite_keys` picks
+# the earliest grounded+verified non-review corroborator + up to 2 independent
+# confirmations; reviews only when no primary; one unverified corroborator
+# when nothing is grounded+verified. Never the whole list.
+
+_GROUNDED = {"support": "yes", "source_handle": "pc1"}
+
+
+def _supporter(
+    store: Any,
+    hub: int,
+    key: str,
+    *,
+    year: int | None,
+    title: str = "A research result",
+    authors: list[dict[str, Any]] | None = None,
+    journal: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> int:
+    """A paper attached to ``hub`` as a corroborator. ``meta`` is the edge meta
+    (default: grounded + verified); pass ``{}`` for a born-withheld edge."""
+    ref = store.insert_ref(
+        kind="paper",
+        slug=key,
+        title=title,
+        year=year,
+        meta={"journal": journal} if journal else {},
+        authors=authors,
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=ref.id,
+        role="corroborates",
+        meta=dict(_GROUNDED if meta is None else meta),
+        check_retraction=False,
+    )
+    return int(ref.id)
+
+
+def _au(*families: str) -> list[dict[str, Any]]:
+    return [{"given": "X.", "family": f} for f in families]
+
+
+def _fallback_keys(store: Any, hub: int) -> tuple[list[str], list[tuple[str, str]]]:
+    return hub_cite_keys(store, derive_evidence(store, hub))
+
+
+def test_fallback_only_grounded_verified_count(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbg01a", year=2001, meta={})  # withheld (no verdict)
+    _supporter(store, hub, "fbg02a", year=2002, meta={"support": "yes"})  # ungrounded
+    _supporter(
+        store, hub, "fbg03a", year=2003, meta={"support": "no", "source_handle": "pc1"}
+    )  # grounded but unsupported
+    _supporter(store, hub, "fbg04a", year=2004)  # grounded + verified
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbg04a"]
+    assert any("primary + 0 independent confirmations" in d for _, d in notes)
+
+
+def test_fallback_grounding_entry_without_edge_source_handle_counts(
+    store: Any,
+) -> None:
+    """A paper→hub edge pinning ``src_chunk_id`` (no ``meta.source_handle``)
+    surfaces in ``HubEvidence.grounding`` and still counts as grounded."""
+    hub = mint_hub(store, _CLAIM)
+    ref = store.insert_ref(
+        kind="paper", slug="fbgr01a", title="Result", year=2001, meta={}
+    )
+    _paper_chunk(store, ref.id, ord=0)
+    store.add_link(
+        src_ref_id=ref.id,
+        dst_ref_id=hub,
+        relation="corroborates",
+        src_pos=0,
+        meta={"support": "yes"},
+    )
+    evidence = derive_evidence(store, hub)
+    assert evidence.corroborators and evidence.corroborators[0].source_handle is None
+    assert evidence.grounding
+
+    keys, _notes = hub_cite_keys(store, evidence)
+
+    assert keys == ["fbgr01a"]
+
+
+def test_fallback_earliest_primary_beats_older_review(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(
+        store, hub, "fbr01a", year=1999, title="Nanobuds: a review", authors=_au("Aa")
+    )
+    _supporter(
+        store, hub, "fbr02a", year=2004, journal="Chemical Reviews", authors=_au("Bb")
+    )
+    _supporter(store, hub, "fbp03a", year=2006, authors=_au("Cc"))
+    _supporter(store, hub, "fbp04a", year=2008, authors=_au("Dd"))
+
+    keys, _notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbp03a", "fbp04a"]  # no review, primary first
+
+
+def test_fallback_skips_shared_author_confirmation(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fba01a", year=2001, authors=_au("Smith", "Jones"))
+    _supporter(store, hub, "fba02a", year=2002, authors=_au("Müller", "JONES"))
+    _supporter(store, hub, "fba03a", year=2003, authors=_au("Nguyen"))
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fba01a", "fba03a"]  # fba02a shares "Jones" (case-folded)
+    assert any("primary + 1 independent confirmation)" in d for _, d in notes)
+
+
+def test_fallback_author_overlap_handles_name_only_authors(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbn01a", year=2001, authors=[{"name": "Jane Q. Doe"}])
+    _supporter(store, hub, "fbn02a", year=2002, authors=[{"name": "Doe, Janet"}])
+    _supporter(store, hub, "fbn03a", year=2003, authors=[{"name": "Bob Roe"}])
+
+    keys, _notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbn01a", "fbn03a"]
+
+
+def test_fallback_caps_at_three(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    for i, fam in enumerate(["Aa", "Bb", "Cc", "Dd", "Ee"]):
+        _supporter(store, hub, f"fbc0{i}a", year=2001 + i, authors=_au(fam))
+
+    keys, _notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbc00a", "fbc01a", "fbc02a"]
+
+
+def test_fallback_missing_authors_counted_independent_with_note(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbm01a", year=2001, authors=_au("Aa"))
+    _supporter(store, hub, "fbm02a", year=2002)  # no authors
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbm01a", "fbm02a"]
+    assert any("authors missing" in d for _, d in notes)
+
+
+def test_fallback_year_none_sorts_last_and_ties_by_ref_id(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fby01a", year=None, authors=_au("Aa"))
+    _supporter(store, hub, "fby02a", year=2005, authors=_au("Bb"))
+    _supporter(store, hub, "fby03a", year=2005, authors=_au("Cc"))
+
+    keys, _notes = _fallback_keys(store, hub)
+
+    assert keys == ["fby02a", "fby03a", "fby01a"]
+
+
+def test_fallback_all_review_prints_one_review(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbv01a", year=2010, journal="Nature Reviews Materials")
+    _supporter(store, hub, "fbv02a", year=2005, title="An overview of nanobuds")
+    _supporter(store, hub, "fbv03a", year=2008, title="Progress in nanobuds")
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbv02a"]
+    assert any("earliest grounded verified review" in d for _, d in notes)
+
+
+def test_fallback_nothing_verified_prints_one_unverified_corroborator(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbu01a", year=2004, meta={})
+    _supporter(store, hub, "fbu02a", year=2002, meta={})
+    _supporter(store, hub, "fbu03a", year=2003, meta={"support": "yes"})  # ungrounded
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbu02a"]
+    assert (
+        "established",
+        "resolved via 1 unverified corroborator — no grounded verified supporter",
+    ) in notes
+
+
+def test_fallback_excludes_retracted_candidate(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    bad = _supporter(store, hub, "fbx01a", year=2001, authors=_au("Aa"))
+    _supporter(store, hub, "fbx02a", year=2002, authors=_au("Bb"))
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET retraction_status = 'retracted' WHERE ref_id = %s", (bad,)
+        )
+        conn.commit()
+
+    keys, _notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbx02a"]
+
+
+def test_fallback_originator_still_wins(store: Any) -> None:
+    hub, _origin = _hub_with_derived_originator(
+        store, origin_key="fbo01a", follow_key="fbo02a"
+    )
+    # An extra grounded+verified corroborator must not leak in beside the
+    # derived originator.
+    _supporter(store, hub, "fbo03a", year=2003)
+
+    keys, notes = _fallback_keys(store, hub)
+
+    assert keys == ["fbo01a"]
+    assert not any("resolved via" in d for _, d in notes)
+
+
+def test_fallback_pin_still_overrides(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbq01a", year=2001, authors=_au("Aa"))
+    pinned = _paper(store, cite_key="fbq09a", title="Pinned paper")
+    evidence = derive_evidence(store, hub)
+    keys, _notes = hub_cite_keys(store, evidence)
+
+    result = apply_pin(
+        store,
+        label="fi1",
+        op=">",
+        handles=[handle_registry.format_handle("paper", pinned)],
+        derived_cite_keys=keys,
+        evidence=evidence,
+    )
+
+    assert keys == ["fbq01a"]
+    assert result.cite_keys == ["fbq09a"]
+
+
+def test_fallback_fetches_candidate_refs_in_one_call(store: Any) -> None:
+    """A bulk caller's contract: one ``fetch_refs_by_ids`` for all candidates
+    (none when ``paper_refs`` already covers them), never one per supporter."""
+    hub = mint_hub(store, _CLAIM)
+    for i in range(4):
+        _supporter(store, hub, f"fbq1{i}a", year=2001 + i, authors=_au("Abcd"[i] * 3))
+    evidence = derive_evidence(store, hub)
+    cite_key_map = store.ref_cite_keys_bulk(
+        [e.paper_ref_id for e in evidence.corroborators]
+    )
+    calls: list[list[int]] = []
+    real = store.fetch_refs_by_ids
+
+    class _Spy:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        def fetch_refs_by_ids(self, ref_ids: Any, **kw: Any) -> Any:
+            ids = list(ref_ids)
+            calls.append(ids)
+            return real(ids, **kw)
+
+    spy: Any = _Spy(store)
+    keys, _ = hub_cite_keys(spy, evidence, cite_key_map=cite_key_map)
+    assert len(keys) == 3
+    assert len(calls) == 1 and len(calls[0]) == 4
+
+    calls.clear()
+    prefetched = real([e.paper_ref_id for e in evidence.corroborators])
+    hub_cite_keys(spy, evidence, cite_key_map=cite_key_map, paper_refs=prefetched)
+    assert calls == []
+
+
+def test_decision_record_primary_tier(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(
+        store, hub, "fbd01a", year=1999, title="Nanobuds: a review", authors=_au("Aa")
+    )
+    _supporter(store, hub, "fbd02a", year=2001, authors=_au("Smith"))
+    _supporter(store, hub, "fbd03a", year=2002, authors=_au("Smith"))
+    _supporter(store, hub, "fbd04a", year=2003, authors=_au("Cc"))
+    _supporter(store, hub, "fbd05a", year=2004, authors=_au("Dd"))
+    _supporter(store, hub, "fbd06a", year=2005, authors=_au("Ee"))
+
+    printed = resolve_hub_print(store, derive_evidence(store, hub))
+
+    assert printed.tier == "primary" and printed.decision is not None
+    d = printed.decision
+    assert d.tier == "primary" and d.n_corroborators == 6
+    by_key = {c.cite_key: c for c in d.candidates}
+    assert by_key["fbd01a"].review_reason == "title ~ 'review'"
+    assert by_key["fbd01a"].outcome == OUTCOME_REVIEW_HELD
+    assert by_key["fbd02a"].review_reason is None
+    assert by_key["fbd02a"].outcome == OUTCOME_FIRST
+    assert by_key["fbd03a"].outcome == OUTCOME_SHARED_AUTHOR
+    assert by_key["fbd04a"].outcome == OUTCOME_CONFIRMATION
+    assert by_key["fbd05a"].outcome == OUTCOME_CONFIRMATION
+    assert by_key["fbd06a"].outcome == OUTCOME_CAP
+    # The record rides the notes too (one line, status `cite-fallback`).
+    line = next(d_ for st, d_ in printed.notes if st == "cite-fallback")
+    assert "fbd02a" in line and "REVIEW[title ~ 'review']" in line
+
+
+def test_decision_record_review_tier(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(store, hub, "fbe01a", year=2010, journal="Chemical Reviews")
+    _supporter(store, hub, "fbe02a", year=2005, title="An overview of nanobuds")
+
+    printed = resolve_hub_print(store, derive_evidence(store, hub))
+
+    assert printed.tier == "review" and printed.cite_keys == ["fbe02a"]
+    assert printed.decision is not None
+    by_key = {c.cite_key: c for c in printed.decision.candidates}
+    assert by_key["fbe02a"].outcome == OUTCOME_REVIEW_PRINTED
+    assert by_key["fbe01a"].outcome == OUTCOME_REVIEW_LATER
+    assert by_key["fbe01a"].review_reason == "journal ~ 'Reviews'"
+
+
+def test_decision_record_absent_for_originators(store: Any) -> None:
+    hub, _origin = _hub_with_derived_originator(
+        store, origin_key="fbz01a", follow_key="fbz02a"
+    )
+
+    printed = resolve_hub_print(store, derive_evidence(store, hub))
+
+    assert printed.tier == "originator" and printed.decision is None
+    assert not any(st == "cite-fallback" for st, _ in printed.notes)
+
+
+def test_evidence_view_renders_citation_fallback_block(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    _supporter(
+        store, hub, "fbw01a", year=1999, title="Nanobuds: a review", authors=_au("Aa")
+    )
+    _supporter(store, hub, "fbw02a", year=2001, authors=_au("Bb"))
+
+    body = _make_handler(store).get(id=hub, view="evidence").body
+
+    assert "## citation fallback" in body
+    assert "fbw02a" in body
+    assert "review-like: title ~ 'review'" in body
+    assert OUTCOME_FIRST in body and OUTCOME_REVIEW_HELD in body
+
+
+def test_evidence_view_no_fallback_block_with_originator(store: Any) -> None:
+    hub, _origin = _hub_with_derived_originator(
+        store, origin_key="fbw11a", follow_key="fbw12a"
+    )
+
+    body = _make_handler(store).get(id=hub, view="evidence").body
+
+    assert "## citation fallback" not in body

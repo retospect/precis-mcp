@@ -167,13 +167,47 @@ def test_hub_falls_back_to_corroborators_when_no_originator_derived(store: Any) 
 
     out, summary = _resolve(store, f"[{pub_id}]", format="plain")
 
-    assert "[corA01; corB02]" in out
+    # Nothing is grounded + verified, so the citation standard prints the
+    # single earliest corroborator — never the whole list.
+    assert "[corA01]" in out and "corB02" not in out
     assert summary.resolved_count == 1
     assert summary.inflight_pub_ids == []
     fallback_notes = [
-        w for w in summary.warnings if w[0] == pub_id and "corroborator" in w[2]
+        w
+        for w in summary.warnings
+        if w[0] == pub_id and "1 unverified corroborator" in w[2]
     ]
     assert fallback_notes, f"missing corroborator-fallback note; got {summary.warnings}"
+
+
+def test_hub_fallback_prints_grounded_primary_plus_independent_confirmation(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    pub_id = _hub_pub_id(store, hub)
+    ev = {"support": "yes", "source_handle": "pc1"}
+    review = _paper(store, cite_key="revw99", title="Nanobuds: a review", year=1999)
+    a = _paper(store, cite_key="corA01", title="A", year=2001)
+    b = _paper(store, cite_key="corB02", title="B", year=2002)
+    for p in (review, a, b):
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=p,
+            role="corroborates",
+            meta=ev,
+            check_retraction=False,
+        )
+
+    out, summary = _resolve(store, f"[{pub_id}]", format="plain")
+
+    # earliest non-review + the next (no authors on either: counted independent)
+    assert "[corA01; corB02]" in out and "revw99" not in out
+    assert any(
+        w[0] == pub_id and "primary + 1 independent confirmation" in w[2]
+        for w in summary.warnings
+    )
+    assert any(w[1] == "cite-fallback" and "revw99" in w[2] for w in summary.warnings)
 
 
 # ── no supporters at all / no cite_keys → in-flight ─────────────────
@@ -242,11 +276,11 @@ def test_hub_originator_missing_cite_key_falls_back_to_corroborator(store: Any) 
 
     out, summary = _resolve(store, f"[{pub_id}]", format="plain")
 
-    # The only originator has no cite_key -> falls through to *all*
-    # corroborators (follow stayed a corroborator since it wasn't
-    # cited by anything in S; ordered by year: corroborator (2003)
-    # before follow (2005)).
-    assert "[side03a; foll10a]" in out
+    # The only originator has no cite_key -> falls through to the
+    # corroborator fallback (follow stayed a corroborator since it wasn't
+    # cited by anything in S). Neither is grounded + verified, so the single
+    # earliest one is printed: corroborator (2003) before follow (2005).
+    assert "[side03a]" in out and "foll10a" not in out
     assert summary.resolved_count == 1
     skipped_notes = [
         w for w in summary.warnings if w[0] == pub_id and "originator" in w[2]

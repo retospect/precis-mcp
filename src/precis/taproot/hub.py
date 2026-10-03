@@ -465,6 +465,21 @@ def mint_hub(
         return _do(c)
 
 
+class HubFrozenError(ValueError):
+    """A reword/rescope refused because the hub has an ``anchored`` or
+    ``published`` nanopub: the artifact is irreversible, so changing the live
+    hub's sentence or scope would silently diverge it from what was
+    published. The honest move is a supersede, not an edit."""
+
+
+#: Publish states whose artifact is irreversible — :func:`refine_claim_sentence`
+#: refuses a hub carrying a live row in one of them. ``reviewed``/``signed``
+#: stay editable: the mint drift gate (``nanopub/gates.py::check_drift``)
+#: catches a changed sentence before anything irreversible happens, and
+#: approve's own title override goes through this door.
+_IRREVERSIBLE_STATES = ("anchored", "published")
+
+
 def refine_claim_sentence(
     store: Store,
     hub_ref_id: int,
@@ -511,9 +526,15 @@ def refine_claim_sentence(
         :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
         for the new sentence (never blocks, never rewrites).
 
+    Refuses (:class:`HubFrozenError`) a hub with a live ``anchored`` or
+    ``published`` ``nanopub_publish`` row — its identity is in an
+    irreversible artifact; supersede it instead. A bulk caller (a notation
+    repair sweep) catches that, skips the hub and reports it.
+
     Raises:
         ValueError: not a live ``TAPROOT:claim`` hub, empty ``sentence``, or
             the new pub_id belongs to a different ref.
+        HubFrozenError: the hub's nanopub is anchored or published.
         TitleRoundTripError: the written title didn't read back equal.
     """
     stripped = sentence.strip() if sentence else ""
@@ -523,6 +544,17 @@ def refine_claim_sentence(
     def _do(c: Any) -> dict[str, Any]:
         if not _is_claim_hub(hub_ref_id, conn=c):
             raise ValueError(f"ref_id={hub_ref_id} is not a TAPROOT:claim hub")
+        frozen = c.execute(
+            "SELECT state FROM nanopub_publish WHERE claim_ref_id = %s "
+            "AND state = ANY(%s) LIMIT 1",
+            (hub_ref_id, list(_IRREVERSIBLE_STATES)),
+        ).fetchone()
+        if frozen is not None:
+            raise HubFrozenError(
+                f"fi{hub_ref_id} has a {frozen[0]} nanopub — its sentence and "
+                "scope are in an irreversible artifact; supersede it instead of "
+                "editing the hub"
+            )
 
         row = c.execute(
             "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",

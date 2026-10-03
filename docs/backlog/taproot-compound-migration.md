@@ -78,10 +78,10 @@ window so nothing refines/re-embeds mid-repoint; avoid 02:00–03:30 UTC
 (tombstone/undelete exists), `conjunct-of` edges deletable, the stamp
 records what was touched — reverted hub-by-hub, not by restore.
 
-Related, not blocking: atom hubs mint with `scope` in their dedup identity
-but hubs have no scope write door after mint
-(`taproot-hub-scope-no-edit-door.md`) — any apply-time scope mistake is
-currently uncorrectable through the product surface.
+Related, not blocking: atom hubs mint with `scope` in their dedup identity;
+an apply-time scope mistake is corrected with
+`edit(kind='finding', id=…, meta={'scope': {...}})` (re-derives the `pub_id`,
+keeps the old as an alias).
 
 ## Quality gates — all 13 shipped
 

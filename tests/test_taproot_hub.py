@@ -520,6 +520,38 @@ def test_refine_claim_sentence_rejects_non_hub(store: Any) -> None:
         refine_claim_sentence(store, plain, "a new sentence")
 
 
+@pytest.mark.parametrize(
+    ("state", "refused"),
+    [
+        ("candidate", False),
+        ("reviewed", False),
+        ("anchored", True),
+        ("published", True),
+    ],
+)
+def test_refine_claim_sentence_refuses_an_irreversible_hub(
+    store: Any, state: str, refused: bool
+) -> None:
+    """An anchored/published nanopub froze the hub's identity: a reword or
+    rescope must not silently diverge the live hub from it (supersede
+    instead). Reviewed/signed stay editable — the drift gate catches them."""
+    from precis.taproot.hub import HubFrozenError
+
+    hub = mint_hub(store, _CLAIM)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, %s)",
+            (hub, state),
+        )
+        conn.commit()
+    if refused:
+        with pytest.raises(HubFrozenError, match=f"{state} nanopub"):
+            refine_claim_sentence(store, hub, "A reworded, sharper claim sentence.")
+        assert store.fetch_refs_by_ids([hub])[hub].title == _CLAIM.sentence
+    else:
+        refine_claim_sentence(store, hub, "A reworded, sharper claim sentence.")
+
+
 def test_refine_claim_sentence_rejects_empty_sentence(store: Any) -> None:
     hub = mint_hub(store, _CLAIM)
     with pytest.raises(ValueError, match="non-empty sentence"):

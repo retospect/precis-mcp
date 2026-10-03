@@ -1462,20 +1462,25 @@ class FindingHandler(NumericRefHandler):
         unacquirable_mode: str | None = None,
         testable_by: str | None = None,
         motivation: str | None = None,
+        meta: dict[str, Any] | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
         retitle a ``TAPROOT:claim`` hub, record an author's
         unacquirable-source override, or sharpen a live hypothesis's
-        falsification terms (``testable_by=``/``motivation=``). Mutually
-        exclusive kwargs — pass exactly one (``testable_by=``/``motivation=``
-        may be combined with each other, not with the rest); ``dry_run`` is
-        rejected outright (no op has a faithful preview). See
+        falsification terms (``testable_by=``/``motivation=``), or rescope a
+        hub (``meta={'scope': {...}}``). Mutually exclusive kwargs — pass
+        exactly one (``testable_by=``/``motivation=`` may be combined with
+        each other, ``meta={'scope': …}`` with ``title=``, not with the
+        rest); ``dry_run`` is honoured only by the scope door and rejected
+        by every other op (no faithful preview). See
         :func:`precis.handlers._finding_edit.edit` for the full contract
         (pick_candidate promotes a chase candidate + flips status back to
         tracing; title retitles a TAPROOT:claim hub via
-        ``taproot/hub.py::refine_claim_sentence``; unacquirable_note writes
+        ``taproot/hub.py::refine_claim_sentence``; meta={'scope': …} replaces
+        the hub's scope through the same door (scope is part of the
+        content-derived pub_id, so it is an identity edit); unacquirable_note writes
         the trust-surfaces override; testable_by=/motivation= route through
         ``_finding_hypothesis.update_hypothesis``) — the state machine lives
         there since it only ever touches ``self.store``/``self.kind``, not
@@ -1491,6 +1496,7 @@ class FindingHandler(NumericRefHandler):
             unacquirable_mode=unacquirable_mode,
             testable_by=testable_by,
             motivation=motivation,
+            meta=meta,
             dry_run=dry_run,
         )
 

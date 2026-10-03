@@ -405,6 +405,37 @@ def test_run_lint_fix_apply_updates_title_and_body_chunk(
     assert body_row is not None and "kΩ" in body_row[0]
 
 
+def test_run_lint_fix_skips_and_reports_an_anchored_hub(
+    store: Any, monkeypatch: Any
+) -> None:
+    """A notation sweep never edits an anchored/published hub — it skips it,
+    reports it, and still fixes the rest of the cohort."""
+    import precis.taproot.notation as notation_mod
+
+    monkeypatch.setattr(
+        notation_mod, "normalize_notation", _fake_normalize_ohm, raising=False
+    )
+    frozen = _mint(store, "Resistance is 5 kOhm shown by DFT.")
+    free = _mint(store, "Resistance is 7 kOhm shown by DFT.")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO nanopub_publish (claim_ref_id, state) VALUES (%s, 'anchored')",
+            (frozen,),
+        )
+        conn.commit()
+    cohort = taproot_cli._select_lint_cohort(store, [f"fi{frozen}", f"fi{free}"])
+
+    results: list[dict[str, Any]] = []
+    taproot_cli._run_lint_fix(
+        store, cohort, apply=True, set_by="agent", results=results
+    )
+    by_hub = {r["hub_ref_id"]: r for r in results}
+    assert by_hub[frozen]["applied"] is False
+    assert "anchored nanopub" in by_hub[frozen]["skipped"]
+    assert by_hub[free]["applied"] is True
+    assert "kOhm" in store.fetch_refs_by_ids([frozen])[frozen].title
+
+
 def test_run_lint_fix_round_trip_mismatch_raises(store: Any, monkeypatch: Any) -> None:
     """``_run_lint_fix`` no longer runs its own round-trip check -- the
     real write door (:func:`~precis.taproot.hub.refine_claim_sentence`)

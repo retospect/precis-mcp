@@ -2220,6 +2220,153 @@ class TestRetitleHub:
             h.edit(title="a new title")
 
 
+# ── edit(meta={'scope': …}) — rescope a TAPROOT:claim hub ────────────
+
+
+class TestRescopeHub:
+    """``edit(kind='finding', id=<hub>, meta={'scope': …})`` routes through
+    ``refine_claim_sentence(scope=…)`` — a scope edit is an identity edit
+    (scope is in the pub_id hash), so the old pub_id is kept as an alias."""
+
+    def _pub_ids(self, store, ref_id: int) -> set[str]:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'pub_id'",
+                (ref_id,),
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def _mint(self, store, scope=None, sentence="Pd/C catalyzes Suzuki coupling."):
+        return mint_hub(
+            store,
+            CanonicalClaim(
+                sentence=sentence,
+                scope={"material": "Pd/C", "method": "corannulene bowls"}
+                if scope is None
+                else scope,
+            ),
+        )
+
+    def test_rescope_replaces_scope_and_keeps_old_pub_id_alias(self, store) -> None:
+        hub = self._mint(store)
+        (old_pub,) = self._pub_ids(store, hub)
+        h = _make_handler(store)
+
+        out = h.edit(id=hub, meta={"scope": {"material": "Pd/C"}})
+
+        assert f"rescoped claim hub fi{hub}" in out.body
+        ref = store.get_ref(kind="finding", id=hub)
+        # replaced, not merged: the stale `method` key is gone.
+        assert ref.meta["scope"] == {"material": "Pd/C"}
+        pubs = self._pub_ids(store, hub)
+        assert len(pubs) == 2 and old_pub in pubs
+        (new_pub,) = pubs - {old_pub}
+        # both pub_ids resolve to the hub; title untouched.
+        for pid in (old_pub, new_pub):
+            h.edit(id=pid, meta={"scope": {"material": "Pd/C"}})
+        assert ref.title == "Pd/C catalyzes Suzuki coupling."
+
+    def test_rescope_with_title_is_one_call(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        out = h.edit(
+            id=hub,
+            title="Pd/C reliably catalyzes Suzuki coupling.",
+            meta={"scope": {"material": "Pd/C"}},
+        )
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref.title == "Pd/C reliably catalyzes Suzuki coupling."
+        assert ref.meta["scope"] == {"material": "Pd/C"}
+        assert "new: Pd/C reliably" in out.body
+        assert len(self._pub_ids(store, hub)) == 2
+
+    def test_empty_dict_clears_scope(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        out = h.edit(id=hub, meta={"scope": {}})
+        assert store.get_ref(kind="finding", id=hub).meta["scope"] == {}
+        assert "lint" not in out.body  # a deliberate clear is not nagged
+
+    def test_dry_run_previews_and_writes_nothing(self, store) -> None:
+        hub = self._mint(store)
+        before_pubs = self._pub_ids(store, hub)
+        before = store.get_ref(kind="finding", id=hub)
+        h = _make_handler(store)
+
+        out = h.edit(id=hub, meta={"scope": {"material": "Pd/C"}}, dry_run=True)
+
+        assert "dry-run" in out.body and "nothing written" in out.body
+        assert "'method': 'corannulene bowls'" in out.body  # old scope shown
+        (old_pub,) = before_pubs
+        assert f"pub_id: {old_pub} ->" in out.body
+        after = store.get_ref(kind="finding", id=hub)
+        assert after.meta == before.meta and after.title == before.title
+        assert self._pub_ids(store, hub) == before_pubs
+
+    def test_non_scope_meta_key_rejected(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="accepts only"):
+            h.edit(id=hub, meta={"scope": {}, "source": "x"})
+        with pytest.raises(BadInput, match="accepts only"):
+            h.edit(id=hub, meta={"source": "x"})
+
+    def test_scope_must_be_str_to_str_dict(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="dict of str -> str"):
+            h.edit(id=hub, meta={"scope": "material=Pd"})
+        with pytest.raises(BadInput, match="dict of str -> str"):
+            h.edit(id=hub, meta={"scope": {"material": 3}})
+
+    def test_free_text_value_warns_like_mint_not_refused(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        prose = "palladium on carbon used for the coupling of aryl halides"
+        out = h.edit(id=hub, meta={"scope": {"material": prose, "bogus": "x"}})
+        assert "scope-free-text" in out.body
+        assert "scope-unknown-key" in out.body
+        assert store.get_ref(kind="finding", id=hub).meta["scope"]["material"] == prose
+
+    def test_exclusive_with_other_ops(self, store) -> None:
+        hub = self._mint(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="exactly one"):
+            h.edit(id=hub, meta={"scope": {}}, unacquirable_note="why")
+        with pytest.raises(BadInput, match="exactly one"):
+            h.edit(id=hub, meta={"scope": {}}, pick_candidate="x")
+
+    def test_non_hub_finding_rejected(self, store) -> None:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a")
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        with pytest.raises(BadInput, match="TAPROOT:claim"):
+            h.edit(id=finding_id, meta={"scope": {"material": "x"}})
+        with pytest.raises(BadInput, match="TAPROOT:claim"):
+            h.edit(id=finding_id, meta={"scope": {"material": "x"}}, dry_run=True)
+
+    def test_requires_id(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires id"):
+            h.edit(meta={"scope": {}})
+
+    def test_pub_id_collision_with_another_hub_raises(self, store) -> None:
+        hub = self._mint(store, scope={"material": "A"})
+        other = self._mint(store, scope={"material": "B"})
+        h = _make_handler(store)
+        before = store.get_ref(kind="finding", id=hub).meta
+
+        with pytest.raises(BadInput, match="dedup/merge candidate"):
+            h.edit(id=hub, meta={"scope": {"material": "B"}})
+        with pytest.raises(BadInput, match="dedup/merge candidate"):
+            h.edit(id=hub, meta={"scope": {"material": "B"}}, dry_run=True)
+
+        assert store.get_ref(kind="finding", id=hub).meta == before
+        assert other != hub
+
+
 # ── edit(unacquirable_note=...) — trust-surfaces override write path ──
 
 

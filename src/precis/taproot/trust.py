@@ -46,7 +46,7 @@ from functools import reduce
 from typing import Any, Literal, cast
 
 from precis.store.protocols import ClaimTrustStore
-from precis.taproot.cite import finding_cite_keys, hub_cite_keys
+from precis.taproot.cite import finding_cite_keys, resolve_hub_print
 from precis.taproot.seniority import (
     HubEvidence,
     conjunct_atoms_bulk,
@@ -161,6 +161,7 @@ def _hub_trust(
     *,
     evidence: HubEvidence | None = None,
     cite_key_map: dict[int, list[str]] | None = None,
+    paper_refs: dict[int, Any] | None = None,
 ) -> tuple[TrustLabel, str | None, str]:
     """A ``TAPROOT:claim`` hub's trust: empty print set (no originators AND
     no corroborators, i.e. :attr:`FindingCite.inflight`) → unverified; any
@@ -175,8 +176,10 @@ def _hub_trust(
     likewise skips the per-supporter ``ref_cite_keys`` round trip when a
     bulk caller already resolved it."""
     if evidence is not None:
-        cite_keys, _notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
-        inflight = not cite_keys
+        printed = resolve_hub_print(
+            store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+        )
+        inflight = not printed.cite_keys
     else:
         fc = finding_cite_keys(store, ref_id)
         inflight = fc.inflight
@@ -393,7 +396,11 @@ def claim_trust(
             ).evidence
         hub_evidence = evidence
         label, note, status = _hub_trust(
-            store, finding_ref_id, evidence=evidence, cite_key_map=cite_key_map
+            store,
+            finding_ref_id,
+            evidence=evidence,
+            cite_key_map=cite_key_map,
+            paper_refs=paper_refs,
         )
     else:
         label, note, status = _lifecycle_trust(store, finding_ref_id, meta)
@@ -457,20 +464,6 @@ def _source_paper_override(
     return override if isinstance(override, dict) else None
 
 
-def _has_cite_key(
-    store: ClaimTrustStore, paper_ref_id: int, cite_key_map: dict[int, list[str]] | None
-) -> bool:
-    """Whether a supporter paper is *print-visible* — has a resolvable
-    cite_key. Mirrors :func:`~precis.taproot.cite._cite_keys_for_group`'s
-    per-edge lookup (bulk map when threaded, else the per-paper query)."""
-    aliases = (
-        cite_key_map.get(paper_ref_id, [])
-        if cite_key_map is not None
-        else store.ref_cite_keys(paper_ref_id)
-    )
-    return bool(aliases)
-
-
 def _hub_grounding_unacquirable(
     store: ClaimTrustStore,
     evidence: HubEvidence,
@@ -487,18 +480,16 @@ def _hub_grounding_unacquirable(
     print-visible supporter at all (not actually a clean hub — defensive;
     the caller only reaches this when ``label == 'clean'``).
 
-    The grounding group mirrors :func:`~precis.taproot.cite.hub_cite_keys`:
-    originators (those with a cite_key) when any exist, else corroborators —
-    exactly the papers that reach the print citation."""
-    for group in (evidence.originators, evidence.corroborators):
-        grounding = [
-            e.paper_ref_id
-            for e in group
-            if _has_cite_key(store, e.paper_ref_id, cite_key_map)
-        ]
-        if grounding:
-            break
-    else:
+    The grounding group is exactly the papers
+    :func:`~precis.taproot.cite.resolve_hub_print` prints — the papers that
+    reach the print citation."""
+    grounding = [
+        e.paper_ref_id
+        for e in resolve_hub_print(
+            store, evidence, cite_key_map=cite_key_map, paper_refs=paper_refs
+        ).edges
+    ]
+    if not grounding:
         return False  # inflight — no print-visible supporter (not a clean hub)
     # ``paper_refs`` — a bulk caller's pre-fetched grounding-paper refs (mirrors
     # ``cite_key_map``); ``None`` falls back to the per-call fetch.
