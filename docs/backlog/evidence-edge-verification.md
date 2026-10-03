@@ -320,6 +320,22 @@ verdict strictly on the passage; run a bounded whole-paper keyword probe and
 record it in a separate field. Both facts are needed — the passage verdict
 drives the edge repair, the paper verdict protects the claim.
 
+Confirmed again 2026-10-03 (nanobuds-paper's printed-source read of dr173020
+(nanobuds review), 159 pairs): the pilot, which could look things up, said
+`fi191126`/`pa3755` = yes. The full read, limited to linked chunks, said
+partial. Same pair, different boundary, different verdict.
+
+### 6. A right passage on the wrong ref passes every passage check
+
+`pa44468` (the thalidomide paper) and `pa42559` (Smith's peapod paper) each
+hold both articles. The two Nature 1998 PDFs share pages (gr463414). A chunk
+can quote the claim word for word and still be attributed to the wrong
+paper. Neither the passage axis nor the paper axis (§1) catches this,
+because "the paper" is the merged body. Candidate check (mechanical, untested):
+before any LLM read, confirm the chunk's page carries the ref's own title
+or DOI. Label `WRONG_REF`; the fix is re-attributing the edge (and
+splitting the PDF), never the sentence.
+
 ### The failure class the PARTIALs share
 
 Nine of 18 were PARTIAL, and they fail the same way: **the sentence asserts more
