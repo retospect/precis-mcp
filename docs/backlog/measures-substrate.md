@@ -307,6 +307,62 @@ What this build decides:
 - **Migration number:** 0187, assigned by the orchestrator on
   2026-10-03.
 
+**Store SI, convert at the edges** (Reto, 2026-10-03 ~22:15Z, via
+nanobuds-paper). In his words: units are SI; "Angstroms are stored as
+very small meter values, but if the user sets angstroms or requests it
+will get it … no 0.000001m ever"; and a general range-and-conditions
+search. What that sets:
+- **Every measurand's `canonical_unit` is its coherent SI unit,** with
+  no prefix:
+  - eV becomes J;
+  - % becomes 1 (a fraction: 95% is stored as 0.95);
+  - Å becomes m;
+  - °C becomes K;
+  - mA cm⁻² becomes A m⁻².
+
+  A new taxon meta key, `display_unit`, holds the unit people expect,
+  such as Å for bond lengths, eV for adsorption energies and % for
+  Faradaic efficiency.
+- **0187 needs no change for this.** It already stores values normalised
+  to the taxon's `canonical_unit`, so SI storage is a property of the
+  taxon data: the pilot taxa are minted with SI canonical units. Tests on
+  0187 cover %→1, eV→J, Å→m and the affine °C→K.
+- **Legacy taxa** from the 0174 seed keep their old units (eV, °C,
+  g/cm³, …). Build A2 converts them to SI, with each row's old unit as
+  its `display_unit`. Rows are append-only, so the converted values are
+  written as new rows that supersede the old ones. The compatibility
+  views convert back on read through a per-taxon linear factor and
+  offset stored in taxon meta, so legacy readers see the unit they
+  always did.
+- **Build B gains the edges:**
+  - **Range search** over `measures`, for any subject kind: by
+    measurand (taxon, including its `specialises` descendants), by a
+    number range (interval overlap on low/high), and by conditions such
+    as `product=NH3`, `hardware=M2 Ultra` or `quant=Q4`.
+  - **Units in queries:** a query bound converts to SI before
+    comparing, so `min='1.4 Å'` works.
+  - **Units in output:** `unit=` converts on request. Otherwise output
+    uses the measurand's `display_unit`, with an automatic prefix, so a
+    value never reads as 0.000001 m.
+- **Units that are not a scale factor:**
+  - **Affine** (°C, °F): pint converts absolute temperatures. A
+    difference ("ΔT of 5 °C") is a different measurand with a delta
+    unit.
+  - **Logarithmic:**
+    - pH is not a unit; it is its own dimensionless measurand and never
+      converts.
+    - dB converts only within its own reference, which is a condition
+      such as dB re 1 mW.
+  - **Reference electrodes** stay a column; they are never folded into
+    the unit.
+  - **Number-like labels that are not numbers** (Miller indices like
+    (111), the taxonomy-bootstrap "3a" case) are categorical. They are
+    never parsed as values.
+- **Open, decided at Build B:** how far the unit layer
+  (`taxonomy/normalise.py` plus pint) already covers display prefixes
+  and log units. pint's `to_compact()` covers prefixes; pH and dB need
+  the explicit rules above, not a pint unit.
+
 **Build A2: fold `rxn_values` in, on a branch to the orchestrator after
 A lands.**
 - **What:** drop `rxn_values`, the third copy of the `material_values`
@@ -338,30 +394,40 @@ nanobuds-paper).
   runtime.
 - **Needs nothing new** beyond "subject is any ref". It names a
   non-chemistry consumer that Build B's `best_measure` must serve.
-- **Data:** a Perplexity research report on open-weight models, which
-  nanobuds-paper is running.
+- **Data:** perplexity-research
+  `state-of-open-weight-llms-in-late-2026-for-local-serving-and`.
+  nanobuds-paper says its figures are thin and partly unsourced, so it
+  supplies first rows only. Each of those rows is `tier='asserted'`, or
+  NULL tier where no source is given, with `source_ref_id` set to the
+  report. None of it is seed truth.
 
 **Build B (qland, after A deploys):**
 - `best_measure` and `measures_census`;
+- the range-and-conditions search, plus unit conversion for queries and
+  output (§ "Store SI, convert at the edges");
+- the `display_unit` taxon key;
 - `precis-measure-help`;
-- ACs 5–8.
+- ACs 5–8, plus a non-chemistry round trip on an `llm` subject.
 
 **The pilot's taxa.** About ten, minted by hand in prod under
 `measurand` via `put` plus a `specialises` link. These are ordinary prod
 writes.
 - **Measurands:**
 
-  | taxon | canonical unit |
-  |---|---|
-  | Faradaic efficiency | % |
-  | product yield rate per geometric area | mol s⁻¹ m⁻² |
-  | product yield rate per catalyst mass | mol s⁻¹ kg⁻¹ |
-  | partial current density | A m⁻² |
-  | applied potential | V; the reference is a column |
-  | product selectivity | % |
-  | reactant conversion | % |
-  | adsorption / reaction energy | eV |
-  | stability duration | s |
+  | taxon | canonical unit (SI) | display unit |
+  |---|---|---|
+  | Faradaic efficiency | 1 | % |
+  | product yield rate per geometric area | mol s⁻¹ m⁻² | µmol h⁻¹ cm⁻² |
+  | product yield rate per catalyst mass | mol s⁻¹ kg⁻¹ | µmol h⁻¹ mg⁻¹ |
+  | partial current density | A m⁻² | mA cm⁻² |
+  | applied potential | V; the reference is a column | V |
+  | product selectivity | 1 | % |
+  | reactant conversion | 1 | % |
+  | adsorption / reaction energy | J | eV |
+  | stability duration | s | h |
+
+  The display units are set once Build B ships `display_unit`. Until
+  then the taxa carry only the SI unit.
 
 - **Product-specific measurands carry required context.** Faradaic
   efficiency, yield rate, selectivity and partial current density each
