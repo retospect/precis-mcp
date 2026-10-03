@@ -55,6 +55,18 @@ _RH_ADATOM: dict[str, Any] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _extra_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dispatch's install check sees the [pourbaix] extra as present.
+
+    Every test stubs ``MP_VERSION``/``MP_FETCH``, so ``mp_api`` is never
+    imported; without this the precis-dev image (pymatgen, no mp-api) fails
+    the check before the code under test runs. The check itself is
+    ``test_missing_extra_fails_config``, whose own patch overrides this one.
+    """
+    monkeypatch.setattr(job, "find_spec", lambda name: object())
+
+
 def _scene(ops: list[dict[str, Any]]) -> Scene:
     scene = Scene(cell=Cell(np.eye(3) * 10.0, (True, True, True)))
     apply_ops(scene, ops)

@@ -44,6 +44,12 @@ spin-paired energy (§22i), so the table stands. Catpath
   clean and marks no margin older-network. That is expected: all three
   prod network stamps are catpath 0.22.0. The guard has nothing to act on
   until a 0.23.0 margin lands; check it then.
+**Round 3 (deployed 929107f3, 2026-10-03):** the pourbaix_bulk note
+clamp and the pymatgen#4709 citation (b41b70d03) are live. They have not
+been dogfooded: the only prod path through them is a live pourbaix_bulk
+job, and that waits on Reto's MP key. The first MP-key job checks them.
+The rest of round 3 here was docs: the CNT read passes and the item-17
+ruling.
 
 **Worktree:** `catalysis-selectivity`
 **Active:** yes — Reto, 2026-10-02 ("high up").
