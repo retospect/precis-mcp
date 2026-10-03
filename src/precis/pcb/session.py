@@ -1077,6 +1077,20 @@ _ROUTER_NET_KEYS = (
     ("a_net", "a_derived"),
     ("b_net", "b_derived"),
 )
+
+
+def router_nets_of(finding: DrcFinding) -> set[str]:
+    """The nets whose ROUTER copper (``derived``-tagged) a finding's objects
+    name — what yields to that finding. Empty when only pads and authored
+    copper are involved."""
+    return {
+        str(obj[net_key])
+        for obj in finding.objects
+        for net_key, flag_key in _ROUTER_NET_KEYS
+        if obj.get(flag_key) and obj.get(net_key)
+    }
+
+
 #: Per-net cap on the problem dicts kept (a badly placed net can trip the
 #: same rule hundreds of times); the overflow count is appended to the last
 #: message instead of adding a differently-named reason to the net's note.
@@ -1107,12 +1121,7 @@ def strip_drc_violating_nets(
     for f in findings:
         if f.severity != "error":
             continue
-        nets: set[str] = set()
-        for obj in f.objects:
-            for net_key, flag_key in _ROUTER_NET_KEYS:
-                if obj.get(flag_key) and obj.get(net_key):
-                    nets.add(str(obj[net_key]))
-        for net in sorted(nets):
+        for net in sorted(router_nets_of(f)):
             kept = problems.setdefault(net, [])
             if len(kept) >= _MAX_DRC_PROBLEMS_PER_NET:
                 extra[net] = extra.get(net, 0) + 1
