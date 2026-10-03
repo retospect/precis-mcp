@@ -37,7 +37,7 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
-**Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
+**Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
 and waits on Reto for the cause; 2 (gr462703) has its server half shipped
 the bar and instancing shipped; the inline early fetch is noted, not
 due. After those the next build is 5
