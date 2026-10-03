@@ -45,9 +45,10 @@ from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from precis.handlers._citations_view import draft_fetch_ref_ids
+from precis.handlers._query_identifier import resolve_query_identifier
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
-from precis_web.item_view import artifact_kinds, display_title
+from precis_web.item_view import artifact_kinds, display_title, presenter_for
 from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
 from precis_web.routes.flags import (
     ACQUIRE_FLAG_DEFS,
@@ -322,7 +323,7 @@ async def index(
     requeued: int = 0,
     fetch_claimed: int = 0,
     fetch_failed: int = 0,
-) -> HTMLResponse:
+) -> Response:
     """The merged Drive surface: Items' cross-kind search/facet engine
     plus Drive's folder-tree sidebar, per-row quick actions, a "show
     deleted" state, and the watch-dir drop-zone info.
@@ -387,6 +388,17 @@ async def index(
     """
     store = get_store(request)
     q = (q or "").strip()
+
+    # A query that *is* an identifier (a lone record handle, or a DOI whole
+    # or as a unique prefix) goes straight to that item's page instead of
+    # the chunk search. Ambiguous prefixes / no match fall through. Other
+    # facets (k/state/folder/…) never affect resolution.
+    if q:
+        hit = await asyncio.to_thread(resolve_query_identifier, store, q)
+        if hit.ref is not None:
+            return RedirectResponse(
+                url=presenter_for(hit.ref.kind).open_url(hit.ref), status_code=302
+            )
 
     runtime = get_runtime(request)
     hub = getattr(runtime, "hub", None)

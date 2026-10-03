@@ -79,6 +79,16 @@ up:
    draws envelopes at every rung; recommended keeping the dash column). The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
+1. **gr462129** (Reto 2026-10-03, read comment 2) — the /drive search box
+   resolves identifiers before the chunk search. Any handle_registry handle
+   (pa, fi, qu, dr, gr, td, se, …) or a DOI, whole or as a unique prefix,
+   302s to the item's page. A retired ref follows its live slug. An
+   ambiguous prefix or no match falls through to today's search. Mirrors
+   `FusedBlockSearch.run` in `handlers/_paper_search.py`. Here because
+   ingest-and-fetch owns /drive but is held for the demo. One build.
+   Acceptance: `/drive?q=pa5303`, `?q=fi<id>` and
+   `?q=10.1021/acscatal.3c0196` each 302 on prod.
+
 2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
    Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server
    phase SHIPPED: vectorised smoothing (1.0 s → 0.04 s), payload and gzip

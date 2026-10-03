@@ -1211,6 +1211,36 @@ class RefsMixin:
             ).fetchone()
         return row[0] if row is not None else None
 
+    def find_paper_ref_ids_by_doi_prefix(
+        self, prefix: str, *, limit: int = 3
+    ) -> list[int]:
+        """Live paper ref ids whose DOI starts with ``prefix``.
+
+        ``prefix`` is normalised like a full DOI (URL / ``doi:`` wrapper
+        stripped, lowercased — the ``ref_identifiers`` canonical form) and
+        LIKE-escaped (``%``, ``_``, ``\\``) so user input is always a
+        literal prefix; it is bound as a parameter. Retired refs are
+        excluded. Ordered by ``ref_id`` and capped at ``limit`` — callers
+        only need to tell "none / one / several" apart. Empty for a blank
+        prefix.
+        """
+        from precis.store._identifiers_ops import _normalise_identifier
+
+        v = _normalise_identifier("doi", prefix)
+        if not v:
+            return []
+        pattern = v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT pi.ref_id FROM ref_identifiers pi "
+                "JOIN refs r ON r.ref_id = pi.ref_id "
+                "WHERE pi.id_kind = 'doi' AND pi.id_value LIKE %s ESCAPE '\\' "
+                "AND r.kind = 'paper' AND r.retired_at IS NULL "
+                "ORDER BY pi.ref_id LIMIT %s",
+                (pattern, limit),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
     def fetch_ref_ids_by_slugs(
         self,
         slugs: Iterable[str],
