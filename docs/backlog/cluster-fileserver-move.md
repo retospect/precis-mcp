@@ -79,7 +79,13 @@ go to the orchestrator as a branch; overlay edits go to Reto.
   - `soft` mounts for scratch that jobs write: soft returns EIO on a
     timeout and can truncate writes silently.
   - Name resolution that does not depend on avahi.
-  - macOS TCC for launchd services, which cannot be tested read-only.
+  - macOS TCC for launchd services: **closed 2026-10-03, nothing to
+    re-approve.** The grant is Full Disk Access per binary, covering every
+    volume; no Mac has a per-server or Network Volumes row. The Macs
+    already write `botshome` on this NAS daily from launchd and cron jobs
+    under the existing grants (python.org 3.12/3.14, cron, the shells,
+    automountd). The DB node's pgbouncer has no grant and must not log to
+    the NAS; the plan already moves its log host-local.
 - 2026-10-02 22:40Z: spark read `botshome` from finnmaccool while the DB
   node's share hung on the same box. It listed instantly, read 200 MB at
   290 MB/s, and negotiated NFS 4.2. So the Linux clients and the LAN are
@@ -266,6 +272,48 @@ live on the file server exclusively."
 
 **Rollback overall:** until step 11, set `nfs_server` back to the DB node
 and re-run steps 7–8. The old export and data stay untouched until then.
+
+### Proposed: role shares instead of one share (2026-10-03, awaiting Reto on local-compute-12)
+
+The share is not only scratch. It holds the DB dumps, every node's config
+copies (sudoers, LaunchDaemon plists), and the scripts that 9 cron jobs
+execute from NFS, 6 of them as root (backups, config_pull and api_monitors
+roles). With a squash-to-root export, any client can replace a script that
+root runs on another node. TOS cannot map clients to separate users, so
+roles are separate shares, each with per-host rules and read-only or
+read-write per host, squashed to `guest`:
+
+- **`dbbackup`**: DB dumps plus botshome's archive. Read-write for the DB
+  node only.
+- **No scripts on NFS:** the roles install them to local disk.
+- **Config copies:** fetched by the deploying machine, not pushed through
+  a share.
+- **`models`:** one writer, every other node read-only.
+- **`library`:** the corpus, podcast, `precis_root` and the B2-synced
+  trees. Read-write for the hosts that ingest or serve them.
+- **`logs`:** read-write for all nodes.
+- **`scratch`:** read-write for all nodes.
+
+The per-host table with sizes and writers is in the review item; it feeds
+the fleet-wide security audit. A prerequisite is fixed node addresses
+(DHCP reservations).
+
+### Phase 6: retire botshome (after the role shares run clean)
+
+12. Identify botshome's unknown owners: the rest of `backups/`, stray
+    tarballs, and the numeric uids.
+13. Copy each class into its role share with checksums, and verify file
+    counts and checksums.
+14. Repoint the overlay paths in one round deploy: corpus, inbox, podcast,
+    `PRECIS_ROOT`, the pg_backup archive root, the autofs map, and
+    `PRECIS_NAS_PROBE_PATH`. The heartbeat probe defaults to
+    `/opt/nas/botshome` (`workers/heartbeat.py`), and so does the
+    `nas-denied` message (`workers/nursery.py::_detect_nas_denied`).
+15. Soak for 7 days with botshome's NFS rule set to read-only. A forgotten
+    writer then fails loudly while reads keep working. Rollback: set the
+    rule back to read-write and revert the overlay.
+16. Remove botshome's NFS rule. Keep the folder and its snapshots for 30
+    days (rollback: re-add the rule). Deletion is Reto's call.
 
 ### Reto's question: would a USB cable from the NAS to a Mac help?
 

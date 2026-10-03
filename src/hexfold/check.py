@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from typing import NamedTuple
 
 import numpy as np
 
@@ -270,14 +271,33 @@ def _findings_from_net(net: Net) -> list[Finding]:
     return out
 
 
-def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
+class Relaxed(NamedTuple):
+    """A caller's own relax for :func:`geometry_findings` to judge: the
+    coordinates, the final max force of that same relax, and a label
+    (``"tethered"``) that ``geom.summary`` carries as ``relax``."""
+
+    coords: np.ndarray
+    max_force: float
+    relax: str
+
+
+def _geometry_findings(
+    net: Net,
+    profile: Profile,
+    relaxed: Relaxed | None = None,
+) -> list[Finding]:
     """Stick-model geometry check: bond lengths vs sigma, ring-corner
     angles vs the ring-ideal interior angle.  ``geom.summary`` always
     carries the statistics; individual findings are capped at the ten
-    worst offenders so reports stay small and deterministic."""
+    worst offenders so reports stay small and deterministic.  ``relaxed``
+    is a caller's own relax (e.g. a tethered one); ``None`` relaxes the
+    net here, untethered."""
     from .stick import stick_info
 
-    coords, max_force = stick_info(net)
+    if relaxed is not None:
+        coords, max_force = relaxed.coords, relaxed.max_force
+    else:
+        coords, max_force = stick_info(net)
     out: list[Finding] = []
     sig = net.lattice.sigma_A
     sig_ch = net.lattice.sigma_CH_A
@@ -460,6 +480,9 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
                     + max(0, len(short_bonds) - 10),
                 ),
                 ("max_force_final", round(max_force, 4)),
+                # a caller's relax names itself, so a stored summary never
+                # shows a tethered geometry as the default stick's
+                *((("relax", relaxed.relax),) if relaxed is not None else ()),
             ),
         )
     )
@@ -520,13 +543,24 @@ def _gen_stale_finding(ast: Spec, generated_of: str) -> Finding | None:
     )
 
 
-def geometry_findings(net: Net, profile: Profile = Profile.DEFAULT) -> list[Finding]:
+def geometry_findings(
+    net: Net,
+    profile: Profile = Profile.DEFAULT,
+    *,
+    relaxed: Relaxed | None = None,
+) -> list[Finding]:
     """The geometry tier (``geom.*``) over an already-built net — what
     ``check(spec, geometry=True)`` adds on top of the topological report.
     Public so a caller that already holds the ``Net`` (se's stick build)
     can put the same findings on the persisted record instead of only on
-    the throwaway check echo (gr454488 residual 3)."""
-    return _geometry_findings(net, profile)
+    the throwaway check echo (gr454488 residual 3).  ``relaxed`` (a
+    :class:`Relaxed`: coordinates, their own final max force, a label)
+    judges the caller's coordinates instead of
+    re-relaxing: a tethered relax (docs/backlog/
+    hexfold-ideal-surface-then-tile.md, S4) would otherwise be judged on a
+    different, untethered geometry.  ``geom.seed_overlap`` still reads
+    ``net.seed3``."""
+    return _geometry_findings(net, profile, relaxed)
 
 
 def check(

@@ -192,6 +192,19 @@ body {
 #bt3d-viewer .bt3d-atom-tip[hidden] {
   display: none;
 }
+/* field | value rows (Reto, 2026-10-03: "do tabular"). */
+#bt3d-viewer .bt3d-atom-tip table {
+  border-collapse: collapse;
+}
+#bt3d-viewer .bt3d-atom-tip th {
+  padding: 0 6px 0 0;
+  text-align: left;
+  font-weight: normal;
+  color: #94a3b8;
+}
+#bt3d-viewer .bt3d-atom-tip td {
+  padding: 0;
+}
 
 /* Per-block abstraction-level chip `[E·I·R·z]`, appended to each tree row
  * by blocktree-3d.js. A lettered rung is a button; `—` is a rung that

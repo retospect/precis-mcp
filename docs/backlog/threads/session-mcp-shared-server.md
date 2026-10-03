@@ -103,9 +103,11 @@ check their state first.
   alerts for a day. Step 3, the `precis-agent` rebuild at the current CLI,
   is the organizer's (Reto, 15:07Z, review item
   session-mcp-shared-server-8). Whether to profile `precis serve` startup
-  is in review item session-mcp-shared-server-9. My recommendation: no
-  profile until the gate's "connected after" numbers show a pass refused
-  or a 95th percentile above 10 s.
+  was decided in review item session-mcp-shared-server-9. Reto chose
+  option 1: wait for the gate's timing data. Profile only if a pass is
+  refused ("precis not connected") or the 95th percentile of
+  "connected after" exceeds 10 s. Read both from worker_logs during the
+  gr463517 check.
 - **Round-2 dogfood, melchior's shared server (13:52Z):** the checkout
   watchdog drained generation 1 (0 in-flight calls) and generation 2
   started at 13:50:16Z on 63301c5c, migration 0181. Session tools work

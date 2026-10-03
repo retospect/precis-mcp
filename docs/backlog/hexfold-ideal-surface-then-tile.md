@@ -144,6 +144,30 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
 - S4: the hero scene builds with no `geom.seed_overlap`, no ERROR
   `geom.clash`, and the S3 bars per feature; a render goes to the
   nanobuds-paper thread.
+  - **Scene built** (`authored_foot.plan_scene`; judged on the tethered
+    coordinates through `hexfold.check.Relaxed`, `geom.summary.relax`
+    = `tethered`). The hero with a (12,0) R = 8 pill (pillar (6,0)
+    R = 3 + C60, bump (12,0) R = 5 + lid, [2+2] bud; 2898 atoms, 36 s)
+    meets all of it:
+    - no ERROR;
+    - clash_min 1.05 Å;
+    - every foot inside the bars, with fillet max ≤ 0.17 Å, bonds
+      1.367–1.485 Å and pyramidalisation ≤ 10.7°.
+  - The (24,0) R = 5 pill meets every bar after the relax, but its k = 10
+    frustum is seeded onto the sheet (3 × `geom.seed_overlap`, gr464358).
+  - Tops are reported, not barred (`ScenePlan.tops`). A free (6,0) + C60
+    neck is about 60° pyramidalised on its own. The tube's last 4 bonds
+    below a ball relax untethered: holding them to the cylinder folds the
+    neck to a 0.83 Å clash.
+  - Hole cells whose sheet seam gains 5–7 pairs are refused (gr464341).
+  - Rendered by nanobuds-paper; Reto's pick between the two pills is
+    pending.
+  - The render shows the pillar's (6,0)→C60 neck at 8 non-bonded pairs
+    of 1.05–1.33 Å. The neck predates S4: hero5 has 8 pairs from 1.053 Å,
+    and a free tube+ball has 7 pairs at 1.07–1.23 Å. It is the stick
+    model's k=3 joint. It is the case for the cap-fillet rung `R_c`
+    (authoring the tube→ball neck). A physics relax of the top alone,
+    with the feet pinned, is the stopgap for a final render.
 
 ## Target + blast radius
 

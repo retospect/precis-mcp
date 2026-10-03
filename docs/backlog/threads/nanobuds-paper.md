@@ -141,8 +141,14 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      hexa-smooth-drum smooth surface looks co-optimized by the tiler);
    - also standard fullerenes generated from a sphere of the right
      diameter.
-   hexfold-toolkit holds the asks. Rebuild the hero from their output and
-   re-file a look-at.
+   **S4 hero delivered 15:47Z (10-03), filed as look-at item 30 (pill12 vs pill24).**
+   - Source: `hexfold-corner/s4_handoff.md`. Rendered by `figs/render_s4.py` (positions from the tethered extxyz, not `stick`) into `figs/render/s4-compare.png`.
+   - The pillar's (6,0)→C₆₀ join has 8 atoms in non-bonded pairs at 1.05–1.33 Å (`figs/s4_closepairs.py`, close-up `s4-neck-az0.png`). This is common to both variants, and hero5/5a have it too: the (6,0) stick joint has had it since the pillar went to (6,0).
+   - **Route (a) failed, 16:00Z.** Under MACE-MP, 4 of the 6 fused (6,0)→C₆₀ seam bonds open to 4.7–4.9 Å, also on a free tube+ball. The fused thin neck is not a bonded minimum.
+     - The `s4_pill12_top*` files are diagnostics only; do not render them.
+     - Item 30 now asks Reto a second question: keep the stick neck, use a (12,0) pillar, or put the C₆₀ on a capped (6,0) end as a bud. The last is my pick if it passes; hexfold is MACE-checking it.
+   - The figure is not final until that is fixed and Reto picks a variant.
+   - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
    (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.

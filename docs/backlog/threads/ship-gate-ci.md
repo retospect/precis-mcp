@@ -17,7 +17,9 @@ green or the reverse), then tuning and residue.
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
-   in the pre-qland lint; per-sha un-cancelled main runs; 48 h GraphQL
+   in the pre-qland lint; un-cancelled main runs (per-sha, replaced by a
+   shared never-cancel-running group 2026-10-03, Reto, review-queue
+   ship-gate-ci-1, after main queued 18 runs at ~33 pushes/h); 48 h GraphQL
    walk with a looked-none exit 2; `scripts/round gate|deploy`; design note
    + verdict in `reviews/ship-gate-ci*.md`). Acceptance met 2026-10-03:
    all six main pushes 12:16–12:40Z completed, none cancelled (four inside
@@ -33,7 +35,14 @@ green or the reverse), then tuning and residue.
    12 h to 12:00Z had a green verdict. Review item organizer-release-branch-1 (v2) has the
    critique and Reto's two open decisions; design-bearing changes go to the
    orchestrator as a design note before they land.
-2. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+2. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
+   Each round cuts `release/r<N>`, fixes land on it and merge forward into
+   main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
+   and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
+   (`round cut`, `release/**` CI) shipped 06247b684. Next is (b) `ship
+   --release`, which needs its own note first and Reto's forward-merge
+   answer (review-queue ship-gate-ci-1); then (c).
+3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
    incident file closed 2026-10-03: the ownership guard (e3135337c) fixed
@@ -47,20 +56,20 @@ green or the reverse), then tuning and residue.
    (was 48 h), and `scripts/test` names the reaper on docker's "fully
    subnetted" error. Its optional fix 2 (teardown in `scripts/test`'s exit
    path) was skipped because the 2 h age alone stops the recurrence.
-3. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-4. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-5. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+6. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
    gate serialises the fleet for up to 1h43m; the round no longer runs one
    (2026-10-03), `/go` still does.
-6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 4 and 5 diagnosable.
-7. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 5 and 6 diagnosable.
+8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon

@@ -483,6 +483,19 @@ def test_dry_run_respects_limit_and_cohort_filter(store: Store) -> None:
     assert report.cohort_filter == "likely-composite"
 
 
+def test_dry_run_offset_slices_are_disjoint_and_cover_the_pool(store: Store) -> None:
+    for i in range(3):
+        mint_hub(store, _claim(f"SPLIT claim {i} with and or but; also, comma, comma"))
+
+    whole = dry_run(store, limit=3, extract_fn=_fake_extract)
+    first = dry_run(store, limit=2, extract_fn=_fake_extract)
+    rest = dry_run(store, limit=2, offset=2, extract_fn=_fake_extract)
+
+    ids = [o.hub.ref_id for o in whole.outcomes]
+    assert [o.hub.ref_id for o in first.outcomes] == ids[:2]
+    assert [o.hub.ref_id for o in rest.outcomes] == ids[2:]
+
+
 def test_dry_run_samples_controls_from_atomic_cohort(store: Store) -> None:
     top_hub = mint_hub(store, _claim("SPLIT top scored claim and another; also, x, y"))
     atomic_hub = mint_hub(store, _claim("A plain atomic control claim"))

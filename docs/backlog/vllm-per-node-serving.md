@@ -229,10 +229,7 @@ same.
   throughput while per-stream drops from 6.7 to 1.9 tok/s and TTFT p95
   grows fivefold. KV is not the limit (75% at 256); decode compute is.
   The 32-stream setpoint gets 65% of the ceiling at 9.6 tok/s per stream;
-  64 gets 89% at 6.7. The setpoint choice is between these two.
-- Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
-  speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
-  and a quality check on the target workloads.
+  64 gets 89% at 6.7 (ruling below).
 **Slice 0 result, SGLang arm on castor (2026-10-03).** `lmsysorg/sglang:latest-cu130`
 (v0.5.21, pulled on castor directly after 7 TLS-timeout retries; Docker
 Hub is flaky from the LAN, not blocked). Same prompts and client as vLLM;
@@ -266,17 +263,17 @@ Hub is flaky from the LAN, not blocked). Same prompts and client as vLLM;
 level that matters, and gpt-oss on vLLM leads everything (ceiling about
 450 out tok/s). The model pick waits on the quality check below.
 
-- **SGLang deadline** (Reto 2026-10-03, local-compute-13): if no SGLang
-  image route turns up by about 2026-10-04, the server is picked on vLLM
-  alone, and the pick says so.
+- **Channels ruled** (Reto 2026-10-03, local-compute-15): the server is
+  sized for 64 streams (`--max-num-seqs 64`). The feedback controller holds
+  about 32 while interactive tiers use it and fills to 64 with graph
+  maintenance. First target: the medium tier plus graph maintenance; big
+  stays on the cloud until its own check.
 - **Quality check = the knowledge-mesh task set** (Reto 2026-10-03): the
   big local model is judged by what it does for the mesh (fix it, add
   links, add findings, alone or at reviewable quality). knowledge-mesh owns
   that eval and review-ledger spec and runs both candidates through the
   `llm_eval` compare harness; the km-8 taxonomy set goes first. No separate
   quality set here.
-- **When the server is picked**, answer Reto in the review queue: how many
-  channels, as measured ceiling, chosen setpoint and KV headroom.
 
 **Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
 world (`eval-run-spine.md`) run there, not on a serving box. It is the same

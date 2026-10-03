@@ -100,8 +100,11 @@ investigate if the rate holds at scale).
 
 **Open:**
 
-- Run the full 1,346-hub dry-run (canary + 100-hub subset are green; the
-  full run has not executed).
+- Run the full dry-run. The population is now 3,954 eligible hubs (phase 0,
+  2026-10-03: 1,794 likely-composite / 1,343 uncertain / 817 likely-atomic).
+  The canary is green after the 10-03 fixes. At ~45 s per call, the run takes
+  ~8 h as 6 `--offset` slices. Status and the command:
+  `docs/backlog/threads/claims-and-evidence.md`.
 - **Decide: does `because` express `conjunct-of`?** fi176422/fi176399
   flatten causal/contrastive structure ("Y is the mechanism for X") into
   peer conjuncts — the relation vocabulary can't express it. Decide before

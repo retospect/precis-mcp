@@ -21,13 +21,14 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -531,6 +532,83 @@ def test_gate_shards_matches_the_check_yml_matrix() -> None:
     assert len(shards) == mod.GATE_SHARDS
     runs = [s.get("run", "") for s in job["steps"] if isinstance(s, dict)]
     assert any(f"--shard ${{{{ matrix.shard }}}}/{mod.GATE_SHARDS}" in r for r in runs)
+
+
+# -- check.yml: release/** trigger and concurrency ---------------------------
+
+
+def _eval_gha(expr: str, **github: str) -> object:
+    """Evaluate the `${{ … }}` subset check.yml's concurrency block uses.
+
+    `&&`/`||`/`!` map to Python's and/or/not (same short-circuit value
+    semantics for these string/bool operands); `startsWith` and `format` are
+    the two functions in play.
+    """
+    py = expr.strip().replace("&&", " and ").replace("||", " or ")
+    py = re.sub(r"!(?!=)", " not ", py)
+    env = {
+        "github": SimpleNamespace(**github),
+        "inputs": SimpleNamespace(full=""),
+        "startsWith": lambda s, p: s.startswith(p),
+        "format": lambda f, *a: f.format(*a),
+    }
+    return eval(py, {"__builtins__": {}}, env)
+
+
+def _render(template: str, **github: str) -> str:
+    return re.sub(
+        r"\$\{\{(.*?)\}\}",
+        lambda m: str(_eval_gha(m.group(1), **github)),
+        template,
+    )
+
+
+def _check_yml() -> dict[Any, Any]:
+    wf = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
+    )
+    assert isinstance(wf, dict)
+    return wf
+
+
+def test_check_yml_runs_on_release_pushes_too() -> None:
+    wf = _check_yml()
+    triggers = wf["on"] if "on" in wf else wf[True]  # PyYAML reads bare `on` as True
+    branches = triggers["push"]["branches"]
+    assert {"main", "ci/**", "release/**"} <= set(branches)
+
+
+def test_check_yml_concurrency_main_shared_release_per_sha_never_cancelled() -> None:
+    conc = _check_yml()["concurrency"]
+    sha = "f" * 40
+
+    def show(ref: str, event: str = "push") -> tuple[str, object]:
+        gh = {"workflow": "check", "ref": ref, "sha": sha, "event_name": event}
+        return (
+            _render(conc["group"], **gh),
+            _eval_gha(conc["cancel-in-progress"].strip("${} "), **gh),
+        )
+
+    main_group, main_cancel = show("refs/heads/main")
+    assert main_group == "check-refs/heads/main-gate"  # shared: no sha suffix
+    assert sha not in main_group
+    assert main_cancel is False
+    rel_group, rel_cancel = show("refs/heads/release/r3")
+    assert rel_group == f"check-refs/heads/release/r3-gate-{sha}"
+    assert rel_cancel is False
+    # The rest keep cancelling a superseded run.
+    ci_group, ci_cancel = show("refs/heads/ci/x")
+    assert sha not in ci_group
+    assert ci_cancel is True
+    assert show("refs/heads/main", "schedule")[1] is False
+
+
+def test_check_yml_release_push_never_takes_a_delta_range() -> None:
+    steps = _check_yml()["jobs"]["plan"]["steps"]
+    run = next(s["run"] for s in steps if s.get("id") == "shape")
+    assert "refs/heads/release/*" in run
+    branch = run[run.index("refs/heads/release/*") :]
+    assert branch.split("fi ;;")[0].count('range=""') == 1
 
 
 # -- real git: the window and --start --------------------------------------

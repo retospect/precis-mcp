@@ -94,6 +94,7 @@ import gzip
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 from collections import OrderedDict
@@ -1214,6 +1215,43 @@ async def _scene3d_response(
 #: design-space metres against atomistic-scale Å needs it exactly once.
 _ATOMIC_A_TO_M = 1e-10
 
+#: Positional resolution of the payload, Å. Absolute, not N significant
+#: digits: a design may pose a nanometre structure a metre from the origin,
+#: and relative precision at that magnitude would erase the atoms.
+_ATOMIC_POS_STEP_A = 1e-3
+
+#: Resolution of the Å-valued measures (`deviation`, `bond_dev`). Absolute:
+#: they are small differences whose meaning does not scale with magnitude.
+_ATOMIC_ANGSTROM_DECIMALS = 4
+
+#: Resolution of the degree-valued strain layers. Absolute for the same
+#: reason: 0.01° is far below any visible colour step at any magnitude.
+_ATOMIC_DEGREE_DECIMALS = 2
+
+
+def _position_decimals(scale: float) -> int:
+    """Decimals that keep :data:`_ATOMIC_POS_STEP_A` in display units
+    (metres x ``scale``), at least 0."""
+    step = _ATOMIC_POS_STEP_A * _ATOMIC_A_TO_M * scale
+    # The epsilon keeps a step that is a power of ten up to float noise from
+    # costing a spurious extra digit.
+    return max(0, math.ceil(-math.log10(step) - 1e-9))
+
+
+def _round_nested(values: Any, decimals: int) -> Any:
+    """``values`` (nested lists, ``None`` allowed) with every number rounded
+    to ``decimals``. Builtin ``round`` is correctly rounded, so
+    ``json.dumps`` writes the short decimal, not a float-noise tail."""
+    return [
+        None
+        if v is None
+        else _round_nested(v, decimals)
+        if isinstance(v, list)
+        else round(v, decimals)
+        for v in values
+    ]
+
+
 #: Ring perception's own size cap (:func:`~precis.viz3d.sheetsmooth.
 #: ring_faces`) — generous enough for every sp² generator's real faces
 #: (pentagon/hexagon) with headroom, small enough that a badly-bonded
@@ -1243,7 +1281,10 @@ def _target_surface(
         return None
     verts_A, tris = revolve(pts, _TARGET_N_THETA)
     world = apply_rigid(xf, verts_A * _ATOMIC_A_TO_M) * scale
-    return {"verts": world.tolist(), "tris": np.asarray(tris).tolist()}
+    return {
+        "verts": _round_nested(world.tolist(), _position_decimals(scale)),
+        "tris": np.asarray(tris).tolist(),
+    }
 
 
 #: Reference C–C bond length for the bond-strain layer (graphene, Å). The
@@ -1272,7 +1313,8 @@ def _strain_arrays(
         if cc.any():
             dev = np.abs(length - _CC_BOND_A)
             out["bond_dev"] = [
-                float(d) if ok else None for d, ok in zip(dev, cc, strict=True)
+                round(float(d), _ATOMIC_ANGSTROM_DECIMALS) if ok else None
+                for d, ok in zip(dev, cc, strict=True)
             ]
         for key, measure in (
             ("angle_strain_thetap", theta_p_by_atom),
@@ -1281,7 +1323,10 @@ def _strain_arrays(
             vals = measure(xyz, pairs)
             vals[~carbon] = np.nan
             if not np.isnan(vals).all():
-                out[key] = [None if np.isnan(v) else float(v) for v in vals]
+                out[key] = [
+                    None if np.isnan(v) else round(float(v), _ATOMIC_DEGREE_DECIMALS)
+                    for v in vals
+                ]
     return out
 
 
@@ -1295,7 +1340,7 @@ def _block_pose(node: Any) -> Any:
 #: Bump when :func:`_build_atomic_block_payload`'s output changes (a new
 #: field, a changed smoothing/ring rule): the payload cache is keyed on it,
 #: so without a bump a builder change serves stale geometry until restart.
-ATOMIC3D_PAYLOAD_VERSION = 1
+ATOMIC3D_PAYLOAD_VERSION = 2
 
 #: Approximate heap the payload cache may hold; least-recently-used entries
 #: are evicted past it.
@@ -1457,6 +1502,7 @@ def _build_atomic_block_payload(
     world_coords = apply_rigid(xf, cart_A * _ATOMIC_A_TO_M) * scale
     world_smooth = apply_rigid(xf, smooth_A * _ATOMIC_A_TO_M) * scale
 
+    pos_decimals = _position_decimals(scale)
     record = (struct_ref.meta or {}).get("chain_atoms")
     payload: dict[str, Any] = {
         "uid": block_uid,
@@ -1465,12 +1511,12 @@ def _build_atomic_block_payload(
         # The hover readout's per-atom name — residue and chain for a
         # realize_chain structure, the scene label otherwise.
         "hover": atom_hover_names(labels, record if isinstance(record, dict) else None),
-        "coords": world_coords.tolist(),
-        "smooth": world_smooth.tolist(),
+        "coords": _round_nested(world_coords.tolist(), pos_decimals),
+        "smooth": _round_nested(world_smooth.tolist(), pos_decimals),
         # The aberration signal itself is reported in Å (an atomistic-scale
         # displacement) regardless of the scene's own display scale — the
         # legend needs a physically meaningful unit, not a display factor.
-        "deviation": dev_A.tolist(),
+        "deviation": _round_nested(dev_A.tolist(), _ATOMIC_ANGSTROM_DECIMALS),
         "bonds": [list(pair) for pair in bond_idx],
         "faces": [list(ring) for ring in faces],
         "units": "scene",
@@ -1479,6 +1525,8 @@ def _build_atomic_block_payload(
     }
     target = _target_surface(struct_ref, xf, scale)
     if target is not None:
+        # Kept in the cached dict for target3d.json; the atomic3d body
+        # strips it (`_atomic3d_body`) and flags `has_target` instead.
         payload["target"] = target
     return payload
 
@@ -1491,6 +1539,7 @@ def _build_atomic3d(
     rev: int | None,
     if_none_match: str | None = None,
     body_cached: Callable[[str], bool] | None = None,
+    etag_salt: str = "",
 ) -> tuple[list[dict[str, Any]] | None, float, str | None]:
     """Off the event loop, mirroring :func:`_build_scene3d`'s own rev
     handling: the live tree by default, or the ``rev`` snapshot — every
@@ -1526,7 +1575,9 @@ def _build_atomic3d(
         )
         planned.append((name, node, block_uid, struct_ref, key))
     digest = hashlib.sha1(
-        repr((ATOMIC3D_PAYLOAD_VERSION, scale, [p[4] for p in planned])).encode("utf-8")
+        repr(
+            (ATOMIC3D_PAYLOAD_VERSION, etag_salt, scale, [p[4] for p in planned])
+        ).encode("utf-8")
     ).hexdigest()
     etag = f'"{digest}"'
     if if_none_match is not None and _etag_matches(if_none_match, etag):
@@ -1565,43 +1616,72 @@ def _etag_matches(header: str, etag: str) -> bool:
 
 
 def _atomic3d_body(
-    store: Store, kind: str, ref_id: int, *, rev: int | None, if_none_match: str | None
+    store: Store,
+    kind: str,
+    ref_id: int,
+    *,
+    rev: int | None,
+    if_none_match: str | None,
+    target: bool = False,
 ) -> tuple[tuple[bytes, bytes] | None, str | None]:
     """The encoded response body ``(json_bytes, gzip_bytes)`` plus its ETag,
     or ``(None, etag)`` for a 304. A complete body is cached under
-    ``("body", etag)``: on a hit, serialising and gzipping 3.86 MB of JSON
-    (0.5 s of a 0.66 s build on the drum, gr462703) is not repeated. A
-    partial body (``etag`` None) is never cached."""
+    ``("body", etag)`` (``("target-body", etag)`` for ``target=True``, the
+    ``target3d.json`` body): on a hit, serialising and gzipping the JSON is
+    not repeated. A partial body (``etag`` None) is never cached."""
+    body_key = "target-body" if target else "body"
+    salt = "target" if target else ""
     blocks, scale, etag = _build_atomic3d(
         store,
         kind,
         ref_id,
         rev=rev,
         if_none_match=if_none_match,
-        body_cached=lambda e: _ATOMIC3D_CACHE.get(("body", e)) is not None,
+        body_cached=lambda e: _ATOMIC3D_CACHE.get((body_key, e)) is not None,
+        etag_salt=salt,
     )
     if blocks is None and etag is not None:
         if if_none_match is not None and _etag_matches(if_none_match, etag):
             return None, etag  # 304
-        hit = _ATOMIC3D_CACHE.get(("body", etag))
+        hit = _ATOMIC3D_CACHE.get((body_key, etag))
         if hit is not None:
             return hit, etag
         # Evicted between the check and the read: build it after all.
-        blocks, scale, etag = _build_atomic3d(store, kind, ref_id, rev=rev)
+        blocks, scale, etag = _build_atomic3d(
+            store, kind, ref_id, rev=rev, etag_salt=salt
+        )
     blocks = blocks or []
-    deviation_max = max((max(b["deviation"], default=0.0) for b in blocks), default=0.0)
-    raw = json.dumps(
-        {"blocks": blocks, "scale": scale, "deviation_max": deviation_max},
-        separators=(",", ":"),
-    ).encode("utf-8")
+    if target:
+        doc: dict[str, Any] = {
+            "targets": {str(b["uid"]): b["target"] for b in blocks if "target" in b}
+        }
+    else:
+        deviation_max = max(
+            (max(b["deviation"], default=0.0) for b in blocks), default=0.0
+        )
+        # The revolved target surface is most of the payload and off by
+        # default: it is served on demand by target3d.json.
+        slim = [
+            {**{k: v for k, v in b.items() if k != "target"}, "has_target": True}
+            if "target" in b
+            else b
+            for b in blocks
+        ]
+        doc = {"blocks": slim, "scale": scale, "deviation_max": deviation_max}
+    raw = json.dumps(doc, separators=(",", ":")).encode("utf-8")
     body = (raw, gzip.compress(raw, compresslevel=6))
     if etag is not None:
-        _ATOMIC3D_CACHE.put(("body", etag), body, size=len(body[0]) + len(body[1]))
+        _ATOMIC3D_CACHE.put((body_key, etag), body, size=len(body[0]) + len(body[1]))
     return body, etag
 
 
 async def _atomic3d_response(
-    request: Request, kind: str, slug: str, *, rev: int | None = None
+    request: Request,
+    kind: str,
+    slug: str,
+    *,
+    rev: int | None = None,
+    target: bool = False,
 ) -> Response:
     store = get_store(request)
     try:
@@ -1611,7 +1691,9 @@ async def _atomic3d_response(
     inm = request.headers.get("if-none-match")
 
     def _build() -> tuple[tuple[bytes, bytes] | None, str | None]:
-        return _atomic3d_body(store, kind, ref.id, rev=rev, if_none_match=inm)
+        return _atomic3d_body(
+            store, kind, ref.id, rev=rev, if_none_match=inm, target=target
+        )
 
     try:
         body, etag = await asyncio.to_thread(_build)
@@ -1858,6 +1940,11 @@ async def se_scene3d(
 @router.get("/se/{slug}/atomic3d.json")
 async def se_atomic3d(request: Request, slug: str, rev: int | None = None) -> Response:
     return await _atomic3d_response(request, "se", slug, rev=rev)
+
+
+@router.get("/se/{slug}/target3d.json")
+async def se_target3d(request: Request, slug: str, rev: int | None = None) -> Response:
+    return await _atomic3d_response(request, "se", slug, rev=rev, target=True)
 
 
 @router.get("/se/{slug}/atoms.{fmt}")
