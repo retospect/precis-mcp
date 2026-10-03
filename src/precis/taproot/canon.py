@@ -692,6 +692,14 @@ def extract_claim_strict_big(chunk_text: str) -> ClaimExtraction:
 #: stalls (fi176812's timeout).
 _MEDIUM_EXTRACT_TIMEOUT_S = 240.0
 
+#: Wall-clock ceiling for one strict SMALL-tier extraction call. Without it a
+#: local rung gets the router's 30 s judge cap (``_SMALL_LOCAL_TIMEOUT_S``,
+#: there for fast failover to a hosted rung), which a cold-loading local model
+#: (qwen3-next-80b on llama-swap, claims-and-evidence-8) overruns on its first
+#: call; a strict caller would then fail that passage as unavailable. The
+#: non-strict path keeps the fast cap: it degrades to empty anyway.
+_SMALL_STRICT_EXTRACT_TIMEOUT_S = 120.0
+
 #: Pause before retrying a dispatch error. The fast exits correlate with
 #: host load (dense flakes exactly while a container gate saturated the
 #: cores, 2026-08-15) — an immediate retry lands in the same spike. Tests
@@ -812,6 +820,11 @@ def _extract_claim_impl(
             prompt=prompt,
             source="taproot:extract" if tier is Tier.SMALL else "taproot:extract-big",
             max_tokens=_EXTRACT_MAX_TOKENS,
+            timeout_s=(
+                _SMALL_STRICT_EXTRACT_TIMEOUT_S
+                if strict and tier is Tier.SMALL
+                else None
+            ),
         )
     )
     if res.error:

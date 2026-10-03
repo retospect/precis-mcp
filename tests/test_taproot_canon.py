@@ -399,6 +399,30 @@ def test_extract_claim_passes_an_explicit_completion_cap(
     assert seen[0].max_tokens == canon._EXTRACT_MAX_TOKENS
 
 
+def test_strict_small_extract_outlasts_the_local_judge_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strict SMALL extract carries its own ceiling, so a cold local model
+    is not cut at the router's 30 s judge cap; the non-strict path and the
+    BIG tier keep the router default."""
+    seen: list[Any] = []
+
+    def fake(req: Any) -> Any:
+        seen.append(req)
+        return _result(data={"claims": [{"claim": "DFT shows the atom holds."}]})
+
+    monkeypatch.setattr(canon, "route", fake)
+    extract_claim_strict("some passage")
+    extract_claim("some passage")
+    canon.extract_claim_strict_big("some passage")
+    assert [r.timeout_s for r in seen] == [
+        canon._SMALL_STRICT_EXTRACT_TIMEOUT_S,
+        None,
+        None,
+    ]
+    assert canon._SMALL_STRICT_EXTRACT_TIMEOUT_S > 30
+
+
 def test_extract_claim_still_degrades_to_empty_on_the_same_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
