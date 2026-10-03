@@ -29,10 +29,13 @@ off that gap until it closes.
   `hexfold-t-handle-bearing` (hexfold-toolkit).
 - **Inferred insertion (Reto 2026-10-02):** `moves` stays required.
   Reto asked whether tool travel and bolt insertion can be inferred; the
-  proposal (an insertion-corridor check beside `toolaccess`, no
-  migration) is in
+  proposal is in
   `~/.claude/projects/-Users-reto-precis-mcp/review-queue/answered/se-machine-design-1.md`.
-  If Reto agrees, file it as a backlog item and rank it here.
+  Its bolt-insertion part has since shipped from se-3d-viewer
+  (fe1e6840c: `toolaccess.insertion_path`, rule `fastener_insertion_path`,
+  run by `fasten(reach=True)` in `view='drc'`), so do not file it. Still
+  unbuilt: inferring the moving end for `press`/`bearing` joints where
+  exactly one end is bought. File that only if Reto asks for it.
 
 ## Do next
 
