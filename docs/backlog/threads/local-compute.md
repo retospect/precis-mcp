@@ -46,7 +46,10 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    castor/pollux serve nothing. Gold set BUILT 2026-10-02 on melchior's
    prod checkout (40 tasks, 10 non-prose; gitignored
    `scripts/llm_eval/gold_set/local/summarize_v1.json`; rebuilt 2026-10-03
-   with the same 40 prompts plus the 220-token cap per task).
+   with the same 40 prompts plus the 220-token cap per task). It lives in
+   reto's prod clone on melchior (`~/precis-mcp-prod`, reto-owned; `ssh
+   melchior` lands as `deploy`, which cannot write there). Run builds and
+   compares as reto, with the env from the web service plist.
    **First compare, 2026-10-03, deployed 63301c5c.**
 
    | arm | mean | without number rule | number-rule-only zeros | hit cap |
