@@ -1290,18 +1290,24 @@ def content_hash(
         # `meta` is hashed only for its AUTHORED keys (align's axis/offset)
         # and only when there are any: `snapped` is job-written, and an
         # empty meta must leave every pre-align row's digest unchanged.
+        # Sorted by their JSON form: operands are dicts and goal/weight may
+        # be None, so two rows tied on the leading fields cannot compare
+        # natively (TypeError on any board with two same-shaped measures).
         measures = sorted(
             (
-                m.get("metric"),
-                m.get("direction"),
-                m.get("goal"),
-                m.get("strength"),
-                m.get("weight"),
-                tuple(m.get("operands") or []),
-                m.get("reason"),
-                *_authored_measure_meta(m),
-            )
-            for m in state.get("measures") or []
+                (
+                    m.get("metric"),
+                    m.get("direction"),
+                    m.get("goal"),
+                    m.get("strength"),
+                    m.get("weight"),
+                    tuple(m.get("operands") or []),
+                    m.get("reason"),
+                    *_authored_measure_meta(m),
+                )
+                for m in state.get("measures") or []
+            ),
+            key=lambda row: json.dumps(row, sort_keys=True, default=str),
         )
         fixed_copper = sorted(
             json.dumps(fc, sort_keys=True, default=str)

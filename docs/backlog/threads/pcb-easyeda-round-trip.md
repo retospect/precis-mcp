@@ -72,14 +72,13 @@ gate, 398 vias (unfrozen: the anneal moved parts). That anneal moved the
 standoffs CN1/CN2/CN5/CN6 1.0–5.4 mm off their own Ø6.4 holes (features
 47–50 do not follow the part). Four hard `align` measures (CN→its hole,
 offset 0) are now on the board and read VIOLATED 1.019/3.104/5.358/4.559,
-as expected before a re-place. **Open bug, unconfirmed:** the follow-up
-`put(op='route', seed=1)` raised an internal error in `put`. Suspected
-cause: `session.content_hash` sorts measure tuples whose `operands` are
-dicts (and `goal`/`direction`/`weight` may be None), so two measures tied
-on metric/direction/goal/strength/weight raise TypeError — fix = sort by
-`json.dumps` of each row, plus a test with two tied measures. Reading
-the traceback and fixing were blocked by the permission classifier;
-needs Reto's go-ahead.
+as expected before a re-place. The follow-up `put(op='route', seed=1)`
+crashed in `session.content_hash`: two measures tied up to their dict
+operands raise TypeError in `sorted` (any board with two same-shaped
+measures). Fixed by sorting rows by their JSON form; this changes the
+dedup key once for boards with two or more measures. Re-route result
+pending the deploy of that fix (the job's enqueue runs in the serving
+process, so it needs the fix live).
 **Last reviewed:** 2026-10-02 (negotiated congestion landed DARK
 825e451aa; the real-board number still waits on review-queue
 `pcb-easyeda-round-trip-1`. Export slice 2b's writer landed after design

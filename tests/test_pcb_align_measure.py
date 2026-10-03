@@ -632,6 +632,23 @@ def test_content_hash_sees_authored_meta_but_not_snapped():
     assert h(legacy) == h({**base, "meta": {}})
 
 
+def test_content_hash_orders_rows_tied_up_to_their_dict_operands():
+    """Four standoff aligns differ only in operands (dicts) and reason:
+    the hash must not compare dicts, and row order must not matter."""
+    graph: dict = {"instances": [], "nets": []}
+    rows = [
+        _align({"feature_id": 46 + i}, first=f"CN{i}", strength="hard")
+        for i in (1, 2, 5, 6)
+    ]
+    rows.append({"metric": "proximity", "operands": [_inst("A"), _inst("B")]})
+    rows.append({**rows[-1], "goal": 2.0})  # None vs float goal on a tie
+
+    def h(ms):
+        return session.content_hash(graph, {}, session_state={"measures": ms})
+
+    assert h(rows) == h(list(reversed(rows)))
+
+
 # ── store + handler: meta round trip, snapped stamp, view detail ────────
 @pytest.fixture
 def pcb(store):
