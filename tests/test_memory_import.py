@@ -36,7 +36,8 @@ def _nodes(store: Store) -> dict[str, int]:
     out: dict[str, int] = {}
     for r in store.list_refs(kind="memory", tags=["SPACE:repo-dev"], limit=1000):
         key = r.meta.get("slug") or r.meta.get("section")
-        assert key is not None
+        if key is None:  # a native write (neither slug nor section)
+            continue
         out[str(key)] = r.id
     return out
 
@@ -236,7 +237,19 @@ def test_render_matches_the_fixture_index_in_order(store: Store, hub: Hub) -> No
     import_memory_dir(store, FIXTURE)
     rendered = render_memory_index(store)
     assert rendered.startswith("# Memory index\n")
-    assert _structure(rendered) == _fixture_index_lines()
+    got = _structure(rendered)
+    want = _fixture_index_lines()
+    assert len(got) == len(want)
+    for g, w in zip(got, want, strict=True):
+        if w.startswith("## "):
+            assert g == w
+            continue
+        m = re.fullmatch(r"- \[(?P<title>[^\]]+)\]\([^)]+\)(?: — (?P<hook>.*))?", w)
+        assert m is not None, w
+        pat = rf"- {re.escape(m['title'])} \(me\d+\)"
+        if m["hook"]:
+            pat += rf" — {re.escape(m['hook'])}"
+        assert re.fullmatch(pat, g), (g, pat)
 
 
 def test_render_orders_by_meta_order_not_by_id(store: Store, hub: Hub) -> None:
@@ -244,10 +257,8 @@ def test_render_orders_by_meta_order_not_by_id(store: Store, hub: Hub) -> None:
     ids = _nodes(store)
     # Move the first bullet of Threads to the end of the order range.
     store.update_ref(ids["alpha-campaign"], meta_patch={"order": 99})
-    lines = [
-        ln for ln in _structure(render_memory_index(store)) if ln.startswith("- [")
-    ]
-    assert lines[:3][-1].startswith("- [Alpha campaign]")
+    lines = [ln for ln in _structure(render_memory_index(store)) if ln[:2] == "- "]
+    assert lines[:3][-1].startswith("- Alpha campaign (me")
 
 
 def test_render_native_node_line_and_trailing_position(store: Store, hub: Hub) -> None:
@@ -270,12 +281,14 @@ def test_render_native_node_line_and_trailing_position(store: Store, hub: Hub) -
     lines = _structure(render_memory_index(store))
     h1 = handle_registry.format_handle("memory", first)
     h2 = handle_registry.format_handle("memory", second)
+    ids = _nodes(store)
+    restart = handle_registry.format_handle("memory", ids["restart-worker"])
+    rotate = handle_registry.format_handle("memory", ids["rotate-token"])
     i = lines.index("## Runbooks")
     assert lines[i + 1 : i + 5] == [
-        "- [Restart the worker](restart-worker.md) — "
+        f"- Restart the worker ({restart}) — "
         "stop, drain the queue, start; never kill mid-batch",
-        "- [Rotate the token](rotate-token.md) — "
-        "new token first, then revoke the old one",
+        f"- Rotate the token ({rotate}) — new token first, then revoke the old one",
         f"- Native note ({h1})",
         f"- Later note ({h2})",
     ]
@@ -308,11 +321,11 @@ def test_render_over_budget_cuts_hooks_and_names_the_overage(
     body, _, tail = out.rstrip("\n").rpartition("\n")
     assert tail.startswith("(memory index over budget:") and "budget 10 tok" in tail
     # the long Alpha hook is cut to 60 chars, ellipsis included
-    alpha = next(ln for ln in body.splitlines() if "[Alpha campaign]" in ln)
+    alpha = next(ln for ln in body.splitlines() if "- Alpha campaign (me" in ln)
     hook = alpha.split(" — ", 1)[1]
     assert len(hook) == HOOK_CUT_CHARS and hook.endswith("…")
     # short hooks stay whole
-    assert "- [Commit style](commit-style.md) — one-line subject, no body" in body
+    assert re.search(r"- Commit style \(me\d+\) — one-line subject, no body\n", body)
     assert len(body) < len(full)
     assert re.search(r"~\d+ tok full", tail)
 
@@ -320,3 +333,189 @@ def test_render_over_budget_cuts_hooks_and_names_the_overage(
 def test_render_within_budget_is_unchanged(store: Store, hub: Hub) -> None:
     import_memory_dir(store, FIXTURE)
     assert render_memory_index(store, budget_tok=8000) == render_memory_index(store)
+
+
+def test_render_native_node_with_a_hook(store: Store, hub: Hub) -> None:
+    import_memory_dir(store, FIXTURE)
+    ref = id_of(
+        MemoryHandler(hub=hub)
+        .put(text="loose", title="Loose", tags=["SPACE:repo-dev"])
+        .body
+    )
+    store.update_ref(ref, meta_patch={"hook": "now with a hook"})
+    handle = handle_registry.format_handle("memory", ref)
+    assert _structure(render_memory_index(store))[-1] == (
+        f"- Loose ({handle}) — now with a hook"
+    )
+
+
+# ── --sync ──────────────────────────────────────────────────────────────
+
+GAMMA_BULLET = (
+    "- [Gamma redesign](gamma-redesign.md) — design settled, build not started\n"
+)
+CLOCK_BULLET = (
+    "- [Clock skew](clock-skew.md) — timestamps from the second host run "
+    "ahead by a few seconds\n"
+)
+
+
+def _fixture_copy(tmp_path: Path) -> Path:
+    mem = tmp_path / "mem"
+    shutil.copytree(FIXTURE, mem)
+    return mem
+
+
+def _edit_index(mem: Path, old: str, new: str) -> None:
+    path = mem / "MEMORY.md"
+    text = path.read_text(encoding="utf-8")
+    assert old in text, old
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def _tag_values(store: Store, ref_id: int) -> set[str]:
+    return {v for _ns, v in store.ref_tags_bulk([ref_id]).get(ref_id, [])}
+
+
+def test_sync_converges_the_graph_on_the_changed_files(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    ids = _nodes(store)
+    native = id_of(
+        MemoryHandler(hub=hub)
+        .put(
+            text="written natively",
+            title="Native only",
+            tags=["SPACE:repo-dev", "section:runbooks"],
+            meta={"hook": "native hook"},
+        )
+        .body
+    )
+
+    # hook change; Clock skew moved Gotchas -> Workflow; Gamma deleted;
+    # Fresh idea added to Threads; a body change.
+    _edit_index(mem, "shipped and verified; next step", "SHIPPED; next step")
+    _edit_index(mem, CLOCK_BULLET, "")
+    _edit_index(
+        mem,
+        "- [Review habit](review-habit.md)",
+        CLOCK_BULLET + "- [Review habit](review-habit.md)",
+    )
+    _edit_index(mem, GAMMA_BULLET, "")
+    _edit_index(
+        mem,
+        "- [Beta rollout](beta-rollout.md)",
+        "- [Fresh idea](fresh-idea.md) — brand new bullet\n"
+        "- [Beta rollout](beta-rollout.md)",
+    )
+    (mem / "fresh-idea.md").write_text(
+        "---\nname: f\n---\nfresh body\n", encoding="utf-8"
+    )
+    (mem / "commit-style.md").write_text(
+        "---\nname: x\n---\nA new commit style.\n", encoding="utf-8"
+    )
+
+    report = import_memory_dir(store, mem, sync=True)
+
+    assert (report.topics_created, report.sections_created) == (1, 0)
+    assert report.retired == 1
+    # changed nodes: alpha (hook), commit-style (body), clock-skew (section +
+    # order), beta-rollout (order 2 -> 3), review-habit (order 2 -> 3) and
+    # lost-notes (order 3 -> 2, Clock skew left Gotchas); nothing else.
+    assert report.updated == 6
+
+    nodes = _nodes(store)
+    live = {r.id: r for r in store.list_refs(kind="memory", limit=1000)}
+    assert live[nodes["alpha-campaign"]].meta["hook"].startswith("SHIPPED; next")
+    assert _body(store, hub, nodes["commit-style"]) == "A new commit style."
+    assert "gamma-redesign" not in nodes
+    assert store.get_ref(kind="memory", id=ids["gamma-redesign"]) is None
+    assert _body(store, hub, nodes["fresh-idea"]) == "fresh body"
+    assert live[nodes["fresh-idea"]].meta["order"] == 2
+    assert live[nodes["beta-rollout"]].meta["order"] == 3
+
+    # moved section: tag swapped, part-of re-pointed (old link gone)
+    clock = nodes["clock-skew"]
+    tags = _tag_values(store, clock)
+    assert "section:workflow" in tags and "section:gotchas" not in tags
+    assert live[clock].meta["order"] == 2
+    part_of = _link_pairs(store, "part-of")
+    assert (clock, nodes["workflow"]) in part_of
+    assert (clock, nodes["gotchas"]) not in part_of
+    assert (nodes["fresh-idea"], nodes["threads"]) in part_of
+
+    # the native write is untouched
+    ref = store.get_ref(kind="memory", id=native)
+    assert ref is not None and ref.title == "Native only"
+    assert ref.meta == {"hook": "native hook"}
+    assert _tag_values(store, native) >= {"repo-dev", "section:runbooks"}
+    assert native not in {a for a, _b in part_of}
+
+
+def test_sync_second_run_is_a_no_op(store: Store, hub: Hub, tmp_path: Path) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _edit_index(mem, "one-line subject, no body", "a different hook")
+    _edit_index(mem, GAMMA_BULLET, "")
+    first = import_memory_dir(store, mem, sync=True)
+    assert (first.updated, first.retired) == (1, 1)
+    before = (len(store.list_refs(kind="memory", limit=1000)), _all_link_count(store))
+    again = import_memory_dir(store, mem, sync=True)
+    assert (again.updated, again.retired) == (0, 0)
+    assert (again.topics_created, again.sections_created) == (0, 0)
+    after = (len(store.list_refs(kind="memory", limit=1000)), _all_link_count(store))
+    assert after == before
+
+
+def test_sync_on_unchanged_files_changes_nothing(store: Store, hub: Hub) -> None:
+    import_memory_dir(store, FIXTURE)
+    report = import_memory_dir(store, FIXTURE, sync=True)
+    assert (report.updated, report.retired) == (0, 0)
+    assert (report.topics_created, report.sections_created) == (0, 0)
+    assert "updated: 0; retired: 0" in report.summary()
+
+
+def test_sync_updates_and_retires_section_nodes(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    ids = _nodes(store)
+    # case-only rename keeps the slug; dropping the last header retires the
+    # section node and the bullet under it.
+    _edit_index(mem, "## Gotchas", "## GOTCHAS")
+    text = (mem / "MEMORY.md").read_text(encoding="utf-8")
+    head, _, rest = text.partition("## Reference")
+    assert rest
+    (mem / "MEMORY.md").write_text(head, encoding="utf-8")
+
+    report = import_memory_dir(store, mem, sync=True)
+
+    live = {r.id: r for r in store.list_refs(kind="memory", limit=1000)}
+    assert live[ids["gotchas"]].title == "GOTCHAS"
+    assert ids["reference"] not in live
+    assert ids["glossary-pointer"] not in live
+    assert (report.retired, report.updated) == (2, 1)
+    assert "Reference" not in render_memory_index(store)
+
+
+def test_plain_import_never_overwrites_even_when_files_changed(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _edit_index(mem, "one-line subject, no body", "something else")
+    _edit_index(mem, GAMMA_BULLET, "")
+    report = import_memory_dir(store, mem)
+    assert (report.updated, report.retired) == (0, 0)
+    nodes = _nodes(store)
+    live = {r.id: r for r in store.list_refs(kind="memory", limit=1000)}
+    assert live[nodes["commit-style"]].meta["hook"] == "one-line subject, no body"
+    assert "gamma-redesign" in nodes
+
+
+def test_sync_flag_is_wired_into_the_cli() -> None:
+    assert _build_parser().parse_args(["memory", "import", "d", "--sync"]).sync
+    assert not _build_parser().parse_args(["memory", "import", "d"]).sync

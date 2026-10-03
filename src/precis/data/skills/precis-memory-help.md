@@ -40,7 +40,12 @@ replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
 `MEMORY.md` and its topic files (one node per `##` section and per bullet,
 `related-to` links from cross-references; safe to re-run, never overwrites
 a node edited in the graph); `precis memory index` prints them back as the
-session-start index.
+session-start index, one `- <Title> (me<id>) — <hook>` line per node.
+A `SPACE:repo-dev` memory's index text is `meta={'hook': 'one line'}`, on
+`put` or alone on `edit(kind='memory', id=N, mode='replace',
+meta={'hook': '…'})` (one line, non-empty; `hook` is the only writable key).
+Its `section:<slug>` tag places it under that `## Section` of the index;
+retag with `tag(add=['section:<slug>'], remove=['section:<old>'])`.
 
 ## Save a thought
 ## Capture a note

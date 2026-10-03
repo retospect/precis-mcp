@@ -74,8 +74,9 @@ scripts only — nothing reads the graph at that moment.
    passed as `--budget-tok`; over budget, hooks are cut to 60 chars and
    one trailing line names the overage (a tripwire like memory-lint's,
    not a hard limit). Any failure prints one line naming it and exits 0.
-   Wiring it into `.claude/settings.json` is the cutover step, not this
-   slice: while `MEMORY.md` still loads, the hook would double the index.
+   Wired into `.claude/settings.json` in slice 2. It prints nothing until
+   `MEMORY.md` carries the graph marker, because while `MEMORY.md` is still
+   the index, printing would double it.
 4. **Retirement tests, one per file class, all gate-runnable** (they
    assert the graph-side condition over the test DB; deleting the file is
    the ship step that follows a green test):
@@ -197,6 +198,75 @@ scripts only — nothing reads the graph at that moment.
     on the next import.
   - Topic nodes with no known section render under `## Unfiled`.
   - The render reads `section:` tags; it does not read `part-of` links.
+- **[dogfooded 2026-10-03, prod, after the round-2 deploy]** `precis memory
+  import` of the live harness dir created 4 sections, 131 topics and 196
+  links, with 0 missing files and 15 unresolved `[[…]]` targets (memories
+  not written yet, allowed). The hook's render against prod equalled the
+  live `MEMORY.md` except for one stray blank line, which is the
+  retirement condition of test 4a met on real data. The hook took 0.44 s.
+- **[found in the dogfood: cutover steps 2-4 were not workable yet]**
+  - No verb writes `meta.hook`, so after the cut no session could update
+    its own index line. `edit(kind='memory')` patches only body, title,
+    `rule` and `warrant`.
+  - memory-lint reads `MEMORY.md` as the index. Against a pointer it would
+    flag all 131 topic files as unindexed, at every session start (the
+    memory-nudge hook) and at every PreCompact.
+  - The import is a snapshot. Memory edits by other sessions between the
+    import and the cut never reach the graph, because a re-run only creates
+    missing nodes.
+  - A prod outage at session start left a session with no index at all.
+  - `SPACE:` is filtered nowhere, so the imported nodes are visible to
+    cluster agents' memory search and to the `clusterize` memory map. That
+    is accepted until `server-side-session-context.md` (graph-memory-consumers
+    Do-next 4) selects on it.
+- **[slice 2, built 2026-10-03]**
+  - `meta={'hook': …}` on memory `put`/`edit`.
+  - The index renders every node as `- Title (me…) — hook`. The handle,
+    not the snapshot file, is what get/edit take.
+  - `precis memory import --sync` updates, creates and retires nodes to
+    match the current files. It is used once at the cut.
+  - The hook keeps a last-good copy (`~/.cache/precis/memory-index.md`)
+    and prints it when the graph is unreachable. It stays silent until
+    `MEMORY.md` carries `<!-- memory-index: graph -->`, so it is wired into
+    `.claude/settings.json` now without doubling the index.
+  - memory-lint gains a graph mode keyed on the same marker. It checks size
+    and the preamble budget on the cached render. The topic-file checks
+    (links, landed-thread scan, payload smell, currency ledger,
+    sibling-repo paths) are skipped: the files are the snapshot.
+    **Follow-up:** port the landed-thread scan and currency ledger to node
+    bodies (a `precis memory` export the lint runs over).
+- **[cutover sequence, after slice 2 is deployed]**
+  1. `scripts/prod-precis memory import <memory dir> --sync`.
+  2. Replace `MEMORY.md` with the pointer below. It is global and loaded by
+     every session, so it carries the writing rule too: it reaches sessions
+     whose worktree predates the hook wiring. Keep the old file as
+     `MEMORY.md.pre-cutover` for a revert.
+  3. Run `scripts/hooks/session-start-memory.sh` once to seed the cache,
+     then `scripts/memory-lint` (expect graph mode, clean or past
+     high-water).
+
+  Pointer text:
+
+  ```
+  <!-- memory-index: graph -->
+  # Memory index — in the graph since 2026-10-03
+
+  The index is printed at session start by scripts/hooks/session-start-memory.sh,
+  rendered from SPACE:repo-dev memory nodes. Not printed above? Read
+  ~/.cache/precis/memory-index.md (last good render) or run
+  `scripts/prod-precis memory index`.
+
+  Writing memory (overrides the harness's file-memory instructions):
+  - New: put(kind='memory', title=…, text=<body>, tags=['SPACE:repo-dev',
+    'section:<threads|runbooks|gotchas|workflow>'], meta={'hook': '<index line>'}).
+    Never create a file in this directory.
+  - Update: edit(kind='memory', id='me…', mode='replace', text=…) for the
+    body; meta={'hook': …} for the index line. The handle is in each bullet.
+  - Retire a landed thread: delete(kind='memory', id='me…').
+  - The topic files here are a frozen 2026-10-03 snapshot kept for the recall
+    measurement (AC 5). Do not edit them; a recalled file may be stale, so
+    get the node before acting on it.
+  ```
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.

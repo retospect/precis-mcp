@@ -6,7 +6,9 @@ capability exists — and text-file memory it replaces is retired per
 `docs/roadmap.md`. North-star: `backlog/fisheye-level2.md` (the focus verb); the
 nanobuds draft evidence (proposal in /tmp, history by SQL, write checks by
 SQL) was closed 2026-10-02 by draft `view='history'`/`'proposals'` and the
-landed-sha edit ack. The memory
+landed-sha edit ack. Both views were dogfooded 2026-10-03 on the live
+server (63301c5c) against dr173020, and both rendered. The edit ack was
+not exercised on that live review draft. The memory
 half (file-mirror, context hierarchy, session history) and the surfaces
 (fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
@@ -19,17 +21,31 @@ what a live consumer is already going without.
 
 1. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. First slice built 2026-10-02 (`SPACE:`
-   axis, `precis memory import`/`index`, the hook script, test 4a). Next:
-   the cutover, approved by Reto 2026-10-02 (option 1): once the slice is
-   deployed, dogfood the hook output against the live index in one
-   session, then do the four steps in the item's decisions log.
-   Then tests 4b/4c, which need `backlog/file-mirror.md` (knowledge-mesh
-   Do-next 7).
+   axis, `precis memory import`/`index`, the hook script, test 4a).
+   - **Dogfooded on prod 2026-10-03:** the import ran, and the graph render
+     matched `MEMORY.md`.
+   - **The dogfood exposed gaps:** no verb writes an index line,
+     memory-lint is file-only, and the import is a snapshot.
+   - **Slice 2 closes them:** `meta={'hook':…}`, handle-form index,
+     `import --sync`, the hook's last-good cache, memory-lint graph mode,
+     and the hook wired but silent until the marker.
+   - **Next:** after slice 2 deploys, the three-step cutover in the item's
+     decisions log (sync, pointer, seed + lint).
+   - **Then:** tests 4b/4c, which need `backlog/file-mirror.md`
+     (knowledge-mesh Do-next 7), and porting memory-lint's body checks to
+     nodes.
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
    `envelope` row moved to tier 2: it is not an outer bound.
+   - **Tier 2, the taproot half (89fff2fe):** live. The prompt's
+     `"compound"` → `"composite"` key is being measured by the local A/B
+     (design note §1).
+   - **Tier 2, the nanopub half (0181, round 2):** live and checked on
+     prod 2026-10-03. The CHECK is validated and allows claim, composite
+     and hypothesis; the one `compound` row is now `composite`.
+     `nanopub_artifacts` is append-only and was not rewritten.
 3. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
    the render side (every kind, the browser focus page) is
    `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
