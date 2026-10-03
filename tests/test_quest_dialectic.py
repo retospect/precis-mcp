@@ -614,11 +614,21 @@ class TestTickWiring:
         assert out.dialectic_applied == 2
 
     def test_prompt_contains_dialectic_blocks_section(self, store: Any) -> None:
+        # gr462891 stopgap: the section renders only once a block exists.
         qid = _mk_quest(store, "A striving")
+        fid = _mk_finding(store)
+        apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
         disp, reqs = _sequenced_dispatch([{"logbook": []}])
         run_quest_tick(store, qid, dispatch_fn=disp)
         assert len(reqs) == 1
         assert "## Dialectic blocks" in reqs[0].prompt
+
+    def test_prompt_omits_dialectic_section_without_blocks(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([{"logbook": []}])
+        run_quest_tick(store, qid, dispatch_fn=disp)
+        assert len(reqs) == 1
+        assert "dialectic" not in reqs[0].prompt.lower()
 
     def test_non_dict_dialectic_op_entries_never_crash_the_tick(
         self, store: Any

@@ -32,7 +32,13 @@ Superseded as input-only designs: `quest-dossier-dialectic.md`,
    of an edge.
 2. **Depth and hierarchy under the apex.** Flat membership, or sub-nodes
    (sub-quest, hypothesis, argument) that own their own members; how a cycle
-   guard composes with `serves`.
+   guard composes with `serves`. Input (gr462891, 2026-10-03): the
+   per-hypothesis dialectic blocks never landed. `apply_dialectic_op`
+   needs an existing `fi<id>`, and no quest code mints a hypothesis
+   finding. Only dossier 164905 has a block, and it was minted by hand. The
+   tick prompt now carries the dialectic section only when a block already
+   exists (`dossier.has_dialectic_blocks`). So a hypothesis sub-node also
+   decides how a tick mints the thing its dialectic hangs on.
 3. **Linearisation trigger.** On demand by a writer agent, per tick, or on
    export; whether its output is ephemeral (a render, discarded) or persisted
    as a draft the reader can cite and `paper-of` binds to.

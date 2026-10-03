@@ -924,7 +924,9 @@ def _axis_reading_notes(fr: Any) -> str:
     return "Reading the axes: " + " ".join(notes) + "\n"
 
 
-def _ledger_constraints(ledger_text: str) -> str:
+def _ledger_constraints(
+    ledger_text: list[dossier_mod.AttemptNode] | str,
+) -> str:
     """Bullet lines for the pinned attempt tree's tried/ruled-out directions.
 
     This is dossier-owned-by-process's structural "do not re-propose" constraint —
@@ -939,7 +941,9 @@ def _ledger_constraints(ledger_text: str) -> str:
     return dossier_mod.ledger_do_not_repropose(ledger_text)
 
 
-def _ledger_open_summary(ledger_text: str) -> str:
+def _ledger_open_summary(
+    ledger_text: list[dossier_mod.AttemptNode] | str,
+) -> str:
     """Bullet lines for the pinned attempt tree's ``open``/``active``
     directions — the upsert counterpart to :func:`_ledger_constraints`'s
     tried/ruled-out list.
@@ -1296,7 +1300,17 @@ def build_tick_prompt(
         if narrative_override is not None
         else dossier_mod.read_narrative(store, qid)
     )
-    ledger_text = dossier_mod.read_ledger(store, qid)
+    # Dialectic prompt parts only for a dossier that already holds a block
+    # (gr462891 stopgap) — the rest is spliced out, nothing dangles.
+    has_blocks = dossier_mod.has_dialectic_blocks(store, qid)
+    dialectic_section = (
+        _DIALECTIC_SECTION.format(dialectic=dossier_mod.read_dialectic(store, qid))
+        if has_blocks
+        else ""
+    )
+    # The forest, not read_ledger's markdown: the open list shows per-node
+    # meta (an `add` kept as a root because its parent didn't resolve).
+    ledger_text = dossier_mod.read_ledger_nodes(store, qid)
     gaps = gaps_mod.quest_gaps(store, qid)
     momentum = gaps_mod.quest_momentum(store, qid)
 
@@ -1320,7 +1334,7 @@ def build_tick_prompt(
             f"{momentum.blocked_todo_servers} blocked"
         ),
         dossier=dossier_text or "(no dossier yet)",
-        dialectic=dossier_mod.read_dialectic(store, qid),
+        dialectic_section=dialectic_section,
         ledger_constraints=_ledger_constraints(ledger_text),
         ledger_open=_ledger_open_summary(ledger_text),
         gaps="\n".join(gap_lines),
@@ -1336,7 +1350,12 @@ def build_tick_prompt(
 
     if quest_body == QUEST_BODY_INQUIRY:
         banner = _INQUIRY_REVIEW_BANNER if review else ""
-        return _PROMPT_TEMPLATE_INQUIRY.format(review_banner=banner, **common)
+        return _PROMPT_TEMPLATE_INQUIRY.format(
+            review_banner=banner,
+            dialectic_guidance=_DIALECTIC_GUIDANCE_INQUIRY if has_blocks else "",
+            dialectic_schema=_DIALECTIC_SCHEMA_INQUIRY if has_blocks else "",
+            **common,
+        )
 
     # QUEST_BODY_MATERIALS (default) — today's unchanged path.
     # Always-on measurement table (rung 4c's review banner used to be the only
@@ -1370,8 +1389,92 @@ def build_tick_prompt(
         axis_notes=_axis_reading_notes(fr),
         reaction_context=_reaction_context(store, quest, fr=fr),
         proposal_cap=max_proposals_per_tick(),
+        dialectic_guidance=_DIALECTIC_GUIDANCE_MATERIALS if has_blocks else "",
+        dialectic_schema=_DIALECTIC_SCHEMA_MATERIALS if has_blocks else "",
         **common,
     )
+
+
+#: The dialectic parts of the tick prompt, spliced into the templates below
+#: ONLY when the quest's dossier already holds a dialectic block (gr462891
+#: stopgap: a dossier with none has nothing to maintain, and the section
+#: invites the model to open hypotheses it then fails to anchor). They are
+#: substituted as format VALUES, so braces here are single, not doubled;
+#: ``_DIALECTIC_SECTION`` takes ``.format(dialectic=...)``.
+_DIALECTIC_SECTION = """\
+## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
+{dialectic}
+
+"""
+
+_DIALECTIC_GUIDANCE_MATERIALS = """\
+**The dialectic lives in blocks, not prose.** Each live hypothesis's \
+argument state — its supports, its steelman counter, its ONE discriminating \
+experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
+section above and the field below), addressed by the hypothesis's `[fi…]` \
+handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
+their content — it is the synthesis layer only (what changed, what it \
+means, what to do next). When new evidence bears on a hypothesis, emit a \
+`support` or `counter` op citing that evidence's handle inline; when a \
+hypothesis is resolved either way, emit `settle` with one linked sentence. \
+A block showing "experiment: (MISSING …)" owes a discriminating experiment \
+with pre-registered branch predictions — emit an `experiment` op for it. \
+Pre-register by citing the structure's `[st…]` handle inline: when a trusted \
+measurement lands on it, a code pass mints a **measurement ruling** that \
+appears as a `measured: [fi…]` line under the experiment (templated text — \
+no LLM authored it, so it is a verifiable anchor). Interpreting a ruling is \
+YOUR job: emit `support`/`counter` citing the ruling's `[fi…]` handle, or \
+`settle` the hypothesis, per the experiment's pre-registered branch.
+
+"""
+
+_DIALECTIC_GUIDANCE_INQUIRY = """\
+**The dialectic lives in blocks, not prose.** Each live hypothesis's \
+argument state — its supports, its steelman counter, its ONE discriminating \
+experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
+section above and the field below), addressed by the hypothesis's `[fi…]` \
+handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
+their content — it is the synthesis layer only (what changed, what it \
+means, what to do next). When new evidence bears on a hypothesis, emit a \
+`support` or `counter` op citing that evidence's handle inline; when a \
+hypothesis is resolved either way, emit `settle` with one linked sentence. \
+A block showing "experiment: (MISSING …)" owes a discriminating experiment — \
+name the ONE piece of evidence (a search, a source) that would settle it, \
+with pre-registered branch predictions, via an `experiment` op.
+
+"""
+
+_DIALECTIC_SCHEMA_MATERIALS = """\
+  "dialectic_ops": [
+    {"op": "open", "hypothesis": "fi<id>"},
+    {"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
+with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
+one handle is REQUIRED — an unanchored support/counter is dropped>"},
+    {"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
+against it, evidence handles inline — same anchor requirement>"},
+    {"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
+discriminating experiment>", "predicts": "<pre-registered branch \
+predictions: what each outcome would mean>"},
+    {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
+sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+  ],
+"""
+
+_DIALECTIC_SCHEMA_INQUIRY = """\
+  "dialectic_ops": [
+    {"op": "open", "hypothesis": "fi<id>"},
+    {"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
+with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
+one handle is REQUIRED — an unanchored support/counter is dropped>"},
+    {"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
+against it, evidence handles inline — same anchor requirement>"},
+    {"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
+discriminating piece of evidence to gather>", "predicts": "<pre-registered \
+branch predictions: what each outcome would mean>"},
+    {"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
+sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}
+  ],
+"""
 
 
 _PROMPT_TEMPLATE = """\
@@ -1387,10 +1490,7 @@ no evidence for.
 ## Current dossier (the living synthesis — you will rewrite it)
 {dossier}
 
-## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
-{dialectic}
-
-## Ruled-out ledger (do NOT re-propose these directions)
+{dialectic_section}## Ruled-out ledger (do NOT re-propose these directions)
 {ledger_constraints}
 
 ## Open ledger directions (already pinned — transition/refine these, don't re-add them)
@@ -1445,25 +1545,7 @@ a question-phrased query keeps missing — phrase it as one or two sentences \
 that could appear verbatim in the abstract of the paper you wish existed, NOT \
 as a question: retrieval matches documents, not questions (this is HyDE).
 
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment \
-with pre-registered branch predictions — emit an `experiment` op for it. \
-Pre-register by citing the structure's `[st…]` handle inline: when a trusted \
-measurement lands on it, a code pass mints a **measurement ruling** that \
-appears as a `measured: [fi…]` line under the experiment (templated text — \
-no LLM authored it, so it is a verifiable anchor). Interpreting a ruling is \
-YOUR job: emit `support`/`counter` citing the ruling's `[fi…]` handle, or \
-`settle` the hypothesis, per the experiment's pre-registered branch.
-
-When you rule out or complete a *direction* that must never be revisited, pin \
+{dialectic_guidance}When you rule out or complete a *direction* that must never be revisited, pin \
 it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
 is rewritten every tick, so a rule-out placed only there is forgotten.
 
@@ -1477,9 +1559,11 @@ the existing node this refines/varies>", "status": "<optional, default open>"}}`
 - `{{"op": "mark", "node": "<exact text of the existing node>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional: exact text of its \
 parent, only needed when that node's text is ambiguous>"}}`
-Address a node by quoting its EXISTING text exactly (case doesn't matter) — \
-there are no ids. An op that can't resolve its node (not found, or the same \
-text in two branches with no disambiguating `parent`) is silently dropped. \
+Address a node by quoting its EXISTING text exactly (case doesn't matter); \
+a unique prefix of at least 40 characters also resolves. There are no ids. A \
+`mark` that can't resolve its node (not found, or ambiguous with no \
+disambiguating `parent`) is silently dropped. An `add` whose `parent` can't \
+be resolved is kept as a top-level node. \
 **Upsert discipline**: check the open/active list above FIRST. If an existing \
 node already covers the thought you're about to add, `mark` it instead — \
 transition its status, or refine it with a CHILD `add` under its exact text \
@@ -1531,20 +1615,7 @@ strategy tried/killed/still open, not a single candidate material>",
     {{"op": "mark", "node": "<exact existing node text>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
-  "dialectic_ops": [
-    {{"op": "open", "hypothesis": "fi<id>"}},
-    {{"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
-with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
-one handle is REQUIRED — an unanchored support/counter is dropped>"}},
-    {{"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
-against it, evidence handles inline — same anchor requirement>"}},
-    {{"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
-discriminating experiment>", "predicts": "<pre-registered branch \
-predictions: what each outcome would mean>"}},
-    {{"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}}
-  ],
-  "proposals": [
+{dialectic_schema}  "proposals": [
     {{"name": "<candidate material>", "rationale": "<why test it>",
       "parent": "<optional: slug of the candidate this varies, when you are \
 refining an existing one>",
@@ -1618,10 +1689,7 @@ no evidence for.
 ## Current dossier (the living synthesis — you will rewrite it)
 {dossier}
 
-## Dialectic blocks (live hypotheses — maintain via `dialectic_ops`, do NOT restate in `dossier_text`)
-{dialectic}
-
-## Ruled-out ledger (do NOT re-propose these directions)
+{dialectic_section}## Ruled-out ledger (do NOT re-propose these directions)
 {ledger_constraints}
 
 ## Open ledger directions (already pinned — transition/refine these, don't re-add them)
@@ -1662,20 +1730,7 @@ a question-phrased query keeps missing — phrase it as one or two sentences \
 that could appear verbatim in the abstract of the paper you wish existed, NOT \
 as a question: retrieval matches documents, not questions (this is HyDE).
 
-**The dialectic lives in blocks, not prose.** Each live hypothesis's \
-argument state — its supports, its steelman counter, its ONE discriminating \
-experiment — is maintained through `dialectic_ops` (see the Dialectic-blocks \
-section above and the field below), addressed by the hypothesis's `[fi…]` \
-handle. The blocks survive every rewrite; `dossier_text` must NOT restate \
-their content — it is the synthesis layer only (what changed, what it \
-means, what to do next). When new evidence bears on a hypothesis, emit a \
-`support` or `counter` op citing that evidence's handle inline; when a \
-hypothesis is resolved either way, emit `settle` with one linked sentence. \
-A block showing "experiment: (MISSING …)" owes a discriminating experiment — \
-name the ONE piece of evidence (a search, a source) that would settle it, \
-with pre-registered branch predictions, via an `experiment` op.
-
-When you rule out or complete a *direction* that must never be revisited, pin \
+{dialectic_guidance}When you rule out or complete a *direction* that must never be revisited, pin \
 it to the ledger via `ledger_ops` (permanently preserved); `dossier_text` \
 is rewritten every tick, so a rule-out placed only there is forgotten.
 
@@ -1689,9 +1744,11 @@ the existing node this refines/varies>", "status": "<optional, default open>"}}`
 - `{{"op": "mark", "node": "<exact text of the existing node>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional: exact text of its \
 parent, only needed when that node's text is ambiguous>"}}`
-Address a node by quoting its EXISTING text exactly (case doesn't matter) — \
-there are no ids. An op that can't resolve its node (not found, or the same \
-text in two branches with no disambiguating `parent`) is silently dropped. \
+Address a node by quoting its EXISTING text exactly (case doesn't matter); \
+a unique prefix of at least 40 characters also resolves. There are no ids. A \
+`mark` that can't resolve its node (not found, or ambiguous with no \
+disambiguating `parent`) is silently dropped. An `add` whose `parent` can't \
+be resolved is kept as a top-level node. \
 **Upsert discipline**: check the open/active list above FIRST. If an existing \
 node already covers the thought you're about to add, `mark` it instead — \
 transition its status, or refine it with a CHILD `add` under its exact text \
@@ -1742,20 +1799,7 @@ strategy tried/settled/still open, not a single fact or citation>",
     {{"op": "mark", "node": "<exact existing node text>", "status": \
 "<open|active|tried|ruled-out>", "parent": "<optional>"}}
   ],
-  "dialectic_ops": [
-    {{"op": "open", "hypothesis": "fi<id>"}},
-    {{"op": "support", "hypothesis": "fi<id>", "text": "<one why-clause \
-with its evidence handle(s) inline, e.g. … [pc123] or [ql456]. At least \
-one handle is REQUIRED — an unanchored support/counter is dropped>"}},
-    {{"op": "counter", "hypothesis": "fi<id>", "text": "<the steelman \
-against it, evidence handles inline — same anchor requirement>"}},
-    {{"op": "experiment", "hypothesis": "fi<id>", "text": "<the ONE \
-discriminating piece of evidence to gather>", "predicts": "<pre-registered \
-branch predictions: what each outcome would mean>"}},
-    {{"op": "settle", "hypothesis": "fi<id>", "text": "<one linked \
-sentence>", "ruling": "<optional fi<id> of the ruling that settled it>"}}
-  ],
-  "directions": ["<0–3 strategic directions — set these on a review>"]
+{dialectic_schema}  "directions": ["<0–3 strategic directions — set these on a review>"]
 }}
 
 Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the \
@@ -2782,9 +2826,12 @@ class _TickRun:
         # logged here so a persistently-malformed model payload is diagnosable;
         # a raise from either call must never crash the tick (mirrors the
         # compute-step / commit-ladder degrade-don't-crash convention below).
+        ledger_ops_seen = 0
+        ledger_ops_applied = 0
         for op in payload.get("ledger_ops") or []:
             if not isinstance(op, dict):
                 continue
+            ledger_ops_seen += 1
             kind = str(op.get("op") or "").strip()
             raw_parent = op.get("parent")
             parent = str(raw_parent).strip() if raw_parent else None
@@ -2812,6 +2859,7 @@ class _TickRun:
                 applied = False
             if applied:
                 ledger_added += 1
+                ledger_ops_applied += 1
             else:
                 log.info(
                     "run_quest_tick: ledger_ops entry for quest %s not applied "
@@ -2831,9 +2879,11 @@ class _TickRun:
         # payload must not fan out unboundedly. 16 is generous: a tick
         # legitimately touches a few hypotheses, not dozens.
         dialectic_applied = 0
+        dialectic_seen = 0
         for op in (payload.get("dialectic_ops") or [])[:16]:
             if not isinstance(op, dict):
                 continue
+            dialectic_seen += 1
             try:
                 applied = dossier_mod.apply_dialectic_op(store, quest_id, op)
             except Exception:
@@ -2852,6 +2902,17 @@ class _TickRun:
                     quest_id,
                     op,
                 )
+        # One per-tick summary: the per-op lines above only ever log failures,
+        # so without this a fully-applied tick leaves no trace (gr462891).
+        log.info(
+            "run_quest_tick: quest %s ledger_ops applied %d of %d, "
+            "dialectic_ops applied %d of %d",
+            quest_id,
+            ledger_ops_applied,
+            ledger_ops_seen,
+            dialectic_applied,
+            dialectic_seen,
+        )
 
         # Proposals — log each candidate as a hypothesis (WORM). The
         # materialise + dispatch half is the `compute` stage.

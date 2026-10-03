@@ -306,12 +306,157 @@ class TestAttemptTree:
         ledger = read_ledger(store, qid)
         assert "  - [open] with a Zn node" in ledger
 
-    def test_add_attempt_unmatched_parent_is_a_noop(self, store: Any) -> None:
+    def test_add_attempt_unmatched_parent_lands_as_a_root(self, store: Any) -> None:
+        # gr462891: dropping the add lost the direction and cascade-failed
+        # every later op naming it; an unresolvable parent now means "root".
+        from precis.quest.dossier import _parse_ledger
+
         qid = _mk_quest(store, "A striving")
-        assert (
-            add_attempt(store, qid, "a variant", parent="nothing named this") is False
+        assert add_attempt(store, qid, "a variant", parent="nothing named this") is True
+        roots = _parse_ledger(read_ledger(store, qid))
+        assert [(r.text, r.status, r.children) for r in roots] == [
+            ("a variant", "open", [])
+        ]
+
+    def test_add_attempt_ambiguous_parent_lands_as_a_root(self, store: Any) -> None:
+        from precis.quest.dossier import _parse_ledger
+
+        qid = _mk_quest(store, "A striving")
+        shared = "explore the shared preamble about zeolite framework topology"
+        assert add_attempt(store, qid, shared + " alpha bravo charlie delta echo")
+        assert add_attempt(store, qid, shared + " foxtrot golf hotel india juliet")
+        assert add_attempt(store, qid, "a variant", parent=shared) is True
+        roots = _parse_ledger(read_ledger(store, qid))
+        assert [r.text for r in roots][-1] == "a variant"
+        assert all(not r.children for r in roots)
+
+    # -- unique-prefix addressing (gr462891) ---------------------------------
+
+    _LONG = (
+        "Screen late transition metal single-atom dopants on nitrogen-doped "
+        "graphene for the oxygen reduction reaction, ranking each candidate by "
+        "the computed limiting potential, the adsorption free energy of the "
+        "OOH intermediate, and the thermodynamic stability against metal "
+        "clustering under operating conditions, then validate the top three "
+        "against explicit solvent and finite-field corrections before "
+        "proposing any synthesis route to the experimental collaborators."
+    )
+
+    def _status_of(self, store: Any, qid: int, text: str) -> str | None:
+        from precis.quest.dossier import _parse_ledger
+
+        for r in _parse_ledger(read_ledger(store, qid)):
+            if r.text == text:
+                return r.status
+        return None
+
+    def test_mark_by_259_char_prefix_of_a_long_node_applies(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert 400 < len(self._LONG) < 500
+        assert add_attempt(store, qid, self._LONG) is True
+        assert mark_attempt(store, qid, self._LONG[:259], "tried") is True
+        assert self._status_of(store, qid, self._LONG) == "tried"
+
+    def test_mark_by_140_char_prefix_with_ellipsis_applies(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, self._LONG) is True
+        assert mark_attempt(store, qid, self._LONG[:140] + "…", "tried") is True
+        assert self._status_of(store, qid, self._LONG) == "tried"
+        # the ASCII three-dot form is stripped the same way
+        assert mark_attempt(store, qid, self._LONG[:140] + " ...", "active") is True
+        assert self._status_of(store, qid, self._LONG) == "active"
+
+    def test_mark_by_text_minus_trailing_handle_applies(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        body = "Screen late transition metal single-atom dopants on graphene"
+        assert add_attempt(store, qid, body + " [ql123]") is True
+        assert mark_attempt(store, qid, body, "tried") is True
+        assert self._status_of(store, qid, body + " [ql123]") == "tried"
+
+    def test_mark_by_prefix_shorter_than_40_chars_does_not_match(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, self._LONG) is True
+        short = self._LONG[:39]
+        assert len(short) == 39
+        assert mark_attempt(store, qid, short, "tried") is False
+        assert mark_attempt(store, qid, self._LONG[:39] + "…", "tried") is False
+        assert self._status_of(store, qid, self._LONG) == "open"
+
+    def test_mark_by_prefix_shared_by_two_nodes_is_ambiguous_noop(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        shared = "explore the shared preamble about zeolite framework topology"
+        a = shared + " alpha bravo charlie delta echo"
+        b = shared + " foxtrot golf hotel india juliet"
+        assert add_attempt(store, qid, a) is True
+        assert add_attempt(store, qid, b) is True
+        assert mark_attempt(store, qid, shared, "tried") is False
+        assert self._status_of(store, qid, a) == "open"
+        assert self._status_of(store, qid, b) == "open"
+
+    def test_exact_match_wins_when_one_node_is_a_prefix_of_another(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        short = "explore the shared preamble about zeolite framework topology"
+        longer = short + " alpha bravo charlie delta echo foxtrot golf hotel india"
+        assert add_attempt(store, qid, longer) is True
+        assert add_attempt(store, qid, short) is True
+        assert mark_attempt(store, qid, short, "tried") is True
+        assert self._status_of(store, qid, short) == "tried"
+        assert self._status_of(store, qid, longer) == "open"
+
+    def test_add_with_parent_given_as_a_40_char_prefix_nests_under_it(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import _parse_ledger
+
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, self._LONG) is True
+        child = "Cu single-atom first"
+        assert add_attempt(store, qid, child, parent=self._LONG[:60]) is True
+        roots = _parse_ledger(read_ledger(store, qid))
+        assert [r.text for r in roots] == [self._LONG]
+        assert [c.text for c in roots[0].children] == [child]
+
+    def test_unplaced_root_round_trips_and_is_shown_in_the_open_list(
+        self, store: Any
+    ) -> None:
+        # gr462891: the unresolved parent is stored on the node chunk, loaded
+        # back, and surfaced (outside the quotable text) in the open list.
+        from precis.quest.dossier import read_ledger_nodes
+
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "placed root") is True
+        assert add_attempt(store, qid, "a variant", parent="nothing named this")
+        nodes = {n.text: n for n in read_ledger_nodes(store, qid)}
+        assert nodes["a variant"].parent_unresolved == "nothing named this"
+        assert nodes["placed root"].parent_unresolved is None
+
+        rendered = ledger_open_nodes(read_ledger_nodes(store, qid))
+        assert '- [open] a variant (unplaced: meant under "nothing named this")' in (
+            rendered
         )
-        assert read_ledger(store, qid).strip().endswith("(none yet)")
+        assert "- [open] placed root\n" in rendered + "\n"  # no marker
+
+    def test_mark_quoting_an_unplaced_node_text_without_the_marker_applies(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "a variant", parent="nothing named this")
+        assert mark_attempt(store, qid, "a variant", "tried") is True
+        assert self._status_of(store, qid, "a variant") == "tried"
+
+    def test_prompt_open_list_marks_an_unplaced_node(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        assert add_attempt(store, qid, "a variant", parent="nothing named this")
+        prompt = build_tick_prompt(store, store.get_ref(kind="quest", id=qid))
+        assert '- [open] a variant (unplaced: meant under "nothing named this")' in (
+            prompt
+        )
 
     def test_add_attempt_blank_text_is_a_noop(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -1254,6 +1399,31 @@ class TestQuestTick:
         assert "- [open] dope with a transition metal" in ledger
         assert "  - [ruled-out] Cu single-atom" in ledger
 
+    def test_tick_logs_one_applied_of_total_summary_line(
+        self, store: Any, caplog: Any
+    ) -> None:
+        import logging
+
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_ops": [
+                {"op": "add", "text": "dope with a transition metal"},
+                {"op": "mark", "node": "nothing named this", "status": "tried"},
+                "not a dict",
+            ],
+        }
+        with caplog.at_level(logging.INFO, logger="precis.quest.tick"):
+            out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        summaries = [
+            r.getMessage() for r in caplog.records if "ledger_ops applied" in r.message
+        ]
+        assert summaries == [
+            f"run_quest_tick: quest {qid} ledger_ops applied 1 of 2, "
+            "dialectic_ops applied 0 of 0"
+        ]
+
     def test_ledger_ops_unmatched_mark_is_skipped_not_counted(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         payload = {
@@ -2046,6 +2216,37 @@ class TestPromptAndView:
         prompt = build_tick_prompt(store, quest)
         assert "low-mastery" in prompt
         assert f"[cn{cid}]" in prompt
+
+    def test_prompt_without_dialectic_blocks_has_no_dialectic_section(
+        self, store: Any
+    ) -> None:
+        # gr462891 stopgap: nothing to maintain -> no section, no guidance,
+        # no `dialectic_ops` schema, in either quest body.
+        qid = _mk_quest(store, "A striving")
+        quest = store.get_ref(kind="quest", id=qid)
+        for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
+            prompt = build_tick_prompt(store, quest, quest_body=body)
+            assert "dialectic_ops" not in prompt
+            assert "dialectic" not in prompt.lower()
+            assert "ledger_ops" in prompt  # the rest of the schema is intact
+            assert '"dossier_text"' in prompt
+
+    def test_prompt_with_a_dialectic_block_keeps_the_dialectic_section(
+        self, store: Any
+    ) -> None:
+        from precis.quest.dossier import apply_dialectic_op
+        from tests.workers._helpers import seed_ref
+
+        qid = _mk_quest(store, "A striving")
+        fid = seed_ref(store, title="Cu is the active site", kind="finding")
+        assert apply_dialectic_op(store, qid, {"op": "open", "hypothesis": f"fi{fid}"})
+        quest = store.get_ref(kind="quest", id=qid)
+        for body in (QUEST_BODY_MATERIALS, QUEST_BODY_INQUIRY):
+            prompt = build_tick_prompt(store, quest, quest_body=body)
+            assert "## Dialectic blocks (live hypotheses" in prompt
+            assert f"[fi{fid}] Cu is the active site" in prompt
+            assert "**The dialectic lives in blocks, not prose.**" in prompt
+            assert '"dialectic_ops": [' in prompt
 
     def test_prompt_shows_ledger_ruled_out_entries_not_open(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
@@ -3434,7 +3635,7 @@ class TestQuestBodyInquiry:
         for token in self._MATERIALS_ONLY_TOKENS:
             assert token not in prompt, token
         # still the shared reasoning apparatus — not a stripped-down stub
-        assert "## Dialectic blocks" in prompt
+        # (the dialectic section is gated on a block existing, gr462891)
         assert "ledger_ops" in prompt
         assert "no proposal menu and no Pareto frontier" in prompt
 

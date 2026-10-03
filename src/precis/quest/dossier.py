@@ -166,7 +166,10 @@ class AttemptNode:
     time), or a parse-order counter for a node materialized from legacy
     markdown text (:func:`_parse_ledger`) that has no chunk_id yet. Used by
     :func:`ledger_open_nodes` to prioritize which open directions survive
-    its budget cutoff (gr263256).
+    its budget cutoff (gr263256). ``parent_unresolved`` is the ``parent`` text
+    an ``add`` named but that matched zero or several nodes, so the node was
+    kept as a root (``meta.parent_unresolved``; gr462891) — ``None`` for a
+    node placed as asked. :func:`ledger_open_nodes` shows it to the model.
     """
 
     text: str
@@ -174,6 +177,7 @@ class AttemptNode:
     children: list[AttemptNode] = field(default_factory=list)
     handle: str | None = None
     seq: int = 0
+    parent_unresolved: str | None = None
 
 
 def _parse_ledger(text: str) -> list[AttemptNode]:
@@ -301,30 +305,70 @@ def _normalize_node_text(text: str) -> str:
     return " ".join(text.split())
 
 
+#: Shortest quoted prefix :func:`_match_nodes` will resolve when no node
+#: matches exactly. Shorter prefixes are too likely to hit several nodes, and
+#: a short quote is not evidence of which node the model meant.
+_PREFIX_MATCH_MIN_CHARS = 40
+
+
+def _prefix_query(text: str) -> str | None:
+    """``text`` normalized for the prefix pass — casefolded, a trailing
+    ``…``/``...`` and whitespace stripped — or ``None`` when what remains is
+    shorter than :data:`_PREFIX_MATCH_MIN_CHARS`."""
+    q = _normalize_node_text(text).casefold()
+    for ellipsis in ("…", "..."):
+        if q.endswith(ellipsis):
+            q = q[: -len(ellipsis)]
+            break
+    q = q.rstrip()
+    return q if len(q) >= _PREFIX_MATCH_MIN_CHARS else None
+
+
+def _resolve_text(
+    pairs: list[tuple[AttemptNode, AttemptNode | None]], text: str
+) -> list[tuple[AttemptNode, AttemptNode | None]]:
+    """``pairs`` whose node text equals ``text`` (normalized, casefolded);
+    only if none do, those that START with it (see :func:`_prefix_query`)."""
+    target = _normalize_node_text(text).casefold()
+    exact = [
+        (n, p) for n, p in pairs if _normalize_node_text(n.text).casefold() == target
+    ]
+    if exact:
+        return exact
+    prefix = _prefix_query(text)
+    if prefix is None:
+        return []
+    return [
+        (n, p)
+        for n, p in pairs
+        if _normalize_node_text(n.text).casefold().startswith(prefix)
+    ]
+
+
 def _match_nodes(
     roots: list[AttemptNode], text: str, parent: str | None = None
 ) -> list[AttemptNode]:
     """Nodes whose text matches ``text`` — trimmed, whitespace-collapsed,
-    case-insensitive (the addressing rule: exact
+    case-insensitive (the addressing rule: quoted
     node text, no id bookkeeping, because the model sees the ledger in its
-    prompt and can quote it exactly; :func:`_normalize_node_text` guards
-    against an embedded newline forging a bullet-line match). ``parent``
-    narrows to nodes whose immediate parent's text also matches, the
+    prompt and can quote it; :func:`_normalize_node_text` guards
+    against an embedded newline forging a bullet-line match). Exact equality
+    wins; only when nothing matches exactly does a unique-prefix pass run: a
+    quote of at least :data:`_PREFIX_MATCH_MIN_CHARS` chars (a trailing
+    ``…``/``...`` ignored) matches nodes whose text starts with it — models
+    routinely quote the head of a long node. ``parent`` narrows to nodes
+    whose immediate parent's text also matches (same two-pass rule), the
     documented disambiguator when the same text appears in two branches.
     Zero or >1 matches is the caller's cue to no-op (ambiguous/unmatched —
     never a guess)."""
-    target = _normalize_node_text(text).casefold()
-    pairs = _flatten_with_parent(roots)
-    matches = [
-        (n, p) for n, p in pairs if _normalize_node_text(n.text).casefold() == target
-    ]
+    matches = _resolve_text(_flatten_with_parent(roots), text)
     if parent is not None:
-        ptarget = _normalize_node_text(parent).casefold()
-        matches = [
-            (n, p)
-            for n, p in matches
-            if p is not None and _normalize_node_text(p.text).casefold() == ptarget
-        ]
+        # Resolve the parent text over every node, then keep the candidates
+        # whose immediate parent is one of the resolved nodes.
+        parents = {
+            id(n) for n, _p in _resolve_text(_flatten_with_parent(roots), parent)
+        }
+        matches = [(n, p) for n, p in matches if p is not None and id(p) in parents]
     return [n for n, _p in matches]
 
 
@@ -626,8 +670,15 @@ _OPEN_LEDGER_BUDGET_ENV = "PRECIS_QUEST_LEDGER_OPEN_BUDGET_CHARS"
 #: OLD per-node truncation made most nodes un-quotable — see
 #: :func:`ledger_open_nodes`'s docstring). Cuts by NODE COUNT, never by
 #: truncating a node's own text — the fix's whole point is that what renders
-#: here must be exactly what :func:`_match_nodes` will accept.
+#: here must be exactly what :func:`_match_nodes` will accept (a unique
+#: prefix of at least :data:`_PREFIX_MATCH_MIN_CHARS` chars also resolves).
 _OPEN_LEDGER_BUDGET_CHARS_DEFAULT = 12_000
+
+
+#: Longest ``parent_unresolved`` text :func:`ledger_open_nodes` echoes in an
+#: ``(unplaced: …)`` marker — enough to recognise the intended parent without
+#: spending the open-list budget on a second copy of a long node.
+_UNPLACED_PARENT_SHOW_CHARS = 120
 
 
 def _open_ledger_budget_chars() -> int:
@@ -667,7 +718,8 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     no-opped, so the model just re-added the same direction as a new node
     every tick instead, and the section accreted (measured: 188 open nodes,
     55.6k of a 90.3k-char prompt). What renders here must always be exactly
-    what :func:`_match_nodes` will accept.
+    what :func:`_match_nodes` will accept (a unique prefix of at least
+    :data:`_PREFIX_MATCH_MIN_CHARS` chars also resolves).
 
     Instead, **the budget is on node COUNT, not text length**
     (:data:`_OPEN_LEDGER_BUDGET_CHARS_DEFAULT`, env-tunable via
@@ -686,6 +738,10 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     discourage re-adding: an omitted node is simply not addressable THIS
     tick, which is still strictly better than the old truncate-but-show
     behaviour (visible yet equally unaddressable).
+
+    A node kept as a root because its ``add`` named an unresolvable ``parent``
+    (:attr:`AttemptNode.parent_unresolved`) carries an `` (unplaced: meant
+    under "…")`` suffix after its text, so the model can re-home it.
 
     Takes the forest directly or the legacy markdown text, mirroring
     :func:`ledger_do_not_repropose`. ``"(none yet)"`` when nothing
@@ -708,6 +764,13 @@ def ledger_open_nodes(ledger: list[AttemptNode] | str) -> str:
     shown = 0
     for n in ordered:
         line = f"- [{n.status}] {n.text}"
+        if n.parent_unresolved:
+            # Suffix, outside the quotable node text (like the status prefix):
+            # tells the model this root was meant to be a child.
+            meant = n.parent_unresolved
+            if len(meant) > _UNPLACED_PARENT_SHOW_CHARS:
+                meant = meant[:_UNPLACED_PARENT_SHOW_CHARS].rstrip() + "…"
+            line += f' (unplaced: meant under "{meant}")'
         if shown and used + len(line) + 1 > budget:
             break
         lines.append(line)
@@ -960,7 +1023,12 @@ def _attempt_statuses(store: Store, chunk_ids: list[int]) -> dict[int, str]:
 
 
 def _write_node_chunk(
-    store: Store, dossier_id: int, parent_handle: str, text: str, status: str
+    store: Store,
+    dossier_id: int,
+    parent_handle: str,
+    text: str,
+    status: str,
+    parent_unresolved: str | None = None,
 ) -> Any:
     """Create one ledger-node chunk as a child of ``parent_handle`` (the
     ledger container, or another node's own chunk) and stamp it: ``split=
@@ -970,7 +1038,9 @@ def _write_node_chunk(
     ``ATTEMPT:<status>`` chunk tag (``replace_prefix=True`` — harmless here
     since a freshly created chunk carries no prior tag, but keeps this the
     same call :func:`mark_attempt` uses to swap an existing one). Returns the
-    created :class:`~precis.store._draft_ops.DraftChunk`. Shared by
+    created :class:`~precis.store._draft_ops.DraftChunk`. ``parent_unresolved``
+    (the ``parent`` text an ``add`` could not resolve) rides in the chunk meta
+    when set. Shared by
     :func:`add_attempt` and the legacy-migration materializer
     (:func:`_materialize_legacy_forest`)."""
     created = store.drafts.add_chunks(
@@ -981,7 +1051,10 @@ def _write_node_chunk(
         split=False,
     )
     chunk = created[0]
-    store.drafts.patch_chunk_meta(chunk.handle, {"pinned": _LEDGER_NODE_PINNED})
+    meta: dict[str, Any] = {"pinned": _LEDGER_NODE_PINNED}
+    if parent_unresolved:
+        meta["parent_unresolved"] = parent_unresolved
+    store.drafts.patch_chunk_meta(chunk.handle, meta)
     ord_ = _chunk_ord(store, dossier_id, chunk.handle)
     store.add_tag(
         dossier_id, Tag.closed("ATTEMPT", status), pos=ord_, replace_prefix=True
@@ -1128,6 +1201,7 @@ def _load_ledger_nodes(store: Store, dossier_id: int) -> list[AttemptNode]:
             children=[],
             handle=str(c.handle),
             seq=c.chunk_id,
+            parent_unresolved=(c.meta or {}).get("parent_unresolved") or None,
         )
         by_chunk_id[c.chunk_id] = node
         if c.parent_chunk_id == container.chunk_id:
@@ -1230,6 +1304,16 @@ def read_ledger(store: Store, owner_id: int) -> str:
     return _render_ledger(_load_ledger_nodes(store, did))
 
 
+def read_ledger_nodes(store: Store, owner_id: int) -> list[AttemptNode]:
+    """The pinned ledger's live attempt forest — the structured counterpart
+    of :func:`read_ledger` (the markdown projection drops per-node meta such
+    as :attr:`AttemptNode.parent_unresolved`)."""
+    ensure_ledger_chunk(store, owner_id)
+    did = dossier_ref_id(store, owner_id)
+    assert did is not None  # ensure_ledger_chunk just guaranteed a dossier
+    return _load_ledger_nodes(store, did)
+
+
 def _ledger_roots(store: Store, owner_id: int) -> tuple[str, int, list[AttemptNode]]:
     """``(container_handle, dossier_id, roots)`` of the owner's pinned
     ledger — the shared read-modify-write preamble for :func:`add_attempt` /
@@ -1291,7 +1375,10 @@ def add_attempt(
     byte-identical text+status among ``parent``'s siblings is also a no-op.
     ``parent`` (optional) is the exact text of an existing node the new one
     joins as a child — matched trimmed + case-insensitive
-    (:func:`_match_nodes`); zero or >1 matches is a no-op (never a guess).
+    (:func:`_match_nodes`; a unique ≥40-char prefix also resolves). A
+    ``parent`` that matches zero or >1 nodes is NOT a reason to drop the
+    node: it is added as a root instead (logged) — dropping lost the new
+    direction and cascade-failed every later op naming it (gr462891).
     ``parent=None`` adds a root (depth-0) node under the ledger CONTAINER
     chunk.
 
@@ -1312,20 +1399,29 @@ def add_attempt(
             _set_node_status(store, did, near_dup, st)
         return False
 
-    if parent is not None:
-        matches = _match_nodes(roots, parent)
-        if len(matches) != 1:
-            return False
+    matches = _match_nodes(roots, parent) if parent is not None else []
+    unresolved: str | None = None
+    if len(matches) == 1:
         target_node = matches[0]
         target_children = target_node.children
         parent_handle = target_node.handle
         assert parent_handle is not None  # every loaded node carries a handle
     else:
+        if parent is not None:
+            unresolved = _normalize_node_text(parent) or None
+            log.info(
+                "add_attempt: owner %s parent %r matched %d nodes; added as a root",
+                owner_id,
+                parent,
+                len(matches),
+            )
         target_children = roots
         parent_handle = container_handle
     if any(n.text == stripped_text and n.status == st for n in target_children):
         return False
-    _write_node_chunk(store, did, parent_handle, stripped_text, st)
+    _write_node_chunk(
+        store, did, parent_handle, stripped_text, st, parent_unresolved=unresolved
+    )
     return True
 
 
@@ -1339,7 +1435,8 @@ def mark_attempt(
     """Set an existing attempt node's status; return ``True`` iff applied.
 
     ``node`` is matched by exact text — trimmed, whitespace-normalized
-    (:func:`_normalize_node_text`), case-insensitive (:func:`_match_nodes`);
+    (:func:`_normalize_node_text`), case-insensitive, with the unique-prefix
+    fallback (:func:`_match_nodes`);
     ``parent`` disambiguates when the same text appears in two branches
     (also normalized before matching). Zero or >1 matches, or a ``status``
     outside :data:`_STATUSES`, is a no-op — degrade-don't-crash, never a
@@ -1803,6 +1900,14 @@ def read_dialectic(store: Store, owner_id: int) -> str:
     return _render_dialectic(store, _load_dialectic_blocks(store, did))
 
 
+def has_dialectic_blocks(store: Store, owner_id: int) -> bool:
+    """True when the owner's dossier holds at least one dialectic block.
+    Read-only (no healing, unlike :func:`read_dialectic`) — the tick prompt
+    gates its whole dialectic section on this."""
+    did = dossier_ref_id(store, owner_id)
+    return did is not None and bool(_load_dialectic_blocks(store, did))
+
+
 def _resolve_hypothesis_id(store: Store, raw: object) -> int | None:
     """``"fi263615"`` / ``"[fi263615]"`` / ``263615`` → the finding's ref id,
     or ``None`` when the handle is malformed, isn't a finding, or doesn't
@@ -2041,6 +2146,7 @@ __all__ = [
     "ensure_dialectic_chunk",
     "ensure_dossier",
     "ensure_ledger_chunk",
+    "has_dialectic_blocks",
     "ledger_do_not_repropose",
     "ledger_open_nodes",
     "mark_attempt",
@@ -2048,6 +2154,7 @@ __all__ = [
     "read_dialectic",
     "read_dossier",
     "read_ledger",
+    "read_ledger_nodes",
     "read_narrative",
     "rewrite_dossier",
     "update_frontier_tree",

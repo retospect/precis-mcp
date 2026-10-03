@@ -278,7 +278,10 @@ blob convert on first read, so nothing needs a migration pass.
 
 The writer **upserts**: a new attempt is near-dup-matched against the
 whole ledger first — a rephrasing of an existing node transitions or
-refines that node instead of appending a twin. When you search the
+refines that node instead of appending a twin. A refinement whose parent
+the writer cannot find is kept as a top-level node with
+`meta.parent_unresolved`, not dropped, and the next tick sees it marked
+unplaced. When you search the
 ledger (or the literature) for prior art, phrase the query as the thing
 you expect to find, not as a question — *"subsurface H co-doping on
 Pd(111) lowers NO dissociation barrier"*, not *"does H help?"*. Search
