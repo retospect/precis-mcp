@@ -113,6 +113,12 @@ off that gap until it closes.
 - **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
   maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an
   object-manipulation thread opens.
+- **One dormant quest owned by this thread** (Reto 2026-10-03, td460284):
+  qu161907 (A self-assembling, atomically-precise compute substrate, a
+  computational seed you can grow). It is tagged `thread:se-machine-design`
+  and carries a logbook decision entry recording the ownership; keep it
+  `STATUS:dormant`. Its draft dr42995 (nano-computer) still gets
+  `draft_refresh` passes; this thread schedules nothing against either.
 
 ## No action needed
 
