@@ -1066,6 +1066,9 @@ def test_poll_past_deadline_terminalizes_without_kill_hook(
     assert _status(store, rid) == "failed"
     tags = {str(t) for t in store.tags_for(rid)}
     assert "swept:wall-timeout" in tags
+    meta = _meta(store, rid)
+    assert meta["failure_class"] == "timeout"
+    assert "killed at wall-clock deadline" in meta["error"]
     events = [
         c.text
         for c in store.chunks.list_chunks_for_ref(rid)

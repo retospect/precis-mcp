@@ -22,15 +22,15 @@ Read-only prod pass over 2026-09-03..10-03 (`refs` kind='job', STATUS tags,
   "unresolved 59" diagnosis has nothing left to read.
 - **Lease churn:** 0 rows hold an expired lease, claimed but not terminal.
   No evidence left to chase.
-- **Gaps:** wall kills record no `failure_class` in meta (NULL), so they
-  are found only by reading the event tail. autocatpath_aggregate had 4
+- **Gaps:** wall kills before 2026-10-03 record no `failure_class` (NULL);
+  since then ssh_node stamps `failure_class='timeout'` + `meta.error`
+  (`ssh_node.py::_kill_and_terminalize`). autocatpath_aggregate had 4
   infra failures (two never got a lease host; jb348535 and jb413788 were
   reclaimed 5× and 2× across node restarts).
 
-Left: (1) why the 09-14/09-21 seeds ran past 5 h while this week's finish
+Left: why the 09-14/09-21 seeds ran past 5 h while this week's finish
 at about 2.5 h — a config or candidate mix change, or host load. Compare
-their run configs before raising any wall. (2) Wall kills should stamp a
-`failure_class` (timeout) so they are countable without reading chunks.
+their run configs before raising any wall.
 
 ## autocatpath: on-spark dev loop (measure + iterate on the GPU box)
 

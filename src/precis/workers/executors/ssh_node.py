@@ -375,6 +375,7 @@ def _kill_and_terminalize(
     *,
     swept_tag: str,
     summary: str,
+    failure_class: str | None = None,
 ) -> None:
     """Shared terminalize-via-kill path for both the wall-clock deadline and
     the §B-2 operator ``kill_requested`` backstop: call the job_type's
@@ -385,7 +386,11 @@ def _kill_and_terminalize(
 
     Takes the caller's already-built :class:`DispatchContext` (``_poll_one``
     mints one per polled row) rather than the raw ``(store, ref_id, title,
-    meta)`` cluster."""
+    meta)`` cluster.
+
+    ``failure_class`` (optional) is stamped on ``meta.failure_class`` with
+    ``summary`` as ``meta.error``, so a deadline kill (``"timeout"``) can be
+    counted from meta without reading each job's event log."""
     store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     if spec.kill is not None:
         try:
@@ -411,6 +416,8 @@ def _kill_and_terminalize(
         )
         if gpu_reset is not None:
             _set_meta(conn, ref_id, kill_gpu_reset=gpu_reset)
+        if failure_class is not None:
+            _set_meta(conn, ref_id, failure_class=failure_class, error=summary)
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)
@@ -485,6 +492,7 @@ def _poll_one(ctx: DispatchContext) -> bool:
             spec,
             swept_tag="wall-timeout",
             summary=f"runner: killed at wall-clock deadline (handle {handle!r})",
+            failure_class="timeout",
         )
         return True
 
