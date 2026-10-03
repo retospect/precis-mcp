@@ -128,7 +128,8 @@ confirmed the target: ask it with the Slice 0 result.**
         knowledge-mesh when castor serves gpt-oss. When the server is
         picked, a review item answers Reto's "how many channels"
         (ceiling, setpoint, KV headroom).
-      - SGLang has no image route yet (ghcr only).
+      - SGLang has no image route yet (ghcr only). No route by about
+        2026-10-04 → pick on vLLM alone and say so (Reto, local-compute-13).
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round

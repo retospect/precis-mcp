@@ -221,6 +221,9 @@ same.
 - Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
   speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
   and a quality check on the target workloads.
+- **SGLang deadline** (Reto 2026-10-03, local-compute-13): if no SGLang
+  image route turns up by about 2026-10-04, the server is picked on vLLM
+  alone, and the pick says so.
 - **Quality check = the knowledge-mesh task set** (Reto 2026-10-03): the
   big local model is judged by what it does for the mesh (fix it, add
   links, add findings, alone or at reviewable quality). knowledge-mesh owns
