@@ -105,17 +105,76 @@ investigate if the rate holds at scale).
   The canary is green after the 10-03 fixes. At ~45 s per call, the run takes
   ~8 h as 6 `--offset` slices. Status and the command:
   `docs/backlog/threads/claims-and-evidence.md`.
-- **Decide: does `because` express `conjunct-of`?** fi176422/fi176399
-  flatten causal/contrastive structure ("Y is the mechanism for X") into
-  peer conjuncts — the relation vocabulary can't express it. Decide before
-  apply; apply writes links phase-3 reviewers read, and unwinding is
-  expensive.
-- **haiku-lane blind spot:** `extract_claim_strict_haiku` is a documented
-  router-bypass (`call_claude_p` + `resolve_model(Tier.MEDIUM)`, listed in
-  `EXCLUDED_OPERATIONS`) riding the OAuth subscription — it writes no
-  `llm_call_log` rows, so this lane is invisible to the budget breaker.
-  Accepted (fix_gripe precedent); per-call `max_usd` cap + debug cost log
-  only.
+- **`because` is decided: `explains`** (Reto 2026-10-03). Built before
+  the bulk dry run, so the run measures the new contract. See the section
+  below.
+- **CLI telemetry bind (fixed):** the `precis taproot-migrate` subcommands bound
+  the budget meter but not `route_log`, so `route_log.enabled()` was False and
+  no extractor call (haiku, small, big) wrote `llm_call_log` / `llm_blob` rows.
+  A missing bind, not an accepted limit; `_bind_llm_telemetry` now binds both.
+
+## `explains` — the causal split (decided 2026-10-03)
+
+"X because Y" says one fact (X) and its explanation (Y). `conjunct-of`
+("peers of one bundle") misstates it as two independent facts (fi176422,
+fi176399), and keep-whole makes one atom that a source showing only the
+effect supports as "partial" and that cannot be disputed by half. Reto
+chose the split.
+
+**Shape.**
+- New relation `explains`, directed **explaining claim hub → explained
+  claim hub** (Y → X), finding→finding, no inverse, no evidence flow.
+  It is advisory, like `refines`/`conjunct-of`. One relation migration
+  (seed row like 0126), through the orchestrator's gate.
+- The original sentence stays the composite hub. Both atoms are its
+  `conjunct-of` parts (they are what the sentence bundles); `explains`
+  carries the structure between them. Composite trust stays worst-of its
+  atoms.
+- Each atom carries its own evidence. The mechanism atom may be supported
+  by a different paper than the effect; that is the payoff (fi176399:
+  the single-hair force measurement vs the van der Waals account).
+- Disputing the mechanism does not demote the effect, and vice versa.
+  `explains` never feeds `derive_evidence`, trust or the cite fallback.
+
+**Extraction contract.**
+- `ClaimExtraction` gains `explains: list[tuple[int, int]]` (index of the
+  explaining atom, index of the explained atom).
+- The prompt's mechanism rule (P2-13, `canon._EXTRACT_PROMPT`) changes from
+  "fold it into the atom it explains" to: emit a mechanism clause as its
+  own atom **when it is a self-contained, groundable assertion** ("van der
+  Waals forces act at individual spatulae"), and record the pair in
+  `explains`. A mechanism too vague to stand alone ("due to its
+  structure") stays inline in the explained atom; it never goes to
+  `not_claims` and is never dropped.
+- Contrastive foils ("whereas X would…") are unchanged: the modality rule
+  still governs them.
+- Gate (`migrate.classify_extraction`): indices valid, no self-pair, no
+  cycle, every `explains` endpoint is an emitted atom. The containment
+  (`nested`) gate must not fire merely because the effect atom names the
+  mechanism's subject.
+
+**Builds (3–4).**
+1. Relation migration + `Relation` Literal + `taproot.hub.link_claims`
+   accepting `explains`; extraction contract + prompt + gate; canary and
+   labelled fixture gain causal passages (a folded-vague case and a split
+   case); dry-run report and JSONL show the pairs.
+2. Apply: `hub.apply_extraction` / `apply_migrate` mint the `explains`
+   edge with the atoms (same transaction, idempotent stamp, add-first
+   invariant); backfill-minted claims get it through the same cascade.
+3. Surfaces: `get(kind='finding')` links and the fisheye claims ring show
+   "explains fiY" / "explained by fiX"; `link(kind='finding',
+   rel='explains')` works between hubs; skills (`precis-taproot-help`,
+   `precis-taproot-hub-edit-help`) give explains vs conjunct-of vs refines.
+4. Nanopub: a composite artifact renders the explanatory link between its
+   signed atoms (predicate choice is open: a precis term or a published
+   vocabulary). It can wait until composites are minted at all.
+
+**Measurement, after build 1's dry run.**
+- How often causal sentences split vs stay inline.
+- How often the two halves verify against different papers.
+- The `nested` false-positive rate on causal splits.
+- 136 of 3,954 live claim sentences carry an explicit causal connective
+  (10-03); the full dry run covers them all.
 
 ## Apply prerequisite — atom re-grounding (blocking)
 
@@ -197,8 +256,9 @@ during the quiet window only).
   immediately, phase 2 in the next quiet window (avoid 02:00–03:30 UTC).
 - **DECIDED (Reto, 2026-08-15, binding):** no source, no atom — every atom
   re-grounded before placement.
-- **Open:** `because` ≠ `conjunct-of` — decide the relation before apply
-  (see Quality gates above).
+- **DECIDED (Reto, 2026-10-03, claims-and-evidence-8):** split causal
+  claims with a directed `explains` relation, not keep-whole and not
+  `conjunct-of`. Design in "`explains` — the causal split" below.
 - **Open:** whether `chase.py::_taproot_bridge` should decompose
   post-migration vs. chase-minted hubs queuing for a standing monthly
   phase-0 re-score.
