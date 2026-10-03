@@ -37,6 +37,16 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
+**Prod dogfood, round 3 (deployed 929107f3, 2026-10-03) → pass.** Against
+prod data through guide-web (the viewer code is the same as the deploy;
+the /drive redirect 063421d9 is not deployed yet and goes in the follow-up
+deploy): all 48 nightly viewer checks pass. The drum's `atomic3d.json` is
+241 KB gzip in 0.85 s cold (it was 1.09 MB), the ETag 304 still works, and
+`target3d.json` is served separately (297 KB). Drum, dogfood-fold-3 and
+unicycle-c1 load one three.js (r184) with no warnings or errors, and the
+`bt3d-*` marks fire in order. Open: gr462129's prod 302 check after the
+follow-up deploy.
+
 **Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Reto's look (td461212, 2026-10-03) passed; its follow-ups shipped in
 round 3 as he ruled them (se-3d-viewer-5): the atom hover is a field |
 value table (atom N9 (N) / residue DG 1 = deoxyguanosine / chain A =
@@ -124,9 +134,10 @@ up:
    of three 0.184 through the page's import map
    (`static/three-cad-viewer/README.md` has the rebuild recipe). The
    "Multiple instances" warning is gone, and three.js costs 440 KB gzip
-   instead of 601 KB. Left: the inline early fetch, payload and one copy
-   want one prod reading after the round deploys (the page's
-   `bt3d-*` performance marks give it exactly).
+   instead of 601 KB. Deployed in round 3 and verified on prod data
+   (headless). Left: Reto's own Safari reading of the `bt3d-*` marks, to
+   compare with his 3.1 s from before. Optional; ask only if he says it
+   is still slow.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
