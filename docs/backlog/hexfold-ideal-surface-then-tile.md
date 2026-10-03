@@ -164,10 +164,24 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
     pending.
   - The render shows the pillar's (6,0)→C60 neck at 8 non-bonded pairs
     of 1.05–1.33 Å. The neck predates S4: hero5 has 8 pairs from 1.053 Å,
-    and a free tube+ball has 7 pairs at 1.07–1.23 Å. It is the stick
-    model's k=3 joint. It is the case for the cap-fillet rung `R_c`
-    (authoring the tube→ball neck). A physics relax of the top alone,
-    with the feet pinned, is the stopgap for a final render.
+    and a free tube+ball has 7 pairs at 1.07–1.23 Å.
+  - MACE-MP small opens the fused (6,0)→C60 joint (gr464391): for k = 0–3,
+    4 of its 6 seam bonds go to 4.7–4.9 Å, both free and inside the scene
+    with the feet pinned. That is not yet a verdict on the joint.
+    - The same protocol also opens the literature-stable [9-6] nanobud on
+      (10,10), its control.
+    - It holds the [2+2] control (seam bonds 1.654 Å) and opens a [2+2]
+      bud on the (6,0) sidewall (2.14 and 2.49 Å).
+    - GFN2-xTB agrees on all three cases:
+      - the fused neck opens 4 of 6 seam bonds to 4.59–4.77 Å;
+      - [2+2] on (10,10) holds at 1.578 Å;
+      - [9-6] on (10,10) opens, to 2.27–3.21 Å.
+    - An MLIP and tight binding agreeing makes a shared artefact unlikely,
+      so the fused (6,0) neck is not a bonded joint. The failing [9-6]
+      control points at hexfold's [9-6] construction (gr464405).
+    - The hero's pillar is Reto's call through nanobuds-paper item 31: a
+      (12,0) lid pillar, or the stick neck shown as an idealised model. No
+      relaxed top ships.
 
 ## Target + blast radius
 
