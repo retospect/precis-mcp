@@ -87,8 +87,16 @@ def relax_kernel(
     rep_cut,
     refresh,
     rep_margin,
+    anchor,
+    anorm,
+    k_tether,
 ):
-    """Relax ``pos`` in place; return the final max force magnitude."""
+    """Relax ``pos`` in place; return the final max force magnitude.
+
+    ``k_tether > 0`` adds a normal-only spring per atom toward its surface
+    foot ``anchor`` along the unit ``anorm``: the atom may slide along the
+    surface but not leave it. ``k_tether == 0`` skips the term entirely.
+    """
     n = pos.shape[0]
     nb = bonds.shape[0]
     ns = si.shape[0]
@@ -134,6 +142,15 @@ def relax_kernel(
                 if keep[q]:
                     for c in range(3):
                         f[pairs[q, 1], c] += -rf[q, c]
+        if k_tether > 0.0:
+            for a in range(n):
+                off = (
+                    (pos[a, 0] - anchor[a, 0]) * anorm[a, 0]
+                    + (pos[a, 1] - anchor[a, 1]) * anorm[a, 1]
+                    + (pos[a, 2] - anchor[a, 2]) * anorm[a, 2]
+                )
+                for c in range(3):
+                    f[a, c] += -k_tether * off * anorm[a, c]
         for a in range(n):
             for c in range(3):
                 f[a, c] *= mv[a]

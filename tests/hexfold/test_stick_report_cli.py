@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -208,6 +209,39 @@ def test_stick_coords_byte_identical() -> None:
     ):
         net = build(text, strict=False)
         assert np.array_equal(stick(net), stick(net))
+
+
+def test_tether_off_leaves_stick_byte_identical() -> None:
+    # S3's tether is opt-in: no tether, or a tether at strength 0, must not
+    # move a single existing build
+    net = build(
+        "hexfold 0.1\norigin s\ns: sheet(12, 12) + sw@(4,4,A):0\n", strict=False
+    )
+    base = stick(net)
+
+    def plane(pos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        foot = pos.copy()
+        foot[:, 2] = 0.0
+        return foot, np.tile([0.0, 0.0, 1.0], (len(pos), 1))
+
+    assert np.array_equal(base, stick(net, tether=None, k_tether=1.0))
+    assert np.array_equal(base, stick(net, tether=plane, k_tether=0.0))
+
+
+def test_tether_holds_a_rippled_sheet_on_its_plane() -> None:
+    net = build("hexfold 0.1\norigin s\ns: sheet(12, 12)\n", strict=False)
+    seed = np.asarray(net.seed3, dtype=float).copy()
+    seed[:, 2] += 0.6 * np.sin(seed[:, 0] / 3.0)
+    rippled = dataclasses.replace(net, seed3=tuple(map(tuple, seed)))
+
+    def plane(pos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        foot = pos.copy()
+        foot[:, 2] = 0.0
+        return foot, np.tile([0.0, 0.0, 1.0], (len(pos), 1))
+
+    free = np.abs(stick(rippled)[:, 2]).max()
+    held = np.abs(stick(rippled, tether=plane, k_tether=1.0)[:, 2]).max()
+    assert held < 0.05 < free
 
 
 def test_euler_residual_zero() -> None:

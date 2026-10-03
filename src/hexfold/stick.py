@@ -24,6 +24,7 @@ from a ``Net``.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 
@@ -38,6 +39,13 @@ _K_REP = 0.1
 _REP_CUT = 1.3
 _REFRESH = 20  # repulsion candidate-pair rebuild period (deterministic)
 _REP_MARGIN = 2.0  # candidate pairs within _REP_MARGIN*_REP_CUT*sigma
+_TETHER_EVERY = 25  # iterations between surface-foot refreshes
+
+#: ``positions (N,3) -> (foot (N,3), unit normal (N,3))``: where each atom's
+#: nearest point on a target surface is, and the surface normal there.
+#: Supplied by the caller (e.g. ``precis_surface.deviation.surface_foot``);
+#: hexfold never imports precis.
+Tether = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
 
 def _spectral_seed(net: Net) -> np.ndarray:
@@ -108,6 +116,8 @@ def stick_relax_pinned(
     *,
     iters: int = _ITERS,
     movable: np.ndarray | None = None,
+    tether: Tether | None = None,
+    k_tether: float = 0.0,
 ) -> tuple[np.ndarray, float]:
     """The vectorised spring relaxation loop, factored out of
     :func:`stick_info` so :mod:`hexfold.join` can re-relax only a seam
@@ -123,6 +133,14 @@ def stick_relax_pinned(
     exactly in place while it still exerts its own spring/repulsion force
     on its neighbours; ``None`` (:func:`stick_info`'s call) is the same as
     an all-ones mask and reproduces its output byte-for-byte.
+
+    ``tether`` with ``k_tether > 0`` holds every atom to a fixed target
+    surface by a normal-only spring (it slides along the surface, it does
+    not leave it); the feet are re-read from ``tether`` every
+    ``_TETHER_EVERY`` iterations, so the loop runs in chunks of that length.
+    The surface is the caller's and never moves (docs/backlog/
+    hexfold-ideal-surface-then-tile.md, S3). Off by default: without it the
+    loop is the single unchunked call it always was.
     """
     pos = pos.copy()
     n = len(pos)
@@ -140,32 +158,58 @@ def stick_relax_pinned(
     from ._stick_kernel import relax_kernel
 
     pos = np.ascontiguousarray(pos, dtype=np.float64)  # already a copy above
-    max_force = float(
-        relax_kernel(
-            pos,
-            np.ascontiguousarray(bonds, dtype=np.int64),
-            np.ascontiguousarray(brest, dtype=np.float64),
-            si,
-            sj,
-            np.ascontiguousarray(srest, dtype=np.float64),
-            bonded,
-            np.ascontiguousarray(mv, dtype=np.float64),
-            float(sigma),
-            int(iters),
-            _DT,
-            _K_BOND,
-            _K_ANGLE,
-            _K_REP,
-            _REP_CUT,
-            _REFRESH,
-            _REP_MARGIN,
-        )
+    bonds_c = np.ascontiguousarray(bonds, dtype=np.int64)
+    brest_c = np.ascontiguousarray(brest, dtype=np.float64)
+    srest_c = np.ascontiguousarray(srest, dtype=np.float64)
+    mv_c = np.ascontiguousarray(mv, dtype=np.float64)
+    tethered = tether is not None and k_tether > 0.0
+    anchor = np.zeros((n, 3))
+    anorm = np.zeros((n, 3))
+    chunks = (
+        [_TETHER_EVERY] * (iters // _TETHER_EVERY)
+        + ([iters % _TETHER_EVERY] if iters % _TETHER_EVERY else [])
+        if tethered
+        else [iters]
     )
+    max_force = 0.0
+    for chunk in chunks:
+        if tethered:
+            assert tether is not None
+            foot, normal = tether(pos)
+            anchor = np.ascontiguousarray(foot, dtype=np.float64)
+            anorm = np.ascontiguousarray(normal, dtype=np.float64)
+        max_force = float(
+            relax_kernel(
+                pos,
+                bonds_c,
+                brest_c,
+                si,
+                sj,
+                srest_c,
+                bonded,
+                mv_c,
+                float(sigma),
+                int(chunk),
+                _DT,
+                _K_BOND,
+                _K_ANGLE,
+                _K_REP,
+                _REP_CUT,
+                _REFRESH,
+                _REP_MARGIN,
+                anchor,
+                anorm,
+                float(k_tether) if tethered else 0.0,
+            )
+        )
     return pos, max_force
 
 
-def stick_info(net: Net) -> tuple[np.ndarray, float]:
-    """Relaxed stick coordinates and the final max force magnitude."""
+def stick_info(
+    net: Net, tether: Tether | None = None, k_tether: float = 0.0
+) -> tuple[np.ndarray, float]:
+    """Relaxed stick coordinates and the final max force magnitude.
+    ``tether``/``k_tether``: see :func:`stick_relax_pinned`."""
     if net.seed3 is not None:
         # primitives with a known embedding (closed-form, cylinder, cone,
         # flat lattice) seed from it; the spring stage is identical
@@ -202,9 +246,11 @@ def stick_info(net: Net) -> tuple[np.ndarray, float]:
     # test_len1_rims.py). Empty index arrays make the assignments below a
     # no-op, which is the right answer.
     springs = np.array(_angle_springs(net), dtype=np.float64).reshape(-1, 3)
-    return stick_relax_pinned(pos, bonds, brest, springs, sig)
+    return stick_relax_pinned(
+        pos, bonds, brest, springs, sig, tether=tether, k_tether=k_tether
+    )
 
 
-def stick(net: Net) -> np.ndarray:
-    pos, _ = stick_info(net)
+def stick(net: Net, tether: Tether | None = None, k_tether: float = 0.0) -> np.ndarray:
+    pos, _ = stick_info(net, tether=tether, k_tether=k_tether)
     return pos

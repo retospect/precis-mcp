@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from precis_surface import revolution as rv
-from precis_surface.deviation import Feature, summary, surface_distance
+from precis_surface.deviation import Feature, summary, surface_distance, surface_foot
 
 
 def _foot(r_tube: float = 4.7, r_f: float = 3.0, cap: bool = False) -> rv.Meridian:
@@ -119,6 +119,26 @@ def test_the_judge_is_exact_on_an_analytic_foot(shift: float) -> None:
     dist, owner = surface_distance(pts, [Feature("foot", (0.0, 0.0), m)], ds=1.0)
     assert np.all(owner == 0)
     assert np.allclose(dist, abs(shift), atol=1e-9, rtol=0.0)
+
+
+@pytest.mark.parametrize("shift", [0.37, -0.37])
+def test_surface_foot_recovers_the_point_and_its_normal(shift: float) -> None:
+    rt, rf, flat, wall = 4.7, 3.0, 10.0, 8.0
+    m = rv.authored_meridian(
+        rt + rf + flat, [("line", flat), ("arc", rf, -90.0), ("line", wall)]
+    )
+    f = [Feature("foot", (1.0, -2.0), m)]
+    on = _analytic_foot(rt, rf, flat, wall, 300, 0.0)
+    off = _analytic_foot(rt, rf, flat, wall, 300, shift)
+    keep = np.hypot(off[:, 0], off[:, 1]) <= rt + rf + flat
+    on, off = on[keep] + [1.0, -2.0, 0.0], off[keep] + [1.0, -2.0, 0.0]
+    foot, nrm = surface_foot(off, f, ds=1.0)
+    assert np.allclose(foot, on, atol=1e-9)
+    assert np.allclose(np.linalg.norm(nrm, axis=1), 1.0)
+    # the point is its foot plus the shift along the (signed) normal
+    along = ((off - foot) * nrm).sum(axis=1)
+    assert np.allclose(np.abs(along), 0.37, atol=1e-9)
+    assert np.allclose(off, foot + along[:, None] * nrm, atol=1e-9)
 
 
 def test_z_offset_is_the_only_alignment() -> None:

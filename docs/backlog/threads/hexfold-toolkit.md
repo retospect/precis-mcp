@@ -45,7 +45,9 @@ waited on happened 09-29 — note at the bottom)
      - S1, surface spec + deviation metric, measured on hero5 and
        `hexa-smooth-drum-v2`;
      - S2, Gauss–Bonnet defect rows;
-     - S3, tile and pin one feature;
+     - S3, tile and pin one feature: the opt-in tether in `stick` is
+       built (see the backlog item's acceptance); next is the planner
+       `foot(R, (n,0), split)` that picks the frustum width k per R;
      - S4, the hero scene.
    - Review-queue hexfold-toolkit-2 has the ETA.
 
@@ -411,6 +413,20 @@ waited on happened 09-29 — note at the bottom)
     (Do-next 4) bite.
 15. **td344088** — the se + hexfold paper. The thread's end state; it
     reports the above rather than waiting on all of it.
+
+## Owned quests, kept dormant
+
+Reto, 2026-10-03 (td460284): this thread owns three molecular-motor quests
+because they feed the CNT channel and motor work. Keep them **dormant**; do
+not tick, wake or re-scope them without his word. On prod they are tagged
+`thread:hexfold-toolkit`, and `STATUS:dormant` is unchanged.
+
+- **qu347482** (propagate a state along a chain of molecular units under
+  optical control) — 130 logbook entries; the cyanide-bridged Fe chain
+  series stops at the tetramer (max_disp growing with chain length).
+- **qu347483** (gang many molecular motors so their strokes and forces add).
+- **qu347484** (join molecular units to each other and to what they act on,
+  so motion transmits).
 
 ## Parked
 

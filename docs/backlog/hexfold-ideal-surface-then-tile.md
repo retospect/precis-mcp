@@ -95,6 +95,23 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
     4.96 Å.
   - hero5a's feet are 0.16–0.30 Å rms off a best-fit fillet of
     1.25–3.0 Å. They are faithful to a one-ring turn Reto ruled out.
+- S3 tether, **built** (`stick(net, tether=, k_tether=)`, opt-in, byte-
+  identical when off; `precis_surface.deviation.surface_foot`). Under the
+  tether the deviation column is small by construction, because the judge
+  and the spring target the same surface. The evidence of a sound carbon
+  net is therefore the columns the tether does not act on: bonds, angle
+  rms and max, and pyramidalisation (C60 is 12°). On the 3+3 foot,
+  measured as fillet-zone mean / max:
+  - (12,0), R = 5, k_t ≥ 0.2: bonds 1.385–1.470 Å, pyramidalisation
+    about 2°, deviation 0.061 / 0.160 Å.
+  - The pillar (6,0), R = 3, k_t = 1.0, which is 3 heptagons on a 6-atom
+    rim: bonds 1.366–1.467 Å, angle rms 1.70°, pyramidalisation 7.9°,
+    deviation 0.042 / 0.169 Å.
+  - Two rows miss only the bond floor at k_t = 1.0: (12,0) at R = 8 with
+    1.355 Å, and (6,0) at R = 5 with 1.317 Å. The hypothesis, still
+    unverified, is that k fits R poorly. The planner, which picks k per R,
+    must lift both before it ships, and its table carries
+    pyramidalisation and the heptagon-corrected angle max as columns.
 - S3 on one feature (sheet → `R_f` fillet → (12,0) tube → cap):
   - atom-to-surface mean ≤ 0.10 Å, max ≤ 0.3 Å;
   - bonds 1.36–1.50 Å;
