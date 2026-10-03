@@ -360,7 +360,8 @@ def best_supply(
 
 #: ``extra_meta`` key of the one ``observation`` entry every supply tick
 #: appends on the capability's logbook: ``{"key", "dry", "external",
-#: "queries"}``.
+#: "queries"}``, plus ``"external_error"`` when an outside search failed
+#: (``external`` is then false: a failed search does not count as searched).
 SUPPLY_OUTCOME_META = "supply_outcome"
 
 #: ``extra_meta`` key of the one-off entry logged when two escalated supply
