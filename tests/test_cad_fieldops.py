@@ -27,6 +27,7 @@ from precis.cad.fieldops import (
     OpenResult,
     _edt_1d_pass,
     _edt_sq,
+    _edt_sq_nearest,
     close,
     decode_field,
     encode_field,
@@ -133,6 +134,69 @@ def test_redistance_sphere_matches_analytic_within_one_pitch() -> None:
         fld.grid <= 0,
         np.linalg.norm(pts - centre, axis=1).reshape(fld.grid.shape) <= 8.0,
     )
+
+
+def test_edt_sq_nearest_points_at_a_nearest_site() -> None:
+    rng = np.random.default_rng(2)
+    sites = rng.random((7, 6, 5)) < 0.1
+    sites[3, 3, 2] = True
+    d2, nearest = _edt_sq_nearest(sites)
+    assert np.array_equal(d2, _edt_sq(sites))
+    pts = np.indices(sites.shape).reshape(3, -1).T
+    owner = np.array(np.unravel_index(nearest.ravel(), sites.shape)).T
+    assert sites.ravel()[nearest.ravel()].all()
+    assert np.array_equal(((pts - owner) ** 2).sum(-1), d2.ravel())
+
+
+def test_redistance_of_a_field_keeps_its_sub_voxel_surface() -> None:
+    """gr464340: a Field's zero set sits between samples; re-distancing it
+    must not snap it to half a pitch outside the last inside sample."""
+    pitch = 0.5
+    origin = np.array([-10.0, -10.0, -10.0])
+    pts = np.indices((40, 40, 40)).transpose(1, 2, 3, 0) * pitch + origin
+    analytic = np.linalg.norm(pts, axis=-1) - 6.3
+    near = np.abs(analytic) < 3.0
+    errs = []
+    for slope in (1.0, 3.0):  # an unnormalised field gives the same answer
+        fld = Field(
+            grid=(analytic * slope).astype(np.float32),
+            pitch=pitch,
+            origin=vec3(*origin),
+            exact=False,
+        )
+        out = redistance(fld)
+        assert out.exact
+        err = np.abs(out.grid.astype(np.float64) - analytic)
+        assert np.array_equal(out.grid <= 0, analytic <= 0)
+        errs.append(err)
+        assert err[near].max() <= 0.4 * pitch
+        assert err[near].mean() <= 0.1 * pitch
+    assert np.allclose(errs[0], errs[1], atol=1e-5)
+
+
+@pytest.mark.parametrize("r", [0.5, 0.6, 0.75, 0.9, 1.0, 1.25, 1.5, 2.5])
+def test_open_and_close_leave_a_flat_face_where_it_was(r: float) -> None:
+    """gr464340: open/close moved a flat face by a sawtooth in r mod pitch
+    (open(0.5·pitch) was a pure dilation). Measured on the +x face of a
+    20 mm cube at pitch 1 mm along the centre line."""
+    occ = np.zeros((30, 30, 30), dtype=bool)
+    occ[5:25, 5:25, 5:25] = True
+    base = from_density(occ.astype(float), 0.5, pitch=1.0, origin=(0.5, 0.5, 0.5))
+
+    def face_x(fld: Field) -> float:
+        line = fld.grid[:, 15, 15].astype(np.float64)
+        i = int(np.where(line <= 0)[0][-1])
+        return float(
+            fld.origin[0] + (i + line[i] / (line[i] - line[i + 1])) * fld.pitch
+        )
+
+    assert face_x(base) == pytest.approx(25.0, abs=1e-6)
+    opened = open_field(base, r)
+    assert not opened.vanished
+    assert face_x(opened.field) == pytest.approx(25.0, abs=0.05)
+    assert face_x(close(base, r)) == pytest.approx(25.0, abs=0.05)
+    # an opening never adds material
+    assert int((opened.field.grid <= 0).sum()) <= int((base.grid <= 0).sum())
 
 
 def test_redistance_refuses_empty_and_full_and_pads_a_bool_input() -> None:

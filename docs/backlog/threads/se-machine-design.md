@@ -66,17 +66,36 @@ off that gap until it closes.
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 lists it as
    O1–O4, none with a migration:
-   - O1: gr464340 and gr464343.
+   - O1: gr464340 and gr464343. Built 2026-10-03:
+     - `fieldops.redistance` keeps a Field's sub-voxel zero set, so a
+       flat face stays put for every r;
+     - realize refuses a morphology that cuts the load off from the
+       support;
+     - manufacture's gap measurement stays on the binarised (floor)
+       re-distance.
+     Ships with the remote gate.
    - O2: `realize(min_member=)` mapped to the filter radius, a pitch guard
      at min_member/3, and a `min_member` capability field.
    - O3: default rounding at min_member/3.
    - O4: optimiser convergence.
-   Then the first test piece, once Reto answers review-queue item
-   se-machine-design-3.
+   First test piece: Reto chose the bracket (2026-10-03, item
+   se-machine-design-3), with the unicycle fork second.
+   - Print 1 runs on today's code, with no morphology. It is se design
+     `organic-bracket-1` on prod (job 464356).
+   - The item that hands Reto the file also asks for his printer model,
+     which he has not given.
 3. **backlog/flatpack-furniture-generator.md** (Reto 2026-10-03; on the
-   orchestrator's branch until its next ship). Stays `draft` until Reto
-   answers review-queue item se-machine-design-4 on machine and plywood.
-   The open questions are argued below under "Flat-pack open questions".
+   orchestrator's branch until its next ship). Reto answered
+   se-machine-design-4:
+   - laser first, and bed size is not a constraint;
+   - the first material is 3 mm corrugated cardboard, not plywood;
+   - the first box is 5 × 5 × 5. The unit is asked in
+     se-machine-design-5; do not guess it.
+   - Finger joints stay the default, and a straight (plain butt) edge is a
+     second joint option.
+   When the unit arrives, the item goes to `ready`. Its example and its
+   acceptance (written for 12 mm plywood) are rewritten for the
+   cardboard box at that point.
 4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
 5. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 4.
@@ -93,6 +112,9 @@ off that gap until it closes.
 
 ## Flat-pack open questions (argued 2026-10-03, for Do next 3)
 
+- **Answered 2026-10-03** (se-machine-design-4): laser, 3 mm corrugated
+  cardboard, finger joints default plus a straight-edge option. The
+  arguments below stand as the reasoning.
 - **Joinery default:** finger joints on the carcass corners, and through-tabs
   (tab-and-slot) for the shelves, on both machines. A laser cannot cut a
   dado (a pocket), and one joinery family keeps the cut file to a single
@@ -155,7 +177,11 @@ off that gap until it closes.
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
     consumer today is se drc — seam, move it if that thread opens first.
-22. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
+22. **backlog/flatpack-living-hinges.md** — kerf-cut bend zones (Reto
+    2026-10-03); blocked-by the flat-pack generator (Do next 3). Its
+    reference is stored as web ref
+    `rs-online-com-designspark-laser-cut-living-hinges-for-neater`.
+23. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
     hygiene: the skill is over the 32 KB hard cap and allowlisted; split
     the FRET/optical and discrete-states domains out. Cheap, any time; do
     it before the next domain section is added to that skill.

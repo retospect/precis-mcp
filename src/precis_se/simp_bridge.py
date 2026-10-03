@@ -791,6 +791,69 @@ def _binarised_overhangs(fld: Field, frame: _BuildFrame) -> int:
     return overhang_violations(frame.forward_array(solid), plate_at_first_solid=True)
 
 
+def _load_path_state(
+    fld: Field,
+    element_origin: Any,
+    pitch: float,
+    load_elems: np.ndarray,
+    fixed_elems: np.ndarray,
+) -> tuple[bool, bool, bool]:
+    """``(material under load_at, material under fixed_at, one 6-connected
+    piece holds both)`` for a thresholded field."""
+    solid = np.asarray(fld.grid) <= 0.0
+    off = np.rint((np.asarray(element_origin) - np.asarray(fld.origin)) / pitch).astype(
+        int
+    )
+    labels, _count = fieldops.label_components(solid)
+
+    def labels_under(elems: np.ndarray) -> set[int]:
+        idx = np.argwhere(elems) + off
+        ok = np.all((idx >= 0) & (idx < np.array(solid.shape)), axis=1)
+        idx = idx[ok]
+        hit = labels[idx[:, 0], idx[:, 1], idx[:, 2]]
+        return {int(v) for v in hit[hit >= 0]}
+
+    at_load, at_fixed = labels_under(load_elems), labels_under(fixed_elems)
+    return bool(at_load), bool(at_fixed), bool(at_load & at_fixed)
+
+
+def _check_load_path(
+    before: Field,
+    after: Field,
+    element_origin: Any,
+    pitch: float,
+    load_elems: np.ndarray,
+    fixed_elems: np.ndarray,
+    *,
+    findings: list[str],
+) -> None:
+    """Refuse a morphology (``open=``/``round=``/``close=``) that cut the
+    load off from the support (gr464343: on prod an ``open=`` erased the
+    loaded tip and the result was bound anyway). Compares the field before
+    and after: losing the material under ``load_at`` or ``fixed_at``, or the
+    6-connected piece joining them, that the raw solve had raises
+    :class:`SimpBridgeError` — the job fails and the previous realization
+    stays bound. What the raw solve already lacked is not judged here (the
+    AM sweep may clear unsupported load elements; coarse fields often join
+    only across a voxel edge)."""
+    had = _load_path_state(before, element_origin, pitch, load_elems, fixed_elems)
+    has = _load_path_state(after, element_origin, pitch, load_elems, fixed_elems)
+    if had[0] and not has[0]:
+        what = "no material is left under load_at"
+    elif had[1] and not has[1]:
+        what = "no material is left under fixed_at"
+    elif had[2] and not has[2]:
+        what = "the material under load_at and under fixed_at are now separate pieces"
+    else:
+        return
+    raise SimpBridgeError(
+        f"realize(simp): {what} after the morphology (open=/round=/close=) — the "
+        "part no longer carries the load to the support, so it is not bound (the "
+        "previous realization, if any, stays); lower the radius or raise volfrac"
+        + (f" ({'; '.join(findings)})" if findings else "")
+    )
+
+
 def solve_simp(
     tree: SeTree, req: SimpRequest, *, domain_builder: DomainBuilder | None = None
 ) -> SimpSolve:
@@ -855,6 +918,7 @@ def solve_simp(
     density = frame.backward_array(result.density)
 
     fld = fieldops.from_density(density, 0.5, pitch=req.pitch, origin=origin)
+    raw_fld = fld
     volume_raw = float(np.count_nonzero(np.asarray(fld.grid) <= 0.0)) * req.pitch**3
     findings: list[str] = []
     morphology: dict[str, Any] = {}
@@ -880,6 +944,16 @@ def solve_simp(
             "realize(simp): the morphology erased the whole body ("
             + "; ".join(findings)
             + ") — nothing left to bind; lower the radius or raise volfrac"
+        )
+    if morphology:
+        _check_load_path(
+            raw_fld,
+            fld,
+            origin,
+            req.pitch,
+            _elements_touching(shape, load_nodes),
+            _elements_touching(shape, fixed_nodes),
+            findings=findings,
         )
     if morphology:
         morphology["volume_before_m3"] = volume_raw

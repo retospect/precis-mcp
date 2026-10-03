@@ -13,10 +13,14 @@ boundary (no DB, no handler) holds here too.
   Felzenszwalb–Huttenlocher lower-envelope pass over the squared
   distance, run on every line of the grid at once (the sequential
   parabola stack is kept per line as arrays and advanced in lock-step;
-  the pops of a step are masked to the lines that need them). The
-  surface sits half a voxel outside the last inside sample, so the
-  result reads ``±0.5·pitch`` on the two samples straddling it and the
-  zero crossing of the trilinear interpolant lands between them.
+  the pops of a step are masked to the lines that need them). For a bool
+  occupancy the surface sits half a voxel outside the last inside sample,
+  so the result reads ``±0.5·pitch`` on the two samples straddling it.
+  For a :class:`Field` the input's own sub-voxel zero set is kept: a
+  closest-point transform to foot points fitted from the samples beside
+  each sign change (exact for an axis-aligned plane, within ~0.4 voxel
+  for an oblique one), so an offset survives the
+  re-distance instead of snapping back to the lattice (gr464340).
 * :func:`offset` — a constant offset (``-r`` dilates, ``+r`` erodes) of a
   field re-distanced first unless it is flagged ``exact``. The result is
   exact on the side the offset moved *away* from and only sign-correct on
@@ -81,7 +85,17 @@ REDISTANCE_PAD = 2
 def _edt_1d_pass(f: NDArray[np.float64]) -> NDArray[np.float64]:
     """One lower-envelope pass along axis 0 of ``f`` (shape ``(n, m)``:
     ``m`` independent lines of ``n`` squared distances) →
-    ``d[p] = min_q f[q] + (p − q)²`` per line.
+    ``d[p] = min_q f[q] + (p − q)²`` per line. See :func:`_edt_1d_arg`."""
+    return _edt_1d_arg(f)[0]
+
+
+def _edt_1d_arg(
+    f: NDArray[np.float64],
+) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
+    """:func:`_edt_1d_pass` plus the minimiser: ``(d, arg)`` with
+    ``arg[p] = argmin_q f[q] + (p − q)²`` per line (the row index ``q``),
+    which is what lets :func:`_edt_sq_nearest` carry a feature transform
+    through the three separable passes.
 
     The Felzenszwalb–Huttenlocher parabola stack is kept per line
     (``v``: site of the k-th envelope parabola, ``z``: where it takes over
@@ -92,7 +106,7 @@ def _edt_1d_pass(f: NDArray[np.float64]) -> NDArray[np.float64]:
     """
     n, m = f.shape
     if n == 1:
-        return f.copy()
+        return f.copy(), np.zeros((1, m), dtype=np.int64)
     cols = np.arange(m)
     v = np.zeros((n, m), dtype=np.int64)
     z = np.empty((n + 1, m), dtype=np.float64)
@@ -114,6 +128,7 @@ def _edt_1d_pass(f: NDArray[np.float64]) -> NDArray[np.float64]:
         z[k, cols] = s
         z[k + 1, cols] = np.inf
     d = np.empty_like(f)
+    arg = np.empty((n, m), dtype=np.int64)
     k = np.zeros(m, dtype=np.int64)
     for p in range(n):
         while True:
@@ -123,7 +138,8 @@ def _edt_1d_pass(f: NDArray[np.float64]) -> NDArray[np.float64]:
             k[adv] += 1
         vk = v[k, cols]
         d[p] = (p - vk) ** 2 + f[vk, cols]
-    return d
+        arg[p] = vk
+    return d, arg
 
 
 def _edt_sq(sites: NDArray[np.bool_]) -> NDArray[np.float64]:
@@ -139,6 +155,140 @@ def _edt_sq(sites: NDArray[np.bool_]) -> NDArray[np.float64]:
         out = _edt_1d_pass(np.ascontiguousarray(flat))
         d = np.moveaxis(out.reshape(moved.shape), 0, axis)
     return np.ascontiguousarray(d)
+
+
+def _edt_sq_nearest(
+    sites: NDArray[np.bool_],
+) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
+    """:func:`_edt_sq` plus the feature transform: ``(d_sq, nearest)`` with
+    ``nearest`` the flat (C-order) index of a nearest ``True`` voxel. The
+    minimiser of each 1-D pass picks which earlier-pass row a voxel's
+    distance came from, so the site index rides along with it."""
+    n = np.array(sites.shape, dtype=np.int64)
+    big = float(np.sum(n.astype(np.float64) ** 2)) * 4.0 + 1.0
+    d = np.where(sites, 0.0, big).astype(np.float64)
+    idx = np.arange(sites.size, dtype=np.int64).reshape(sites.shape)
+    for axis in range(3):
+        moved_d = np.moveaxis(d, axis, 0)
+        moved_i = np.moveaxis(idx, axis, 0)
+        shape = moved_d.shape
+        flat_d = np.ascontiguousarray(moved_d.reshape(shape[0], -1))
+        flat_i = np.ascontiguousarray(moved_i.reshape(shape[0], -1))
+        out, arg = _edt_1d_arg(flat_d)
+        carried = np.take_along_axis(flat_i, arg, axis=0)
+        d = np.moveaxis(out.reshape(shape), 0, axis)
+        idx = np.moveaxis(carried.reshape(shape), 0, axis)
+    return np.ascontiguousarray(d), np.ascontiguousarray(idx)
+
+
+def _interface_feet(
+    grid: NDArray[np.float64],
+) -> tuple[NDArray[np.bool_], NDArray[np.float64]]:
+    """The samples next to the zero set and, for each, its foot point on
+    the zero set — read off the field's values, not just its sign.
+
+    A sample is in the band when a 6-neighbour has the other sign
+    (``grid <= 0`` is inside). Along each axis with such a neighbour the
+    linear zero crossing sits at signed offset ``t_i = ±φ_s / (φ_s − φ_n)``
+    voxels (the nearer of the two directions). The interface is taken as
+    the plane through those axis intercepts; the foot is the sample's
+    orthogonal projection onto it, ``s + t̂ / Σ(1/t_i²)`` with
+    ``t̂_i = 1/t_i`` (0 on an axis with no crossing) — a plane fit that
+    needs no gradient, so a field of any slope gives the same foot.
+    Returns ``(band, feet)``, ``feet`` of shape ``(*grid.shape, 3)`` in
+    voxel coordinates (meaningful on the band only)."""
+    inside = grid <= 0.0
+    n = grid.shape
+    inv_t = np.zeros((*n, 3), dtype=np.float64)
+    on_surface = np.zeros(n, dtype=bool)
+    for axis in range(3):
+        best = np.full(n, np.inf, dtype=np.float64)
+        signed = np.zeros(n, dtype=np.float64)
+        for step in (1, -1):
+            nb = np.roll(grid, -step, axis=axis)
+            nb_in = np.roll(inside, -step, axis=axis)
+            valid = np.ones(n, dtype=bool)
+            edge = [slice(None)] * 3
+            edge[axis] = slice(-1, None) if step == 1 else slice(0, 1)
+            valid[tuple(edge)] = False  # np.roll wrapped these
+            cross = valid & (nb_in != inside)
+            frac = np.abs(
+                np.where(cross, grid / np.where(cross, grid - nb, 1.0), np.inf)
+            )
+            nearer = frac < best
+            best = np.where(nearer, frac, best)
+            signed = np.where(nearer, step * frac, signed)
+        hit = np.isfinite(best)
+        on_surface |= hit & (best == 0.0)
+        safe = np.where(hit & (best > 0.0), signed, 1.0)
+        inv_t[..., axis] = np.where(hit & (best > 0.0), 1.0 / safe, 0.0)
+    band = np.any(inv_t != 0.0, axis=-1) | on_surface
+    norm_sq = np.sum(inv_t * inv_t, axis=-1, keepdims=True)
+    shift = inv_t / np.where(norm_sq > 0.0, norm_sq, 1.0)
+    shift = np.where(on_surface[..., None], 0.0, shift)
+    feet = np.indices(n, dtype=np.float64).transpose(1, 2, 3, 0) + shift
+    return band, feet
+
+
+def _redistance_field(grid: NDArray[np.float64], pitch: float) -> NDArray[np.float64]:
+    """Signed distance that keeps the input field's sub-voxel zero set
+    (gr464340): a closest-point transform. Each band sample has a foot
+    point on the interface (:func:`_interface_feet`); every sample's
+    distance is the distance to the foot of its nearest band sample on its
+    own side, refined over the feet its neighbours resolved to. Exact for
+    an axis-aligned plane (gr464340's test); an oblique plane comes back
+    within ~0.4 voxel (an axis whose crossing lies beyond the neighbour is
+    left out of the plane fit) where the bool path is off by up to 0.5.
+    Re-placing the surface half a pitch outside the last inside sample
+    instead (the bool path) snaps an offset back to the lattice, which
+    biased :func:`open`/:func:`close` by up to half a pitch."""
+    inside = grid <= 0.0
+    band, feet = _interface_feet(grid)
+    flat_feet = feet.reshape(-1, 3)
+    shape = np.array(grid.shape, dtype=np.int64)
+    out = np.zeros(grid.shape, dtype=np.float64)
+    for side, sign in ((inside, -1.0), (~inside, 1.0)):
+        sites = band & side
+        if not np.any(sites):
+            continue  # no sign change: the caller refused empty/full already
+        site_d_sq, nearest = _edt_sq_nearest(sites)
+        pts = np.argwhere(side)  # (k, 3) voxel coordinates on this side
+        own = nearest[pts[:, 0], pts[:, 1], pts[:, 2]]
+        d_sq = np.sum((pts - flat_feet[own]) ** 2, axis=-1)
+        # The nearest band SAMPLE need not own the nearest FOOT (a sample
+        # with one axis crossing fits a plane square to that axis): within
+        # a few voxels of the band, also try the feet the 26 neighbours
+        # resolved to and keep the closest. Farther out the choice of foot
+        # barely moves the distance, so the refinement is skipped there.
+        near = site_d_sq[pts[:, 0], pts[:, 1], pts[:, 2]] <= _REFINE_REACH_SQ
+        q = pts[near]
+        best = d_sq[near]
+        for off in _NEIGHBOUR_OFFSETS:
+            nb = np.clip(q + np.array(off), 0, shape - 1)
+            cand = nearest[nb[:, 0], nb[:, 1], nb[:, 2]]
+            best = np.minimum(best, np.sum((q - flat_feet[cand]) ** 2, axis=-1))
+        d_sq[near] = best
+        d = np.sqrt(d_sq) * pitch
+        if sign > 0.0:
+            # an outside sample must read > 0 (``<= 0`` is inside)
+            d = np.maximum(d, np.finfo(np.float32).tiny)
+        out[pts[:, 0], pts[:, 1], pts[:, 2]] = sign * d
+    return out
+
+
+#: Squared voxel distance from the band within which
+#: :func:`_redistance_field` refines a sample's foot over its neighbours'.
+_REFINE_REACH_SQ = 36.0
+
+#: The 26 neighbour shifts :func:`_redistance_field` borrows candidate
+#: feet from.
+_NEIGHBOUR_OFFSETS: tuple[tuple[int, int, int], ...] = tuple(
+    (i, j, k)
+    for i in (-1, 0, 1)
+    for j in (-1, 0, 1)
+    for k in (-1, 0, 1)
+    if (i, j, k) != (0, 0, 0)
+)
 
 
 def _padded(binary: NDArray[np.bool_], pad: int) -> NDArray[np.bool_]:
@@ -158,8 +308,11 @@ def redistance(
     = material; ``pitch`` and ``origin`` — the position of voxel
     ``[0,0,0]``'s centre — are then required) or a :class:`Field`, whose
     sign (``grid <= 0``) is the occupancy and whose pitch/origin carry
-    over. The result is flagged ``exact``; its zero set is half a pitch
-    outside the last inside voxel centre.
+    over. The result is flagged ``exact``. For a bool input its zero set
+    is half a pitch outside the last inside voxel centre; for an unpadded
+    field input it is the field's own (linearly interpolated) zero set
+    (:func:`_redistance_field`). A field passed with ``pad > 0`` is padded
+    and re-distanced from its sign only — the bool path.
 
     A bool input is padded by ``pad`` voxels (default
     :data:`REDISTANCE_PAD`) of empty space on every side so the surface
@@ -197,11 +350,17 @@ def redistance(
         raise ValueError(
             "occupancy is full — no empty voxel, no surface to re-distance"
         )
-    d_out = np.sqrt(_edt_sq(binary))  # for outside voxels: distance to material
-    d_in = np.sqrt(_edt_sq(~binary))  # for inside voxels: distance to void
-    # The surface lies midway between an inside and an outside centre:
-    # shift both sides in by half a voxel so they read ±0.5 there.
-    signed = np.where(binary, -(d_in - 0.5), d_out - 0.5) * float(pitch)
+    if isinstance(binary_or_field, Field) and pad == 0:
+        # a field carries its zero set between samples: keep it (gr464340)
+        signed = _redistance_field(
+            np.asarray(binary_or_field.grid, dtype=np.float64), float(pitch)
+        )
+    else:
+        d_out = np.sqrt(_edt_sq(binary))  # outside voxels: distance to material
+        d_in = np.sqrt(_edt_sq(~binary))  # inside voxels: distance to void
+        # The surface lies midway between an inside and an outside centre:
+        # shift both sides in by half a voxel so they read ±0.5 there.
+        signed = np.where(binary, -(d_in - 0.5), d_out - 0.5) * float(pitch)
     return Field(
         grid=signed.astype(np.float32),
         pitch=float(pitch),

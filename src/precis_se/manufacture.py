@@ -1921,7 +1921,16 @@ def solve_manufacture(
         for this, other in ((e.a, e.b), (e.b, e.a)):
             if other not in side_field:
                 try:
-                    side_field[other] = fieldops.redistance(eroded_fields[other])
+                    # the binarised re-distance on purpose: its surface sits
+                    # up to pitch/2 OUTSIDE the eroded partner, so the gap
+                    # measured against it is a floor, never an overstatement
+                    eroded = eroded_fields[other]
+                    side_field[other] = fieldops.redistance(
+                        np.asarray(eroded.grid) <= 0.0,
+                        eroded.pitch,
+                        eroded.origin,
+                        pad=0,
+                    )
                 except ValueError as exc:
                     raise ManufactureError(
                         f"realize(manufacture): eroded member {other!r} — {exc}"
