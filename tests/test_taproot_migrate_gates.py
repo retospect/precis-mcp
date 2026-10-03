@@ -164,6 +164,18 @@ def test_number_tokens_keep_catalog_names_excluded() -> None:
     assert _number_bearing_tokens("frameworks such as MOF-5 and ZIF-8") == []
 
 
+def test_number_tokens_split_glued_degree_sign() -> None:
+    """ "19 degrees" rendered as "19°" (canary passage 2) is the same angle;
+    "300°C" and "300 °C" are the same temperature."""
+    assert _number_bearing_tokens("angles of 19, 39 and 113 degrees") == [
+        "19",
+        "39",
+        "113",
+    ]
+    assert _number_bearing_tokens("angles of 19°, 39° and 113°") == ["19", "39", "113"]
+    assert _number_bearing_tokens("at 300°C") == _number_bearing_tokens("at 300 °C")
+
+
 def test_number_tokens_fold_approximation_prefix() -> None:
     """ "near 10 kHz" rendered as "~10 kHz" is the same measurement."""
     assert _number_bearing_tokens("~10 kHz") == _number_bearing_tokens("10 kHz")

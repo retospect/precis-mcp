@@ -128,6 +128,14 @@ def add_parser(subparsers: Any) -> None:
         help="Number of top-scored hubs to evaluate.",
     )
     d.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip this many top-scored hubs first (default: 0). Disjoint "
+        "--offset/--limit slices split one bulk run across processes; give "
+        "--controls to one slice only.",
+    )
+    d.add_argument(
         "--cohort",
         choices=("likely-composite", "uncertain", "likely-atomic"),
         default=None,
@@ -356,6 +364,7 @@ def _run_dry_run(args: argparse.Namespace) -> None:
         report = dry_run(
             store,
             limit=args.limit,
+            offset=args.offset,
             cohort=args.cohort,
             controls=args.controls,
             control_seed=args.control_seed,
