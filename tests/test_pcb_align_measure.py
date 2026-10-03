@@ -663,25 +663,13 @@ def _align_design(pcb, slug):
                 {
                     "refdes": "D3",
                     "label": "led",
-                    "x": 10.0,
-                    "y": 5.0,
                     "pins": [{"name": "1"}],
                 },
                 {
                     "refdes": "J1",
                     "label": "conn",
-                    "x": 10.0,
-                    "y": 6.5,
                     "pins": [{"name": "1"}],
                 },
-            ],
-            "features": [
-                {
-                    "ftype": "mounting_hole",
-                    "x": 10.0,
-                    "y": 5.0,
-                    "geom": {"diameter": 3.2},
-                }
             ],
             "measures": [
                 {
@@ -697,6 +685,20 @@ def _align_design(pcb, slug):
     )
     ref = pcb.store.get_ref(kind="pcb", id=slug)
     assert ref is not None
+    # The LED sits on its mounting hole and the connector overlaps it — the
+    # point of the fixture, and exactly what `put` refuses to create, so the
+    # poses and the hole are written straight to the store.
+    pcb.store.pcb_set_pose(ref.id, {"D3": (10.0, 5.0, 0.0), "J1": (10.0, 6.5, 0.0)})
+    pcb.store.pcb_apply(
+        slug=slug,
+        title=slug,
+        components=[],
+        nets=[],
+        connections=[],
+        features=[
+            {"ftype": "mounting_hole", "x": 10.0, "y": 5.0, "geom": {"diameter": 3.2}}
+        ],
+    )
     return ref.id
 
 

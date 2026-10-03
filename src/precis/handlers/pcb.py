@@ -64,13 +64,14 @@ See ``precis-pcb-help`` and ``precis-pcb-route-help``.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import json
 import logging
 import math
 import re
 import tempfile
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
@@ -229,13 +230,22 @@ _MOVES_EXAMPLE = (
 def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
     """Coordinate-free identity of one object of a DRC finding: a pad is
     ``refdes/pin``, authored fixed copper its ``fixed_id``. An object with
-    neither (no stable identity) falls back to ``ctype:net:layer``."""
+    neither is a courtyard finding's ``a``/``b`` pair (``part:<refdes>``, or
+    ``hole:<label>``); an object with none of these falls back to
+    ``ctype:net:layer``."""
     refdes, pin = o.get(prefix + "refdes"), o.get(prefix + "pin")
     if refdes and pin:
         return f"pad:{refdes}/{pin}"
     fid = o.get(prefix + "fixed_id")
     if fid is not None:
         return f"fixed:{fid}"
+    a, b = o.get(prefix + "a"), o.get(prefix + "b")
+    if a is not None and b is not None:
+        # courtyard_overlap / courtyard_hole: ``a`` is a refdes, ``b`` another
+        # refdes or a hole label. Unordered, so the pair keys the same from
+        # either end.
+        side = [f"part:{a}", f"hole:{b}" if str(b).startswith("hole") else f"part:{b}"]
+        return "+".join(sorted(side))
     return (
         f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
     )
@@ -325,6 +335,81 @@ def _finding_identity(f: pcb_drc.DrcFinding) -> tuple[Any, ...]:
     return (f.rule, ids, layer)
 
 
+def _margin_delta[T](
+    before: Iterable[tuple[tuple[Any, ...], float]],
+    after: Iterable[tuple[tuple[Any, ...], float, T]],
+) -> tuple[list[tuple[T, float, float | None]], list[T]]:
+    """Pair findings by identity key, worst margin first, and split ``after``
+    into ``(new_or_worse, standing)``.
+
+    ``new_or_worse`` holds ``(payload, margin, old_margin)`` — ``old_margin``
+    is ``None`` for a finding with no counterpart before. A finding is worse
+    when its margin fell by more than :data:`_GROUP_MOVE_MARGIN_EPS_MM`;
+    otherwise it is standing. Several findings under one key (e.g. many
+    clearance hits between the same two parts) pair rank for rank, the most
+    negative with the most negative, so one new hit among old ones is the
+    one that is reported."""
+    old: dict[tuple[Any, ...], list[float]] = collections.defaultdict(list)
+    for key, margin in before:
+        old[key].append(margin)
+    for margins in old.values():
+        margins.sort()
+    new: dict[tuple[Any, ...], list[tuple[float, T]]] = collections.defaultdict(list)
+    for key, margin, payload in after:
+        new[key].append((margin, payload))
+    worse: list[tuple[T, float, float | None]] = []
+    standing: list[T] = []
+    for key, items in new.items():
+        items.sort(key=lambda it: it[0])
+        olds = old.get(key, [])
+        for i, (margin, payload) in enumerate(items):
+            if i >= len(olds):
+                worse.append((payload, margin, None))
+            elif margin < olds[i] - _GROUP_MOVE_MARGIN_EPS_MM:
+                worse.append((payload, margin, olds[i]))
+            else:
+                standing.append(payload)
+    return worse, standing
+
+
+@dataclasses.dataclass
+class JudgeReport:
+    """What a judged mutation left behind: ``ripped`` maps each router net it
+    had to rip to the rule that did it; ``standing`` counts validity findings
+    the board already had and the change did not worsen."""
+
+    ripped: dict[str, str] = dataclasses.field(default_factory=dict)
+    standing: int = 0
+    #: Problems reported instead of refused (``refuse=False``): what the
+    #: change made visible and left standing.
+    visible: list[str] = dataclasses.field(default_factory=list)
+    #: New warn-tier findings on pads/authored copper only: a shortfall
+    #: against a class or house requirement, listed but never refused.
+    margins: list[str] = dataclasses.field(default_factory=list)
+
+    def lines(self) -> str:
+        """Response lines for the report, each ending in a newline."""
+        out = [
+            f"{net} ripped: {rule} after this change — re-route\n"
+            for net, rule in sorted(self.ripped.items())
+        ]
+        out.extend(
+            f"now visible (class requirement, not refused): {m}\n"
+            for m in self.margins[:8]
+        )
+        if len(self.margins) > 8:
+            out.append(f"+{len(self.margins) - 8} more\n")
+        if self.visible:
+            shown = "; ".join(self.visible[:8])
+            more = f" (+{len(self.visible) - 8} more)" if len(self.visible) > 8 else ""
+            out.append(f"now visible, standing until re-placed: {shown}{more}\n")
+        if self.standing:
+            out.append(
+                f"{self.standing} standing finding(s) not caused by this change\n"
+            )
+        return "".join(out)
+
+
 class PcbHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="pcb",
@@ -412,6 +497,15 @@ class PcbHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        """Author a design in batch (components/nets/features/generators/
+        net_classes...) or run an ``op``.
+
+        The batch path is JUDGED (:meth:`_judged_mutation`): the board it
+        leaves must not carry a validity finding it did not already have. A
+        new one that names only pads/authored copper refuses the whole put
+        (nothing is stored); one that names router copper rips that net,
+        reported in the response. A put that leaves the design with no
+        placed instance is never judged."""
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='pcb') requires id= (the design slug)",
@@ -454,7 +548,9 @@ class PcbHandler(Handler):
             # (e.g. a blank net_class name) rolls back the whole put — never
             # a committed design followed by a BadInput implying nothing
             # happened (gr — pcb-guided-place-route Slice 1 review).
-            with self.store.tx() as conn:
+            existing = self.store.get_ref(kind="pcb", id=slug)
+
+            def apply(conn: Any) -> tuple[Any, bool, dict[str, int], int]:
                 ref, created, counts = self.store.pcb_apply(
                     slug=slug,
                     title=ttl,
@@ -473,6 +569,13 @@ class PcbHandler(Handler):
                     n_classes = self.store.pcb_upsert_net_classes(
                         ref.id, net_classes, conn=conn
                     )
+                return ref, created, counts, n_classes
+
+            (ref, created, counts, n_classes), judged = self._judged_mutation(
+                existing.id if existing is not None else None,
+                apply,
+                ref_id_of=lambda r: int(r[0].id),
+            )
         except ValueError as exc:
             raise BadInput(f"pcb: {exc}") from exc
 
@@ -520,7 +623,11 @@ class PcbHandler(Handler):
             n for n in (self._pin_name_note(ref.id), self._stale_note(ref.id)) if n
         ]
         return Response(
-            body=head + "\n" + "".join(n + "\n" for n in notes) + self._toc(design)
+            body=head
+            + "\n"
+            + judged.lines()
+            + "".join(n + "\n" for n in notes)
+            + self._toc(design)
         )
 
     def _stale_note(self, ref_id: int) -> str:
@@ -1049,29 +1156,18 @@ class PcbHandler(Handler):
                 ]
 
             ir_old = self._build_ir(ref.id, graph, fixed_copper=fixed_old)
-            before: dict[tuple[Any, ...], list[float]] = collections.defaultdict(list)
-            for key, margin, _ in keyed(ir_old, fixed_old):
-                before[key].append(margin)
-            for margins in before.values():
-                margins.sort()  # worst (most negative) first
-            after: dict[tuple[Any, ...], list[tuple[float, str]]] = (
-                collections.defaultdict(list)
+            worse, kept = _margin_delta(
+                [(k, m) for k, m, _ in keyed(ir_old, fixed_old)],
+                [(k, m, line) for k, m, line in keyed(ir_new, foreign + carried_new)],
             )
-            for key, margin, line in keyed(ir_new, foreign + carried_new):
-                after[key].append((margin, line))
-            for key, items in after.items():
-                items.sort()
-                olds = before.get(key, [])
-                for i, (margin, line) in enumerate(items):
-                    if i >= len(olds):
-                        problems.append(line)
-                    elif margin < olds[i] - _GROUP_MOVE_MARGIN_EPS_MM:
-                        problems.append(
-                            f"{line} (worse: {margin:.4f}mm vs {olds[i]:.4f}mm "
-                            "before the move)"
-                        )
-                    else:
-                        standing.append(line)
+            for line, margin, old_margin in worse:
+                problems.append(
+                    line
+                    if old_margin is None
+                    else f"{line} (worse: {margin:.4f}mm vs {old_margin:.4f}mm "
+                    "before the move)"
+                )
+            standing.extend(kept)
         first = plans[0]
         if problems:
             shown = "; ".join(problems[:8])
@@ -1320,6 +1416,11 @@ class PcbHandler(Handler):
         )
 
     def _op_class_rules(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``put(args={'op':'class_rules','name':...,'rules':{...}})`` — set
+        one net class's rules. Judged (:meth:`_judged_mutation`): router
+        copper the new rules no longer admit is ripped (its net goes
+        unrouted and is listed); a new error between pads/authored copper
+        refuses the change and stores nothing."""
         name = str(args.get("name") or "").strip()
         rules = args.get("rules")
         if not name or not isinstance(rules, dict):
@@ -1328,8 +1429,13 @@ class PcbHandler(Handler):
                 next="args={'op':'class_rules','name':'i2c',"
                 "'rules':{'clearance_mm':0.2}}",
             )
-        self.store.pcb_set_class_rules(ref.id, name, rules)
-        return Response(body=f"# net class {name!r} rules set: {rules}")
+        _, judged = self._judged_mutation(
+            ref.id,
+            lambda conn: self.store.pcb_set_class_rules(ref.id, name, rules, conn=conn),
+        )
+        return Response(
+            body=f"# net class {name!r} rules set: {rules}\n" + judged.lines()
+        )
 
     def _op_stackup(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'stackup','layers':[...]})`` — author the
@@ -3280,6 +3386,83 @@ class PcbHandler(Handler):
             )
         )
 
+    def _drc_rule_inputs(
+        self,
+        design: dict[str, Any],
+        courtyard_local: dict[str, list[tuple[float, float]]],
+        capability: CapabilityRow,
+    ) -> tuple[
+        list[pcb_drc.Courtyard],
+        dict[str, bool],
+        dict[str, NetRules],
+        dict[str, float],
+    ]:
+        """``(courtyards, courtyard_bottom, net_rules, net_voltages)`` — the
+        per-design inputs the geometric rules take besides the copper model.
+        Shared by :meth:`_drc_run` and :meth:`_validity_findings` so the two
+        cannot judge a board by different courtyards or class rules."""
+        # The part's own courtyard POLYGON (see :meth:`_drc_geometry`),
+        # placed into board coordinates through the SAME affine path its
+        # pads and its silkscreen travel — a courtyard that rotated by a
+        # different convention would reserve space where the part's own
+        # copper is not, and look plausible doing it. A refdes the IR
+        # somehow didn't carry falls back to the flat
+        # ``DEFAULT_COURTYARD_RADIUS_MM`` square: a safety net, not the
+        # normal path, and deliberately still SOMETHING rather than
+        # nothing, since a part checked against no shape is a part the
+        # rule cannot see.
+        _flat = pcb_drc.DEFAULT_COURTYARD_RADIUS_MM
+        _fallback = [(-_flat, -_flat), (_flat, -_flat), (_flat, _flat), (-_flat, _flat)]
+        courtyards: list[pcb_drc.Courtyard] = [
+            (
+                str(i["refdes"]),
+                place_points(
+                    courtyard_local.get(str(i["refdes"])) or _fallback,
+                    cx=float(i["x"]),
+                    cy=float(i["y"]),
+                    rot_deg=float(i.get("rot") or 0.0),
+                ),
+            )
+            for i in design["instances"]
+            if i["x"] is not None and i["y"] is not None
+        ]
+        # gr341516 — a courtyard reservation says nothing about which side
+        # of the board it sits on; two parts on OPPOSITE sides, one
+        # directly beneath the other (an EWOD sink grid's whole point,
+        # `generators.py`'s own module docstring), are not colliding.
+        # `padplace.is_bottom_instance` is the SAME predicate `_drc_pads`'s
+        # own pad source now reads (`ir.py::from_graph` ->
+        # `PcbIR.inst_bottom`) -- one parse of `pcb_instances.layer`, not a
+        # second one narrower than it.
+        courtyard_bottom = {
+            str(i["refdes"]): padplace.is_bottom_instance(i)
+            for i in design["instances"]
+        }
+        net_classes = design.get("net_classes") or {}
+        net_rules: dict[str, NetRules] = {
+            str(n["name"]): resolve_net_rules(
+                str(n.get("net_class") or ""),
+                # Clearance (the only field check_clearance reads off this
+                # map) doesn't depend on layer -- an arbitrary True is fine
+                # here; realize.py is the caller that resolves per-layer.
+                layer_is_outer=True,
+                fab_caps=capability,
+                overrides=net_classes.get(n.get("net_class") or ""),
+                current_a=n.get("est_current_a"),
+            )
+            for n in design["nets"]
+        }
+        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
+        # a net missing here is "not annotated", never 0 V, and
+        # `check_clearance` reports the difference rather than inventing a
+        # potential (`pcb-missing-constraint-classes.md` §E-1).
+        net_voltages = {
+            str(n["name"]): float(n["working_voltage_v"])
+            for n in design["nets"]
+            if n.get("working_voltage_v") is not None
+        }
+        return courtyards, courtyard_bottom, net_rules, net_voltages
+
     def _drc_run(
         self, ref_id: int, design: dict[str, Any]
     ) -> tuple[str, list[pcb_drc.DrcFinding], bool] | None:
@@ -3387,66 +3570,9 @@ class PcbHandler(Handler):
             "silkscreen": silk_draws,
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
         }
-        # The part's own courtyard POLYGON (see :meth:`_drc_geometry`),
-        # placed into board coordinates through the SAME affine path its
-        # pads and its silkscreen travel — a courtyard that rotated by a
-        # different convention would reserve space where the part's own
-        # copper is not, and look plausible doing it. A refdes the IR
-        # somehow didn't carry falls back to the flat
-        # ``DEFAULT_COURTYARD_RADIUS_MM`` square: a safety net, not the
-        # normal path, and deliberately still SOMETHING rather than
-        # nothing, since a part checked against no shape is a part the
-        # rule cannot see.
-        _flat = pcb_drc.DEFAULT_COURTYARD_RADIUS_MM
-        _fallback = [(-_flat, -_flat), (_flat, -_flat), (_flat, _flat), (-_flat, _flat)]
-        courtyards: list[pcb_drc.Courtyard] = [
-            (
-                str(i["refdes"]),
-                place_points(
-                    courtyard_local.get(str(i["refdes"])) or _fallback,
-                    cx=float(i["x"]),
-                    cy=float(i["y"]),
-                    rot_deg=float(i.get("rot") or 0.0),
-                ),
-            )
-            for i in design["instances"]
-            if i["x"] is not None and i["y"] is not None
-        ]
-        # gr341516 — a courtyard reservation says nothing about which side
-        # of the board it sits on; two parts on OPPOSITE sides, one
-        # directly beneath the other (an EWOD sink grid's whole point,
-        # `generators.py`'s own module docstring), are not colliding.
-        # `padplace.is_bottom_instance` is the SAME predicate `_drc_pads`'s
-        # own pad source now reads (`ir.py::from_graph` ->
-        # `PcbIR.inst_bottom`) -- one parse of `pcb_instances.layer`, not a
-        # second one narrower than it.
-        courtyard_bottom = {
-            str(i["refdes"]): padplace.is_bottom_instance(i)
-            for i in design["instances"]
-        }
-        net_classes = design.get("net_classes") or {}
-        net_rules: dict[str, NetRules] = {
-            str(n["name"]): resolve_net_rules(
-                str(n.get("net_class") or ""),
-                # Clearance (the only field check_clearance reads off this
-                # map) doesn't depend on layer -- an arbitrary True is fine
-                # here; realize.py is the caller that resolves per-layer.
-                layer_is_outer=True,
-                fab_caps=capability,
-                overrides=net_classes.get(n.get("net_class") or ""),
-                current_a=n.get("est_current_a"),
-            )
-            for n in design["nets"]
-        }
-        # §E-1's PAIRWISE voltage term. Only annotated nets are in the map —
-        # a net missing here is "not annotated", never 0 V, and
-        # `check_clearance` reports the difference rather than inventing a
-        # potential (`pcb-missing-constraint-classes.md` §E-1).
-        net_voltages = {
-            str(n["name"]): float(n["working_voltage_v"])
-            for n in design["nets"]
-            if n.get("working_voltage_v") is not None
-        }
+        courtyards, courtyard_bottom, net_rules, net_voltages = self._drc_rule_inputs(
+            design, courtyard_local, capability
+        )
         findings = pcb_drc.run_geometric_drc(
             model,
             capability=capability,
@@ -3475,6 +3601,164 @@ class PcbHandler(Handler):
             int(board["board_id"]), run_id, [f.to_row() for f in findings]
         )
         return run_id, list(findings), pads_only
+
+    def _validity_findings(self, ref_id: int) -> list[pcb_drc.DrcFinding]:
+        """The findings of the geometric-validity rules on the board as
+        the store (or the open :meth:`Store.pcb_judged_tx`) holds it now,
+        persisting nothing, errors AND warnings (a warning is a shortfall
+        against the house or net-class margin; only :meth:`_judged_mutation`
+        decides which of them gate): copper clearance (with class rules and net
+        voltages), trace width, annular ring, NPTH clearance, via/pad and
+        via/via keep-out, board edge, plus courtyard overlap, courtyard vs
+        mounting hole and outline containment. Not silkscreen, unrouted/
+        connectivity (routedness, not validity), synthesized footprints or
+        board furniture.
+
+        Router (non-``fixed``) copper rows carry ``derived: True`` so a
+        finding names which side yields (:func:`precis.pcb.session.
+        router_nets_of`). ``[]`` for a board with no placed instance: an
+        unplaced netlist has no geometry to violate. A part whose footprint
+        is only a synthesized bound (no cached or authored pad geometry)
+        contributes no pads and no courtyard: a verdict on a guess would
+        refuse boards for geometry nobody drew."""
+        design = self.store.pcb_load(ref_id)
+        board = design["board"]
+        if board is None or not any(
+            i["x"] is not None and i["y"] is not None for i in design["instances"]
+        ):
+            return []
+        try:
+            capability = capability_for(pcb_drc.process_for_stackup(board["stackup"]))
+        except ValueError as exc:
+            raise BadInput(f"pcb: {exc}") from exc
+        layer_names = [str(layer.get("name")) for layer in board["stackup"]]
+        pads, courtyard_local = self._drc_geometry(ref_id, layer_names)
+        # A part with no real footprint is checked at a guessed bound, which
+        # `view='drc'` itself calls "not a verdict" — never gate on a guess.
+        guessed = {str(p.get("refdes")) for p in pads if p.get("synthesized")}
+        pads = [p for p in pads if str(p.get("refdes")) not in guessed]
+        courtyards, courtyard_bottom, net_rules, net_voltages = self._drc_rule_inputs(
+            design, courtyard_local, capability
+        )
+        courtyards = [c for c in courtyards if c[0] not in guessed]
+        copper = [
+            {**row, "net": row.get("net") or ""}
+            if row.get("fixed")
+            else {**row, "derived": True}
+            for row in self.store.pcb_copper_list(int(board["board_id"]))
+        ]
+        model = {
+            "layers": layer_names,
+            "copper": copper,
+            "pads": pads,
+            "drills": self._drc_drills(ref_id),
+        }
+        outline = self._outline_from_features(ref_id)
+        ir = self._build_ir(ref_id, self.store.pcb_graph(ref_id))
+        findings: list[pcb_drc.DrcFinding] = [
+            *pcb_drc.check_clearance(
+                model, capability, net_rules=net_rules, net_voltages=net_voltages
+            ),
+            *pcb_drc.check_trace_width(model, capability),
+            *pcb_drc.check_annular_ring(model, capability),
+            *pcb_drc.check_npth_clearance(model, capability),
+            *pcb_drc.check_via_pad_keepout(model, capability),
+            *pcb_drc.check_via_via_keepout(model, capability),
+            *pcb_drc.check_board_edge_clearance(model, capability, outline=outline),
+            *pcb_drc.check_outline_containment(
+                model, outline=outline, courtyards=courtyards
+            ),
+        ]
+        if courtyards:
+            findings += pcb_drc.check_courtyard_overlap(
+                courtyards, bottom_by_refdes=courtyard_bottom
+            )
+            findings += pcb_drc.check_courtyard_hole(
+                courtyards,
+                [
+                    (
+                        f"hole @ ({h.x:g}, {h.y:g})",
+                        pcb_optimize.mounting_hole_keepout_polygon(h),
+                        h.part,
+                    )
+                    for h in ir.mounting_holes
+                ],
+            )
+        return findings
+
+    def _judged_mutation[T](
+        self,
+        ref_id: int | None,
+        mutate: Callable[[Any], T],
+        *,
+        ref_id_of: Callable[[T], int] | None = None,
+        refuse: bool = True,
+    ) -> tuple[T, JudgeReport]:
+        """Run ``mutate(conn)`` in one transaction and judge the board it
+        leaves, as a DELTA against the board before it (legality is a hard
+        gate; incompleteness is the only permitted failure):
+
+        - a validity finding the change adds, or deepens by more than
+          :data:`_GROUP_MOVE_MARGIN_EPS_MM`, that names ROUTER copper rips
+          that copper's net (it goes unrouted, listed in the report) — at
+          any severity, so a tightened net class that the stored copper no
+          longer meets (a warning-tier shortfall) yields too;
+        - an ERROR that names only pads and authored copper is a problem,
+          and any problem raises :class:`BadInput` and rolls the whole
+          change back (a warning between pads is a margin, not legality);
+        - an error the board already had, not worsened, is only counted.
+
+        ``ref_id`` is ``None`` for a design the mutation creates (nothing
+        before); ``ref_id_of(result)`` then names it. A board with no placed
+        instance is never judged (:meth:`_validity_findings`).
+
+        ``refuse=False`` turns the refusal into a report: the problems are
+        kept (``JudgeReport.visible``) and the change commits (the seam for
+        a mutation whose new facts must win, e.g. a pulled footprint)."""
+        with self.store.pcb_judged_tx() as conn:
+            before = self._validity_findings(ref_id) if ref_id is not None else []
+            result = mutate(conn)
+            rid = ref_id_of(result) if ref_id_of is not None else ref_id
+            if rid is None:
+                raise ValueError("_judged_mutation: no ref id after the change")
+            after = self._validity_findings(rid)
+            worse, standing = _margin_delta(
+                [(_finding_identity(f), f.margin_mm or 0.0) for f in before],
+                [(_finding_identity(f), f.margin_mm or 0.0, f) for f in after],
+            )
+            report = JudgeReport(
+                standing=sum(1 for f in standing if f.severity == "error")
+            )
+            problems: list[str] = []
+            for f, margin, old_margin in worse:
+                nets = pcb_session.router_nets_of(f)
+                if nets:
+                    for net in sorted(nets):
+                        report.ripped.setdefault(net, f.rule)
+                    continue
+                if f.severity != "error":
+                    report.margins.append(f"{f.rule} {f.where}")
+                    continue
+                line = f"{f.rule}: {f.where}"
+                if old_margin is not None:
+                    line += f" (worse: {margin:.4f}mm vs {old_margin:.4f}mm before)"
+                problems.append(line)
+            if problems and not refuse:
+                report.visible = problems
+            elif problems:
+                shown = "; ".join(problems[:8])
+                more = f" (+{len(problems) - 8} more)" if len(problems) > 8 else ""
+                raise BadInput(
+                    f"pcb: this change would leave an invalid board: {shown}{more}",
+                    next=(
+                        "omit x/y for those parts and run put(args={'op':"
+                        "'place'}), or give poses clear of the named parts. "
+                        "Nothing was changed."
+                    ),
+                )
+            for net in report.ripped:
+                self.store.pcb_rip_route(rid, net, conn=conn)
+        return result, report
 
     def _gerber_drc_banner(self, ref_id: int, slug: str) -> tuple[str, int]:
         """What ``view='gerber'`` says about DRC, and the error count.

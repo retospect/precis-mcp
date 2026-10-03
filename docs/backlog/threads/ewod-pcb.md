@@ -18,10 +18,10 @@ landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
 Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
-## Resume (parked at TIER 3, Reto's 2026-10-03 priority review)
+## Resume (UNPARKED 2026-10-03 15:38Z — Reto: "I also want the pcb/ewod thread to continue")
 
-Start no new slice until the organizer reopens this thread. State at park:
-everything is landed; round 3 carries 5d50cd44a (route restores pin swaps
+Plan by build sent as review item ewod-pcb-3. Everything is landed;
+round 3 carries 5d50cd44a (route restores pin swaps
 before the layer sketch, gr464237; refdes slot sets the furniture margin;
 prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
 
@@ -34,8 +34,14 @@ prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
    route reply carries the stale warning, confirmed live). Re-put its
    generators entry, route, report routed count before/after — after
    step 1, so the two effects are not confounded.
-3. Then Do-next 1's remaining invariant paths (`pcb_apply`,
-   `op='footprint'`, `op='class_rules'`) and Do-next 2 (datasheet pull).
+3. Build 4 is in (pcb_apply + class_rules judged). Left in Do-next 1:
+   `op='footprint'` (ruled ewod-pcb-4). Then Do-next 2 (datasheet pull,
+   build 5). Order confirmed by Reto (ewod-pcb-3).
+Pending Reto's ruling on review item se-machine-design-7 (shared 2-D sheet
+job): this thread builds the pcb model -> sheet-job adapter (edge-cut->cut,
+NPTH->drill, silk->engrave-vector, copper/gasket->drag-knife cut), one build
+after build 4, against the input shape se-machine-design defines and sends
+here for review. Start nothing on it before the ruling.
 Owed to pcb-easyeda-round-trip's version-stamp item if picked up from
 here: a code-version input to `content_hash` (round-2 review finding 1).
 
@@ -76,8 +82,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    unmatched sketch entries are reported in the job summary, and a test
    holds run 2's `before` equal to run 1's `after`. The pose half of the move check is a
    delta now too (verdict 2026-10-02). The multi-pose `op='move'`
-   (ruling 2) is built too. **Next:** the remaining mutation paths in the
-   item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);
+   (ruling 2) is built too. **Built 2026-10-03 (build 4):** batch `put` (`pcb_apply`) and
+   `op='class_rules'` run in one judged transaction (`Store.pcb_judged_tx`,
+   `PcbHandler._judged_mutation`): new or worse pad/fixed/courtyard findings
+   refuse, router copper that now conflicts is ripped, class-requirement
+   shortfalls between pads are listed as now visible. **Next:** `op='footprint'`
+   per ruling ewod-pcb-4 (store, rip router copper, report pad/pose collisions
+   as now visible — the `refuse=False` seam exists, unwired);
 
    Dogfood after the deploy: re-route ewod-dogfood-6, expect 0 in the
    summary's "stripped by post-route DRC" count.

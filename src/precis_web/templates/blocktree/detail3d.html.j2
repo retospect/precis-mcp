@@ -302,6 +302,11 @@
 
 {% endblock %}
 {% block scripts %}
+{# One three.js for the vendored viewer and the atom overlay
+   (static/three-cad-viewer/README.md). Must precede every module script. #}
+<script type="importmap">
+{"imports": {"three": "/static/three-r184/three.module.min.js"}}
+</script>
 {# Start the scene and atom fetches before mermaid and the module bundle
    load (~0.6 s on Reto's Safari reading, se-3d-viewer-6); blocktree-3d.js
    takes these responses when the URLs match (_takePrefetch). The no-op

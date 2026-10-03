@@ -276,6 +276,9 @@ and where to check before trusting a `view='drc'` pass on that part.
 
 ## Place and route it — `put(args={'op':'place'|'route', …})`
 
+A put whose authored x/y overlap other parts, holes or copper is refused and
+stores nothing: omit x/y and run `op='place'`, or give clear poses.
+
 Placement and routing run as **enqueued worker jobs** — never inline in this
 call (a real board is minutes of compute, not milliseconds). `put` returns a
 job id immediately; see **[[precis-pcb-route-help]]** for the full `op=` surface
