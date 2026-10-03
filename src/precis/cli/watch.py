@@ -918,11 +918,17 @@ def process_pdf(
             printable_only=printable_only,
         )
     else:
+        # ``role='supplement'`` sidecar (SI fetched by the si_fetch pass, or a
+        # hand drop): ``ref_id`` is the PARENT, not a stub to fold into —
+        # ingest mints the SI as its own linked ref (add._ingest_supplement).
+        is_supplement = sidecar is not None and sidecar.role == "supplement"
         input_ = PdfInput(
             pdf_path=pdf,
             extra_tags=routing.extra_tags,
-            fold_ref_id=fold_ref_id,
+            fold_ref_id=None if is_supplement else fold_ref_id,
             printable_only=printable_only,
+            supplement_of=fold_ref_id if is_supplement else None,
+            supplement_info=sidecar.si if is_supplement and sidecar else None,
         )
 
     try:

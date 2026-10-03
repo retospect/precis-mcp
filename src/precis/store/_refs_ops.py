@@ -117,6 +117,21 @@ _PAPER_AUTHOR_COLS = (
 )
 
 
+def _si_cite_slug(
+    conn: Connection, ref_id: int, kind: str, pdf_role: str | None
+) -> str | None:
+    """Parent slug to cite for a supplementary-information paper ref (see
+    ``ResolvedHandle.cite_public_id``), else ``None``. The resolve SQL already
+    carries ``pdf_role``, so an ordinary ref costs no extra query: the parent
+    lookup runs only for a ``paper`` ref whose role is ``'supplement'``."""
+    if kind != "paper" or pdf_role != "supplement":
+        return None
+    from precis.store.si_links import supplement_parent
+
+    parent = supplement_parent(conn, ref_id)
+    return parent[1] if parent is not None else None
+
+
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
     """One ``paper_authors`` row (``_PAPER_AUTHOR_COLS`` order) → dict."""
     return {
@@ -476,7 +491,7 @@ class RefsMixin:
             "SELECT r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug "
+            " LIMIT 1) AS slug, r.pdf_role "
             "FROM refs r WHERE r.ref_id = %s AND r.retired_at IS NULL"
         )
 
@@ -517,7 +532,12 @@ class RefsMixin:
             if row_kind != kind:  # prefix/kind mismatch — not this handle
                 return None
             public_id = slug if slug is not None else str(pk)
-            return ResolvedHandle(ref_id=pk, kind=row_kind, public_id=public_id)
+            return ResolvedHandle(
+                ref_id=pk,
+                kind=row_kind,
+                public_id=public_id,
+                cite_public_id=_si_cite_slug(c, pk, row_kind, row[2]),
+            )
 
         if conn is not None:
             return _do(conn)
@@ -581,7 +601,7 @@ class RefsMixin:
             "SELECT c.ref_id, c.ord, r.kind, "
             "(SELECT id_value FROM ref_identifiers ri "
             " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
-            " LIMIT 1) AS slug "
+            " LIMIT 1) AS slug, r.pdf_role "
             "FROM chunks c JOIN refs r ON r.ref_id = c.ref_id "
             "WHERE c.chunk_id = %s AND r.retired_at IS NULL"
         )
@@ -605,6 +625,7 @@ class RefsMixin:
                 public_id=public_id,
                 chunk_id=chunk_id,
                 chunk_ord=ord_,
+                cite_public_id=_si_cite_slug(c, ref_id, row_kind, row[4]),
             )
 
         if conn is not None:

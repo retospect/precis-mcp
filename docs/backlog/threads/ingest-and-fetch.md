@@ -16,11 +16,20 @@ states that count a paper as usable when it is not, then metadata.
    are found where attention is, always fetched, and ingested as their
    own ref linked to the parent paper and cited as the parent. Reto
    ruled 2026-10-03 (review session 20:02Z). Blocks quest qu164903
-   (NO→NH3 on Pd(111)) through catalysis-selectivity-17. Build 1: discovery
-   (Crossref relation/component entries plus publisher link patterns,
-   through `safe_get`), fetch and linked-ref ingest, with an explicit
-   `fetch-si` trigger. Run it on pa5303 and pa166889 at deploy and write
-   the result into catalysis-selectivity-17. Build 2: the attention trigger
+   (NO→NH3 on Pd(111)) through catalysis-selectivity-17. Build 1 landed
+   2026-10-03 (`si_discovery.py`, `si_fetch.py`, `si_links.py`;
+   `put(kind='paper', id=…, mode='fetch-si')`). Discovery runs Figshare
+   (`resource_doi`; ACS mirrors its SI there), then Crossref relation, a
+   component-DOI probe and landing-page patterns. pubs.acs.org answers a
+   Cloudflare challenge, which is recorded as a miss, not bypassed. Two
+   deviations from the spec: the link is `part-of`/`contains` with
+   `meta.role='supplement'`, because a new relation pair needs a
+   migration (switch point: `SI_RELATION` in `store/si_links.py`); the event
+   source is `si_fetch`, because `fetcher:%` events start the main-PDF
+   backoff. Not built: a CLI, and a bare-slug cite of an SI ref is not
+   redirected to the parent (search hits and exports are). Next, after the
+   round-4 deploy: run `fetch-si` on pa5303 and pa166889 and write the
+   result into catalysis-selectivity-17. Build 2: the attention trigger
    (web open, MCP `get`, walker touch; one check per paper, a miss
    recorded on the ref) and `fetch_oa` lane priority for those fetches.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek

@@ -293,6 +293,9 @@ class PaperHandler(Handler):
         # arxiv) — the repair affordance the web metadata editor drives;
         # it never touches block bodies.
         supports_put=True,
+        # ``put`` mints stubs; its one other door is ``mode='fetch-si'``
+        # (queue a supplementary-information fetch for an existing paper).
+        modes=("fetch-si",),
         supports_edit=True,
         supports_tag=True,
         supports_link=True,
@@ -325,9 +328,15 @@ class PaperHandler(Handler):
         reason: str | None = None,
         context_ref_id: int | str | None = None,
         verify: bool = True,
+        id: str | int | None = None,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Mint a paper **stub** — the agent-facing "I want this paper".
+
+        ``put(kind='paper', id=<slug>, mode='fetch-si')`` is the one other
+        door: it queues a supplementary-information fetch for an existing
+        paper (:meth:`_queue_si_fetch`).
 
         Paper *bodies* stay import-only (``.acatome`` ingest); ``put``
         only ever requests a paper into the "papers we need" backlog,
@@ -343,6 +352,15 @@ class PaperHandler(Handler):
         ``upsert_stub_paper`` → tag/link path (idempotent: a hit on an
         already-held or already-wanted paper is a no-op).
         """
+        if mode is not None:
+            if mode != "fetch-si":
+                raise BadInput(
+                    f"put(kind={self.spec.kind!r}) only supports mode='fetch-si', "
+                    f"got {mode!r}",
+                    options=["fetch-si"],
+                    next=f"put(kind={self.spec.kind!r}, id='<slug>', mode='fetch-si')",
+                )
+            return self._queue_si_fetch(id)
         # ``put`` mints stubs; it never writes a body. A caller passing
         # ``text=`` is trying to rewrite a paper body — reject loudly
         # rather than silently drop the text into ``_kw``. Bodies stay
@@ -373,6 +391,56 @@ class PaperHandler(Handler):
             reason=reason,
             context_ref_id=context_ref_id,
             verify=verify,
+        )
+
+    def _queue_si_fetch(self, id: str | int | None) -> Response:
+        """Flag a paper so the ``fetch_oa`` lane's SI pass discovers and fetches
+        its supplementary information. Writes ``meta.si_fetch`` only — the MCP
+        server fetches nothing (no Marker, no inbox here)."""
+        from psycopg.types.json import Jsonb
+
+        from precis.store.si_links import supplement_parent, utc_stamp
+
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput(
+                "mode='fetch-si' needs id=<paper slug>",
+                next="put(kind='paper', id='<slug>', mode='fetch-si')",
+            )
+        slug, ref_id = self._resolve_paper_slug(id)
+        with self.store.pool.connection() as conn:
+            parent = supplement_parent(conn, ref_id)
+            if parent is not None:
+                raise BadInput(
+                    f"{slug} is itself supplementary information of "
+                    f"{parent[1] or parent[0]}",
+                    next=f"put(kind='paper', id='{parent[1] or parent[0]}', mode='fetch-si')",
+                )
+            row = conn.execute(
+                "SELECT meta->'si_fetch'->>'requested_at', meta->>'si_checked_at' "
+                "FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            pending = bool(
+                row is not None
+                and row[0]
+                and (row[1] is None or str(row[1]) < str(row[0]))
+            )
+            if not pending:
+                conn.execute(
+                    "UPDATE refs SET meta = meta || jsonb_build_object("
+                    "'si_fetch', %s::jsonb) WHERE ref_id = %s",
+                    (Jsonb({"requested_at": utc_stamp(), "by": "agent"}), ref_id),
+                )
+            conn.commit()
+        state = "already queued" if pending else "queued"
+        return Response(
+            body=(
+                f"{state}: supplementary-information fetch for {slug} — the "
+                "fetch worker discovers it on its next tick; each SI PDF found "
+                "becomes its own paper ref linked to this one and cites as it. "
+                "The outcome lands on the paper "
+                "(get(id=..., view='log'): si_found / si_none / si_blocked)."
+            )
         )
 
     def acquire(
@@ -1488,6 +1556,31 @@ class PaperHandler(Handler):
 
     # -- rendering helpers ---------------------------------------------------
 
+    def _si_overview_lines(self, ref: Ref) -> list[str]:
+        """One line naming the parent on an SI ref, or listing the SI refs on
+        a parent (empty for a paper with neither)."""
+        from precis.store.si_links import supplement_children, supplement_parent
+
+        if ref.pdf_role == "supplement":
+            with self.store.pool.connection() as conn:
+                parent = supplement_parent(conn, ref.id)
+            if parent is None:
+                return []
+            p = parent[1] or str(parent[0])
+            return [f"supplementary information of {p} — cite as {p}"]
+        # Parent side: an ordinary paper pays no query. Only a paper whose SI
+        # was requested (``put(mode='fetch-si')``) can have SI refs from the
+        # fetch pass; a hand-dropped SI of an unflagged paper is not listed here.
+        meta = ref.meta or {}
+        if "si_fetch" not in meta and not meta.get("si_fetched"):
+            return []
+        with self.store.pool.connection() as conn:
+            kids = supplement_children(conn, ref.id)
+        if not kids:
+            return []
+        shown = ", ".join(k[1] or str(k[0]) for k in kids)
+        return [f"supplementary information: {shown}"]
+
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
         doi = meta.get("doi")
@@ -1514,6 +1607,7 @@ class PaperHandler(Handler):
             lines.append(", ".join(venue))
         if doi:
             lines.append(f"doi: {doi}")
+        lines.extend(self._si_overview_lines(ref))
         lines.append("")
         lines.append(f"{n_blocks} block{'s' if n_blocks != 1 else ''}")
         abstract = meta.get("abstract")

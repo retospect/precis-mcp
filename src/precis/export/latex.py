@@ -966,7 +966,10 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
         resolved = ctx.store.resolve_handle(tgt)
     except Exception:  # pragma: no cover — store hiccup
         return None
-    return resolved.public_id if resolved is not None else None
+    if resolved is None:
+        return None
+    # An SI ref cites as its parent paper (si-attachments ruling 3).
+    return getattr(resolved, "cite_public_id", None) or resolved.public_id
 
 
 def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:

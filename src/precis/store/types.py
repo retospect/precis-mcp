@@ -533,6 +533,13 @@ class ResolvedHandle:
     #: the tombstone to this live survivor. Carries the *original* handle
     #: string so the caller can emit a "please use the new handle" hint.
     redirected_from: str | None = None
+    #: For a supplementary-information paper ref (``pdf_role='supplement'`` with
+    #: an SI edge to a parent): the PARENT's slug. Citations point at the
+    #: parent, so cite-producing callers (export, bibliography) use
+    #: ``cite_public_id or public_id``; address-producing callers (``get``,
+    #: link targets) keep using ``public_id``/``ref_id`` — they must reach the
+    #: SI ref itself. ``None`` for every ordinary ref.
+    cite_public_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -97,6 +97,15 @@ class PdfInput:
     #: ever an attach-only printable, never a second, order-dependent body
     #: candidate. See :func:`precis.ingest.pipeline.extract_paper`.
     printable_only: bool = False
+    #: Parent paper ``ref_id`` when this PDF is a supplementary-information
+    #: file (sidecar ``role='supplement'``). Ingest then mints the PDF as its
+    #: OWN ref (``pdf_role='supplement'``) linked to that parent — never folds
+    #: into it, never registers the parent's DOI on it. See
+    #: :func:`_ingest_supplement`.
+    supplement_of: int | None = None
+    #: ``source`` / ``url`` / ``component_doi`` provenance from the sidecar,
+    #: recorded on the minted ref's ``meta.si_parent``.
+    supplement_info: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -302,6 +311,11 @@ def precis_add(
             return None
         with store.pool.connection() as conn:
             existing_ref_id = probe_existing(pdf_sha256=pdf_sha256, conn=conn)
+        if existing_ref_id is not None and input.supplement_of is not None:
+            # Same SI bytes seen before: reuse that ref (ensure its link to
+            # the parent), never mint a second one and never reconcile it
+            # against a stub (the SI's filename stem is not a cite_key).
+            return _reuse_supplement(input, existing_ref_id, store=store)
         if existing_ref_id is not None:
             # Fast-path hit: re-applying ``extra_tags`` is the watcher's
             # signal that re-dropping a known PDF under a different
@@ -330,8 +344,9 @@ def precis_add(
         # builds Store from a pre-made pool), we degrade to no-claim
         # — single-host correctness is preserved by the file-system
         # mutex used by ``_PdfHandler._enqueue``.
+        ingest = _ingest_supplement if input.supplement_of is not None else _ingest_pdf
         if store.dsn is None:
-            return _ingest_pdf(
+            return ingest(
                 input,
                 store=store,
                 pdf_sha256=pdf_sha256,
@@ -348,7 +363,7 @@ def precis_add(
                     input.pdf_path.name,
                 )
                 return None
-            return _ingest_pdf(
+            return ingest(
                 input,
                 store=store,
                 pdf_sha256=pdf_sha256,
@@ -492,6 +507,216 @@ def _ingest_pdf(
         # gr236139 — surfaced by extract_paper via paper.meta so the
         # watcher can raise a fallback alert / route an empty-body
         # degraded extraction to errors/ without re-deriving it here.
+        used_marker_fallback=bool(paper.meta.get("extract_used_fallback")),
+        fallback_empty_body=bool(paper.meta.get("extract_fallback_empty")),
+    )
+
+
+def _load_si_parent(ref_id: int, *, conn: Any) -> dict[str, Any] | None:
+    """The live paper a supplement attaches to, or ``None``."""
+    row = conn.execute(
+        """
+        SELECT r.title, r.authors, r.year, r.meta,
+               (SELECT min(id_value) FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key'),
+               (SELECT min(id_value) FROM ref_identifiers
+                 WHERE ref_id = r.ref_id AND id_kind = 'doi')
+          FROM refs r
+         WHERE r.ref_id = %s AND r.kind = 'paper' AND r.retired_at IS NULL
+        """,
+        (ref_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "ref_id": ref_id,
+        "title": str(row[0] or ""),
+        "authors": row[1] or [],
+        "year": row[2],
+        "meta": row[3] or {},
+        "cite_key": row[4],
+        "doi": row[5],
+    }
+
+
+def _link_supplement(
+    si_ref_id: int, parent_ref_id: int, *, store: Store, conn: Any
+) -> None:
+    """Idempotently write the SI -> parent edge (``si_links.SI_RELATION``)."""
+    from precis.store.si_links import SI_LINK_META, SI_RELATION
+
+    store.add_link(
+        src_ref_id=si_ref_id,
+        dst_ref_id=parent_ref_id,
+        relation=SI_RELATION,
+        set_by="system",
+        meta=dict(SI_LINK_META),
+        conn=conn,
+    )
+
+
+def _reuse_supplement(
+    input: PdfInput, existing_ref_id: int, *, store: Store
+) -> IngestResult:
+    """A ref already holds this SI PDF's sha: ensure the link, no new mint."""
+    parent_id = input.supplement_of
+    assert parent_id is not None
+    with store.pool.connection() as conn:
+        role_row = conn.execute(
+            "SELECT pdf_role FROM refs WHERE ref_id = %s", (existing_ref_id,)
+        ).fetchone()
+        existing_role = role_row[0] if role_row is not None else None
+        if parent_id == existing_ref_id or existing_role != "supplement":
+            # The sha is held by an ordinary paper (e.g. the SI bytes equal a
+            # main PDF): linking it would turn a real paper into someone's SI.
+            log.warning(
+                "precis_add: supplement of ref_id=%s matches existing ref_id=%s "
+                "(pdf_role=%r) — not linking",
+                parent_id,
+                existing_ref_id,
+                existing_role,
+            )
+        elif _load_si_parent(parent_id, conn=conn) is not None:
+            _link_supplement(existing_ref_id, parent_id, store=store, conn=conn)
+        conn.commit()
+        hit = _hit_result_from_db(existing_ref_id, conn=conn)
+        stored_kind = _lookup_kind(existing_ref_id, conn=conn)
+    return _with_kind(hit, kind=stored_kind)
+
+
+def _ingest_supplement(
+    input: PdfInput,
+    *,
+    store: Store,
+    pdf_sha256: str,
+    use_pdf2doi: bool,
+    crossref_mailto: str,
+    s2_api_key: str,
+    marker_timeout_s: float | None = None,
+) -> IngestResult:
+    """Mint an SI PDF as its OWN paper ref linked to its parent.
+
+    The normal extraction runs (chunks searchable like any body text) with
+    these guards, because an SI PDF usually prints the PARENT's DOI/title:
+
+    * ``pdf_role='supplement'`` (the stub-upgrade path's COALESCE and the
+      pipeline's hardcoded ``'main'`` never get a say — no probe by extracted
+      identifiers, so no fold into the parent);
+    * no DOI/arXiv/S2/PubMed/OpenAlex identifier from the PDF is registered —
+      only the SI's own component DOI (``supplement_info['component_doi']``)
+      when the discovery source knew it; ``paper_id`` is sha-derived;
+    * the title is minted ``Supporting Information: <parent title>`` (with
+      `` (n)`` once the parent has other SI refs), authors/year copied from
+      the parent, and the PDF is not patched with the resolved metadata;
+    * ``meta.si_parent`` records parent/source/url/component DOI.
+
+    Falls back to the ordinary path when the parent is gone (nothing to link).
+    """
+    from precis.identity import make_paper_id
+    from precis.ingest.pipeline import _build_cards
+    from precis.store.si_links import SI_PDF_ROLE, supplement_children
+
+    parent_id = input.supplement_of
+    assert parent_id is not None
+    with store.pool.connection() as conn:
+        parent = _load_si_parent(parent_id, conn=conn)
+    if parent is None:
+        log.warning(
+            "precis_add: supplement parent ref_id=%s is gone — ingesting %s "
+            "as an ordinary paper",
+            parent_id,
+            input.pdf_path.name,
+        )
+        return _ingest_pdf(
+            input,
+            store=store,
+            pdf_sha256=pdf_sha256,
+            use_pdf2doi=use_pdf2doi,
+            crossref_mailto=crossref_mailto,
+            s2_api_key=s2_api_key,
+            marker_timeout_s=marker_timeout_s,
+        )
+
+    paper = _build_paper(
+        input,
+        use_pdf2doi=use_pdf2doi,
+        crossref_mailto=crossref_mailto,
+        s2_api_key=s2_api_key,
+        marker_timeout_s=marker_timeout_s,
+    )
+    info = dict(input.supplement_info or {})
+    component_doi = info.get("component_doi") or None
+    parent_cite = parent["cite_key"] or f"ref{parent_id}"
+
+    with store.pool.connection() as conn:
+        n_existing = len(supplement_children(conn, parent_id))
+        title = f"Supporting Information: {parent['title']}".strip()
+        if n_existing >= 1:
+            title += f" ({n_existing + 1})"
+
+        # Cards are rebuilt from the minted title/authors: the extracted ones
+        # name whatever the SI PDF printed (usually the parent's own title).
+        cards = _build_cards(
+            title=title, authors=parent["authors"], abstract="", keywords=[]
+        )
+        body = [c for c in paper.chunks if c.ord >= 0]
+        meta = {
+            k: v
+            for k, v in paper.meta.items()
+            if k not in ("abstract", "keywords", "verify_warnings")
+        }
+        parent_journal = (parent["meta"] or {}).get("journal")
+        if parent_journal:
+            meta["journal"] = parent_journal
+        meta["si_parent"] = {
+            "ref_id": parent_id,
+            "cite_key": parent_cite,
+            "doi": parent["doi"],
+            "source": info.get("source"),
+            "url": info.get("url"),
+            "component_doi": component_doi,
+        }
+        paper = replace(
+            paper,
+            title=title,
+            authors=parent["authors"],
+            year=parent["year"],
+            paper_id=make_paper_id(pdf_sha256=pdf_sha256),
+            pub_id=None,
+            cite_key_prefix=f"{parent_cite}si",
+            doi=component_doi,
+            arxiv_id=None,
+            s2_id=None,
+            pubmed_id=None,
+            openalex_id=None,
+            pdf_role=SI_PDF_ROLE,
+            meta=meta,
+            chunks=cards + body,
+        )
+        # Only the sha identity may already exist (same file processed in a
+        # race); identifier-based dedup is exactly what must NOT run here.
+        existing = probe_existing(
+            pdf_sha256=paper.pdf_sha256, content_hash=paper.content_hash, conn=conn
+        )
+        if existing is not None:
+            conn.commit()
+            return _reuse_supplement(input, existing, store=store)
+        result = write_paper(paper, conn=conn)
+        _link_supplement(result.ref_id, parent_id, store=store, conn=conn)
+        conn.commit()
+
+    _apply_extra_tags(store, paper.kind, result.ref_id, input.extra_tags)
+    return IngestResult(
+        ref_id=result.ref_id,
+        inserted=True,
+        paper_id=paper.paper_id,
+        pub_id=paper.pub_id,
+        cite_key=result.cite_key,
+        pdf_sha256=paper.pdf_sha256,
+        content_hash=paper.content_hash,
+        chunks_written=result.chunks_written,
+        identifiers=result.identifiers_written,
+        kind=paper.kind,
         used_marker_fallback=bool(paper.meta.get("extract_used_fallback")),
         fallback_empty_body=bool(paper.meta.get("extract_fallback_empty")),
     )

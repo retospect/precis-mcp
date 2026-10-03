@@ -1445,6 +1445,13 @@ class PaperSearchResultRenderer:
             flag = _retraction_flag(ref)
             if flag:
                 kw_display = f"{flag} — {kw_display}" if kw_display else flag
+            # Supplementary information cites as its parent (si-attachments
+            # ruling 3): name the parent so the agent cites it, not the SI.
+            si_parent = (ref.meta or {}).get("si_parent")
+            if ref.pdf_role == "supplement" and isinstance(si_parent, dict):
+                parent_cite = si_parent.get("cite_key") or si_parent.get("ref_id")
+                si_note = f"SI of {parent_cite} — cite as {parent_cite}"
+                kw_display = f"{si_note}: {kw_display}" if kw_display else si_note
             table_rows.append(
                 {
                     "handle": handle,

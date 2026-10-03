@@ -210,6 +210,38 @@ single-pair door either — call `merge_duplicate(survivor_ref_id=…,
 duplicate_ref_id=…, ...)` directly inside a transaction via the prod
 one-off CLI recipe; survivor = the ref that actually holds chunks/body.
 
+## Get a paper's supplementary information (SI)
+## The SI / supporting-information PDF is missing — how do I pull it?
+## Does a search hit in SI text cite the SI or the paper?
+
+```python
+put(kind="paper", id="smith2023", mode="fetch-si")  # queue the SI fetch
+```
+
+This only **queues**: it stamps the paper, and the fetch worker's next
+tick looks for the SI (Figshare mirrors, Crossref component DOIs, the
+publisher landing page) and downloads each PDF it finds. Calling it again
+while the request is still pending is a no-op; a fresh call after the check
+re-arms it. `mode=` other than `'fetch-si'` raises `BadInput`.
+
+What it records, on the paper: `meta.si_checked_at`, `si_found` (candidate
+files), `si_fetched` (PDFs queued for ingest), `si_misses` (`{url, source,
+reason}` — e.g. `cloudflare_403` when the publisher answers with a
+challenge: that is a recorded miss, never retried around), `si_skipped`
+(non-PDF files: zip/xlsx/docx are not ingested), and one `si_found` /
+`si_none` / `si_blocked` row in `get(id=..., view='log')`. A paper with no
+SI is checked once and not re-checked until you call it again.
+
+Each SI PDF becomes **its own paper ref** titled `Supporting Information:
+<parent title>`, linked to the parent (edge `part-of` → parent, read as
+`contains` from the parent; the edge carries `meta.role='supplement'`), and
+its chunks are searchable like any body text. It carries no DOI of the
+parent's. **An SI ref cites as its parent:** a search hit in SI text reads
+`SI of <parent> — cite as <parent>`, and a `pc<id>`/`pa<id>` handle of the SI
+exports as the parent's citation. `get(id=<parent>)` lists its SI refs;
+`get(id=<SI>)` names its parent. To attach an SI PDF by hand, drop it in the
+inbox with a sidecar `role: supplement` and `ref_id` = the parent's ref id.
+
 ## See additional papers after a search
 ## Page through more search results
 ## What if there are more hits than I see?

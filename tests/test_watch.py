@@ -638,6 +638,49 @@ class TestProcessPdf:
         assert cols[4] == "inserted"
         assert cols[5] == "smith2024.pdf"
 
+    def test_supplement_sidecar_becomes_supplement_of(self, tmp_path: Path):
+        from precis.ingest.fetch_sidecar import write_sidecar
+
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        pdf = watch_dir / "smith2023cat-si-01.pdf"
+        pdf.write_bytes(b"%PDF-1.4 si")
+        write_sidecar(
+            pdf,
+            ref_id=77,
+            identifiers={},
+            source="fetcher:si",
+            role="supplement",
+            si={"source": "figshare", "url": "https://x/f.pdf"},
+        )
+        fake_result = IngestResult(
+            ref_id=99,
+            inserted=True,
+            paper_id="sha256:x",
+            pub_id=None,
+            cite_key="smith2023casi",
+            pdf_sha256="a" * 64,
+            content_hash="b" * 64,
+            chunks_written=1,
+            identifiers={"cite_key": "smith2023casi"},
+        )
+        with patch("precis.cli.watch.precis_add", return_value=fake_result) as m:
+            process_pdf(
+                pdf,
+                store=MagicMock(),
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+        inp = m.call_args[0][0]
+        # ref_id is the PARENT: never a fold target for a supplement
+        assert inp.supplement_of == 77
+        assert inp.fold_ref_id is None
+        assert inp.supplement_info == {"source": "figshare", "url": "https://x/f.pdf"}
+
     def test_existed_path_moves_to_duplicates(self, tmp_path: Path):
         watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
         pdf = watch_dir / "dup.pdf"

@@ -51,6 +51,7 @@ options list. Link verb mechanics and target grammar live in
 | `off-topic-for` | (none) | Paper A was considered for document B and rejected as out of scope. |
 | `realized-by` | `realizes` | A is made real by B: a cad design's catalog part → the component that realizes it, or a component → the catalog part that builds it (`target='part:C25804'`; the part's ref is minted on its first link). |
 | `datasheet-of` | `has-datasheet` | Datasheet A documents part B. `edit(kind='datasheet', part_lcsc='C25804')` writes it. |
+| `part-of` (SI use) | `contains` | A supplementary-information PDF (own paper ref, `meta.role='supplement'` on the edge) is part of its parent paper; written by the SI ingest, not by hand. The SI cites as the parent. A dedicated `supplements` / `has-supplement` pair is not seeded yet. |
 
 ## Which endpoints does a relation accept?
 ## Why did link() refuse my rel= — wrong kind, second draft, or a cycle?

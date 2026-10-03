@@ -773,7 +773,11 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
         return None
     if resolved is None or not resolved.public_id:
         return None
-    return resolved.public_id, resolved.chunk_id
+    # An SI ref cites as its parent paper (si-attachments ruling 3).
+    return (
+        getattr(resolved, "cite_public_id", None) or resolved.public_id,
+        resolved.chunk_id,
+    )
 
 
 def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]:

@@ -98,6 +98,15 @@ class FetchSidecar:
     #: fails to parse (see ``add.py::_ingest_markup``), which re-enables
     #: this PDF as the OCR fallback for a not-yet-processed trigger.
     printable_only: bool = False
+    #: ``"supplement"`` when this file is an SI attachment of the paper
+    #: ``ref_id`` names (build 1 of ``si-attachments``): ingest mints it as
+    #: its OWN ref linked to that paper instead of folding into it. ``None``
+    #: for every ordinary fetch / hand drop. Also the hand-drop door: write a
+    #: sidecar with ``role='supplement'`` + the parent's ``ref_id``.
+    role: str | None = None
+    #: Provenance for a supplement (``source``/``url``/``component_doi``);
+    #: copied onto the minted ref's ``meta.si_parent``. Empty otherwise.
+    si: dict[str, str] | None = None
 
 
 def sidecar_path(pdf: Path) -> Path:
@@ -114,6 +123,8 @@ def write_sidecar(
     source_format: str = "pdf",
     companion_pdf: str | None = None,
     printable_only: bool = False,
+    role: str | None = None,
+    si: dict[str, str] | None = None,
 ) -> None:
     """Atomically write the sidecar next to the trigger file ``pdf``.
 
@@ -139,7 +150,7 @@ def write_sidecar(
         )
         source_format = "pdf"
     target = sidecar_path(pdf)
-    payload = {
+    payload: dict[str, Any] = {
         "ref_id": int(ref_id),
         "identifiers": {k: v for k, v in identifiers.items() if v},
         "source": source,
@@ -147,6 +158,10 @@ def write_sidecar(
         "companion_pdf": companion_pdf,
         "printable_only": bool(printable_only),
     }
+    if role:
+        payload["role"] = role
+    if si:
+        payload["si"] = {k: v for k, v in si.items() if v}
     tmp = target.with_name(f".{target.name}.tmp")
     try:
         tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -194,6 +209,14 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         companion_pdf = str(companion_raw) if companion_raw else None
         # Back-compat: absent in sidecars written before gr161905.
         printable_only = bool(data.get("printable_only", False))
+        role_raw = data.get("role")
+        role = str(role_raw) if role_raw else None
+        si_raw = data.get("si")
+        si = (
+            {str(k): str(v) for k, v in si_raw.items()}
+            if isinstance(si_raw, dict)
+            else None
+        )
     except (ValueError, KeyError, TypeError) as exc:
         log.warning("fetch_sidecar: ignoring malformed %s: %s", path.name, exc)
         return None
@@ -204,6 +227,8 @@ def read_sidecar(pdf: Path) -> FetchSidecar | None:
         source_format=source_format,
         companion_pdf=companion_pdf,
         printable_only=printable_only,
+        role=role,
+        si=si,
     )
 
 

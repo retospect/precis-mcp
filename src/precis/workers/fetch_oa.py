@@ -1922,6 +1922,19 @@ def run_oa_fetch_pass(
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("fetch_oa: staging sweep errored: %s", exc)
 
+    # SI pass (docs/backlog/si-attachments.md): papers someone flagged with
+    # ``put(mode='fetch-si')`` go BEFORE the stub claim — an attention-queued
+    # SI fetch is a priority bump over the backlog, not a sweep. Best-effort:
+    # it must never block the stub fetch.
+    try:
+        from precis.workers.si_fetch import run_si_pass
+
+        si_res = run_si_pass(store, inbox_path, email=email)
+        if si_res.get("claimed"):
+            log.info("fetch_oa: si pass %s", si_res)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("fetch_oa: si pass errored: %s", exc)
+
     with store.pool.connection() as conn:
         stubs = claim_stubs_to_fetch(conn, limit=limit)
 
