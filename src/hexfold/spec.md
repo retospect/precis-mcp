@@ -789,7 +789,7 @@ results (§26).
 
 ```
 hexfold 0.2
-prov: lib=hexfold@0.2.0 design=<content hash of the smooth authoring, if any>
+prov: lib=hexfold@0.3.0 design=<content hash of the smooth authoring, if any>
 
 lattice: element=C sigma=1.42 strain_max=0.30
 
@@ -841,7 +841,7 @@ the generated section.**
   "hash": "<sha256 of the canonical authored JSON>",
   "report":  Report.to_dict(),
   "generated": {                         # optional; verifiable cache
-     "of": "<hash>", "generator": "hexfold@0.2.0", "fidelity": "stick",
+     "of": "<hash>", "generator": "hexfold@0.3.0", "fidelity": "stick",
      "platform": "...", "relaxer": null,
      "atoms": [{"path":..., "ord": i, "element":..., "hyb":..., "instance":..., "xyz_A": ["1.234","0.000","-0.710"], "surface": {"patch":..., "u":..., "v":...}}],
      "bonds": [[ord_i, ord_j, order]],

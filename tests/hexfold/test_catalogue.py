@@ -70,6 +70,13 @@ def test_envkey_hash_differs_on_every_field() -> None:
     assert base.hash() != EnvKey(zone="edge", rim_type="z", N=8, rung="geo").hash()
 
 
+def test_default_relaxer_label_follows_the_library_version() -> None:
+    # 0.3.0 changed what `sw` and wedge seeds build; a row measured under
+    # 0.2.0 must not share a key with one measured now
+    assert EnvKey(zone="bulk").relaxer == f"stick@{__version__}"
+    assert __version__ != "0.2.0"
+
+
 # ---------- rows: JSON round trip ----------
 
 

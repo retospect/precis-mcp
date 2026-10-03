@@ -133,7 +133,8 @@ class EnvKey:
     N: int | None = None  # edge dangling count; None = wildcard (pinned table)
     seam: tuple[str, str, int, int] | None = None  # (type_a, type_b, N, k)
     rung: str = "stick"
-    relaxer: str = "stick@0.2.0"  # relaxer code version
+    # relaxer code version: rows of different versions never share a key
+    relaxer: str = f"stick@{__version__}"
 
     def __post_init__(self) -> None:
         if self.nm is not None and self.nm[1] > self.nm[0]:
@@ -184,6 +185,7 @@ def _key_from_dict(d: dict[str, Any]) -> EnvKey:
         N=d.get("N"),
         seam=tuple(d["seam"]) if d.get("seam") is not None else None,
         rung=str(d.get("rung", "stick")),
+        # a stored key without a label predates 0.3.0 (sw rotation, wedge seeds)
         relaxer=str(d.get("relaxer", "stick@0.2.0")),
     )
 
