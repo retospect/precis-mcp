@@ -110,6 +110,12 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
             # (--mcp-config) so the planner can call back via MCP.
             # See workers/job_types/plan_tick.py for the wiring.
             "mcp_config",
+            # ``pourbaix_bulk``: pymatgen + mp_api, the ``[pourbaix]`` extra.
+            # Static, like ``ssh_node``'s ``has_gpaw``: the deploy installs
+            # the extra into every venv that runs this pass (the ``mcps``
+            # role's shared venv and the ``precis_worker`` venv); a host
+            # without it fails the job ``failure_class="config"`` at dispatch.
+            "has_pourbaix",
         }
     ),
     # ``coordinator`` is the yield/resume executor for long-running

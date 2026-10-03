@@ -273,8 +273,11 @@ plus seven on 2026-10-01, minus serving-programme, plus
 same set as the sessions `/fleet` opens, changed in the same commit):
 `catalysis-selectivity` ·
 `ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
-`nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (prep-only
-until 2026-10-16) · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
+`nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (lands its
+current slice, idles until the 2026-10-16 hold expires, then resumes the
+module moves, which feed the catpath paper due in November — Reto
+2026-10-03: a dated sequence, not open-ended lowest-priority work) ·
+`roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
 · `session-mcp-shared-server` · `knowledge-mesh` ·
 `claims-and-evidence` · `se-machine-design` · `chemistry` (added
 2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01) ·
@@ -318,6 +321,11 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-03 — not a full pass: follow-up to the priority review (Reto):
+  `plugin-split` is not open-ended tier-3 work — it lands its slice,
+  idles until the 2026-10-16 hold expires, then resumes the module moves
+  that feed the November catpath paper; recorded in the active-thread
+  line above.
 - 2026-10-02 — not a full pass: conferences added to A's output (Reto, via
   the review queue): `cfp` refs under qu459585, a recurring search for
   calls. Open on Reto: whether a conference submission may ever count as

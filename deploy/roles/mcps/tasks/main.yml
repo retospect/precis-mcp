@@ -137,12 +137,16 @@
   # correct, and silently useless, which is the failure mode
   # `precis_se.chain.fold`'s docstring warns about. Not in
   # `[all]`, so it has to be named here.
+  #
+  # `[pourbaix]` (pymatgen + mp-api): this venv runs the agent-profile worker
+  # (com.precis.worker-agent), which owns the `claude_inproc` pass that claims
+  # `pourbaix_bulk` jobs — without the extra they fail `failure_class=config`.
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
       --constraints /opt/precis/constraints.txt \
       --overrides /opt/mcps/etc/uv-overrides.txt \
-      'precis-mcp[chain] @ git+https://github.com/retospect/precis-mcp@main' \
+      'precis-mcp[chain,pourbaix] @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
       'acatome-store[embeddings]' \
       acatome-mcp \

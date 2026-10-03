@@ -98,7 +98,7 @@
     name: autocatpath
     tasks_from: wheelhouse_seed
 
-- name: Install precis-mcp[paper] into worker venv
+- name: Install precis-mcp[paper,pourbaix] into worker venv
   # Installing from git+https because the worker subcommand only lives in
   # the v7/v8 line — PyPI is still at 6.0.0 as of 2026-05-31. Point at a
   # branch ref (configurable via precis_worker_git_ref) so a single commit
@@ -130,6 +130,10 @@
   # deps" note. Likewise the former `patent`/`external` extras were promoted
   # to core 2026-08-16, so only `paper` (marker/torch) remains here.
   #
+  # ``pourbaix`` (pymatgen + mp-api) is the ``pourbaix_bulk`` job's engine
+  # (src/precis_dft/pourbaix_bulk.py); a venv without it fails
+  # that job ``failure_class=config``.
+  #
   # ``catalyst`` (autocatpath_plugin hosts only) pulls the light pure
   # autocatpath engine so PathwayHandler imports — without the module the
   # handler InitErrors on every pathway dispatch and the kind disappears
@@ -151,7 +155,7 @@
       --constraints /opt/precis/constraints.txt \
       --no-sources \
       {{ _precis_worker_find_links }} \
-      'precis-mcp[paper{% if _precis_worker_is_autocatpath_plugin | bool %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
+      'precis-mcp[paper,pourbaix{% if _precis_worker_is_autocatpath_plugin | bool %},catalyst{% endif %}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: precis_install
   # uv prints its "Installed/Updated N package(s)" summary to STDERR, so

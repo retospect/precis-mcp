@@ -180,6 +180,7 @@ env is `PRECIS_UNPAYWALL_EMAIL`.
 | Var | Resolves via | Notes |
 |-----|--------------|-------|
 | `PRECIS_LLM_API_KEY`, `PRECIS_CORE_API_KEY`, `PRECIS_ELSEVIER_API_KEY`, `PRECIS_WILEY_TDM_TOKEN`, `PRECIS_OPENALEX_CONTENT_KEY`, `PRECIS_EPO_KEY`, `PRECIS_SUMMARIZE_LLM_KEY` | DB vault | Off-env is the ADR-0055 posture. |
+| `PRECIS_MP_API_KEY` | DB vault (process env first) | Materials Project key for the `pourbaix_bulk` job's Pourbaix entry fetch. Unset → the job fails `failure_class=config`, never a silent verdict. |
 | `PRECIS_SECRETS_FILE_DIR` | file fallback (`~/.secrets/pw`) | Local-dev fallback; the vault wins when both resolve. |
 | `PRECIS_CROSSREF_MAILTO` / `PRECIS_UNPAYWALL_EMAIL` / `PRECIS_WIKIPEDIA_UA` | polite-pool identity | Low-risk. |
 

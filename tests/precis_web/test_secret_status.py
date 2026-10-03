@@ -50,6 +50,16 @@ def test_every_spec_has_cost_note() -> None:
         assert spec.cost.strip()
 
 
+def test_mp_api_key_is_listed_presence_only() -> None:
+    # The pourbaix_bulk job's key (precis.workers.job_types.pourbaix_bulk
+    # .MP_API_KEY_SECRET) must show on /secrets so it can be provisioned.
+    from precis.workers.job_types.pourbaix_bulk import MP_API_KEY_SECRET
+
+    (spec,) = [s for s in secret_status.KNOWN_SECRETS if s.name == MP_API_KEY_SECRET]
+    assert spec.probe_group is None
+    assert "pourbaix_bulk" in spec.purpose
+
+
 def test_every_probe_group_has_a_registered_probe() -> None:
     groups = {s.probe_group for s in secret_status.KNOWN_SECRETS if s.probe_group}
     assert groups  # sanity: the registry does define probed secrets

@@ -3,18 +3,18 @@ status: draft
 title: catalyst quests gate candidates on the bulk Pourbaix verdict at their operating U/pH window, recomputably
 pillar: 3d-design
 prio: high
-blocked-by: pourbaix-bulk-verdict-job
 ---
 
 # Catalyst quests gate candidates on the bulk Pourbaix verdict at their operating window
 
-Part B of the bulk Pourbaix gate. The verdict engine and job are
-`pourbaix-bulk-verdict-job.md` (Part A). Design-reviewed 2026-10-02
-(design note §13, S1–S5).
+Part B of the bulk Pourbaix gate. The verdict engine and job (Part A) are
+built: `src/precis_dft/pourbaix_bulk.py` (engine, verdict vocabulary) and
+`src/precis/workers/job_types/pourbaix_bulk.py` (the `pourbaix_bulk` job).
+Design-reviewed 2026-10-02 (design note §13, S1–S5).
 
 ## Motivation / why
 
-See Part A. This item puts its verdict onto quest candidates, so a
+See the engine module docstring. This item puts its verdict onto quest candidates, so a
 candidate whose bulk dissolves across the quest's operating window
 stops consuming selectivity budget. A verdict built on a provisional
 operating point or a GGA-level energy must stay revisable.
@@ -29,7 +29,7 @@ operating point or a GGA-level energy must stay revisable.
    there is one notion of operating point per quest.
 2. **Dispatch.** The compute step dispatches `pourbaix_bulk` for every
    live candidate on a quest with `operating_conditions` set, when the
-   candidate has no verdict or its stored verdict's inputs (Part A item 7)
+   candidate has no verdict or its stored verdict's inputs (the result's `basis`)
    differ from the quest's current ones or the current MP version. It is
    idem-keyed on (candidate geometry hash, inputs), so it is one job per
    input set. A `config` failure (no key) is not re-minted until the key

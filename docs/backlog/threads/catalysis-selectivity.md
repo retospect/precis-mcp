@@ -68,15 +68,13 @@ spin-paired energy (§22i), so the table stands. Catpath
      landing on the level it feeds, with one grey label per shared column.
 
    Left: the catpath `added`/`removed`/`kind` link fields.
-4. **backlog/pourbaix-bulk-verdict-job.md** →
+4. **src/precis/workers/job_types/pourbaix_bulk.py** →
    **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
    network (2026-10-02); independent of 1–3. A candidate whose bulk
    dissolves across the operating window cannot be the catalyst, so it is
    ruled out before selectivity is spent on it (qu202468). The job (A)
-   is built and reviewed (design note §18). It goes to the orchestrator as
-   branch `worktree-agent-af864454b1508ef28` (tip `224232762`) for round 2,
-   not a qland, because it changes deploy roles. The orchestrator owns that
-   branch now. After it lands: clamp the within-tol note's margin at 0 (a
+   is on main (e167f4859, landed by the orchestrator because it changes
+   deploy roles). Left on it: clamp the within-tol note's margin at 0 (a
    ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"), and cite
    materialsproject/pymatgen#4709 at the `process_multientry` workaround
    so it can be deleted once upstream fixes it. The gate (B) waits on A

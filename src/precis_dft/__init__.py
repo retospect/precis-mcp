@@ -22,7 +22,14 @@ a second copy would mean two lanes drifting apart.
 ``structures/`` are what the compute image runs. ``ops/``, ``annotator/``,
 ``reactions/``, ``structures/`` and ``data/`` are imported by nothing in
 precis-mcp yet and exist as the library half — pure functions with their own
-tests under ``tests/precis_dft/``. ``handlers/`` and ``_test_store.py`` are
+tests under ``tests/precis_dft/``. ``pourbaix_bulk`` (pymatgen + mp_api,
+the ``[pourbaix]`` extra) is the engine behind precis-mcp's ``pourbaix_bulk``
+job type, which imports it lazily: a recomputable bulk Pourbaix verdict
+(dissolved / leached / transformed / oxidised / unmatched / stable) for a
+candidate's host phase over a U/pH window; its module docstring holds the
+design, including a workaround for a pymatgen ``PourbaixDiagram`` bug. The
+retired ``jobs/pourbaix.py`` (a simplified μ(U, pH) with no ion-activity
+corrections and no caller) is gone. ``handlers/`` and ``_test_store.py`` are
 inert: registered nowhere, kept because they type-check clean and keep the
 volcano-plot tests alive.
 

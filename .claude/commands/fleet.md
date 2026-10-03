@@ -97,12 +97,18 @@ Note from the user: `$ARGUMENTS`
 
 On a `ctx <window> <pct>% <state>` event:
 
-- 60–70%, idle: send `/next`, then `/compact` with the retention argument
-  it printed.
-- 60–70%, busy: leave it; act at its next idle.
-- 80% and up, busy: `say` it to commit WIP, update its thread file and run
+- 30% and up, idle: send `/next` (it persists state: WIP commit, thread
+  file, resume pointer), then `/compact` with the retention argument it
+  printed. Reto's rule (2026-10-02): a long context costs more per turn
+  than a compaction costs in lost detail, so compact early and persist
+  what matters in files.
+- 30% and up, busy: leave it; act at its next idle.
+- 50% and up, busy: `say` it to commit WIP, update its thread file and run
   `/next` at the next stopping point; compact when it goes idle.
 - Never while its dialog is open.
+- The orchestrator itself follows the same rule: at 30%, write the
+  round state to `.claude/purpose` and the open items to the review
+  queue, then `/compact`.
 
 ## Design review
 

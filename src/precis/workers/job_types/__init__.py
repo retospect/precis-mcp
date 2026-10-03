@@ -297,6 +297,14 @@ def _load_news_poll() -> JobTypeSpec:
     return news_poll.SPEC
 
 
+def _load_pourbaix_bulk() -> JobTypeSpec:
+    # Deterministic bulk Pourbaix verdict for a quest candidate (runs via
+    # plugin dispatch under claude_inproc; needs the [pourbaix] extra).
+    from precis.workers.job_types import pourbaix_bulk
+
+    return pourbaix_bulk.SPEC
+
+
 def _load_briefing() -> JobTypeSpec:
     # Deterministic morning-news digest (runs via plugin dispatch).
     from precis.workers.job_types import briefing
@@ -623,6 +631,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "news_poll":
         _REGISTRY["news_poll"] = _load_news_poll()
         return _REGISTRY["news_poll"]
+    if name == "pourbaix_bulk":
+        _REGISTRY["pourbaix_bulk"] = _load_pourbaix_bulk()
+        return _REGISTRY["pourbaix_bulk"]
     if name == "briefing":
         _REGISTRY["briefing"] = _load_briefing()
         return _REGISTRY["briefing"]
@@ -704,6 +715,7 @@ def known_job_types() -> list[str]:
         "remarkable_papers_send",
         "remarkable_reading_send",
         "news_poll",
+        "pourbaix_bulk",
         "briefing",
         "reading_brief",
         "meditation",

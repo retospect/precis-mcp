@@ -455,7 +455,17 @@ estimate = [
 # `scripts/lib/check-core-deps.py`'s IMPORT_NAME_OVERRIDES: the module the
 # distribution installs is `RNA`, which that script's default guess misses.
 chain = ["ViennaRNA>=2.7"]
-all = ["precis-mcp[embed,paper,web]"]
+# `pourbaix` — the bulk Pourbaix verdict job (`pourbaix_bulk`,
+# src/precis_dft/pourbaix_bulk.py): pymatgen's PourbaixDiagram
+# (same pin as `[estimate]`) over Materials Project entries fetched with
+# mp-api. Installed into every venv that runs the `claude_inproc` pass
+# (deploy roles `mcps` and `precis_worker`); `precis_dft.pourbaix_bulk`
+# imports both lazily, so a venv without the extra still imports it.
+pourbaix = [
+    "pymatgen>=2026.5",
+    "mp-api>=0.45",
+]
+all =["precis-mcp[embed,paper,web]"]
 
 [project.scripts]
 precis = "precis.cli:main"
@@ -833,6 +843,9 @@ module = [
     "mendeleev",
     "mendeleev.*",
     "mermaidx",
+    # mp-api (the [pourbaix] extra) ships no py.typed marker.
+    "mp_api",
+    "mp_api.*",
     "num2words",
     "numba",  # core dep (pcb/maze.py) that ships no py.typed marker
     "numba.*",

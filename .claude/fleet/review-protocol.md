@@ -29,6 +29,12 @@ filed: <UTC timestamp, Z>
 **Context.** The minimum he needs: numbers, the id to open, the link.
 ```
 
+Ids carry their names. A quest id never stands alone: write it as
+`qu164903 (NO→NH3 selectivity)` at every mention, question and context
+alike. Reto reads items by quest, not by number (his rule, 2026-10-02);
+the same goes for a draft or paper id when the item turns on which one
+it is.
+
 ## The review session's job
 
 1. **Gather.** Read every file in `open/`. Also pull Reto's own precis

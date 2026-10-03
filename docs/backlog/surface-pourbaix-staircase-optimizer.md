@@ -14,8 +14,8 @@ this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
 
 **Base, which this extends:**
-- Part A, the bulk Pourbaix verdict job (`precis_dft/pourbaix_bulk.py`,
-  landing in round 2; spec `pourbaix-bulk-verdict-job.md` until then);
+- Part A, the bulk Pourbaix verdict job (`precis_dft/pourbaix_bulk.py`;
+  its module docstring is the spec);
 - Part B, the quest gate (`pourbaix-quest-gate.md`).
 
 A and B answer "does the bulk survive at (U, pH)". This item adds the

@@ -154,6 +154,15 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="wolfram",
     ),
     SecretSpec(
+        name="PRECIS_MP_API_KEY",
+        purpose="Materials Project Pourbaix entries for the pourbaix_bulk job.",
+        get_url="https://next-gen.materialsproject.org/api",
+        get_blurb="Log in to the Materials Project; the API page shows your "
+        "key — paste it here.",
+        cost="free",
+        probe_group=None,
+    ),
+    SecretSpec(
         name="PRECIS_CORE_API_KEY",
         purpose="CORE open-access fulltext fetch.",
         get_url="https://core.ac.uk/services/api",

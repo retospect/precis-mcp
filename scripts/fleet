@@ -12,7 +12,7 @@
 #   scripts/fleet status             window · index · ctx% · busy/idle/dialog
 #   scripts/fleet say <file> [win…]  send one message; skips open dialogs
 #   scripts/fleet effort             send each window its /effort level
-#   scripts/fleet watch-ctx          emit a line as a window crosses 60/70/80/90% ctx
+#   scripts/fleet watch-ctx          emit a line as a window crosses 30/40/50/…% ctx (PRECIS_FLEET_CTX_FLOOR)
 #   scripts/fleet queue-dir          print the review-queue directory
 set -euo pipefail
 
@@ -164,7 +164,7 @@ cmd_watch_ctx() {
       pane=$(tmux capture-pane -p -t "$w" 2>/dev/null) || continue
       pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 | grep -o '^[0-9]*' || true)
       [ -z "$pct" ] && continue
-      [ "$pct" -lt 60 ] && continue
+      [ "$pct" -lt "${PRECIS_FLEET_CTX_FLOOR:-30}" ] && continue
       bucket=$((pct / 10 * 10))
       case "$seen" in *" $w:$bucket"*) continue ;; esac
       seen="$seen $w:$bucket"

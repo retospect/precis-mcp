@@ -381,6 +381,12 @@ def pytest_configure(config: pytest.Config) -> None:
         "check.yml's 6 Linux shards, which carry no -m filter, and by the "
         "nightly matrix. See docs/conventions/testing.md.",
     )
+    config.addinivalue_line(
+        "markers",
+        "mp_live: calls the live Materials Project API (needs "
+        "PRECIS_MP_API_KEY). Opt-in: skipped unless the -m expression names "
+        "mp_live, so no default lane, gate or CI shard touches the network.",
+    )
 
 
 def pytest_collection_modifyitems(
@@ -396,10 +402,13 @@ def pytest_collection_modifyitems(
         "runtime_with_store",
         "fresh_db",
     }
+    mp_live_opted_in = "mp_live" in (config.getoption("markexpr", "") or "")
     for item in items:
         fixturenames = getattr(item, "fixturenames", ())
         if db_fixtures.intersection(fixturenames):
             item.add_marker(pytest.mark.db)
+        if not mp_live_opted_in and item.get_closest_marker("mp_live") is not None:
+            item.add_marker(pytest.mark.skip(reason="opt-in live MP test: -m mp_live"))
 
     spec = config.getoption("--shard")
     if spec:
