@@ -31,25 +31,26 @@ green or the reverse), then tuning and residue.
    hand sequences as `scripts/fleet` verbs (verdict, say -m/--when-clear,
    peek/dialogs, compact --at-idle, mcp-check, one watcher, refs). Mined
    from its transcript 2026-10-03; builds after 1.
-3. **backlog/reap-live-worktree-incident.md** — auto-reap deleted a live
-   session's tree twice, killing in-flight prod runs; data loss outranks
-   every stall below. Overlaps 2: settle which one survives before fixing.
-4. **backlog/reaper-removed-live-session-worktree.md** — the same
-   lock-silently-released failure, fixes 1–3 shipped, harness-event root
-   cause open; read with 1.
-5. **backlog/inflight-lists-the-live-deploy-render-tree-as-removable.md** —
+3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+   live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
+   the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
+   incident file closed 2026-10-03: the ownership guard (e3135337c) fixed
+   the spurious-SessionEnd unlock and `scripts/inflight` now buckets a
+   non-`pid` lock `needs_judgment`.
+4. **backlog/inflight-lists-the-live-deploy-render-tree-as-removable.md** —
    inflight tells agents to delete the tree a deploy reads; same blast
-   class as 1.
-6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+   class as 3.
+5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-7. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
-   gate serialises the fleet for up to 1h43m; 4's sibling on the lock.
-8. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 4 and 5 diagnosable.
-9. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+6. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+   gate serialises the fleet for up to 1h43m; the round no longer runs one
+   (2026-10-03), `/go` still does.
+7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 5 and 6 diagnosable.
+8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-10. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon

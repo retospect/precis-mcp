@@ -33,7 +33,8 @@
 #                               #   base            the primary branch, not a candidate
 #                               #   self            the worktree you're calling from
 #                               #   live_session    a claude session still holds the lock
-#                               #   needs_judgment  dirty tree — includes a capped diffstat
+#                               #   needs_judgment  dirty tree (capped diffstat), or a lock with no
+#                               #                   parseable `pid <N>` — never guessed dead
 #                               #   safe_remove     clean + fully merged (ancestor or squash-absorbed)
 #                               #   has_unmerged_work  real commits ahead of base, informational
 #                               # plus a repo-wide stashCount (stash is one ref shared by every
@@ -154,9 +155,13 @@ emit() { # emit <path> <head> <branch> <locked>
   purp=$(purpose_field "$path" "$head" "$branch")
   last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
   ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
-  # removable = merged into main, clean tree, no live session, not the current wt, not main
+  # removable = merged into main, clean tree, no live session, not the current wt, not main.
+  # A lock whose reason carries no `pid <N>` (sess = `locked`) was placed by hand
+  # or by older code; reap must not guess it dead (incident 2026-08-15,
+  # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
-     && [[ "$sess" != live#* ]] && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
+     && [[ "$sess" != live#* ]] && [ "$sess" != 'locked' ] \
+     && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
     REMOVABLE+=("$name")
   fi
 
@@ -166,6 +171,7 @@ emit() { # emit <path> <head> <branch> <locked>
     if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
     elif [ "$path" = "$HERE" ]; then bucket='self'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
+    elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
     elif [ "$dirtyf" != 'clean' ]; then
       bucket='needs_judgment'
       diffstat=$(git -C "$path" diff --stat 2>/dev/null | head -10)

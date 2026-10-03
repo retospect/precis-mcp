@@ -1739,3 +1739,85 @@ def test_sweep_is_silent_when_the_remote_is_unreachable(
     )
     assert result.returncode == 0, result.stderr
     assert "gate ref" not in result.stdout
+
+
+# --- 2026-08-15 reap incident, defect 2: a lock whose reason
+# carries no `pid <N>` (placed by hand: "live session 22516 recovery") rendered
+# SESSION `locked`, and a merged+clean tree in that state bucketed safe_remove --
+# so reap-worktrees unlocked and deleted it. It must now be needs_judgment.
+
+_HAND_LOCK_REASON = "live session 22516 recovery"
+
+
+def test_inflight_buckets_non_pid_lock_needs_judgment(
+    guard_repo: dict[str, Path],
+) -> None:
+    """Merged + clean B locked with a reason that has no `pid <N>`: inflight
+    can't prove the lock dead, so it must never say safe_remove."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", _HAND_LOCK_REASON)
+
+    bucket = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+    )
+    assert bucket["verdict"] == "merged", bucket
+    assert bucket["session"] == "locked", bucket
+    assert bucket["bucket"] == "needs_judgment", bucket
+
+
+def test_inflight_text_mode_omits_non_pid_lock_from_removable(
+    guard_repo: dict[str, Path],
+) -> None:
+    """The text-mode REMOVABLE list (what reap-worktrees consumes) must not
+    name a hand-locked worktree."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", _HAND_LOCK_REASON)
+
+    out = _run([str(primary / "scripts" / "inflight")], primary).stdout
+    assert not any(ln.startswith("Removable") for ln in out.splitlines()), out
+
+    # Positive control: once unlocked the same tree IS listed, so the absence
+    # above is the lock's doing, not a changed footer format.
+    _git(primary, "worktree", "unlock", str(b))
+    out = _run([str(primary / "scripts" / "inflight")], primary).stdout
+    assert any(
+        ln.startswith("Removable") and b.name in ln for ln in out.splitlines()
+    ), out
+
+
+def test_reap_worktrees_leaves_non_pid_locked_worktree_alone(
+    guard_repo: dict[str, Path],
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", _HAND_LOCK_REASON)
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_REAP_GRACE_SECONDS="1"),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert b.exists()
+    assert _lock_reason_for(primary, b) == _HAND_LOCK_REASON
+
+
+def test_inflight_dead_pid_lock_still_buckets_safe_remove(
+    guard_repo: dict[str, Path],
+) -> None:
+    """Control: the non-pid exclusion must not swallow an ordinary stale lock.
+    (The slow live-then-dead test above covers this end to end; this is the
+    fast inflight-only check.)"""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    assert _wait_for(lambda: not _pid_alive(dead.pid), timeout=5.0)
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {dead.pid}")
+
+    bucket = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+    )
+    assert bucket["session"] == f"dead-lock#{dead.pid}", bucket
+    assert bucket["bucket"] == "safe_remove", bucket

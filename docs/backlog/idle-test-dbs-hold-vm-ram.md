@@ -48,7 +48,7 @@ Separate lane, not a flag on the orphan sweep:
   in that tree pays a full migration replay. Slow, not dangerous — and it
   happens to be the same reset that clears a migration-checksum mismatch.
 - Related prior incidents where a reaper was too eager:
-  `reap-live-worktree-incident.md`, `reaper-liveness-race.md`,
+  `reaper-liveness-race.md`, the 2026-08-15 non-pid-lock incident (fixed in `scripts/inflight`),
   `reaper-removed-live-session-worktree.md`. Read those before building this.
 
 ## Worth building?
