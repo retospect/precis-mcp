@@ -1194,6 +1194,35 @@ def test_apply_extraction_mints_atoms_and_composite_with_conjunct_links(
     assert "at" in entry
 
 
+@pytest.mark.parametrize("source", ["model", "coerced", None])
+def test_apply_extraction_stamps_composite_source_on_minted_composite(
+    store: Any, source: str | None
+) -> None:
+    """``composite_source`` lands in the minted composite hub's meta (and
+    only there -- atom hubs stay unmarked); None writes no key."""
+    paper = seed_ref(store, title=f"Provenance {source}", kind="paper")
+    outcome = apply_extraction(
+        store,
+        atoms=[
+            (_ATOM_CLAIM, Placement(action="new")),
+            (_ATOM_CLAIM_2, Placement(action="new")),
+        ],
+        composite=(_COMPOSITE_CLAIM, Placement(action="new")),
+        paper_ref_id=paper,
+        composite_source=source,
+    )
+    assert outcome.composite_hub_id is not None
+    composite_ref = store.get_ref(kind="finding", id=outcome.composite_hub_id)
+    meta = composite_ref.meta or {}
+    if source is None:
+        assert "composite_source" not in meta
+    else:
+        assert meta["composite_source"] == source
+    for atom_hub in outcome.atom_hub_ids:
+        atom_ref = store.get_ref(kind="finding", id=atom_hub)
+        assert "composite_source" not in (atom_ref.meta or {})
+
+
 def test_apply_extraction_needs_review_atom_contributes_no_link(store: Any) -> None:
     paper = seed_ref(store, title="Risky 2023", kind="paper")
     captured: list[tuple[CanonicalClaim, Placement]] = []

@@ -82,7 +82,10 @@ but attach-only-through-atoms: `link(...,
 rel='establishes'|'corroborates'|'contradicts')` onto a composite
 hub raises. Attach evidence to the atom hub the passage actually supports
 instead — `get(id='fi<id>', view='links')` lists a composite's `conjunct-of`
-atoms.
+atoms. A minted composite's `meta.composite_source` says who wrote the
+sentence: `model` (the extraction model's own bundling sentence) or `coerced`
+(the model gave 2+ atoms but no composite, so the source sentence stood in).
+Absent on hubs minted before the marker.
 
 A composite's **trust** is derived, not absent: worst-of its atoms' own
 trust states (`taproot/trust.py::_composite_trust`, status `hub-composite`)

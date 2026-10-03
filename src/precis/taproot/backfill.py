@@ -220,6 +220,10 @@ class GroupPlan:
     #: The composite's own ``(claim, Placement)`` pair, or ``None`` when the
     #: extraction didn't decompose (a lone atom has no composite).
     composite_plan: tuple[CanonicalClaim, Placement] | None = None
+    #: Provenance of the composite (``ClaimExtraction.composite_source``:
+    #: ``"model"`` / ``"coerced"`` / ``None``) — written to the minted
+    #: composite hub's ``meta.composite_source`` by ``apply_extraction``.
+    composite_source: str | None = None
     #: Rejected conjuncts (:func:`extract_claim`'s ``not_claims``) — folded
     #: into the composite hub's audit memo by
     #: :func:`precis.taproot.hub.apply_extraction` (step 8). Empty when the
@@ -611,6 +615,7 @@ def _run_cascade(
         placement=target_placement,
         atom_plans=atom_plans,
         composite_plan=composite_plan,
+        composite_source=extraction.composite_source,
         not_claims=extraction.not_claims,
         supporters=supporters,
         hub_ref_id=target_placement.hub_ref_id,
@@ -1137,6 +1142,7 @@ def apply_chunk(
                 store,
                 atoms=plan.atom_plans,
                 composite=plan.composite_plan,
+                composite_source=plan.composite_source,
                 not_claims=plan.not_claims,
                 paper_ref_id=plan.supporters[0][1],
                 meta=_edge_meta(plan.supporters[0][0]),

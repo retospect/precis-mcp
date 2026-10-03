@@ -322,6 +322,12 @@ def _is_composite_hub(ref_id: int, *, conn: Any) -> bool:
 #: Don't "fix" this to a ref-id key later — there is no ref for it to be.
 _NOT_CLAIMS_META_KEY = "taproot_not_claims"
 
+#: ``meta`` key on a minted composite hub recording whether the extraction
+#: LLM wrote the composite sentence (``"model"``) or
+#: :func:`precis.taproot.canon._coerce_extraction` synthesized it from the
+#: source sentence (``"coerced"``). Absent on atom hubs and pre-marker hubs.
+_COMPOSITE_SOURCE_META_KEY = "composite_source"
+
 
 def mint_hub(
     store: Store,
@@ -2348,13 +2354,16 @@ def _apply_composite_placement(
     todo_fn: Callable[[CanonicalClaim, Placement], Any] | None,
     set_by: ActorSlug,
     conn: Any,
+    composite_source: str | None = None,
 ) -> int | None:
     """Mint-or-converge the composite hub for one :func:`extract_claim`
     result, **without** any evidence edge (step 3: composites hold no
     direct evidence). ``attach`` resolves the existing hub id and merges
     the not-a-claim memo non-destructively; ``new``/``new_contradicts``
     mint via :func:`_mint_for_placement` (``attach_paper=False``) with the
-    memo seeded at insert time; ``needs_review`` files the todo and mints
+    memo and ``meta.composite_source`` (``"model"``/``"coerced"``) seeded at
+    insert time — an ``attach`` stores no new sentence, so it marks nothing;
+    ``needs_review`` files the todo and mints
     nothing (no hub -> no memo target)."""
     action = placement.action
     memo = _not_claims_memo(not_claims) if not_claims else None
@@ -2368,7 +2377,11 @@ def _apply_composite_placement(
         return hub_ref_id
 
     if action in ("new", "new_contradicts"):
-        extra_meta = {_NOT_CLAIMS_META_KEY: memo} if memo else None
+        extra_meta: dict[str, Any] = {}
+        if memo:
+            extra_meta[_NOT_CLAIMS_META_KEY] = memo
+        if composite_source:
+            extra_meta[_COMPOSITE_SOURCE_META_KEY] = composite_source
         return _mint_for_placement(
             store,
             claim,
@@ -2380,7 +2393,7 @@ def _apply_composite_placement(
             conn=conn,
             pending_checks=None,
             attach_paper=False,
-            extra_meta=extra_meta,
+            extra_meta=extra_meta or None,
         )
 
     if action == "needs_review":
@@ -2421,6 +2434,7 @@ def apply_extraction(
     set_by: ActorSlug = "agent",
     conn: Any = None,
     pending_checks: list[int] | None = None,
+    composite_source: str | None = None,
 ) -> ExtractionOutcome:
     """Persist a full :class:`~precis.taproot.canon.ClaimExtraction` through
     the write door — the decomposition-aware orchestrator on top of
@@ -2433,7 +2447,9 @@ def apply_extraction(
        :attr:`ExtractionOutcome.atom_hub_ids`).
     2. ``composite`` (if given) -> mint-or-converge with **no** evidence edge
        via :func:`_apply_composite_placement`, which also writes/merges the
-       ``not_claims`` audit memo onto the composite hub.
+       ``not_claims`` audit memo onto the composite hub, and stamps a newly
+       minted composite hub's ``meta.composite_source`` (``composite_source``
+       arg: ``"model"``/``"coerced"``, from ``ClaimExtraction``).
     3. Every placed atom hub gets ``link_claims(atom, composite,
        relation="conjunct-of")``.
 
@@ -2469,6 +2485,7 @@ def apply_extraction(
             todo_fn=todo_fn,
             set_by=set_by,
             conn=conn,
+            composite_source=composite_source,
         )
 
     if composite_hub_id is not None:

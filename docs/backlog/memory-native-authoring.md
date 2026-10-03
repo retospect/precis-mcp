@@ -274,8 +274,8 @@ scripts only — nothing reads the graph at that moment.
     `MEMORY.md`'s 134.
   - **Session MCP:** `edit(kind='memory', meta={'hook': …})` lands through
     it, and a non-`hook` key gets BadInput.
-  - **Not verified:** idempotence (a second sync reporting 0 updated);
-    auto mode denied the re-run.
+  - **Idempotence:** auto mode denied the re-run here; it was verified
+    later by a dry run (below).
 - **[built 2026-10-03, after the orchestrator's diff review]** The sync
   retired every node missing from `MEMORY.md`, with no dry run and no cap.
   After step 2 the pointer has no bullets, so one `--sync` would have
@@ -286,8 +286,29 @@ scripts only — nothing reads the graph at that moment.
     as well as sync.
   - A sync that would retire more than max(5, 10% of imported nodes) is
     refused unless `--allow-retire N` covers the count.
-  Steps 2–3 wait on the orchestrator's go-ahead: step 2 overwrites the
-  global `MEMORY.md` every session loads.
+- **[cutover steps 2–3 done 2026-10-03 21:02Z]**
+  - **Go-ahead:** the orchestrator's 0b verdict ("memory cutover steps may
+    proceed").
+  - **Freshness:** every memory file edit predated the 20:38Z sync (newest
+    20:14Z).
+  - **Step 2:** the old index is kept as `MEMORY.md.pre-cutover`
+    (21906 B), and `MEMORY.md` is now the pointer above.
+  - **Step 3:** the hook seeded the cache with 134 bullets (18.5 KB), and
+    memory-lint reports graph mode, clean, preamble ≈ 7191 tok of 8000.
+  - **Revert:** move `MEMORY.md.pre-cutover` back over `MEMORY.md`. The
+    hook then goes silent again.
+- **[slice 2 check on prod, 2026-10-03 ~21:50Z: PASS]**
+  - **put:** `put(kind='memory', meta={'hook':…})` created me464696 through
+    the session MCP (prod 929107f32), and the index renders it with that
+    hook.
+  - **edit:** `edit(mode='replace', text=…, meta={'hook':…})` on me464663
+    changed both the body and the hook.
+  - **Idempotence:** verified by a dry run. `import --sync --dry-run` over
+    a copy holding `MEMORY.md.pre-cutover` planned 0 created, 0 retired
+    and 1 updated. That one update was real: at 21:29Z a session started
+    before the cutover edited `fleet-say-drops-first-line.md` by hand.
+    The edit was ported to me464663, and gotcha me464696 records the
+    `find -newer` check.
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.

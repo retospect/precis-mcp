@@ -29,30 +29,27 @@ what a live consumer is already going without.
    - **Slice 2 closes them:** `meta={'hook':…}`, handle-form index,
      `import --sync`, the hook's last-good cache, memory-lint graph mode,
      and the hook wired but silent until the marker.
-   - **Resume (2026-10-03, round 3 live at 929107f32):** slice 2 was
-     dogfooded on prod; cutover step 1 (`--sync`) is done; the sync guard
-     (dry run, graph-marker refusal, retire cap) has landed.
-   - **Next:** cutover steps 2–3 (pointer `MEMORY.md`, then seed and
-     lint) after the orchestrator's go-ahead.
+   - **Resume (2026-10-03 22:00Z): CUT OVER, slice 2 PASS on prod.**
+     Harness memory is in the graph: `MEMORY.md` is the pointer, and the
+     old index is kept as `MEMORY.md.pre-cutover`. The sync guard
+     (31fc2a3c) has landed but is not deployed.
+   - **Next: the memory-lint graph port.** Port the landed-thread scan and
+     the currency ledger to node bodies, and run the reconsolidation clock
+     in graph mode. Today `--currency` is a no-op there, but the clock
+     still reports DUE. Add a stray-write check: a topic file newer than
+     `MEMORY.md.pre-cutover` is an edit the graph missed (one at 21:29Z,
+     ported to me464663; gotcha me464696).
    - **Then:** tests 4b/4c, which need `backlog/file-mirror.md`
-     (knowledge-mesh Do-next 7), and porting memory-lint's body checks to
-     nodes.
+     (knowledge-mesh Do-next 7).
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
    `envelope` row moved to tier 2: it is not an outer bound.
-   - **Tier 2, the taproot half (89fff2fe):** live. The local A/B
-     (2026-10-03, glm-4.7-flash Q5_K_M, design note §1) found no data
-     lost and no wrong-key emissions. It failed the share bar: in 9 of 36
-     passages the model omits the `"composite"` key, so the composite is
-     synthesized from the source sentence. A local reword of the field
-     description (key stays `composite`) restores the slot: 31/36, against
-     30/36 for old. It moves splitting on 5 of 36 passages, with mixed
-     results. **Next:** a three-arm OpenRouter run (old, shipped, reword)
-     once the key exists (review-queue graph-memory-consumers-3). No prompt
-     change ships from the local result.
-   - **Note:** prod has run no claim extraction since the 13:49Z deploy.
+   - **Tier 2, the taproot half (89fff2fe):** live; the prompt A/B is
+     closed (orchestrator 2026-10-03 21:39Z). The shipped prompt stays,
+     and `_coerce_extraction` is the floor for a dropped composite.
+     Coerced composites carry `meta.composite_source`.
    - **Tier 2, the nanopub half (0181, round 2):** live and checked on
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.

@@ -219,6 +219,10 @@ class ClaimExtraction:
       composite and mints no ``conjunct-of`` links.
     * ``not_claims`` — rejected conjuncts, kept for the composite hub's
       audit memo (step 8), never minted.
+    * ``composite_source`` — provenance of ``composite``: ``"model"`` (the
+      extraction LLM wrote it), ``"coerced"`` (:func:`_coerce_extraction`
+      synthesized it from the source sentence), or ``None`` (no composite).
+      Persisted as ``meta.composite_source`` on a minted composite hub.
 
     Construct via :func:`extract_claim`, not directly — the three-way
     invariant between ``atoms``/``composite``/``not_claims`` is enforced at
@@ -230,6 +234,7 @@ class ClaimExtraction:
     atoms: tuple[CanonicalClaim, ...]
     composite: CanonicalClaim | None
     not_claims: tuple[NotClaim, ...]
+    composite_source: str | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -266,9 +271,14 @@ def _coerce_extraction(
       Only an empty ``source_sentence`` (bias-safe floor) still degrades
       to NO-CLAIM — without a bundle, downstream would silently cite only
       the first atom.
+
+    Records which composite survived in ``ClaimExtraction.composite_source``:
+    ``"model"`` (model-written), ``"coerced"`` (synthesized above), or
+    ``None`` (no composite).
     """
     atoms_t = tuple(atoms)
     not_claims_t = tuple(not_claims)
+    composite_source: str | None = None
     if not atoms_t or (len(atoms_t) == 1 and not not_claims_t):
         composite = None
     elif len(atoms_t) >= 2 and composite is None:
@@ -280,6 +290,7 @@ def _coerce_extraction(
                 len(atoms_t),
             )
             composite = CanonicalClaim(sentence=synthesized, scope={})
+            composite_source = "coerced"
         else:
             log.warning(
                 "taproot: extract_claim returned %d atoms with no composite "
@@ -288,7 +299,14 @@ def _coerce_extraction(
                 len(atoms_t),
             )
             return _EMPTY_EXTRACTION
-    return ClaimExtraction(atoms=atoms_t, composite=composite, not_claims=not_claims_t)
+    elif composite is not None:
+        composite_source = "model"
+    return ClaimExtraction(
+        atoms=atoms_t,
+        composite=composite,
+        not_claims=not_claims_t,
+        composite_source=composite_source,
+    )
 
 
 @dataclass(frozen=True)

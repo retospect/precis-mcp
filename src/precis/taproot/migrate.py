@@ -1041,6 +1041,7 @@ def _extraction_to_dict(extraction: ClaimExtraction | None) -> dict[str, Any] | 
             if extraction.composite is not None
             else None
         ),
+        "composite_source": extraction.composite_source,
         "not_claims": [dict(nc) for nc in extraction.not_claims],
     }
 

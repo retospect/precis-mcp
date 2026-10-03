@@ -63,7 +63,10 @@ def _extract_const(sentence: str | None):
 
 
 def _extract_multi(
-    atoms: list[str], composite: str | None, not_claims: list[NotClaim] | None = None
+    atoms: list[str],
+    composite: str | None,
+    not_claims: list[NotClaim] | None = None,
+    composite_source: str | None = None,
 ):
     """Fake ``ExtractFn``: a decomposed extraction — ``atoms`` sentences plus
     an optional bundling ``composite`` sentence and ``not_claims``. Mirrors
@@ -76,6 +79,7 @@ def _extract_multi(
             atoms=tuple(_claim(s) for s in atoms),
             composite=_claim(composite) if composite is not None else None,
             not_claims=tuple(not_claims or ()),
+            composite_source=composite_source,
         )
 
     return _fn
@@ -1877,6 +1881,38 @@ def test_apply_not_claims_memo_lands_on_composite_hub_meta(
     entry = next(iter(memo.values()))
     assert entry["text"] == "enables next-gen tech"
     assert entry["reason"] == "forward-looking"
+
+
+@pytest.mark.parametrize("source", ["model", "coerced"])
+def test_apply_composite_source_lands_on_composite_hub_meta(
+    draft: DraftHandler, hub: Hub, source: str
+) -> None:
+    """The extraction's ``composite_source`` rides GroupPlan through
+    ``apply_extraction`` into the minted composite hub's ``meta``."""
+    _, pc = _pc_of(hub.live_store)
+    dc = _seed_draft_para(draft, hub, f"Bundle claim [{pc}].")
+
+    result = apply_chunk(
+        hub.live_store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_multi(
+            ["Atom one.", "Atom two."], "Bundle claim.", composite_source=source
+        ),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    composite_hub = result.plans[0].hub_ref_id
+    assert composite_hub is not None
+    with hub.live_store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (composite_hub,)
+        ).fetchone()
+    assert row is not None
+    assert row[0]["composite_source"] == source
 
 
 # ── prose-less grounding is refused (gripe 245842) ───────────────────────

@@ -604,6 +604,7 @@ def test_coerce_extraction_no_atoms_drops_any_composite() -> None:
     )
     assert result == ClaimExtraction(atoms=(), composite=None, not_claims=())
     assert result.is_empty
+    assert result.composite_source is None
 
 
 def test_coerce_extraction_lone_atom_no_rejects_folds_composite_away() -> None:
@@ -612,6 +613,7 @@ def test_coerce_extraction_lone_atom_no_rejects_folds_composite_away() -> None:
         [atom], CanonicalClaim(sentence="x", scope={}), []
     )
     assert result.composite is None
+    assert result.composite_source is None
     assert result.atoms == (atom,)
 
 
@@ -621,6 +623,7 @@ def test_coerce_extraction_lone_atom_with_reject_keeps_composite() -> None:
     nc = NotClaim(text="y", reason="vague")
     result = canon._coerce_extraction([atom], composite, [nc])
     assert result.composite is composite
+    assert result.composite_source == "model"
     assert result.not_claims == (nc,)
 
 
@@ -630,6 +633,7 @@ def test_coerce_extraction_multi_atom_keeps_composite() -> None:
     composite = CanonicalClaim(sentence="bundle", scope={})
     result = canon._coerce_extraction([a1, a2], composite, [])
     assert result.composite is composite
+    assert result.composite_source == "model"
     assert result.atoms == (a1, a2)
 
 
@@ -651,6 +655,27 @@ def test_coerce_extraction_multi_atom_without_composite_synthesizes_from_source(
     assert result.composite == CanonicalClaim(
         sentence="X does one thing and Y does another.", scope={}
     )
+    assert result.composite_source == "coerced"
+
+
+def test_coerce_extraction_composite_source_marks_model_vs_coerced_vs_none() -> None:
+    """``composite_source`` tells a later reader who wrote the composite:
+    the model (``"model"``), ``_coerce_extraction`` (``"coerced"``), or
+    nobody (``None`` — zero atoms, or a lone atom with nothing rejected)."""
+    a1 = CanonicalClaim(sentence="x", scope={})
+    a2 = CanonicalClaim(sentence="y", scope={})
+    bundle = CanonicalClaim(sentence="bundle", scope={})
+    src = "X and Y."
+    assert canon._coerce_extraction([a1, a2], None, [], src).composite_source == (
+        "coerced"
+    )
+    assert canon._coerce_extraction([a1, a2], bundle, [], src).composite_source == (
+        "model"
+    )
+    assert canon._coerce_extraction([], None, [], src).composite_source is None
+    assert canon._coerce_extraction([], bundle, [], src).composite_source is None
+    assert canon._coerce_extraction([a1], None, [], src).composite_source is None
+    assert canon._coerce_extraction([a1], bundle, [], src).composite_source is None
 
 
 def test_coerce_extraction_multi_atom_without_composite_or_source_degrades_to_empty() -> (
