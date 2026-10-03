@@ -1197,3 +1197,22 @@ def test_note_name_slugs_and_dedupes() -> None:
         "q-should-the-hub-bore-3"
     )
     assert _note_name("question", "???", set()) == "q-note"
+
+
+def test_payload_cache_charges_a_payload_at_its_heap_size() -> None:
+    """A cached payload dict costs several times its JSON length in memory,
+    so the byte cap charges it at that multiple; a body is charged as is."""
+    from precis_web.routes import blocktree_view as bv
+
+    payload = {"coords": [[0.1, 0.2, 0.3]] * 10}
+    json_len = len(json.dumps(payload, separators=(",", ":")))
+    # Room for one payload at its heap charge, many at its JSON length.
+    cache = bv._PayloadCache(2 * bv._PAYLOAD_HEAP_PER_JSON_BYTE * json_len - 1)
+    cache.put(("a",), payload)
+    assert cache.get(("a",)) is payload
+    cache.put(("b",), payload)
+    assert cache.get(("a",)) is None
+    assert cache.get(("b",)) is payload
+
+    cache.put(("body", "e"), (b"x", b"y"), size=2)
+    assert cache.get(("body", "e")) is not None

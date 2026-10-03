@@ -56,6 +56,18 @@ The motivating case: in `unicycle-c1`, blocks `flange_bolt_left` and `flange_bol
 
 Owner `src/precis_se/validate.py`, `src/precis_se/joints.py`.
 
+## Open: a fastener blocked only by another fastener (2026-10-03)
+
+`fastener_insertion_path` (built, round 2) checks the final state, so a
+screw whose path crosses only another fastener reports an error even when
+inserting it first would work. First case: unicycle-c1's
+`flange_bolt_left` is blocked by `seatpost_clamp_bolt`; with the pinch
+bolt out it goes in. The check has no notion of assembly order. To
+decide: whether a blocker that is itself a fastener should become an
+install-order finding (phase 2's declared boundaries, ruling 1) rather
+than an error, or stay an error under ruling 1's "all bolts accessible all
+the time" reading.
+
 ## Drift found while reviewing this file (2026-09-30, unicycle)
 
 Three things to settle when this is built; none changes the rulings.

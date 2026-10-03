@@ -136,8 +136,11 @@ up:
    seatpost_clamp_bolt (a real hit as drawn: the pinch bolt runs through
    its path). Error findings gate nothing (order, bom, realize never read
    them). Next: the render, from an on-demand endpoint fetched when a
-   finding badge is clicked. Scene3d must not run `fasten` per page load
-   (~1.4 s on unicycle-c1).
+   finding badge is clicked. Scene3d must not run `fasten` per page load.
+   Budget: the insertion check took `fasten` on unicycle-c1 from 0.35 s
+   to 1.39 s; the render slice must not add to that. The flange_bolt_left
+   error is an assembly-order fact (it goes in before the pinch bolt);
+   whether to model order is open in the backlog item.
 6. **backlog/se-tool-sector-and-lkey-access.md** — the one tool class left
    modelled by a volume nobody believes: an L-key or wrench that only needs
    a ratchet SECTOR is refused by the full-circle disc. Split out of the

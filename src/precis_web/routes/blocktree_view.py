@@ -1297,15 +1297,22 @@ def _block_pose(node: Any) -> Any:
 #: so without a bump a builder change serves stale geometry until restart.
 ATOMIC3D_PAYLOAD_VERSION = 1
 
-#: Total approximate size (bytes of serialised JSON) the payload cache may
-#: hold; least-recently-used blocks are evicted past it.
+#: Approximate heap the payload cache may hold; least-recently-used entries
+#: are evicted past it.
 _ATOMIC3D_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+#: A payload is cached as Python lists of floats, which take about 3.6x its
+#: compact-JSON length on the heap (tracemalloc, a 20k-atom payload,
+#: 2026-10-03). Charging the JSON length alone let the 256 MiB cap hold
+#: about 0.9 GiB. Encoded bodies are bytes and are charged as they are.
+_PAYLOAD_HEAP_PER_JSON_BYTE = 4
 
 
 class _PayloadCache:
     """Thread-safe LRU of built atomic block payloads AND of the encoded
-    response bodies (keyed ``("body", etag)``), bounded by approximate bytes
-    (``len`` of a payload's JSON, or the body's own byte length). The route
+    response bodies (keyed ``("body", etag)``), bounded by approximate heap
+    bytes (a payload's JSON length times :data:`_PAYLOAD_HEAP_PER_JSON_BYTE`,
+    or the body's own byte length). The route
     builds in ``asyncio.to_thread``, so every access takes the lock."""
 
     def __init__(self, max_bytes: int) -> None:
@@ -1324,7 +1331,9 @@ class _PayloadCache:
 
     def put(self, key: tuple[Any, ...], payload: Any, size: int | None = None) -> None:
         if size is None:
-            size = len(json.dumps(payload, separators=(",", ":")))
+            size = _PAYLOAD_HEAP_PER_JSON_BYTE * len(
+                json.dumps(payload, separators=(",", ":"))
+            )
         if size > self.max_bytes:
             return
         with self._lock:
