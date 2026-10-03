@@ -54,8 +54,11 @@ green or the reverse), then tuning and residue.
    when ansible fails. The agent test-db item closed the same day too:
    `scripts/reap-test-dbs` downs an `agent-*` tree's idle db after 2 h
    (was 48 h), and `scripts/test` names the reaper on docker's "fully
-   subnetted" error. Its optional fix 2 (teardown in `scripts/test`'s exit
-   path) was skipped because the 2 h age alone stops the recurrence.
+   subnetted" error. The 2 h reap alone did not stop it: the pools ran
+   out again at ~18:25Z. So `scripts/test` now tears an `agent-*` tree's
+   project down at exit (ae5084ae3), and colima's docker pools were widened
+   from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
+   the orchestrator 19:01Z).
 4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
