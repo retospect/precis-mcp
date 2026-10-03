@@ -36,6 +36,20 @@ edges + pin every hub cite; claims-and-evidence also offered a fallback
 fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
 4cf8b684e (round 1). In this order:
 
+0. **Round-2 deploy (63301c5c, 13:49Z 10-03), dogfood:**
+   - **Export with the new cite fallback** (`export-tex-r2/`, chem-rsc) works: 120 bib entries.
+     The fallback prints fewer keys, but the pins add their papers back.
+   - **All 120 entries lack volume and pages.** The RSC bibliography needs
+     `enrich-rearm` over the 170 cited papers (`export-tex/cited-paper-ids.txt`), then a worker cycle, then a re-export.
+   - **Two Reto-run commands, both denied to the session by the auto-mode check:**
+     - the enrich-rearm (dry run, then `--apply`);
+     - the pillar regeneration: soft-delete structure `hexa-nanobud-pillar-bud` (459564), then
+       `nanobud-fidelity/pillar/regen.py`. The old record is in `pillar/old-generated.json` and its atoms in `before.extxyz`.
+     - After both: `ztable.py <new id> after` and the RSC re-export.
+   - **New export advisory:** "[fiX] pinned {paY} but derived originator is {paZ} — reconsider", on 9 hubs:
+     fi189535, fi189536, fi190976, fi191314, fi191016, fi191021, fi191123, fi191164 and fi272040.
+     fi190976 is already known (pa2615 SI vs pa2069). Under the adopted rule a non-originator pin is fine when it supports the sentence.
+     Checked: one real case, fi191314 in dc2445942 ("the original synthesis" pinned to pa1483, not pa2069). Filed as item 28 §A7. The rest are fine.
 0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
    pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
    verified; citekey still `wang22c`, no rename door on paper edit). pa2615 (the Nasibulin SI) is still the ONLY support of fi189540 (junction-geometry transmission hub): re-ground it on the main paper pa2069 before signing.
