@@ -343,13 +343,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "pads, live on every board with a cached footprint"
     ),
     # ---- class methods/properties: legitimately unwired ------------------
-    "src/precis/pcb/jlc_api.py::JlcApiClient.component_info": (
-        "the single-part live-stock lookup ('in stock now' check at "
-        "part-selection time, own docstring) -- its sibling "
-        "iter_components IS wired (workers/parts_refresh.py), but no "
-        "part-selection call site exists yet for the single-part live "
-        "check"
-    ),
 }
 
 

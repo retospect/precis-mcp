@@ -44,8 +44,10 @@ are scoped out of `search(kind='paper')` and vice-versa.
 
 ## Where a datasheet comes from
 
-Most arrive from a part's `datasheet_url` or an operator drop — ask an
-operator if one's missing (`docs/runbooks/datasheet-ops.md`). Set
+A datasheet for each C-number a `pcb` design uses is pulled and linked
+automatically (a `datasheet_pull` job, queued by the put); when it fails,
+`get(kind='part', id='C…')` gives the reason. Otherwise an operator drops the
+PDF — ask one if it's missing (`docs/runbooks/datasheet-ops.md`). Set
 vendor/subtype/part; they flow into the exported citation, and `part_lcsc`
 also links the datasheet `datasheet-of` the part (its ref is minted on first
 use, [[precis-part-select-help]]):

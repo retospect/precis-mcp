@@ -452,6 +452,15 @@ def _load_pcb_route() -> JobTypeSpec:
     return pcb_route.SPEC
 
 
+def _load_datasheet_pull() -> JobTypeSpec:
+    # Fetch + ingest + link one LCSC part's datasheet — the enqueued half of
+    # the pcb datasheet auto-pull (minted by put(kind='pcb')). Runs via
+    # plugin dispatch under the job_inproc executor.
+    from precis.workers.job_types import datasheet_pull
+
+    return datasheet_pull.SPEC
+
+
 def _load_derived_drain() -> JobTypeSpec:
     # Bounded in-proc work order draining a SMALL-tier derived LLM queue
     # (summarize/classify) — melchior-pinned, router-capped, never cloud.
@@ -691,6 +700,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "pcb_route":
         _REGISTRY["pcb_route"] = _load_pcb_route()
         return _REGISTRY["pcb_route"]
+    if name == "datasheet_pull":
+        _REGISTRY["datasheet_pull"] = _load_datasheet_pull()
+        return _REGISTRY["datasheet_pull"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -735,6 +747,7 @@ def known_job_types() -> list[str]:
         "derived_drain",
         "pcb_place",
         "pcb_route",
+        "datasheet_pull",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

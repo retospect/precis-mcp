@@ -83,6 +83,7 @@ from precis.format import render_agent_table
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import cost as pcb_cost
+from precis.pcb import datasheets as pcb_datasheets
 from precis.pcb import drc as pcb_drc
 from precis.pcb import epro_write as pcb_epro_write
 from precis.pcb import export as pcb_export
@@ -208,7 +209,7 @@ _INLINE_EDIT_OPS = (
 #: the router's per-board compute, so it runs inline like the edits above,
 #: never as an enqueued worker job.
 _FOOTPRINT_OPS = ("footprint",)
-_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS)
+_OPS = (*_JOB_OPS, *_INLINE_EDIT_OPS, *_FOOTPRINT_OPS, "datasheets")
 
 #: :meth:`PcbHandler._polarized_refdes`'s label-inference half — an
 #: instance whose ``label`` matches this (case-insensitively) is treated
@@ -600,6 +601,10 @@ class PcbHandler(Handler):
         except ValueError as exc:
             raise BadInput(f"pcb: {exc}") from exc
 
+        # After the commit, never inside the judged transaction: queue the
+        # datasheet pulls (jobs; nothing is fetched here).
+        queued = self._queue_datasheets(ref.id)
+
         if autoplace:
             # Retired as a computed-inline behavior (pcb-guided-place-route
             # Slice 10) — enqueues the SAME `pcb_place` job `op='place'`
@@ -648,7 +653,16 @@ class PcbHandler(Handler):
             + "\n"
             + judged.lines()
             + "".join(n + "\n" for n in notes)
+            + (f"{queued} datasheet pull(s) queued\n" if queued else "")
             + self._toc(design)
+        )
+
+    def _queue_datasheets(self, ref_id: int, *, force: bool = False) -> int:
+        """Enqueue a ``datasheet_pull`` job per C-number on the board that has
+        no datasheet and no recorded attempt (:mod:`precis.pcb.datasheets`);
+        returns how many were newly queued."""
+        return pcb_datasheets.enqueue_pulls(
+            self.store, self.hub.sibling("job"), ref_id, force=force
         )
 
     def _stale_note(self, ref_id: int) -> str:
@@ -781,6 +795,12 @@ class PcbHandler(Handler):
             return self._op_stackup(ref, args)
         if op == "footprint":
             return self._op_footprint(ref, args)
+        if op == "datasheets":
+            n = self._queue_datasheets(ref.id, force=bool(args.get("force")))
+            return Response(
+                body=f"{ref.slug}: {n} datasheet pull(s) queued"
+                + ("" if args.get("force") else " (force=true re-queues failed pulls)")
+            )
         raise BadInput(
             f"unknown op {op!r}",
             options=list(_OPS),
@@ -2763,7 +2783,21 @@ class PcbHandler(Handler):
             head += "\n" + "\n".join(f"⚠️  {w}" for w in warns)
         # Echo a short preview so the agent sees the shape without re-reading.
         preview = "\n".join(content.splitlines()[:12])
+        if view == "bom":
+            # Not a column of the file (JLCPCB's BOM upload has fixed
+            # headers): the datasheet state of each C-number, beside it.
+            head += self._datasheet_status_block(ref_id)
         return Response(body=head + "\n\n```\n" + preview + "\n```")
+
+    def _datasheet_status_block(self, ref_id: int) -> str:
+        rows = [
+            f"  {lcsc}: "
+            + pcb_datasheets.status_line(
+                pcb_datasheets.datasheet_state(self.store, lcsc)
+            )
+            for lcsc in pcb_datasheets.live_lcscs(self.store, ref_id)
+        ]
+        return ("\ndatasheets:\n" + "\n".join(rows)) if rows else ""
 
     def _export_warnings(self, model: dict[str, Any], view: str) -> list[str]:
         out = []

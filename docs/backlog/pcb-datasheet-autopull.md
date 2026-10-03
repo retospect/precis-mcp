@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 title: a part a board uses gets its datasheet pulled, ingested and linked without anyone asking
 prio: high
 pillar: 3d-design
@@ -50,6 +50,36 @@ then the PDF. Check first whether prod has JLC API credentials
    `get(kind='part')`, so "no datasheet" is distinguishable from "never tried".
 4. **Read side:** `get(kind='pcb', view='bom')` (or `parts`) shows each
    line's datasheet ref or its failure reason.
+
+## Built (undeployed) and not yet built
+
+Built: the `datasheet_pull` job (`workers/job_types/datasheet_pull.py`,
+`job_inproc`: JLC `component_info` URL with `parts` upsert and a stored-URL
+fallback, `safe_stream` fetch capped at 50 MB, `%PDF` check, sha dedupe,
+ingest through `precis_add(PdfInput(as_kind='datasheet'))`, `datasheet-of`
+link, outcome in the part ref's `meta.datasheet_pull`); the trigger
+(`pcb/datasheets.py`: `put(kind='pcb')` and the `import-epro` CLI queue one
+job per unlinked, unattempted C-number, key `datasheet_pull:<LCSC>`);
+`put(args={'op':'datasheets','force':True})` re-queues failed pulls;
+`get(kind='part')` shows the datasheet or the reason; `get(view='bom')` lists
+each C-number's state beside the CSV (not a column: the JLCPCB BOM upload has
+fixed headers). Failure reasons: `no_url`, `jlc_api_error:<status|class>`,
+`fetch_refused`, `http_<status>`, `not_pdf`, `too_large`,
+`fetch_error:<class>`, `fetch_timeout` (300 s download deadline),
+`ingest_empty` (0 body chunks; ref and link kept), `ingest_failed:<class>`.
+`jlc_api_error:*`, `http_5xx`/`http_429`, `fetch_error:*` and `fetch_timeout`
+are transient: a later put re-queues them once the record is 24 h old
+(`pcb/datasheets.py::is_transient`); the rest need `op='datasheets', force`.
+`force` on an `ingest_empty` part re-runs the pull but the sha dedupe finds the
+empty datasheet again, so it does not re-run Marker; delete the empty
+datasheet first.
+
+Not built: the knowledge-mesh half (below, theirs); the community-dump URL
+fallback beyond an existing `parts.datasheet_url` (a populated catalog
+supplies it); a worker host without the Marker extra falls back to fitz page
+extraction, so confirm the first prod pull's chunk quality. A failed pull
+mints the part ref even for a C-number outside the catalog
+(`ensure_part_ref(uncatalogued_ok=True)`) so the reason has a place to live.
 
 ## Consumers (why it is ranked where it is)
 

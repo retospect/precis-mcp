@@ -32,16 +32,22 @@ first use:
 - ``component realized-by part`` goes through ``ComponentHandler.link``,
   which refuses ``made-of``/``contains`` (they keep their ``put`` doors).
 - A datasheet's ``part_lcsc`` dual-writes ``meta.part_lcsc`` (nanopub,
-  docx, latex read it) and ``datasheet-of``; outside the catalog it keeps
-  the meta and skips the edge.
+  docx, latex read it) and ``datasheet-of``; outside the catalog with no
+  part ref it keeps the meta and skips the edge.
 - A board ``contains`` one part ref per placed C-number, with
   ``links.meta = {refdes, qty}``, reconciled at the end of every
   ``pcb_apply`` (``PcbMixin._pcb_reconcile_part_edges``) and backfilled by
-  ``precis pcb link-parts``. A C-number outside the catalog gets no edge;
-  revisit if a hand-authored board needs a dropped part (the alternative
+  ``precis pcb link-parts``. A C-number outside the catalog gets no edge
+  unless a part ref already exists for it (the ``datasheet_pull`` job mints
+  one, flagged ``meta.uncatalogued``, to record a failed pull); revisit if a hand-authored board needs a dropped part (the alternative
   is minting from the board's own snapshot).
 - ``get`` appends the ref's ring; after the catalog swap drops the row it
   renders the ref with "no longer in the catalog" instead of ``NotFound``.
+- A part's datasheet is pulled automatically when a board uses its C-number
+  (``precis.pcb.datasheets``; the ``datasheet_pull`` job): ``get`` shows the
+  linked ``datasheet-of`` datasheet, or the recorded pull failure and its
+  reason. A failed pull mints the part ref even for a C-number outside the
+  catalog, so the reason has a place to live.
 """
 
 from __future__ import annotations
@@ -54,11 +60,41 @@ from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._links_render import render_links_section
 from precis.pcb.catalog import min_unit_price
+from precis.pcb.datasheets import datasheet_state
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
 
 log = logging.getLogger(__name__)
+
+
+def _datasheet_line(state: dict[str, Any]) -> str:
+    """The part's datasheet: the linked ref, the recorded pull failure with
+    its reason, or "not pulled yet" (``precis.pcb.datasheets``)."""
+    ds = state["datasheet"]
+    if ds is not None:
+        slug = ds[1] or ds[0]
+        line = f"datasheet: {slug}  get(kind='datasheet', id='{slug}')"
+        pull = state["pull"]
+        if pull is not None and pull.get("status") == "failed":
+            line += f"; pull failed, reason {pull.get('reason')}"
+            if pull.get("detail"):
+                line += f" ({pull['detail']})"
+        return line
+    pull = state["pull"]
+    if pull is None:
+        return (
+            "datasheet: not pulled yet (a pcb design that uses this part "
+            "queues the pull)"
+        )
+    if pull.get("status") == "failed":
+        line = f"datasheet: pull failed, reason {pull.get('reason')}"
+        if pull.get("detail"):
+            line += f" ({pull['detail']})"
+        if pull.get("url"):
+            line += f"; url {pull['url']}"
+        return line + f"; at {pull.get('at')}"
+    return f"datasheet: pulled {pull.get('at')} but the datasheet ref is gone"
 
 
 class PartHandler(Handler):
@@ -119,11 +155,12 @@ class PartHandler(Handler):
             body = render_agent_table([payload])
         else:
             assert ref is not None
-            body = (
-                f"# {lcsc} — {ref.title}\n"
-                f"{lcsc} is no longer in the catalog (as of the last refresh); "
-                "its ref and links remain."
-            )
+            if (ref.meta or {}).get("uncatalogued"):
+                gone = f"{lcsc} is not in the parts catalog (no catalogue row yet); "
+            else:
+                gone = f"{lcsc} is no longer in the catalog (as of the last refresh); "
+            body = f"# {lcsc} — {ref.title}\n{gone}its ref and links remain."
+        body += "\n" + _datasheet_line(datasheet_state(self.store, lcsc))
         if ref is not None:
             # the section arrives with its own leading blank line
             body += f"\nref: {handle_registry.format_handle('part', ref.id)}"

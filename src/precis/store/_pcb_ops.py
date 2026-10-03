@@ -666,7 +666,9 @@ class PcbMixin:
         One edge per (board, part) with ``links.meta = {refdes: [...], qty}``;
         a part no longer placed loses its edge; part refs are minted on
         first use (:meth:`ensure_part_ref`). A C-number outside the catalog
-        with no ref gets no edge (``uncatalogued``). Only changed edges are
+        that already has a ref (one the ``datasheet_pull`` job minted with
+        ``uncatalogued_ok``, to record a failed pull) gets its edge like any
+        part; one with no ref gets none (``uncatalogued``). Only changed edges are
         written, so an unchanged re-apply is one read. ``dry_run`` counts
         what would change and writes nothing (``precis.handlers.part``).
         """
@@ -3376,6 +3378,7 @@ class PcbMixin:
         lcsc: str,
         *,
         set_by: ActorSlug = "agent",
+        uncatalogued_ok: bool = False,
         conn: Connection | None = None,
     ) -> int:
         """Find-or-mint the lazy ``part`` ref for a catalog C-number.
@@ -3385,7 +3388,10 @@ class PcbMixin:
         summary cascade never sees it), titled from the catalog row at
         mint time (``precis.handlers.part`` docstring). An existing live ref
         is returned whether or not its row is still in ``parts``; a mint
-        needs the row and raises :class:`NotFound` without it.
+        needs the row and raises :class:`NotFound` without it, unless
+        ``uncatalogued_ok`` (the ``datasheet_pull`` job, which must record a
+        failed pull on a part the catalog does not hold) titles it by the
+        C-number alone.
 
         Race: two first links both miss the probe and both insert; the
         ``lcsc`` identifier's primary key serialises them, the loser's
@@ -3405,19 +3411,22 @@ class PcbMixin:
             row = c.execute(
                 "SELECT mfr_part, description FROM parts WHERE lcsc = %s", (key,)
             ).fetchone()
-            if row is None:
+            if row is None and not uncatalogued_ok:
                 raise NotFound(
                     f"part {key} is not in the catalog and has no ref",
                     next="search(kind='part', q='...') for a catalog C-number",
                 )
-            title = " — ".join(s for s in (row[0], row[1]) if s) or key
+            title = (
+                " — ".join(s for s in (row[0], row[1]) if s) if row is not None else ""
+            ) or key
             try:
                 with c.transaction():
                     ref = self.insert_ref(
                         kind="part",
                         slug=key,
                         title=title,
-                        meta={"set_by": set_by},
+                        meta={"set_by": set_by}
+                        | ({"uncatalogued": True} if row is None else {}),
                         conn=c,
                     )
                     claimed = c.execute(

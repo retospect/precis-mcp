@@ -34,9 +34,18 @@ prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
    route reply carries the stale warning, confirmed live). Re-put its
    generators entry, route, report routed count before/after — after
    step 1, so the two effects are not confounded.
-3. Build 4 is in (pcb_apply + class_rules judged). Left in Do-next 1:
-   `op='footprint'` (ruled ewod-pcb-4). Then Do-next 2 (datasheet pull,
-   build 5). Order confirmed by Reto (ewod-pcb-3).
+3. Build 4 is landed (round 3: 5f145c3a, 4d58cefc, 4def048c, 796fc1b4).
+   Batch put, class_rules and op='footprint' are judged. Next is Do-next 2
+   (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).
+   After the deploy, dogfood: a put that shrinks the outline under routed
+   copper rips the net and does not refuse.
+4. gr464537: JLCPCB's getComponentInfos answers prod's parts_refresh with
+   HTTP 500, so `parts` stays empty. Build 5's datasheet pulls resolve
+   URLs through the same API and will mostly record `jlc_api_error`
+   until this is fixed. Probe the first-page payload by hand (one
+   API call), then fix it. This comes first after build 5 deploys.
+5. gr464529: re-putting an outline feature appends a second outline.
+   Small; decide replace-or-refuse when Do-next 2 allows.
 Reto approved se-machine-design-7 option 1 (2026-10-03): the shared 2-D
 sheet job lives under flat-pack; pcb only emits into it. This thread builds
 the pcb model -> sheet-job adapter (edge-cut->cut, NPTH->drill,
@@ -110,7 +119,12 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    threads wait on it (claims-and-evidence citations, knowledge-mesh's
    datasheet nodes, gr458878 pin provenance) and nothing here blocks it.
    The mesh half is knowledge-mesh's; its shape is in review item
-   ewod-pcb-2.
+   ewod-pcb-2. BUILT, UNDEPLOYED: the `datasheet_pull` job (job_inproc),
+   the put/EasyEDA-import trigger, `get(kind='part')` reasons. First on
+   deploy: put a board in prod and read `get(kind='part')` for a C-number;
+   JLC's component API is erroring (gr464537), so expect `jlc_api_error:500`
+   until a datasheet_url exists in `parts`. What is left is in the backlog
+   item.
 3. **backlog/pcb-risk-is-a-max-so-any-money-term-is-a-free-tiebreaker.md** —
    **de-escalated by 1's ruling.** risk() is a MAX over margin terms, so any
    MONEY term is a free tie-breaker against every non-maximal constraint (a

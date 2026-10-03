@@ -100,6 +100,11 @@ put(
 )
 ```
 
+A put (and an EasyEDA import) queues a datasheet pull for each C-number the
+board uses that has none; the reply says "N datasheet pull(s) queued".
+`get(kind='part', id='C…')` shows the datasheet or why the pull failed;
+`put(args={'op':'datasheets','force':True})` re-queues failed pulls.
+
 ## Author a design — field notes
 
 Field notes:

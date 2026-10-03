@@ -786,6 +786,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-pcb-route-help",
     ),
     ServiceSpec(
+        # Fetch + ingest + link one LCSC part's datasheet; minted by
+        # put(kind='pcb') for each C-number a board uses that has none.
+        # job_inproc, bounded: one <=50 MB fetch + one ingest.
+        name="datasheet_pull",
+        label="Datasheet pull (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Fetch, ingest and link the datasheet of a part a pcb "
+        "design uses — minted by put(kind='pcb').",
+        doc_skill="precis-pcb-route-help",
+    ),
+    ServiceSpec(
         name="llm_summarize",
         label="LLM summarize (llm-v1)",
         category="discovery",

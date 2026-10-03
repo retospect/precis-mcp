@@ -258,6 +258,7 @@ def _import_epro(args: argparse.Namespace) -> None:
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
     store = Store.connect(dsn)
+    datasheets_queued = 0
     try:
         result = import_epro(
             store,
@@ -270,6 +271,15 @@ def _import_epro(args: argparse.Namespace) -> None:
             update=getattr(args, "update", False),
             freeze=getattr(args, "freeze", False),
         )
+        if not args.dry_run and result.ref_id:
+            # The import writes through pcb_apply, not put(kind='pcb'), so it
+            # queues the datasheet pulls itself (jobs; nothing fetched here).
+            from precis.dispatch import Hub
+            from precis.pcb.datasheets import enqueue_pulls
+
+            datasheets_queued = enqueue_pulls(
+                store, Hub(store=store).sibling("job"), result.ref_id
+            )
     except EproError as exc:
         # The file is not readable as .epro2, or is missing something
         # precis cannot invent (an outline). Re-exporting might fix it.
@@ -316,6 +326,8 @@ def _import_epro(args: argparse.Namespace) -> None:
     if result.copper is not None:
         for line in copper_report.render(result.copper):
             print(f"  {line}")
+    if datasheets_queued:
+        print(f"  {datasheets_queued} datasheet pull(s) queued")
     if args.dry_run:
         print("  (dry run — nothing was written)")
 
