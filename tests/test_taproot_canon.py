@@ -296,6 +296,71 @@ def test_extract_claim_strict_raises_on_dispatch_error(
         extract_claim_strict("some passage")
 
 
+#: A reply cut off at the old 220-token cap (reviews/graph-memory-consumers.md
+#: §2): the outer object never closes, so the router's last-complete-object
+#: parse hands back the final finished claim ITEM, not the payload.
+_TRUNCATED_TEXT = (
+    '{"assertions": ["a", "b", "c"], "claims": ['
+    '{"claim": "DFT shows the first atom holds.", "material": "graphene"}, '
+    '{"claim": "DFT shows the second atom holds.", "material": "graphene"}, '
+    '{"claim": "DFT shows the third'
+)
+_LAST_ITEM = {"claim": "DFT shows the second atom holds.", "material": "graphene"}
+
+
+def test_extract_claim_strict_refuses_a_truncated_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cut-off reply must not become a silent single-atom extraction:
+    the strict path raises the retryable infra error."""
+    monkeypatch.setattr(
+        canon, "route", lambda req: _result(data=dict(_LAST_ITEM), text=_TRUNCATED_TEXT)
+    )
+    with pytest.raises(ExtractionUnavailable, match="cut off"):
+        extract_claim_strict("some passage")
+
+
+def test_extract_claim_degrades_a_truncated_reply_to_empty_not_one_atom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        canon, "route", lambda req: _result(data=dict(_LAST_ITEM), text=_TRUNCATED_TEXT)
+    )
+    assert extract_claim("some passage").is_empty
+
+
+def test_extract_claim_reply_cut_after_claims_closed_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cut inside not_claims: the last complete object is a not_claim item,
+    so even a closed ``claims`` array would be lost without the guard."""
+    text = (
+        '{"claims": [{"claim": "DFT shows the atom holds."}], '
+        '"not_claims": [{"text": "x", "reason": "vague"}, {"text": "y'
+    )
+    monkeypatch.setattr(
+        canon,
+        "route",
+        lambda req: _result(data={"text": "x", "reason": "vague"}, text=text),
+    )
+    with pytest.raises(ExtractionUnavailable, match="cut off"):
+        extract_claim_strict("some passage")
+
+
+def test_extract_claim_passes_an_explicit_completion_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+
+    def fake(req: Any) -> Any:
+        seen.append(req)
+        return _result(data={"claims": [{"claim": "DFT shows the atom holds."}]})
+
+    monkeypatch.setattr(canon, "route", fake)
+    extract_claim_strict("some passage")
+    assert seen[0].max_tokens == canon._EXTRACT_MAX_TOKENS
+
+
 def test_extract_claim_still_degrades_to_empty_on_the_same_dispatch_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -16,9 +16,12 @@ defect and follow-on cluster below is owned here.
 
 ## Do next
 
-0. **Round 2 queue (10-02 ~22:40Z).**
-   - Committed here, unlanded: the scope edit door, the anchored/published refusal (orchestrator: land early in round 2), and the cite-standard fallback (079e07f16 + d9a287074). The fallback waits on the orchestrator's sample check (reviews/claims-and-evidence.md §3); after that, send nanobuds-paper the dr173020 (nanobuds review) before/after key set.
-   - In flight: the report/definition types + web anchor, with migration 0183 going to the orchestrator's gate.
+0. **Now (10-03).**
+   - **Extraction truncation** (found by graph-memory-consumers, reviews/graph-memory-consumers.md §2). 147/275 prod `taproot:extract` replies were cut at 220 tokens and 114 silently became one atom.
+     - Fixed: an explicit `canon._EXTRACT_MAX_TOKENS` (provisional 1024; the measured value is coming from graph-memory-consumers' replay), and `_top_level_payload` refuses a cut-off reply (strict → retryable `ExtractionUnavailable`; lenient → empty, never one atom).
+     - Open: count the findings minted from capped replies and re-extract them (a prod write, after the pgbouncer fix and Reto's go). The lenient `extract_claim` callers (`chase.py` bridge, `hub_refine`) still read empty as final, which is the outage audit in item 4.
+   - **report/definition types**: built on `worktree-agent-afd8ba55d0ab15fb5` (f262c69c1, migration 0183) → the orchestrator's gate in round 2. The web anchor is NOT built: no content hash is stored for web refs (`cache_state.request_hash` is the URL hash; the 7-day refresh replaces the body). That needs Reto's call on storing a fetch-time content sha.
+   - **Prune draft-sentence check** (Reto, nanobuds-paper-22, round 3). The reground judge reads the citing draft sentence(s) and never prunes an edge that is the sole support for one of their clauses, or that a live `[fi…>pc…]` cite pins; it also re-judges against the current hub sentence. Then `slice_refine_eval` must pass. Test case: dr173020 (nanobuds review), `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/prune-edges.tsv` → prune the 78 free edges, keep the 21 needed.
 1. **Scope chain** — (edit door shipped 10-02: `edit(kind='finding',
    meta={'scope': …})`; `refine_claim_sentence` now refuses an anchored/published
    hub — `HubFrozenError`; the notation sweep skips + reports it) ·

@@ -328,6 +328,46 @@ class Placement:
 #: sized up a little since this extractor also reads for scope terms).
 _EXTRACT_EXCERPT_CHARS = 1500
 
+#: Completion cap for every extract call. Without one the openai-compat
+#: transport falls back to ``LlmConfig.max_tokens`` (220, the summarizer's
+#: gloss budget) and 147 of 275 prod extract replies (30 days to
+#: 2026-10-02) stopped at exactly 220 tokens, mid-JSON. PROVISIONAL value,
+#: pending the measured completion-length distribution of those replies
+#: (reviews/graph-memory-consumers.md §2).
+_EXTRACT_MAX_TOKENS = 1024
+
+
+class ExtractionTruncated(ValueError):
+    """The extract reply was cut off before its top-level object closed.
+
+    Detected without a finish reason (the routed result carries none): the
+    reply text names ``"claims"`` but the parsed payload has no top-level
+    ``claims`` key — the router's last-complete-object parse handed back an
+    inner claim item, which the single-object branch would otherwise read
+    as a one-atom extraction, silently dropping every other atom, the
+    composite and the not_claims."""
+
+
+def _top_level_payload(res: Any) -> dict[str, Any] | None:
+    """The reply's top-level JSON object, refusing a truncated one.
+
+    Raises :class:`ExtractionTruncated` when the text carries ``"claims"``
+    but neither ``res.data`` nor a whole-text parse yields an object with a
+    top-level ``claims`` key. ``None`` when nothing parses at all."""
+    data = res.data if isinstance(res.data, dict) else None
+    if data is None or "claims" not in data:
+        whole = _parse_json_object(res.text)
+        if isinstance(whole, dict) and ("claims" in whole or data is None):
+            data = whole
+    if '"claims"' in (res.text or "") and (
+        not isinstance(data, dict) or "claims" not in data
+    ):
+        raise ExtractionTruncated(
+            "extract reply cut off before its top-level object closed"
+        )
+    return data
+
+
 _EXTRACT_SYS = (
     "You are a precise scientific claim extractor. Reply with ONLY the "
     "requested JSON object, no prose."
@@ -677,6 +717,7 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
                 prompt=prompt,
                 source="taproot:extract-medium",
                 timeout_s=_MEDIUM_EXTRACT_TIMEOUT_S,
+                max_tokens=_EXTRACT_MAX_TOKENS,
             )
         )
         if res.error:
@@ -693,9 +734,10 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
                 continue
             raise ExtractionUnavailable(res.error)
 
-        data = res.data if isinstance(res.data, dict) else None
-        if data is None:
-            data = _parse_json_object(res.text)
+        try:
+            data = _top_level_payload(res)
+        except ExtractionTruncated as exc:
+            raise ExtractionUnavailable(str(exc)) from exc
         if not isinstance(data, dict):
             if attempt == 0:
                 log.info(
@@ -738,6 +780,7 @@ def _extract_claim_impl(
             ],
             prompt=prompt,
             source="taproot:extract" if tier is Tier.SMALL else "taproot:extract-big",
+            max_tokens=_EXTRACT_MAX_TOKENS,
         )
     )
     if res.error:
@@ -745,7 +788,16 @@ def _extract_claim_impl(
         if strict:
             raise ExtractionUnavailable(res.error)
         return _EMPTY_EXTRACTION
-    data = res.data or _parse_json_object(res.text)
+    try:
+        data = _top_level_payload(res)
+    except ExtractionTruncated as exc:
+        # A cut-off reply is an infra outcome, not a verdict: strict callers
+        # retry (backfill leaves the span un-checkpointed); the lenient
+        # path degrades to empty, never to a single surviving atom.
+        log.warning("taproot: extract_claim reply truncated: %s", exc)
+        if strict:
+            raise ExtractionUnavailable(str(exc)) from exc
+        return _EMPTY_EXTRACTION
     if not isinstance(data, dict):
         return _EMPTY_EXTRACTION
     return _extraction_from_payload(data, excerpt)
