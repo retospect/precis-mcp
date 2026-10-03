@@ -82,15 +82,17 @@ spin-paired energy (§22i), so the table stands. Catpath
    **backlog/pourbaix-quest-gate.md** — Reto asked for it next after the
    network (2026-10-02); independent of 1–3. A candidate whose bulk
    dissolves across the operating window cannot be the catalyst, so it is
-   ruled out before selectivity is spent on it (qu202468). The job (A)
-   is on main (e167f4859, landed by the orchestrator because it changes
-   deploy roles); its note clamp and the pymatgen#4709 citation followed
-   in round 3. The first live job
-   dogfoods on pollux once Reto confirms `PRECIS_MP_API_KEY` is in
-   /secrets (release-2-2, 2026-10-03; the review session relays it).
-   The gate (B) waits on A
-   landing, the MP key in the vault (Reto), and qu202468's operating point
-   (set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10).
+   ruled out before selectivity is spent on it (qu202468 (Convert NO to
+   fertilizer nitrogen with non-palladium solid-state catalysts)). The
+   job (A) is on main (e167f4859, landed by the orchestrator because it
+   changes deploy roles); its note clamp and the pymatgen#4709 citation
+   followed in round 3.
+   - **Waits on Reto: key.** Reto adds `PRECIS_MP_API_KEY` to the secret
+     store himself (release-2-2); do not add or ask for it. After he says
+     it is set, run one prod job through the Materials Project path and
+     record it here as "MP key live: <call> → <result>".
+   - The gate (B) waits on the same key. qu202468's operating point is
+     set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10.
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
    named; blocked by 1 and 2 because a window over an incomplete network
    or the wrong substrate is the wrong window. Post-processing only, so cheap once 1 lands. Also
@@ -115,8 +117,9 @@ spin-paired energy (§22i), so the table stands. Catpath
    - Ranked last because it needs Parts A and B landed, the corrected
      references (catalysis-selectivity-19), and Do-next 5's window
      objective, which it generalises.
-   - The proof-of-concept paper (Fe-doped Pd, ~Nov 2026) belongs to
-     qu459585, not this thread.
+   - The proof-of-concept paper (Fe-doped Pd) belongs to
+     qu459585 (Open science that ships: papers written from the
+     graph), not this thread.
 4. **backlog/encapsulated-metal-candidate-space.md** (Reto, 2026-10-02:
    **file only**) supplies the optimizer's candidate space: carbon-encapsulated
    metal families F1–F4, a carbon/cap Pourbaix layer, and
