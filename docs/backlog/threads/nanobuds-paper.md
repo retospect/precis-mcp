@@ -161,8 +161,8 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - Item 31 revised 17:42Z. Recommended: A, the stick-neck hero now, captioned "idealised stick model; the pillar–ball junction is unrelaxed", swapped for the bonded (12,0) hero when hexfold's planner fix passes. B: wait. C: A plus an isolated-pillar close-up.
    - The figure is not final until that is fixed and Reto picks a variant.
    - A prod se record of this spec is not this scene until S4b.
-   **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
-   (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
+   **Items 15/16 (answered 21:34Z):** 15 done; item 20 done 19:39Z: pa1181 merged with 42560, journal Nature, all cite keys on pa1181, ref 893 retired
+   (Reto ran the stale nanobud-fidelity/merge_1181.py, so the cite-key move was done by hand). HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.
    Phosphorene: fi191297 reworded to Carbon 2021 body values, preprint
    (ref 50777) edges removed. 16 is NOT a ruling: remove nothing; a
@@ -272,22 +272,12 @@ td173019.
    placeholder-figure export (jo461157, queued 2026-10-02 — see Horizon 2).
    Then td461162: the Phase 5 adversarial review from the precis-web
    review block.
-3. **td450082** — pa1181/42560 duplicate reference merge. Reto approved
-   2026-10-01; the auto-mode classifier still blocks the session's direct
-   prod-DB script (re-tried 2026-10-01 after Reto's "prod is authorized"),
-   so Reto runs it. **Restaged 2026-10-03 14:50Z** at
-   `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge-1181/merge_1181.py`. Run it from this worktree:
-   - `uv run python <path>` rehearses and rolls back; adding `--apply` commits.
-   - It runs `merge_duplicate`, moves 42560's cite_key aliases to pa1181 and adds a `yao99…` alias.
-   - The docstring gives the follow-up command that sets the journal to Nature.
-   - Both refs were still live at 14:45Z (42560: 6 inlinks, 8 held bib entries).
-   - It gates the export.
-4. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
+3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
    hexfold. Left: a rigidity screen and a Cases A–D test of hexfold's
    `annot.sublattice`, both via the hexa session.
-5. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
+4. **backlog/nanobud-claim-remediation.md** — `status: in-progress/high`;
    brings the 139 claim hubs behind the nanobud draft above board — direct
    input to this thread's own claim-hub-signing end state. 2026-10-02 pass
    done (fi189536 grounded, dc2445930 cut); open = the non-empirical
@@ -298,7 +288,7 @@ td173019.
 1. **nanopub approve/sign pass over dr173020's hubs** — waits on Reto's
    findings check (Do next 2; rewording after signing re-opens hubs); the 173020 batch in
    td345830–td345836.
-2. **export + submission** — waits on 1 and td450082. The
+2. **export + submission** — waits on 1 (td450082 done 2026-10-03 19:39Z). The
    `placeholder_figures` waiver is deployed (gr454753, on prod since
    2026-10-02), so a reading export no longer needs the ten figures;
    jo461157 is that export (params `placeholder_figures: true`). Submission
