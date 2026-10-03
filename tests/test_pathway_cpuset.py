@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("autocatpath")
+
 from precis_pathway import runner, seed_job
 
 
