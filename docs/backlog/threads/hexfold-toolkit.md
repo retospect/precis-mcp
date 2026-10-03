@@ -70,8 +70,10 @@ waited on happened 09-29 — note at the bottom)
          footprint was a 5577 dislocation dipole (pentagons adjacent, net
          b = a), removed. Measured on sw30: circuit 0, seed far field
          1.420–1.422 Å, plateau worst 0.028 Å. Review-queue item
-         hexfold-toolkit-1 asks Reto whether it rides round 2. Open, not
-         blocking: a test that a cut-free sheet gives `_cut_jump` J = 0.
+         hexfold-toolkit-1 asks Reto whether it rides round 2. The
+         stacked-seed ERROR test's only fixture is now a flat-seeded
+         `57@(4,4,A):1`; if the 57 seed is ever de-stacked too, find it
+         another.
        - **Later:** compare the planar relaxed 5-7 core (fix seed, 0.042
          Å worst bond) with the buckled one (flat seed, 0.029) by MACE
          energy once the science lane is back. If buckled wins, the seed

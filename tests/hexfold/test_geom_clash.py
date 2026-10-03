@@ -551,6 +551,34 @@ def test_a_rotation_of_a_bond_an_earlier_glyph_dropped_names_both() -> None:
     assert "glyph sw@(15,15,A):0 already consumed" in err.message
 
 
+def test_cut_jump_invents_no_jump_on_a_cut_free_sheet() -> None:
+    # the per-bond sign is a free choice; on bonds that are all lattice
+    # steps, no J != 0 closes all three directions, so the fit must say 0
+    import hexfold.build as hb
+
+    net = build("hexfold 0.2\norigin s\ns: sheet(16,16)\n", strict=False)
+    pos = np.asarray(net.seed3, dtype=float)
+    b = np.array([(i, j) for i, j, _ in net.bonds])
+    jump, sign = hb._cut_jump(pos[b[:, 1], :2] - pos[b[:, 0], :2], _ideal_steps())
+    assert np.linalg.norm(jump) < 1e-9
+    assert np.all(sign != 0)
+
+
+@pytest.mark.parametrize("defect", ["", "+ heptagon@(8,8,A):1", "+ pentagon@(8,8,A):0"])
+def test_charged_and_pristine_sheets_never_reach_the_cut_fit(
+    defect: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # fed every bond of a saddle or cone seed, _cut_jump finds |J| ~ 0.3 A
+    # (projected curved bonds are not lattice steps); only K = 0 clusters
+    # may call it
+    import hexfold.build as hb
+
+    calls: list = []
+    monkeypatch.setattr(hb, "_volterra", lambda *a: calls.append(a))
+    build(f"hexfold 0.2\norigin s\ns: sheet(16,16) {defect}\n", strict=False)
+    assert not calls
+
+
 def test_laplace_solver_cg_agrees_with_dense(monkeypatch: pytest.MonkeyPatch) -> None:
     import hexfold.build as hb
 
