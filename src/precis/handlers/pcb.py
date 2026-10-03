@@ -246,6 +246,13 @@ def _finding_object_identity(o: dict[str, Any], prefix: str = "") -> str:
         # either end.
         side = [f"part:{a}", f"hole:{b}" if str(b).startswith("hole") else f"part:{b}"]
         return "+".join(sorted(side))
+    role = o.get(prefix + "role")
+    if role is not None:
+        # outline_containment of a silk draw: role + refdes + side.
+        return f"silk:{role}:{o.get(prefix + 'refdes')}:{o.get(prefix + 'side')}"
+    if refdes:
+        # outline_containment of a whole part (courtyard): no pin.
+        return f"part:{refdes}"
     return (
         f"{o.get(prefix + 'ctype')}:{o.get(prefix + 'net')}:{o.get(prefix + 'layer')}"
     )
@@ -397,6 +404,9 @@ class JudgeReport:
     #: New warn-tier findings on pads/authored copper only: a shortfall
     #: against a class or house requirement, listed but never refused.
     margins: list[str] = dataclasses.field(default_factory=list)
+    #: Set when the judge itself crashed and the change was stored unjudged
+    #: (op='footprint' only: the real footprint is always stored).
+    unjudged: str = ""
 
     def lines(self) -> str:
         """Response lines for the report, each ending in a newline."""
@@ -1718,7 +1728,14 @@ class PcbHandler(Handler):
             for lcsc, data in footprints.items():
                 self.store.part_footprint_put(lcsc, data)
 
-        _, judged = self._judged_mutation(ref.id, apply, refuse=False)
+        try:
+            _, judged = self._judged_mutation(ref.id, apply, refuse=False)
+        except Exception as exc:
+            # The ruling is that the real footprint is always stored: a judge
+            # crash rolled the transaction back, so write it unjudged.
+            for lcsc, data in footprints.items():
+                self.store.part_footprint_put(lcsc, data)
+            return JudgeReport(unjudged=f"{type(exc).__name__}: {exc}")
         return judged
 
     def _footprint_judge_lines(
@@ -1738,6 +1755,11 @@ class PcbHandler(Handler):
         )
         if len(shown) > 8:
             out.append(f"+{len(shown) - 8} more\n")
+        if judged.unjudged:
+            out.append(
+                "could not judge this design after the footprint change: "
+                f"{judged.unjudged} — check view='drc'\n"
+            )
         for lcsc in lcscs:
             others = self.store.pcb_designs_using_part(lcsc, exclude_ref_id=ref.id)
             if others:

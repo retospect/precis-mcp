@@ -2032,6 +2032,19 @@ def check_outline_containment(
         over = geom.difference(board)
         wholly = not board.intersects(geom)
         gap = board.distance(geom) if wholly else 0.0
+        if not wholly:
+            # A partial overhang's depth: the farthest any vertex of the
+            # shape lies outside the outline (floored just above zero so a
+            # finding never reads as "no shortfall").
+            gap = max(
+                (
+                    board.distance(Point(c))
+                    for g in getattr(geom, "geoms", [geom])
+                    for c in getattr(g, "exterior", g).coords
+                ),
+                default=0.0,
+            )
+            gap = max(gap, 1e-6)
         detail = (
             f"{rule_where} lies {'entirely' if wholly else 'partly'} outside "
             "the board outline"
@@ -2048,7 +2061,7 @@ def check_outline_containment(
                 where=rule_where,
                 detail=detail + "; a fab images only what is inside the profile",
                 objects=(obj,),
-                margin_mm=-gap if wholly else None,
+                margin_mm=-gap,
             )
         )
 
@@ -2060,7 +2073,7 @@ def check_outline_containment(
         outside(
             geom,
             f"{ctype}[{net}] on {layer}",
-            {"net": net, "layer": layer, "ctype": ctype},
+            {"net": net, "layer": layer, "ctype": ctype, **_derived_tag(item)},
         )
 
     for pad in model.get("pads") or []:
@@ -2076,7 +2089,16 @@ def check_outline_containment(
         if geom is None or geom.is_empty:
             continue
         net, layer = pad.get("net"), pad.get("layer")
-        outside(geom, f"pad[{net}] on {layer}", {"net": net, "layer": layer})
+        outside(
+            geom,
+            f"pad[{net}] on {layer}",
+            {
+                "net": net,
+                "layer": layer,
+                "refdes": pad.get("refdes"),
+                "pin": pad.get("pin"),
+            },
+        )
 
     for refdes, poly in courtyards or []:
         if len(poly) < 3:
