@@ -109,13 +109,28 @@ up:
    drum has 1304). Instanced atom and bond meshes SHIPPED in round 2: one
    InstancedMesh per block per kind; on the 6123-atom drum the client build
    went 0.78 s → 0.24 s, first visit 1.55 s → ~0.9 s, revisit 1.30 s →
-   ~0.7 s (local). Left:
-   - start the `scene3d`/`atomic3d` fetches from an inline script before
-     the module bundle parses: ~0.5 s of page and module load comes before
-     the first request today (verdict 1c: note it, not now).
-   Reto's own timing reading is skipped (se-3d-viewer-4, option 2: no
-   access to that browser); an exact reading later comes from the page's
-   timestamp mark.
+   ~0.7 s (local). Reto's prod reading (Safari, macOS, after the round-2
+   deploy; se-3d-viewer-4): atom payload done at 3.13 s =
+   - ~0.9 s before the request starts (html 0.29 s, then module load);
+   - 1.09 s server: a cold build. Local cold is 0.96 s, warm 0.03 s; the
+     cache is per process and empty after a deploy;
+   - 1.14 s download of 1.09 MB gzip (3.86 MB raw). Locally gzip is served
+     to Safari's Accept-Encoding; prod behind its proxy is unchecked.
+   Left, in payoff order (proposed in review item se-3d-viewer-6):
+   - **Fetch `target` only when its checkbox is ticked.** The target
+     surface is 426 KB of the 1090 KB gzip and off by default.
+   - **Round the floats to 5 significant digits.** That takes the whole
+     payload from 1090 KB to 588 KB gzip.
+   - Start the `scene3d`/`atomic3d` fetches from an inline script before
+     the module bundle parses (verdict 1c: note it, not now). Reto's
+     reading puts this at ~0.6 s.
+   - **Two three.js copies on the page.** Safari warns "Multiple instances
+     of Three.js being imported": the overlay's r160
+     `/static/three/three.module.min.js` (166 KB gzip extra) sits beside
+     three-cad-viewer's bundled r184. Shared-state hazard is class
+     identity, handled by `_forBundledRenderer` and caught by the nightly
+     `strain` check. One copy needs three-cad-viewer re-vendored with three
+     external, so both use one r184 module.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
