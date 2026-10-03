@@ -50,14 +50,17 @@ capacity and isolation gaps.
 ## Do next
 **Waiting on the orchestrator or Reto (2026-10-03).** Do not rebuild these;
 check their state first.
-- **Branch `mcp-http-proxy` @ bbe473c46** (organizer-mcp-1): an always-up
-  Caddy proxy plus blue-green backends, which supersedes Do-next 0's
-  refused windows. The orchestrator gates it. Reto does the cutover per
-  machine; the steps are in `deploy/mcp-http/README.md` on the branch.
-  Tell the orchestrator the minute before.
+- **Always-up proxy, on main as 9c668358a** (organizer-mcp-1): a Caddy
+  proxy plus blue-green backends, which supersedes Do-next 0's refused
+  windows. The cutover is Reto's, per machine, in review item
+  organizer-mcp-2 (steps in `deploy/mcp-http/README.md`); he runs
+  `--migrate` in his own window, and the orchestrator does the
+  `/mcp reconnect` sweep afterwards.
 - **Branch `pgbouncer-reset-readonly` @ 5fcb38b71** (organizer-pgbouncer-1):
-  `track_extra_parameters`. Held for Reto. DISCARD ALL waits on gr463966
-  and gr463967.
+  Stage A, `track_extra_parameters`. Held for Reto. Stage B, DISCARD ALL,
+  waits on gr463966 and gr463967. The two-stage proposal is in
+  `reviews/session-mcp-shared-server.md` ("pgbouncer: whole-class
+  re-proposal").
 - **gr463517** (structural review ran without precis): the fail-closed
   MCP gate is qlanded as eebbb9a9f, not deployed. After the deploy, close
   the gripe on a clean structural pass. Step 3, an image rebuild with a
@@ -131,15 +134,11 @@ check their state first.
    from the next recreate. The orchestrator's sweep counts the drops
    against a before-state of 5 DOWN.
    **Still to do:**
-   - Reto's dev-Mac session installs the same script; keep the scratch
-     copy until then.
-   - The ensure script is under no version control:
-     `~/work/infrastructure/precis-mcp/` is not a git repo, and its only
-     history is the scratch copies. Its live/test guard therefore has no
-     CI test (gr462596 diagnosis). The candidate home is
-     `scripts/precis-mcp-http-ensure.sh` here, with the SessionStart hook
-     pointing at the checkout's copy, but that entangles with Horizon 1
-     (mcps role vs hand-rolled wrapper). Decide with that item.
+   - The dev Mac and melchior take the proxy version of the script at the
+     organizer-mcp-2 cutover. Its home is now
+     `deploy/mcp-http/precis-mcp-http-ensure.sh` (9c668358a). The live
+     copy under `~/work/infrastructure/precis-mcp/` is still copied by
+     hand, and Horizon 1 (mcps role vs wrapper) decides whether that stays.
    **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the
    next. Fixed in 7f006bf09 (round 2); it loads at the first recreate
