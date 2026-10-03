@@ -49,8 +49,22 @@ waited on happened 09-29 — note at the bottom)
        `plan_foot` are built (see the backlog item's acceptance). The
        pillar (6,0) R = 3 and the pill (24,0) R = 5/8 are inside the
        bars; (18,0) is an open row;
-     - **S4, the hero scene: next.** Send nanobuds-paper a spec to render
-       with figs/render_hero.py;
+     - **S4, the hero scene: next.** Wire `plan_foot` (tether plus k by
+       measurement) into the `hexfold` generator path, then send
+       nanobuds-paper a spec to render with figs/render_hero.py.
+       - Round-2 prod dogfood (2026-10-03 13:53Z, design
+         `hexfold-dogfood-r2`, hexfold 0.3.0) shows why this comes first.
+       - `sw` and gr462144's sheet_sw build ok on prod:
+         - rings {5:2, 7:2};
+         - atom count equal to pristine;
+         - sheet_sw bond rms 0.006 Å, no seed overlap and no clash.
+         - gr462144 is closed.
+       - The pillar 3+3 foot through the deployed generator (untethered
+         stick) is NOT ok:
+         - `geom.clash` ERRORs at 0.54–0.97 Å;
+         - angles down to 59°.
+         - This is the same crumple as the S3 tether-off rows, and the
+           clash check catches it;
      - next rung after S4: per-annulus Gauss–Bonnet rows (2+2+2 / 1×6:
        irregular hole + tube-wall surgery, gr459928), the route to
        R ≳ 12 Å.
@@ -62,13 +76,14 @@ waited on happened 09-29 — note at the bottom)
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
    verdict (2026-10-02 14:55Z, `reviews/hexfold-toolkit.review.md`) sets
    the order:
-   - **After round 2 deploys** (C3 disclination seed 7a746e5cc; C4
-     flat-host bud face, `build._flat_bud_sides`, with the outer rim by
-     largest mean radius and `place.face_conflict` for a washer whose rims
-     disagree):
-     - nanobuds-paper regenerates prod `hexa-nanobud-pillar` (structure
-       459564, stored as a peapod) and reports the before/after z table;
-     - close gr462144 (`sheet_sw` stacked seed).
+   - **Round 2 deployed 2026-10-03 13:49Z** (63301c5c). It carries the C3
+     disclination seed 7a746e5cc and the C4 flat-host bud face
+     (`build._flat_bud_sides`, outer rim by largest mean radius,
+     `place.face_conflict` for a washer whose rims disagree).
+     - Open: nanobuds-paper regenerates prod `hexa-nanobud-pillar`
+       (structure 459564, stored as a peapod) and reports the
+       before/after z table. I confirm it when it arrives.
+     - gr462144 (`sheet_sw` stacked seed) is verified on prod and closed.
    - **Seed tier: built 2026-10-02.** `geom.seed_overlap` is an ERROR
      for seed pairs under 0.7 Å, and `geom.summary` gains
      `seed_clash_count`/`seed_clash_min`. Exactly the four seed-wrong
