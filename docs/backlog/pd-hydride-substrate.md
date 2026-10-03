@@ -176,6 +176,10 @@ the duration, and record the pause in the quest logbook.
   The spin check at the Ta end (design note §22i) found no moment (Ta
   < 10⁻⁸ μ_B from a 1 μ_B seed) and the spin-paired energy to 10⁻⁵ eV,
   so the spin-paired table stands.
-- **Open (`catalysis-selectivity-17`):** the reference scale of pa5303 and
-  pa166889 sits behind publisher SI paywalls (403). It is Reto's check.
-  Until then no operating point is written.
+- **Open (`catalysis-selectivity-17`), Reto 2026-10-03:** the reference
+  scale of pa5303 and pa166889 sits in their SIs, behind publisher
+  paywalls (403). Reto will not check them by hand. SI auto-ingestion
+  (one linked ref per SI file; the organizer is assigning an owner) is
+  1–2 builds out. Once both SIs are ingested, read the scale from them
+  and resolve the item. Until then qu164903 (NO→NH₃ selectivity) has no
+  operating point, and stage 0 proceeds without one.
