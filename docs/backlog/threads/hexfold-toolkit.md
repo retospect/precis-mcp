@@ -30,6 +30,15 @@ waited on happened 09-29 — note at the bottom)
 
 ## Resume
 
+- Round 3 dogfood (prod 929107f32, 2026-10-03 20:38Z): design
+  `hexfold-dogfood-r3`, pill12 through `hexfold_scene` via
+  scripts/prod-precis → **pass**, 55 s. The `view='block'` readback shows
+  `relax=tethered ks={t:4, q:6, p:6}`, the `scene.top.joint` WARN on t,
+  and the stored `scene` and `plan`. The report is ok, with no
+  `scene.bar`. 2898 atoms and a 1.05 Å minimum pair, the same as the
+  local S4b run. The only clashes are WARNs at the t ball neck
+  (gr464391). Reto's ball-top nanobud question is review-queue
+  hexfold-toolkit-3.
 - Round 2 dogfood (prod 63301c5c): design `hexfold-dogfood-r2` through
   scripts/prod-precis → **pass**. `sw` is a true Stone–Wales rotation on
   a stored build (rings {5:2, 7:2}, atom count equal to pristine, bond
