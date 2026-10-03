@@ -666,16 +666,11 @@ function _download(blob, filename) {
 // — a private field, reached the SAME documented way this file's own
 // scale-bar overlay already reaches ``viewer._rendered.camera`` above
 // (guarded end-to-end, degrades to "no overlay" rather than breaking the
-// primary viewer). The overlay's own three.js objects are built from a
-// SEPARATE vendored copy (``/static/three/three.module.min.js`` — the
-// ``cad`` viewer's own, a different revision than the one bundled inside
-// three-cad-viewer): mixing two three.js module instances is not
-// something either project promises to support, but a plain
-// Mesh/LineSegments/BufferGeometry object only needs the long-stable,
-// duck-typed ``isMesh``/``isObject3D`` contract ``WebGLRenderer``
-// traverses by, not class identity — this rendered correctly end to end
-// in manual verification. A future bump of either vendored copy that
-// changes that contract would need this reach revisited.
+// primary viewer). The overlay's three.js objects come from the SAME
+// three.js the viewer renders with: the vendored viewer is built with
+// ``three`` external and the page's import map resolves it to
+// ``/static/three-r184/`` (static/three-cad-viewer/README.md). Bumping
+// one without the other brings back two copies on the page.
 const _ATOMIC_CPK = {
   H: "#ffffff", He: "#d9ffff", B: "#ffb5b5", C: "#909090",
   N: "#3050f8", O: "#ff0d0d", F: "#90e050", Si: "#f0c8a0",
@@ -965,7 +960,7 @@ const _BUILD_SLICE_ATOMS = 1000;
 
 async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, progress = null, isStale = () => false) {
   const [THREE, data] = await Promise.all([
-    import("/static/three/three.module.min.js"),
+    import("three"),
     _fetchAtomicPayload(atomicUrl, progress),
   ]);
   _bt3dMark("bt3d-atomic-fetched");
@@ -1044,19 +1039,6 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
     if (mesh.computeBoundingBox) mesh.computeBoundingBox();
-  }
-
-  //: These InstancedMeshes come from the overlay's r160 three.js but are
-  //: drawn by three-cad-viewer's bundled r184 renderer (module comment
-  //: above `_ATOMIC_CPK`). That renderer reads fields r160 never sets and
-  //: treats `undefined` as present: `morphTexture !== null` turns on
-  //: USE_INSTANCING_MORPH and the shader fails to compile, so nothing
-  //: draws. Set them to the null the newer class would. Culling is off
-  //: because the two revisions disagree on where instance bounds live.
-  function _forBundledRenderer(mesh) {
-    if (mesh.morphTexture === undefined) mesh.morphTexture = null;
-    if (mesh.previousInstanceMatrix === undefined) mesh.previousInstanceMatrix = null;
-    mesh.frustumCulled = false;
   }
 
   const group = new THREE.Group();
@@ -1174,7 +1156,6 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true }),
         n
       );
-      _forBundledRenderer(atomMesh);
       atomMesh.userData.blockIndex = blocks.length;
       const cpk = new Array(n);
       for (let i = 0; i < n; i++) {
@@ -1190,7 +1171,6 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true }),
         bondList.length
       );
-      _forBundledRenderer(bondMesh);
       const greyColour = new THREE.Color(_BOND_GREY);
       const bondEntries = [];
       const bondSlice = Math.max(1, Math.ceil((_BUILD_SLICE_ATOMS * bondList.length) / Math.max(1, n)));
