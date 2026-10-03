@@ -28,6 +28,7 @@ import math
 import random
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -1126,8 +1127,8 @@ def _hot_run(seed: int):
             seen.append((v, _ir_state(ir)))
         return v
 
-    engine._total_at_report = spy  # type: ignore[method-assign]
-    engine.anneal(random.Random(seed))
+    with mock.patch.object(engine, "_total_at_report", spy):
+        engine.anneal(random.Random(seed))
     return ir, config, engine, seen
 
 
