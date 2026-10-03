@@ -83,6 +83,9 @@ and 8 per release fix, so 40–48 jobs. Before the stopgap it was 120.
 
 ## Slices (builds)
 
-(a) `round cut` and the `release/**` CI trigger. (b) `ship --release` with
+(a) `round cut` and the `release/**` CI trigger: shipped 2026-10-03
+(06247b684). The migration scan flags only duplicates beyond what
+`origin/prod` already carries (main has historical 0037/0039 pairs), and the
+plan-skip on an already-verdicted cut sha is deferred. (b) `ship --release` with
 the forward merge. (c) `round gate`/`deploy` on the release head, the tag,
 the merge-back, and docs (`/round`, `/fleet`, CLAUDE.md ship section).

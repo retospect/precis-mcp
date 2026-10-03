@@ -38,7 +38,10 @@ green or the reverse), then tuning and residue.
 2. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
    Each round cuts `release/r<N>`, fixes land on it and merge forward into
    main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
-   is in `reviews/ship-gate-ci.md` and awaits the verdict; 3 builds.
+   and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
+   (`round cut`, `release/**` CI) shipped 06247b684. Next is (b) `ship
+   --release`, which needs its own note first and Reto's forward-merge
+   answer (review-queue ship-gate-ci-1); then (c).
 3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
