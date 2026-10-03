@@ -63,16 +63,28 @@ check their state first.
     `pgbouncer-reset-readonly` @ 5fcb38b71): the orchestrator lands it and
     restarts pgbouncer in round 3's restart window. This thread does not
     `round in` it.
+  - **Order inside round 3's window:** restart pgbouncer only after every
+    worker host runs the gr463966 fix. A pgbouncer restart closes every
+    server connection, so it clears the leaked lock. Old code running after
+    the restart leaks it again.
   - **Stage B** (`DISCARD ALL` + `server_reset_query_always = 1`): this
-    thread owns the switch, in the restart window after gr463966 is on
-    main. claims-and-evidence owns all three gr463966 sites
-    (`ingest/claim.py`, `workers/chunk_keywords.py`,
-    `workers/anki_sync.py`) and tells this thread when the fix lands.
+    thread owns the switch. gr463966 is fixed on main in 514091d4 (round
+    3, claims-and-evidence): all three sites (`ingest/claim.py`,
+    `workers/chunk_keywords.py`, `workers/anki_sync.py`) take
+    `pg_try_advisory_xact_lock` on a dedicated connection via
+    `store/advisory.py::try_xact_advisory_lock`. Stage B starts in the
+    first restart window after that deploys and the "before" day is in.
+  - **Cost the measurement must see:** each running lock holder pins one
+    server connection for its pass. That is at most 1 for chunk_keywords,
+    1 per in-flight PDF claim and 1 per anki user sync, against a
+    `default_pool_size` of 25. Pinned connections show as higher
+    `cl_waiting` at peak, so the "before" day must start after the round-3
+    deploy, or Stage B gets blamed for this cost.
   - **The leaked lock is chunk_keywords' `_LOCK_KEY`** (pg_locks classid
     3815272043, objid 1600878336). At 14:44Z it was held on pooled backend
     15730, born 14:14Z. Backend 11267, named at 12:38Z, has since been
-    recycled, so the leak recurs.
-  - **gr463967 closed, not a blocker:** asa_bot's LISTEN already goes over
+    recycled, so the leak recurs until the fix deploys.
+  - **gr463967 closed, not a blocker for Stage B:** asa_bot's LISTEN already goes over
     the direct 5433 tunnel (`PRECIS_NOTIFY_DATABASE_URL` in
     `deploy/roles/asa_bot/templates/com.asa.bot.plist.j2`). The LISTEN
     backend had been idle 57 min at 14:44Z; pgbouncer closes a pooled
