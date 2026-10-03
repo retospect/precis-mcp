@@ -9,6 +9,7 @@ stub function) — no live model, no DB. The live-model eval harness itself
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -327,6 +328,43 @@ def test_extract_claim_degrades_a_truncated_reply_to_empty_not_one_atom(
         canon, "route", lambda req: _result(data=dict(_LAST_ITEM), text=_TRUNCATED_TEXT)
     )
     assert extract_claim("some passage").is_empty
+
+
+@pytest.mark.parametrize("data", [None, {"text": "b"}])
+def test_extract_claim_strict_refuses_a_reply_cut_inside_assertions(
+    monkeypatch: pytest.MonkeyPatch, data: dict[str, Any] | None
+) -> None:
+    """``assertions`` precedes ``claims`` in the schema, so a cut there never
+    reaches the text ``"claims"``; the router hands back the last complete
+    assertion item or nothing. The opened-never-closed arm catches both."""
+    text = '```json\n{"assertions": [{"text": "a"}, {"text": "b"}, {"text": "c'
+    monkeypatch.setattr(canon, "route", lambda req: _result(data=data, text=text))
+    with pytest.raises(ExtractionUnavailable, match="cut off"):
+        extract_claim_strict("some passage")
+
+
+def test_extract_claim_truncation_warning_names_its_origin(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        canon, "route", lambda req: _result(data=dict(_LAST_ITEM), text=_TRUNCATED_TEXT)
+    )
+    with caplog.at_level("WARNING", logger=canon.log.name):
+        assert extract_claim("some passage", origin="dc4242").is_empty
+    assert "origin=dc4242" in caplog.text
+
+
+def test_extract_claim_trailing_prose_after_a_whole_object_is_not_a_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole-text parse fails on prose holding a stray brace, but the
+    router found the complete top-level object: not truncated."""
+    payload = {
+        "claims": [{"claim": "DFT shows the atom holds.", "material": "graphene"}]
+    }
+    text = json.dumps(payload) + "\nNote: {see above}"
+    monkeypatch.setattr(canon, "route", lambda req: _result(data=payload, text=text))
+    assert len(extract_claim_strict("some passage").atoms) == 1
 
 
 def test_extract_claim_reply_cut_after_claims_closed_is_still_refused(

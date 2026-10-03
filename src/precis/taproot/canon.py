@@ -31,6 +31,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -340,28 +341,47 @@ _EXTRACT_MAX_TOKENS = 1024
 class ExtractionTruncated(ValueError):
     """The extract reply was cut off before its top-level object closed.
 
-    Detected without a finish reason (the routed result carries none): the
-    reply text names ``"claims"`` but the parsed payload has no top-level
-    ``claims`` key — the router's last-complete-object parse handed back an
-    inner claim item, which the single-object branch would otherwise read
+    Detected without a finish reason (the routed result carries none), by
+    either of two arms:
+
+    * the reply opens a top-level object (stripped text, after any code
+      fence, begins with ``{``) and the whole text does not parse to one —
+      the object was opened and never closed. This catches a cut inside
+      ``assertions``, where the router hands back the last complete
+      assertion item or nothing (23 prod replies, 2026-10-02);
+    * the reply names ``"claims"`` but the parsed payload has no top-level
+      ``claims`` key — the router's last-complete-object parse handed back
+      an inner claim item.
+
+    Either way the single-object branch would otherwise read the fragment
     as a one-atom extraction, silently dropping every other atom, the
     composite and the not_claims."""
+
+
+_CODE_FENCE_RE = re.compile(r"^```[A-Za-z]*\s*")
 
 
 def _top_level_payload(res: Any) -> dict[str, Any] | None:
     """The reply's top-level JSON object, refusing a truncated one.
 
-    Raises :class:`ExtractionTruncated` when the text carries ``"claims"``
-    but neither ``res.data`` nor a whole-text parse yields an object with a
-    top-level ``claims`` key. ``None`` when nothing parses at all."""
+    Raises :class:`ExtractionTruncated` on either arm documented there.
+    ``None`` when nothing parses and the reply never opened an object."""
+    text = res.text or ""
+    whole = _parse_json_object(text)
     data = res.data if isinstance(res.data, dict) else None
-    if data is None or "claims" not in data:
-        whole = _parse_json_object(res.text)
+    router_has_top = isinstance(data, dict) and "claims" in data
+    if (
+        whole is None
+        and not router_has_top
+        and _CODE_FENCE_RE.sub("", text.strip()).startswith("{")
+    ):
+        raise ExtractionTruncated(
+            "extract reply cut off: top-level object opened, never closed"
+        )
+    if not router_has_top:
         if isinstance(whole, dict) and ("claims" in whole or data is None):
             data = whole
-    if '"claims"' in (res.text or "") and (
-        not isinstance(data, dict) or "claims" not in data
-    ):
+    if '"claims"' in text and (not isinstance(data, dict) or "claims" not in data):
         raise ExtractionTruncated(
             "extract reply cut off before its top-level object closed"
         )
@@ -618,7 +638,7 @@ class ExtractionUnavailable(RuntimeError):
     fail-safe as a verdict."""
 
 
-def extract_claim(chunk_text: str) -> ClaimExtraction:
+def extract_claim(chunk_text: str, *, origin: str | None = None) -> ClaimExtraction:
     """Extract the atomic claims (+ optional composite + rejected conjuncts)
     from ``chunk_text`` — a :class:`ClaimExtraction`.
 
@@ -632,8 +652,12 @@ def extract_claim(chunk_text: str) -> ClaimExtraction:
     tolerates the legacy ``{"claim": ..., "material": ...}`` single-object
     shape a SMALL-tier model may regress to (degrades to one atom).
     :func:`_coerce_extraction` enforces the invariants either way.
+
+    ``origin`` names the source span (``"dc123"``, ``"ref 456"``) in the
+    warning a cut-off reply logs, so the re-extract set can be rebuilt from
+    logs alone.
     """
-    return _extract_claim_impl(chunk_text, strict=False)
+    return _extract_claim_impl(chunk_text, strict=False, origin=origin)
 
 
 def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
@@ -644,7 +668,8 @@ def extract_claim_strict(chunk_text: str) -> ClaimExtraction:
     melchior dry-run's all-``no-claim`` garbage report when every call
     ECONNREFUSED'd. Unparseable-but-successful output still degrades to
     the empty extraction — the model *did* respond, so that is a genuine
-    no-claim.
+    no-claim — except a cut-off reply (:class:`ExtractionTruncated`), which
+    raises like a dispatch error.
     """
     return _extract_claim_impl(chunk_text, strict=True)
 
@@ -759,7 +784,11 @@ def extract_claim_strict_medium(chunk_text: str) -> ClaimExtraction:
 
 
 def _extract_claim_impl(
-    chunk_text: str, *, strict: bool, tier: Tier = Tier.SMALL
+    chunk_text: str,
+    *,
+    strict: bool,
+    tier: Tier = Tier.SMALL,
+    origin: str | None = None,
 ) -> ClaimExtraction:
     """Shared body of :func:`extract_claim` / :func:`extract_claim_strict` /
     :func:`extract_claim_strict_big` — see those for the behavioral
@@ -794,7 +823,11 @@ def _extract_claim_impl(
         # A cut-off reply is an infra outcome, not a verdict: strict callers
         # retry (backfill leaves the span un-checkpointed); the lenient
         # path degrades to empty, never to a single surviving atom.
-        log.warning("taproot: extract_claim reply truncated: %s", exc)
+        log.warning(
+            "taproot: extract_claim reply truncated (origin=%s): %s",
+            origin or "unknown",
+            exc,
+        )
         if strict:
             raise ExtractionUnavailable(str(exc)) from exc
         return _EMPTY_EXTRACTION

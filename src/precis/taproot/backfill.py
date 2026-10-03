@@ -581,7 +581,7 @@ def _run_cascade(
             group=group,
             action="extract-unavailable",
             supporters=supporters,
-            note=f"claim extraction unavailable (LLM dispatch failed) — re-run: {exc}",
+            note=f"claim extraction unavailable (dispatch failed or reply cut off) — re-run: {exc}",
         )
     if extraction.is_empty:
         return GroupPlan(
