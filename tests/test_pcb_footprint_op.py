@@ -4,7 +4,7 @@ Prod's ``part_footprints`` cache had no rows for the EWOD dogfood board's
 two catalog parts (HV507PG-G = C639448, and the I2C temp sensor — then a
 placeholder C32254, now TMP112 = C28927) and there was no MCP-facing way
 to fill it —
-:func:`precis.pcb.footprint.ensure_footprint` existed but nothing in
+a fetch-and-cache helper existed but nothing in
 :class:`precis.handlers.pcb.PcbHandler` ever called it (confirmed: no
 production caller anywhere in the tree before this fix, only tests). This
 exercises the two ways to close that gap — pull (with the fetcher

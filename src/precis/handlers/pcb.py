@@ -1599,8 +1599,8 @@ class PcbHandler(Handler):
     # ── footprint cache (gr341532 fix 3) ────────────────────────────────
     def _op_footprint(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'footprint', ...})`` — fill the ``part_footprints``
-        cache :func:`precis.pcb.footprint.ensure_footprint` reads/writes but
-        which nothing in this handler ever called: a catalog-part instance
+        cache (``part_footprint_get``/``part_footprint_put``), which nothing in
+        this handler used to fill: a catalog-part instance
         with no cached row silently DRC'd at a synthesized bound (the
         ``synthesized_footprint`` finding, :func:`precis.pcb.drc.
         check_synthesized_footprint`) with no MCP-facing way to close the

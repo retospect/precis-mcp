@@ -10,57 +10,28 @@ fetch all ~300k catalog parts — only the few a design actually selects — and
 cache the result in ``part_footprints`` (keyed by C-number, FK-free so the
 Flow-A catalog swap never touches it).
 
-The fetch is pluggable: ``ensure_footprint(store, lcsc, fetcher=...)`` returns
-the cache row, fetching+caching on a miss. The default fetcher hits EasyEDA
-live; tests inject a fake fetcher instead.
+The fetch is pluggable: ``fetch_footprint(lcsc, fetcher=...)`` returns the
+parsed footprint, which the caller caches with ``part_footprint_put``. The
+default fetcher hits EasyEDA live; tests inject a fake fetcher instead.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from precis.store import Store
+from typing import Any
 
 #: A fetcher takes a C-number and returns the footprint dict
 #: ``{pads, pin_map, courtyard, centroid, source, raw}`` or None.
 Fetcher = Callable[[str], "dict[str, Any] | None"]
 
 
-def ensure_footprint(
-    store: Store,
-    lcsc: str,
-    *,
-    fetcher: Fetcher | None = None,
-    force: bool = False,
-) -> dict[str, Any] | None:
-    """Return the cached footprint for ``lcsc``, fetching + caching on a miss.
-
-    ``store`` provides ``part_footprint_get`` / ``part_footprint_put``.
-    Returns None if the part has no resolvable footprint. ``force=True``
-    (``put(kind='pcb', op='footprint', force=True)`` — see
-    :mod:`precis.handlers.pcb`) skips the cache read and re-fetches even
-    when a row already exists, for a stale/wrong cached pull.
-    """
-    lcsc = lcsc.strip().upper()
-    if not force:
-        cached = store.part_footprint_get(lcsc)
-        if cached is not None:
-            return cached
-    data = fetch_footprint(lcsc, fetcher=fetcher)
-    if data is None:
-        return None
-    store.part_footprint_put(lcsc, data)
-    return store.part_footprint_get(lcsc)
-
-
 def fetch_footprint(
     lcsc: str, *, fetcher: Fetcher | None = None
 ) -> dict[str, Any] | None:
-    """The network half of :func:`ensure_footprint`: fetch only, no store
-    access, so a caller can keep it outside a database transaction and do
-    just the ``part_footprint_put`` inside one."""
+    """Fetch ``lcsc``'s footprint (EasyEDA by default), with no store
+    access, so ``put(kind='pcb', op='footprint')`` keeps the network call
+    outside its judged transaction and does only the
+    ``part_footprint_put`` inside it."""
     fetch = fetcher or _easyeda_fetch
     return fetch(lcsc.strip().upper())
 

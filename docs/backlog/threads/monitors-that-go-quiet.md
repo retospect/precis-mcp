@@ -38,9 +38,14 @@ gr346534, soft-deleted)
    td462461 was minted while td456667 on gr456034 was open. Second, a
    "No queryable surface" tool-gap bullet stays in the report as a
    non-ask instead of minting (td455178). Deployed in round 2
-   (63301c5c, 13:49Z 2026-10-03); 0 waiting-for:reto todos minted since.
-   Check the first post-deploy doctor tick (due about 17:52Z): it mints
-   no todo naming an open `gr`/`al`/`td`. Still owed: items
+   (63301c5c, 13:49Z 2026-10-03). Dogfood PASS at 18:17Z. The first
+   post-deploy tick was job 464516 (`doctor:2026-10-03/2`, 18:06Z,
+   succeeded). Its Needs-a-human section is "None.", and it minted 0 todos
+   under td347578. The report draft for that day (462892) has 0
+   "(no ask: tracked by" lines. So the prompt change kept the tracked
+   bullets out entirely, and the deterministic gate has not yet been
+   exercised on prod. The first tick that renders a "tracked by" line
+   proves the gate. Still owed: items
    (1) and (2) of that analysis arrived cut off. Get them resent and fix
    them at source. The dedupe agent closes existing duplicates; this
    thread does not. Of its two hand-offs, td455178 is now gr463592 and
