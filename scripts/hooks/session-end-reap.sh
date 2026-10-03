@@ -124,7 +124,11 @@ fi
 if command -v find_session_pid >/dev/null 2>&1; then
     OWN_PID=$(find_session_pid "${PPID:-}") || OWN_PID=""
 fi
-if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+# Live = exists, whoever owns it: a bare `kill -0` fails with EPERM on another
+# user's live pid and would let this hook reap that user's tree.
+_lock_err="$(export LC_ALL=C; kill -0 "${LOCK_PID:-x}" 2>&1)" && _lock_live=1 || _lock_live=0
+[[ "$_lock_err" == *"not permitted"* ]] && _lock_live=1
+if [ -n "$LOCK_PID" ] && [ "$_lock_live" = 1 ]; then
     # Live lock: proceed ONLY on a positive identity match with this session.
     if ! { [ -n "$OWN_PID" ] && [ "$OWN_PID" = "$LOCK_PID" ]; }; then
         exit 0

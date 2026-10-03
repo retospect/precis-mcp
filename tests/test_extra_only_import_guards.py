@@ -57,6 +57,12 @@ def _module_scope_imports(tree: ast.AST) -> set[str]:
             if node.module:
                 names.add(node.module.split(".")[0])
                 names.add(node.module)
+                # `from precis_pathway import runner` imports the submodule
+                # `precis_pathway.runner`; without this spelling the walk
+                # missed it and test_pathway_cpuset.py reddened all six
+                # shards (2026-10-03, run 37128991031).
+                for a in node.names:
+                    names.add(f"{node.module}.{a.name}")
     return names
 
 

@@ -36,28 +36,39 @@ green or the reverse), then tuning and residue.
 2. **backlog/fleet-orchestrator-verbs.md** — the orchestrator's repeated
    hand sequences as `scripts/fleet` verbs (verdict, say -m/--when-clear,
    peek/dialogs, compact --at-idle, mcp-check, one watcher, refs). Mined
-   from its transcript 2026-10-03; builds after 1.
+   from its transcript 2026-10-03. Design note 2 + verdict (14:56Z) in
+   `reviews/ship-gate-ci*.md`; verbs 1–3 and 7 (say -m/--when-clear,
+   queue, deliver, verdict, peek, dialogs, refs) shipped 2026-10-03; 4–6
+   (compact --at-idle, mcp-check --fix, watch) are the second range.
 3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
    incident file closed 2026-10-03: the ownership guard (e3135337c) fixed
    the spurious-SessionEnd unlock and `scripts/inflight` now buckets a
-   non-`pid` lock `needs_judgment`.
-4. **backlog/inflight-lists-the-live-deploy-render-tree-as-removable.md** —
-   inflight tells agents to delete the tree a deploy reads; same blast
-   class as 3.
-5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+   non-`pid` lock `needs_judgment`. The deploy render-tree item closed the
+   same day: the tree is pid-suffixed and pid-locked (2026-09-29), every
+   tree-deleting liveness check (deploy lock steal and sweep, inflight,
+   session-end-reap) reads EPERM as alive, and a vanished tree is named
+   when ansible fails.
+4. **backlog/agent-test-dbs-exhaust-docker-address-pools.md** — idle
+   test-dbs of sessionless `agent-*` trees used up docker's address pools
+   on 2026-10-03 and failed every `scripts/test` fleet-wide. About 8 agent
+   trees of headroom remain, so it recurs within a day.
+5. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+   renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
+   unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
+6. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-6. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+7. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
    gate serialises the fleet for up to 1h43m; the round no longer runs one
    (2026-10-03), `/go` still does.
-7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 5 and 6 diagnosable.
-8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+8. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 6 and 7 diagnosable.
+9. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
-   3.13-only but prod runs 3.12; nightly red on a green main.
+10. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon
 
@@ -100,8 +111,9 @@ green or the reverse), then tuning and residue.
 `plugin-split` owns the plugin-boundary and image work that
 `pathway-plugin-ci-image` waits on. `monitors-that-go-quiet` owns signals
 that lie; this thread owns the gate and reaper, and `main-stays-gated`
-feeds that thread's "is main green" answer. `deploy-fleet-ops` shares
-`scripts/deploy`'s render tree with item 3.
+feeds that thread's "is main green" answer. `deploy-fleet-ops` owns the
+rest of `deploy-async-task-controller-filenotfounderror.md` (whether a
+vanished play file should abort a running play; the apt stall).
 
 `backlog/backlog-lint-flags-ticked-subitems-as-shipped.md` was named by the
 platform pass but has no file; file it before ranking it here.

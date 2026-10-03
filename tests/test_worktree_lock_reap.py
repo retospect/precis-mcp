@@ -653,6 +653,33 @@ def test_session_end_reap_still_reaps_dead_lock(
     assert str(b) not in wt_list
 
 
+def test_session_end_reap_holds_a_lock_owned_by_another_users_live_pid(
+    repo_trio: dict[str, Path],
+) -> None:
+    """The dead-lock path above must not fire on EPERM: a bare `kill -0` fails
+    on a live pid this user may not signal, and the hook then unlocked and
+    reaped that user's tree. pid 1 is always alive and, outside a root
+    container, never ours."""
+    primary, b = repo_trio["primary"], repo_trio["b"]
+    hook = primary / "scripts" / "hooks" / "session-end-reap.sh"
+    _git(primary, "worktree", "lock", str(b), "--reason", "pid 1")
+
+    payload = json.dumps({"reason": "logout", "cwd": str(b)})
+    result = subprocess.run(
+        ["bash", str(hook)],
+        cwd=str(primary),
+        input=payload,
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    assert b.exists()
+    assert _lock_reason_for(primary, b) == "pid 1"
+    _git(primary, "worktree", "unlock", str(b))
+
+
 def test_session_end_reap_holds_when_it_cannot_identify_itself(
     repo_trio: dict[str, Path],
     tmp_path: Path,
@@ -1821,3 +1848,28 @@ def test_inflight_dead_pid_lock_still_buckets_safe_remove(
     )
     assert bucket["session"] == f"dead-lock#{dead.pid}", bucket
     assert bucket["bucket"] == "safe_remove", bucket
+
+
+def test_inflight_reads_another_users_live_pid_as_live(
+    guard_repo: dict[str, Path],
+) -> None:
+    """A bare `kill -0` fails with EPERM on a live pid this user may not
+    signal, and inflight read that as dead-lock → safe_remove. Deploys run
+    as both `reto` and `deploy` on one controller, so a deploy render tree
+    locked by the other user's live run was a reap candidate. pid 1 is
+    always alive and, outside a root container, never ours."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(
+        primary,
+        "worktree",
+        "lock",
+        str(b),
+        "--reason",
+        "pid 1 scripts/deploy render tree",
+    )
+
+    bucket = _bucket_for(
+        _run([str(primary / "scripts" / "inflight"), "--json"], primary).stdout, b
+    )
+    assert bucket["session"] == "live#1", bucket
+    assert bucket["bucket"] != "safe_remove", bucket

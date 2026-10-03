@@ -33,7 +33,12 @@ from precis.workers.chunk_keywords import (
     run_chunk_keywords_pass,
     write_chunk_keywords,
 )
-from tests.workers._helpers import make_mock_bge_m3, seed_chunk, seed_ref
+from tests.workers._helpers import (
+    make_mock_bge_m3,
+    seed_chunk,
+    seed_ref,
+    skip_if_backends_multiplexed,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -432,6 +437,25 @@ class TestRunChunkKeywordsPass:
             ).fetchall()
         # Both chunks get the current version stamp.
         assert [r[1] for r in rows] == [KEYWORDS_VERSION, KEYWORDS_VERSION]
+
+    def test_lock_held_elsewhere_skips_the_pass(self, store: Store) -> None:
+        """A held single-runner lock => graceful ``claimed=0`` skip, and the
+        work is picked up once the holder releases (gr463966)."""
+        import precis.workers.chunk_keywords as ck
+        from precis.store.advisory import try_xact_advisory_lock
+
+        ref_id = seed_ref(store)
+        _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        assert store.dsn
+        skip_if_backends_multiplexed(store.dsn)
+        emb = make_mock_bge_m3()
+        with try_xact_advisory_lock(store.dsn, ck._LOCK_KEY) as held:
+            assert held is True
+            skipped = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert skipped == {"claimed": 0, "ok": 0, "failed": 0}
+        # Lock released on exit: the same chunk is now processed.
+        done = run_chunk_keywords_pass(store, emb, batch_size=10)
+        assert done == {"claimed": 1, "ok": 1, "failed": 0}
 
     def test_idempotent_within_same_version(self, store: Store) -> None:
         ref_id = seed_ref(store)

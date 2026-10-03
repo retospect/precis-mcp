@@ -32,8 +32,9 @@ even show the task source at 19:03:03: the detached render worktree
 and removes only in its EXIT trap) was already gone while ansible was still
 running. Something outside this deploy removed it mid-run; the concurrent gate run
 (`scripts/ship --mutate --full`, 18:54–19:07) has no code path to it. The
-fitting mechanism — `scripts/inflight` advertising the live render tree as
-removable — is filed in `inflight-lists-the-live-deploy-render-tree-as-removable.md`.
+fitting mechanism was `scripts/inflight` advertising the live render tree as
+removable. That is closed: the tree is pid-suffixed and pid-locked
+(2026-09-29), and liveness checks treat EPERM as alive (2026-10-03).
 
 Host-side trail, verbatim tail of
 `~/.cache/precis-agent-build/build-6008588c4851fd6063d62815e580eabb79222269.log`
@@ -66,15 +67,10 @@ wrapper" is ruled out.
 
 ## To do
 
-1. **Controller:** the removal mechanism and its fix live in
-   `inflight-lists-the-live-deploy-render-tree-as-removable.md` (deployer
-   tree): `scripts/inflight` buckets the live render tree as "Removable
-   (merged + clean + no live session)" and prints the removal command for
-   it without checking the deploy lock, and the dead-holder lock steal in
-   `scripts/deploy` decides liveness with `kill -0`, which is EPERM across
-   users. This item adds only: decide whether a play file missing mid-run
-   should abort a *running* play at all (ansible re-reads it only to render
-   the error).
+1. **Controller:** the removal mechanism is fixed, and `scripts/deploy` now
+   names a vanished render tree when ansible fails. Open: decide whether a
+   play file missing mid-run should abort a *running* play at all (ansible
+   re-reads it only to render the error).
 2. **Host:** the `apt-get` stall in step #22 (Debian + nodesource InRelease,
    then 900 s of silence) is a second occurrence class next to
    `agent-image-build-stalls-on-mirror-fallback.md` (registry side). Consider

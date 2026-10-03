@@ -330,6 +330,76 @@ def test_a_stale_render_worktree_from_a_dead_run_is_replaced(
     assert "STAMP=SIBLING" not in rendered
 
 
+def test_a_render_tree_owned_by_another_users_live_pid_is_not_swept(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """The startup sweep deletes `precis-deploy-tree-<pid>` when <pid> is
+    dead. A bare `kill -0` also fails (EPERM) on a live pid owned by another
+    user, so a deploy run as `reto` deleted a running `deploy`-user run's
+    render tree — the 2026-09-27 `[Errno 2]` signature. pid 1 is always
+    alive and, outside a root container, never ours."""
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+    foreign = fx._common_dir() / "precis-deploy-tree-1"
+    _git(fx.repo, "worktree", "add", "--detach", "--quiet", str(foreign), fx.sibling)
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (foreign / "deploy" / "STAMP").exists(), (
+        "the sweep deleted a render tree whose owner pid is alive"
+    )
+    assert "STAMP=GATED" in record.read_text(encoding="utf-8")
+
+
+def test_a_deploy_lock_held_by_another_users_live_pid_is_not_stolen(
+    fx: Fixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same EPERM hole in the dead-holder steal: the lock would be taken from
+    a live run, and the sweep above would then delete that run's tree."""
+    fakebin = _make_fake_bin(tmp_path)
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+    fx.lock_path().mkdir()
+    (fx.lock_path() / "pid").write_text("1\n", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_DEPLOY_LOCK_WAIT", "0")
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "stealing deploy lock" not in out, out
+    assert "still holds the lock" in out, out
+    assert (fx.lock_path() / "pid").read_text(encoding="utf-8").strip() == "1"
+
+
+_FAKE_PLAYBOOK_LOSES_ITS_TREE = """#!/usr/bin/env bash
+rm -rf "$(dirname "$PWD")"
+echo '[ERROR]: Task failed: [Errno 2] No such file or directory'
+exit 2
+"""
+
+
+def test_a_render_tree_deleted_mid_run_is_named_as_the_cause(
+    fx: Fixture, tmp_path: Path
+) -> None:
+    """Ansible losing its playbooks mid-run printed only `[Errno 2]`, with
+    nothing saying the render tree had vanished. The deploy must say so."""
+    fakebin = _make_fake_bin(tmp_path)
+    (fakebin / "ansible-playbook").write_text(
+        _FAKE_PLAYBOOK_LOSES_ITS_TREE, encoding="utf-8"
+    )
+    record = tmp_path / "render.txt"
+    fx.set_marker(fx.gated)
+
+    result = _run_deploy(fx, fakebin, record, fx.gated, "--pinned")
+
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "render worktree" in out and "is GONE" in out, out
+
+
 def test_the_lock_is_released_on_a_successful_deploy(
     fx: Fixture, tmp_path: Path
 ) -> None:

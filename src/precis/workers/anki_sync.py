@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from precis.anki.sync import AnkiSyncError
+from precis.store.advisory import try_xact_advisory_lock
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: Fixed advisory-lock key namespace — paired with ``hashtext(login)`` (the
-#: two-key ``pg_try_advisory_lock`` form) so concurrent runners serialise
+#: two-key ``pg_try_advisory_xact_lock`` form) so concurrent runners serialise
 #: per-user rather than fleet-wide.
 _ANKI_SYNC_LOCK = 0x616E6B69  # "anki"
 
@@ -126,48 +127,44 @@ def _sync_one_user(
 
     # Per-user advisory lock: only one sync per AnkiWeb account at a time,
     # but two different users' syncs never contend on each other's lock.
-    with store.pool.connection() as conn:
-        lock_row = conn.execute(
-            "select pg_try_advisory_lock(%s, hashtext(%s))", (_ANKI_SYNC_LOCK, login)
-        ).fetchone()
-        got = lock_row[0] if lock_row else False
+    # Transaction-scoped on a dedicated connection (gr463966): a session
+    # lock is broken behind pgbouncer transaction pooling. The lock
+    # connection only holds the lock; the sync itself uses the store pool.
+    if store.dsn is None:
+        raise AnkiSyncMisconfigured("the store has no DSN to hold the sync lock on.")
+    with try_xact_advisory_lock(store.dsn, _ANKI_SYNC_LOCK, text_key=login) as got:
         if not got:
             return f"{prefix}: another sync holds the lock; skipping."
-        try:
-            result, stats = sync_tick(
-                mirror_path=mirror_path,
-                user=email,
-                password=password,
-                specs=specs,
-                deck=cfg.anki_deck,
-                fix=fix or cfg.anki_fix_enabled,
-                project=project or cfg.anki_project_enabled,
-                retire_ref_ids=retire_ids,
+        result, stats = sync_tick(
+            mirror_path=mirror_path,
+            user=email,
+            password=password,
+            specs=specs,
+            deck=cfg.anki_deck,
+            fix=fix or cfg.anki_fix_enabled,
+            project=project or cfg.anki_project_enabled,
+            retire_ref_ids=retire_ids,
+        )
+        now = datetime.now(UTC).isoformat()
+        for ref_id, st in stats.items():
+            # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
+            # nested `{"anki": {...}}` would REPLACE the whole meta.anki
+            # object (wiping guid/content_sha the projection dedups on —
+            # the 2026-07 incident). Patch top-level keys only.
+            store.update_ref(
+                ref_id,
+                meta_patch={"anki_stats": st, "anki_synced_at": now},
             )
-            now = datetime.now(UTC).isoformat()
-            for ref_id, st in stats.items():
-                # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
-                # nested `{"anki": {...}}` would REPLACE the whole meta.anki
-                # object (wiping guid/content_sha the projection dedups on —
-                # the 2026-07 incident). Patch top-level keys only.
-                store.update_ref(
-                    ref_id,
-                    meta_patch={"anki_stats": st, "anki_synced_at": now},
-                )
-            lines = [f"{prefix}: {result.summary()}{claim_note}"]
-            if result.all_cards is not None:
-                from precis.anki.project import project_cards
+        lines = [f"{prefix}: {result.summary()}{claim_note}"]
+        if result.all_cards is not None:
+            from precis.anki.project import project_cards
 
-                proj = project_cards(store, result.all_cards, owner_login=login)
-                lines.append(f"{prefix}: {proj.summary()}")
-            summary = "\n".join(lines)
-            if result.aborted:
-                raise AnkiSyncError(f"sync aborted for {login}: {summary}")
-            return summary
-        finally:
-            conn.execute(
-                "select pg_advisory_unlock(%s, hashtext(%s))", (_ANKI_SYNC_LOCK, login)
-            )
+            proj = project_cards(store, result.all_cards, owner_login=login)
+            lines.append(f"{prefix}: {proj.summary()}")
+        summary = "\n".join(lines)
+        if result.aborted:
+            raise AnkiSyncError(f"sync aborted for {login}: {summary}")
+        return summary
 
 
 def run_anki_sync(

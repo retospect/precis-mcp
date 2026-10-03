@@ -24,6 +24,12 @@ from precis.workers.job_types import pcb_route
 pytestmark = pytest.mark.db
 
 
+def _route(ctx: Any) -> None:
+    """Run the route job on a duck-typed context (``_FakeCtx`` is not a
+    ``DispatchContext``)."""
+    pcb_route._dispatch(ctx, pcb_route.SPEC)
+
+
 class _FakeCtx:
     def __init__(self, store: Store, *, params: dict[str, Any]) -> None:
         self.store = store
@@ -120,7 +126,7 @@ def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
 def test_pcb_route_writes_realized_route_and_copper(store: Store) -> None:
     ref_id = _seed(store, "route-x", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     assert not ctx.failures
     assert ctx.summaries and ctx.summaries[0][0] == "job_summary"
@@ -149,7 +155,7 @@ def test_pcb_route_widens_a_high_current_net_well_past_the_old_flat_default(
     of current."""
     ref_id = _seed(store, "route-current", _DESIGN_HIGH_CURRENT)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     board_id = store.pcb_ensure_board(ref_id)
@@ -236,7 +242,7 @@ def test_pcb_route_persists_realized_vias_at_a_layer_transition(store: Store) ->
     # anneal must not move the wall out of the way before the router
     # meets it.
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 1, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     with store.pool.connection() as conn:
@@ -264,7 +270,7 @@ def test_pcb_route_persists_sketch_survives_rebuild(store: Store) -> None:
     in-memory ``seg_id``."""
     ref_id = _seed(store, "route-persist", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 3})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     routes = store.pcb_routes_get(ref_id)
     assert "N1" in routes
@@ -309,7 +315,7 @@ def test_pcb_route_applies_authored_plane_assignment(store: Store) -> None:
     plane_id = store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
     assert plane_id
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     assert not ctx.failures
     board_id = store.pcb_ensure_board(ref_id)
@@ -349,7 +355,7 @@ def test_plane_net_with_no_board_outline_is_reported_not_silently_stranded(
     ref_id = _seed(store, "route-plane-noboard", _DESIGN)
     assert store.pcb_assign_plane(ref_id, "In1.Cu", "N1")
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     # An unrealized net fails the JOB too (Reto, 2026-10-01), naming it.
     assert [c for _, c in ctx.failures] == ["non-convergence"]
@@ -405,7 +411,7 @@ def test_pcb_route_persists_optimizer_derived_plane_promotion(
 
     ref_id = _seed(store, "route-derived-plane", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     # No outline, so the forced plane cannot pour and N1 fails the job; the
     # plane write-back under test happens before that.
     assert [c for _, c in ctx.failures] == ["non-convergence"]
@@ -436,7 +442,7 @@ def test_pcb_route_never_touches_an_authored_plane_assignment(store: Store) -> N
     ]
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     # No outline to pour the authored plane into: N1 fails the job.
     assert [c for _, c in ctx.failures] == ["non-convergence"]
 
@@ -480,7 +486,7 @@ def test_pcb_route_locks_an_authored_plane_through_the_anneal(store: Store) -> N
     # a short run may not exercise enough PLANE_DEMOTE proposals to be a
     # real test of the lock.
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 3000, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     planes = store.pcb_planes_list(ref_id)
@@ -519,12 +525,12 @@ def test_pcb_route_replaces_derived_plane_rows_across_reruns(
 
     ref_id = _seed(store, "route-derived-rerun", _DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx1)
     # The forced plane has no outline to pour into, so N1 fails each run;
     # only that failure is acceptable here.
     assert [c for _, c in ctx1.failures] == ["non-convergence"]
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
-    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx2)
     assert [c for _, c in ctx2.failures] == ["non-convergence"]
 
     rows = store.pcb_planes_list(ref_id)
@@ -535,9 +541,9 @@ def test_pcb_route_replaces_derived_plane_rows_across_reruns(
 def test_pcb_route_is_rerunnable(store: Store) -> None:
     ref_id = _seed(store, "route-rerun", _DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx1)
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 2})
-    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx2)
     assert not ctx2.failures
     status_rows = store.pcb_route_status(ref_id)
     assert len(status_rows) == 1  # upsert, not a duplicate row
@@ -551,7 +557,7 @@ def test_pcb_route_dangling_net_does_not_block_route_complete(store: Store) -> N
     as ``'unrouted'`` forever)."""
     ref_id = _seed(store, "route-dangling", _DESIGN_WITH_DANGLING)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     assert not ctx.failures
     status_by_name = {r["name"]: r for r in store.pcb_route_status(ref_id)}
@@ -605,7 +611,7 @@ def test_pcb_route_fails_legibly_on_no_nets(store: Store) -> None:
     ref = store.get_ref(kind="pcb", id="route-empty")
     assert ref is not None
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref.id})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert ctx.failures
     assert "no nets" in ctx.failures[0][0]
 
@@ -682,7 +688,7 @@ def test_pcb_route_persists_optimizer_derived_pin_swap(
 
     ref_id = _seed(store, "route-pinswap", _PIN_SWAP_DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
@@ -718,7 +724,7 @@ def test_pcb_route_reapplies_persisted_pin_swap_on_fresh_ir(
 
     ref_id = _seed(store, "route-pinswap-rebuild", _PIN_SWAP_DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx1)
     assert not ctx1.failures
     assert store.pcb_pin_swaps_list(ref_id)
 
@@ -733,7 +739,7 @@ def test_pcb_route_reapplies_persisted_pin_swap_on_fresh_ir(
 
     monkeypatch.setattr(pcb_route, "optimize", _spy)
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 2})
-    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx2)
     assert not ctx2.failures
 
     assert seen == {"right": "B", "left": "A"}, (
@@ -761,7 +767,7 @@ def test_pcb_place_reapplies_persisted_pin_swap(
     monkeypatch.setattr(pcb_route, "optimize", _force_swap)
     ref_id = _seed(store, "place-pinswap", _PIN_SWAP_DESIGN)
     route_ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(route_ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(route_ctx)
     assert not route_ctx.failures
     assert store.pcb_pin_swaps_list(ref_id)
 
@@ -853,7 +859,7 @@ def test_pcb_route_pin_swap_group_feed_settles_a_real_swap(store: Store) -> None
     ``delta < 0``), so any single hit anywhere in that window suffices."""
     ref_id = _seed(store, "route-pinswap-feed", _PIN_SWAP_FEED_DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 800, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     swaps = {(r["refdes"], r["pin"]): r for r in store.pcb_pin_swaps_list(ref_id)}
@@ -899,7 +905,7 @@ def test_pcb_route_never_touches_an_authored_pin_swap(store: Store) -> None:
     ]
 
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 200, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
     assert not ctx.failures
 
     after = store.pcb_pin_swaps_list(ref_id)
@@ -939,7 +945,7 @@ def test_routed_net_is_never_failed_by_a_placement_chord_crossing(
     monkeypatch.setattr(pcb_route, "_residual_crossings", _always_crossing)
     ref_id = _seed(store, "route-chord-phantom", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     assert not ctx.failures
     status_rows = store.pcb_route_status(ref_id)
@@ -980,7 +986,7 @@ def test_routed_net_is_never_failed_by_a_gap_capacity_warning(
     monkeypatch.setattr(pcb_realize, "_gap_usage", _always_over_capacity)
     ref_id = _seed(store, "route-gap-phantom", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     assert not ctx.failures
     status_rows = store.pcb_route_status(ref_id)
@@ -1023,7 +1029,7 @@ def test_pcb_route_strips_a_net_whose_router_copper_violates_drc(
     monkeypatch.setattr(pcb_session, "routed_drc_findings", _violation)
     ref_id = _seed(store, "route-drc-strip", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     (row,) = store.pcb_route_status(ref_id)
     assert row["status"] == "failed"
@@ -1042,7 +1048,7 @@ def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(
     under moved parts), and the job result names the rule that raised."""
     ref_id = _seed(store, "route-drc-raises", _DESIGN)
     first = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})
-    pcb_route._dispatch(first, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(first)
     poses_before = {
         i["refdes"]: (i["x"], i["y"], i["rot"])
         for i in store.pcb_load(ref_id)["instances"]
@@ -1058,7 +1064,7 @@ def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(
 
     monkeypatch.setattr(pcb_drc, "check_npth_clearance", _boom)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 7})
-    pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx)
 
     poses_after = {
         i["refdes"]: (i["x"], i["y"], i["rot"])
@@ -1160,13 +1166,13 @@ def test_pcb_route_second_run_starts_where_the_first_ended(
     res1 = _capture_optimize(monkeypatch, force_swap=True)
     ref_id = _seed(store, "route-resume-cost", _PIN_SWAP_DESIGN)
     ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx1)
     assert not ctx1.failures
     assert store.pcb_pin_swaps_list(ref_id)
 
     res2 = _capture_optimize(monkeypatch, force_swap=False)
     ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
-    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    _route(ctx2)
     assert not ctx2.failures
     assert abs(res2[-1].cost_before - res1[-1].cost_after) < 1e-6, (
         res2[-1].cost_before,
@@ -1183,7 +1189,7 @@ def test_pcb_route_is_deterministic_from_the_same_seeded_state(
     def _run(slug: str) -> tuple[Any, Any, Any]:
         ref_id = _seed(store, slug, _PIN_SWAP_DESIGN)
         ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 60, "seed": 7})
-        pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+        _route(ctx)
         statuses = {
             n: (r or {}).get("status") for n, r in store.pcb_routes_get(ref_id).items()
         }

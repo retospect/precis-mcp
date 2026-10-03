@@ -52,6 +52,18 @@ with the env pin kept for the other tiers. Measure first on one re-run
 verify seed with the larger wall to get its real runtime before fixing the
 multiplier.
 
+Not built yet (verdict §8 asked for the first; the second is a gap found
+while building the hold):
+- **Runtime per tier.** Jobs carry no elapsed time, so the harvest cannot
+  record runtime by tier and the hint cannot be re-sized from data. Needs
+  ssh_node to stamp e.g. `meta.elapsed_s` at terminalization
+  (`ssh_node.py`, next to `_set_status`), then the harvest to aggregate it
+  per tier.
+- **Timeout on the aggregate path.** `_seed_timeout_held` covers seed jobs
+  only. A wall-killed `autocatpath_aggregate` / explore job still takes the
+  retry-once-then-infra-gripe path in `harvest_measures`, which has its own
+  counter.
+
 ## autocatpath: on-spark dev loop (measure + iterate on the GPU box)
 
 _Grouped 2026-09-26; was `autocatpath-spark-dev-loop`._

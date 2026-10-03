@@ -29,8 +29,14 @@ states that count a paper as usable when it is not, then metadata.
    math-extension fonts; the stored flag on 461434 stays until re-analysed.
    gr461607 verified live: 1 of 15 PDF ingests since the deploy carries
    `glyph_health`, against 0 of 1,198 the week before. Next, about a day
-   after the round-2 deploy: measure detector precision, as the
-   orchestrator accepted it 2026-10-02.
+   after the round-2 deploy (63301c5c, 2026-10-03 13:49Z): measure
+   detector precision, as the orchestrator accepted it 2026-10-02. First,
+   re-run `analyze_pdf` with the deployed rule over every flagged paper
+   (16 on 10-03, all flagged under the old C0 rule), and rewrite or drop
+   each stored record. Flagged and unflagged papers then mean the same
+   thing whatever their ingest date (round-2 review finding). No CLI
+   re-analyses a stored PDF yet, so this runs on the node that holds the
+   corpus.
    - Report the flag rate over new ingests. More than a few percent means
      the orphan-span signal is firing on clean symbol fonts.
    - Inspect 20 flagged papers per signal: the `/ToUnicode` font tell, and
@@ -68,10 +74,23 @@ states that count a paper as usable when it is not, then metadata.
    so the 45 untried Elsevier papers in batch 1 were unpinned
    (`bodiless_refetch.outcome='held_elsevier_preview'`). The 814 Elsevier
    papers wait for the vault key (td462729) and are not re-fetched. The
-   no-body ingest branch now clears the pin once a body lands (round 2,
-   this commit). Until that deploys, clear pins by hand after each batch.
-   Next: let the 32 pinned "other" papers finish, then queue the other
-   ~83 non-Elsevier papers. Throughput is about 9 tried per hour. Vault-key
+   no-body ingest branch now clears the pin once a body lands (a0bb7b707,
+   live since 13:49Z). Prod check: waiting for the first post-deploy
+   re-fetch that gains a body. Queuing must also set `prio=1`
+   (`prio_by='acquire'`, as `pin_stub_for_fetch` does). The claim orders
+   by `prio` before the re-queue flag (`claim_stubs_to_fetch`). Only the 18
+   prio-1 papers of batch 1 were tried; the other 37 sat behind 1,205
+   prio-1 stubs until re-pinned at 12:35Z (old value in
+   `bodiless_refetch.prev_prio`). Re-pinning did not help: by 14:40Z, 0 of
+   the 37 had been tried. prio 1 is the floor, and the next tiebreak
+   (`oa_requeued`, then `ref_id DESC`) still ranks them behind 1,325
+   newer acquire stubs, with the lane trying about 25 refs an hour. Round
+   3 ranks a `markup_refetch` pin directly after `prio`. Only these 37
+   refs carry the pin.
+   Next, after round 3 deploys: let the 37 finish, then queue the other
+   ~83 non-Elsevier papers. This
+   thread owns td461154 (STATUS:doing). Close it once the policy is
+   applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
 3. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
@@ -137,6 +156,18 @@ states that count a paper as usable when it is not, then metadata.
   residual audit row; 0 recurrences since 09-28).
 
 ## Seam
+
+- **gr463966** (session advisory locks under pgbouncer transaction
+  pooling, a blocker for the Stage B DISCARD ALL): claims-and-evidence
+  owns the fix for all three sites. That includes this pipeline's
+  `ingest/claim.py` (`Claim`, the per-PDF Marker claim) and
+  `workers/chunk_keywords.py`. The leaked lock is chunk_keywords'
+  `_LOCK_KEY`. It recurs on fresh pooled backends: it was on pid 11267,
+  then on 15730 (born 14:14Z) at 14:44Z on 2026-10-03. Recycling one
+  backend therefore does not clear it. Only the code fix does, and Stage
+  B's DISCARD ALL waits on that fix, not on the held lock. The `Claim`
+  leak means two hosts can run Marker on the same PDF until the fix
+  deploys.
 
 - `local-compute` parks the **embed-drain** half of what was one cluster
   (gr456034, gr454865). That is throughput, this thread is fidelity; they

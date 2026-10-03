@@ -488,7 +488,12 @@ def claim_stubs_to_fetch(
          -- `prio` (stub_rank pass; 1=hottest..10=coldest, NULL=unranked)
          -- outranks both — the fetcher spends its budget on the hottest
          -- stubs first, falling back to the pre-prio tiebreak within ties.
+         -- A `markup_refetch` pin is an operator's explicit re-fetch
+         -- request; within a prio it outranks the acquire backlog, whose
+         -- newest-first tiebreak would otherwise starve the old refs a
+         -- re-fetch batch targets (td461154).
          ORDER BY r.prio ASC NULLS LAST,
+                  jsonb_exists(r.meta, 'markup_refetch') DESC,
                   jsonb_exists(r.meta, 'oa_requeued') DESC,
                   COALESCE(qb.qw, 0) DESC,
                   r.ref_id DESC

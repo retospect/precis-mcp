@@ -48,8 +48,11 @@ Note from the user: `$ARGUMENTS`
    - `scripts/fleet say .claude/fleet/msg-route-questions.txt <windows>`
    - `scripts/fleet say .claude/fleet/msg-design-review.txt <the design-review: yes windows>`
    A message sent to a busy session queues behind its turn. `say` skips a
-   window with a dialog open and prints it; resend to those once the
-   review session has answered the dialog. Always send through `say`: it
+   window with a dialog open and prints it; add `--when-clear` to hold the
+   message instead (`HELD: <window>`) and `scripts/fleet deliver` it once
+   the dialog is answered (`scripts/fleet queue` lists what is held). Short
+   messages need no file: `scripts/fleet say -m "<text>" <windows>`.
+   Always send through `say`: it
    sends the text, pauses, then sends Enter as a separate keystroke and
    checks an idle window took it. Text and Enter in one `tmux send-keys`
    leaves the message unsent in an idle session's box. Never send a bare
@@ -60,7 +63,8 @@ Note from the user: `$ARGUMENTS`
    - the design-note directory (`<queue-dir>/../reviews/`) for new or
      changed `<slug>.md`.
 
-5. **Round.** `scripts/round status`. No round open → open one and send
+5. **Round.** `scripts/round status` and `scripts/fleet refs` (main / gated /
+   prod shas with ages, and the newest green main). No round open → open one and send
    `.claude/fleet/msg-round-open.txt`; one already open → resend only to
    windows `up` created. Then follow `/round` for collect → `round gate`
    (newest green-CI main sha) → `round deploy` → verify → restart notice. After the deploy, also file
@@ -117,7 +121,10 @@ On a design note: read the note and the commit range (`scripts/inflight
 --json` for the tree, never `git -C`). Check each numbered claim against
 the code and the evidence, the confirming numbers hardest. Write
 `<slug>.review.md` beside the note: a verdict per claim, then land / fix
-first / needs Reto. A "needs Reto" verdict is also a review-queue item.
+first / needs Reto. Write it with `scripts/fleet verdict <slug>` (body on
+stdin, or `--file`): it appends a `date -u`-stamped section, never a hand
+typed time, and tells the thread's window. A "needs Reto" verdict is also
+a review-queue item.
 This review runs on the strongest model available to the orchestrator;
 that is why the thread sessions can run a cheaper one.
 

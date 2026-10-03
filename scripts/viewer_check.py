@@ -747,6 +747,15 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
     return _report(base_url, slug, out, checks)
 
 
+#: (label, width, height): a phone, a small laptop, the desktop the other
+#: checks use.
+NOWEBGL_VIEWPORTS = (
+    ("phone", 390, 844),
+    ("laptop", 1280, 720),
+    ("desktop", 1600, 1000),
+)
+
+
 def nowebgl_probe(base_url: str, slug: str, out_dir: str) -> int:
     """gr462702: with WebGL disabled the page shows ``#bt3d-fallback`` (a
     message naming WebGL 2 plus the design's 2D SVG inline), not a bare error."""
@@ -759,28 +768,50 @@ def nowebgl_probe(base_url: str, slug: str, out_dir: str) -> int:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(args=["--disable-3d-apis"])
-        page = browser.new_page(viewport={"width": 1600, "height": 1000})
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(f"{base_url}/se/{slug}", wait_until="networkidle", timeout=180000)
-        has_gl2 = page.evaluate(
-            "() => document.createElement('canvas').getContext('webgl2') !== null"
-        )
-        checks.append(Check("webgl2 is unavailable in this browser", not has_gl2))
-        page.wait_for_selector("#bt3d-fallback", timeout=int(WAIT_S * 1000))
-        text = page.inner_text("#bt3d-fallback")
-        checks.append(
-            Check("message mentions WebGL 2", "WebGL 2" in text, {"text": text[:200]})
-        )
-        page.wait_for_function(
-            "() => { const i = document.querySelector('#bt3d-fallback img');"
-            " return i && i.complete; }",
-            timeout=int(WAIT_S * 1000),
-        )
-        nat = page.evaluate(
-            "() => document.querySelector('#bt3d-fallback img').naturalWidth"
-        )
-        checks.append(Check("fallback <img> loaded", nat > 0, {"naturalWidth": nat}))
-        page.screenshot(path=str(out / "nowebgl.png"))
+        # Which device fails is still open (review item se-3d-viewer-3),
+        # so the fallback is checked at phone, laptop and desktop size.
+        for label, width, height in NOWEBGL_VIEWPORTS:
+            page = browser.new_page(viewport={"width": width, "height": height})
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(f"{base_url}/se/{slug}", wait_until="networkidle", timeout=180000)
+            has_gl2 = page.evaluate(
+                "() => document.createElement('canvas').getContext('webgl2') !== null"
+            )
+            checks.append(
+                Check(f"{label}: webgl2 is unavailable in this browser", not has_gl2)
+            )
+            page.wait_for_selector("#bt3d-fallback", timeout=int(WAIT_S * 1000))
+            text = page.inner_text("#bt3d-fallback")
+            checks.append(
+                Check(
+                    f"{label}: message mentions WebGL 2",
+                    "WebGL 2" in text,
+                    {"text": text[:200]},
+                )
+            )
+            page.wait_for_function(
+                "() => { const i = document.querySelector('#bt3d-fallback img');"
+                " return i && i.complete; }",
+                timeout=int(WAIT_S * 1000),
+            )
+            box = page.evaluate(
+                "() => { const r = (s) => document.querySelector(s)"
+                ".getBoundingClientRect();"
+                " const i = document.querySelector('#bt3d-fallback img');"
+                " return {nat: i.naturalWidth, img: r('#bt3d-fallback img').right,"
+                " msg: r('#bt3d-fallback-message').right,"
+                " msgH: r('#bt3d-fallback-message').height}; }"
+            )
+            checks.append(Check(f"{label}: fallback <img> loaded", box["nat"] > 0, box))
+            checks.append(
+                Check(
+                    f"{label}: message and 2D image fit the viewport width",
+                    box["img"] <= width and box["msg"] <= width and box["msgH"] > 0,
+                    {**box, "viewport": width},
+                )
+            )
+            page.screenshot(path=str(out / f"nowebgl-{label}.png"))
+            page.close()
         checks.append(Check("no uncaught pageerror", not errors, {"errors": errors}))
         browser.close()
     return _report(base_url, slug, out, checks)

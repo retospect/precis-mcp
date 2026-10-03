@@ -71,6 +71,11 @@ gr346534, soft-deleted)
    took them), so what is left is the monitor. Second: it is the only open
    code work here that is mine to start, but nothing is specced yet and the
    thing it would watch is not currently costing anything.
+5. **backlog/b2-offsite-sync-dark-alert.md** (filed 2026-10-03 for the
+   orchestrator; draft, do not build yet). The nightly B2 sync failed on
+   every run for 7 weeks into a log nobody reads. The fix is a
+   `health_digest` check on the log, because the DB node has no tick of
+   its own. It must be timeout-guarded against the NFS hang in item 2.
 
 ## Horizon
 

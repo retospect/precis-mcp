@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+import psycopg
+import pytest
+
 from precis.embedder import MockEmbedder
 from precis.store import Store
 
@@ -78,3 +81,23 @@ __all__ = [
     "seed_chunks",
     "seed_ref",
 ]
+
+
+def skip_if_backends_multiplexed(dsn: str) -> None:
+    """Skip when two ``psycopg.connect`` calls share one Postgres backend.
+
+    The dev container's network path can multiplex connections onto one
+    backend; advisory locks are re-entrant within a backend, so a
+    "second holder is refused" test would be vacuous there.
+    """
+    pids: list[int] = []
+    with (
+        psycopg.connect(dsn, autocommit=True) as a,
+        psycopg.connect(dsn, autocommit=True) as b,
+    ):
+        for conn in (a, b):
+            row = conn.execute("SELECT pg_backend_pid()").fetchone()
+            assert row is not None
+            pids.append(row[0])
+    if pids[0] == pids[1]:
+        pytest.skip("test env multiplexes connections onto one backend")

@@ -58,7 +58,9 @@ and every grid cell are dissolved.
 lone entry whose composition equals ``comp_dict``: ``process_multientry``
 reads the product coefficient through ``Reaction.get_coeff``, which finds
 the identical reactant first and returns −1, so the positive-coefficient
-check drops it (reproduced on pymatgen 2026.5.4 and 2026.9.24). A truly
+check drops it (reproduced on pymatgen 2026.5.4 and 2026.9.24; filed
+upstream as materialsproject/pymatgen#4709 — delete the restore once it is
+fixed there). A truly
 stable Cu3P would then read as a phantom ``leached``. When ΔG_pbx <
 −:data:`RESTORE_EPS` (1e-6 eV/atom; smaller negatives are numerical noise),
 the matched phase is restored as the domain with ΔG_pbx 0, and the cell
@@ -314,8 +316,9 @@ def classify(
         if not is_matched:
             # Within tolerance of the hull, though another domain is lower:
             # say which and by how much, so a near-boundary "stable" shows.
+            # Clamped: a ΔG_pbx in (−RESTORE_EPS, 0) is noise, not "below".
             out["note"] = (
-                f"{matched_formula} is {dg_pbx:.3f} eV/atom above "
+                f"{matched_formula} is {max(dg_pbx, 0.0):.3f} eV/atom above "
                 f"{' + '.join(out['domain'])} (within stability_tol {tol})"
             )
     elif not in_solid:
@@ -356,7 +359,8 @@ def _point_eval(
         # never keeps the lone entry whose composition equals ``comp_dict``:
         # ``process_multientry`` reads the product coefficient with
         # ``Reaction.get_coeff``, which finds the identical reactant first
-        # and returns −1, failing the positive-coefficient check. Restore it
+        # and returns −1, failing the positive-coefficient check
+        # (materialsproject/pymatgen#4709). Restore it
         # here; its ΔG_pbx is 0 by definition, and ``domain_restored`` says
         # the engine overrode the diagram.
         domain, dg = matched, 0.0

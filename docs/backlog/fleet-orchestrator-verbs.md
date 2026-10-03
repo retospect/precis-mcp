@@ -89,6 +89,16 @@ in `src/`.
 
 ## Open questions / decisions log
 
+- Decided 2026-10-03 (orchestrator verdict on design note 2,
+  `reviews/ship-gate-ci.review.md` 14:56Z): held messages live in
+  `<state>/fleet-queue/<win>/`, not the git-common-dir; the watch criterion
+  is "re-armed only on expiry, a re-arm replays nothing" (Monitor caps an
+  arm at 30 min); bare `/compact` after `/next` with a 90 s grace, and
+  `compact` refuses the orchestrator's own window; `mcp-check --fix` sends
+  `/mcp reconnect all`; `watch` emits on transition only and its `ci main`
+  leg reports a run's conclusion, never a verdict. Verbs 1–3 and 7 shipped
+  2026-10-03 (plus a `trust` dialog type and a refusal of hand-stamped
+  verdict headings); 4–6 remain.
 - Decided 2026-10-03: this is orchestrator-owned tooling; build it in the
   `ship-gate-ci` session (platform) as Do-next 2 behind
   `release-candidate-verdicts`, since the orchestrator does no thread work.
