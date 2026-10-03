@@ -5,7 +5,8 @@ allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:
 ---
 
 You are the coordinator of a peer round. Many sessions land onto `main` with
-`/qland` (no pytest); every main push gets a GitHub CI verdict, and one
+`/qland` (no pytest); main's GitHub CI samples the newest sha about once
+per run (~45 min, a running run is never cancelled), and one
 session — you — puts the newest green main sha on the cluster. A round is one pass of that.
 
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
@@ -41,8 +42,8 @@ Note from the user: `$ARGUMENTS`
    scripts/round gate
    ```
    The candidate is the newest main sha whose GitHub CI verdict is fully
-   green (lint + every `test-linux` shard; every main push runs to
-   completion since 2026-10-03). It prints the candidate, its verdict age,
+   green (lint + every `test-linux` shard; main's CI samples the newest
+   sha about once per run and never cancels a running one). It prints the candidate, its verdict age,
    `origin/gated` / `origin/prod`, and how many docs-only and code commits
    main is ahead of it. No local suite runs and no ship lock is taken, so
    peers' qlands never queue behind the round. A peer's sha that is not yet

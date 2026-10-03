@@ -17,7 +17,9 @@ green or the reverse), then tuning and residue.
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
-   in the pre-qland lint; per-sha un-cancelled main runs; 48 h GraphQL
+   in the pre-qland lint; un-cancelled main runs (per-sha, replaced by a
+   shared never-cancel-running group 2026-10-03, Reto, review-queue
+   ship-gate-ci-1, after main queued 18 runs at ~33 pushes/h); 48 h GraphQL
    walk with a looked-none exit 2; `scripts/round gate|deploy`; design note
    + verdict in `reviews/ship-gate-ci*.md`). Acceptance met 2026-10-03:
    all six main pushes 12:16–12:40Z completed, none cancelled (four inside

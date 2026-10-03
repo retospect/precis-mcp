@@ -40,24 +40,26 @@ on:
 permissions:
   contents: read
 
-# Every push to `main` runs to completion: the round deploys the newest main
-# sha with a full green verdict (`scripts/round gate|deploy`) and the qland
-# drift guard reads its age, so a cancelled main run is a sha that can never
-# be a candidate. Cancelling superseded main runs left 0 of 52 main commits
+# A RUNNING main run is never cancelled: the round deploys the newest main sha
+# with a full green verdict (`scripts/round gate|deploy`) and the qland drift
+# guard reads its age. Cancelling running main runs left 0 of 52 main commits
 # with a verdict over 2026-10-03 00:00–12:00Z and hid a red ratchet for 12 h
 # (backlog/release-candidate-verdicts.md). `ci/**` and PR refs still cancel:
 # a ship retry force-pushes the same `ci/` ref and the superseded run is
 # worthless.
 #
-# A main push gets a group of its own (the sha is in the key), not just
-# `cancel-in-progress: false`: a group admits one running and ONE pending run,
-# and a third arrival cancels the pending one, so a shared group would still
-# drop shas inside any 12-min window with three pushes. With per-sha groups
-# main runs are fully parallel and only the 20-job cap queues them.
+# Main pushes share ONE group with `cancel-in-progress: false`. A group admits
+# one running and one pending run; a newer push replaces the pending one, so
+# main is SAMPLED: every run that starts finishes, and a green verdict lands
+# about once per run (~45 min) on the newest sha at that moment. The verdict
+# readers only need the newest green sha, not one per commit. Cost: a red names
+# the range of pushes since the last finished run, not one sha.
 #
-# Cost of not cancelling main: ~7.7 pushes/h at peak × ~12 min ≈ 1.5
-# concurrent main runs ≈ 12 of the 20 job slots on average; bursts queue per
-# job, and a `ship --remote` gate waits behind them.
+# Why not a run per push (the sha in the key, 2026-10-03 12:16–16:00Z): at
+# fleet rate (~33 pushes/h) × 8 jobs × ~100 runner-min against the 20-job cap
+# (~12 full pushes/h), main queued 18 runs with 10–18 min queue delay, and a
+# `ship --remote` gate waited behind them. Reto ruled for the shared group
+# (review-queue ship-gate-ci-1, 2026-10-03).
 #
 # Job budget: the ship-gate shape is 8 jobs (plan + lint + 6 shards of one
 # Linux leg); the nightly full shape is 18. The account's standard-runner
@@ -79,7 +81,7 @@ permissions:
 # (~40 min, well inside ship's 150 min CI timeout, and a CAS race lost while
 # queued re-runs CI per gr343941).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') && format('-{0}', github.sha) || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}
   cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' }}
 
 jobs:
