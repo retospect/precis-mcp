@@ -168,11 +168,11 @@ def test_footprint_cache_fetches_once(store):
             "source": "fake",
         }
 
-    f1 = footprint.ensure_footprint(store, "C9001", fetcher=fake)
-    assert f1 is not None and f1["source"] == "fake"
-    f2 = footprint.ensure_footprint(store, "C9001", fetcher=fake)
-    assert f2 is not None
-    assert calls == ["C9001"]  # second call hit the cache, no re-fetch
+    data = footprint.fetch_footprint(" c9001 ", fetcher=fake)
+    assert data is not None and calls == ["C9001"]  # normalized C-number
+    store.part_footprint_put("C9001", data)
+    cached = store.part_footprint_get("C9001")
+    assert cached is not None and cached["source"] == "fake"
 
 
 # ── auto-stamp a catalog part onto a component ───────────────────────
@@ -278,10 +278,9 @@ def test_parts_bulk_replace_preserves_footprints_and_availability(store):
             )
         ]
     )
-    footprint.ensure_footprint(
-        store,
+    store.part_footprint_put(
         "C4004",
-        fetcher=lambda lcsc: {
+        {
             "pads": [{"n": "1"}],
             "pin_map": {"1": "A"},
             "source": "fake",

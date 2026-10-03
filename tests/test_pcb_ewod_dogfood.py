@@ -15,7 +15,7 @@ pads (:func:`_grid_footprint`) named to match this test's own
 existing reference fixtures already do (``tests/test_pcb_fab_export.py``'s
 ``_QFN_FOOTPRINT`` trims a real 32-pin QFN down to 3 pads it actually
 exercises). No network fetch happens; nothing here is a BOM commitment —
-swap in a real ``ensure_footprint``-pulled/verified row before ordering.
+swap in a real ``op='footprint'``-pulled/verified row before ordering.
 LCSC C-numbers are the spec's own choice (HV507PG-G = C639448) or a
 documented placeholder for an unverified "any in-stock I2C temp sensor"
 pick — see each constant's own comment.
