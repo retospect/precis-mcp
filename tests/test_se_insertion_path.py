@@ -89,6 +89,15 @@ class TestBody:
         # the seat plane the head sits at z in [-24 mm, -20 mm]
         assert abs(body["pose"][2] - (-0.024)) < 1e-9
 
+    def test_view_fasten_marks_the_error_apart_from_warnings(self) -> None:
+        from precis_se.handler import _render_fasten
+
+        tree = _tree()
+        tree.blocks["cover"] = SeBlock(
+            name="cover", pose=[0, 0, -0.014], envelope="box:w0.03d0.03h0.004"
+        )
+        assert "✗ fastener_insertion_path:" in _render_fasten(tree)
+
     def test_the_head_start_position_is_swept(self) -> None:
         tree = _tree()
         # z in [-23.5 mm, -20.5 mm]: past the shank's start (-20 mm) but

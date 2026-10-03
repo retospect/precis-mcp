@@ -4760,7 +4760,7 @@ def _render_fasten(tree: SeTree) -> str:
                 seen.add(h.kind)
                 lines.append(f"  {h.kind}: {h.source}")
         for f in res.findings:
-            mark = "ℹ" if getattr(f, "severity", "warn") == "info" else "⚠"
+            mark = {"info": "ℹ", "error": "✗"}.get(getattr(f, "severity", "warn"), "⚠")
             lines.append(f"{mark} {f.rule}: {f.detail}")
     return "\n".join(lines)
 

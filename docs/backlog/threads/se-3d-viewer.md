@@ -29,6 +29,14 @@ since 567f207f; Reto approved both as they are, review item
 se-3d-viewer-1; level chips landed for round 2)
 **Worktree:** `se-3d-viewer`
 
+**Prod dogfood, round 2 (deployed 63301c5c, 2026-10-03).** Against prod
+data through guide-web: all 39 nightly viewer checks pass (`strain` and
+`nowebgl` on `hexa-smooth-drum-v2`, 6123 atoms; `probe` on
+`unicycle-c1`); the drum's atom payload serves cold in 0.97 s. `view='drc'`
+and `view='fasten'` on prod's `unicycle-c1` match the local result
+(flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
+drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
+
 **Resume state (2026-10-02).** Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
 and waits on Reto for the cause; 2 (gr462703) has its server half shipped
 the bar and instancing shipped; the inline early fetch is noted, not
