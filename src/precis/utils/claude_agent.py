@@ -768,6 +768,11 @@ def _check_deny_list_profile_safety(effective_deny: list[str]) -> None:
 #: CLI's own 30 s ``MCP_TIMEOUT`` connect deadline.
 MCP_STARTUP_WAIT_MS: str = "30000"
 
+#: Per-server MCP connect timeout (``MCP_CONNECT_TIMEOUT_MS``) for the agent
+#: container's older CLI, which blocks on it once ``MCP_CONNECTION_NONBLOCKING``
+#: is ``false`` instead of honouring the startup wait above (gr463517).
+MCP_CONNECT_TIMEOUT_MS: str = "60000"
+
 
 def _prepare_agent_env(
     *,
@@ -1316,6 +1321,18 @@ def stream_init_tools(stdout: str) -> list[str] | None:
     if not isinstance(tools, list):
         return None
     return [str(t) for t in tools if isinstance(t, str)]
+
+
+def stream_cli_version(stdout: str) -> str | None:
+    """The ``claude_code_version`` the stream's init event reports, or ``None``.
+
+    A containerized pass runs the image's pinned CLI, not the host's, and
+    the two differ in how long a first turn waits for MCP servers
+    (gr463517) — so a starved pass's evidence has to say which one ran.
+    """
+    ev = _stream_init_event(stdout)
+    version = ev.get("claude_code_version") if ev is not None else None
+    return str(version) if version else None
 
 
 def _stream_init_event(stdout: str) -> dict[str, Any] | None:

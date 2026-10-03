@@ -478,7 +478,11 @@ def _tool_starved_evidence(res: LlmResult) -> str:
     declined them — a prompt problem), the unscoped tool-call total (built-in
     tools used, precis not?), turns/cost, and the head of what it wrote.
     """
-    from precis.utils.claude_agent import stream_init_tools, stream_mcp_server_status
+    from precis.utils.claude_agent import (
+        stream_cli_version,
+        stream_init_tools,
+        stream_mcp_server_status,
+    )
 
     servers = stream_mcp_server_status(res.raw_text or "")
     if servers is None:
@@ -487,6 +491,8 @@ def _tool_starved_evidence(res: LlmResult) -> str:
         mcp = "mcp init: NO servers listed — mcp_config not applied"
     else:
         mcp = "mcp init: " + ", ".join(f"{k}={v}" for k, v in sorted(servers.items()))
+    # gr463517: a containerized pass runs the image's CLI, not the host's.
+    mcp += f" (cli {stream_cli_version(res.raw_text or '') or '?'})"
     # gr463517: whether the first turn was OFFERED precis tools, which the
     # server status cannot say — listed, deferred behind ToolSearch, or absent.
     tools = stream_init_tools(res.raw_text or "")

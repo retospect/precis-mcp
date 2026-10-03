@@ -100,6 +100,14 @@ def test_write_full_is_agent_rw_oauth() -> None:
     assert "ANTHROPIC_API_KEY" not in cenv.secret_keys
 
 
+def test_container_cli_blocks_on_mcp_connect() -> None:
+    """gr463517: the image's pinned CLI caps the first-turn MCP wait at 2 s
+    and ignores the startup-wait var; these make it block on precis."""
+    cenv = ac.container_env(Envelope(), model="qwen")
+    assert cenv.values["MCP_CONNECTION_NONBLOCKING"] == "false"
+    assert cenv.values["MCP_CONNECT_TIMEOUT_MS"] == "60000"
+
+
 def test_write_none_is_agent_ro() -> None:
     cenv = ac.container_env(Envelope(write="none"), model="qwen")
     assert cenv.values["PRECIS_MCP_DB_ROLE"] == "agent_ro"

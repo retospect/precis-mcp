@@ -39,7 +39,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from precis.utils.claude_agent import MCP_STARTUP_WAIT_MS
+from precis.utils.claude_agent import MCP_CONNECT_TIMEOUT_MS, MCP_STARTUP_WAIT_MS
 from precis.utils.container_limits import container_limit_flags
 from precis.workers import envelope as _envelope
 
@@ -368,6 +368,13 @@ def container_env(
             # gr245505: first turn waits for the precis MCP server, same as
             # the in-proc path (``claude_agent._prepare_agent_env``).
             "CLAUDE_CODE_MCP_STARTUP_WAIT_MS": MCP_STARTUP_WAIT_MS,
+            # gr463517: the image's pinned CLI (Dockerfile CLAUDE_CODE_VERSION,
+            # 2.1.143) predates that var and caps the first-turn wait at a
+            # hard-coded 2 s, so a ``precis serve`` slower than that left the
+            # pass tool-less. These two make that CLI block until the server
+            # connects, up to 60 s; newer CLIs honour the line above instead.
+            "MCP_CONNECTION_NONBLOCKING": "false",
+            "MCP_CONNECT_TIMEOUT_MS": MCP_CONNECT_TIMEOUT_MS,
         },
     )
 
