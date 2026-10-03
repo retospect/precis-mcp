@@ -12,28 +12,75 @@ green while carrying src no shard ever ran (observed 2026-09-26 on a 35-line
 `_pcb_ops.py` change, and four consecutive times over 2026-09-29/30).
 
 This walks main's first-parent history back from a starting sha and prints the
-newest one whose `test-linux` check-runs are *all* successful — the last sha
-with a real shard verdict. `plan` uses it as the range start, so a docs-only
-push sitting on ungated src inherits the full lane instead of the docs one.
-The range can only ever widen, so the only failure direction is over-gating.
+newest one with a real full-gate verdict. `plan` uses it as the range start, so
+a docs-only push sitting on ungated src inherits the full lane instead of the
+docs one. The range can only ever widen, so the only failure direction is
+over-gating.
 
-Deliberately sha-keyed (`/commits/<sha>/check-runs`), not `gh run list`: the
-run-list page and the `/actions/runs` endpoint both serve a cache that has
-been weeks stale, which is the whole substance of gr456236. The sha-keyed
-endpoint has not shown that behaviour.
+  scripts/last-gated-main-sha [--start <ref>] [--limit N] [--hours H] [--age-hours]
 
-  scripts/last-gated-main-sha [--start <ref>] [--limit N] [--age-hours]
+Verdict rule for a sha: at least one check-run named exactly `lint`, every
+`lint` run SUCCESS; AND at least GATE_SHARDS (6) check-runs whose name starts
+with `test-linux`, every one SUCCESS. "At least", not "exactly": a sha the
+nightly also ran carries 18 test-linux runs (3.12 + 3.13 legs on top of the
+gate's six) and 2 lint runs. "Every" is across all check suites on the sha, so
+a red nightly leg disqualifies it. A docs-lane sha runs no test-linux at all,
+and a partially-cancelled matrix leaves one green shard beside five cancelled
+ones — neither is a verdict. Re-runs are collapsed (`checkType: LATEST`), so a
+re-run to green supersedes the cancelled attempt.
 
-`--age-hours` prints how many hours ago that verdict *completed*, instead of
-the sha — the drift `scripts/ship --quick` refuses past. Deliberately the
-check-run's `completed_at` and not the commit date: a verdict always lands
-after the commit it judges, so commit date overstates the drift, and this
-number gates a hard refusal.
+Source: one batched GraphQL query (`gh api graphql`, 100 commits per call) over
+main's history, `since` the window cutoff. It reads the same per-sha check-run
+objects as REST `/commits/<sha>/check-runs` — sha-keyed, never `gh run list`:
+the run-list page and the `/actions/runs` endpoint both serve a cache that has
+been weeks stale, which is the whole substance of gr456236. The REST per-sha
+walk would be ~368 calls inside every main push's `plan` job (main took 368
+commits in 48 h), hence the batching.
 
-Advisory: always exits 0, prints nothing when it cannot tell (no `gh`, no
-auth, nothing gated inside the window). An empty answer means "gate fully" —
-and, for `--age-hours`, "do not refuse on this": an unanswerable lookup must
-never be the thing that blocks a ship, or a GitHub outage stops the fleet.
+The history is main's, from its tip, but `--start` may be older (check.yml
+passes `--start $BEFORE`, ship passes `--start origin/main`). So the local
+`git rev-list --first-parent` from `--start` fixes the order, the GraphQL pages
+supply an oid -> check-runs map, and the walk takes the first local sha whose
+runs pass. A local sha absent from the map (e.g. `--start` is not on main) is
+simply not green; the walk continues.
+
+Bound: WINDOW_HOURS (48) by commit date, at most MAX_COMMITS (500, five pages).
+The earlier "walk 25 commits" cap assumed a burst is a handful of commits; main
+took 368 commits in 48 h, the 25-walk fell off the end of the gated history, and
+the drift guard was blind from 2026-10-02 (a ~3 h window). `--limit N` overrides
+MAX_COMMITS, `--hours H` overrides the window.
+
+`--age-hours` prints how many hours ago that verdict *completed* instead of the
+sha — the drift `scripts/ship --quick` refuses past. It is the hours since the
+newest `completedAt` across the chosen sha's `lint` + `test-linux` runs: the
+verdict is not in until the last job reports, so the matrix is as old as its
+slowest member. Deliberately the check-run's completion time and not the commit
+date: a verdict always lands after the commit it judges, so commit date
+overstates the drift, and this number gates a hard refusal. A green sha whose
+timestamps are unreadable prints nothing rather than falling through to an
+older sha, which would overstate the drift.
+
+Three outcomes, in both the plain and the `--age-hours` mode:
+
+  exit 0, output   found: the sha, or its age in hours.
+  exit 0, empty    unknowable — no `gh`, no auth, a GraphQL error or timeout,
+                   malformed JSON, a `--start` git cannot resolve, a green sha
+                   whose timestamps are unreadable, or no commits at all in the
+                   window (nothing to judge). Empty output means unknowable and
+                   never refuses: for the sha it means "gate fully", for
+                   `--age-hours` "do not refuse on this". An unanswerable
+                   lookup must never be the thing that blocks a ship, or a
+                   GitHub outage stops the fleet.
+  exit 2, empty    looked and found none: every page the walk needed was
+                   fetched, the window holds at least one commit, and none has
+                   a full verdict (a page-capped walk still counts: the whole
+                   bounded window was looked at). This is what the drift guard
+                   refuses on — without it a window as long as the refusal
+                   threshold could never say "too old".
+
+Exit 2 is an answer, not a crash: callers must not treat it as one. check.yml's
+`plan` runs under `bash -e` and catches it explicitly; `scripts/ship --quick`
+refuses on it.
 """
 
 from __future__ import annotations
@@ -42,14 +89,30 @@ import json
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# How far back to look. A burst is a handful of commits; past ~25 the cost of
-# the walk exceeds the cost of just running the full gate once.
-DEFAULT_LIMIT = 25
+# check.yml's test-linux gate shape: shard: [1..6] and `pytest --shard K/6`.
+# tests/test_last_gated_main_sha.py pins this against the workflow.
+GATE_SHARDS = 6
+
+# How far back to look: by commit date, capped by commit count. Sized to the
+# real commit rate (368 on main in 48 h), not to "a burst".
+WINDOW_HOURS = 48
+MAX_COMMITS = 500
+PAGE_SIZE = 100
+
+QUERY = """
+query($owner:String!,$name:String!,$since:GitTimestamp!,$after:String){
+ repository(owner:$owner,name:$name){ref(qualifiedName:"refs/heads/main"){target{... on Commit{
+  history(first:100,since:$since,after:$after){pageInfo{hasNextPage endCursor}
+   nodes{oid checkSuites(first:20){nodes{checkRuns(first:30,filterBy:{checkType:LATEST}){nodes{name conclusion completedAt}}}}}}}}}}}
+"""
+
+Run = dict[str, Any]
 
 
 def _run(*args: str) -> str | None:
@@ -67,98 +130,175 @@ def _run(*args: str) -> str | None:
     return cp.stdout if cp.returncode == 0 else None
 
 
-def first_parent_shas(start: str, limit: int) -> list[str]:
-    out = _run("git", "rev-list", "--first-parent", f"-n{limit}", start)
-    return out.split() if out else []
-
-
-def shard_verdict(sha: str) -> list[list[str | None]] | None:
-    """`[[conclusion, completed_at], ...]` for `sha`'s `test-linux` check-runs.
-
-    `None` when the lookup itself could not be answered — no `gh`, no auth, a
-    timeout. Distinct from `[]` (the sha ran no shards at all), because one
-    means "we don't know" and the other means "we know, and it wasn't gated".
-    """
+def first_parent_shas(start: str, limit: int, since: str) -> list[str] | None:
+    """The local window, newest first; `None` when it could not be read (an
+    unresolvable `--start`), distinct from `[]` (a valid start with no commits
+    that recent)."""
     out = _run(
+        "git", "rev-list", "--first-parent", f"--since={since}", f"-n{limit}", start
+    )
+    return None if out is None else out.split()
+
+
+def _runs_of(node: Any) -> list[Run]:
+    """Flatten one commit's check suites into its check-runs."""
+    runs: list[Run] = []
+    suites = ((node.get("checkSuites") or {}).get("nodes")) or []
+    for suite in suites:
+        for run in ((suite or {}).get("checkRuns") or {}).get("nodes") or []:
+            if isinstance(run, dict):
+                runs.append(run)
+    return runs
+
+
+def fetch_page(since: str, after: str | None) -> dict[str, Any] | None:
+    """One page of main's history, or `None` when it could not be answered.
+
+    `None` covers no `gh`, no auth, a timeout, malformed JSON and a response
+    carrying `errors` — all "we don't know", never "nothing was gated".
+    """
+    args = [
         "gh",
         "api",
-        f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
-        "--jq",
-        "[.check_runs[] | select(.name | startswith(\"test-linux\")) "
-        "| [.conclusion, .completed_at]]",
-    )
+        "graphql",
+        "-F",
+        "owner={owner}",
+        "-F",
+        "name={repo}",
+        "-f",
+        f"since={since}",
+        "-f",
+        f"query={QUERY}",
+    ]
+    if after:
+        args += ["-f", f"after={after}"]
+    out = _run(*args)
     if out is None:
         return None
     try:
         parsed = json.loads(out)
-    except ValueError:
+        if parsed.get("errors"):
+            return None
+        history = parsed["data"]["repository"]["ref"]["target"]["history"]
+    except (ValueError, KeyError, TypeError, AttributeError):
         return None
-    return parsed if isinstance(parsed, list) else None
-
-
-def has_shard_verdict(sha: str) -> bool:
-    """True when every `test-linux` check-run at `sha` concluded success.
-
-    All, not any: a partially-cancelled matrix leaves one green shard next to
-    five cancelled ones, and that is exactly the state this exists to refuse
-    to count. `filter=latest` (the endpoint default) collapses re-runs, so a
-    re-run to green supersedes the cancelled attempt.
-    """
-    runs = shard_verdict(sha)
-    if not runs:
-        return False
-    return all(r[0] == "success" for r in runs)
-
-
-def verdict_age_hours(sha: str) -> float | None:
-    """Hours since `sha`'s shard verdict finished, or `None` if unknowable.
-
-    The *newest* `completed_at` across the matrix: the verdict is not in until
-    the last shard reports, so the matrix is as old as its slowest member, not
-    its fastest.
-    """
-    runs = shard_verdict(sha)
-    if not runs or not all(r[0] == "success" for r in runs):
+    if not isinstance(history, dict) or not isinstance(history.get("nodes"), list):
         return None
+    return history
+
+
+def is_green(runs: list[Run]) -> bool:
+    """True when `runs` carry a full gate verdict (rule in the module doc)."""
+    lint = [r for r in runs if r.get("name") == "lint"]
+    shards = [r for r in runs if str(r.get("name", "")).startswith("test-linux")]
+    return (
+        bool(lint)
+        and all(r.get("conclusion") == "SUCCESS" for r in lint)
+        and len(shards) >= GATE_SHARDS
+        and all(r.get("conclusion") == "SUCCESS" for r in shards)
+    )
+
+
+def verdict_age_hours(runs: list[Run]) -> float | None:
+    """Hours since the newest `lint` / `test-linux` completion, or `None`."""
     stamps = []
-    for _conclusion, completed in runs:
-        if not completed:
+    for r in runs:
+        name = str(r.get("name", ""))
+        if name != "lint" and not name.startswith("test-linux"):
             continue
         try:
-            stamps.append(datetime.fromisoformat(str(completed)))
+            stamp = datetime.fromisoformat(str(r.get("completedAt")))
         except ValueError:
             continue
+        stamps.append(stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC))
     if not stamps:
         return None
     newest = max(stamps)
-    if newest.tzinfo is None:
-        newest = newest.replace(tzinfo=UTC)
     return (datetime.now(UTC) - newest).total_seconds() / 3600.0
 
 
-def main(argv: list[str]) -> int:
-    start = "HEAD"
-    limit = DEFAULT_LIMIT
-    age_mode = "--age-hours" in argv
+def find_green(
+    local: list[str], by_oid: dict[str, list[Run]], *, complete: bool
+) -> tuple[str | None, bool]:
+    """Walk `local` in order; `(sha, decided)`.
+
+    `decided` is False when the walk reached a sha the pages fetched so far do
+    not cover and more pages remain — an older green sha must not win over a
+    newer one that simply has not been fetched yet.
+    """
+    for sha in local:
+        runs = by_oid.get(sha)
+        if runs is None:
+            if complete:
+                continue  # not on main's history inside the window: not green
+            return None, False
+        if is_green(runs):
+            return sha, True
+    return None, True
+
+
+FOUND, NONE_GREEN, UNKNOWN = "found", "none", "unknown"
+
+
+def lookup(start: str, limit: int, hours: float) -> tuple[str, str | None, list[Run]]:
+    """`(FOUND, sha, runs)`; `(NONE_GREEN, ...)` — the whole bounded window was
+    looked at and holds no green sha; or `(UNKNOWN, ...)` — could not look, or
+    nothing to judge (an empty local window)."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    local = first_parent_shas(start, limit, cutoff)
+    if not local:
+        return UNKNOWN, None, []
+    by_oid: dict[str, list[Run]] = {}
+    after: str | None = None
+    pages = max(1, -(-limit // PAGE_SIZE))
+    for fetched in range(1, pages + 1):
+        page = fetch_page(cutoff, after)
+        if page is None:
+            return UNKNOWN, None, []
+        for node in page["nodes"]:
+            if isinstance(node, dict) and node.get("oid"):
+                by_oid[node["oid"]] = _runs_of(node)
+        info = page.get("pageInfo") or {}
+        after = info.get("endCursor")
+        complete = not info.get("hasNextPage") or not after or fetched == pages
+        sha, decided = find_green(local, by_oid, complete=complete)
+        if sha is not None:
+            return FOUND, sha, by_oid[sha]
+        if decided or complete:
+            return NONE_GREEN, None, []
+    return UNKNOWN, None, []
+
+
+def _flag(argv: list[str], name: str, default: Any, cast: Any) -> Any:
     for i, arg in enumerate(argv):
-        if arg == "--start" and i + 1 < len(argv):
-            start = argv[i + 1]
-        elif arg == "--limit" and i + 1 < len(argv):
-            limit = int(argv[i + 1])
-    for sha in first_parent_shas(start, limit):
-        if not has_shard_verdict(sha):
-            continue
-        if not age_mode:
-            print(sha)
-            return 0
-        age = verdict_age_hours(sha)
-        # A gated sha whose timestamps are unreadable stops the walk rather
-        # than falling through to an older one: the answer is "the newest
-        # verdict's age is unknown", not "the newest KNOWABLE verdict is
-        # older than it is", which would overstate the drift.
-        if age is not None:
-            print(f"{age:.1f}")
+        if arg == name and i + 1 < len(argv):
+            try:
+                return cast(argv[i + 1])
+            except ValueError:
+                return default
+    return default
+
+
+def main(argv: list[str]) -> int:
+    if "--help" in argv or "-h" in argv:
+        print(__doc__)
         return 0
+    start = _flag(argv, "--start", "HEAD", str)
+    limit = _flag(argv, "--limit", MAX_COMMITS, int)
+    hours = _flag(argv, "--hours", WINDOW_HOURS, float)
+    status, sha, runs = lookup(start, limit, hours)
+    if status == NONE_GREEN:
+        return 2
+    if status != FOUND or sha is None:
+        return 0
+    if "--age-hours" not in argv:
+        print(sha)
+        return 0
+    # A gated sha whose timestamps are unreadable prints nothing rather than
+    # falling through to an older one (see the module doc).
+    age = verdict_age_hours(runs)
+    if age is not None:
+        print(f"{age:.1f}")
     return 0
 
 

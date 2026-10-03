@@ -19,11 +19,23 @@ and nothing is tracked or pushed.
   scripts/round status [--json]       the table: every worktree and its mark
   scripts/round pending               worktrees with no final mark, one per line
   scripts/round close                 coordinator: end the round
+  scripts/round gate [--json]         coordinator: newest main sha with a green CI verdict (read-only)
+  scripts/round deploy [--dry-run]    coordinator: move `gated` to that sha, then deploy it pinned
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the round number, so a mark left from an earlier round reads as
 "no mark" — `open` never has to clean up after anyone. `in` and `none` are
 final for the round; `eta` is not, so an `eta` peer stays in `pending`.
+
+There is no local gate and no ship lock in a round any more. Every main push
+gets a full GitHub CI verdict (check.yml no longer cancels main runs), so the
+candidate is simply the newest main sha whose shards all went green
+(`scripts/last-gated-main-sha`). `gate` reports it and how much unverified
+main sits above it; `deploy` refuses unless it is still an ancestor of
+origin/main, fresh enough, and a fast-forward of `gated`, then deploys exactly
+that sha with `--pinned`. Neither verb takes the ship lock or runs a test, so
+qlands never stall behind a round. Peers do not deploy — the coordinator
+runs `deploy`.
 
 Exit codes: 0 ok; 1 refused (no round open, unknown sha, bad usage). `pending`
 exits 0 with no output when everyone is in.
@@ -42,6 +54,12 @@ from pathlib import Path
 from typing import Any
 
 FINAL = ("in", "none")
+# check.yml `plan`'s docs-lane classifier: a commit touching only paths that
+# match this is docs-only. A test pins that the workflow still says the same.
+DOCS_ONLY_RE = r"^(docs/|[^/]+\.md$)"
+# How old the candidate's CI verdict may be before `deploy` refuses it. Reto's
+# ruling on the right window is pending; only this default may change.
+DEFAULT_MAX_CANDIDATE_HOURS = 6.0
 _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 
 
@@ -240,6 +258,285 @@ def cmd_pending(state: Path, _args: argparse.Namespace) -> int:
     return 0
 
 
+def _root() -> Path:
+    """The checkout whose scripts/ and refs the gate verbs use.
+
+    PRECIS_ROUND_ROOT overrides it (tests aim the verbs at a throwaway repo);
+    otherwise it is the checkout this script lives in.
+    """
+    override = os.environ.get("PRECIS_ROUND_ROOT", "").strip()
+    return Path(override) if override else Path(__file__).resolve().parent.parent
+
+
+def _rgit(root: Path, *args: str) -> str | None:
+    return _git("-C", str(root), *args)
+
+
+def _ref(root: Path, name: str) -> str:
+    return _rgit(root, "rev-parse", "--verify", "--quiet", name) or ""
+
+
+def _ancestor(root: Path, older: str, newer: str) -> bool:
+    cp = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", older, newer],
+        capture_output=True,
+        check=False,
+    )
+    return cp.returncode == 0
+
+
+def _lgm(root: Path, *flags: str) -> str:
+    """Output of scripts/last-gated-main-sha (a black box; empty = unknowable)."""
+    return _lgm_run(root, *flags)[0]
+
+
+def _lgm_run(root: Path, *flags: str) -> tuple[str, int]:
+    """(stdout, exit code). Exit 2 + empty = the whole window had no green sha."""
+    argv = [
+        str(root / "scripts" / "last-gated-main-sha"),
+        *flags,
+        "--start",
+        "origin/main",
+    ]
+    try:
+        cp = subprocess.run(
+            argv,
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except OSError:
+        return "", 1
+    return cp.stdout.strip(), cp.returncode
+
+
+def _fetch(root: Path) -> None:
+    """Refresh origin's main/gated/prod; a failure is a warning, not fatal."""
+    if _rgit(root, "fetch", "-q", "origin", "main", "gated", "prod") is not None:
+        return
+    # A ref absent on origin fails the combined fetch: retry one by one.
+    got = [
+        _rgit(root, "fetch", "-q", "origin", r) is not None
+        for r in ("main", "gated", "prod")
+    ]
+    if not got[0]:
+        print(
+            "scripts/round: warning: fetch of origin/main failed — using local refs",
+            file=sys.stderr,
+        )
+
+
+def _docs_only(root: Path, sha: str) -> bool:
+    files = (_rgit(root, "diff", "--name-only", f"{sha}^", sha) or "").splitlines()
+    return all(re.match(DOCS_ONLY_RE, f) for f in files)
+
+
+def _red_above(root: Path, cand: str) -> dict[str, Any] | None:
+    """Newest of the 10 main commits above `cand` whose verdict is complete and failed."""
+    jq = r'.check_runs[] | [.name, .status, (.conclusion // ""), .html_url] | @tsv'
+    for sha in (
+        _rgit(root, "rev-list", "--first-parent", "-n10", f"{cand}..origin/main") or ""
+    ).split():
+        try:
+            cp = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+                    "--jq",
+                    jq,
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if cp.returncode != 0:
+            return None
+        rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
+        rows = [r for r in rows if r[0] == "lint" or r[0].startswith("test-linux")]
+        if not rows or any(r[1] != "completed" for r in rows):
+            continue
+        failed = [r for r in rows if r[2] in ("failure", "timed_out")]
+        if failed:
+            m = re.search(r"/actions/runs/(\d+)", failed[0][3])
+            return {
+                "sha": sha,
+                "jobs": [r[0] for r in failed],
+                "url": failed[0][3],
+                "run_id": m.group(1) if m else "",
+            }
+    return None
+
+
+def _gate_facts(root: Path) -> dict[str, Any]:
+    _fetch(root)
+    sha, rc = _lgm_run(root)
+    cand = _ref(root, f"{sha}^{{commit}}") if sha else ""
+    # exit 2 + empty = walked the whole window, none green; any other empty
+    # answer (gh/auth/API trouble) is "could not look".
+    state = (
+        "found" if cand else "none_in_window" if (rc == 2 and not sha) else "unreadable"
+    )
+    try:
+        age: float | None = float(_lgm(root, "--age-hours")) if cand else None
+    except ValueError:
+        age = None
+    facts: dict[str, Any] = {
+        "candidate": cand,
+        "candidate_state": state,
+        "subject": (_rgit(root, "log", "-1", "--format=%s", cand) or "")
+        if cand
+        else "",
+        "age_hours": age,
+        "origin_main": _ref(root, "refs/remotes/origin/main"),
+        "origin_gated": _ref(root, "refs/remotes/origin/gated"),
+        "origin_prod": _ref(root, "refs/remotes/origin/prod"),
+        "candidate_in_main": False,
+        "gated_is_ancestor": True,
+        "ahead_docs": 0,
+        "ahead_code": 0,
+        "red": None,
+    }
+    if not cand:
+        return facts
+    facts["candidate_in_main"] = _ancestor(root, cand, "origin/main")
+    if facts["origin_gated"]:
+        facts["gated_is_ancestor"] = _ancestor(root, facts["origin_gated"], cand)
+    if facts["candidate_in_main"]:
+        above = (
+            _rgit(root, "rev-list", "--first-parent", f"{cand}..origin/main") or ""
+        ).split()
+        facts["ahead_docs"] = sum(_docs_only(root, s) for s in above)
+        facts["ahead_code"] = len(above) - facts["ahead_docs"]
+        if above:
+            facts["red"] = _red_above(root, cand)
+    return facts
+
+
+_NO_CANDIDATE = {
+    "none_in_window": "no main sha with a green CI verdict in the last 48 h",
+    "unreadable": "could not read CI verdicts (gh/auth/API) — no candidate",
+}
+
+
+def cmd_gate(args: argparse.Namespace) -> int:
+    f = _gate_facts(_root())
+    if args.json:
+        print(json.dumps(f))
+    elif not f["candidate"]:
+        print(_NO_CANDIDATE[f["candidate_state"]])
+    else:
+        age = f"{f['age_hours']:.1f}h" if f["age_hours"] is not None else "unknown"
+        print(f"candidate {f['candidate'][:8]} {f['subject']}")
+        print(f"verdict age {age}")
+        print(
+            f"origin/main {f['origin_main'][:8] or '—'}  origin/gated {f['origin_gated'][:8] or '—'}"
+            f"  origin/prod {f['origin_prod'][:8] or '—'}"
+        )
+        if not f["candidate_in_main"]:
+            print("candidate is NOT an ancestor of origin/main (deploy will refuse)")
+        print(
+            f"main is ahead of the candidate by {f['ahead_docs']} docs-only"
+            f" and {f['ahead_code']} code commit(s)"
+        )
+        if not f["gated_is_ancestor"]:
+            print(
+                "origin/gated is not an ancestor of the candidate (deploy will refuse)"
+            )
+        red = f["red"]
+        if red:
+            print(
+                f"red above the candidate: {red['sha'][:8]} — failing: {', '.join(red['jobs'])}"
+            )
+            print(f"  {red['url']}")
+            if red["run_id"]:
+                print(f"  gh run view {red['run_id']} --log-failed")
+    return 0 if f["candidate"] else 1
+
+
+def _refusal(root: Path, f: dict[str, Any]) -> str:
+    """Why `deploy` must not go ahead on these facts; empty when it may."""
+    cand = f["candidate"]
+    if not cand:
+        return _NO_CANDIDATE.get(f["candidate_state"], _NO_CANDIDATE["unreadable"])
+    if not f["candidate_in_main"]:
+        return f"candidate {cand[:8]} is not an ancestor of origin/main"
+    age = f["age_hours"]
+    if age is None:
+        return f"the age of candidate {cand[:8]}'s verdict is unknown"
+    max_h = float(
+        os.environ.get("PRECIS_ROUND_MAX_CANDIDATE_HOURS", "")
+        or DEFAULT_MAX_CANDIDATE_HOURS
+    )
+    if age > max_h:
+        return (
+            f"candidate {cand[:8]}'s verdict is {age:.1f}h old"
+            f" (limit {max_h:g}h, PRECIS_ROUND_MAX_CANDIDATE_HOURS)"
+        )
+    if not f["gated_is_ancestor"]:
+        return (
+            f"origin/gated {f['origin_gated'][:8]} is not an ancestor of candidate"
+            f" {cand[:8]} (gated moves fast-forward only)"
+        )
+    pin = root / ".ship-sha"
+    pinned = pin.read_text(encoding="utf-8").strip() if pin.is_file() else ""
+    if pinned and pinned != cand:
+        return f".ship-sha here pins {pinned[:8]}, not {cand[:8]} — remove it or run from a clean tree"
+    return ""
+
+
+def cmd_deploy(args: argparse.Namespace) -> int:
+    root = _root()
+    f = _gate_facts(root)
+    reason = _refusal(root, f)
+    if reason:
+        print(f"scripts/round: deploy refused — {reason}", file=sys.stderr)
+        return 1
+    cand = f["candidate"]
+    if args.dry_run:
+        print(
+            f"dry-run: would move origin/gated to {cand[:8]} (env_pointer_move gated)"
+        )
+        print(f"dry-run: would run scripts/deploy {cand} --pinned")
+        return 0
+    move = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. scripts/lib/env-pointers.sh && env_pointer_move "$1" gated "$2"',
+            "_",
+            str(root),
+            cand,
+        ],
+        cwd=root,
+        check=False,
+    )
+    if move.returncode != 0:
+        print(
+            f"scripts/round: deploy refused — env_pointer_move gated {cand[:8]} failed"
+            f" (exit {move.returncode}: push refused or pointers disabled)",
+            file=sys.stderr,
+        )
+        return 1
+    _fetch(root)
+    if _ref(root, "refs/remotes/origin/gated") != cand:
+        print(
+            f"scripts/round: deploy refused — origin/gated did not move to {cand[:8]}",
+            file=sys.stderr,
+        )
+        return 1
+    return subprocess.run(
+        [str(root / "scripts" / "deploy"), cand, "--pinned"], cwd=root, check=False
+    ).returncode
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scripts/round", description="Shared tally for a coordinated peer round."
@@ -255,7 +552,13 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_parser(name).add_argument("note", nargs="*")
     sub.add_parser("status").add_argument("--json", action="store_true")
     sub.add_parser("pending")
+    sub.add_parser("gate").add_argument("--json", action="store_true")
+    sub.add_parser("deploy").add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.cmd == "gate":
+        return cmd_gate(args)
+    if args.cmd == "deploy":
+        return cmd_deploy(args)
     state = _state_dir()
     handlers = {
         "open": cmd_open,

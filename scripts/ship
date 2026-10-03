@@ -853,14 +853,25 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # two days is.
         #
         # An unknown age NEVER refuses. `last-gated-main-sha --age-hours`
-        # prints nothing when it cannot tell (no gh, no auth, nothing gated
-        # in the window), and treating that as "too old" would let a GitHub
+        # prints nothing and exits 0 when it cannot look (no gh, no auth, an
+        # API error), and treating that as "too old" would let a GitHub
         # outage stop every tree in the fleet from landing — strictly worse
-        # than the ungated main this is guarding against.
+        # than the ungated main this is guarding against. Exit 2 is the other
+        # empty answer: it walked its whole window (48 h) and found no green
+        # sha, which IS a known age past the refuse threshold. Before that
+        # split the window equalled the threshold and the refusal could never
+        # fire (backlog/release-candidate-verdicts.md).
         drift_warn="${PRECIS_QLAND_DRIFT_WARN_HOURS:-24}"
         drift_refuse="${PRECIS_QLAND_DRIFT_REFUSE_HOURS:-48}"
-        drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main 2>/dev/null || true)"
-        if [[ -z "$drift_age" ]]; then
+        drift_rc=0
+        drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main --hours "$drift_refuse" 2>/dev/null)" || drift_rc=$?
+        if [[ -z "$drift_age" && "$drift_rc" == 2 ]]; then
+            if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
+                say "main has no green shard verdict in the last ${drift_refuse}h — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
+            else
+                die "main has no all-green shard matrix in the last ${drift_refuse}h (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a red on main fixed or a /go over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+            fi
+        elif [[ -z "$drift_age" ]]; then
             say "main's last shard verdict: age unknown — not gating on it (drift guard only ever refuses on a number it actually has)"
         elif awk "BEGIN{exit !($drift_age >= $drift_refuse)}"; then
             if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
@@ -1186,7 +1197,7 @@ if [[ "$QUICK" == 1 ]]; then
     if [[ "$QLAND_LINT_RAN" != 1 ]]; then
         printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
     else
-        printf '\n\033[33m⚡ UNTESTED ship — ruff/mypy/import contracts passed, pytest did NOT run. main is\n  untested until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
+        printf '\n\033[33m⚡ UNTESTED ship — ruff/mypy/import contracts and the DB-free hygiene tests passed; the\n  suite did NOT run. main is untested until its CI verdict or the next full gate.\033[0m\n'
     fi
 fi
 

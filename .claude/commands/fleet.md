@@ -62,8 +62,8 @@ Note from the user: `$ARGUMENTS`
 
 5. **Round.** `scripts/round status`. No round open → open one and send
    `.claude/fleet/msg-round-open.txt`; one already open → resend only to
-   windows `up` created. Then follow `/round` for collect → full gate →
-   pinned deploy → verify → restart notice. After the deploy, also file
+   windows `up` created. Then follow `/round` for collect → `round gate`
+   (newest green-CI main sha) → `round deploy` → verify → restart notice. After the deploy, also file
    `release-<round>-<n>.md` look-at items in the review queue: what is
    newly live and what Reto should look at, with the URL or command.
 
@@ -71,7 +71,8 @@ Note from the user: `$ARGUMENTS`
    - **Migrations and `safe_fetch.py` come to you.** A peer does not run
      `/go` on them: its local full gate holds the ship lock and blocks
      every qland. The peer commits, marks `scripts/round eta`, names the
-     branch; you squash-land those branches just before the round's gate.
+     branch; you squash-land those branches early enough that their CI
+     verdict is in before `round gate`.
    - **You hand out migration numbers.** Keep the round's claimed numbers
      in `.claude/purpose`; before the gate, check the range for two files
      with one number (`/whatneedsdoing`'s collision scan).

@@ -45,7 +45,7 @@ per-cluster piece is the gitignored local overlay (`deploy/inventory/` +
    | Ref | Means | Moved by |
    |-----|-------|----------|
    | `main` | landed, possibly untested | a land |
-   | `gated` | last sha the full gate passed | `scripts/ship`, on green |
+   | `gated` | last sha with a full green gate or CI verdict | `scripts/ship`, on green; `scripts/round deploy` |
    | `prod` | what the cluster runs | `scripts/deploy`, on success |
 
    Both are fast-forward only; `prod` goes backward only under

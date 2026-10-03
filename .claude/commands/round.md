@@ -1,12 +1,12 @@
 ---
-description: Coordinate one peer round — peers dogfood on prod, fix, qland; you gate the integrated main, deploy the gated sha pinned, verify, and open the next round. Run from the coordinating (deploy) session's worktree.
+description: Coordinate one peer round — peers dogfood on prod, fix, qland; you deploy the newest main sha with a green CI verdict (scripts/round gate|deploy), verify, and open the next round. Run from the coordinating (deploy) session's worktree.
 argument-hint: "[optional note for the round ping]"
 allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/inflight:*), Bash(scripts/qgo-guard:*), Bash(git:*), Bash(cat:*), Agent, SendMessage, ListAgents
 ---
 
 You are the coordinator of a peer round. Many sessions land onto `main` with
-`/qland` (no pytest); one session — you — settles the debt with a full gate
-and puts the result on the cluster. A round is one pass of that.
+`/qland` (no pytest); every main push gets a GitHub CI verdict, and one
+session — you — puts the newest green main sha on the cluster. A round is one pass of that.
 
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
 under the common git dir, and peers mark themselves from their own trees. A
@@ -35,32 +35,39 @@ Note from the user: `$ARGUMENTS`
    and only once. A peer that messages "qlanded <sha>" instead of marking is
    fine — the sha is on main either way.
 
-3. **Gate the integrated main.** When `pending` is empty, or the stragglers
-   are `eta` and what has landed is worth a deploy:
+3. **Read the candidate.** When `pending` is empty, or the stragglers are
+   `eta` and what has landed is worth a deploy:
    ```
-   scripts/ship --mutate --full "<message>" > /tmp/go-gateN.log 2>&1; echo "GATE_EXIT=$?" >> /tmp/go-gateN.log
+   scripts/round gate
    ```
-   in the background, from a script file, with a waiter on `^GATE_EXIT=`.
-   Never pipe ship into a filter. No edits in this worktree while it runs —
-   ship's final reset destroys them. The full gate holds the ship lock, so
-   peers' qlands queue until it exits.
+   The candidate is the newest main sha whose GitHub CI verdict is fully
+   green (lint + every `test-linux` shard; every main push runs to
+   completion since 2026-10-03). It prints the candidate, its verdict age,
+   `origin/gated` / `origin/prod`, and how many docs-only and code commits
+   main is ahead of it. No local suite runs and no ship lock is taken, so
+   peers' qlands never queue behind the round. A peer's sha that is not yet
+   under the candidate rides the next round, or wait for its CI run (~12 min).
 
-4. **Red gate → route, do not absorb.** Read the `FAILED` and `E  ` lines.
-   Find the owning commit (`git diff <prod>..origin/main` on the failing
-   path) and send that peer the test id, the decisive line, and "qland the
-   fix". Ratchet failures are fixed at the new site, never by raising a
-   ceiling. Fix it yourself only when it is trivial sibling drift and you can
-   run the test. Re-gate when the fix is on main.
+4. **Red verdict → route, do not absorb.** `round gate` names the newest
+   failed main sha above the candidate, its failing jobs and the
+   `gh run view <id> --log-failed` line. Read the `FAILED` and `E  ` lines
+   there, find the owning commit, and send that peer the test id, the
+   decisive line, and "qland the fix". Ratchet failures are fixed at the new
+   site, never by raising a ceiling. Fix it yourself only when it is trivial
+   sibling drift and you can run the test. The fix's own green verdict makes
+   the next candidate.
 
-5. **Deploy the gated sha, pinned.**
+5. **Deploy the candidate.**
    ```
-   scripts/deploy "$(cat .ship-sha)" --pinned > /tmp/go-deployN.log 2>&1; echo "DEPLOY_EXIT=$?" >> /tmp/go-deployN.log
+   scripts/round deploy > /tmp/round-deployN.log 2>&1; echo "DEPLOY_EXIT=$?" >> /tmp/round-deployN.log
    ```
-   Background, waiter on `^DEPLOY_EXIT=`. Never bare, never the branch name.
-   A migration or `safe_fetch.py` in the range is why this is a full gate
-   first. Not between 03:00 and 04:20 UTC. If the preflight reports a host
-   unreachable, probe it once and retry once; a second failure is a report,
-   not a loop.
+   Background, waiter on `^DEPLOY_EXIT=`; `--dry-run` first if in doubt. It
+   refuses a candidate that is not an ancestor of main, older than
+   `PRECIS_ROUND_MAX_CANDIDATE_HOURS` (default 6), or that `gated` cannot
+   fast-forward to; otherwise it moves `gated` and runs
+   `scripts/deploy <40-char sha> --pinned`. Not between 03:00 and 04:20 UTC.
+   If the preflight reports a host unreachable, probe it once and retry
+   once; a second failure is a report, not a loop.
 
 6. **Verify, in this order.** `DEPLOY_EXIT=0`; the `origin/prod →` and
    `prod clone →` lines name the sha; `get(kind='skill', id='precis-status')`

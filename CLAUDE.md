@@ -58,7 +58,7 @@ for overlap; once your task is clear, write one line to `.claude/purpose`.
 When a coordinator has a peer round open (`scripts/round status`), end your
 land by marking it from your own tree — `scripts/round in <sha>`,
 `scripts/round none`, or `scripts/round eta <text>` — instead of messaging;
-leave deploys to the coordinator (`/round`). The fleet itself — one tmux
+leave deploys to the coordinator (`/round`: deploys the newest main sha with a green CI verdict via `scripts/round gate|deploy` — no local gate, no ship lock). The fleet itself — one tmux
 window per active thread plus Reto's `review` window — comes up, and
 recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
 session a question for Reto is a review-queue item
