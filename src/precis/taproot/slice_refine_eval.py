@@ -37,6 +37,7 @@ from precis.workers._chase_llm import _verify_support_with_caveats, is_corrobora
 from precis.workers.hub_refine import (
     _META_REJECTED,
     _attached_source_ids,
+    _claim_source_passage,
     _min_sim_default,
     _topk_default,
 )
@@ -213,6 +214,8 @@ def _eval_one_hub(
         limit=topk,
         max_distance=min_sim,
     )
+    # The same claim-source passage the live pass shows its verifier.
+    claim_source_text = _claim_source_passage(conn, hub_ref_id)
     seen_papers: set[int] = set()
     for block, ref, score in candidates:
         paper_ref_id = int(ref.id)
@@ -241,6 +244,7 @@ def _eval_one_hub(
             target_cite_key=ref.slug or f"ref:{paper_ref_id}",
             target_chunk_ord=block.ord,
             target_chunk_text=block.text,
+            claim_source_text=claim_source_text,
         )
         if verification is None:
             hub_eval.verify_failed += 1

@@ -75,7 +75,13 @@
 #   4. the test-db container itself has been running for at least
 #      PRECIS_REAP_DB_MIN_AGE_SECONDS (default 48h) — a fresh test-db is
 #      almost certainly mid-use; a multi-day-old one with nothing else
-#      running and no recent purpose is not.
+#      running and no recent purpose is not. An `agent-*` worktree (a
+#      subagent's: it never resumes a session, so a warm db is worth nothing
+#      once it finishes) uses PRECIS_REAP_AGENT_DB_MIN_AGE_SECONDS (default
+#      2h) instead. 2026-10-03 ~14:40Z: 7 idle agent test-dbs 3-27 h old held
+#      enough compose networks that docker ran out of address pools ("all
+#      predefined address pools have been fully subnetted") and every
+#      scripts/test in the fleet failed before its first test.
 # All four together are meant to be far more conservative than "would
 # scripts/inflight call this safe_remove" — this sweep never removes the
 # worktree itself, only its docker footprint, so a false negative (leaving a
@@ -201,6 +207,7 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
     # without it.
     if [ -x "$ROOT/scripts/inflight" ]; then
         DB_MIN_AGE_SECONDS="${PRECIS_REAP_DB_MIN_AGE_SECONDS:-172800}"        # 48h
+        AGENT_DB_MIN_AGE_SECONDS="${PRECIS_REAP_AGENT_DB_MIN_AGE_SECONDS:-7200}"  # 2h
         DB_PURPOSE_FRESH_SECONDS="${PRECIS_REAP_DB_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
         PRIMARY_WT="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
         INFLIGHT_JSON="$("$ROOT/scripts/inflight" --json 2>/dev/null || true)"
@@ -241,13 +248,13 @@ sys.exit(0 if age >= threshold else 1)
 PY
         }
 
-        # container_old_enough <container-id> — true (0) when the
-        # container's `Created` timestamp is at least DB_MIN_AGE_SECONDS old.
+        # container_old_enough <container-id> <seconds> — true (0) when the
+        # container's `Created` timestamp is at least <seconds> old.
         container_old_enough() {
-            local cid=$1 created
+            local cid=$1 min_age=$2 created
             created="$(docker inspect -f '{{.Created}}' "$cid" 2>/dev/null)" || return 1
             [ -z "$created" ] && return 1
-            python3 - "$created" "$DB_MIN_AGE_SECONDS" <<'PY'
+            python3 - "$created" "$min_age" <<'PY'
 import datetime
 import sys
 
@@ -302,8 +309,11 @@ PY
             [ "$other_running" = 1 ] && continue
             [ -z "$db_cid" ] && continue   # no running db either -- nothing to reap here
 
-            # (4) the db container has been up at least DB_MIN_AGE_SECONDS.
-            container_old_enough "$db_cid" || continue
+            # (4) the db container has been up at least DB_MIN_AGE_SECONDS
+            # (AGENT_DB_MIN_AGE_SECONDS for a subagent's `agent-*` tree).
+            min_age="$DB_MIN_AGE_SECONDS"
+            case "$(basename "$wt_path")" in agent-*) min_age="$AGENT_DB_MIN_AGE_SECONDS" ;; esac
+            container_old_enough "$db_cid" "$min_age" || continue
 
             if [ "$DRY_RUN" = 1 ]; then
                 REAPED+=("$proj")

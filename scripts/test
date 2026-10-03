@@ -238,10 +238,16 @@ THREAD_CAP_ENV=(
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
-elif compose up -d --wait precis-test-db >/dev/null 2>&1; then
+elif DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2
+    # Every worktree's project owns one compose network; idle ones used up
+    # docker's address pools on 2026-10-03 and failed every scripts/test in the
+    # fleet with only this compose error. Name the remedy.
+    if [[ "$DB_UP_OUT" == *"fully subnetted"* ]]; then
+        echo "docker is out of network address pools (idle worktree test-dbs hold them): run scripts/reap-test-dbs; PRECIS_REAP_DB_MIN_AGE_SECONDS=7200 widens it to thread trees idle 2 h" >&2
+    fi
 fi
 
 # Default -n6 unless the caller set their own -n (single fast test → pass -n0).

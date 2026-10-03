@@ -22,12 +22,27 @@
 #   scripts/fleet peek <win> [-n N]  last N (default 25) non-empty pane lines
 #   scripts/fleet dialogs            windows with a dialog: window · type · command
 #   scripts/fleet refs               origin main/gated/prod shas + ages, newest green main
+#   scripts/fleet compact <win…> [--at-idle]   /next, a grace, then /compact once idle
+#       (PRECIS_FLEET_COMPACT_GRACE 90 s, PRECIS_FLEET_COMPACT_WAIT 1800 s per window).
+#       Exit 3 = refused: busy or dialog (without --at-idle), wait timed out, or
+#       the caller's own / window 0 / claude / organizer. Exit code = worst window.
+#   scripts/fleet mcp-check [--fix]  per window: precis= and claude-context= connected|dead|unknown;
+#       --fix sends `/mcp reconnect all` to idle windows with a dead one (busy or
+#       dialog: `pending: <win> (busy|dialog)`; the orchestrator's seat is skipped)
+#   scripts/fleet watch              ONE watcher, typed lines on transition only:
+#       ctx <win> <pct>% <busy|idle> · note <slug> new|changed · dialog <win> <type>
+#       · ci main <sha9> <conclusion> · mcp <win> dead · delivered <win>
+#       Seen state persists in <state>/fleet-watch.state, so a restart replays
+#       nothing (a first start seeds silently). Also drains the held queue.
+#       PRECIS_FLEET_WATCH_TICK 15 s, PRECIS_FLEET_CTX_FLOOR 30
 #   scripts/fleet effort             send each window its /effort level
-#   scripts/fleet watch-ctx          emit a line as a window crosses 30/40/50/…% ctx (PRECIS_FLEET_CTX_FLOOR)
+#   scripts/fleet watch-ctx          the old ctx-only watcher (kept; `watch` supersedes it)
 #   scripts/fleet queue-dir          print the review-queue directory
 #
 # Test seams: PRECIS_FLEET_TMUX_SOCKET (private tmux server, tmux -L),
-# PRECIS_FLEET_STATE (state dir), PRECIS_FLEET_REVIEWS (reviews dir).
+# PRECIS_FLEET_STATE (state dir), PRECIS_FLEET_REVIEWS (reviews dir),
+# PRECIS_FLEET_WATCH_TICKS (watch exits after N ticks), PRECIS_FLEET_COMPACT_POLL
+# (compact's idle-poll interval, 5 s).
 set -euo pipefail
 
 common=$(git rev-parse --path-format=absolute --git-common-dir)
@@ -120,6 +135,12 @@ cmd_up() {
   done
 }
 
+mcp_helper_path() {
+  local helper; helper="$(dirname "$0")/lib/fleet_mcp_state.py"
+  [ -f "$helper" ] || helper="$root/scripts/lib/fleet_mcp_state.py"
+  printf '%s' "$helper"
+}
+
 cmd_status() {
   need_tmux
   # precis MCP per pane: a session that gave up on it is otherwise silent
@@ -128,8 +149,7 @@ cmd_status() {
   # unsynced tree, `git show origin/main:scripts/fleet`) falls back to the
   # main checkout's. No helper or a failed one prints `?`, never `-`, which
   # means "no MCP events yet".
-  local mcp="" unknown="?" helper="$(dirname "$0")/lib/fleet_mcp_state.py"
-  [ -f "$helper" ] || helper="$root/scripts/lib/fleet_mcp_state.py"
+  local mcp="" unknown="?" helper; helper=$(mcp_helper_path)
   if [ ! -f "$helper" ]; then
     echo "scripts/fleet: no fleet_mcp_state.py beside this script or in $root — mcp column unknown" >&2
   elif mcp=$(python3 "$helper"); then
@@ -233,8 +253,10 @@ cmd_queue() {
   done
 }
 
-cmd_deliver() {
-  need_tmux
+# deliver_held <mode>: send each held message to a window with no dialog.
+# mode cli prints send's lines and `delivered: <win>`; mode watch prints only
+# `delivered <win>`. The dialog is re-checked per message, at delivery time.
+deliver_held() {
   local d w f text out
   for d in "$held"/*/; do
     [ -d "$d" ] || continue
@@ -246,13 +268,18 @@ cmd_deliver() {
       ! has_dialog "$w" || break
       text=$(cat "$f")
       out=$(send "$w" "$text")
-      echo "$out"
+      [ "$1" = watch ] || echo "$out"
       case "$out" in SKIPPED*) break ;; esac
       rm -f "$f"
-      echo "delivered: $w"
+      if [ "$1" = watch ]; then echo "delivered $w"; else echo "delivered: $w"; fi
     done
   done
   return 0
+}
+
+cmd_deliver() {
+  need_tmux
+  deliver_held cli
 }
 
 cmd_verdict() {
@@ -394,6 +421,271 @@ cmd_refs() {
   else echo "green ${green:0:9} ?"; fi
 }
 
+# win_state <window> -> dialog | busy | idle | gone (same tests as `status`).
+win_state() {
+  local p; p=$(tmux capture-pane -p -t "$1" 2>/dev/null) || { echo gone; return 0; }
+  if printf '%s\n' "$p" | grep -q -E "$dialog_re"; then echo dialog
+  elif printf '%s\n' "$p" | grep -q -E '… \([0-9]+'; then echo busy
+  else echo idle; fi
+}
+
+# The orchestrator's seat: window 0, `claude`, `organizer`, and the caller's own
+# window. The classifier blocks tmux self-drive there and Reto types /compact
+# himself, so compact and mcp-check --fix never send to it.
+orch_window() {
+  local w="$1" idx own
+  idx=$(tmux list-windows -F '#{window_index} #{window_name}' | awk -v w="$w" '$2 == w {print $1; exit}')
+  [ "$idx" != 0 ] || return 0
+  case "$w" in claude|organizer) return 0 ;; esac
+  if [ -n "${TMUX_PANE:-}" ]; then
+    own=$(tmux display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || true)
+    [ "$own" != "$w" ] || return 0
+  fi
+  return 1
+}
+
+# wait_idle <win> <start-seconds> <limit-seconds>: poll until two CONSECUTIVE
+# polls see the window idle. 0 = idle, 1 = timed out, 2 = window gone.
+wait_idle() {
+  local run=0 poll="${PRECIS_FLEET_COMPACT_POLL:-5}" st
+  while true; do
+    st=$(win_state "$1")
+    [ "$st" != gone ] || return 2
+    if [ "$st" = idle ]; then run=$((run + 1)); else run=0; fi
+    [ "$run" -lt 2 ] || return 0
+    [ $((SECONDS - $2)) -lt "$3" ] || return 1
+    sleep "$poll"
+  done
+}
+
+# compact_one <win> <at-idle: 1|0> -> 0 done, 1 no window, 3 refused / timed out
+compact_one() {
+  local w="$1" at_idle="$2" limit="${PRECIS_FLEET_COMPACT_WAIT:-1800}"
+  local grace="${PRECIS_FLEET_COMPACT_GRACE:-90}" start=$SECONDS st rc out
+  has_window "$w" || { echo "no window: $w" >&2; return 1; }
+  if orch_window "$w"; then
+    echo "scripts/fleet compact: refusing $w: the orchestrator's seat or the caller's own window" >&2
+    return 3
+  fi
+  if [ "$at_idle" = 1 ]; then
+    rc=0; wait_idle "$w" "$start" "$limit" || rc=$?
+    case "$rc" in
+      0) ;;
+      2) echo "scripts/fleet compact: $w vanished while waiting for idle; nothing sent" >&2; return 3 ;;
+      *) echo "scripts/fleet compact: $w not idle within ${limit}s; nothing sent" >&2; return 3 ;;
+    esac
+  else
+    st=$(win_state "$w")
+    [ "$st" = idle ] || { echo "scripts/fleet compact: refusing $w: $st (use --at-idle to wait)" >&2; return 3; }
+  fi
+  out=$(send "$w" "/next"); echo "$out"
+  case "$out" in SKIPPED*) echo "scripts/fleet compact: $w opened a dialog before /next; nothing more sent" >&2; return 3 ;; esac
+  # A window reports idle before /next registers: a fixed grace, then two idle polls.
+  sleep "$grace"
+  rc=0; wait_idle "$w" "$start" "$limit" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) echo "scripts/fleet compact: $w vanished after /next; /compact not sent" >&2; return 3 ;;
+    *) echo "scripts/fleet compact: $w not idle within ${limit}s after /next; /compact not sent" >&2; return 3 ;;
+  esac
+  out=$(send "$w" "/compact"); echo "$out"
+  case "$out" in SKIPPED*) echo "scripts/fleet compact: $w opened a dialog before /compact; not sent" >&2; return 3 ;; esac
+  return 0
+}
+
+cmd_compact() {
+  need_tmux
+  local at_idle=0 wins="" w r rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --at-idle) at_idle=1 ;;
+      -*) echo "usage: scripts/fleet compact <win…> [--at-idle]" >&2; exit 2 ;;
+      *) wins="$wins $1" ;;
+    esac
+    shift
+  done
+  [ -n "$wins" ] || { echo "usage: scripts/fleet compact <win…> [--at-idle]" >&2; exit 2; }
+  for w in $wins; do
+    r=0; compact_one "$w" "$at_idle" || r=$?
+    [ "$r" -le "$rc" ] || rc=$r
+  done
+  exit "$rc"
+}
+
+# mcp_states -> one `<win> <precis> <claude-context>` line per window, each
+# connected | dead | unknown. Fails (quietly) when the helper is missing or fails.
+mcp_states() {
+  local helper out list w pid
+  helper=$(mcp_helper_path)
+  [ -f "$helper" ] || return 1
+  out=$(python3 "$helper" --servers precis,claude-context 2>/dev/null) || return 1
+  list=$(tmux list-windows -F '#{window_name} #{pane_id}') || return 1
+  printf '%s\n' "$list" | while read -r w pid; do
+    printf '%s\n' "$out" | awk -v w="$w" -v p="$pid" '
+      function m(s) { return s == "ok" ? "connected" : s == "DOWN" ? "dead" : "unknown" }
+      BEGIN { a = "-"; b = "-" }
+      $1 == p { split($2, x, "="); split($3, y, "="); a = x[2]; b = y[2]; exit }
+      END { print w, m(a), m(b) }'
+  done
+}
+
+cmd_mcp_check() {
+  need_tmux
+  local fix=0 states w p c st
+  case "${1:-}" in
+    --fix) fix=1 ;;
+    "") ;;
+    *) echo "usage: scripts/fleet mcp-check [--fix]" >&2; exit 2 ;;
+  esac
+  states=$(mcp_states) || { echo "scripts/fleet mcp-check: no usable fleet_mcp_state.py — states unknown" >&2; exit 1; }
+  printf '%s\n' "$states" | while read -r w p c; do
+    echo "$w precis=$p claude-context=$c"
+  done
+  [ "$fix" = 1 ] || return 0
+  printf '%s\n' "$states" | while read -r w p c; do
+    [ "$p" = dead ] || [ "$c" = dead ] || continue
+    if orch_window "$w"; then echo "skipped: $w (orchestrator)"; continue; fi
+    st=$(win_state "$w")
+    case "$st" in
+      idle) send "$w" "/mcp reconnect all" ;;
+      *) echo "pending: $w ($st)" ;;
+    esac
+  done
+}
+
+# --- watch --------------------------------------------------------------------
+# State is tab-separated `kind key value` lines, held in W_STATE and written
+# whole, atomically, once a tick. bash 3.2: no associative arrays.
+st_get() { printf '%s\n' "$W_STATE" | awk -F'\t' -v k="$1" -v key="$2" '$1 == k && $2 == key {print $3; exit}'; }
+st_kind() { printf '%s\n' "$W_STATE" | awk -F'\t' -v k="$1" '$1 == k'; }
+st_line() { printf '%s\t%s\t%s\n' "$1" "$2" "$3"; } # <kind> <key> <value>
+
+watch_windows() { # ctx and dialog legs; one pane capture per window
+  local w pane pct bucket old st type floor="${PRECIS_FLEET_CTX_FLOOR:-30}"
+  for w in $(windows); do
+    pane=$(tmux capture-pane -p -J -t "$w" 2>/dev/null) || continue
+    case "$w" in organizer|presentation) ;; *)
+      pct=$(printf '%s\n' "$pane" | grep -o '[0-9]*% ctx' | tail -1 | grep -o '^[0-9]*' || true)
+      old=$(st_get ctx "$w")
+      if [ -z "$pct" ]; then
+        # No marker in this capture (a redraw): keep what was last seen.
+        [ -z "$old" ] || wn_ctx="$wn_ctx$(st_line ctx "$w" "$old")"$'\n'
+      elif [ "$pct" -ge "$floor" ]; then
+        bucket=$((pct / 10 * 10))
+        wn_ctx="$wn_ctx$(st_line ctx "$w" "$bucket")"$'\n'
+        if [ "$W_FIRST" = 0 ] && { [ -z "$old" ] || [ "$bucket" -gt "$old" ]; }; then
+          if printf '%s\n' "$pane" | grep -q -E '… \([0-9]+'; then st=busy; else st=idle; fi
+          echo "ctx $w ${pct}% $st"
+        fi
+      fi ;;
+    esac
+    if printf '%s\n' "$pane" | grep -q -E "$dialog_re"; then
+      wn_dialog="$wn_dialog$(st_line dialog "$w" 1)"$'\n'
+      if [ "$W_FIRST" = 0 ] && [ -z "$(st_get dialog "$w")" ]; then
+        type=$(dialog_type "$(dialog_text "$pane")")
+        echo "dialog $w $type"
+      fi
+    fi
+  done
+}
+
+watch_notes() {
+  local f mt old
+  for f in "$reviews"/*.md; do
+    [ -e "$f" ] || continue
+    case "$f" in *.review.md) continue ;; esac
+    mt=$(mtime "$f")
+    wn_note="$wn_note$(st_line note "$f" "$mt")"$'\n'
+    [ "$W_FIRST" = 0 ] || continue
+    old=$(st_get note "$f")
+    if [ -z "$old" ]; then echo "note $(basename "$f" .md) new"
+    elif [ "$old" != "$mt" ]; then echo "note $(basename "$f" .md) changed"; fi
+  done
+}
+
+# Newly completed check.yml push runs on main, oldest first. The conclusion and
+# the tested sha are printed as gh reports them; a gh failure is silent and
+# retried at the next ci tick. The first successful listing only seeds.
+watch_ci() {
+  local out runs id sha concl seeded bound=()
+  # A hung gh would stall the tick and with it the queue drain. macOS ships no
+  # `timeout`; perl's alarm is on both platforms (SIGALRM ends gh, the leg
+  # retries at the next ci tick).
+  command -v perl >/dev/null && bound=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_FLEET_GH_TIMEOUT:-30}")
+  out=$(${bound[@]+"${bound[@]}"} gh run list --workflow check.yml --branch main --event push --status completed \
+    --limit 20 --json databaseId,headSha,conclusion 2>/dev/null) || return 0
+  runs=$(printf '%s' "$out" | python3 -c '
+import json, sys
+for r in reversed(json.load(sys.stdin)):
+    print(r["databaseId"], str(r["headSha"])[:9], r.get("conclusion") or "unknown")
+' 2>/dev/null) || return 0
+  seeded=$(st_get seed ci)
+  wn_ci_ran=1
+  while read -r id sha concl; do
+    [ -n "$id" ] || continue
+    wn_ci="$wn_ci$(st_line ci "$id" 1)"$'\n'
+    if [ -n "$seeded" ] && [ -z "$(st_get ci "$id")" ]; then echo "ci main $sha $concl"; fi
+  done <<EOF
+$runs
+EOF
+}
+
+watch_mcp() {
+  local states w p c seeded
+  states=$(mcp_states) || return 0
+  seeded=$(st_get seed mcp)
+  wn_mcp_ran=1
+  while read -r w p c; do
+    [ -n "$w" ] || continue
+    if [ "$p" = dead ] || [ "$c" = dead ]; then
+      wn_mcp="$wn_mcp$(st_line mcp "$w" 1)"$'\n'
+      if [ -n "$seeded" ] && [ -z "$(st_get mcp "$w")" ]; then echo "mcp $w dead"; fi
+    fi
+  done <<EOF
+$states
+EOF
+}
+
+watch_tick() { # watch_tick <tick number from 0>
+  local n="$1" new sf="$state/fleet-watch.state"
+  wn_ctx=""; wn_dialog=""; wn_note=""; wn_ci=""; wn_mcp=""; wn_ci_ran=""; wn_mcp_ran=""
+  watch_windows
+  watch_notes
+  # gh and the MCP logs are slower: every 8th / 4th tick, the first tick included.
+  if [ $((n % 8)) = 0 ]; then watch_ci; fi
+  if [ $((n % 4)) = 0 ]; then watch_mcp; fi
+  deliver_held watch
+  # A leg that did not run, or failed, keeps its previous state; once a leg has
+  # succeeded its `seed` line is set, which is what lets it emit.
+  if [ -n "$wn_ci_ran" ]; then wn_ci="$wn_ci$(st_line seed ci 1)"
+  else wn_ci="$(st_kind ci)"$'\n'"$(st_kind seed | awk -F'\t' '$2 == "ci"')"; fi
+  if [ -n "$wn_mcp_ran" ]; then wn_mcp="$wn_mcp$(st_line seed mcp 1)"
+  else wn_mcp="$(st_kind mcp)"$'\n'"$(st_kind seed | awk -F'\t' '$2 == "mcp"')"; fi
+  new=$(printf '%s\n%s\n%s\n%s\n%s\n' "$wn_ctx" "$wn_note" "$wn_dialog" "$wn_ci" "$wn_mcp" | awk 'NF')
+  if [ "$W_FIRST" = 1 ] || [ "$new" != "$W_STATE" ]; then
+    printf '%s\n' "$new" > "$sf.tmp.$$"
+    mv "$sf.tmp.$$" "$sf"
+  fi
+  W_STATE="$new"
+  W_FIRST=0
+}
+
+cmd_watch() {
+  need_tmux
+  local tick="${PRECIS_FLEET_WATCH_TICK:-15}" max="${PRECIS_FLEET_WATCH_TICKS:-0}" n=0
+  mkdir -p "$state"
+  W_STATE=""; W_FIRST=1
+  if [ -f "$state/fleet-watch.state" ]; then
+    W_STATE=$(cat "$state/fleet-watch.state"); W_FIRST=0
+  fi
+  while true; do
+    watch_tick "$n"
+    n=$((n + 1))
+    if [ "$max" != 0 ] && [ "$n" -ge "$max" ]; then break; fi
+    sleep "$tick"
+  done
+}
+
 cmd_effort() {
   need_tmux
   # `/effort` saves its level as the default for new sessions, last write
@@ -435,8 +727,11 @@ case "${1:-}" in
   peek) shift; cmd_peek "$@" ;;
   dialogs) cmd_dialogs ;;
   refs) cmd_refs ;;
+  compact) shift; cmd_compact "$@" ;;
+  mcp-check) shift; cmd_mcp_check "$@" ;;
+  watch) cmd_watch ;;
   effort) cmd_effort ;;
   watch-ctx) cmd_watch_ctx ;;
   queue-dir) echo "$queue" ;;
-  *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

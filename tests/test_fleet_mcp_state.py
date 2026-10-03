@@ -19,6 +19,9 @@ GAVE_UP = "Max reconnection attempts (5) reached, giving up"
 STARTUP_LAST_RETRY = "Transient ECONNREFUSED on initial connect — retry 3/3 in 4000ms"
 CONNECTED = 'Connection established with capabilities: {"hasTools":true}'
 TOOL_OK = "Tool 'get' completed successfully in 8s"
+SESSION_EXPIRED = 'Error POSTing to endpoint: {"jsonrpc":"2.0","error":{"message":"Session not found"}}'
+STDIO_GONE = "Connection failed after 5ms: MCP error -32000: Connection closed"
+RECONNECTED = "HTTP reconnection successful after 812ms (attempt 2)"
 
 
 def _module() -> ModuleType:
@@ -37,9 +40,13 @@ def _session(sessions: Path, pid: int, sid: str, pane: str | None) -> None:
 
 
 def _log(
-    cache: Path, project: str, name: str, events: list[tuple[str, str, str]]
+    cache: Path,
+    project: str,
+    name: str,
+    events: list[tuple[str, str, str]],
+    server: str = "precis",
 ) -> Path:
-    d = cache / project / "mcp-logs-precis"
+    d = cache / project / f"mcp-logs-{server}"
     d.mkdir(parents=True, exist_ok=True)
     f = d / f"{name}.jsonl"
     f.write_text(
@@ -117,3 +124,60 @@ def test_runs_as_a_script_with_nothing_to_report(dirs: tuple[Path, Path]) -> Non
         check=False,
     )
     assert (r.returncode, r.stdout) == (0, "")
+
+
+def test_expired_session_and_gone_stdio_child_are_down_until_reconnected(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    sessions, cache = dirs
+    _session(sessions, 1, "expired", "%1")
+    _session(sessions, 2, "healed", "%2")
+    _session(sessions, 3, "stdio", "%3")
+    _log(
+        cache,
+        "-a",
+        "s1",
+        [
+            ("2026-10-02T14:00:00Z", "expired", CONNECTED),
+            ("2026-10-02T15:00:00Z", "expired", SESSION_EXPIRED),
+            ("2026-10-02T14:00:00Z", "healed", CONNECTED),
+            ("2026-10-02T15:00:00Z", "healed", SESSION_EXPIRED),
+            ("2026-10-02T15:00:05Z", "healed", RECONNECTED),
+            ("2026-10-02T14:00:00Z", "stdio", CONNECTED),
+        ],
+    )
+    _log(
+        cache,
+        "-a",
+        "c1",
+        [("2026-10-02T16:00:00Z", "stdio", STDIO_GONE)],
+        "claude-context",
+    )
+    assert _run(capsys) == {"%1": "DOWN", "%2": "ok", "%3": "ok"}  # precis column
+    assert _module().main(["--server", "claude-context"]) == 0
+    assert dict(line.split() for line in capsys.readouterr().out.splitlines()) == {
+        "%1": "-",
+        "%2": "-",
+        "%3": "DOWN",
+    }
+
+
+def test_servers_flag_prints_one_column_per_server(
+    dirs: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    sessions, cache = dirs
+    _session(sessions, 1, "a", "%1")
+    _session(sessions, 2, "b", "%2")
+    _log(cache, "-a", "p", [("2026-10-02T14:00:00Z", "a", GAVE_UP)])
+    _log(
+        cache,
+        "-a",
+        "c",
+        [("2026-10-02T14:00:00Z", "b", CONNECTED)],
+        "claude-context",
+    )
+    assert _module().main(["--servers", "precis,claude-context"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "%1 precis=DOWN claude-context=-",
+        "%2 precis=- claude-context=ok",
+    ]

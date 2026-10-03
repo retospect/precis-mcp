@@ -39,9 +39,14 @@ what a live consumer is already going without.
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
    `envelope` row moved to tier 2: it is not an outer bound.
-   - **Tier 2, the taproot half (89fff2fe):** live. The prompt's
-     `"compound"` → `"composite"` key is being measured by the local A/B
-     (design note §1).
+   - **Tier 2, the taproot half (89fff2fe):** live. The local A/B
+     (2026-10-03, glm-4.7-flash Q5_K_M, design note §1) found no data
+     lost and no wrong-key emissions. It failed the share bar: in 9 of 36
+     passages the model omits the `"composite"` key, so the composite is
+     synthesized from the source sentence. **Next:** re-run old vs new on
+     OpenRouter once the key exists (review-queue
+     graph-memory-consumers-3), then reword the field if the drop holds.
+   - **Note:** prod has run no claim extraction since the 13:49Z deploy.
    - **Tier 2, the nanopub half (0181, round 2):** live and checked on
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.

@@ -1580,6 +1580,55 @@ def test_reap_test_dbs_carve_out_holds_when_db_container_is_too_young(
     assert "down|precis-test-b" not in log, log
 
 
+def _agent_tree(primary: Path) -> Path:
+    agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
+    _git(
+        primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "worktree-agent-a1b2c3",
+        str(agent),
+        "main",
+    )
+    return agent
+
+
+def test_reap_test_dbs_reaps_an_agent_trees_db_after_two_hours(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """2026-10-03: 7 idle `agent-*` test-dbs 3-27 h old used up docker's
+    address pools and every scripts/test in the fleet failed. A subagent
+    never resumes its session, so its db ages out at 2 h, not 48 h; the
+    thread tree `b` in the same state (3 h) is the control and stays."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    agent = _agent_tree(primary)
+    containers = [
+        f"precis-test-agent-a1b2c3|dbcid1|precis-test-db|{agent}/docker/dev/compose.yaml",
+        f"precis-test-b|dbcid2|precis-test-db|{b}/docker/dev/compose.yaml",
+    ]
+    created = [f"dbcid1|{_iso_created(3 / 24)}", f"dbcid2|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-agent-a1b2c3" in log, (result.stdout, log)
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_holds_an_agent_trees_db_younger_than_two_hours(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    primary = reap_db_repo["primary"]
+    agent = _agent_tree(primary)
+    containers = [
+        f"precis-test-agent-a1b2c3|dbcid1|precis-test-db|{agent}/docker/dev/compose.yaml"
+    ]
+    created = [f"dbcid1|{_iso_created(1 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-agent-a1b2c3" not in log, log
+
+
 def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(
     reap_db_repo: dict[str, Path], tmp_path: Path
 ) -> None:

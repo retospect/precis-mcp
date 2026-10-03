@@ -40,6 +40,7 @@ from precis.workers.hub_refine import (
     RegroundPlan,
     RegroundPrune,
     StrictVerdict,
+    _claim_source_passage,
     apply_reground_plan,
     claim_depth_policy,
     is_front_matter,
@@ -138,20 +139,41 @@ class _ScriptedJudge:
     calls so convergence can be asserted as *no re-spend*, not just as an
     unchanged outcome."""
 
-    def __init__(self, rules: list[tuple[str, str]], default: str = "KEEP") -> None:
+    def __init__(
+        self,
+        rules: list[tuple[str, str]],
+        default: str = "KEEP",
+        *,
+        same_setup: bool | str | None = True,
+        primary: bool | None = True,
+    ) -> None:
         self.rules = rules
         self.default = default
+        # What a CONTRADICTS verdict says about setup/primacy: the control
+        # default is "shown same + primary" (disputes allowed).
+        self.same_setup = same_setup
+        self.primary = primary
         self.calls = 0
         self.seen_depth: list[str] = []
+        self.kwargs_seen: list[dict[str, Any]] = []
+
+    def _verdict(self, verdict: str) -> StrictVerdict:
+        return StrictVerdict(
+            verdict=verdict,
+            reason=f"scripted:{verdict}",
+            same_setup=self.same_setup,
+            primary=self.primary,
+        )
 
     def __call__(self, **kwargs: Any) -> StrictVerdict:
         self.calls += 1
         self.seen_depth.append(str(kwargs.get("depth_policy")))
+        self.kwargs_seen.append(kwargs)
         text = str(kwargs.get("chunk_text") or "")
         for needle, verdict in self.rules:
             if needle in text:
-                return StrictVerdict(verdict=verdict, reason=f"scripted:{verdict}")
-        return StrictVerdict(verdict=self.default, reason="scripted:default")
+                return self._verdict(verdict)
+        return self._verdict(self.default)
 
 
 # ══ pure units ══════════════════════════════════════════════════════
@@ -851,6 +873,239 @@ def test_new_discovery_candidate_contradicts_verdict_files_disputes(store: Any) 
     log_entries = _hub_meta(store, hub)[META_REGROUND_LOG]
     disputes_entries = [e for e in log_entries if e.get("relation") == "disputes"]
     assert disputes_entries and disputes_entries[-1]["verdict"] == "CONTRADICTS"
+
+
+def _capture_demotions() -> tuple[Any, list[Any]]:
+    """Patch ``run_demotions`` in hub_refine; returns ``(patcher, queued)``
+    where ``queued`` collects every ``DemotionRequest`` the pass queued."""
+    queued: list[Any] = []
+
+    def _fake(_store: Any, requests: Any) -> list[Any]:
+        queued.extend(requests or [])
+        return []
+
+    return patch("precis.workers.hub_refine.run_demotions", _fake), queued
+
+
+def _seed_discovery_hub(
+    store: Any, embedder: Any, tag: str
+) -> tuple[int, int, list[int]]:
+    hub = _seed_hub(
+        store, sentence="Extension p-doping raises CNT FET drain current to 13.95 uA."
+    )
+    paper, chunks = _seed_paper(
+        store,
+        embedder,
+        cite_key=tag,
+        texts=[
+            "PROXY: carbon nanomaterials can be adjusted by doping [5-24].",
+            "AGAINST: drain current actually falls under extension doping.",
+        ],
+    )
+    _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
+    return hub, paper, chunks
+
+
+@pytest.mark.parametrize(
+    "same_setup,primary",
+    [(False, True), ("unclear", True), (None, True), (True, False), (True, None)],
+)
+def test_candidate_contradicts_without_same_setup_or_primary_is_withheld(
+    store: Any, same_setup: Any, primary: Any
+) -> None:
+    """A CONTRADICTS verdict not shown to be same-setup AND primary is
+    treated like a not-attached "no": memoed + logged, no ``disputes``
+    link, no queued demotion (review item claims-and-evidence-4)."""
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-withheld")
+    judge = _ScriptedJudge(
+        [("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")],
+        same_setup=same_setup,
+        primary=primary,
+    )
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    assert not _link_exists(store, src=paper, dst=hub, relation="disputes")
+    assert not _link_exists(store, src=paper, dst=hub, relation="contradicts")
+    assert queued == []
+    assert _handles(store, hub) == {EvidenceHandle(paper, chunks[0], "corroborates")}
+    meta = _hub_meta(store, hub)
+    memo = meta["reground_seen"][f"{paper}:{chunks[1]}"]
+    assert memo["verdict"] == "CONTRADICTS"
+    assert memo["same_setup"] == same_setup and memo["primary"] == primary
+    withheld = [
+        e
+        for e in meta[META_REGROUND_LOG]
+        if e.get("action") == "withheld (setup not shown same)"
+    ]
+    assert len(withheld) == 1 and withheld[0]["verdict"] == "CONTRADICTS"
+
+
+def test_candidate_contradicts_same_setup_and_primary_still_files_disputes(
+    store: Any,
+) -> None:
+    """Control: all three shown true -> disputes link + demotion queued, and
+    the judge saw the candidate's neighbour passage."""
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-allowed")
+    judge = _ScriptedJudge([("PROXY", "KEEP"), ("AGAINST", "CONTRADICTS")])
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, queued = _capture_demotions()
+    with patcher:
+        reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    assert _link_exists(store, src=paper, dst=hub, relation="disputes")
+    assert [d.hub_ref_id for d in queued] == [hub]
+    against = [k for k in judge.kwargs_seen if "AGAINST" in k["chunk_text"]]
+    assert against and against[0]["neighbours"] == [
+        "PROXY: carbon nanomaterials can be adjusted by doping [5-24]."
+    ]
+
+
+def test_audit_contradicts_with_primary_false_is_logged_not_converted(
+    store: Any,
+) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="The opening angle is 85 degrees.")
+    paper, chunks = _seed_paper(
+        store, embedder, cite_key="pa-audit", texts=["AGAINST: the formula gives 83.6"]
+    )
+    other, other_chunks = _seed_paper(
+        store, embedder, cite_key="pa-audit2", texts=["neutral"]
+    )
+    _attach(store, hub=hub, paper=paper, chunk_id=chunks[0], role="corroborates")
+    _attach(store, hub=hub, paper=other, chunk_id=other_chunks[0], role="corroborates")
+
+    judge = _ScriptedJudge([("AGAINST", "CONTRADICTS")], default="KEEP", primary=False)
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    patcher, queued = _capture_demotions()
+    with patcher:
+        res = reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+
+    assert res.contradicts_reattached == 0
+    assert not _link_exists(store, src=paper, dst=hub, relation="disputes")
+    assert queued == []
+    # The supporter stays exactly as it was.
+    assert {(h.src_ref_id, h.relation) for h in _handles(store, hub)} == {
+        (paper, "corroborates"),
+        (other, "corroborates"),
+    }
+    log = _hub_meta(store, hub)[META_REGROUND_LOG]
+    withheld = [e for e in log if e.get("action") == "withheld (setup not shown same)"]
+    assert len(withheld) == 1 and withheld[0]["src_ref_id"] == paper
+
+
+def test_claim_source_passage_reads_the_establishes_chunk(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A claim with an originating passage.")
+    paper, chunks = _seed_paper(
+        store, embedder, cite_key="pa-origin", texts=["front", "ORIGIN: measured 5 nm"]
+    )
+    with store.pool.connection() as conn:
+        assert _claim_source_passage(conn, hub) is None  # no establishes link yet
+    _attach(store, hub=hub, paper=paper, chunk_id=chunks[1], role="establishes")
+    with store.pool.connection() as conn:
+        assert _claim_source_passage(conn, hub) == "ORIGIN: measured 5 nm"
+        # A retired chunk is skipped.
+        conn.execute(
+            "UPDATE chunks SET retired_at = now() WHERE chunk_id = %s", (chunks[1],)
+        )
+        conn.commit()
+        assert _claim_source_passage(conn, hub) is None
+
+
+def test_claim_source_passage_reaches_the_judge(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub, paper, chunks = _seed_discovery_hub(store, embedder, "pa-src2")
+    origin, origin_chunks = _seed_paper(
+        store, embedder, cite_key="pa-origin2", texts=["ORIGIN: measured at 300 K"]
+    )
+    _attach(store, hub=hub, paper=origin, chunk_id=origin_chunks[0], role="establishes")
+    judge = _ScriptedJudge([], default="KEEP")
+    cfg = RegroundConfig(prune=True, judge_fn=judge, deeper_topk=8)
+    reground_one_hub(store, hub, embedder=embedder, cfg=cfg)
+    assert judge.kwargs_seen
+    assert {k["claim_source_text"] for k in judge.kwargs_seen} == {
+        "ORIGIN: measured at 300 K"
+    }
+
+
+class _Res:
+    def __init__(self, data: Any = None) -> None:
+        self.data = data
+        self.text = ""
+        self.error = ""
+
+
+def test_judge_prompt_carries_claim_source_and_parses_setup_fields() -> None:
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        cite_key="pa1",
+        chunk_ord=3,
+        chunk_text="We measured 4 nm by TEM.",
+    )
+    reply = {
+        "verdict": "CONTRADICTS",
+        "reason": "r",
+        "claim_setup": "a",
+        "passage_setup": "b",
+        "same_setup": True,
+        "primary": True,
+    }
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply)) as r:
+        v = judge_edge_strict(claim_source_text="ORIGIN TEXT", **kwargs)
+    assert v is not None and v.disputes_ok is True
+    assert (v.claim_setup, v.passage_setup) == ("a", "b")
+    assert "CLAIM'S OWN SOURCE PASSAGE" in r.call_args[0][0].prompt
+    assert "ORIGIN TEXT" in r.call_args[0][0].prompt
+
+    with patch("precis.workers.hub_refine.route", return_value=_Res(reply)) as r:
+        judge_edge_strict(**kwargs)
+    assert "(not available)" in r.call_args[0][0].prompt
+
+    # Missing / "unclear" setup fields parse to not-allowed.
+    for bad in (
+        {"verdict": "CONTRADICTS", "reason": "r"},
+        {**reply, "same_setup": "unclear"},
+        {**reply, "same_setup": "yes"},
+        {**reply, "primary": "true"},
+    ):
+        with patch("precis.workers.hub_refine.route", return_value=_Res(bad)):
+            v = judge_edge_strict(**kwargs)
+        assert v is not None and v.disputes_ok is False
+
+
+def test_verify_prompt_carries_claim_source_and_setup_fields() -> None:
+    from precis.workers._chase_llm import _verify_support_with_caveats
+
+    kwargs: dict[str, Any] = dict(
+        claim="X is 5 nm.",
+        scope={},
+        target_cite_key="pa1",
+        target_chunk_ord=1,
+        target_chunk_text="chunk",
+    )
+    path = "precis.workers._chase_llm.route"
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(claim_source_text="ORIGIN TEXT", **kwargs)
+    prompt = r.call_args[0][0].prompt
+    assert "ORIGIN TEXT" in prompt
+    for field in ('"claim_setup"', '"passage_setup"', '"same_setup"'):
+        assert field in prompt
+    assert prompt.index('"same_setup"') < prompt.index('"contradicts"')
+
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(**kwargs)
+    assert "(not available)" in r.call_args[0][0].prompt
+
+    with patch(path, return_value=_Res({"supports": "no"})) as r:
+        _verify_support_with_caveats(claim_source_text="z" * 5000, **kwargs)
+    assert "z" * 3000 in r.call_args[0][0].prompt
+    assert "z" * 3001 not in r.call_args[0][0].prompt
 
 
 def test_zero_supporters_needs_no_schema_change(store: Any) -> None:
