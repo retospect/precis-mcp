@@ -76,11 +76,30 @@ waited on happened 09-29 — note at the bottom)
        - The (24,0) pill variant waits on gr464358 (the k=10 frustum is
          seeded onto the sheet). Hole cells that hit gr464341's fuse
          phase are refused, so a layout change may need a cell moved.
+       - Reto picked pill12. The pillar's fused (6,0)→C60 neck opens under
+         MACE-MP and GFN2-xTB (gr464391), so it can only be shown as a
+         stick model.
+       - The bonded alternative passes both relaxers as an isolated
+         pillar: a (12,0) tube with a lid and the C60 as a sidewall [2+2]
+         bud (scripts in hexfold-corner/s4_lid_check.py).
+       - Inside the tethered scene it fails: the multi-pass tethered relax
+         leaves about 6 close pairs around the bud, and four scratch fixes
+         did not pass.
+       - **Next after S4b: buds on tethered tubes**, one dev cycle. Reto's
+         choice between the two is nanobuds-paper item 31.
        - The render round trip is nanobuds-paper's build plus Reto's
          eyeball. Each change he asks for that stays inside the bars is
          one more hero build, with no new code.
-       - S4b, the `hexfold` generator wiring, is one more dev cycle plus
-         a round deploy before a prod dogfood. It is off the hero's path.
+       - S4b, **built**: the se generator `hexfold_scene` (params:
+         `sheet` and `features`, plus optional `extra` and `k_tether`)
+         mints tethered scenes, about 35 s, synchronous.
+         - It reports `scene.bar` and `scene.top.joint` WARNs, also in the
+           provenance; the stored record keeps `scene` and `plan`.
+         - `plan_foot` rows with ERROR findings no longer meet, so the
+           (24,0) R=8 k=10 cell now misses (gr464358).
+         - `hexfold` output is unchanged, pinned by the golden test.
+         - Next: a prod dogfood of the pill12 scene after the round
+           deploys, read back with `view='block'`.
        - Round-2 prod dogfood (2026-10-03 13:53Z, design
          `hexfold-dogfood-r2`, hexfold 0.3.0) shows why this comes first.
        - `sw` and gr462144's sheet_sw build ok on prod:

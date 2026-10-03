@@ -630,6 +630,7 @@ def test_registry_has_round_1_and_round_2_generators() -> None:
         "cone",
         "cyclodextrin",
         "hexfold",
+        "hexfold_scene",
         "tpms",
         "schwarzite",
         "smooth_drum",

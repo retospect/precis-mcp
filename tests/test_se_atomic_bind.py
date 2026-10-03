@@ -606,6 +606,7 @@ def test_the_generator_registry_is_reachable_from_se() -> None:
         "cone",
         "cyclodextrin",
         "hexfold",
+        "hexfold_scene",
         "tpms",
         "schwarzite",
         "smooth_drum",

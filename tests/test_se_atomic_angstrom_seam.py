@@ -31,6 +31,7 @@ Two things are pinned here:
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 
@@ -80,6 +81,13 @@ _CASES: dict[str, dict[str, object]] = {
     # The smallest clean drum (neck >= 10 on a (60,0) wall, smooth_drum.py);
     # relax=False keeps it at ~0.1 s -- the envelope is all this file checks.
     "smooth_drum": {"neck": 10, "wall": 60, "sheet_radius_A": 30.0, "relax": False},
+    # one open (6,0) foot on a small sheet: the cheapest scene realization
+    "hexfold_scene": {
+        "sheet": [30, 24],
+        "features": [
+            {"name": "t", "at": [13, 15], "n": 6, "radius": 3.0, "tube_len": 2}
+        ],
+    },
     "hexfold": {
         "spec": (
             "hexfold 0.1\n\nlattice: element=C sigma=1.42\n\n"
@@ -87,6 +95,14 @@ _CASES: dict[str, dict[str, object]] = {
         )
     },
 }
+
+
+@functools.cache
+def _block(name: str) -> GeneratedBlock:
+    """Each generator's block, built once per module: the two parametrized
+    tests below read the same envelope, and ``hexfold_scene`` runs a real
+    tethered relax (~11 s) that the 0.1 s cases should not pay twice."""
+    return GENERATORS[name](dict(_CASES[name]))
 
 
 def _sources() -> list[tuple[str, str]]:
@@ -106,7 +122,7 @@ def test_every_generator_is_exercised_by_this_file() -> None:
 
 @pytest.mark.parametrize("name", sorted(_CASES))
 def test_generator_envelope_carries_its_unit_on_every_length(name: str) -> None:
-    block = GENERATORS[name](dict(_CASES[name]))
+    block = _block(name)
     assert isinstance(block, GeneratedBlock)
     env = block.envelope
     alias, _, params = env.partition(":")
@@ -129,7 +145,7 @@ def test_generator_envelope_carries_its_unit_on_every_length(name: str) -> None:
 def test_generator_envelope_parses_to_metres_at_the_one_boundary(name: str) -> None:
     """The round trip the merge's acceptance criterion names: Å-suffixed
     text in, metres out, with no handler-side pre-conversion."""
-    block = GENERATORS[name](dict(_CASES[name]))
+    block = _block(name)
     strict = cad_dsl.parse(block.envelope, require_units=True)
     # Same text read as bare numbers = the generator's own Å figures.
     bare = cad_dsl.parse(block.envelope.replace(ENVELOPE_UNIT, ""))

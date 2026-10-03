@@ -1,7 +1,7 @@
 ---
 id: precis-se-atomic-help
 title: precis — designing chemistry as a block tree (atomic mode)
-summary: atomic mode extends an se block tree down to real chemistry — declare_threading/declare_dof record intent, bind_structure maps ports to atoms in a structure design, generate mints canonical fragments (cnt/fullerene/cone/cyclodextrin/hexfold/tpms/smooth_drum) with no LLM, view=mechanics gives advisory continuum ceilings, view=literature runs a deterministic paper search, and view='validate' carries the chemistry-tier findings (port_capability, dangling_binding, binding_element_mismatch, envelope_fit, connect_cycle, bond_length_sanity, bond_vector_alignment, composite_part_stolen)
+summary: atomic mode extends an se block tree down to real chemistry — declare_threading/declare_dof record intent, bind_structure maps ports to atoms in a structure design, generate mints canonical fragments (cnt/fullerene/cone/cyclodextrin/hexfold/hexfold_scene/tpms/smooth_drum) with no LLM, view=mechanics gives advisory continuum ceilings, view=literature runs a deterministic paper search, and view='validate' carries the chemistry-tier findings (port_capability, dangling_binding, binding_element_mismatch, envelope_fit, connect_cycle, bond_length_sanity, bond_vector_alignment, composite_part_stolen)
 answers:
   - how do I design a molecular machine as nested blocks before filling in real chemistry?
   - how do I record that a macrocycle is threaded onto an axle?
@@ -71,7 +71,7 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
 ## Atomic-mode ops — `generate` (exact parameter list)
 
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
-  cyclodextrin|hexfold|tpms|schwarzite|smooth_drum`, `params` (dict), `name` (new block) · `parent`/`pose`/
+  cyclodextrin|hexfold|hexfold_scene|tpms|schwarzite|smooth_drum`, `params` (dict), `name` (new block) · `parent`/`pose`/
   `rot` passthrough. One op = a canonical block whose atoms follow from
   math, no LLM: mints a `structure` design at `<design>-<name>` holding
   the generated atoms, adds the block (envelope + ports + topology
@@ -82,6 +82,11 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   topology-only notation — `precis-hexfold-help`) and `params.fidelity`
   (`check|stick`, default `stick`; `check` is a report-only preview that
   mints nothing; `dry_run` is a deprecated alias for `fidelity="check"`).
+  `hexfold_scene` tiles an authored smooth surface (sheet + fillet/tube/top
+  features) with carbon, relaxed under a tether to that surface
+  (`params.sheet`, `params.features` — `precis-hexfold-help`); misses and
+  caveats come back as `scene.bar` / `scene.top.joint` WARNs, also in the
+  returned provenance. Unknown keys are refused.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →
