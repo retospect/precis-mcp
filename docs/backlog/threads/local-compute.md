@@ -119,7 +119,13 @@ confirmed the target: ask it with the Slice 0 result.**
         64. About 2.8× Nemotron throughout. Needs the harmony vocab staged
         offline (item has the recipe). Next: C above 64, then the quality
         check on knowledge-mesh's task set (km-8 taxonomy first; Reto
-        2026-10-03, co-owned with knowledge-mesh). When the server is
+        2026-10-03, co-owned with knowledge-mesh). Spec:
+        `backlog/local-mesh-upkeep.md` slice 0; its categorise task IS
+        this check, run once for both threads. Open: the bench server is
+        loopback-only, so the eval needs a serving window where
+        `llm_eval` can reach castor (a LAN bind plus a `resource_slots`
+        row for the window, or run the harness on castor). Ping
+        knowledge-mesh when castor serves gpt-oss. When the server is
         picked, a review item answers Reto's "how many channels"
         (ceiling, setpoint, KV headroom).
       - SGLang has no image route yet (ghcr only).
