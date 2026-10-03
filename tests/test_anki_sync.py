@@ -416,6 +416,47 @@ class TestRunAnkiSyncClaim:
         assert store.get_ref(kind="anki", id=card.id).owner_login is None
 
 
+class TestRunAnkiSyncLock:
+    def test_held_per_user_lock_skips_that_user_only(
+        self, store, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """The per-user xact lock is held elsewhere => skip message, no
+        ``sync_tick``; another login's lock is independent (gr463966)."""
+        import precis.anki.sync as sync_mod
+        from precis.anki.sync import SyncResult
+        from precis.store.advisory import try_xact_advisory_lock
+        from precis.workers.anki_sync import _ANKI_SYNC_LOCK, run_anki_sync
+        from tests.workers._helpers import skip_if_backends_multiplexed
+
+        _add_user(store, "reto", "rs")
+        _configure_creds(monkeypatch, "reto", "reto@example.com")
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+            owner_login="reto",
+        )
+        called: list[dict] = []
+
+        def _fake(**kw):
+            called.append(kw)
+            return SyncResult(), {}
+
+        monkeypatch.setattr(sync_mod, "sync_tick", _fake)
+        assert store.dsn
+        skip_if_backends_multiplexed(store.dsn)
+        cfg = _cfg(mirror_dir=str(tmp_path))
+        with try_xact_advisory_lock(store.dsn, _ANKI_SYNC_LOCK, text_key="reto") as h:
+            assert h is True
+            summary = run_anki_sync(store, cfg)
+        assert "another sync holds the lock; skipping." in summary
+        assert not called
+        # Released on exit: the next tick syncs.
+        run_anki_sync(store, cfg)
+        assert len(called) == 1
+
+
 class TestRunAnkiSyncFanOut:
     def test_two_users_get_two_sync_tick_calls_with_their_own_mirror_and_cards(
         self, store, monkeypatch: pytest.MonkeyPatch, tmp_path

@@ -47,25 +47,23 @@ system-profile host on the same ~2s worker tick, and its claim
 ``chunk_id`` — without a fleet-wide lock, every host would re-claim
 and re-derive the *same* batch every cycle (fleet-normal, not a rare
 edge case: the claim's row lock vanishes at commit, well before the
-slow per-chunk embedder work runs). Guarded by a **session-scoped**
-``pg_try_advisory_lock``, held on one dedicated ``autocommit=True``
-connection spanning claim + every chunk's processing, released via an
-explicit ``pg_advisory_unlock`` in a ``finally`` (with the connection
-close as the safety-net second release — mirrors
-:class:`precis.ingest.claim.Claim`, that module's docstring has the
-full "why advisory locks" rationale). Deliberately NOT the
-**transaction**-scoped ``pg_try_advisory_xact_lock`` idiom
-``paper_reconcile`` / ``openalex_enrich`` / ``paper_meta_enrich`` use:
-those passes are throttled to run at most once every several hours, so
-holding one open (idle, uncommitted) transaction for their duration is
-fine, but ``chunk_keywords`` has no such ceiling on a single pass's
-wall-clock length (a slow embedder, or a big batch), and prod's
-``idle_in_transaction_session_timeout='300s'`` (same ``ALTER ROLE``
-block that sets ``lock_timeout=5s``) would kill a slower pass's
-lock-holding session mid-run — silently releasing the lock AND raising
-``FATAL`` on the now-dead connection when the pass tries to use it
-again. Autocommit means this connection never opens a transaction, so
-that timeout can never fire on it. A lock-acquire miss (another host
+slow per-chunk embedder work runs). Guarded by a **transaction**-scoped
+``pg_try_advisory_xact_lock`` (:func:`precis.store.advisory.try_xact_advisory_lock`)
+held on one dedicated, non-pooled connection spanning claim + every
+chunk's processing (gr463966). The earlier session-scoped
+``pg_try_advisory_lock`` was broken behind prod's pgbouncer
+``pool_mode = transaction``: lock and unlock landed on different server
+backends, so there was no exclusion and the lock leaked. An open
+transaction pins one pgbouncer server connection for the whole pass, so
+the lock lives and dies on one backend, and it ends with the transaction
+(rollback in a ``finally``), so a ``DISCARD ALL`` reset or backend reuse
+cannot leak it. This pass has no ceiling on wall-clock length (a slow
+embedder, or a big batch), so the helper issues ``SET LOCAL
+idle_in_transaction_session_timeout = 0`` — prod's ``300s`` kill (same
+``ALTER ROLE`` block that sets ``lock_timeout=5s``) would otherwise end
+the idle lock-holding transaction mid-run, silently dropping the lock.
+``SET LOCAL`` is transaction-scoped; a session ``SET`` through pgbouncer
+would poison other clients. A lock-acquire miss (another host
 owns this tick) is a graceful skip — same ``claimed=0`` convention as
 the ``EmbedderUnavailable`` branch, not a failure.
 """
@@ -76,12 +74,12 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any
 
-import psycopg
 from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.types.json import Jsonb
 
 from precis.embedder import Embedder, EmbedderUnavailable
+from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.db_retry import retry_locked
 from precis.utils.rake import extract_keywords as _rake_phrases
@@ -553,20 +551,15 @@ def run_chunk_keywords_pass(
     runs on every system-profile host on the same ~2s tick, all ordering
     candidates by ``chunk_id`` — without exclusivity, every host would
     re-claim and re-derive the same batch every cycle. A dedicated
-    ``autocommit=True`` connection holds a **session-scoped**
-    ``pg_try_advisory_lock`` for the WHOLE pass (this function's entire
-    body, not just the claim step), released via an explicit
-    ``pg_advisory_unlock`` in a ``finally`` — mirrors
-    :class:`precis.ingest.claim.Claim`. Session-scoped (not
-    transaction-scoped, unlike ``paper_reconcile``/``openalex_enrich``/
-    ``paper_meta_enrich``) specifically because this pass has no bound on
-    how long it can run: an open, uncommitted transaction held for longer
-    than prod's ``idle_in_transaction_session_timeout='300s'`` gets its
-    session killed by the server, silently dropping the lock mid-pass. An
-    autocommit connection never opens a transaction, so that timeout
-    can't touch it; if the process dies outright, Postgres releases the
-    lock the moment the socket closes, same as the explicit unlock would
-    have. That dedicated connection ONLY ever holds the lock;
+    connection (:func:`precis.store.advisory.try_xact_advisory_lock`) holds
+    a **transaction-scoped** ``pg_try_advisory_xact_lock`` for the WHOLE
+    pass (this function's entire body, not just the claim step) and rolls
+    it back on exit (gr463966: session-scoped locks are broken behind
+    pgbouncer transaction pooling). The helper lifts
+    ``idle_in_transaction_session_timeout`` for that transaction only, so
+    prod's ``300s`` cap cannot kill a slow pass's lock; if the process dies
+    outright, pgbouncer closes the orphaned server connection and the lock
+    goes with it. That dedicated connection ONLY ever holds the lock;
     :func:`_run_chunk_keywords_batch` does every real read/write through
     ``store``'s own pool, on separate connections. A lock-acquire miss
     (another host owns this tick) is a graceful skip — same ``claimed=0``
@@ -576,28 +569,10 @@ def run_chunk_keywords_pass(
     if not store.dsn:
         return idle
 
-    # autocommit=True: no transaction ever opens on this connection, so
-    # idle_in_transaction_session_timeout can't fire on it mid-pass (see
-    # this docstring above). Dedicated (not pooled) so the session-scoped
-    # lock's lifetime brackets exactly this call, same as Claim.
-    lock_conn = psycopg.connect(store.dsn, autocommit=True)
-    try:
-        row = lock_conn.execute(
-            "SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)
-        ).fetchone()
-        if not (row and row[0]):
+    with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
+        if not got:
             return idle  # another node owns this pass this cycle
-        try:
-            return _run_chunk_keywords_batch(store, embedder, batch_size=batch_size)
-        finally:
-            try:
-                lock_conn.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
-            except Exception as exc:
-                # Best effort -- closing the connection below releases the
-                # lock anyway (same fallback as Claim.__exit__).
-                log.warning("chunk_keywords: advisory unlock failed: %s", exc)
-    finally:
-        lock_conn.close()
+        return _run_chunk_keywords_batch(store, embedder, batch_size=batch_size)
 
 
 # ── helpers ─────────────────────────────────────────────────────────

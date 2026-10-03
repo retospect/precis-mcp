@@ -34,8 +34,8 @@ class StoreCore:
     def __init__(self, pool: ConnectionPool, *, dsn: str | None = None) -> None:
         self.pool = pool
         # Original DSN string — used by callers that need to open a
-        # dedicated (non-pooled) connection, e.g. for session-scoped
-        # advisory locks in ``precis.ingest.claim`` where pool-based
+        # dedicated (non-pooled) connection, e.g. for the transaction-scoped
+        # advisory locks in ``precis.store.advisory`` where pool-based
         # connections aren't usable. ``None`` when the Store was
         # constructed without going through :meth:`connect` (tests
         # using a pre-built pool); claim acquisition falls back to a

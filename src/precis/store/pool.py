@@ -9,20 +9,23 @@ JSONB round-trip happens via the `Jsonb()` adapter wrapper at call
 sites; we don't register a global dict-as-jsonb adapter because that
 breaks ordinary JSON columns and is too implicit.
 
-Session-scoped advisory-lock holders must NOT go through this pool.
-A ``pg_try_advisory_lock``/``pg_advisory_unlock`` pair is bound to the
-connection that acquired it; if that connection came from here and
-got handed back mid-hold, the pool could recycle it out to an
-unrelated caller who'd inherit the lock by accident, or the pool
-could close it early and drop the lock before the holder is done.
-:class:`precis.ingest.claim.Claim` is the one deliberate example in
-this codebase — it opens its own ``psycopg.connect()`` for exactly
-this reason (see that module's docstring). Verified by grepping the
-tree for bare ``psycopg.connect(`` sites: most of the others (worker
+Advisory-lock holders must NOT go through this pool, and must not rely on
+session state at all (gr463966). A session-scoped
+``pg_try_advisory_lock``/``pg_advisory_unlock`` pair is bound to one
+backend; behind pgbouncer ``pool_mode = transaction`` the two statements
+land on different backends, so the lock neither excludes nor releases, and
+a pooled psycopg connection handed back mid-hold would also let an
+unrelated caller inherit it. Long-lived holders
+(:class:`precis.ingest.claim.Claim`, ``chunk_keywords``, ``anki_sync``) use
+:func:`precis.store.advisory.try_xact_advisory_lock` instead: a dedicated
+``psycopg.connect()`` holding a transaction-scoped
+``pg_try_advisory_xact_lock``, which pins one pgbouncer server connection
+for exactly the hold and cannot outlive its transaction (see that
+module's docstring). Most other bare ``psycopg.connect(`` sites (worker
 one-offs, the DB log handler, the migration runner, admin-DSN schema
-dump/doc scripts) are dedicated connections for unrelated reasons —
-not advisory-lock holders — so this isn't a "these N sites" list to
-keep in sync, just the one pattern to recognise if you see it again.
+dump/doc scripts) are dedicated connections for unrelated reasons, so
+this isn't a "these N sites" list to keep in sync, just the pattern to
+recognise if you see it again.
 """
 
 from __future__ import annotations
