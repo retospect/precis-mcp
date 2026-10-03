@@ -29,6 +29,14 @@ filed: <UTC timestamp, Z>
 **Context.** The minimum he needs: numbers, the id to open, the link.
 ```
 
+An item that tells Reto something is ready to sign or approve (a nanopub,
+a hub) must cite a passing gate dry run of the exact wording and payload
+he will submit: `get(kind='finding', id=…, view='mint-preflight',
+args={'payload': …})` or `precis nanopub check`, with the PASS line and
+when it ran. A claim edited after that run needs a new run. A sign item
+without it is not ready (fi263188, 2026-10-03: "ready to sign" was filed
+on a wording the claim-sentence gate refused).
+
 Ids carry their names. A quest id never stands alone: write it as
 `qu164903 (NO→NH3 selectivity)` at every mention, question and context
 alike. Reto reads items by quest, not by number (his rule, 2026-10-02);

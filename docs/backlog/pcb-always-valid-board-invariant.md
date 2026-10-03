@@ -344,9 +344,21 @@ extracted *affinity*, which is a different fact.
   violation is refused, naming the rule and the pair. **Done for
   single-part `op='move'` (2026-10-01)** via
   `OptimizeEngine.pose_conflicts`, which applies the placer's own rule set and
-  checks the moved part only. The other mutation paths listed above
-  (`pcb_apply`, `view='route'`, `op='footprint'`, `op='class_rules'`) are
-  still open; rulings 1 and 2 are built.
+  checks the moved part only. **Done for the batch `put` (`pcb_apply` +
+  net_classes) and `op='class_rules'` (2026-10-03)** via
+  `PcbHandler._judged_mutation`: one transaction (`Store.pcb_judged_tx`, so
+  the check reads the uncommitted change), the validity findings
+  (`_validity_findings`: copper rules, courtyard overlap/hole, outline) judged
+  as a delta before/after; a new or worsened finding naming router copper
+  rips that net, one naming only pads/authored copper refuses and rolls
+  back, a standing one is counted in the response. A part with no real
+  footprint (synthesized bound) is not judged. Still open:
+  `op='footprint'` (ruled 2026-10-03, ewod-pcb-4: the real footprint wins — store and report; router copper that collides is ripped, pad/placement collisions are reported as now visible and stand until a re-place; not built yet; `_judged_mutation(refuse=False)` is the seam) and `view='route'`
+  (`backlog/pcb-freerouting-view-replaces-without-legality.md`); rulings 1
+  and 2 are built.
+- On put and class_rules, courtyard/outline findings carry no margin, so a
+  deepened standing overlap counts as standing, not worse; `op='move'`
+  measures it by area.
 - Negative control: a legal mutation is NOT refused. Without it the refusal
   path can be vacuously "always refuse". (Has a test for `op='move'`.)
 - An incumbent-invalid board is reported as invalid rather than silently

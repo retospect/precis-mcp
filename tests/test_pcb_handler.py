@@ -1159,6 +1159,28 @@ def _two_parts(ax: float, ay: float, bx: float = 10.0, by: float = 10.0):
     }
 
 
+def _put_standing(pcb, store, slug, design):
+    """Author ``design`` unplaced, then write its poses straight to the store.
+    ``put`` refuses to create a violation, so this is how a test builds a
+    board that already carries one."""
+    poses = {
+        c["refdes"]: (c["x"], c["y"], float(c.get("rot") or 0.0))
+        for c in design["components"]
+        if "x" in c
+    }
+    bare = {
+        **design,
+        "components": [
+            {k: v for k, v in c.items() if k not in ("x", "y")}
+            for c in design["components"]
+        ],
+    }
+    pcb.put(id=slug, args=bare)
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    store.pcb_set_pose(ref.id, poses)
+
+
 def _move_a(pcb, slug, x, y, **extra):
     return pcb.put(id=slug, args={"op": "move", "refdes": "A", "x": x, "y": y, **extra})
 
@@ -1171,7 +1193,7 @@ def test_op_move_delta_courtyard_overlap_standing_may_shrink_never_grow(pcb, sto
     passes and is reported, one that grows it is refused with the depth,
     one that clears it passes with no report."""
     slug = "mv-delta-pair"
-    pcb.put(id=slug, args=_two_parts(0.0, 0.0, 0.3, 0.0))
+    _put_standing(pcb, store, slug, _two_parts(0.0, 0.0, 0.3, 0.0))
     with pytest.raises(BadInput, match=r"courtyard_overlap with B \(worse: "):
         _move_a(pcb, slug, 0.2, 0.0)
     assert _xy(store, slug, "A") == (0.0, 0.0)
@@ -1181,9 +1203,9 @@ def test_op_move_delta_courtyard_overlap_standing_may_shrink_never_grow(pcb, sto
     assert "moved" in resp.body and _STANDING not in resp.body
 
 
-def test_op_move_delta_list_form_reports_standing_overlap(pcb):
+def test_op_move_delta_list_form_reports_standing_overlap(pcb, store):
     slug = "mv-delta-pair-list"
-    pcb.put(id=slug, args=_two_parts(0.0, 0.0, 0.3, 0.0))
+    _put_standing(pcb, store, slug, _two_parts(0.0, 0.0, 0.3, 0.0))
     resp = pcb.put(
         id=slug,
         args={"op": "move", "moves": [{"refdes": "A", "x": -0.1, "y": 0.0}]},
@@ -1205,7 +1227,7 @@ def test_op_move_delta_outline_part_outside_may_move_in_never_further_out(pcb, s
             "geom": {"path": [[0, 0], [40, 0], [40, 40], [0, 40], [0, 0]]},
         }
     ]
-    pcb.put(id=slug, args=design)
+    _put_standing(pcb, store, slug, design)
     with pytest.raises(BadInput, match=r"outline with board outline \(worse: "):
         _move_a(pcb, slug, -0.3, 20.0)
     resp = _move_a(pcb, slug, 0.35, 20.0)
@@ -1220,18 +1242,21 @@ def test_op_move_delta_outline_part_outside_may_move_in_never_further_out(pcb, s
 def test_op_move_delta_mounting_hole_standing_may_shrink_never_grow(pcb, store):
     slug = "mv-delta-hole"
     pcb.put(id=slug, args=_two_parts(31.5, 30.0))
-    pcb.put(
-        id=slug,
-        args={
-            "features": [
-                {
-                    "ftype": "mounting_hole",
-                    "x": 30.0,
-                    "y": 30.0,
-                    "geom": {"diameter": 3.2},
-                }
-            ]
-        },
+    # put would refuse a hole under a placed part; plant it in the store.
+    store.pcb_apply(
+        slug=slug,
+        title=slug,
+        components=[],
+        nets=[],
+        connections=[],
+        features=[
+            {
+                "ftype": "mounting_hole",
+                "x": 30.0,
+                "y": 30.0,
+                "geom": {"diameter": 3.2},
+            }
+        ],
     )
     with pytest.raises(
         BadInput, match=r"courtyard_hole with hole @ \(30, 30\) \(worse: "
@@ -1243,7 +1268,7 @@ def test_op_move_delta_mounting_hole_standing_may_shrink_never_grow(pcb, store):
     assert "moved" in resp.body and _STANDING not in resp.body
 
 
-def test_op_move_delta_new_overlap_with_an_untouched_part_still_refused(pcb):
+def test_op_move_delta_new_overlap_with_an_untouched_part_still_refused(pcb, store):
     """Negative control: a standing overlap A/B does not excuse a NEW one
     with C."""
     slug = "mv-delta-new"
@@ -1251,7 +1276,7 @@ def test_op_move_delta_new_overlap_with_an_untouched_part_still_refused(pcb):
     design["components"].append(
         {"refdes": "C", "label": "ic", "x": -6.0, "y": 0.0, "pins": [{"name": "1"}]}
     )
-    pcb.put(id=slug, args=design)
+    _put_standing(pcb, store, slug, design)
     with pytest.raises(BadInput, match="courtyard_overlap with C"):
         _move_a(pcb, slug, -6.1, 0.0)
 
@@ -2008,11 +2033,6 @@ def _gen_board(pcb, slug, *, p1_from_via=None):
     assert ref is not None
     board_id = int(pcb.store.pcb_graph(ref.id)["board"]["board_id"])
     p1_xy = (300.0, 300.0)
-    if p1_from_via is not None:
-        via = next(
-            r for r in pcb.store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via"
-        )
-        p1_xy = (via["x"] + p1_from_via[0], via["y"] + p1_from_via[1])
     pcb.put(
         id=slug,
         args={
@@ -2056,6 +2076,16 @@ def _gen_board(pcb, slug, *, p1_from_via=None):
             ],
         },
     )
+    if p1_from_via is not None:
+        # put refuses to create a violation, so the standing one is planted
+        # straight in the store.
+        via = next(
+            r for r in pcb.store.pcb_fixed_copper_list(board_id) if r["ctype"] == "via"
+        )
+        pcb.store.pcb_set_pose(
+            ref.id,
+            {"P1": (via["x"] + p1_from_via[0], via["y"] + p1_from_via[1], 0.0)},
+        )
     return ref, board_id
 
 
@@ -2409,3 +2439,199 @@ def test_route_status_headers_split_dangling_from_routed(pcb, store):
     assert "realized (dangling net" in status_view
     board_view = pcb.get(id="sensor-node").body
     assert f"## route status: {want}" in board_view
+
+
+# ── always-valid board: batch put and class_rules are judged ─────────────
+_PADP = {
+    "name": "padp",
+    "pads": [
+        {"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+    ],
+}
+
+
+def _judge_board(pcb, store, slug, *, p2_x=10.0, routed=False):
+    """P1 (net A) at the origin and P2 (net B) at ``(p2_x, 0)``, both 1 mm
+    pads of an authored footprint, both nets in class ``sig``. ``routed``
+    stores a realized router track of net A 0.4 mm clear of P2's pad."""
+    pcb.put(
+        id=slug,
+        args={
+            "footprints": [_PADP],
+            "components": [
+                {
+                    "refdes": "P1",
+                    "label": "p",
+                    "footprint": "padp",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                },
+                {
+                    "refdes": "P2",
+                    "label": "p",
+                    "footprint": "padp",
+                    "x": p2_x,
+                    "y": 0.0,
+                    "pins": [{"name": "1"}],
+                },
+            ],
+            "nets": [{"name": "A", "class": "sig"}, {"name": "B", "class": "sig"}],
+            "connections": [
+                {"net": "A", "refdes": "P1", "pin": "1"},
+                {"net": "B", "refdes": "P2", "pin": "1"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    board_id = int(store.pcb_graph(ref.id)["board"]["board_id"])
+    if routed:
+        nets = store.pcb_net_ids(ref.id)
+        store.pcb_routes_write(ref.id, board_id, {"A": {"status": "realized"}})
+        x = p2_x + 0.5 + 0.4 + 0.1  # pad edge + 0.4 mm gap + half the width
+        store.pcb_copper_replace(
+            board_id,
+            [
+                {
+                    "ctype": "track",
+                    "layer": "F.Cu",
+                    "net_id": nets["A"],
+                    "geom": {
+                        "segments": [
+                            {"shape": "line", "start": [x, -3.0], "end": [x, 3.0]}
+                        ],
+                        "width_mm": 0.2,
+                    },
+                }
+            ],
+        )
+    return ref, board_id
+
+
+def _class_rules(pcb, slug, **rules):
+    return pcb.put(
+        id=slug, args={"op": "class_rules", "name": "sig", "rules": dict(rules)}
+    )
+
+
+def _stored_rules(store, ref_id):
+    return store.pcb_graph(ref_id)["net_classes"]
+
+
+def test_class_rules_tightening_rips_the_router_net_it_violates(pcb, store):
+    ref, board_id = _judge_board(pcb, store, "jr-rip", routed=True)
+    assert store.pcb_nets_with_router_copper(board_id) == {"A"}
+    resp = _class_rules(pcb, "jr-rip", clearance_mm=0.8)
+    assert "A ripped: clearance after this change" in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == set()
+    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref.id)}
+    assert status["A"] != "realized"
+    assert _stored_rules(store, ref.id)["sig"] == {"clearance_mm": 0.8}
+
+
+def test_class_rules_tightening_between_two_pads_is_a_margin_not_a_refusal(pcb, store):
+    """Pads never yield, but a net class only sets the HOUSE margin: a pad
+    pair short of it is a warning (the fab floor is the error), so tightening
+    a class over two pads is not refused, but the new shortfall is listed."""
+    ref, _ = _judge_board(pcb, store, "jr-pads", p2_x=2.0)
+    resp = _class_rules(pcb, "jr-pads", clearance_mm=2.0)
+    assert "now visible (class requirement, not refused): clearance" in resp.body
+    assert "ripped" not in resp.body
+    assert _stored_rules(store, ref.id)["sig"] == {"clearance_mm": 2.0}
+
+
+def test_batch_put_hole_under_a_placed_part_is_refused(pcb, store):
+    ref, _ = _judge_board(pcb, store, "jr-hole")
+    with pytest.raises(BadInput, match="courtyard_hole") as exc:
+        pcb.put(
+            id="jr-hole",
+            args={
+                "features": [
+                    {
+                        "ftype": "mounting_hole",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "geom": {"diameter": 3.2},
+                    }
+                ]
+            },
+        )
+    assert "Nothing was changed" in (exc.value.next or "")
+    assert "op':'place'" in (exc.value.next or "")
+    assert store.pcb_features_list(ref.id) == []
+
+
+def test_legal_class_rules_and_batch_put_are_not_refused_or_ripped(pcb, store):
+    """Negative control: without it the refusal and the rip could both be
+    vacuously always-on."""
+    ref, board_id = _judge_board(pcb, store, "jr-ok", routed=True)
+    resp = _class_rules(pcb, "jr-ok", clearance_mm=0.2)
+    assert "ripped" not in resp.body and "standing" not in resp.body
+    resp = pcb.put(id="jr-ok", args={"nets": [{"name": "C", "class": "sig"}]})
+    assert "ripped" not in resp.body and "standing" not in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == {"A"}
+    assert _stored_rules(store, ref.id)["sig"] == {"clearance_mm": 0.2}
+    assert "C" in store.pcb_net_ids(ref.id)
+
+
+def test_standing_overlap_does_not_refuse_an_unrelated_legal_put(pcb, store):
+    ref, _ = _judge_board(pcb, store, "jr-stand")
+    store.pcb_set_pose(ref.id, {"P2": (0.3, 0.0, 0.0)})  # planted: overlaps P1
+    resp = pcb.put(id="jr-stand", args={"nets": [{"name": "C", "class": "sig"}]})
+    assert "standing finding(s) not caused by this change" in resp.body
+    n = int(resp.body.split(" standing finding(s)")[0].split()[-1])
+    assert n >= 1
+
+
+def test_judged_tx_reads_its_own_writes_and_rolls_back(pcb, store):
+    ref, _ = _judge_board(pcb, store, "jr-tx")
+    with pytest.raises(RuntimeError, match="boom"):
+        with store.pcb_judged_tx() as conn:
+            store.pcb_upsert_net_classes(
+                ref.id, {"zz": {"clearance_mm": 0.3}}, conn=conn
+            )
+            assert "zz" in store.pcb_graph(ref.id)["net_classes"]
+            # a plain pool connection (what a read outside the tx opens)
+            # cannot see the uncommitted row
+            with store.pool.connection() as other:
+                (n,) = other.execute(
+                    "SELECT count(*) FROM pcb_net_classes WHERE ref_id = %s "
+                    "AND name = 'zz'",
+                    (ref.id,),
+                ).fetchone()
+            assert n == 0
+            raise RuntimeError("boom")
+    assert "zz" not in store.pcb_graph(ref.id)["net_classes"]
+
+
+def test_unplaced_netlist_is_never_judged(pcb, store):
+    """Netlist-first authoring must stay storable: no x/y, no geometry."""
+    resp = pcb.put(
+        id="jr-unplaced",
+        args={
+            "components": [
+                {"refdes": "U1", "label": "ic", "pins": [{"name": "1"}]},
+                {"refdes": "U2", "label": "ic", "pins": [{"name": "1"}]},
+            ],
+            "nets": [{"name": "N"}],
+            "connections": [
+                {"net": "N", "refdes": "U1", "pin": "1"},
+                {"net": "N", "refdes": "U2", "pin": "1"},
+            ],
+        },
+    )
+    assert "created" in resp.body
+    assert "standing" not in resp.body and "ripped" not in resp.body
+
+
+def test_validity_findings_wall_time(pcb, store, capsys):
+    import time
+
+    ref, _ = _judge_board(pcb, store, "jr-time", routed=True)
+    t0 = time.perf_counter()
+    for _ in range(5):
+        pcb._validity_findings(ref.id)
+    per = (time.perf_counter() - t0) / 5
+    with capsys.disabled():
+        print(f"\n_validity_findings: {per * 1000:.0f} ms/call (2 parts, 1 track)")

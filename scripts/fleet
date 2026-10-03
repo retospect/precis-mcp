@@ -606,27 +606,64 @@ watch_notes() {
 # Newly completed check.yml push runs on main, oldest first. The conclusion and
 # the tested sha are printed as gh reports them; a gh failure is silent and
 # retried at the next ci tick. The first successful listing only seeds.
+#
+# 2026-10-03, two bursts of 20 repeated lines: the page is the 20 newest
+# completed runs, and with main's shared group (many cancelled runs) a run drops
+# off it and comes back. So a seen id is CARRIED across ticks with its creation
+# time (`ci <id> <epoch>`), not rebuilt from the page; only runs CREATED within
+# PRECIS_FLEET_CI_WINDOW_HOURS (default 6, whole hours) are eligible, and seen
+# ids older than that are pruned, since they can never be emitted again. At
+# most PRECIS_FLEET_CI_MAX_LINES (default 5) go out per tick; the rest stay
+# unseen and go out next tick. A createdAt watermark would be wrong: a run
+# queued behind others completes after a younger one and would be skipped.
 watch_ci() {
-  local out runs id sha concl seeded bound=()
+  local out runs id sha concl ep seeded bound=() emitted=0 page=" " _k
+  local cap="${PRECIS_FLEET_CI_MAX_LINES:-5}" hours="${PRECIS_FLEET_CI_WINDOW_HOURS:-6}"
+  local cutoff=$(( $(date +%s) - hours * 3600 ))
   # A hung gh would stall the tick and with it the queue drain. macOS ships no
   # `timeout`; perl's alarm is on both platforms (SIGALRM ends gh, the leg
   # retries at the next ci tick).
   command -v perl >/dev/null && bound=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_FLEET_GH_TIMEOUT:-30}")
   out=$(${bound[@]+"${bound[@]}"} gh run list --workflow check.yml --branch main --event push --status completed \
-    --limit 20 --json databaseId,headSha,conclusion 2>/dev/null) || return 0
+    --limit 20 --json databaseId,headSha,conclusion,createdAt 2>/dev/null) || return 0
   runs=$(printf '%s' "$out" | python3 -c '
 import json, sys
+from datetime import datetime, timedelta, timezone
+cutoff = datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[1]))
 for r in reversed(json.load(sys.stdin)):
-    print(r["databaseId"], str(r["headSha"])[:9], r.get("conclusion") or "unknown")
-' 2>/dev/null) || return 0
+    created = r.get("createdAt") or ""
+    try:
+        when = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        continue  # no usable date: never eligible
+    if when < cutoff:
+        continue
+    print(r["databaseId"], str(r["headSha"])[:9], r.get("conclusion") or "unknown",
+          int(when.timestamp()))
+' "$hours" 2>/dev/null) || return 0
   seeded=$(st_get seed ci)
   wn_ci_ran=1
-  while read -r id sha concl; do
+  while read -r id sha concl ep; do
     [ -n "$id" ] || continue
-    wn_ci="$wn_ci$(st_line ci "$id" 1)"$'\n'
-    if [ -n "$seeded" ] && [ -z "$(st_get ci "$id")" ]; then echo "ci main $sha $concl"; fi
+    if [ -n "$seeded" ] && [ -z "$(st_get ci "$id")" ]; then
+      # Over the cap: leave it unseen, so it goes out next tick.
+      [ "$emitted" -lt "$cap" ] || continue
+      echo "ci main $sha $concl"
+      emitted=$((emitted + 1))
+    fi
+    page="$page$id "
+    wn_ci="$wn_ci$(st_line ci "$id" "$ep")"$'\n'
   done <<EOF
 $runs
+EOF
+  # Carry ids seen earlier that are off this page but still inside the window.
+  while IFS=$'\t' read -r _k id ep; do
+    [ -n "$id" ] || continue
+    case "$page" in *" $id "*) continue ;; esac
+    [ "$ep" -ge "$cutoff" ] 2>/dev/null || continue
+    wn_ci="$wn_ci$(st_line ci "$id" "$ep")"$'\n'
+  done <<EOF
+$(st_kind ci)
 EOF
 }
 

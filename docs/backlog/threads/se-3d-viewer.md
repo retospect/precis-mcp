@@ -45,15 +45,14 @@ strand hp), the pick header and residue row name the atom and base, an
 it, and the smooth/strain rows stay on every structure with their
 references in the labels ("keep it as is, it's cool"). gr462702 is
 closed: Reto no longer has the failing browser, so the shipped fallback
-stands (se-3d-viewer-3, option 2). Next is item 2's three levers in
-Reto's order (se-3d-viewer-6); after them the next build is 5
+stands (se-3d-viewer-3, option 2). Item 2's three speed levers
+(se-3d-viewer-6) shipped in round 3; the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02; `strain` checks atom hover since instancing, so atom
-click-pick is its remaining blind spot. The atom overlay's InstancedMeshes
-are r160 objects drawn by three-cad-viewer's bundled r184 renderer, which
-needs `morphTexture`/`previousInstanceMatrix` set to null
-(`_forBundledRenderer`). A three.js bump re-checks this, on either copy:
-  the nightly `strain` check fails on it (console_clean plus every redraw). Two traps for whoever picks this
+click-pick is its remaining blind spot. The viewer and the atom overlay
+share one three.js (`/static/three-r184/`, import map in
+detail3d.html.j2): bump three-cad-viewer and three together, or the page
+carries two copies again. Two traps for whoever picks this
 up:
 - Checking the viewer against prod data without the prod web's Basic
   credential: `scripts/guide-web --db prod --port 9110` (local
@@ -106,17 +105,18 @@ up:
    because a nanometre structure can sit a metre from the origin.
    On prod data the drum's `atomic3d.json` went from 1090 KB to 241 KB
    gzip (3.86 MB → 0.73 MB raw).
-   Left, in Reto's order (se-3d-viewer-6, 2026-10-03):
-   - Start the `scene3d`/`atomic3d` fetches from an inline script before
-     the module bundle parses (verdict 1c: note it, not now). Reto's
-     reading puts this at ~0.6 s.
-   - **Two three.js copies on the page.** Safari warns "Multiple instances
-     of Three.js being imported": the overlay's r160
-     `/static/three/three.module.min.js` (166 KB gzip extra) sits beside
-     three-cad-viewer's bundled r184. Shared-state hazard is class
-     identity, handled by `_forBundledRenderer` and caught by the nightly
-     `strain` check. One copy needs three-cad-viewer re-vendored with three
-     external, so both use one r184 module.
+   The early fetch SHIPPED too: an inline script starts `scene3d` and
+   `atomic3d` before mermaid and the module bundle load
+   (`_takePrefetch`). On prod data the atom request now starts at 155 ms,
+   where it used to wait for the bundle (436–705 ms) and the scene fetch.
+   One three.js SHIPPED last: three-cad-viewer 5.0.6 rebuilt from source
+   with `three` external, so the viewer and the atom overlay share one copy
+   of three 0.184 through the page's import map
+   (`static/three-cad-viewer/README.md` has the rebuild recipe). The
+   "Multiple instances" warning is gone, and three.js costs 440 KB gzip
+   instead of 601 KB. Left: the inline early fetch, payload and one copy
+   want one prod reading after the round deploys (the page's
+   `bt3d-*` performance marks give it exactly).
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later

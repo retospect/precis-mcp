@@ -64,7 +64,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - claims-and-evidence re-ran its cite-fallback pass: printed pairs went from 114 to 107, all expected (`scratch/cite-standard/dr173020-printed-pairs-apply28-diff.tsv`).
      - fi191144 no longer appears in the draft because A2 deleted it.
      - fi189548's two bare uses are now pinned inside its signed grounding: dc2445881 >pc40252, dc2445916 >pc40243,pc40252.
-   - **Item 29 (decide, open), corrected 15:39Z after Reto pushed back.** fi189535's claim is supported by its papers; no supersede is needed.
+   - **Item 29 answered 16:06Z, applied 16:10Z.**
+     - Item 26's pins are restored: dc2445860 `[fi189535>pc209495,pc209502,pc209505]` and dc2445859 `[fi189527>pc452187,pc452198]`. All pinned passages are linked.
+     - Pin rule: a pin stays within the signed grounding's papers and names the passage that carries the sentence.
+     - Reto's follow-up, how to stop this recurring and catch it automatically, is filed as **claims-and-evidence-9** (`review-queue/open/claims-and-evidence-9.md`), owned by claims-and-evidence. My three proposals are in it as G3, G1 and G5; the pin rule is G4. I sent:
+       - (f) pin-vs-sentence term coverage and a narrowing warning;
+       - (g) a sign-time check for evidence edges added after review;
+       - (h) absence-claim search discipline.
+     - Case facts: fi189535's publish row was created 09-19 16:06Z; its methods edges pc209502 and pc209509 were linked at 16:29Z; signed 09-22. Of the 15 anchored hubs, fi189535 is the only confirmed front-matter grounding. fi236369 and fi236370 are Nature-letter candidates, unread (`printed-read/grounding-depth.out`).
+   - **Item 29 history, corrected 15:39Z after Reto pushed back.** fi189535's claim is supported by its papers; no supersede is needed.
      - STS is in pa2069: pc209508 and pc209509, and pc209505 (Fig. 2e). TEM is in pa2069 pc209502 (Fig. 1). The graphene buds are shown by HRTEM in pa1120 pc99780.
      - The signed grounding picked an abstract and a definition instead of these passages.
      - My first search needed the literal phrase "tunnelling spectroscopy"; pa2069 writes "microscopy (STM) and spectroscopy (STS)". Log: `printed-read/sts-recheck-29.out`.
@@ -146,7 +154,10 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    - The pillar's (6,0)→C₆₀ join has 8 atoms in non-bonded pairs at 1.05–1.33 Å (`figs/s4_closepairs.py`, close-up `s4-neck-az0.png`). This is common to both variants, and hero5/5a have it too: the (6,0) stick joint has had it since the pillar went to (6,0).
    - **Route (a) failed, 16:00Z.** Under MACE-MP, 4 of the 6 fused (6,0)→C₆₀ seam bonds open to 4.7–4.9 Å, also on a free tube+ball. The fused thin neck is not a bonded minimum.
      - The `s4_pill12_top*` files are diagnostics only; do not render them.
-     - Item 30 now asks Reto a second question: keep the stick neck, use a (12,0) pillar, or put the C₆₀ on a capped (6,0) end as a bud. The last is my pick if it passes; hexfold is MACE-checking it.
+     - Item 30 answered 16:06Z: pill12 at azimuth −110, top-only relax, caption says so.
+     - **Correction 16:25Z: the "fused neck tears" result is not established.** The same MACE-MP-small protocol also tears the literature-stable [9-6] (10,10) control. Only the (6,0) [2+2] bud failure is credible, because its control holds.
+     - hexfold is re-running on GFN-xTB, controls first. If xTB holds the neck, Reto's answer is carried out as written; the handoff goes to `hexfold-corner/s4_pill12_top_xtb.extxyz`.
+     - Item 31 says there is no decision until then. Fused (9,0) cannot be built (`port.mismatch`).
    - The figure is not final until that is fixed and Reto picks a variant.
    - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20

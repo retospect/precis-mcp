@@ -21,8 +21,10 @@ Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 
 from __future__ import annotations
 
+import contextvars
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import Any
 
 from psycopg import Connection
@@ -274,6 +276,16 @@ _FIXED_COPPER_ENVELOPE_FIELDS = {
 }
 
 
+#: The connection of the open :meth:`PcbMixin.pcb_judged_tx`, if any. While
+#: set, every pcb store read/write in the same context goes through it, so a
+#: check run between a mutation and its commit sees the uncommitted rows (a
+#: read on its own pool connection cannot) and a write never waits on row
+#: locks this transaction itself holds.
+_AMBIENT_CONN: contextvars.ContextVar[Connection | None] = contextvars.ContextVar(
+    "pcb_ambient_conn", default=None
+)
+
+
 class PcbMixin:
     pool: Any
     tx: Any
@@ -283,6 +295,46 @@ class PcbMixin:
     add_link: Any  # LinksMixin — the board → part ``contains`` edges
     remove_link: Any
     chunks: Any  # ChunkStore sub-store — the shared card_combined write
+
+    # -- transaction-visible reads ----------------------------------------
+    def _pcb_conn(self) -> AbstractContextManager[Connection]:
+        """A connection for a pcb read: the ambient judged transaction's
+        when one is open, else a fresh pool connection."""
+        ambient = _AMBIENT_CONN.get()
+        if ambient is not None:
+            return nullcontext(ambient)
+        return self.pool.connection()
+
+    @contextmanager
+    def _pcb_tx(self) -> Iterator[Connection]:
+        """A transaction for a pcb write: a savepoint on the ambient judged
+        transaction when one is open (its rollback undoes only this call;
+        the enclosing transaction still commits or rolls back as a unit),
+        else a fresh :meth:`tx`."""
+        ambient = _AMBIENT_CONN.get()
+        if ambient is not None:
+            with ambient.transaction():
+                yield ambient
+            return
+        with self.tx() as conn:
+            yield conn
+
+    @contextmanager
+    def pcb_judged_tx(self) -> Iterator[Connection]:
+        """One transaction in which every pcb store call (including reads)
+        shares the yielded connection. A handler mutates inside it, re-reads
+        the board to judge the result, and raises to roll the mutation back.
+        Not re-entrant: an inner call joins the outer transaction."""
+        ambient = _AMBIENT_CONN.get()
+        if ambient is not None:
+            yield ambient
+            return
+        with self.tx() as conn:
+            token = _AMBIENT_CONN.set(conn)
+            try:
+                yield conn
+            finally:
+                _AMBIENT_CONN.reset(token)
 
     # -- write ----------------------------------------------------------
     def pcb_apply(
@@ -361,7 +413,7 @@ class PcbMixin:
                 generators=generators,
                 meta=meta,
             )
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_apply(
                 c,
                 slug=slug,
@@ -691,7 +743,7 @@ class PcbMixin:
         default) writes nothing. Returns summed stats plus ``boards``."""
         totals = {"boards": 0, "mint": 0, "add": 0, "update": 0, "remove": 0}
         totals["uncatalogued"] = 0
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             boards = [
                 int(r[0])
                 for r in conn.execute(
@@ -1124,7 +1176,7 @@ class PcbMixin:
         otherwise."""
         if conn is not None:
             return self._pcb_ensure_board(conn, ref_id)
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_ensure_board(c, ref_id)
 
     def _pcb_ensure_board(self, conn: Connection, ref_id: int) -> int:
@@ -1222,7 +1274,7 @@ class PcbMixin:
         """The design's board/net_classes/route-status + instances + nets +
         a fanout count per net, for the netlist TOC. Components/pins are
         joined into the instance rows."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             board, net_classes, route_status = self._pcb_board_meta(conn, ref_id)
             instances = [
                 {
@@ -1287,7 +1339,7 @@ class PcbMixin:
     def pcb_instance_neighbors(self, ref_id: int, refdes: str) -> dict[str, Any] | None:
         """The graph hop from one component instance: its pins, the net on each
         pin, and the neighbouring instances on those nets."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             inst = conn.execute(
                 "SELECT instance_id, component_id FROM pcb_instances "
                 "WHERE ref_id = %s AND refdes = %s AND retired_at IS NULL",
@@ -1326,7 +1378,7 @@ class PcbMixin:
 
     def pcb_net_members(self, ref_id: int, name: str) -> dict[str, Any] | None:
         """A net's members: every (refdes, pin) on it."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             net = conn.execute(
                 "SELECT net_id, net_class, est_current_a, width_mm, "
                 "       working_voltage_v, edge_rate_v_per_ns, impedance_ohm, "
@@ -1373,7 +1425,7 @@ class PcbMixin:
         :class:`pcb_routes.status`; empty = all-unrouted), and the
         unconnected pins. Pure data — the analysis lives in
         :mod:`precis.pcb`."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             board, net_classes, route_status = self._pcb_board_meta(conn, ref_id)
             instances = [
                 {
@@ -1548,7 +1600,7 @@ class PcbMixin:
         reason (e.g. a dangling <2-member net is written ``'realized'``
         with a note explaining why — see ``pcb_route``'s job docstring —
         so a bare ``status`` doesn't read as an actually-routed net)."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             board_row = conn.execute(
                 "SELECT board_id FROM pcb_boards "
                 "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
@@ -1591,7 +1643,7 @@ class PcbMixin:
         :meth:`pcb_ensure_board`)."""
         if conn is not None:
             return self._pcb_upsert_net_classes(conn, ref_id, classes)
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_upsert_net_classes(c, ref_id, classes)
 
     def _pcb_upsert_net_classes(
@@ -1631,7 +1683,7 @@ class PcbMixin:
         if conn is not None:
             self._pcb_write_drc_findings(conn, board_id, run_id, findings)
             return
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             self._pcb_write_drc_findings(c, board_id, run_id, findings)
 
     def _pcb_write_drc_findings(
@@ -1663,7 +1715,7 @@ class PcbMixin:
         board — ``(None, [])`` when there is no board yet or no run has
         ever been recorded (the ``netlist_drc_clean`` gate evaluator reads
         this: no run yet means "not yet", not "clean")."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             board_row = conn.execute(
                 "SELECT board_id FROM pcb_boards "
                 "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",
@@ -1709,7 +1761,7 @@ class PcbMixin:
         Never moves a `fixed` instance (guarded in SQL too). Optionally stamps
         a placement summary onto `refs.meta`. Returns the rows moved."""
         moved = 0
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             for refdes, (x, y) in placement.items():
                 moved += conn.execute(
                     "UPDATE pcb_instances SET x = %s, y = %s "
@@ -1743,7 +1795,7 @@ class PcbMixin:
         round-trip) never writes rotation, so a coarser blanket guard is
         honest there. Returns instances with ≥1 axis written."""
         moved = 0
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             for refdes, (x, y, rot) in pose.items():
                 moved += conn.execute(
                     "UPDATE pcb_instances SET "
@@ -1812,7 +1864,7 @@ class PcbMixin:
         )
         if conn is not None:
             return conn.execute(sql, params).rowcount > 0
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return c.execute(sql, params).rowcount > 0
 
     def pcb_move_group(
@@ -1861,7 +1913,7 @@ class PcbMixin:
         reset). Any failure rolls all of it back. Returns the nets actually
         ripped."""
         ripped: list[str] = []
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             for refdes, x, y, rot in poses:
                 if not self.pcb_move_instance(
                     ref_id, refdes, x=x, y=y, rot=rot, conn=conn
@@ -1892,7 +1944,7 @@ class PcbMixin:
     def pcb_nets_with_router_copper(self, board_id: int) -> set[str]:
         """Names of the active nets that own at least one DERIVED
         ``pcb_copper`` row — the nets a part move can strand."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return {
                 str(r[0])
                 for r in conn.execute(
@@ -1907,7 +1959,7 @@ class PcbMixin:
         """``{net name: net_id}`` for a design — the join key
         :meth:`pcb_routes_write`/:meth:`pcb_copper_replace`'s callers use to
         turn the IR's name-addressed sketch back into real FKs."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return {
                 r[0]: int(r[1])
                 for r in conn.execute(
@@ -1924,7 +1976,7 @@ class PcbMixin:
         choice survives the next ``pcb_route`` run's IR rebuild. A net with
         no ``pcb_routes`` row yet reads as the all-empty/``'unrouted'``
         default, same convention as :meth:`pcb_route_status`."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT n.name, rt.tree, rt.topology, rt.layer_assign, "
                 "       rt.status, rt.fail, rt.meta "
@@ -1960,7 +2012,7 @@ class PcbMixin:
         rather than a bare status a later reader can't distinguish from an
         actually-routed net. Returns the number of rows written."""
         n = 0
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             for net_name, row in rows.items():
                 net = conn.execute(
                     "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
@@ -2011,7 +2063,7 @@ class PcbMixin:
         separate (pcb-pre-place-route-blocks Slice 1). No caller does that
         today (checked: every :meth:`pcb_copper_list` reader is a render/
         DRC consumer, never a :meth:`pcb_copper_replace` source)."""
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             conn.execute("DELETE FROM pcb_copper WHERE board_id = %s", (board_id,))
             for r in rows:
                 conn.execute(
@@ -2047,7 +2099,7 @@ class PcbMixin:
         remember; ``fixed: True`` marks the authored rows, absent/``False``
         on derived ones. See :meth:`pcb_copper_replace`'s own docstring for
         the one thing this union must NEVER feed back into."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT c.ctype, c.layer, n.name, c.geom "
                 "FROM pcb_copper c JOIN pcb_nets n ON n.net_id = c.net_id "
@@ -2144,7 +2196,7 @@ class PcbMixin:
             return self._pcb_fixed_copper_put(
                 conn, ref_id, board_id, generator_name, generator, version, rows
             )
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_fixed_copper_put(
                 c, ref_id, board_id, generator_name, generator, version, rows
             )
@@ -2229,7 +2281,7 @@ class PcbMixin:
         since been retired — the geometry row itself stays visible either
         way (never silently dropped, unlike :meth:`pcb_copper_list`'s
         derived side, which inner-joins on an active net)."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT fc.ctype, fc.layer, n.name, fc.geom, fc.generator_name, "
                 "       fc.envelope, fc.fixed_id "
@@ -2264,7 +2316,7 @@ class PcbMixin:
         otherwise."""
         if conn is not None:
             return self._pcb_fixed_copper_retire(conn, ref_id, generator_name)
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_fixed_copper_retire(c, ref_id, generator_name)
 
     def _pcb_fixed_copper_retire(
@@ -2291,7 +2343,7 @@ class PcbMixin:
         nothing to rip). Reuses ``conn`` inside an existing transaction."""
         if conn is not None:
             return self._pcb_rip_route(conn, ref_id, net_name)
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_rip_route(c, ref_id, net_name)
 
     def _pcb_rip_route(self, conn: Connection, ref_id: int, net_name: str) -> bool:
@@ -2338,7 +2390,7 @@ class PcbMixin:
         — pinning a side is a legitimate first edit to an as-yet-unrouted
         net's sketch. Returns whether the net resolved."""
         key = "|".join(sorted((a, b)))
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             board_id = self._pcb_ensure_board(conn, ref_id)
             net = conn.execute(
                 "SELECT net_id FROM pcb_nets WHERE ref_id = %s AND name = %s "
@@ -2403,7 +2455,7 @@ class PcbMixin:
         :meth:`pcb_planes_replace_derived`."""
         if conn is not None:
             return self._pcb_assign_plane(conn, ref_id, layer_name, net_name)
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             return self._pcb_assign_plane(c, ref_id, layer_name, net_name)
 
     def _pcb_assign_plane(
@@ -2441,7 +2493,7 @@ class PcbMixin:
         ``meta.source`` (pre-this-change rows) — the safe direction,
         since misreading a row as ``'derived'`` would let a later
         replace silently retire a human's instruction."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return [
                 {
                     "layer": r[0],
@@ -2482,7 +2534,7 @@ class PcbMixin:
 
         ``assignments`` is ``{net_name: layer_name}``. Returns nets
         attempted (not necessarily inserted)."""
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             conn.execute(
                 "UPDATE pcb_planes SET retired_at = now() "
                 "WHERE board_id = %s AND retired_at IS NULL "
@@ -2524,7 +2576,7 @@ class PcbMixin:
 
         ``source`` defaults ``'authored'`` for a row with no
         ``meta.source``, same safe direction as :meth:`pcb_planes_list`."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return [
                 {
                     "refdes": r[0],
@@ -2571,7 +2623,7 @@ class PcbMixin:
         or ``net`` is silently skipped (netlist changed under it), never
         an error. Returns overrides attempted (not necessarily
         inserted)."""
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             conn.execute(
                 "UPDATE pcb_pin_swaps SET retired_at = now() "
                 "WHERE board_id = %s AND retired_at IS NULL "
@@ -2625,11 +2677,18 @@ class PcbMixin:
                 n += 1
         return n
 
-    def pcb_set_class_rules(self, ref_id: int, name: str, rules: dict[str, Any]) -> int:
+    def pcb_set_class_rules(
+        self,
+        ref_id: int,
+        name: str,
+        rules: dict[str, Any],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
         """Thin single-class wrapper around
         :meth:`pcb_upsert_net_classes` — the inline "set class rules"
-        editor's write path."""
-        return self.pcb_upsert_net_classes(ref_id, {name: rules})
+        editor's write path. Reuses ``conn`` inside an existing transaction."""
+        return self.pcb_upsert_net_classes(ref_id, {name: rules}, conn=conn)
 
     def pcb_set_stackup(
         self,
@@ -2655,7 +2714,7 @@ class PcbMixin:
         if conn is not None:
             self._pcb_set_stackup(conn, board_id, stackup)
             return
-        with self.tx() as c:
+        with self._pcb_tx() as c:
             self._pcb_set_stackup(c, board_id, stackup)
 
     def _pcb_set_stackup(
@@ -2671,7 +2730,7 @@ class PcbMixin:
         """Live measures of a design. ``measure_id`` and ``meta`` ride along
         for `align` (axis/offset authored in ``meta``; ``meta.snapped`` is
         stamped by :meth:`pcb_measures_mark_snapped`)."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return [
                 {
                     "measure_id": int(r[7]),
@@ -2699,7 +2758,7 @@ class PcbMixin:
         the flag always describes the LAST run (a measure the snap pass did
         not touch this time is not "snapped"). Returns rows now flagged."""
         ids = [int(i) for i in snapped]
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             conn.execute(
                 "UPDATE pcb_measures SET meta = meta - 'snapped' "
                 "WHERE ref_id = %s AND metric = 'align' AND retired_at IS NULL "
@@ -2721,7 +2780,7 @@ class PcbMixin:
         """Live non-electrical features of a design — the
         board outline + mounting holes the mechanical exporter / the 0041
         enclosure bridge consume."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             return [
                 {
                     "feature_id": int(r[0]),
@@ -2746,7 +2805,7 @@ class PcbMixin:
         """Cached Flow-B footprints (pads + pin_map) keyed by C-number for every
         part the design's instances reference. The DSN exporter (§6) uses real
         pad geometry where present and falls back to centroid pins otherwise."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT f.lcsc, f.pads, f.pin_map, f.courtyard, f.centroid "
                 "FROM part_footprints f "
@@ -2804,7 +2863,7 @@ class PcbMixin:
         normal authoring path; this is here for a caller that already has
         a normalized ``{pads, pin_map, courtyard, centroid}`` dict (a
         generator, in a later slice)."""
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             self._pcb_local_footprint_upsert(conn, ref_id, name, data)
 
     def pcb_local_footprints_for(self, ref_id: int) -> dict[str, dict[str, Any]]:
@@ -2815,7 +2874,7 @@ class PcbMixin:
         that method): this table is already ref_id-scoped and small, and
         an unreferenced-but-authored footprint should still show up for
         inspection."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT name, pads, pin_map, courtyard, centroid "
                 "FROM pcb_local_footprints WHERE ref_id = %s",
@@ -2984,7 +3043,7 @@ class PcbMixin:
         ledger}`` each, the same shape :meth:`_pcb_generator_row` reads
         inside a transaction (this is the outside-a-batch read-back,
         e.g. for a capability-map view)."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT name, generator, version, params, refdes, ledger "
                 "FROM pcb_generators WHERE ref_id = %s ORDER BY name",
@@ -3013,7 +3072,7 @@ class PcbMixin:
         lever for the full ~300k dump (the PCB netlist+placement IR —
         "drop-index trick optional at our row count")."""
         counts = {"upserted": 0, "restocked": 0}
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             for r in rows:
                 lcsc = r["lcsc"]
                 new_stock = int(r.get("stock") or 0)
@@ -3101,7 +3160,7 @@ class PcbMixin:
         # :func:`precis.pcb.catalog.read_jlcparts_sqlite` already uses for
         # its dynamic column list.
         staging = "parts_staging"
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             conn.execute(f"DROP TABLE IF EXISTS {staging}")
             conn.execute(f"CREATE TABLE {staging} (LIKE parts INCLUDING ALL)")
             for r in rows:
@@ -3217,7 +3276,7 @@ class PcbMixin:
         parts; rank Basic-first then **turnover** (restock frequency + healthy
         EWMA stock) — prefer parts that keep being available, not the last reel.
         """
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             rows = conn.execute(
                 "SELECT p.lcsc, p.mfr_part, p.description, p.basic, p.stock, "
                 "       p.package, p.price, coalesce(a.restock_count, 0), "
@@ -3246,7 +3305,7 @@ class PcbMixin:
         ]
 
     def part_row(self, lcsc: str) -> dict[str, Any] | None:
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             r = conn.execute(
                 "SELECT p.lcsc, p.mfr, p.mfr_part, p.description, "
                 "       p.jlcpcb_assemblable, p.basic, p.stock, p.package, "
@@ -3287,7 +3346,7 @@ class PcbMixin:
 
         if conn is not None:
             return _do(conn)
-        with self.pool.connection() as c:
+        with self._pcb_conn() as c:
             return _do(c)
 
     def ensure_part_ref(
@@ -3361,7 +3420,7 @@ class PcbMixin:
 
         if conn is not None:
             return _do(conn)
-        with self.pool.connection() as c:
+        with self._pcb_conn() as c:
             return _do(c)
 
     def part_footprint_get(self, lcsc: str) -> dict[str, Any] | None:
@@ -3370,7 +3429,7 @@ class PcbMixin:
         Slice 5, `precis.pcb.escape.compute_escape_graph`) — footprint-
         intrinsic, so it round-trips here rather than in any board-scoped
         table."""
-        with self.pool.connection() as conn:
+        with self._pcb_conn() as conn:
             r = conn.execute(
                 "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape "
                 "FROM part_footprints WHERE lcsc = %s",
@@ -3398,7 +3457,7 @@ class PcbMixin:
         :mod:`precis.pcb.escape`) round-trips the same way as every other
         field: an upsert with the key omitted (or ``None``) writes NULL,
         same as ``kicad_mod``/``source`` above."""
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             conn.execute(
                 """
                 INSERT INTO part_footprints
@@ -3428,7 +3487,7 @@ class PcbMixin:
         """Soft-delete a design: mark the ref deleted, retire its graph rows,
         drop its search card — atomically."""
         counts = {}
-        with self.tx() as conn:
+        with self._pcb_tx() as conn:
             self.retire_ref(ref_id, conn=conn)
             for tbl in (
                 "pcb_instances",
