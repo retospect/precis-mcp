@@ -78,7 +78,7 @@ its central objects at all. Survey against code (2026-09-13):
   (`ir.py::PcbIR.instance_part_lcsc` = None) but gets only a synthesized
   land-pattern bound, and `gerber.py::export_fab` refuses to export any
   synthesized pad (`SynthesizedPadError`). Footprints are *pulled, never
-  synthesized* (`footprint.py::ensure_footprint`, keyed by LCSC C-number);
+  synthesized* (`op='footprint'` → `part_footprints`, keyed by LCSC C-number);
   `store.part_footprint_put` has no MCP verb. There is no authoring path
   for "this pin is a 1.5 mm square copper electrode".
 - **Pad shapes are circle/rect/obround only** (`gerber.py::_aperture_for_pad`,
