@@ -154,7 +154,10 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    - The pillar's (6,0)→C₆₀ join has 8 atoms in non-bonded pairs at 1.05–1.33 Å (`figs/s4_closepairs.py`, close-up `s4-neck-az0.png`). This is common to both variants, and hero5/5a have it too: the (6,0) stick joint has had it since the pillar went to (6,0).
    - **Route (a) failed, 16:00Z.** Under MACE-MP, 4 of the 6 fused (6,0)→C₆₀ seam bonds open to 4.7–4.9 Å, also on a free tube+ball. The fused thin neck is not a bonded minimum.
      - The `s4_pill12_top*` files are diagnostics only; do not render them.
-     - Item 30 answered 16:06Z: pill12 at azimuth −110. But "proceed with the top-only relax" names the route that failed, so it is re-asked as **item 31** (decide). The options are the capped-(6,0) bud (my pick, hexfold MACE-checking it), a (12,0) lid pillar, or the stick neck. If the bud fails, I fall back to the (12,0) pillar.
+     - Item 30 answered 16:06Z: pill12 at azimuth −110, top-only relax, caption says so.
+     - **Correction 16:25Z: the "fused neck tears" result is not established.** The same MACE-MP-small protocol also tears the literature-stable [9-6] (10,10) control. Only the (6,0) [2+2] bud failure is credible, because its control holds.
+     - hexfold is re-running on GFN-xTB, controls first. If xTB holds the neck, Reto's answer is carried out as written; the handoff goes to `hexfold-corner/s4_pill12_top_xtb.extxyz`.
+     - Item 31 says there is no decision until then. Fused (9,0) cannot be built (`port.mismatch`).
    - The figure is not final until that is fixed and Reto picks a variant.
    - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
