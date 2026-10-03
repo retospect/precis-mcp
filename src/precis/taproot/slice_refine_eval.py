@@ -33,12 +33,19 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.embed_query import embed_query
-from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
+from precis.workers._chase_llm import (
+    SourceIdentity,
+    _verify_support_with_caveats,
+    is_corroborating,
+)
 from precis.workers.hub_refine import (
     _META_REJECTED,
     _attached_source_ids,
+    _chunk_neighbours,
+    _chunk_section_path,
     _claim_source_passage,
     _min_sim_default,
+    _source_identity,
     _topk_default,
 )
 
@@ -216,6 +223,7 @@ def _eval_one_hub(
     )
     # The same claim-source passage the live pass shows its verifier.
     claim_source_text = _claim_source_passage(conn, hub_ref_id)
+    identity_cache: dict[int, SourceIdentity] = {}
     seen_papers: set[int] = set()
     for block, ref, score in candidates:
         paper_ref_id = int(ref.id)
@@ -245,6 +253,10 @@ def _eval_one_hub(
             target_chunk_ord=block.ord,
             target_chunk_text=block.text,
             claim_source_text=claim_source_text,
+            # Same section / neighbours / identity the live pass shows.
+            section_path=_chunk_section_path(conn, int(block.id)),
+            neighbours=_chunk_neighbours(conn, paper_ref_id, block.ord),
+            source_identity=_source_identity(conn, paper_ref_id, identity_cache),
         )
         if verification is None:
             hub_eval.verify_failed += 1

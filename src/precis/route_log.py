@@ -152,8 +152,11 @@ def _warn_if_unmetered(rec: LlmCallRecord) -> None:
     )
 
 
-def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> None:
-    """Write one call record — best-effort, never raises.
+def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> str | None:
+    """Write one call record — best-effort, never raises. Returns the
+    ``request_hash`` the row was logged under (the ``llm_blob`` key of the
+    request text), or ``None`` when nothing was logged: no store bound, a
+    failed write, or a lite row (``store_blobs=False``, which keeps no hash).
 
     No-op when no store is bound (and none passed). Dedups the request/response
     text into ``llm_blob`` (content-addressed), then inserts the metadata row.
@@ -165,14 +168,15 @@ def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> None:
     _warn_if_unmetered(rec)
     st = store if store is not None else _STORE
     if st is None:
-        return
+        return None
     try:
-        _write(st, rec)
+        return _write(st, rec)
     except Exception:
         log.debug("route_log: record_call failed", exc_info=True)
+        return None
 
 
-def _write(store: Store, rec: LlmCallRecord) -> None:
+def _write(store: Store, rec: LlmCallRecord) -> str | None:
     import json
 
     # Char counts are recorded either way (the mineable volume signal); the blob
@@ -235,6 +239,7 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
             ),
         )
         conn.commit()
+    return req_hash
 
 
 @dataclass(frozen=True, slots=True)

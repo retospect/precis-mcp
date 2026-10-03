@@ -72,6 +72,27 @@ def test_record_call_writes_row_and_dedups_blobs(store: Any) -> None:
     assert row[2] is True
 
 
+def test_record_call_returns_the_logged_request_hash(store: Any) -> None:
+    tag = uuid4().hex[:8]
+    src = f"test-{tag}"
+    h = route_log.record_call(_rec(source=src, request_text=f"REQ-{tag}"), store=store)
+    assert isinstance(h, str) and len(h) == 64
+    with store.pool.connection() as conn:
+        logged = conn.execute(
+            "SELECT request_hash FROM llm_call_log WHERE source=%s", (src,)
+        ).fetchone()[0]
+    assert logged == h
+    # nothing logged -> None: a lite row keeps no hash, an unbound store logs nothing
+    assert (
+        route_log.record_call(
+            _rec(source=src, request_text=f"L-{tag}", store_blobs=False), store=store
+        )
+        is None
+    )
+    route_log.bind_store(None)
+    assert route_log.record_call(_rec()) is None
+
+
 def test_record_call_persists_token_counts(store: Any) -> None:
     # Migration 0121: the four token fields round-trip to the row untouched —
     # None stays None (claude_p reports no telemetry), a set value survives.

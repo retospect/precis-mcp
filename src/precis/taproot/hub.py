@@ -956,6 +956,42 @@ def attach_evidence(
 #: any human asking "why is this edge gone?".
 META_REGROUND_LOG = "reground_log"
 
+#: ``finding.meta`` keys of the two judge memos ``workers/hub_refine`` keeps
+#: (one verdict per passage per ``claim_sha``): the reground judge's
+#: ``reground_seen`` and the widen arm's per-source ``taproot_rejected``.
+#: Defined here so the read side (:func:`reground_counts`, the evidence /
+#: fisheye views) never imports a worker.
+META_REGROUND_SEEN = "reground_seen"
+META_REJECTED = "taproot_rejected"
+
+
+def reground_counts(meta: dict[str, Any] | None) -> tuple[int, int, int]:
+    """``(judged, withheld, removed)`` for one claim hub, from its ``meta``.
+
+    ``judged`` = distinct judge memos (``reground_seen`` passages plus
+    ``taproot_rejected`` sources not already covered by a seen passage —
+    the reground judge writes both for one rejected candidate);
+    ``withheld`` = log entries whose action starts ``withheld``;
+    ``removed`` = log entries whose action starts ``disputes removed`` (a
+    disputing edge taken off the hub; a routine evidence prune, action
+    ``removed``, is deliberately not counted). Pure and cheap: the summary
+    line on ``view='evidence'`` and the fisheye posture header both read it.
+    """
+    m = meta or {}
+    seen = m.get(META_REGROUND_SEEN) or {}
+    rejected = m.get(META_REJECTED) or {}
+    seen_refs = {str(k).split(":", 1)[0] for k in seen}
+    judged = len(seen) + sum(1 for k in rejected if str(k) not in seen_refs)
+    actions = [
+        str(e.get("action") or "")
+        for e in (m.get(META_REGROUND_LOG) or [])
+        if isinstance(e, dict)
+    ]
+    withheld = sum(1 for a in actions if a.startswith("withheld"))
+    removed = sum(1 for a in actions if a.startswith("disputes removed"))
+    return judged, withheld, removed
+
+
 #: Ceiling on :data:`META_REGROUND_LOG` length — oldest entries drop
 #: first. Reground is converging-by-construction (the ``reground_seen``
 #: sha-memo in :mod:`precis.workers.hub_refine`), so a hub only ever
@@ -1014,6 +1050,71 @@ def live_evidence_count(conn: Any, hub_ref_id: int) -> int:
     return len(live_evidence_handles(conn, hub_ref_id))
 
 
+#: Cap on each stored setup text (``claim_setup`` / ``passage_setup``) in a
+#: judge memo, log entry or edge meta.
+JUDGE_SETUP_CHARS = 300
+
+
+def judgement_fields(
+    *,
+    claim_setup: str | None = None,
+    passage_setup: str | None = None,
+    same_setup: bool | str | None = None,
+    primary: bool | None = None,
+    terminal: bool | None = None,
+    llm_request_hash: str | None = None,
+) -> dict[str, Any]:
+    """The judge's reasoning, as the optional keys a memo / log entry / edge
+    meta carries beside the verdict. Only fields the judge actually returned
+    appear (an empty setup text or ``None`` is omitted, so an entry written
+    before these fields existed reads the same as one without them); each
+    setup text is capped at :data:`JUDGE_SETUP_CHARS`."""
+    out: dict[str, Any] = {}
+    for key, text in (("claim_setup", claim_setup), ("passage_setup", passage_setup)):
+        if isinstance(text, str) and text.strip():
+            out[key] = text.strip()[:JUDGE_SETUP_CHARS]
+    # Normalised so every judge path stores the same shapes: ``same_setup``
+    # is a bool or "unclear"; ``primary`` / ``terminal`` are bools. Anything
+    # else (a stringified "true", a number) is dropped, not guessed at.
+    if isinstance(same_setup, bool):
+        out["same_setup"] = same_setup
+    elif isinstance(same_setup, str) and same_setup.strip().lower() == "unclear":
+        out["same_setup"] = "unclear"
+    if isinstance(primary, bool):
+        out["primary"] = primary
+    if isinstance(terminal, bool):
+        out["terminal"] = terminal
+    if isinstance(llm_request_hash, str) and llm_request_hash:
+        # ``llm_call_log.request_hash`` of the call that produced the verdict
+        # (the replayable prompt in ``llm_blob``); absent when nothing was logged.
+        out["llm_request_hash"] = llm_request_hash
+    return out
+
+
+#: Keys a log entry already carries as top-level judge fields — dropped from
+#: its ``removed_meta`` (:func:`cap_removed_meta`).
+_ENTRY_JUDGE_KEYS = frozenset(
+    {"claim_setup", "passage_setup", "same_setup", "primary", "terminal"}
+)
+
+
+def cap_removed_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """A deleted link's ``meta`` as kept in a log entry: the judge keys the
+    entry already carries at top level are dropped, and every string value
+    (nested ones too) is cut at :data:`JUDGE_SETUP_CHARS`."""
+
+    def _cap(value: Any) -> Any:
+        if isinstance(value, str):
+            return value[:JUDGE_SETUP_CHARS]
+        if isinstance(value, dict):
+            return {k: _cap(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_cap(v) for v in value]
+        return value
+
+    return {k: _cap(v) for k, v in (meta or {}).items() if k not in _ENTRY_JUDGE_KEYS}
+
+
 def reground_log_entry(
     *,
     src_ref_id: int,
@@ -1024,6 +1125,13 @@ def reground_log_entry(
     action: str,
     sha: str | None = None,
     handle: str | None = None,
+    claim_setup: str | None = None,
+    passage_setup: str | None = None,
+    same_setup: bool | str | None = None,
+    primary: bool | None = None,
+    terminal: bool | None = None,
+    llm_request_hash: str | None = None,
+    removed_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one :data:`META_REGROUND_LOG` record.
 
@@ -1032,7 +1140,11 @@ def reground_log_entry(
     triple rides along so the log is queryable without re-parsing
     ``edge``, and ``action`` distinguishes what actually happened
     (``removed`` / ``reattached-disputes`` / ``added`` / ``withheld``)
-    from what was judged.
+    from what was judged. The optional judge fields
+    (:func:`judgement_fields`) are present only when the judge returned
+    them, so older entries stay readable; ``removed_meta`` is the deleted
+    link's own ``meta`` for a ``removed`` action (the edge is gone, this is
+    all that is left of its verdict).
     """
     edge = handle or (
         f"ref:{src_ref_id}"
@@ -1049,6 +1161,19 @@ def reground_log_entry(
         "reason": reason,
         "action": action,
         "sha": sha,
+        **judgement_fields(
+            claim_setup=claim_setup,
+            passage_setup=passage_setup,
+            same_setup=same_setup,
+            primary=primary,
+            terminal=terminal,
+            llm_request_hash=llm_request_hash,
+        ),
+        **(
+            {"removed_meta": capped}
+            if removed_meta and (capped := cap_removed_meta(removed_meta))
+            else {}
+        ),
     }
 
 
@@ -1123,6 +1248,7 @@ def remove_evidence(
     conn: Any = None,
     allow_last: bool = False,
     log: bool = True,
+    judged: dict[str, Any] | None = None,
 ) -> int:
     """Remove one ``source --role--> hub`` evidence edge. Returns the
     number of rows deleted (``0`` when the edge was already gone).
@@ -1154,7 +1280,8 @@ def remove_evidence(
     :data:`META_REGROUND_LOG` — a hard delete that records nothing is
     exactly the un-auditable removal this door exists to prevent; only a
     caller writing its own richer entry (the disputes re-attach below)
-    passes ``log=False``.
+    passes ``log=False``. ``judged`` (:func:`judgement_fields`) rides on
+    that entry.
     """
     if role not in HUB_ROLES:
         raise BadInput(
@@ -1192,10 +1319,12 @@ def remove_evidence(
         cur = c.execute(
             "DELETE FROM links WHERE dst_ref_id = %s AND dst_chunk_id IS NULL "
             "AND src_ref_id = %s AND src_chunk_id IS NOT DISTINCT FROM %s "
-            "AND relation = %s",
+            "AND relation = %s RETURNING meta",
             (hub_ref_id, src_ref_id, src_chunk_id, role),
         )
-        n = cur.rowcount or 0
+        deleted = cur.fetchall()
+        n = len(deleted)
+        removed_meta = dict(deleted[0][0] or {}) if deleted else None
         if n and log:
             append_reground_log(
                 store,
@@ -1210,6 +1339,8 @@ def remove_evidence(
                         action="removed",
                         sha=claim_sha,
                         handle=handle,
+                        removed_meta=removed_meta,
+                        **(judged or {}),
                     )
                 ],
                 conn=c,
@@ -1235,6 +1366,7 @@ def reattach_as_disputes(
     meta: dict[str, Any] | None = None,
     set_by: str = "system",
     conn: Any = None,
+    judged: dict[str, Any] | None = None,
 ) -> bool:
     """Convert one evidence edge from ``from_role`` to a non-blocking
     ``disputes`` open question. Returns ``True`` when the ``disputes`` edge
@@ -1324,11 +1456,81 @@ def reattach_as_disputes(
                     ),
                     sha=claim_sha,
                     handle=handle,
+                    **(judged or {}),
                 )
             ],
             conn=c,
         )
         return True
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
+def remove_disputes(
+    store: Store,
+    *,
+    hub_ref_id: int,
+    src_ref_id: int,
+    reason: str,
+    judged: dict[str, Any] | None = None,
+    llm_request_hash: str | None = None,
+    claim_sha: str | None = None,
+    verdict: str = "NOT-CONTRADICTS",
+    conn: Any = None,
+) -> int:
+    """Delete one ``source --disputes--> hub`` link a re-audit found was not a
+    real contradiction, and log it. Returns the number of rows deleted (``0``
+    when no such link exists — nothing is logged then).
+
+    The delete (``DELETE … RETURNING meta``) and the log append share one
+    transaction; the log entry's action is exactly ``"disputes removed
+    (re-audit)"`` — the prefix :func:`reground_counts` counts as *removed*.
+    ``judged`` (:func:`judgement_fields`) and ``llm_request_hash`` are the
+    re-audit's own reasoning; the deleted link's meta rides along, capped
+    (:func:`cap_removed_meta`), as ``removed_meta``. This door does not undo
+    the hub demotion the filed ``disputes`` caused — there is no automatic
+    re-promotion (``nanopub.demote`` only reopens); that stays a human step.
+    """
+
+    def _do(c: Any) -> int:
+        if not _is_claim_hub(hub_ref_id, conn=c):
+            raise BadInput(
+                f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
+                next="disputes belong to claim hubs — pick a TAPROOT:claim finding",
+            )
+        cur = c.execute(
+            "DELETE FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'disputes' RETURNING meta",
+            (src_ref_id, hub_ref_id),
+        )
+        deleted = cur.fetchall()
+        if not deleted:
+            return 0
+        fields = {**(judged or {})}
+        if llm_request_hash:
+            fields["llm_request_hash"] = llm_request_hash
+        append_reground_log(
+            store,
+            hub_ref_id,
+            [
+                reground_log_entry(
+                    src_ref_id=src_ref_id,
+                    src_chunk_id=None,
+                    relation="disputes",
+                    verdict=verdict,
+                    reason=reason,
+                    action="disputes removed (re-audit)",
+                    sha=claim_sha,
+                    removed_meta=dict(deleted[0][0] or {}),
+                    **fields,
+                )
+            ],
+            conn=c,
+        )
+        return len(deleted)
 
     if conn is not None:
         return _do(conn)
@@ -2285,8 +2487,11 @@ __all__ = [
     "CLAIM_LINK_RELATIONS",
     "EVIDENCE_SRC_KINDS",
     "HUB_ROLES",
+    "JUDGE_SETUP_CHARS",
     "MERGE_COLLAPSE_RELATION",
     "META_REGROUND_LOG",
+    "META_REGROUND_SEEN",
+    "META_REJECTED",
     "MOTIVATION_RELATION",
     "MOTIVATION_SRC_KINDS",
     "REGROUND_LOG_MAX",
@@ -2301,6 +2506,8 @@ __all__ = [
     "apply_placement",
     "attach_evidence",
     "attach_motivation",
+    "cap_removed_meta",
+    "judgement_fields",
     "link_claims",
     "live_evidence_count",
     "live_evidence_handles",
@@ -2308,6 +2515,8 @@ __all__ = [
     "mint_hub",
     "reattach_as_disputes",
     "refine_claim_sentence",
+    "reground_counts",
     "reground_log_entry",
+    "remove_disputes",
     "remove_evidence",
 ]

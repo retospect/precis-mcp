@@ -260,6 +260,7 @@ get(
     id="fi42", view="evidence"
 )  # taproot claim-hub evidence (originators/corroborators/contradicts)
 get(id="fi42", view="fisheye+1hop")  # the hub's claim-graph neighborhood
+get(id="fi42", view="judgments")  # what the refine judges withheld or removed, and why
 ```
 
 ```text
@@ -332,7 +333,10 @@ Read that line first. `support` is `affirmative✓ negative✗ withheld?`,
 and a hub whose evidence is merely *unjudged* is unverified, not
 supported — see the verdict semantics above. `view='evidence'` remains
 the way to see *which* papers carry which verdict; the eye is for seeing
-the claim's shape in the graph.
+the claim's shape in the graph. When the refine judges kept a passage out
+or took an edge off, the line ends `· withheld 2 · removed 1`;
+`view='judgments'` lists each, newest first, with the judge's reason and
+the two setups it compared.
 
 `put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
 `wants=`) mints/converges a claim hub; `cited_in=` makes an ordinary

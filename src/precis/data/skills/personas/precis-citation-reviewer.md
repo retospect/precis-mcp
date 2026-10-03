@@ -60,6 +60,10 @@ findings as `retracted-source` / `eoc-source` /
   judged against the full text and may span passages. Check
   polarity separately: does the source run against the claim's
   direction or strength for the same quantity and conditions?
+  Before a contradiction or disputes call, open the claim's own
+  establishing passage (`get(kind='finding', id=<hub>, view='evidence')`)
+  and write down both setups (sample/material, method, conditions); a
+  different setup is a different finding, not a contradiction.
   A finding attributed to a group must cite that group's paper;
   a review is fine for background and definitions. Quote both
   the citing sentence AND the source's actual wording. The

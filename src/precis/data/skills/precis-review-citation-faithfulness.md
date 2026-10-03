@@ -83,7 +83,10 @@ not a finding. Then, for each citation handle already present:
    finding: contradicted claim (SUBSTANTIVE). A contradiction is about the
    same quantity, system and comparable conditions. A different value
    measured on a different sample, material, method or condition is a
-   different finding, not a contradiction.
+   different finding, not a contradiction. Before a contradiction or
+   disputes call, open the claim's own establishing passage
+   (`get(kind='finding', id=<hub>, view='evidence')`) and write down both
+   setups (sample/material, method, conditions) — claim's vs passage's.
 9. If the cite is a bare `[pc<id>]`/`[pa<id>]` — file a change-request:
    it must become a hub cite. A `◆ taproot:` hint next to it names the
    hub the paper already grounds — switch to `[fi<hub>]`, or

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.utils.llm.router import LlmRequest, Tier, route
@@ -35,6 +36,54 @@ if TYPE_CHECKING:
     from precis.workers.chase import _NextHopTarget
 
 log = logging.getLogger(__name__)
+
+#: Per-neighbour excerpt cap in the verify and judge prompts — a neighbour
+#: is context only. ``hub_refine._JUDGE_NEIGHBOUR_CHARS`` is this value.
+NEIGHBOUR_CHARS = 600
+#: Abstract excerpt cap for the source-identity block (both prompts).
+ABSTRACT_CHARS = 600
+
+#: One sentence of instruction shared by the verify and judge prompts'
+#: source-identity block.
+SOURCE_IDENTITY_NOTE = (
+    "use it to tell which system the paper studies; it is not evidence for or "
+    "against the claim"
+)
+
+
+@dataclass(frozen=True)
+class SourceIdentity:
+    """Who the candidate source is — title, year and the opening of its
+    abstract — shown to the verifier/judge so a chunk is never read without
+    knowing which system its paper studies. Any field may be ``None``."""
+
+    title: str | None = None
+    year: int | None = None
+    abstract: str | None = None
+
+
+def render_source_identity(identity: SourceIdentity | None) -> str:
+    """The prompt text for a source-identity block: a title/year line plus
+    the first :data:`ABSTRACT_CHARS` of the abstract. A missing abstract
+    renders "(no abstract on record)"; a missing title/year "(not available)"."""
+    title = (identity.title or "").strip() if identity else ""
+    year = identity.year if identity else None
+    abstract = (identity.abstract or "").strip() if identity else ""
+    head = f"{title or '(title not available)'} ({year or 'year unknown'})"
+    return f"{head}\nABSTRACT (opening): " + (
+        abstract[:ABSTRACT_CHARS] or "(no abstract on record)"
+    )
+
+
+def render_neighbours(neighbours: list[str] | None, *, what: str) -> str:
+    """The prompt text for the prev/next neighbour block; ``None`` (caller
+    could not look them up) renders "(not available)", an empty list "(none…)"."""
+    if neighbours is None:
+        return "(not available)"
+    parts = [n[:NEIGHBOUR_CHARS] for n in neighbours if n]
+    if not parts:
+        return f"(none — this {what} has no live neighbours in the source)"
+    return "\n\n".join(parts)
 
 
 #: Appended into ``_PROMPT_VERIFY`` only when the candidate source is a
@@ -73,10 +122,19 @@ SETUP (structured):
 CLAIM'S OWN SOURCE PASSAGE (what the claim was measured on):
 {claim_source_text}
 
-SOURCE: {source_kind} {target_cite_key}, chunk ord {target_chunk_ord}
+SOURCE: {source_kind} {target_cite_key}, chunk ord {target_chunk_ord}, section {section_path}
+
+SOURCE IDENTITY ({identity_note}):
+{source_identity}
 
 CHUNK TEXT:
 {target_chunk_text}
+
+NEIGHBOURING CHUNKS in the same source — context only, to tell a
+recitation or background sentence from the source's own result. Support is
+never judged off a neighbour alone: a CHUNK that carries none of the claim
+cannot borrow it from a neighbour.
+{neighbours}
 {patent_note}
 First decide the chunk's STANCE toward the claim as stated: does it give
 evidence FOR the claim, evidence AGAINST it (an opposite result or
@@ -165,12 +223,28 @@ def _verify_support_with_caveats(
     target_chunk_text: str,
     source_kind: str = "paper",
     claim_source_text: str | None = None,
+    section_path: str | None = None,
+    neighbours: list[str] | None = None,
+    source_identity: SourceIdentity | None = None,
+    with_request_hash: bool = False,
 ) -> dict[str, Any] | None:
     """Run the verifier LLM hook. Returns the parsed JSON dict or None.
 
     ``claim_source_text`` is the passage the claim itself was established
     from (capped at 3000 chars); the verifier compares the candidate's
     setup against it. ``None`` renders as "(not available)".
+
+    ``section_path``, ``neighbours`` (the chunk's live ``ord`` ± 1 siblings,
+    each capped at :data:`NEIGHBOUR_CHARS`) and ``source_identity`` (title,
+    year, abstract opening) keep the chunk from being judged in isolation —
+    the strict judge (``hub_refine.judge_edge_strict``) gets the same.
+    ``None`` renders as "(not available)" (an empty ``neighbours`` list as
+    "(none …)").
+
+    ``with_request_hash=True`` adds the logged call's ``llm_call_log.
+    request_hash`` to the returned dict under ``_llm_request_hash`` (only when
+    one was logged), for a caller that stores it beside the verdict. Off by
+    default: the returned shape is otherwise unchanged.
 
     ``source_kind`` names the candidate source ref's kind (``"paper"`` or
     ``"patent"``) — when it's a patent, :data:`_PATENT_VERIFY_NOTE` is
@@ -185,6 +259,10 @@ def _verify_support_with_caveats(
         source_kind=source_kind,
         target_cite_key=target_cite_key,
         target_chunk_ord=target_chunk_ord,
+        section_path=section_path or "(not available)",
+        identity_note=SOURCE_IDENTITY_NOTE,
+        source_identity=render_source_identity(source_identity),
+        neighbours=render_neighbours(neighbours, what="chunk"),
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
         claim_source_text=(claim_source_text or "")[:3000] or "(not available)",
         patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
@@ -193,6 +271,9 @@ def _verify_support_with_caveats(
     if res.error:
         log.warning("chase: verify hook failed: %s", res.error)
         return None
+    request_hash = getattr(res, "request_hash", None)
+    if with_request_hash and res.data is not None and isinstance(request_hash, str):
+        return {**res.data, "_llm_request_hash": request_hash}
     return res.data
 
 
@@ -320,4 +401,6 @@ __all__ = [
     "_locate_chunk_in_target",
     "_verify_support_with_caveats",
     "is_corroborating",
+    "render_neighbours",
+    "render_source_identity",
 ]

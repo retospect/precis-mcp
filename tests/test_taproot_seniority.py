@@ -554,6 +554,291 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     assert "no evidence edges yet for this claim hub" in resp.body
 
 
+def _log_entry(i: int, **over: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "at": f"2026-10-03T10:{i:02d}:00+00:00",
+        "edge": f"ref:{i}",
+        "src_ref_id": None,
+        "src_chunk_id": None,
+        "relation": "corroborates",
+        "verdict": "PRUNE",
+        "reason": f"reason {i}",
+        "action": "removed",
+        "sha": "abc",
+    }
+    entry.update(over)
+    return entry
+
+
+_JUDGING_LINE = (
+    "judging: 3 judged · 2 withheld · 1 removed — view='judgments' for detail"
+)
+
+
+def _touch(store: Any, hub: int, paper: int) -> None:
+    """Give ``hub`` 3 judge memos, 2 withheld and 1 removed log entries."""
+    store.update_ref(
+        hub,
+        meta_patch={
+            "reground_seen": {f"{paper}:1": {"verdict": "KEEP"}, f"{paper}:2": {}},
+            "taproot_rejected": {str(paper + 1000): {"supports": "no"}},
+            "reground_log": [
+                _log_entry(1, action="withheld (setup not shown same)"),
+                _log_entry(2, action="withheld (depth policy)"),
+                _log_entry(3, action="disputes removed (re-audit)"),
+                _log_entry(4, action="removed"),  # routine prune: never counted
+            ],
+        },
+    )
+
+
+def test_evidence_summary_line_only_with_nonzero_counts(store: Any) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Judged paper", year=2001)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=paper, role="corroborates")
+
+    untouched = handler.get(id=hub, view="evidence").body
+    assert "judging" not in untouched and "withheld" not in untouched
+
+    _touch(store, hub, paper)
+    touched = handler.get(id=hub, view="evidence").body
+    assert _JUDGING_LINE in touched
+    # the line is the ONLY difference from the untouched view
+    assert touched.replace("\n" + _JUDGING_LINE, "", 1) == untouched
+
+    # zero parts are omitted; a lone judged count still shows
+    store.update_ref(
+        hub,
+        meta_patch={"reground_seen": {f"{paper}:1": {}}, "reground_log": []},
+    )
+    body = handler.get(id=hub, view="evidence").body
+    assert "judging: 2 judged — view='judgments' for detail" in body
+
+    # an emptied hub (no edges left) still carries the line
+    empty = mint_hub(store, CanonicalClaim(sentence="Another claim.", scope={}))
+    store.update_ref(
+        empty,
+        meta_patch={"reground_log": [_log_entry(1, action="disputes removed")]},
+    )
+    out = handler.get(id=empty, view="evidence").body
+    assert "no evidence edges yet for this claim hub" in out
+    assert "judging: 1 removed — view='judgments' for detail" in out
+
+
+def test_fisheye_posture_header_token_only_when_withheld_or_removed(
+    store: Any,
+) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Judged paper", year=2001)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=paper, role="corroborates")
+
+    untouched = handler.get(id=hub, view="fisheye").body
+    assert "withheld" not in untouched.split("\n")[0]
+
+    # judged alone never shows in fisheye
+    store.update_ref(hub, meta_patch={"reground_seen": {f"{paper}:1": {}}})
+    assert handler.get(id=hub, view="fisheye").body == untouched
+
+    _touch(store, hub, paper)
+    touched = handler.get(id=hub, view="fisheye").body
+    first = touched.split("\n")[0]
+    assert first.startswith("◆ claim hub —")
+    assert first.endswith(" · withheld 2 · removed 1")
+    assert "judged" not in first
+    assert touched.replace(" · withheld 2 · removed 1", "", 1) == untouched
+
+    # one count only -> one token
+    store.update_ref(
+        hub, meta_patch={"reground_log": [_log_entry(1, action="withheld (x)")]}
+    )
+    assert (
+        handler.get(id=hub, view="fisheye")
+        .body.split("\n")[0]
+        .endswith(" · withheld 1")
+    )
+
+
+def test_judgments_view_lists_entries_newest_first_with_stored_fields(
+    store: Any,
+) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Logged paper", year=2001)
+    assert "(no judgments logged yet)" in handler.get(id=hub, view="judgments").body
+
+    entries = [_log_entry(i) for i in range(5)]
+    entries[3] = _log_entry(
+        3,
+        src_ref_id=paper,
+        verdict="CONTRADICTS",
+        action="withheld (setup not shown same)",
+        same_setup=False,
+        primary=True,
+        terminal=False,
+        reason="a recitation of ref [6], not the paper's own result",
+        claim_setup="C20-C40 clusters, DFT",
+        passage_setup="C60 nanobuds, reviewed",
+        llm_request_hash="deadbeef",
+    )
+    entries[4] = _log_entry(
+        4,
+        action="removed",
+        removed_meta={"support": "yes", "support_reason": "old verdict"},
+    )
+    store.update_ref(hub, meta_patch={"reground_log": entries})
+
+    body = handler.get(id=hub, view="judgments").body
+    assert body.index("reason 4") < body.index("a recitation of ref [6]")
+    assert body.index("a recitation of ref [6]") < body.index("reason 0")
+    assert "5 logged entries, newest first (showing 1–5)." in body
+    assert "withheld (setup not shown same) · CONTRADICTS" in body
+    assert "same_setup: false · primary: true · terminal: false" in body
+    assert "claim_setup: C20-C40 clusters, DFT" in body
+    assert "passage_setup: C60 nanobuds, reviewed" in body
+    assert "llm: llm_request_hash=deadbeef" in body
+    keys = store.ref_cite_keys_bulk([paper]).get(paper)
+    assert f"source: {keys[0] if keys else f'ref:{paper}'}" in body
+    # legacy entry (no judge fields): dashes, no setup lines
+    assert "same_setup: — · primary: — · terminal: —" in body
+    # a removal shows the deleted link's stored meta
+    assert (
+        'removed link meta: {"support": "yes", "support_reason": "old verdict"}' in body
+    )
+
+
+def test_judgments_view_pages_at_fifty(store: Any) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    store.update_ref(
+        hub, meta_patch={"reground_log": [_log_entry(i % 60) for i in range(60)]}
+    )
+
+    page1 = handler.get(id=hub, view="judgments").body
+    assert "60 logged entries, newest first (showing 1–50)." in page1
+    assert "## 50. " in page1 and "## 51. " not in page1
+    assert "… 10 older entries" in page1 and "args={'page': 2}" in page1
+
+    page2 = handler.get(id=hub, view="judgments", page=2).body
+    assert "(showing 51–60)." in page2 and "## 60. " in page2
+    assert "older entries" not in page2
+
+    assert "past the end" in handler.get(id=hub, view="judgments", page=9).body
+
+
+def test_remove_disputes_deletes_logs_and_counts_as_removed(store: Any) -> None:
+    from precis.taproot.hub import reattach_as_disputes, remove_disputes
+
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Disputing paper", year=2001)
+    assert reattach_as_disputes(
+        store,
+        hub_ref_id=hub,
+        src_ref_id=paper,
+        reason="looked contradicting",
+        meta={
+            "support": "no",
+            "claim_setup": "dup of an entry key",
+            "note": "n" * 500,
+        },
+    )
+    # a filed contradiction is NOT "removed"
+    assert "removed" not in handler.get(id=hub, view="evidence").body
+
+    n = remove_disputes(
+        store,
+        hub_ref_id=hub,
+        src_ref_id=paper,
+        reason="re-audit: different sample, not a contradiction",
+        judged={"claim_setup": "A", "passage_setup": "B", "same_setup": False},
+        llm_request_hash="f" * 64,
+    )
+    assert n == 1
+    with store.pool.connection() as conn:
+        left = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'disputes'",
+            (paper, hub),
+        ).fetchone()[0]
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (hub,)
+        ).fetchone()[0]
+    assert left == 0
+    entry = meta["reground_log"][-1]
+    assert entry["action"] == "disputes removed (re-audit)"
+    assert entry["same_setup"] is False and entry["llm_request_hash"] == "f" * 64
+    assert (entry["claim_setup"], entry["passage_setup"]) == ("A", "B")
+    # removed_meta: top-level judge keys dropped, strings capped at 300
+    assert entry["removed_meta"]["support"] == "no"
+    assert "claim_setup" not in entry["removed_meta"]
+    assert entry["removed_meta"]["note"] == "n" * 300
+
+    body = handler.get(id=hub, view="evidence").body
+    assert "judging: 1 removed — view='judgments' for detail" in body
+    # a second call finds nothing: no deletion, no extra log entry
+    assert remove_disputes(store, hub_ref_id=hub, src_ref_id=paper, reason="again") == 0
+    judged = handler.get(id=hub, view="judgments").body
+    assert judged.count("disputes removed (re-audit)") == 1
+
+
+def test_judgments_view_caps_old_removed_meta_and_rejects_bad_page(
+    store: Any,
+) -> None:
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    store.update_ref(
+        hub,
+        meta_patch={
+            "reground_log": [
+                _log_entry(
+                    1,
+                    action="removed",
+                    removed_meta={"claim_setup": "dup", "note": "z" * 500},
+                )
+            ]
+        },
+    )
+    body = handler.get(id=hub, view="judgments").body
+    assert "z" * 300 in body and "z" * 301 not in body
+    assert "dup" not in body
+    with pytest.raises(BadInput):
+        bad_page: Any = "x"
+        handler.get(id=hub, view="judgments", page=bad_page)
+
+
+def test_remove_evidence_keeps_the_deleted_links_meta_in_the_log(store: Any) -> None:
+    from precis.taproot.hub import remove_evidence
+
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Soon removed", year=2001)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"support": "yes", "support_reason": "kept in the log"},
+    )
+    n = remove_evidence(
+        store,
+        hub_ref_id=hub,
+        src_ref_id=paper,
+        role="corroborates",
+        reason="proxy",
+        allow_last=True,
+        judged={"claim_setup": "A", "same_setup": False},
+    )
+    assert n == 1
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (hub,)).fetchone()
+    (entry,) = row[0]["reground_log"]
+    assert entry["action"] == "removed"
+    assert entry["removed_meta"]["support"] == "yes"
+    assert entry["removed_meta"]["support_reason"] == "kept in the log"
+    assert entry["claim_setup"] == "A" and entry["same_setup"] is False
+
+
 def test_finding_view_evidence_hypothesis_shows_motivated_by_not_supporters(
     store: Any,
 ) -> None:

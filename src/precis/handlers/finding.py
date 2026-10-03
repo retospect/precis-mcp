@@ -26,7 +26,9 @@ This handler owns the **write door** for findings:
   via-chain, status). ``view='evidence'`` (:mod:`._finding_evidence`),
   ``view='nanopub'`` (:mod:`._finding_nanopub`) and
   ``view='mint-preflight'`` (:mod:`._finding_mint_preflight`, the real
-  mint gates run read-only) are the finding-specific views.
+  mint gates run read-only) and ``view='judgments'``
+  (:mod:`._finding_judgments`, what the refine judges did to a hub's
+  edges) are the finding-specific views.
 - ``search(q, status=..., trust=...)`` filters by status (default
   ``STATUS:established``) and falls through to the base full-text
   + ANN hybrid; see :meth:`FindingHandler.search`.
@@ -76,6 +78,9 @@ sibling modules so this file stays legible:
   (pick_candidate / title / unacquirable_note).
 * :mod:`precis.handlers._finding_evidence` — ``get(view='evidence')``
   rendering + patent-family collapsing.
+* :mod:`precis.handlers._finding_judgments` — ``get(view='judgments')``
+  plus the compact judged/withheld/removed counts the evidence view and the
+  fisheye posture header carry.
 * :mod:`precis.handlers._finding_common` — the one helper
   (``fetch_ref_any_kind``) shared across this file and those three.
 """
@@ -92,6 +97,7 @@ from precis.handlers import (
     _finding_acquire,
     _finding_edit,
     _finding_evidence,
+    _finding_judgments,
     _finding_nanopub,
 )
 from precis.handlers._finding_common import fetch_ref_any_kind
@@ -801,11 +807,18 @@ class FindingHandler(NumericRefHandler):
         # ``view='merge-plan'``'s loser hub, same channel
         # (``args={'loser': 'fi<N>' | <int> | '<pub_id>'}``).
         loser: str | int | None = None,
+        # ``view='judgments'``'s 1-based page, same channel
+        # (``args={'page': 2}``).
+        page: int | None = None,
         **_kw: Any,
     ) -> Response:
         """``view='evidence'`` renders a claim hub's evidence, split by
         derived seniority (originators/corroborators/contradicts — see
         :func:`precis.taproot.seniority.derive_evidence`).
+        ``view='judgments'`` lists what the refine judges did to the hub's
+        edges (``meta.reground_log``, newest first, 50 a page via
+        ``args={'page': N}``): action, verdict, source, same_setup/primary/
+        terminal, reason, both setup texts, the removed link's stored meta.
         ``view='nanopub'`` renders the hub as TriG — the exact frozen
         artifact bytes once signed, an unsigned draft otherwise
         (:mod:`precis.handlers._finding_nanopub`, nanopub slice 1).
@@ -839,7 +852,7 @@ class FindingHandler(NumericRefHandler):
         Every other view (bare get, ``links``/``log``/``raw``) falls
         through to the base
         :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
-        All six deliberately kept off ``_BASE_VIEWS`` — finding-specific,
+        These views are deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
         id = self._resolve_pub_id_slug(id)
@@ -847,6 +860,10 @@ class FindingHandler(NumericRefHandler):
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
             return _finding_evidence.render_evidence_view(self.store, ref)
+        if view == "judgments":
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return _finding_judgments.render_judgments_view(self.store, ref, page=page)
         if view == "nanopub":
             ref_id = self._coerce_id(id)
             ref = self._resolve_live_ref(ref_id)
@@ -1895,9 +1912,12 @@ def _hub_eye_header(store: Store, ref: Ref) -> str:
     row = rows[0] if rows else None
     cells = _posture_cells(row)
     parts = [f"{k}: {v}" for k, v in cells.items() if v]
+    # `` · withheld N · removed M`` — judge actions that kept an edge out or
+    # took one off; absent (byte-identical header) for an untouched hub.
+    judged = _finding_judgments.posture_suffix(ref.meta)
     if not parts:
-        return "◆ claim hub — no publish posture yet\n\n"
-    return "◆ claim hub — " + " · ".join(parts) + "\n\n"
+        return "◆ claim hub — no publish posture yet" + judged + "\n\n"
+    return "◆ claim hub — " + " · ".join(parts) + judged + "\n\n"
 
 
 def _posture_cells(row: HubOverviewRow | None) -> dict[str, str]:

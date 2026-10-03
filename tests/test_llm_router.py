@@ -1607,6 +1607,39 @@ def test_dispatch_log_call_false_skips_route_log(
     assert len(recorded) == 1
 
 
+def test_dispatch_stamps_the_logged_request_hash_on_the_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LlmResult.request_hash`` is what ``record_call`` actually logged — and
+    ``None`` when logging is off (``log_call=False``), no store is bound, or the
+    write returned nothing."""
+    import precis.workers.llm_summarize as summ
+    from precis import route_log
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: "hash-of-" + rec.source)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="p", source="unit"))
+    assert out.request_hash == "hash-of-unit"
+
+    off = route(LlmRequest(tier=Tier.SMALL, prompt="p", log_call=False))
+    assert off.request_hash is None
+
+    monkeypatch.setattr(route_log, "record_call", lambda rec: None)
+    assert route(LlmRequest(tier=Tier.SMALL, prompt="p")).request_hash is None
+
+    monkeypatch.setattr(route_log, "enabled", lambda: False)
+    assert route(LlmRequest(tier=Tier.SMALL, prompt="p")).request_hash is None
+
+
 def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from precis.utils.claude_p import ClaudePError
 

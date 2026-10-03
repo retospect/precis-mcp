@@ -969,6 +969,12 @@ class LlmResult:
     #: local primary that fell back to cloud really did spend money.
     #: ``None`` only when no rung was resolved (an early error return).
     placement: str | None = None
+    #: ``llm_call_log.request_hash`` the call was logged under (the
+    #: post-replacement request :func:`_record_dispatch` actually wrote), so a
+    #: caller can point a stored verdict back at its replayable prompt. ``None``
+    #: when nothing was logged (no store bound, ``log_call`` off, a lite row,
+    #: or a failed write).
+    request_hash: str | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -2174,12 +2180,15 @@ def route(req: LlmRequest) -> LlmResult:
             )
             started = time.monotonic()
             result = escape.run(req, model=saturated_model)
-            _record_dispatch(
-                req,
+            result = _replace(
                 result,
-                transport=transport,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                routed=routed,
+                request_hash=_record_dispatch(
+                    req,
+                    result,
+                    transport=transport,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    routed=routed,
+                ),
             )
             return result
         return LlmResult(
@@ -2225,14 +2234,16 @@ def route(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
-    _record_dispatch(
-        req,
+    return _replace(
         result,
-        transport=transport,
-        duration_ms=int((time.monotonic() - started) * 1000),
-        routed=routed,
+        request_hash=_record_dispatch(
+            req,
+            result,
+            transport=transport,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            routed=routed,
+        ),
     )
-    return result
 
 
 async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult:
@@ -2409,14 +2420,16 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
                 else _placement_of(ladder[0])
             ),
         )
-    _record_dispatch(
-        req,
+    return _replace(
         result,
-        transport=transport,
-        duration_ms=int((time.monotonic() - started) * 1000),
-        routed=_routed_placement(ladder[0], slot),
+        request_hash=_record_dispatch(
+            req,
+            result,
+            transport=transport,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            routed=_routed_placement(ladder[0], slot),
+        ),
     )
-    return result
 
 
 class DispatchError(RuntimeError):
@@ -2616,18 +2629,20 @@ def _record_dispatch(
     transport: Transport,
     duration_ms: int,
     routed: str | None = None,
-) -> None:
+) -> str | None:
     """Best-effort: record the full call to the route-log. Dark (no-op) unless a
     store is bound at boot; any failure is swallowed so it can't break dispatch.
+    Returns the logged ``request_hash`` (``None`` when nothing was logged) for
+    the caller to stamp onto :attr:`LlmResult.request_hash`.
 
     ``routed`` is :func:`_routed_placement` — where the router meant the call
     to run, logged beside the landed ``result.placement``."""
     from precis import route_log
 
     if not req.log_call or not route_log.enabled():
-        return
+        return None
     try:
-        route_log.record_call(
+        logged = route_log.record_call(
             route_log.LlmCallRecord(
                 source=req.source or None,
                 tier=req.tier.value,
@@ -2660,8 +2675,10 @@ def _record_dispatch(
                 cache_creation_tokens=result.cache_creation_tokens,
             )
         )
+        return logged if isinstance(logged, str) else None
     except Exception:
         log.debug("route_log: dispatch record failed", exc_info=True)
+        return None
 
 
 def record_dispatch(
@@ -2671,11 +2688,12 @@ def record_dispatch(
     transport: Transport,
     duration_ms: int,
     routed: str | None = None,
-) -> None:
+) -> str | None:
     """Public handle on :func:`_record_dispatch` for callers that dispatch a
     provider directly (the eval harness's pinned rung) yet still want the call
-    in the route-log. Same best-effort, dark-until-bound behaviour."""
-    _record_dispatch(
+    in the route-log. Same best-effort, dark-until-bound behaviour; returns the
+    logged ``request_hash`` (``None`` when nothing was logged)."""
+    return _record_dispatch(
         req, result, transport=transport, duration_ms=duration_ms, routed=routed
     )
 

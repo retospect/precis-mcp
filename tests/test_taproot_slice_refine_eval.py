@@ -59,6 +59,18 @@ class FakeConn:
             hub_ref_id = params[0]
             ids = self.attached_by_hub.get(hub_ref_id, set())
             return FakeResult(fetchall_value=[(pid,) for pid in ids])
+        if "from refs where ref_id" in s and "left(meta->>'abstract'" in s:
+            return FakeResult(
+                fetchone_value=(
+                    f"Title of {params[1]}",
+                    2011,
+                    f"Abstract of {params[1]}",
+                )
+            )
+        if "array_to_string(section_path" in s:
+            return FakeResult(fetchone_value=("Results > Sizes",))
+        if "select text from chunks where ref_id" in s:
+            return FakeResult(fetchall_value=[("PREV TEXT",), ("NEXT TEXT",)])
         if "relation = 'establishes'" in s:
             return FakeResult()  # claim-source passage: hub has no establishes link
         if "select count(*) from links" in s:
@@ -119,7 +131,7 @@ class FakeBlock:
     text: str
 
 
-def _stub_verify(calls: list[str]):
+def _stub_verify(calls: list[str], kwargs_seen: list[dict[str, Any]] | None = None):
     def verify(
         *,
         claim: str,
@@ -128,8 +140,19 @@ def _stub_verify(calls: list[str]):
         target_chunk_ord: int,
         target_chunk_text: str,
         claim_source_text: str | None = None,
+        section_path: str | None = None,
+        neighbours: list[str] | None = None,
+        source_identity: Any = None,
     ) -> dict[str, Any] | None:
         calls.append(target_cite_key)
+        if kwargs_seen is not None:
+            kwargs_seen.append(
+                {
+                    "section_path": section_path,
+                    "neighbours": neighbours,
+                    "source_identity": source_identity,
+                }
+            )
         if target_chunk_text == "SUPPORTS":
             return {"supports": "yes", "caveats": ["mild hedge"]}
         if target_chunk_text == "REJECT":
@@ -235,6 +258,25 @@ def test_buckets_populate_correctly_and_dedup_by_paper() -> None:
     assert "ref-77" not in calls
     # the duplicate ref-20 candidate is deduped before verify -- called once
     assert calls.count("ref-20") == 1
+
+
+def test_verify_gets_section_neighbours_and_identity_like_the_live_pass() -> None:
+    store, _ = _make_store_and_candidates()
+    seen: list[dict[str, Any]] = []
+    eval_hub_slice(
+        store,
+        [_HUB_ID],
+        embedder=FakeEmbedder(),
+        verify_fn=_stub_verify([], seen),
+        progress=False,
+    )
+    assert seen, "verify_fn was never reached"
+    for kw in seen:
+        assert kw["section_path"] == "Results > Sizes"
+        assert kw["neighbours"] == ["PREV TEXT", "NEXT TEXT"]
+        assert kw["source_identity"].year == 2011
+        assert kw["source_identity"].title.startswith("Title of ")
+        assert kw["source_identity"].abstract.startswith("Abstract of ")
 
 
 def test_hub_itself_never_verified_as_its_own_candidate() -> None:
