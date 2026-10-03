@@ -154,6 +154,16 @@ up:
    DRC file, which deferred it in two rulings without giving it a home.
    Blocked by 5 (ruling 2 intends the same per-tool-class
    volume model to carry it), hence after it.
+7. **Print (3MF) dialog with a scale factor** (Reto 2026-10-03; review item
+   se-3d-viewer-7, open). One button per printable block. It shows the real
+   size and an editable factor, suggested by fitting the longest side to
+   ~100 mm rounded down to a 1-2-5 step, above the floor for the chosen
+   model type (vdW from 1e7, ball-and-stick ~5e7). It also shows the
+   printed size. Above 1 mm it suggests 1:1. ½ build. XYZ/PDB already ship
+   (`/se/{slug}/atoms.xyz|pdb`). The writer scale, the print check and the
+   atom geometry are se-machine-design's: after their print-file button
+   (`routes/se_print.py`) and writer scale. Atom geometry is in
+   `backlog/printable-atomic-models.md`. Build after Reto answers.
 
 ## Horizon
 
