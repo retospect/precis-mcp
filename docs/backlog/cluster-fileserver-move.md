@@ -140,10 +140,13 @@ no Full Disk Access grant has to be redone.
 
 ### Phase 0: prepare (no client sees a change)
 
-1. **NAS export.** Create a user `cluster` and a folder `cluster` with a
-   `shared/` subfolder owned by that user. Add an NFS rule for the LAN
-   subnet only: `rw`, `sync`, `all_squash` to the `cluster` user,
-   `secure`, NFS v3 and v4.
+1. **NAS export.** Create a folder `cluster` with a `shared/` subfolder.
+   Add an NFS rule for the LAN subnet only: `rw`, `sync`, `all_squash`,
+   `secure`, NFS v3 and v4. TOS 7.0.0601 cannot squash to a named user;
+   its choices are root or all users mapped to `admin` or `guest`. So the
+   rule maps all users to the built-in `guest` (least privilege), with
+   `guest` read/write on the folder, and no `cluster` user is created
+   (2026-10-03, read from the NAS language files; local-compute-12).
    - Touches: the NAS's TOS configuration only.
    - Rollback: delete the folder and the rule.
    - Who creates it is open question 1.
