@@ -626,3 +626,243 @@ def test_cli_compare_prints_void_side(
     out = capsys.readouterr().out
     assert "void (3/40 err)" in out and "(0.900/40)" in out
     assert "(0.900/37)" not in out
+
+
+# ── pinned dispatch (gr464223): eval runs the candidate, not the chain ──
+
+
+class _FakeProvider:
+    def __init__(self, calls: list[Any], transport: Any, *, boom: bool = False) -> None:
+        self.calls, self.transport, self.boom = calls, transport, boom
+
+    def run(self, req: Any, *, model: str) -> Any:
+        from precis.utils.llm.router import LlmResult
+
+        self.calls.append((self.transport, req, model))
+        if self.boom:
+            raise RuntimeError("wire down")
+        return LlmResult(
+            text="ok", cost_usd=None, turns_used=None, model=model, tier=req.tier
+        )
+
+
+def _pin_env(
+    monkeypatch: pytest.MonkeyPatch, *, boom: bool = False
+) -> tuple[list[Any], list[Any]]:
+    """Stub provider_for + record_dispatch; return (provider calls, records)."""
+    from precis.llm_eval import pinned
+
+    calls: list[Any] = []
+    recs: list[Any] = []
+    monkeypatch.setattr(
+        pinned, "provider_for", lambda t, **kw: _FakeProvider(calls, t, boom=boom)
+    )
+    monkeypatch.setattr(
+        pinned, "record_dispatch", lambda req, res, **kw: recs.append((req, res, kw))
+    )
+    return calls, recs
+
+
+def _req(**kw: Any) -> Any:
+    from precis.utils.llm.router import LlmRequest, Tier
+
+    return LlmRequest(tier=Tier.MEDIUM, prompt="p", source="llm_eval", **kw)
+
+
+def _stub_slots(monkeypatch: pytest.MonkeyPatch, slot: Any) -> list[Any]:
+    from precis.utils.llm import local_serving
+
+    released: list[Any] = []
+    monkeypatch.setattr(local_serving, "acquire", lambda model: slot)
+    monkeypatch.setattr(local_serving, "release", lambda s: released.append(s))
+    return released
+
+
+def test_pinned_local_acquires_runs_candidate_and_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.llm_eval.pinned import pinned_dispatch
+    from precis.utils.llm.local_serving import LocalSlot
+    from precis.utils.llm.router import Transport
+
+    slot = LocalSlot(
+        host="h",
+        resource="r",
+        reserved=True,
+        paused=False,
+        endpoint="http://x/v1",
+        served_model="srv-name",
+    )
+    released = _stub_slots(monkeypatch, slot)
+    calls, recs = _pin_env(monkeypatch)
+    res = pinned_dispatch("cand", "local")(_req(model="cand"))
+    assert res.error is None and res.placement == "local"
+    transport, creq, model = calls[0]
+    assert transport is Transport.LOCAL
+    assert creq.local_url == "http://x/v1" and model == "srv-name"
+    assert released == [slot]
+    assert recs[0][0].source == "llm_eval"
+    assert recs[0][2]["transport"] is Transport.LOCAL
+
+
+def test_pinned_local_releases_slot_when_provider_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.llm_eval.pinned import pinned_dispatch
+    from precis.utils.llm.local_serving import LocalSlot
+
+    slot = LocalSlot(host="h", resource="r", reserved=True, paused=False)
+    released = _stub_slots(monkeypatch, slot)
+    _pin_env(monkeypatch, boom=True)
+    res = pinned_dispatch("cand", "local")(_req())
+    assert res.error and "wire down" in res.error
+    assert released == [slot]
+
+
+def test_pinned_local_not_served_is_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.llm_eval.pinned import pinned_dispatch
+
+    released = _stub_slots(monkeypatch, None)
+    calls, _ = _pin_env(monkeypatch)
+    res = pinned_dispatch("cand", "local")(_req())
+    assert res.error and "not served on any host" in res.error
+    assert not calls and released == []
+
+
+def test_pinned_local_paused_is_error_and_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.llm_eval.pinned import pinned_dispatch
+    from precis.utils.llm.local_serving import LocalSlot
+
+    slot = LocalSlot(host="h", resource="r", reserved=False, paused=True)
+    released = _stub_slots(monkeypatch, slot)
+    calls, _ = _pin_env(monkeypatch)
+    res = pinned_dispatch("cand", "local")(_req())
+    assert res.error and "all local slots busy" in res.error
+    assert not calls and released == [slot]
+
+
+def test_pinned_cloud_picks_transport_by_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.budget import breaker
+    from precis.llm_eval.pinned import pinned_dispatch
+    from precis.utils.llm.router import Transport
+
+    seen: list[Any] = []
+
+    def _gate(tier: Any, **kw: Any) -> None:
+        seen.append(kw)
+
+    monkeypatch.setattr(breaker, "gate_tier", _gate)
+    calls, _ = _pin_env(monkeypatch)
+    r1 = pinned_dispatch("claude-haiku-4-5", "cloud")(_req())
+    r2 = pinned_dispatch("qwen3-235b", "cloud")(_req())
+    assert [c[0] for c in calls] == [Transport.CLAUDE_P, Transport.OPENAI_COMPAT]
+    assert [c[2] for c in calls] == ["claude-haiku-4-5", "qwen3-235b"]
+    assert r1.placement == r2.placement == "cloud"
+    assert seen[0]["local"] is False and seen[0]["bare"] is False
+
+
+def test_pinned_cloud_honours_tripped_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.budget import breaker
+    from precis.llm_eval.pinned import pinned_dispatch
+
+    monkeypatch.setattr(breaker, "gate_tier", lambda tier, **kw: "daily cap hit")
+    calls, recs = _pin_env(monkeypatch)
+    res = pinned_dispatch("claude-haiku-4-5", "cloud")(_req())
+    assert res.error == "daily cap hit" and not calls and not recs
+
+
+def test_run_eval_with_placement_uses_pinned_dispatcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.budget import breaker
+    from precis.utils.llm.router import Tier
+
+    monkeypatch.setattr(breaker, "gate_tier", lambda tier, **kw: None)
+    calls, _ = _pin_env(monkeypatch)
+    run_eval(
+        cast(Any, None),
+        model="claude-cand",
+        tier=Tier.MEDIUM,
+        tasks=[_task()],
+        placement="cloud",
+        record=False,
+    )
+    assert calls and all(c[2] == "claude-cand" for c in calls)
+
+
+def test_cli_void_axis_prints_first_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    import precis.llm_eval as llm_eval_pkg
+    from precis.cli.llm import _cmd_eval
+    from precis.llm_eval.harness import AxisResult, EvalReport, TaskScore
+
+    def _rep(model: str, err: str) -> EvalReport:
+        res = AxisResult(
+            axis="summarize-extract",
+            n=0,
+            mean_score=0.0,
+            ordinal=1,
+            per_task=[TaskScore("t1", 0.0, error=err), TaskScore("t2", 0.0, error="x")],
+            errors=2,
+        )
+        return EvalReport(model=model, results=[res], skipped=[])
+
+    long_err = "boom " * 100
+    monkeypatch.setattr(
+        llm_eval_pkg,
+        "compare",
+        lambda store, **kw: {"a": _rep("a", "not served"), "b": _rep("b", long_err)},
+    )
+    args = argparse.Namespace(
+        model="a", compare="b", tier="small", gold=None, no_record=True
+    )
+    _cmd_eval(cast(Any, None), args)
+    out = capsys.readouterr().out
+    assert "a summarize-extract: first error: not served" in out
+    assert "operator chain" in out  # no placements -> warning
+    line = next(ln for ln in out.splitlines() if ln.startswith("b summarize"))
+    assert len(line) < 260
+
+    monkeypatch.setattr(
+        llm_eval_pkg, "run_eval", lambda store, **kw: _rep("a", "single err")
+    )
+    single = argparse.Namespace(
+        model="a", compare=None, tier="small", gold=None, no_record=True
+    )
+    _cmd_eval(cast(Any, None), single)
+    assert "first error: single err" in capsys.readouterr().out
+
+
+def test_run_binds_the_four_process_stores(monkeypatch: pytest.MonkeyPatch) -> None:
+    import argparse
+
+    from precis import budget as budget_pkg
+    from precis import route_log, secrets, settings
+    from precis.cli import llm as cli_llm
+
+    fake = object()
+    bound: list[str] = []
+
+    def _rec(name: str) -> Any:
+        return lambda s: bound.append(name) if s is fake else None
+
+    monkeypatch.setattr(cli_llm.Store, "connect", lambda dsn: fake)
+    monkeypatch.setattr(cli_llm, "resolve_dsn", lambda url: "dsn")
+    monkeypatch.setattr(secrets, "adopt_process_store", _rec("secrets"))
+    monkeypatch.setattr(route_log, "bind_store", _rec("route_log"))
+    monkeypatch.setattr(budget_pkg, "bind_store", _rec("budget"))
+    monkeypatch.setattr(settings, "bind_store", _rec("settings"))
+    seen: list[Any] = []
+    monkeypatch.setattr(cli_llm, "_cmd_list", lambda store: seen.append(store))
+    cli_llm.run(argparse.Namespace(llm_cmd="list", database_url=None))
+    assert sorted(bound) == ["budget", "route_log", "secrets", "settings"]
+    assert seen == [fake]

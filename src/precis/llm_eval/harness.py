@@ -184,13 +184,21 @@ def run_eval(
     provenance). Tasks naming an unwired scorer are collected into
     ``report.skipped`` and reported, not measured.
 
-    ``dispatch_fn`` defaults to the live :func:`router.route`; tests inject a
-    stub so no real model runs.
+    ``dispatch_fn`` defaults to :func:`pinned.pinned_dispatch` when
+    ``placement`` is set (runs exactly the candidate), else the live
+    :func:`router.route` (whose operator chain may override the model); tests
+    inject a stub so no real model runs.
     """
-    if dispatch_fn is None:
+    if dispatch_fn is None and placement in ("local", "cloud"):
+        # Pin the candidate itself: the live router's operator chain pins its
+        # own rung models and would ignore ``req.model`` (gr464223).
+        from precis.llm_eval.pinned import pinned_dispatch
+
+        disp: Callable[[Any], Any] = pinned_dispatch(model, placement)
+    elif dispatch_fn is None:
         from precis.utils.llm.router import route as _live_dispatch
 
-        disp: Callable[[Any], Any] = _live_dispatch
+        disp = _live_dispatch
     else:
         disp = dispatch_fn
 

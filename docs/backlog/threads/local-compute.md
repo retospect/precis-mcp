@@ -57,7 +57,15 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    - The CLI could not run it (gripe gr464223): it never binds its store,
      and the operator chain's pinned rung model overrides the candidate id.
      The local arm was driven through `run_eval(dispatch_fn=...)`, using the
-     LOCAL transport at the served endpoint. The number-rule zeros differ by
+     LOCAL transport at the served endpoint: **hook-driven, bypasses the
+     breaker and slot accounting** (concurrency 1 on an idle slot). This is
+     the measurement of record until the CLI fix lands (orchestrator §9a).
+     Past damage (§9c, read-only 2026-10-03): **zero `record=True` eval
+     runs affected.** Prod has no `record_eval` entry at all. The one
+     `measured-eval` review (2026-08-10, deepseek-v4-flash) is a manual
+     note with no axis or ordinal. CLI runs never saw the DB chains, so
+     they kept the candidate id; only a settings-bound process would have
+     hit the override. The number-rule zeros differ by
      1, so the delta is usable.
    - The gap is non-prose tagging, not summary quality. 8 of the local
      arm's 10 zeros and 6 of the cloud arm's 7 are chunks the incumbent
