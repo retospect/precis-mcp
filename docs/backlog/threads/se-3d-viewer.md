@@ -37,10 +37,13 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
-**Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Do-next 0 waits on Reto alone. Do-next 1 (gr462702) shipped its fallback
-and waits on Reto for the cause; 2 (gr462703) has its server half shipped
+**Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Reto's look (td461212, 2026-10-03) passed checks 1, 2, 3 and 5; its
+three follow-ups are Do-next 0, proposed to him in review item
+se-3d-viewer-5. gr462702 is closed: Reto no longer has the failing
+browser, so the shipped fallback stands (se-3d-viewer-3, option 2).
+2 (gr462703) has its server half,
 the bar and instancing shipped; the inline early fetch is noted, not
-due. After those the next build is 5
+due. After 0 the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02; `strain` checks atom hover since instancing, so atom
 click-pick is its remaining blind spot. The atom overlay's InstancedMeshes
@@ -62,22 +65,27 @@ up:
 
 ## Do next
 
-0. **Reto's look at his 2026-10-01 prod pass.** All of it is deployed and
-   was agent-verified 2026-10-02 on prod's `dogfood-fold-3` (through
-   guide-web, above); what is left is Reto's own look (td461212):
-   - pick steps 1–3 (atom click → panel → cite), which his pass predated;
-   - page scroll (vendored three-cad-viewer.css's global
-     `body{overflow:hidden; user-select:none}`, undone in
-     blocktree-3d-overrides.css);
-   - export PNG / SVG beside `explode` — the view as on screen, scale bar
-     included; the SVG holds the scene as an embedded PNG and the scale
-     bar as vector. A fully vector scene (projected edges, hidden-line
-     removal) was not asked for and is not filed;
-   - atom hover tip (element · atom name · residue (chain) for a
-     realize_chain structure, the scene label otherwise —
-     `atomic3d.json` `hover`, from `pick.atom_hover_names`);
-   - the atoms checkbox is in the control row on any structure-bound
-     design (prod `dogfood-fold-3` is bound, so it renders there).
+0. **Follow-ups from Reto's look at /se/dogfood-fold-3/view3d** (td461212,
+   2026-10-03; pick, scroll, export and the atoms toggle passed, the
+   sliders work). Wording proposed in review item se-3d-viewer-5; build
+   once it is answered:
+   - **Hover label says what each field is.** Today `N · N9 · DG 1 (A)`
+     (`pick.atom_hover_names`); Reto could not tell whether N and N9 are
+     separate, what DG1 is, or whether A is strand A or adenine. Proposed:
+     `N9 (N) · DG 1 = deoxyguanosine 1 · chain A of strand hp`. The pick
+     panel's header shows the scene label `aN1` for the same atom: give it
+     the atom name instead.
+   - **Toggle for the xyz axes gizmo** (bottom left of the 3D view), and
+     leave it out of PNG/SVG export unless it is on.
+   - **The smooth end and the deviation/strain rows are carbon-sheet
+     measures shown on every structure.** `deviation` is each atom's
+     distance to its own Taubin-smoothed position (`sheetsmooth.deviation`);
+     bond strain is |C–C − 1.42 Å| and angle strain is against 120° — all
+     graphene references. On dogfood-fold-3 (248 atoms of DNA) the smooth
+     end is 32 grey ring patches with no colour above the 1.43 Å threshold,
+     and nothing on the page names the reference. Proposed: show the
+     smooth slider and the three rows only for a 3-coordinated carbon
+     sheet; there, the legend says "distance from the smoothed sheet (Å)".
    Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
    no opaque-while-tinted change.
    Round 2 (once deployed): the per-block level chip `[E·I·R·z]` on every
@@ -88,17 +96,6 @@ up:
    draws envelopes at every rung; recommended keeping the dash column). The chips are small at the
    tree's 220 px width — say if it needs widening (it shrinks the canvas).
 
-1. **gr462702** — "3D viewer failed to start: Error creating WebGL context"
-   on hexa-smooth-drum-v2 in some browsers (Reto). SHIPPED (62a22b1d): a
-   plain message plus the 2D view on a start failure or a lost context,
-   and `viewer_check.py nowebgl` in the nightly. The vendored renderer
-   asks for WebGL2 only (three r163+ has no WebGL1 path), and the bare
-   message means no WebGL2 context at all, so a retry with relaxed
-   attributes cannot help. Cause still open: which browsers fail is review
-   item se-3d-viewer-3, on Reto's hands-on list ("Later"). If other se pages work there, it is Chrome blocking
-   WebGL for the site after GPU crashes; instancing (item 2, now in round 2)
-   cut the drum from ~15,000 meshes and materials to two per block, which
-   is the fix for that cause.
 2. **gr462703** — a progress bar from request to the atoms drawn (Reto).
    Design note `reviews/se-3d-viewer.md` §1–1c, verdicts beside it. Server
    phase SHIPPED: vectorised smoothing (1.0 s → 0.04 s), payload and gzip
@@ -116,8 +113,9 @@ up:
    - start the `scene3d`/`atomic3d` fetches from an inline script before
      the module bundle parses: ~0.5 s of page and module load comes before
      the first request today (verdict 1c: note it, not now).
-   Reto's own timing (review item se-3d-viewer-4, "Later") now only says
-   whether prod is slower than local; both levers it ordered have shipped.
+   Reto's own timing reading is skipped (se-3d-viewer-4, option 2: no
+   access to that browser); an exact reading later comes from the page's
+   timestamp mark.
 3. **backlog/se-3d-viewer-ux-batch.md**, visibility via the public setState
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
