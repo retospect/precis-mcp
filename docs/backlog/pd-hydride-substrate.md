@@ -169,6 +169,13 @@ the duration, and record the pause in the quest logbook.
   - **Decided, Reto 2026-10-02 (`catalysis-selectivity-18`):** x ≈ 0.625
     from experiment, geometry from MACE. Proceed with stages 1–3 (≈ 15
     GPU-h plus the strain controls).
+- **Decided, Reto 2026-10-03 (`catalysis-selectivity-27`):** PBE single
+  points agree with MACE on the H flight next to Ta (design note §22f).
+  When the pilot resumes, it keeps `substrate_level.emptied_sites`
+  (57, 58, 60) with no further DFT. The holds of items 23 and 25 stay.
+  The spin check at the Ta end (design note §22i) found no moment (Ta
+  < 10⁻⁸ μ_B from a 1 μ_B seed) and the spin-paired energy to 10⁻⁵ eV,
+  so the spin-paired table stands.
 - **Open (`catalysis-selectivity-17`):** the reference scale of pa5303 and
   pa166889 sits behind publisher SI paywalls (403). It is Reto's check.
   Until then no operating point is written.

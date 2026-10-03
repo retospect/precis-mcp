@@ -28,7 +28,10 @@ The pause would only have stopped the re-runs, so it is no longer needed.
 The PBE H-flight check (pair plus undoped control, run on spark) agrees
 with MACE: next to Ta the subsurface H goes downhill to the surface at the
 midpoint and the end. The Ta effect at the end is −0.29 eV in both methods
-(design note §22f). The result is with Reto as `catalysis-selectivity-27`. Catpath
+(design note §22f). Reto accepted it (`catalysis-selectivity-27`): the
+emptied-site rule stands for when the pilot resumes, and every hold stays.
+A spin-polarised point at the Ta end keeps no moment and matches the
+spin-paired energy (§22i), so the table stands. Catpath
 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
@@ -52,7 +55,7 @@ midpoint and the end. The Ta effect at the end is −0.29 eV in both methods
    surface-Pourbaix optimizer (Horizon 3) is built, because the bare-surface
    construction may change once the resting state at the operating point is
    known (Reto, item 23). The PBE check of the H flight from Ta agrees with
-   MACE, so the emptied-site rule stands (§22f, item 27). Precis-side fixes (struct_relax
+   MACE, so the emptied-site rule stands (§22f; Reto accepted, item 27). Precis-side fixes (struct_relax
    lattice write-back, preflight on H-loaded slabs) can start.
 3. **backlog/pathway-diagram-step-annotations.md** +
    **backlog/catpath-desorption-link-kind.md** (its first slice, moved
