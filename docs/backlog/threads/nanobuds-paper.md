@@ -77,13 +77,26 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    2748 atoms, min 1.05 Å at the pillar's fused neck (9 WARNs). Pillar is
    now (6,0) with a fused-neck C60 ([9-6] impossible on a (6,0) lid); gentle
    flange not producible (parked smooth collar). Look-at item 24.
-   **C4 approved (orchestrator, ~23:40Z):** 15b943888 qlanding. After
+   **C4 approved (orchestrator, ~23:40Z):** landed as main af16a39ef
+   (15b943888 + review changes; hero4 rebuilt unchanged on it). After
    round 2 deploys: regenerate `hexa-nanobud-pillar` block `bud` (459564,
    same spec; remove_block + generate), run
    `nanobud-fidelity/pillar/ztable.py <new id> after`, and fill the "After
    (prod)" table in `reviews/nanobuds-paper.md` (release item). Before
    table recorded: ball 19.5–25.6 Å under a 26.1–27.3 Å lid; expected
-   after: ball 27.9–33.7 Å on the lid. Then mint the hero (item 24).
+   after: ball 27.9–33.7 Å on the lid. Then mint the hero.
+   **Items 23/24 answered 06:44Z (10-03).** 23: camera d (el 18°), 55 Å
+   sheet kept → done: gsheet22/96 regenerated on prod (st463286/7; round-1
+   prod hexfold builds them identically to main, so no wait on round 2;
+   prod atoms = local build, `figs/prod_vs_local.py`), and both structure
+   figures put into the draft as `original` (`figs/render_final.py`,
+   `upload_own.py`): dc4300876 tubes (camera c, bud22/87/96 = st462601-3)
+   replaced placeholder dc3015720; dc4300877 sheets after dc2445859.
+   dc3015729 (magnetic seam cases A–D) stays a placeholder until the 2D
+   sublattice schematic is drawn. 24: wider necks + rounder transitions →
+   hexfold-toolkit sent hero5/hero5a (`figs/specs-hero/`, compare
+   `figs/render/hero5-compare.png`; necks only come in (6k,0) steps, so
+   pill/bump went (6,0)→(12,0)); look-at item 25, which version to mint.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
    (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.
@@ -111,7 +124,9 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    edges had to be removed from the finding side). Read-back
    (`readback_21.sql`) clean: every draft pin resolves; W48 (Canatu) kept
    for the report-type reword; a pre-existing broken pin
-   `[fi190976>pc279174]` (pa2615 passage, edge lost earlier) re-attached. A `verify-edges` re-judge was
+   `[fi190976>pc279174]` (pa2615 passage, edge lost earlier) re-attached.
+   Left from it: dc2445940's "nonlinear optical response" clause has no
+   hub carrying it (find a source or cut it before signing). A `verify-edges` re-judge was
    classifier-denied (LLM spend); stale `partial` labels are legacy-valid
    for the preflight, so re-judging is optional.
 1. **Figures** (items 5/6): the five kept third-party figures are in
@@ -137,17 +152,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    review-queue answered/reto-cite-standard-1.md). Item 15 open: HOMA/NICS
    primaries not held, ref 893 (Tans 1998 inside an issue scan), the
    phosphorene preprint, and the td450082 script restage.
-   **Printed-source read (orchestrator verdict, reviews/
-   nanobuds-paper.review.md §1, accepted):** once claims-and-evidence's
-   ruled fallback has a stable before/after key set for dr173020 (their
-   note §3, after the orchestrator has looked at their samples), read
-   only the ~150 sources it prints. One row per (hub, source chunk):
-   does the passage state the sentence's claim as its own result —
-   yes / no / cites-another / partial, with the passage quoted, in the
-   `evidence-edge-verification` row shape. Hand-check 15 rows across the
-   four answers before trusting totals. Report "n of 150 printed sources
-   do not carry their sentence" plus method in the fidelity pack. Over
-   $25 → review item first.
+   **Printed-source read: DONE 2026-10-03 ~07:40Z.** 61 of 159
+   printed sources do not carry their sentence on their linked passages.
+   26 of 120 hubs have no carrying source. 15-row hand-check: 13 agree.
+   Cost: ~610K sonnet tokens. Report: `~/.claude/projects/
+   -Users-reto-precis-mcp/nanobud-fidelity/printed-read/REPORT.md`. Noted
+   under §1 of reviews/nanobuds-paper.md. Wrong-paper ingest: gr463414.
+   Fixes wait on review item nanobuds-paper-26 (recommended: 16 link
+   removals, 22 re-grounds, 4 hand swaps, then re-read the touched hubs).
+   fi449540 stays provisional until its re-ground lands.
 3. **Reground batches: DONE 2026-10-02 ~20:15Z** (461608, 461803,
    462063, 462112 … 462390). Cited hubs now: 168, 696 evidence edges, 61
    still withheld on 56 hubs. OPEN.md items 5 and 7 settled: dc2445904
