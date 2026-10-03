@@ -637,3 +637,34 @@ def test_a_nearly_stacked_bond_in_the_seed_is_a_warn() -> None:
     assert sorted(dict(short[0].data)["atoms"]) == sorted([i, j])
     summary = next(dict(f.data) for f in found if f.code == "geom.summary")
     assert summary["seed_short_bond_count"] == 1
+
+
+def test_relaxed_coordinates_are_judged_as_given_not_re_relaxed() -> None:
+    # S4: a tethered relax is judged on its own coordinates; an untethered
+    # re-relax inside geometry_findings would judge a different geometry
+    from hexfold.check import Relaxed, geometry_findings
+    from hexfold.stick import stick_info
+
+    net = build("hexfold 0.2\norigin s\ns: sheet(8,8)\n", strict=False)
+    pos, force = stick_info(net)
+
+    def summary(found: list[Any]) -> dict[str, Any]:
+        return next(dict(f.data) for f in found if f.code == "geom.summary")
+
+    plain = geometry_findings(net)
+    same = geometry_findings(net, relaxed=Relaxed(pos, force, "untethered"))
+    # the same coordinates judge the same; only the label is added
+    assert [f for f in same if f.code != "geom.summary"] == [
+        f for f in plain if f.code != "geom.summary"
+    ]
+    assert "relax" not in summary(plain)
+    assert summary(same) == {**summary(plain), "relax": "untethered"}
+    squeezed = pos.copy()
+    i, j, _o = net.bonds[0]
+    far = max(range(len(pos)), key=lambda a: float(np.linalg.norm(pos[a] - pos[i])))
+    squeezed[far] = pos[i] + np.array([0.0, 0.0, 0.5])  # stacked on atom i
+    found = geometry_findings(net, relaxed=Relaxed(squeezed, force, "tethered"))
+    clash = [f for f in found if f.code == "geom.clash"]
+    assert clash and clash[0].severity == Severity.ERROR
+    assert summary(found)["relax"] == "tethered"
+    assert not [f for f in plain if f.code == "geom.clash"]
