@@ -1504,10 +1504,10 @@ class ComponentHandler(Handler):
     # ── search ───────────────────────────────────────────────────────
 
     # ── link ─────────────────────────────────────────────────────────
-    def link(  # type: ignore[override]
+    def link(
         self,
         *,
-        id: str | int,
+        id: str | int | None = None,
         target: str | None = None,
         mode: str = "add",
         rel: str | None = None,
@@ -1522,6 +1522,12 @@ class ComponentHandler(Handler):
             raise BadInput(
                 f"rel={rel!r} is written through put, not link",
                 next=_PUT_DOOR_RELS[rel],
+            )
+        if id is None or not str(id).strip():
+            raise BadInput(
+                "link(kind='component') requires id= (the component slug)",
+                next="link(kind='component', id=<slug>, rel='realized-by', "
+                "target='part:C25804')",
             )
         target = require_link_target("component", target)
         validate_link_mode(mode)
