@@ -94,8 +94,13 @@ def _run(
     run_rc: int = 0,
     down_rc: int = 0,
     keep_db: bool = False,
+    other_run_pids: tuple[int, ...] = (),
 ) -> tuple[int, list[str]]:
     tree = _stage(tmp_path, name)
+    markers = tree / ".git" / "precis-test-runs"
+    for pid in other_run_pids:
+        markers.mkdir(exist_ok=True)
+        (markers / str(pid)).write_text("", encoding="utf-8")
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
     docker = fakebin / "docker"
@@ -126,6 +131,9 @@ def _run(
         timeout=60,
         check=False,
     )
+    if proc.returncode == 0 and markers.is_dir():
+        # A run never leaves its own marker behind.
+        assert not [m for m in markers.iterdir() if int(m.name) not in other_run_pids]
     return proc.returncode, log.read_text(encoding="utf-8").splitlines()
 
 
@@ -173,3 +181,22 @@ def test_test_failure_exit_status_survives_teardown(tmp_path: Path) -> None:
     rc, log = _run(tmp_path, "agent-abc123", run_rc=3, down_rc=1)
     assert rc == 3
     assert "down|-v|precis-test-agent-abc123" in log
+
+
+def test_agent_tree_with_another_live_run_is_left_up(tmp_path: Path) -> None:
+    """Round-3 review of ae5084ae3: a second run between its `compose up` and
+    its own container start shows no running container, only its marker."""
+    rc, log = _run(tmp_path, "agent-abc123", other_run_pids=(os.getpid(),))
+    assert rc == 0
+    assert not [line for line in log if line.startswith("down|")]
+
+
+def test_stale_run_marker_does_not_block_teardown(tmp_path: Path) -> None:
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    rc, log = _run(tmp_path, "agent-abc123", other_run_pids=(dead.pid,))
+    assert rc == 0
+    assert "down|-v|precis-test-agent-abc123" in log
+    assert not (
+        tmp_path / "agent-abc123" / ".git" / "precis-test-runs" / str(dead.pid)
+    ).exists()

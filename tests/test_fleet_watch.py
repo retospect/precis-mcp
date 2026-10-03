@@ -73,7 +73,7 @@ def wf(fleet: Fleet, tmp_path: Path) -> Iterator[Fleet]:  # noqa: F811
     (fleet.state / "reviews").mkdir(parents=True)
     fleet.env.update(
         {
-            "PATH": f"{gh_dir}{os.pathsep}{os.environ['PATH']}",
+            "PATH": f"{gh_dir}{os.pathsep}{fleet.env['PATH']}",
             "FAKE_GH_DIR": str(gh_dir),
             "PRECIS_FLEET_SESSIONS_DIR": str(sessions),
             "PRECIS_FLEET_CLIENT_CACHE": str(cache),

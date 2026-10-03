@@ -210,7 +210,46 @@ TESTMON_LOG=""
 # project (a concurrent scripts/test run, a gate) is still RUNNING — the same
 # guard scripts/reap-test-dbs uses. Best-effort: never fails, and cleanup()
 # re-raises the script's real exit status around it.
+#
+# A running container alone misses a second run of the same tree that is
+# between `compose up --wait precis-test-db` and starting its own container
+# (round-3 review of ae5084ae3): `down -v` would delete the db under it. So a
+# db-using run leaves a pid marker in the tree's git dir BEFORE it brings the
+# db up, and the teardown also stands down while any other marker's pid is
+# alive (EPERM from kill -0 = alive). The marker scan runs last, right before
+# the `down`, which leaves only that gap open.
+RUN_MARKER_DIR=""
+RUN_MARKER=""
+run_marker_write() {
+    case "${WORKTREE##*/}" in agent-*) ;; *) return 0 ;; esac
+    local gd
+    gd="$(git -C "$WORKTREE" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+    RUN_MARKER_DIR="$gd/precis-test-runs"
+    mkdir -p "$RUN_MARKER_DIR" 2>/dev/null || return 0
+    RUN_MARKER="$RUN_MARKER_DIR/$$"
+    : >"$RUN_MARKER" 2>/dev/null || RUN_MARKER=""
+}
+pid_alive() {
+    local err
+    kill -0 "$1" 2>/dev/null && return 0
+    err="$(kill -0 "$1" 2>&1)"
+    [[ "$err" == *"ermitted"* ]]
+}
+other_run_alive() {
+    [[ -n "$RUN_MARKER_DIR" && -d "$RUN_MARKER_DIR" ]] || return 1
+    local m pid
+    for m in "$RUN_MARKER_DIR"/*; do
+        [[ -e "$m" ]] || continue
+        pid="${m##*/}"
+        [[ "$pid" == "$$" ]] && continue
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        if pid_alive "$pid"; then return 0; fi
+        rm -f "$m"
+    done
+    return 1
+}
 agent_db_teardown() {
+    [[ -n "$RUN_MARKER" ]] && rm -f "$RUN_MARKER"
     [[ "$FAST" == "1" ]] && return 0
     [[ -n "${PRECIS_TEST_KEEP_DB:-}" ]] && return 0
     case "${WORKTREE##*/}" in agent-*) ;; *) return 0 ;; esac
@@ -221,6 +260,7 @@ agent_db_teardown() {
         [[ -z "$svc" || "$svc" == "precis-test-db" ]] && continue
         return 0
     done <<<"$services"
+    other_run_alive && return 0
     env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" \
         -p "$COMPOSE_PROJECT" --profile dev down -v >/dev/null 2>&1 || true
     return 0
@@ -274,7 +314,7 @@ THREAD_CAP_ENV=(
 TEST_DB_ENV=()
 if [[ "$FAST" == "1" ]]; then
     :  # no DB tests selected — don't pay for Postgres
-elif DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
+elif run_marker_write; DB_UP_OUT="$(compose up -d --wait precis-test-db 2>&1)"; then
     TEST_DB_ENV=(-e "PRECIS_TEST_PG_URL=postgresql://postgres@precis-test-db:5432/precis_test")
 else
     echo "WARNING: precis-test-db didn't start — falling back to the container's default test DB" >&2

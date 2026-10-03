@@ -84,6 +84,21 @@ class Fleet:
     state: Path
     sock: str
     env: dict[str, str]
+    calls_dir: Path | None = None
+
+    def calls(self, sub: str | None = None) -> list[tuple[str, list[str], str]]:
+        """Every send-keys / load-buffer / paste-buffer the script made, in order:
+        (subcommand, args after it, stdin for load-buffer)."""
+        assert self.calls_dir is not None
+        out = []
+        for f in sorted(self.calls_dir.glob("*.args")):
+            raw = f.read_bytes().decode("utf-8").split("\0")[:-1]
+            argv = raw[2:] if raw[:1] == ["-L"] else raw  # drop `-L <sock>`
+            stdin_f = f.with_suffix(".stdin")
+            stdin = stdin_f.read_bytes().decode("utf-8") if stdin_f.exists() else ""
+            if sub is None or argv[0] == sub:
+                out.append((argv[0], argv[1:], stdin))
+        return out
 
     def run(
         self, *args: str, stdin: str | None = None
@@ -110,10 +125,19 @@ class Fleet:
             check=False,
         )
 
-    def _command(self, name: str, text: str) -> str:
+    def _command(self, name: str, text: str, sink: Path | None = None) -> str:
         canned = self.repo / f"canned-{name}.txt"
         canned.write_text(text, encoding="utf-8")
-        return f"cat {shlex.quote(str(canned))}; sleep 600"
+        show = f"cat {shlex.quote(str(canned))}"
+        if sink is None:
+            return f"{show}; sleep 600"
+        # A receiver like Claude Code's: raw tty (a cooked one holds ~1 KB of
+        # typed-ahead input and drops the rest), bracketed paste turned on, input
+        # written to a file byte for byte.
+        return (
+            "stty -echo -icanon -icrnl; printf '\\033[?2004h'; "
+            f"{show}; exec cat > {shlex.quote(str(sink))}"
+        )
 
     def _settle(self, name: str, text: str) -> None:
         last = [ln for ln in text.splitlines() if ln.strip()][-1].strip()
@@ -124,8 +148,8 @@ class Fleet:
             time.sleep(0.1)
         raise AssertionError(f"window {name} never showed {last!r}: {self.pane(name)}")
 
-    def window(self, name: str, text: str) -> None:
-        cp = self.tmux("new-window", "-d", "-n", name, self._command(name, text))
+    def window(self, name: str, text: str, sink: Path | None = None) -> None:
+        cp = self.tmux("new-window", "-d", "-n", name, self._command(name, text, sink))
         assert cp.returncode == 0, cp.stderr
         self._settle(name, text)
 
@@ -172,6 +196,25 @@ def _git(repo: Path, *args: str, date: str | None = None) -> str:
     return cp.stdout.strip()
 
 
+# A `tmux` on the script's PATH that records the input-sending subcommands
+# (args NUL-separated; load-buffer's stdin kept) and then runs the real tmux.
+TMUX_SHIM = """#!/bin/bash
+n=$(ls "$SHIM_CALLS" | grep -c '[.]args$')
+f=$(printf '%s/%05d' "$SHIM_CALLS" "$n")
+args=("$@")
+if [ "${args[0]}" = -L ]; then sub=${args[2]}; else sub=${args[0]}; fi
+case "$sub" in
+  load-buffer)
+    cat > "$f.stdin"
+    printf '%s\\0' "$@" > "$f.args"
+    exec "$REAL_TMUX" "$@" < "$f.stdin" ;;
+  send-keys|paste-buffer)
+    printf '%s\\0' "$@" > "$f.args" ;;
+esac
+exec "$REAL_TMUX" "$@"
+"""
+
+
 @pytest.fixture
 def fleet(tmp_path: Path) -> Iterator[Fleet]:
     repo = tmp_path / "repo"
@@ -190,15 +233,26 @@ def fleet(tmp_path: Path) -> Iterator[Fleet]:
     state = tmp_path / "state"
     home = tmp_path / "home"
     home.mkdir()
+    shim_dir, calls_dir = tmp_path / "shim", tmp_path / "calls"
+    shim_dir.mkdir()
+    calls_dir.mkdir()
+    shim = shim_dir / "tmux"
+    shim.write_text(TMUX_SHIM, encoding="utf-8")
+    shim.chmod(0o755)
+    real_tmux = shutil.which("tmux")
+    assert real_tmux is not None
     env = {
         **os.environ,
+        "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+        "REAL_TMUX": real_tmux,
+        "SHIM_CALLS": str(calls_dir),
         "HOME": str(home),
         "TMUX": "/dummy/socket,1,0",  # need_tmux only checks it is set
         "PRECIS_FLEET_TMUX_SOCKET": sock,
         "PRECIS_FLEET_STATE": str(state),
     }
     env.pop("TMUX_PANE", None)
-    f = Fleet(repo=repo, state=state, sock=sock, env=env)
+    f = Fleet(repo=repo, state=state, sock=sock, env=env, calls_dir=calls_dir)
     cp = f.tmux(
         "-f", "/dev/null", "new-session", "-d", "-s", "t", "-x", "200", "-y", "50"
     )
@@ -263,6 +317,114 @@ def test_say_without_when_clear_skips_a_dialog_window(fleet: Fleet) -> None:
     cp = fleet.run("say", "-m", "nope", "alpha")
     assert "SKIPPED (dialog open): alpha" in cp.stdout
     assert fleet.queued("alpha") == []
+
+
+# --- say: long and multi-line text goes in by bracketed paste -----------------
+
+# An idle prompt with a line under it, so the text the tty echoes after the
+# send does not land on the line right after `❯` (where the retry looks).
+IDLE_STATUS = "previous output\n\n❯ \n  ? for shortcuts\n"
+IDLE_PLACEHOLDER = (
+    "previous output\n\n❯ [Pasted text #1 +12 lines]\n  ? for shortcuts\n"
+)
+
+
+def _long_message() -> str:
+    """1500+ chars over 20 lines, each line distinct and under a tty's line limit."""
+    return "".join(f"line {i:02d} " + "x" * 70 + "\n" for i in range(1, 21))
+
+
+def test_say_file_over_200_chars_goes_by_bracketed_paste_whole(fleet: Fleet) -> None:
+    """2026-10-03 head-loss incident: a long `send-keys -l` line arrived with its
+    head missing; long text must go in as one bracketed paste, newlines kept."""
+    sink = fleet.repo / "received.bin"
+    fleet.window("alpha", IDLE_STATUS, sink=sink)
+    body = _long_message()
+    assert len(body) > 1500
+    msg = fleet.repo / "msg.txt"
+    msg.write_text(body, encoding="utf-8")
+    cp = fleet.run("say", str(msg), "alpha")
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.startswith("sent"), cp.stdout
+
+    loads = fleet.calls("load-buffer")
+    assert len(loads) == 1
+    assert loads[0][2] == body.rstrip("\n")  # whole, newlines kept
+    pastes = fleet.calls("paste-buffer")
+    assert len(pastes) == 1
+    flags = pastes[0][1]
+    assert "-p" in flags and "-d" in flags
+    assert flags[flags.index("-b") + 1] == loads[0][1][loads[0][1].index("-b") + 1]
+    # No byte of the message was typed with send-keys -l.
+    assert [c for c in fleet.calls("send-keys") if "-l" in c[1]] == []
+    # The receiver got one bracketed paste (tmux sends the newlines as CR), then
+    # the Enter, every byte intact.
+    want = "\x1b[200~" + body.rstrip("\n").replace("\n", "\r") + "\x1b[201~\r"
+    assert sink.read_bytes().decode("utf-8") == want
+    # -d: the buffer is gone once pasted.
+    assert fleet.tmux("list-buffers").stdout.strip() == ""
+
+
+def test_say_short_inline_line_is_still_typed_not_pasted(fleet: Fleet) -> None:
+    """2026-10-03 head-loss incident: short single-line text keeps `send-keys -l`
+    (the paste path is only for long or multi-line text)."""
+    fleet.window("alpha", IDLE_STATUS)
+    cp = fleet.run("say", "-m", "a short note", "alpha")
+    assert cp.returncode == 0, cp.stderr
+    typed = [c for c in fleet.calls("send-keys") if "-l" in c[1]]
+    assert [c[1][-1] for c in typed] == ["a short note"]
+    assert fleet.calls("load-buffer") == [] and fleet.calls("paste-buffer") == []
+
+
+def test_say_multiline_inline_text_goes_by_paste(fleet: Fleet) -> None:
+    """2026-10-03 head-loss incident: a newline typed with `send-keys -l` would
+    submit mid-message, so multi-line `-m` text is pasted with its newlines."""
+    fleet.window("alpha", IDLE_STATUS)
+    cp = fleet.run("say", "-m", "first line\nsecond line", "alpha")
+    assert cp.returncode == 0, cp.stderr
+    loads = fleet.calls("load-buffer")
+    assert [c[2] for c in loads] == ["first line\nsecond line"]
+    assert len(fleet.calls("paste-buffer")) == 1
+    assert [c for c in fleet.calls("send-keys") if "-l" in c[1]] == []
+    pane = fleet.pane("alpha")
+    assert "first line" in pane and "second line" in pane
+
+
+def test_say_paste_placeholder_on_the_prompt_gets_a_second_enter(fleet: Fleet) -> None:
+    """2026-10-03 head-loss incident: Claude Code shows a long paste as
+    `[Pasted text #N +M lines]`, not as the text; if that is still on the prompt
+    line after Enter, the Enter was swallowed and is sent again."""
+    fleet.window("alpha", IDLE_PLACEHOLDER)
+    cp = fleet.run("say", "-m", "one\n" + "y" * 300, "alpha")
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.startswith("sent (second Enter)"), cp.stdout
+    enters = [c for c in fleet.calls("send-keys") if c[1][-1] == "Enter"]
+    assert len(enters) == 2
+
+
+def test_say_pasted_text_that_left_the_prompt_gets_no_second_enter(
+    fleet: Fleet,
+) -> None:
+    """2026-10-03 head-loss incident: no placeholder (and none of the text) on the
+    prompt line means the paste was submitted: one Enter only."""
+    fleet.window("alpha", IDLE_STATUS)
+    cp = fleet.run("say", "-m", "one\n" + "y" * 300, "alpha")
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.strip() == "sent: alpha", cp.stdout
+    enters = [c for c in fleet.calls("send-keys") if c[1][-1] == "Enter"]
+    assert len(enters) == 1
+
+
+def test_deliver_sends_a_held_multiline_message_by_paste(fleet: Fleet) -> None:
+    """2026-10-03 head-loss incident: held text keeps its newlines too, so
+    `deliver` pastes it rather than typing it."""
+    fleet.window("alpha", PERMISSION)
+    fleet.run("say", "-m", "held one\nheld two", "--when-clear", "alpha")
+    fleet.respawn("alpha", IDLE_STATUS)
+    cp = fleet.run("deliver")
+    assert cp.returncode == 0, cp.stderr
+    assert "delivered: alpha" in cp.stdout
+    assert [c[2] for c in fleet.calls("load-buffer")] == ["held one\nheld two"]
 
 
 # --- queue / deliver ---------------------------------------------------------

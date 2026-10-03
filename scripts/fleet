@@ -65,22 +65,44 @@ dialog_re='Enter to select|Do you want to|Do you trust the files'
 has_dialog() { tmux capture-pane -p -t "$1" | grep -q -E "$dialog_re"; }
 need_tmux() { [ -n "${TMUX:-}" ] || { echo "scripts/fleet: run inside tmux" >&2; exit 2; }; }
 
-fill() { # substitute {slug} {queue} {reviews} in a message file, one line out
-  sed -e "s|{slug}|$2|g" -e "s|{queue}|$queue|g" -e "s|{reviews}|$reviews|g" "$1" | tr '\n' ' '
+fill() { # substitute {slug} {queue} {reviews} in a message file; newlines kept
+  sed -e "s|{slug}|$2|g" -e "s|{queue}|$queue|g" -e "s|{reviews}|$reviews|g" "$1"
 }
+
+# Text typed with `send-keys -l` loses its head in a Claude Code pane when it is
+# long (2026-10-03: five cases, one kept only the last 120 of 900 chars), and
+# each newline typed that way would submit. So text over this many chars, or
+# with a newline, goes in by bracketed paste (`paste-buffer -p`): one paste
+# event, newlines inside it do not submit. Short single-line text is typed.
+paste_min=200
 
 send() { # send <window> <text>; refuses a window with a dialog open
   if has_dialog "$1"; then echo "SKIPPED (dialog open): $1"; return 0; fi
-  tmux send-keys -t "$1" -l "$2"
+  local buf
+  if [ "${#2}" -gt "$paste_min" ] || [[ $2 == *$'\n'* ]]; then
+    buf="fleet-say-$$-$RANDOM"
+    printf '%s' "$2" | tmux load-buffer -b "$buf" -
+    # -d drops the buffer after pasting; on failure drop it here.
+    tmux paste-buffer -p -d -b "$buf" -t "$1" || { tmux delete-buffer -b "$buf" 2>/dev/null || true; return 1; }
+  else
+    tmux send-keys -t "$1" -l "$2"
+  fi
   # An Enter that arrives with the text is taken as part of the paste and
   # the message sits unsent in the box: pause, submit, then check.
   sleep 1
   tmux send-keys -t "$1" Enter
   sleep 1
   local pane; pane=$(tmux capture-pane -p -t "$1")
+  # What an unsent message looks like after the prompt: Claude Code shows a
+  # big paste as a `[Pasted text #N +M lines]` placeholder and a small one as
+  # the text itself. The text probe is the first line only, at most 40 chars
+  # (a newline in a -F pattern would be a second pattern; an empty one matches all).
+  local head=${2%%$'\n'*} after; head=${head:0:40}
+  after=$(printf '%s\n' "$pane" | grep -A1 '^❯' || true)
   # A busy session shows the queued text too; only an idle one needs the retry.
   if ! printf '%s\n' "$pane" | grep -q -E '… \([0-9]+' && ! has_dialog "$1" &&
-     printf '%s\n' "$pane" | grep -A1 '^❯' | grep -q -F -- "${2:0:40}"; then
+     { printf '%s\n' "$after" | grep -q -E '\[Pasted text #[0-9]+' ||
+       { [ -n "$head" ] && printf '%s\n' "$after" | grep -q -F -- "$head"; }; }; then
     tmux send-keys -t "$1" Enter
     echo "sent (second Enter): $1"
   else
@@ -169,7 +191,7 @@ cmd_status() {
   done
 }
 
-# A held message is one line of final text (placeholders already filled), so
+# A held message is the final text (placeholders already filled), so
 # `deliver` needs no knowledge of which form it came from.
 hold_msg() { # hold_msg <window> <text>
   local d="$held/$1" stamp n=1 f
@@ -212,8 +234,7 @@ cmd_say() {
     [ -z "$file" ] || wins="$file$wins"
     # An empty message would be a bare Enter, which can answer a dialog.
     ! blank "$text" || { echo "scripts/fleet say: empty -m text" >&2; exit 2; }
-    # A newline would submit mid-message; flatten like `fill` does for files.
-    text=$(printf '%s' "$text" | tr '\n' ' ')
+    # Newlines stay: `send` pastes multi-line text, so none submits mid-message.
   else
     # An unreadable file would send an empty message, i.e. a bare Enter.
     [ -n "$file" ] && [ -s "$file" ] || { echo "scripts/fleet say: no such message file: $file" >&2; exit 2; }
