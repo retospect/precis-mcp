@@ -52,7 +52,9 @@ paper needs.
    **Outcome 2026-10-03:** restarted 13:51Z; the 17:11Z tick read all five
    papers, closed both gold-bridge fronts as off-target, credited
    pc2727852. Per the ruling it stays active (it cited them);
-   recommendation to re-pause is review-queue `chemistry-9`. tick_count
+   recommendation to re-pause is review-queue `chemistry-9`; Reto 19:35Z:
+   hold as-is (active, no extra ticks) until he rules after knowledge-mesh
+   answers whether the mesh can take this quest's output. tick_count
    did not advance on that tick (stuck at 314; gr464538), so count
    ticks from the quest's chunks, not meta. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
