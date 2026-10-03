@@ -10,10 +10,30 @@ green or the reverse), then tuning and residue.
 **Last reviewed:** 2026-10-03
 **Worktree:** `ship-gate-ci`
 **Active:** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
+**Resume:** 2026-10-03 round 3 deployed 929107f32 with all of this
+thread's code in it. The work is host tooling, and its dogfood was the
+deploy itself: `scripts/round gate|deploy` picked the newest green main.
+Round 4 so far: f0c01b03c (`fleet say` pastes long or multi-line text, so
+its head survives; the agent-tree teardown stands down while another
+`scripts/test` run of the tree is alive). Next: rebuild the precis-dev
+image for numba and mp-api, then release slice (b).
 
 ## Do next
 
-1. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
+1. **Narrow ship lock** — Reto 2026-10-03 21:35Z ("make it work").
+   Qlands wait out other ships' whole runs: today one used up its 30-min
+   limit behind seven trees. `scripts/ship` holds the repo-wide lock across
+   sync, lint and gate, and the hybrid fallback keeps it through a full
+   local gate. The CAS push already keeps main from taking a stale tree.
+   Lint and gate move outside the lock, and the lock covers only fetch,
+   merge, squash, CAS push and the local-main fast-forward. Design note 4 is
+   in `reviews/ship-gate-ci.md`. Acceptance: two qlands started together
+   both land without waiting on each other's lint, and a hybrid ship blocks
+   a qland for no longer than its CAS section.
+2. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
+   the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
+   Preflight free-space refusal plus a build-cache cap in the reaper.
+3. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
@@ -35,14 +55,14 @@ green or the reverse), then tuning and residue.
    12 h to 12:00Z had a green verdict. Review item organizer-release-branch-1 (v2) has the
    critique and Reto's two open decisions; design-bearing changes go to the
    orchestrator as a design note before they land.
-2. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
+4. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
    Each round cuts `release/r<N>`, fixes land on it and merge forward into
    main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
    and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
    (`round cut`, `release/**` CI) shipped 06247b684. Next is (b) `ship
    --release`, which needs its own note first and Reto's forward-merge
    answer (review-queue ship-gate-ci-1); then (c).
-3. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
+5. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
    incident file closed 2026-10-03: the ownership guard (e3135337c) fixed
@@ -59,20 +79,20 @@ green or the reverse), then tuning and residue.
    project down at exit (ae5084ae3), and colima's docker pools were widened
    from ~31 to 256 networks (Reto, review-queue ship-gate-ci-2, done by
    the orchestrator 19:01Z).
-4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+6. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+7. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-6. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+8. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
    gate serialises the fleet for up to 1h43m; the round no longer runs one
    (2026-10-03), `/go` still does.
-7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+9. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
    container; the tooling that makes 5 and 6 diagnosable.
-8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+10. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+11. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon
