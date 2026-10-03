@@ -37,15 +37,9 @@ Measure: wall per SCF iteration; one ionic step at 1 rank on the new image
 first, then 8 ranks (review note §5). Rank the items below by what that
 paper needs.
 
-1. **gr345366 dogfood + gr322060** — both gr345366 causes landed
-   2026-10-02 and protect quests once deployed: the quota guard accepts
-   `terminal_reason='completed'` (`router.py::result_from_agent`), and
-   quest_tick opts into the stray-closer repair
-   (`json_reply.py::_repair_stray_closers`, logged as
-   `json_reply: dropped stray`). After the deploy, check qu164903's tick
-   failures and count those log lines; close gr345366 if the
-   unparseable-output failures stop. Left: gr322060, the relax-infra
-   tracker. `backlog/qu164903-campaign.md` residuals are ops/Reto
+1. **gr322060** (relax-infra tracker). gr345366 closed 2026-10-03:
+   no parse failures on 63301c5c across three quests' ticks.
+   `backlog/qu164903-campaign.md` residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
 2. **qu202467 (NO from exhaust → fertilizer N) restart** — RULED
@@ -55,8 +49,12 @@ paper needs.
    at that moment, and when it reaches +3, re-pause to dormant unless one of
    those ticks cited [pa220629], [pa215329], [pa198891], [pa417969] or
    [pa202897] or changed the ledger from them. Report the outcome either way.
-   **Restarted 2026-10-03T13:51Z at tick_count 314** (round 2 = 63301c5c
-   live 13:49Z): re-pause check at tick_count 317. The "six unresolved gold stubs" blocker was
+   **Outcome 2026-10-03:** restarted 13:51Z; the 17:11Z tick read all five
+   papers, closed both gold-bridge fronts as off-target, credited
+   pc2727852. Per the ruling it stays active (it cited them);
+   recommendation to re-pause is review-queue `chemistry-9`. tick_count
+   did not advance on that tick (stuck at 314; gr464538), so count
+   ticks from the quest's chunks, not meta. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
    tick's literature section shows about 12 of 484 served papers, and the
    cite instruction read "unlisted" as "stub". Fixed in abf642971
