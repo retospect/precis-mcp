@@ -92,6 +92,9 @@ Don't use a job for work that fits inside the current conversation.
 ## What job types are available?
 ## List the registered job_types
 
+Agent and internal job types; the compute and sandbox types are in the
+next section.
+
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
 | `fix_gripe`         | `claude_inproc` | Fix a gripe and land it. **Lane OFF since 2026-10-02**: nothing auto-mints it; a hand-submit skips at the push preflight without a credential |
@@ -99,10 +102,16 @@ Don't use a job for work that fits inside the current conversation.
 | `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
-| `struct_relax`      | `ssh_node`      | DFT/ML relax of a `structure` on a GPU node   |
-| `pourbaix_bulk`     | `claude_inproc` | Bulk Pourbaix verdict (`dissolved` / `leached` / `transformed` / `oxidised` / `unmatched` / `stable`) for a candidate structure's host phase at a U/pH point and over a window, from Materials Project entries; written to the job's `meta.verdict`. Params: `candidate_ref`, `point` (`{U_RHE, pH}`), optional `window` (`{U_RHE: [lo, hi], pH: [lo, hi]}`), `ion_conc_M` (1e-6), `stability_tol` (0.1 eV/atom), `grid` (5). Fails `config` without `PRECIS_MP_API_KEY`. A bulk verdict is necessary, not sufficient: the surface can still restructure under bias. |
 | `good_search`       | `coordinator`   | Deep paper-search campaign — normally minted for you by `search(kind='paper', q=…, good=True)`, not submitted by hand (see `precis-search-help`) |
 | `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
+
+## Which job types run compute or code?
+## Run a relax, a Pourbaix verdict or a sandbox build
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
+| `struct_relax`      | `ssh_node`      | DFT/ML relax of a `structure` on a GPU node   |
+| `pourbaix_bulk`     | `claude_inproc` | Bulk Pourbaix verdict (`dissolved` / `leached` / `transformed` / `oxidised` / `unmatched` / `stable`) for a candidate structure's host phase at a U/pH point and over a window, from Materials Project entries; written to the job's `meta.verdict`. Params: `candidate_ref`, `point` (`{U_RHE, pH}`), optional `window` (`{U_RHE: [lo, hi], pH: [lo, hi]}`), `ion_conc_M` (1e-6), `stability_tol` (0.1 eV/atom), `grid` (5). Fails `config` without `PRECIS_MP_API_KEY`. A bulk verdict is necessary, not sufficient: the surface can still restructure under bias. |
 | `sandbox_run`       | `claude_docker` | Run an open-ended coding task (`mode:build`) or re-run a prior build's harvested tarball (`mode:run`, no claude/OAuth) in a throwaway, cgroup-capped container on an `agent_sandbox_host`. **Dark** — the `job_claude_docker` pass runs only where its `service_config` row (seeded from `agent_sandbox_hosts` group membership at deploy) has `prio>=1`; `precis service prio <host> job_claude_docker <n>` flips it live. A put on a host without it queues a job nothing claims. Params: `mode` (`build` default \| `run`), `prompt` (`mode:build`, required), `artifact` (`mode:run` — a prior build's harvested `folder` ref id, required), `precis_access` (`none` default \| `read` — `mode:build` only, a per-run token'd read-only MCP callback, needs `PRECIS_SANDBOX_READ_MCP=1`), `target_node` (a sandbox host, never melchior), `resources.wall_seconds`. `validate_submit` rejects an unsupported `mode`, `precis_access:read` without `PRECIS_SANDBOX_READ_MCP`, `secrets`, a non-sandbox target, `mode:build` with no `prompt`, `mode:run` with no `artifact`, and (`mode:build` only) a missing `CLAUDE_CODE_OAUTH_TOKEN`. Recurring `mode:run` (e.g. a dated pipeline) just wraps the same params in a `meta.schedule` todo — no special-casing, see `precis-recurring-help`. `image` (`code-task:<git-sha>`, default `code-task:latest` — the ansible play's movable tag; per-job override via `params.image`) is pinned in the launch argv and recorded as provenance in three places: the job's `meta.image`, the terminal `job_summary` text, and the harvest folder's `meta.image`. |
 
 (More land as new modules under `precis/workers/job_types/`. See

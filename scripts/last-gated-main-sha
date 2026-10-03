@@ -55,7 +55,7 @@ sha — the drift `scripts/ship --quick` refuses past. It is the hours since the
 newest `completedAt` across the chosen sha's `lint` + `test-linux` runs: the
 verdict is not in until the last job reports, so the matrix is as old as its
 slowest member. Deliberately the check-run's completion time and not the commit
-date: a verdict always lands after the commit it judges, so commit date
+time: a verdict always lands after the commit it judges, so the commit date
 overstates the drift, and this number gates a hard refusal. A green sha whose
 timestamps are unreadable prints nothing rather than falling through to an
 older sha, which would overstate the drift.
