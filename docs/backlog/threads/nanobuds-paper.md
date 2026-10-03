@@ -13,10 +13,11 @@ section now opens with the thesis and carries both analogues (2026-09-30).
 Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 10,000+ words, so the restructure reorders rather than cuts; scope is covalent
 and non-covalent buds. RSC reviews go through a proposal form first.
+**Resume (2026-10-03 20:40Z):** round 3 deployed at 929107f3. Every round-3 land from this thread is a thread-file edit, so there is no code to dogfood. The prod work was data edits (items 27–29 applied, td450082 merged), each verified when it was applied. Next: Reto's answer on item 31 (hero pillar, recommended A); hexfold's planner fix for the bonded (12,0) scene; Reto-run commands (two placeholder deletes, enrich-rearm, pillar regen).
 **Deployed vs landed (2026-10-02):** everything this thread shipped is on
 prod (fleet 7242d4c9 includes 974e3a20 hygiene fix and 1f2324a4); nothing
 is landed-only. **Traps:** the session classifier blocks direct prod-DB
-Python scripts (td450082 is Reto's to run) but allows `scripts/prod-precis`
+Python scripts (Reto runs those) but allows `scripts/prod-precis`
 CLI calls and read-only `scripts/prod-psql`; `verify-edges` judges each
 edge against the whole claim, so never attach a methods-only passage to
 "name the method".
