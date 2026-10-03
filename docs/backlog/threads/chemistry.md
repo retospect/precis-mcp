@@ -65,10 +65,12 @@ paper needs.
    Not fixed: the frontier-table sync wall (undiagnosed) — the next
    blocker if the quest holds again.
 3. **backlog/autocatpath-seed-health.md** — PARTIAL (child-killed fix
-   a772a52aa and the 0.11 tier overlays shipped). Left: read the first
-   unbuffered prod failures before picking a remedy, the re-lease churn
-   evidence, the dev-loop decisions. Engine reliability gates every
-   number the quest loop consumes.
+   a772a52aa and the 0.11 tier overlays shipped). Prod read 2026-10-03:
+   the August "child exited without result.json" population and the lease
+   churn are gone in the last 30 days; all 24 seed failures are 5–7.5 h
+   wall kills from the weeks of 09-14/09-21, and the week of 09-28 has 68
+   succeeded, 0 failed. Left: why those weeks overran (compare run configs
+   before touching the wall) and a `failure_class` stamp on wall kills.
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into

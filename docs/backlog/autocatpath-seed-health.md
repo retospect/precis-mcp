@@ -7,38 +7,30 @@ pillar: 3d-design
 
 Grouped 2026-09-26 from 5 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
-## Read the first unbuffered autocatpath_seed failures (the unresolved 59)
+## Prod evidence 2026-10-03 (replaces the "unresolved 59" diagnosis and the re-lease churn items)
 
-_Grouped 2026-09-26; was `autocatpath-seed-failure-diagnosis`._
+Read-only prod pass over 2026-09-03..10-03 (`refs` kind='job', STATUS tags,
+`job_event` chunks):
 
-Diagnosis pass; evidence exists only since the `80e562a6` deploy (unbuffered
-child stdout). Pull `chunks.text` (`chunk_kind='job_event'`) for `kind='job'`
-refs with `meta->>'job_type'='autocatpath_seed'` created after the deploy and
-read the stdout tail. Target: the 59 runs dying 21 s–8061 s with "child
-process exited without writing result.json" (rc=-15 siblings) — cause
-explicitly unnamed; do not pick a remedy before reading. Evidence gr192371:
-seed jobs die "child exited without result.json" (e3nn/mace torch.load
-warnings), 9 failed vs 6 succeeded. Needs Reto first: set
-`PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1` on spark (flag has no TTL/cap — sweep
-or unset after), and decide spark's nightly-reboot.timer + enabled apt-daily
-timers (gr50907) — a node rebooting under a 3 h job may be the whole answer.
-Also unexplained: job ref 187387 has zero chunks where every sibling has
-diagnostics. Owner `src/precis_pathway/runner.py` diagnostics.
+- **autocatpath_seed:** 118 succeeded, 24 failed. **Every failure is a
+  wall-clock kill** (`runner: killed at wall-clock deadline`), at 5.0–7.5 h,
+  most at about 18,000 s. Hosts: castor 15, pollux 9. All 24 fall in the
+  weeks of 09-14 (16) and 09-21 (8). The week of 09-28 has 68 succeeded and
+  0 failed. Latest success: jb463215, pollux, 2026-10-03, 9,224 s wall.
+- **The August population is gone.** No "child process exited without
+  writing result.json", no `infra:child-killed`, no rc=-15 in 30 days. The
+  "unresolved 59" diagnosis has nothing left to read.
+- **Lease churn:** 0 rows hold an expired lease, claimed but not terminal.
+  No evidence left to chase.
+- **Gaps:** wall kills record no `failure_class` in meta (NULL), so they
+  are found only by reading the event tail. autocatpath_aggregate had 4
+  infra failures (two never got a lease host; jb348535 and jb413788 were
+  reclaimed 5× and 2× across node restarts).
 
-Related: autocatpath-seed-wall-overruns.md (the slow-compute sibling
-population).
-
-## autocatpath ~2.5 h re-lease churn — needs cluster-log evidence
-
-_Grouped 2026-09-26; was `autocatpath-lease-churn`._
-
-PRECIS_AUTOCATPATH_WALL_SECONDS wiring is confirmed correct end-to-end
-(regression in tests/test_quest_compute.py), so the observed re-lease churn
-is NOT a dropped value. Get live cluster-log evidence (contention? runs
-genuinely outliving a correctly-applied 2.5 h lease?) before raising the
-default — don't guess a new number.
-
-Related: autocatpath-seed-wall-overruns.md.
+Left: (1) why the 09-14/09-21 seeds ran past 5 h while this week's finish
+at about 2.5 h — a config or candidate mix change, or host load. Compare
+their run configs before raising any wall. (2) Wall kills should stamp a
+`failure_class` (timeout) so they are countable without reading chunks.
 
 ## autocatpath: on-spark dev loop (measure + iterate on the GPU box)
 
@@ -334,8 +326,6 @@ Status 2026-08-09:
 Owner `src/precis_pathway/runner.py` + `src/precis/quest/compute.py`. Needs
 design (checkpointing/sharding); the speedup levers are wired, pending deploy.
 
-Related: autocatpath-seed-failure-diagnosis.md (slow-overrun vs fast rc=-15
-crash population), autocatpath-lease-churn.md (re-lease churn duration).
 
 ## autocatpath seeds: `infra:child-killed` was a persistence bug, not killed children — residuals
 
