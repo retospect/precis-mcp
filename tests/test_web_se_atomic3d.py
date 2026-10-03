@@ -284,19 +284,25 @@ def test_atomic3d_json_target_surface_is_the_revolved_meridian_placed_like_smoot
 
     body = atomic3d_client.get("/se/c60design5/atomic3d.json").json()
     block = body["blocks"][0]
-    target = block["target"]
+    # The target is served on demand; atomic3d only flags it.
+    assert "target" not in block
+    assert block["has_target"] is True
+    target_r = atomic3d_client.get("/se/c60design5/target3d.json")
+    assert target_r.status_code == 200
+    target = target_r.json()["targets"][str(block["uid"])]
 
     verts_A, tris = revolve(np.array(_CYL_MERIDIAN), 96)
     xf = cad_pose(cad_as_vec3([0.0, 0.0, 0.0]), cad_as_vec3([0.0, 0.0, 0.0]))
     expect = apply_rigid(xf, verts_A * 1e-10) * body["scale"]
     got = np.array(target["verts"])
     assert got.shape == expect.shape
-    assert np.allclose(got, expect, rtol=0, atol=1e-12 * max(1.0, body["scale"]))
+    step = 1e-3 * 1e-10 * body["scale"]  # the payload's positional quantum
+    assert np.allclose(got, expect, rtol=0, atol=step)
     assert np.array_equal(np.array(target["tris"]), tris)
     # Placement: radius 10 Å and half-height 5 Å in display units.
     radial = np.hypot(got[:, 0], got[:, 1]).max()
-    assert radial == pytest.approx(10e-10 * body["scale"], rel=1e-9)
-    assert got[:, 2].max() == pytest.approx(5e-10 * body["scale"], rel=1e-9)
+    assert radial == pytest.approx(10e-10 * body["scale"], abs=step)
+    assert got[:, 2].max() == pytest.approx(5e-10 * body["scale"], abs=step)
     # Same frame as the atoms: C60 sits inside the cylinder.
     coords = np.array(block["coords"])
     assert np.hypot(coords[:, 0], coords[:, 1]).max() < radial
@@ -309,6 +315,99 @@ def test_atomic3d_json_target_surface_absent_without_meridian(
     _seed_atomic_se(runtime_with_store, slug="c60design6", structure_slug="c60frag6")
     block = atomic3d_client.get("/se/c60design6/atomic3d.json").json()["blocks"][0]
     assert "target" not in block
+    assert "has_target" not in block
+    targets = atomic3d_client.get("/se/c60design6/target3d.json").json()
+    assert targets == {"targets": {}}
+
+
+def test_target3d_json_etag_304_gzip_and_distinct_body_cache(
+    atomic3d_client, runtime_with_store
+) -> None:
+    from precis_web.routes import blocktree_view as bv
+
+    bv._ATOMIC3D_CACHE.clear()
+    _seed_c60_structure(runtime_with_store, "c60frag8")
+    _stamp_surface_meridian(runtime_with_store, "c60frag8", _CYL_MERIDIAN)
+    _seed_atomic_se(runtime_with_store, slug="c60design8", structure_slug="c60frag8")
+    url = "/se/c60design8/target3d.json"
+
+    plain = atomic3d_client.get(url, headers={"Accept-Encoding": "identity"})
+    assert plain.status_code == 200
+    etag = plain.headers["etag"]
+    assert etag != atomic3d_client.get("/se/c60design8/atomic3d.json").headers["etag"]
+    assert "content-encoding" not in plain.headers
+    assert plain.headers["cache-control"] == "private, no-cache"
+
+    r304 = atomic3d_client.get(url, headers={"If-None-Match": etag})
+    assert r304.status_code == 304
+    assert r304.headers["etag"] == etag
+
+    gz = atomic3d_client.get(url, headers={"Accept-Encoding": "gzip"})
+    assert gz.status_code == 200
+    assert gz.headers["content-encoding"] == "gzip"
+    assert gz.json() == plain.json()
+
+    assert bv._ATOMIC3D_CACHE.get(("target-body", etag)) is not None
+    assert bv._ATOMIC3D_CACHE.get(("body", etag)) is None
+
+
+def test_atomic3d_numbers_are_quantised_to_an_absolute_step() -> None:
+    from precis_web.routes.blocktree_view import _position_decimals, _round_nested
+
+    # Display units are metres x scale: 1e10 makes the unit an Angstrom.
+    assert _position_decimals(1e10) == 3
+    assert _position_decimals(1e13) == 0  # clamped, never negative
+    assert _position_decimals(1e9) == 4  # 1 unit = 10 A -> 0.0001 units
+    coords = [[0.123456789, 1.987654321, 2.0], [None, 0.5, 1.5]]
+    out = _round_nested(coords, 3)
+    assert out == [[0.123, 1.988, 2.0], [None, 0.5, 1.5]]
+    assert len(json.dumps(out)) == len("[[0.123, 1.988, 2.0], [null, 0.5, 1.5]]")
+
+
+def test_atomic3d_far_from_origin_keeps_sub_angstrom_resolution(
+    atomic3d_client, runtime_with_store
+) -> None:
+    """A nanometre structure posed 1 m from the origin: relative precision
+    would merge the atoms; the absolute step must not."""
+    from precis_web.routes.blocktree_view import _position_decimals
+
+    StructureHandler(hub=runtime_with_store.hub).put(
+        id="farpair",
+        text=json.dumps(
+            {
+                "cell": {"a": 40.0, "b": 40.0, "c": 40.0, "pbc": [False] * 3},
+                "ops": [
+                    {"op": "add_atom", "element": "C", "cart": [1.0, 1.0, 1.0]},
+                    {"op": "add_atom", "element": "C", "cart": [2.4, 1.0, 1.0]},
+                ],
+            }
+        ),
+    )
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="fardesign",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "hub",
+                        "envelope": "sphere:r5e-9",
+                        "pose": [1.0, 0.0, 0.0],
+                    },
+                    {"op": "bind_structure", "block": "hub", "design": "farpair"},
+                ]
+            }
+        ),
+    )
+    body = atomic3d_client.get("/se/fardesign/atomic3d.json").json()
+    xyz = np.array(body["blocks"][0]["coords"])
+    unit_per_A = 1e-10 * body["scale"]
+    assert xyz[:, 0].min() > 0.5 * body["scale"]  # really far from the origin
+    gap = np.linalg.norm(xyz[1] - xyz[0]) / unit_per_A
+    assert gap != 0.0
+    assert gap == pytest.approx(1.4, abs=2e-3)
+    d = _position_decimals(body["scale"])
+    assert all(round(v, d) == v for v in xyz.ravel())
 
 
 def test_detail3d_page_has_target_surface_toggle_for_the_atomic_design(
@@ -361,12 +460,13 @@ def test_atomic3d_payload_cache_etag_and_invalidation(
     assert len(calls) == 1
 
     # A new payload version misses the cache and changes the ETag.
-    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", 2)
+    version = bv.ATOMIC3D_PAYLOAD_VERSION
+    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", version + 1)
     r4 = atomic3d_client.get(url, headers={"If-None-Match": etag})
     assert r4.status_code == 200
     assert r4.headers["etag"] != etag
     assert len(calls) == 2
-    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", 1)
+    monkeypatch.setattr(bv, "ATOMIC3D_PAYLOAD_VERSION", version)
 
     # A new structure revision (an edit) misses and changes the ETag.
     StructureHandler(hub=runtime_with_store.hub).put(

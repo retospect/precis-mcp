@@ -21,6 +21,8 @@ and nothing is tracked or pushed.
   scripts/round close                 coordinator: end the round
   scripts/round gate [--json]         coordinator: newest main sha with a green CI verdict (read-only)
   scripts/round deploy [--dry-run]    coordinator: move `gated` to that sha, then deploy it pinned
+  scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S)
+  scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the round number, so a mark left from an earlier round reads as
@@ -36,6 +38,15 @@ origin/main, fresh enough, and a fast-forward of `gated`, then deploys exactly
 that sha with `--pinned`. Neither verb takes the ship lock or runs a test, so
 qlands never stall behind a round. Peers do not deploy — the coordinator
 runs `deploy`.
+
+`cut` freezes what the round ships: it pushes `release/r<N>` at the candidate
+(the sha `gate` names, or `--sha`), records it in round.json and prints the
+peers' marked shas the cut does not contain (`late: <peer> <sha>`). check.yml
+runs the full gate shape on every `release/**` push. It refuses while any
+release branch exists on origin, off main's first-parent line, or when the cut
+tree carries a new duplicate migration number. Slice (a) of
+docs/backlog/release-branch-rounds.md; `gate`/`deploy` do not read the release
+yet.
 
 Exit codes: 0 ok; 1 refused (no round open, unknown sha, bad usage). `pending`
 exits 0 with no output when everyone is in.
@@ -240,6 +251,11 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
     print(
         f"round {cur['n']} — opened {cur['opened']} by {cur['by']}, base {cur.get('base', '')[:8] or 'unknown'}"
     )
+    rel = cur.get("release")
+    if rel:
+        hrs = _hours_since(rel.get("cut_at", ""))
+        age = f"{hrs:.1f}h" if hrs is not None else "unknown age"
+        print(f"  release {rel['branch']} at {rel['base'][:9]}, cut {age} ago")
     width = max([len(r["peer"]) for r in rows] + [4])
     for r in rows:
         shas = " ".join(s[:8] for s in r["shas"])
@@ -375,7 +391,8 @@ def _red_above(root: Path, cand: str) -> dict[str, Any] | None:
     return None
 
 
-def _gate_facts(root: Path) -> dict[str, Any]:
+def _candidate(root: Path) -> tuple[str, str]:
+    """(candidate sha, state) after a fetch; state is found|none_in_window|unreadable."""
     _fetch(root)
     sha, rc = _lgm_run(root)
     cand = _ref(root, f"{sha}^{{commit}}") if sha else ""
@@ -384,6 +401,11 @@ def _gate_facts(root: Path) -> dict[str, Any]:
     state = (
         "found" if cand else "none_in_window" if (rc == 2 and not sha) else "unreadable"
     )
+    return cand, state
+
+
+def _gate_facts(root: Path) -> dict[str, Any]:
+    cand, state = _candidate(root)
     try:
         age: float | None = float(_lgm(root, "--age-hours")) if cand else None
     except ValueError:
@@ -537,6 +559,187 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     ).returncode
 
 
+MIG_DIR = "src/precis/migrations"
+_MIG_NUM = re.compile(r"^(\d{4})_.*\.sql$")
+
+
+def _migration_numbers(root: Path, rev: str) -> dict[str, list[str]]:
+    """Migration number -> file names in `rev`'s tree (top level of MIG_DIR only)."""
+    out = _rgit(root, "ls-tree", "-r", "--name-only", rev, "--", f"{MIG_DIR}/") or ""
+    nums: dict[str, list[str]] = {}
+    for rel in out.splitlines():
+        parent, _, name = rel.rpartition("/")
+        m = _MIG_NUM.match(name)
+        if parent == MIG_DIR and m:
+            nums.setdefault(m.group(1), []).append(name)
+    return nums
+
+
+def _migration_collisions(root: Path, sha: str) -> list[str]:
+    """Numbers carried by more files in `sha` than in origin/prod (floor 1).
+
+    Same rule as scripts/migration-check: a duplicate number that already
+    shipped is accepted history, a new one is a collision. That script reads
+    worktrees and branch heads, not an arbitrary tree, hence this.
+    """
+    prod = _ref(root, "refs/remotes/origin/prod")
+    shipped = _migration_numbers(root, prod) if prod else {}
+    bad = []
+    for num, names in sorted(_migration_numbers(root, sha).items()):
+        if len(names) > max(len(shipped.get(num, [])), 1):
+            bad.append(f"{num}: {', '.join(sorted(names))}")
+    return bad
+
+
+def _release_branches(root: Path) -> list[str] | None:
+    """Release branch names on origin; None when origin could not be read."""
+    out = _rgit(root, "ls-remote", "--heads", "origin", "refs/heads/release/*")
+    if out is None:
+        return None
+    return [ln.split("refs/heads/", 1)[1] for ln in out.splitlines() if "\trefs/" in ln]
+
+
+def _on_first_parent(root: Path, sha: str) -> bool:
+    line = _rgit(root, "rev-list", "--first-parent", "refs/remotes/origin/main") or ""
+    return sha in line.split()
+
+
+def _late(root: Path, state: Path, n: int, cut: str) -> list[str]:
+    lines = []
+    for peer, mark in _marks(state, n).items():
+        for sha in mark.get("shas", []):
+            if not _ref(root, f"{sha}^{{commit}}"):
+                lines.append(f"late: {peer} {sha[:9]} (not fetched)")
+            elif not _ancestor(root, sha, cut):
+                lines.append(f"late: {peer} {sha[:9]}")
+    return lines
+
+
+def _hours_since(stamp: str) -> float | None:
+    try:
+        then = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return (datetime.now(UTC) - then).total_seconds() / 3600
+
+
+def _cut_refuse(why: str) -> int:
+    print(f"scripts/round: cut refused — {why}", file=sys.stderr)
+    return 1
+
+
+def cmd_cut(state: Path, args: argparse.Namespace) -> int:
+    root = _root()
+    if args.abandon:
+        return _cut_abandon(root, state, args)
+    cur = _require_round(state)
+    n = cur["n"]
+    branch = f"release/r{n}"
+    if cur.get("release"):
+        return _cut_refuse(
+            f"round.json already records an open release ({cur['release']['branch']})"
+            " — `scripts/round cut --abandon` first"
+        )
+    _fetch(root)
+    existing = _release_branches(root)
+    if existing is None:
+        return _cut_refuse("could not read origin's branches (git ls-remote failed)")
+    if existing:
+        return _cut_refuse(
+            f"release branch {', '.join(existing)} exists on origin — one release at a time"
+        )
+    if args.sha:
+        sha = _ref(root, f"{args.sha}^{{commit}}")
+        if not sha:
+            return _cut_refuse(f"{args.sha} is not a commit in this checkout")
+    else:
+        sha, cstate = _candidate(root)
+        if not sha:
+            return _cut_refuse(_NO_CANDIDATE[cstate])
+    if not _on_first_parent(root, sha):
+        return _cut_refuse(f"{sha[:9]} is not on origin/main's first-parent line")
+    collisions = _migration_collisions(root, sha)
+    if collisions:
+        return _cut_refuse(
+            "migration number collision in the cut tree (renumber the unshipped one on main first):\n  "
+            + "\n  ".join(collisions)
+        )
+    for line in _late(root, state, n, sha):
+        print(line)
+    if args.dry_run:
+        print(f"dry-run: would push {sha[:9]} to origin as {branch}")
+        return 0
+    push = subprocess.run(
+        ["git", "-C", str(root), "push", "-q", "origin", f"{sha}:refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if push.returncode != 0:
+        return _cut_refuse(f"git push of {branch} failed: {push.stderr.strip()}")
+    cur["release"] = {"branch": branch, "base": sha, "cut_at": _now()}
+    _write(state / "round.json", cur)
+    print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n + 1}")
+    print(
+        f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: land'
+        f" only the fixes the coordinator asks for (from your own tree, --quick onto"
+        f' the release); everything else qlands to main for round {n + 1}"'
+    )
+    return 0
+
+
+def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
+    cur = _read(state / "round.json") or {}
+    rel = cur.get("release")
+    if not rel:
+        return _cut_refuse(
+            "no open release is recorded in round.json — nothing to abandon"
+        )
+    branch = rel["branch"]
+    _fetch(root)
+    _rgit(
+        root,
+        "fetch",
+        "-q",
+        "origin",
+        f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+    )
+    head = _ref(root, f"refs/remotes/origin/{branch}")
+    remote = _release_branches(root)
+    if remote is None:
+        return _cut_refuse("could not read origin's branches (git ls-remote failed)")
+    if branch not in remote:
+        # Already gone from origin: only the record is left to clear.
+        print(f"{branch} is not on origin — clearing the record")
+        if not args.dry_run:
+            del cur["release"]
+            _write(state / "round.json", cur)
+        return 0
+    if not head:
+        return _cut_refuse(f"could not fetch {branch} from origin")
+    if not _ancestor(root, head, "refs/remotes/origin/main"):
+        unforwarded = _rgit(root, "log", "--oneline", f"origin/main..origin/{branch}")
+        print(
+            f"scripts/round: abandon refused — {branch} carries commits not on origin/main"
+            " (no forward-merge tool yet; merge them to main by hand first):",
+            file=sys.stderr,
+        )
+        print(unforwarded or "(could not list them)", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print(f"dry-run: would delete {branch} on origin ({head[:9]} is on main)")
+        return 0
+    if _rgit(root, "push", "-q", "origin", "--delete", branch) is None:
+        return _cut_refuse(f"deleting {branch} on origin failed")
+    del cur["release"]
+    _write(state / "round.json", cur)
+    print(
+        f"{branch} abandoned ({head[:9]} is on main) — deleted on origin, record cleared"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scripts/round", description="Shared tally for a coordinated peer round."
@@ -554,6 +757,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("pending")
     sub.add_parser("gate").add_argument("--json", action="store_true")
     sub.add_parser("deploy").add_argument("--dry-run", action="store_true")
+    p_cut = sub.add_parser("cut")
+    p_cut.add_argument("--sha", default="")
+    p_cut.add_argument("--dry-run", action="store_true")
+    p_cut.add_argument("--abandon", action="store_true")
     args = parser.parse_args(argv)
     if args.cmd == "gate":
         return cmd_gate(args)
@@ -568,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
         "eta": cmd_mark,
         "status": cmd_status,
         "pending": cmd_pending,
+        "cut": cmd_cut,
     }
     return handlers[args.cmd](state, args)
 

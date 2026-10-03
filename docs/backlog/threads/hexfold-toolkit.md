@@ -28,6 +28,17 @@ written); gr458061 removed as a met precondition — the transport move it
 waited on happened 09-29 — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
+## Resume
+
+- Round 2 dogfood (prod 63301c5c): design `hexfold-dogfood-r2` through
+  scripts/prod-precis → **pass**. `sw` is a true Stone–Wales rotation on
+  a stored build (rings {5:2, 7:2}, atom count equal to pristine, bond
+  rms 0.006 Å). The stored record carries the geometry findings:
+  `view='block'` on `pillar_foot` shows "report: NOT ok — 51
+  finding(s)" with 4 ERROR `geom.clash` at 0.54–0.97 Å. Gap filed:
+  `view='validate'` says 0 errors and `view='drc'` none on the same
+  design (gr464342).
+
 ## Do next
 
 1. **backlog/hexfold-ideal-surface-then-tile.md — ideal smooth surface
@@ -41,17 +52,35 @@ waited on happened 09-29 — note at the bottom)
        needs, not from authored radii;
      - its weak relax tether (0.01) leaves atoms a mean 0.7 Å off the
        target.
-   - Stages, each through a design note:
+   - Stages, each through a design note. Distance is counted in dev
+     cycles, not dates (Reto, 2026-10-03, hexfold-toolkit-2). One dev
+     cycle = build, design note, orchestrator verdict, qland.
      - S1, surface spec + deviation metric, measured on hero5 and
-       `hexa-smooth-drum-v2`;
-     - S2, Gauss–Bonnet defect rows;
+       `hexa-smooth-drum-v2`: **done**, 0 cycles left.
+     - S2, Gauss–Bonnet defect rows: **done at the 3+3 level**, 0 cycles
+       left. The per-annulus form is the next rung below.
      - S3, tile and pin one feature: the tether and the planner
        `plan_foot` are built (see the backlog item's acceptance). The
        pillar (6,0) R = 3 and the pill (24,0) R = 5/8 are inside the
-       bars; (18,0) is an open row;
-     - **S4, the hero scene: next.** Wire `plan_foot` (tether plus k by
-       measurement) into the `hexfold` generator path, then send
-       nanobuds-paper a spec to render with figs/render_hero.py.
+       bars; (18,0) is an open row. **Done**, 0 cycles left; the (18,0)
+       re-seed probe is one probe, off the hero path.
+     - **S4, the hero scene: in progress, 1 dev cycle plus 1 render round
+       trip out.**
+       - S4a, **built**: `plan_scene` tiles several authored feet on one
+         sheet in one tethered relax. The hero with a (12,0) R = 8 pill
+         meets the S4 bars (numbers in the backlog item's acceptance).
+         Next: hand it to nanobuds-paper as relaxed coordinates, since the
+         tether is not in the `.hx` text and figs/render_hero.py's
+         untethered build cannot reproduce it. A prod `hexfold` generate
+         still relaxes untethered until S4b.
+       - The (24,0) pill variant waits on gr464358 (the k=10 frustum is
+         seeded onto the sheet). Hole cells that hit gr464341's fuse
+         phase are refused, so a layout change may need a cell moved.
+       - The render round trip is nanobuds-paper's build plus Reto's
+         eyeball. Each change he asks for that stays inside the bars is
+         one more hero build, with no new code.
+       - S4b, the `hexfold` generator wiring, is one more dev cycle plus
+         a round deploy before a prod dogfood. It is off the hero's path.
        - Round-2 prod dogfood (2026-10-03 13:53Z, design
          `hexfold-dogfood-r2`, hexfold 0.3.0) shows why this comes first.
        - `sw` and gr462144's sheet_sw build ok on prod:
@@ -67,8 +96,8 @@ waited on happened 09-29 — note at the bottom)
            clash check catches it;
      - next rung after S4: per-annulus Gauss–Bonnet rows (2+2+2 / 1×6:
        irregular hole + tube-wall surgery, gr459928), the route to
-       R ≳ 12 Å.
-   - Review-queue hexfold-toolkit-2 has the ETA.
+       R ≳ 12 Å. At least 2 dev cycles (the grammar, then the rows), not
+       yet scoped.
 
 2. **gr459567 family: overlaps the clash check now reports.** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]

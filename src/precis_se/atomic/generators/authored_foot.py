@@ -25,6 +25,15 @@ tether makes it small by construction. Bonds, ring-ideal angles and
 pyramidalisation are the columns the tether does not act on; every
 :class:`FootRow` carries them.
 
+**Scenes (S4).** :func:`plan_scene` puts several authored feet on one
+sheet and relaxes them in one tethered pass, each feature judged in its
+own fillet zone with the same :class:`FootRow` columns, the whole scene by
+hexfold's geometry findings on the tethered coordinates
+(:class:`hexfold.check.Relaxed`). Tops (a flat lid, a C60) are not
+authored surfaces yet; their joints are reported in ``ScenePlan.tops``,
+not barred. A hole cell whose sheet seam is not the planned three
+heptagons is refused (a hexfold fuse-phase fault, gr464341).
+
 This module sits in ``precis_se`` because it is the layer that already
 imports both hexfold and precis_surface; hexfold itself never imports
 precis_surface (the tether is a callable).
@@ -33,14 +42,17 @@ precis_surface (the tether is a callable).
 from __future__ import annotations
 
 import dataclasses
+import functools
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from hexfold.build import build
+from hexfold.check import Relaxed, geometry_findings
 from hexfold.lattice import tube_radius
-from hexfold.stick import stick
+from hexfold.stick import stick_info
 from precis_surface import revolution as rv
 from precis_surface.deviation import Feature, surface_distance, surface_foot
 
@@ -152,9 +164,12 @@ def foot_meridian(n: int, radius: float) -> rv.Meridian:
     )
 
 
-def angle_stats(pos: np.ndarray, bonds: Any, rings: Any) -> tuple[float, float, float]:
+def angle_stats(
+    pos: np.ndarray, bonds: Any, rings: Any, atoms: np.ndarray | None = None
+) -> tuple[float, float, float]:
     """(rms, max) of |angle - ring ideal| over 3-coordinated corners, and
-    the max pyramidalisation (360 - angle sum)."""
+    the max pyramidalisation (360 - angle sum); ``atoms`` (a boolean mask)
+    limits the corners to one feature's zone."""
     nb: dict[int, set[int]] = {}
     for i, j, *_ in bonds:
         nb.setdefault(i, set()).add(j)
@@ -169,7 +184,7 @@ def angle_stats(pos: np.ndarray, bonds: Any, rings: Any) -> tuple[float, float, 
     dev: list[float] = []
     pyr: list[float] = [0.0]
     for a, ns_set in nb.items():
-        if len(ns_set) != 3:
+        if len(ns_set) != 3 or (atoms is not None and not atoms[a]):
             continue
         ns = sorted(ns_set)
         u = {b: (pos[b] - pos[a]) / np.linalg.norm(pos[b] - pos[a]) for b in ns}
@@ -183,6 +198,29 @@ def angle_stats(pos: np.ndarray, bonds: Any, rings: Any) -> tuple[float, float, 
         pyr.append(360.0 - total)
     d = np.asarray(dev) if dev else np.zeros(1)
     return float(np.sqrt(np.mean(d**2))), float(d.max()), float(max(pyr))
+
+
+def _tethered_relax(
+    net: Any,
+    tether: Any,
+    k_tether: float,
+    judge: Callable[[np.ndarray], float],
+) -> tuple[np.ndarray, float, int]:
+    """Stick passes under the tether, each seeded from the last, until the
+    judge's mean moves less than ``_SETTLED_A`` over 6 passes: (positions,
+    final max force, passes)."""
+    cur = net
+    hist: list[float] = []
+    pos = np.asarray(net.seed3, dtype=float)
+    force = 0.0
+    for _ in range(_PASSES):
+        raw, force = stick_info(cur, tether=tether, k_tether=k_tether)
+        pos = np.asarray(raw, dtype=float)
+        cur = dataclasses.replace(net, seed3=tuple(map(tuple, pos)))
+        hist.append(judge(pos))
+        if len(hist) > 6 and abs(hist[-1] - hist[-7]) < _SETTLED_A:
+            break
+    return pos, force, len(hist)
 
 
 def _measure(
@@ -203,15 +241,12 @@ def _measure(
         foot, nrm = surface_foot(pos * _FLIP, feat, ds=_DS)
         return foot * _FLIP, nrm * _FLIP
 
-    cur = net
-    hist: list[float] = []
-    pos = seed
-    for _ in range(_PASSES):
-        pos = np.asarray(stick(cur, tether=tether, k_tether=k_tether), dtype=float)
-        cur = dataclasses.replace(net, seed3=tuple(map(tuple, pos)))
-        hist.append(float(surface_distance(pos * _FLIP, feat, ds=_DS)[0].mean()))
-        if len(hist) > 6 and abs(hist[-1] - hist[-7]) < _SETTLED_A:
-            break
+    pos, _force, passes = _tethered_relax(
+        net,
+        tether,
+        k_tether,
+        lambda q: float(surface_distance(q * _FLIP, feat, ds=_DS)[0].mean()),
+    )
     d, _ = surface_distance(pos * _FLIP, feat, ds=_DS)
     b = np.array([(i, j) for i, j, *_ in net.bonds])
     bl = np.linalg.norm(pos[b[:, 0]] - pos[b[:, 1]], axis=1)
@@ -250,7 +285,7 @@ def _measure(
         angle_max=amax,
         pyramid_max=pmax,
         rim_r=float(rad[rim].mean()),
-        passes=len(hist),
+        passes=passes,
         misses=misses,
     )
     return row, pos, centre, text
@@ -287,3 +322,324 @@ def plan_foot(
     return FootPlan(
         n=n, radius=radius, k=row.k, text=text, positions=pos, centre=centre, rows=rows
     )
+
+
+# --- scenes: several authored feet on one sheet (S4) ----------------------
+
+_SCENE_FLAT_A = 1.5  # a scene feature's own flat run; the sheet beyond is |z|
+_BALL_FREE_BONDS = 4  # tube atoms this close (bonds) to a ball top relax free
+_TOPS = ("open", "lid", "ball")
+
+
+@dataclass(frozen=True)
+class SceneFeature:
+    """One authored foot on the scene sheet: sheet → fillet ``radius`` →
+    an ``(n, 0)`` tube of ``tube_len`` periods → ``top``.
+
+    ``name`` is the tube's hexfold instance; the frustum is ``<name>f`` and
+    the top ``<name>c``.  ``at`` is the sheet cell of the hole centre.
+    ``top``: ``open``, ``lid`` (a flat ``cap(n,0)``) or ``ball`` (C60 minus
+    a hexagon, fused k=3; (6,0) only).  Tops are not authored surfaces in
+    S4: the tether does not act on them, nor on the last few tube bonds
+    below a ball, and their joint is reported in ``ScenePlan.tops``."""
+
+    name: str
+    at: tuple[int, int]
+    n: int
+    radius: float
+    tube_len: int
+    top: str = "open"
+
+
+@dataclass(frozen=True)
+class ScenePlan:
+    text: str
+    ks: dict[str, int]
+    positions: np.ndarray  # relaxed, in the build's frame (features along -z)
+    instances: tuple[str, ...]  # per atom
+    rows: dict[str, FootRow]  # per feature, judged in its own fillet zone
+    # per lid/ball feature: (ring-ideal angle max, pyramidalisation max) over
+    # the top and its joint -- reported, not barred: tops are not authored
+    # in S4, and a free (6,0) + C60 neck is ~50-60 degrees on its own
+    tops: dict[str, tuple[float, float]]
+    findings: tuple[Any, ...]  # hexfold geometry findings on ``positions``
+    passes: int
+
+    @property
+    def errors(self) -> tuple[str, ...]:
+        """ERROR finding codes (``geom.clash`` overlap, ``geom.seed_overlap``)."""
+        return tuple(
+            sorted({f.code for f in self.findings if f.severity.name == "ERROR"})
+        )
+
+    @property
+    def meets(self) -> bool:
+        return not self.errors and all(r.meets for r in self.rows.values())
+
+
+def scene_text(
+    sheet: tuple[int, int],
+    features: tuple[SceneFeature, ...],
+    ks: dict[str, int],
+    extra: str = "",
+) -> str:
+    """One sheet with one ``hex(k/2-1)`` hole per feature, each fused to its
+    3+3 frustum, tube and top (:func:`foot_text`'s lines, per feature).
+    ``extra`` is appended verbatim: buds and their attachments."""
+    holes: list[str] = []
+    body: list[str] = []
+    fuses: list[str] = []
+    for idx, f in enumerate(features):
+        if f.top not in _TOPS:
+            raise ValueError(f"{f.name}: top must be one of {_TOPS}; got {f.top!r}")
+        if f.top == "ball" and f.n != 6:
+            raise ValueError(f"{f.name}: a ball top fuses onto (6,0) only; got n={f.n}")
+        if f.top == "lid" and f.n % 6:
+            raise ValueError(f"{f.name}: a flat lid needs n a multiple of 6; got {f.n}")
+        k = ks[f.name]
+        foot_text(f.n, k)  # refuses a k too narrow to build
+        holes.append(f" - hex({k // 2 - 1})@({f.at[0]},{f.at[1]},A):0")
+        b, c = f"{f.name}f", f"{f.name}c"
+        body.append(
+            f"{b}: cap({6 * k},0) + 3@(-1,0,A):2 - hex({f.n // 3 - 1})@(-1,0,A):0"
+        )
+        body.append(f"{f.name}: tube({f.n},0, len={f.tube_len})")
+        hole = "hole" if idx == 0 else f"hole{idx}"
+        fuses.append(f"s.{hole} --fuse k=0--> {b}.in")
+        fuses.append(f"{b}.hole --fuse k=0--> {f.name}.in")
+        if f.top == "lid":
+            body.append(f"{c}: cap({f.n},0)")
+            fuses.append(f"{f.name}.out --fuse k=0--> {c}.in")
+        elif f.top == "ball":
+            body.append(f"{c}: fullerene(C60) - hexagon@(0,0,A)")
+            fuses.append(f"{f.name}.out --fuse k=3--> {c}.hole")
+    lines = [
+        "hexfold 0.2",
+        "origin s",
+        f"s: sheet({sheet[0]},{sheet[1]})" + "".join(holes),
+        *body,
+        *fuses,
+    ]
+    tail = extra.strip()
+    return "\n".join(lines) + "\n" + (tail + "\n" if tail else "")
+
+
+def _hops_from(bonds: Any, start: np.ndarray) -> np.ndarray:
+    """Bond-graph distance of every atom from the ``start`` mask (0 on it,
+    a large number where unreachable)."""
+    n = len(start)
+    nb: list[list[int]] = [[] for _ in range(n)]
+    for i, j, *_ in bonds:
+        nb[i].append(j)
+        nb[j].append(i)
+    hops = np.full(n, n + 1, dtype=np.int64)
+    front = [int(a) for a in np.flatnonzero(start)]
+    hops[front] = 0
+    while front:
+        nxt = []
+        for a in front:
+            for b in nb[a]:
+                if hops[b] > hops[a] + 1:
+                    hops[b] = hops[a] + 1
+                    nxt.append(b)
+        front = nxt
+    return hops
+
+
+def _scene_masks(
+    bonds: Any, inst: np.ndarray, features: tuple[SceneFeature, ...]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(authored, tethered, near_top) per atom.
+
+    Authored: on the surface the author wrote (sheet, frustum, tube), and
+    judged.  Tethered: authored, less a band of ``_BALL_FREE_BONDS`` bonds
+    below a ball top -- holding the (6,0) tube to its cylinder right up to
+    the C60 neck folds the neck (0.83 A clash with no band, 1.05 A with 4-6
+    bonds free; s4_topfree probe).  A lid needs the tether up to its seam:
+    freeing the same band crumpled a one-period bump (fillet max 4.6 A) and
+    lifted a pill lid seam's pyramidalisation from 3 to 23 degrees.
+    Near-top: one bond from a top or a bud, that top's seam, not the foot's.
+    """
+    authored = inst == "s"
+    for f in features:
+        authored |= (inst == f.name) | (inst == f"{f.name}f")
+    balls = np.isin(inst, [f"{f.name}c" for f in features if f.top == "ball"])
+    tethered = authored & (_hops_from(bonds, balls) > _BALL_FREE_BONDS)
+    near_top = _hops_from(bonds, ~authored) <= 1
+    return authored, tethered, near_top
+
+
+def _joint_mask(
+    inst: np.ndarray, f: SceneFeature, near_top: np.ndarray, tethered: np.ndarray
+) -> np.ndarray:
+    """A top and its joint: the top's atoms plus the feature's own atoms
+    the foot row leaves out (its seam and the free band), so every atom of
+    the feature is judged in one of the two."""
+    mine = (inst == f.name) | (inst == f"{f.name}f")
+    return (inst == f"{f.name}c") | (mine & (near_top | ~tethered))
+
+
+def _check_seams(
+    rings: Any, inst: np.ndarray, features: tuple[SceneFeature, ...]
+) -> None:
+    """Each sheet→frustum seam must be the 3+3 foot's three heptagons.  At
+    some hole cells the fuse mints three extra 5-7 pairs there instead (a
+    hexfold seam-phase fault, cause under investigation); a scene built
+    on one would judge a different defect census than the one planned, so
+    it is refused with the cell named rather than relaxed."""
+    for f in features:
+        seam = {"s", f"{f.name}f"}
+        census = sorted(
+            len(r) for r in rings if len(r) != 6 and {inst[a] for a in r} == seam
+        )
+        if census != [7, 7, 7]:
+            raise ValueError(
+                f"{f.name}: the sheet seam at cell {f.at} has rings {census}, not "
+                "[7, 7, 7]; move the hole one cell (seam-phase fault)"
+            )
+
+
+def _relax_scene(
+    sheet: tuple[int, int],
+    features: tuple[SceneFeature, ...],
+    ks: dict[str, int],
+    extra: str,
+    k_tether: float,
+) -> ScenePlan:
+    text = scene_text(sheet, features, ks, extra)
+    net = build(text, strict=False)
+    errs = sorted({f.code for f in net.report.errors()})
+    if errs:
+        raise ValueError(f"scene build errors {errs}")
+    seed = np.asarray(net.seed3, dtype=float)
+    inst = np.array([a.instance for a in net.atoms])
+    _check_seams(net.rings, inst, features)
+    authored, tethered, near_top = _scene_masks(net.bonds, inst, features)
+    feats = []
+    for f in features:
+        tub = seed[inst == f.name]
+        if float(tub[:, 2].mean()) > 0.0:
+            raise ValueError(f"{f.name}: the build grew the feature along +z")
+        rt = tube_radius(f.n, 0)
+        meridian = rv.authored_meridian(
+            rt + f.radius + _SCENE_FLAT_A,
+            [("line", _SCENE_FLAT_A), ("arc", f.radius, -90.0), ("line", _WALL_A)],
+        )
+        centre = (float(tub[:, 0].mean()), float(tub[:, 1].mean()))
+        feats.append(Feature(f.name, centre, meridian))
+
+    def tether(pos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        foot, nrm = surface_foot(pos * _FLIP, feats, ds=_DS)
+        foot, nrm = foot * _FLIP, nrm * _FLIP
+        foot[~tethered] = pos[~tethered]
+        nrm[~tethered] = 0.0
+        return foot, nrm
+
+    def judge(pos: np.ndarray) -> float:
+        d, _ = surface_distance(pos[authored] * _FLIP, feats, ds=_DS)
+        return float(d.mean())
+
+    pos, force, passes = _tethered_relax(net, tether, k_tether, judge)
+    findings = tuple(geometry_findings(net, relaxed=Relaxed(pos, force, "tethered")))
+
+    d_all, _ = surface_distance(pos * _FLIP, feats, ds=_DS)
+    rows: dict[str, FootRow] = {}
+    tops: dict[str, tuple[float, float]] = {}
+    for f, ft in zip(features, feats, strict=True):
+        rt = tube_radius(f.n, 0)
+        rad = np.hypot(pos[:, 0] - ft.centre[0], pos[:, 1] - ft.centre[1])
+        mine = (inst == f.name) | (inst == f"{f.name}f")
+        zone = authored & (rad <= rt + f.radius + 1.0) & (-pos[:, 2] <= f.radius + 1.0)
+        dz = d_all[zone]
+        # the foot's corners: not a top's seam, not the free band below a ball
+        corner = (zone | mine) & ~near_top & tethered
+        bl = np.array(
+            [
+                float(np.linalg.norm(pos[i] - pos[j]))
+                for i, j, *_ in net.bonds
+                if corner[i] and corner[j]
+            ]
+        )
+        arms, amax, pmax = angle_stats(pos, net.bonds, net.rings, atoms=corner)
+        rim = sorted(
+            {
+                a
+                for i, j, *_ in net.bonds
+                for a, o in ((i, j), (j, i))
+                if inst[a] == "s" and inst[o] == f"{f.name}f"
+            }
+        )
+        misses = tuple(
+            name
+            for name, bad in (
+                ("fillet mean", dz.mean() > MEAN_MAX_A),
+                ("fillet max", dz.max() > DEV_MAX_A),
+                ("bond min", bl.min() < BOND_MIN_A),
+                ("bond max", bl.max() > BOND_MAX_A),
+            )
+            if bad
+        )
+        rows[f.name] = FootRow(
+            k=ks[f.name],
+            k_tether=k_tether,
+            fillet_mean=float(dz.mean()),
+            fillet_p95=float(np.percentile(dz, 95)),
+            fillet_max=float(dz.max()),
+            bond_min=float(bl.min()),
+            bond_max=float(bl.max()),
+            angle_rms=arms,
+            angle_max=amax,
+            pyramid_max=pmax,
+            rim_r=float(rad[rim].mean()),
+            passes=passes,
+            misses=misses,
+        )
+        if f.top != "open":
+            joint = _joint_mask(inst, f, near_top, tethered)
+            _rms, tmax, tpyr = angle_stats(pos, net.bonds, net.rings, atoms=joint)
+            tops[f.name] = (tmax, tpyr)
+    return ScenePlan(
+        text=text,
+        ks=dict(ks),
+        positions=pos,
+        instances=tuple(inst.tolist()),
+        rows=rows,
+        tops=tops,
+        findings=findings,
+        passes=passes,
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _planned_k(n: int, radius: float, k_tether: float) -> int:
+    return plan_foot(n, radius, k_tether=k_tether).k
+
+
+def plan_scene(
+    sheet: tuple[int, int],
+    features: tuple[SceneFeature, ...],
+    *,
+    extra: str = "",
+    k_tether: float = 1.0,
+) -> ScenePlan:
+    """Tile several authored feet on one sheet in one tethered relax.
+
+    Every feature starts at :func:`k_min` (the narrowest frustum won every
+    S3 anchor) and is judged in its own fillet zone.  A feature whose row
+    misses a bar gets :func:`plan_foot`'s candidate loop on its own sheet;
+    when that picks a different k the scene is rebuilt once with it.  The
+    returned rows are the scene's, so a miss that survives is reported,
+    never hidden."""
+    names = [f.name for f in features]
+    if len(set(names)) != len(names) or "s" in names:
+        raise ValueError(f"feature names must be distinct and not 's': {names}")
+    ks = {f.name: k_min(f.n) for f in features}
+    plan = _relax_scene(sheet, features, ks, extra, k_tether)
+    redo = {
+        f.name: _planned_k(f.n, f.radius, k_tether)
+        for f in features
+        if not plan.rows[f.name].meets
+    }
+    if any(ks[name] != k for name, k in redo.items()):
+        plan = _relax_scene(sheet, features, {**ks, **redo}, extra, k_tether)
+    return plan

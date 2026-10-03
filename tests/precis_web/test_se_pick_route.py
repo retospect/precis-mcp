@@ -105,13 +105,18 @@ def test_the_3d_page_wires_the_pick_panel(pick_client: TestClient) -> None:
     assert '"/se/pkw/pick"' in html
 
 
-def test_atomic3d_carries_a_hover_name_per_atom(pick_client: TestClient) -> None:
+def test_atomic3d_carries_a_hover_row_set_per_atom(pick_client: TestClient) -> None:
     blocks = pick_client.get("/se/pkw/atomic3d.json").json()["blocks"]
     assert blocks
     for b in blocks:
-        assert len(b["hover"]) == len(b["elements"])
-        # A realize_chain structure names residue and chain, not the label.
-        assert all(re.search(r" · \w+ \d+ \(\w\)$", h) for h in b["hover"])
+        hover = b["hover"]
+        # A realize_chain structure sends atom names plus residue rows, each
+        # residue once, not the scene label.
+        assert len(hover["atom"]) == len(hover["residue"]) == len(b["elements"])
+        assert all(0 <= r < len(hover["residues"]) for r in hover["residue"])
+        for label, chain, strand in hover["residues"]:
+            assert re.fullmatch(r"D[ACGT] \d+ = deoxy\w+", label)
+            assert chain and strand
 
 
 def test_the_3d_page_wires_the_view_export(pick_client: TestClient) -> None:

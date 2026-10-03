@@ -37,13 +37,16 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
-**Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Reto's look (td461212, 2026-10-03) passed checks 1, 2, 3 and 5; its
-three follow-ups are Do-next 0, proposed to him in review item
-se-3d-viewer-5. gr462702 is closed: Reto no longer has the failing
-browser, so the shipped fallback stands (se-3d-viewer-3, option 2).
-2 (gr462703) has its server half,
-the bar and instancing shipped; the inline early fetch is noted, not
-due. After 0 the next build is 5
+**Resume state (2026-10-02).** Round 2 dogfood (prod 63301c5c): ETag on `hexa-smooth-drum-v2/atomic3d.json` through guide-web on prod data → pass (200 gzip 1.09 MB 0.93 s; If-None-Match 304 0 bytes 0.04 s; stale tag 200); WebGL-off fallback at 390/1280/1600 px → pass, 13/13 (`nowebgl` now checks all three nightly). Reto's look (td461212, 2026-10-03) passed; its follow-ups shipped in
+round 3 as he ruled them (se-3d-viewer-5): the atom hover is a field |
+value table (atom N9 (N) / residue DG 1 = deoxyguanosine / chain A =
+strand hp), the pick header and residue row name the atom and base, an
+"axes" checkbox drives the corner marker and the PNG/SVG export follows
+it, and the smooth/strain rows stay on every structure with their
+references in the labels ("keep it as is, it's cool"). gr462702 is
+closed: Reto no longer has the failing browser, so the shipped fallback
+stands (se-3d-viewer-3, option 2). Next is item 2's three levers in
+Reto's order (se-3d-viewer-6); after them the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02; `strain` checks atom hover since instancing, so atom
 click-pick is its remaining blind spot. The atom overlay's InstancedMeshes
@@ -65,30 +68,11 @@ up:
 
 ## Do next
 
-0. **Follow-ups from Reto's look at /se/dogfood-fold-3/view3d** (td461212,
-   2026-10-03; pick, scroll, export and the atoms toggle passed, the
-   sliders work). Wording proposed in review item se-3d-viewer-5; build
-   once it is answered:
-   - **Hover label says what each field is.** Today `N · N9 · DG 1 (A)`
-     (`pick.atom_hover_names`); Reto could not tell whether N and N9 are
-     separate, what DG1 is, or whether A is strand A or adenine. Proposed:
-     `N9 (N) · DG 1 = deoxyguanosine 1 · chain A of strand hp`. The pick
-     panel's header shows the scene label `aN1` for the same atom: give it
-     the atom name instead.
-   - **Toggle for the xyz axes gizmo** (bottom left of the 3D view), and
-     leave it out of PNG/SVG export unless it is on.
-   - **The smooth end and the deviation/strain rows are carbon-sheet
-     measures shown on every structure.** `deviation` is each atom's
-     distance to its own Taubin-smoothed position (`sheetsmooth.deviation`);
-     bond strain is |C–C − 1.42 Å| and angle strain is against 120° — all
-     graphene references. On dogfood-fold-3 (248 atoms of DNA) the smooth
-     end is 32 grey ring patches with no colour above the 1.43 Å threshold,
-     and nothing on the page names the reference. Proposed: show the
-     smooth slider and the three rows only for a 3-coordinated carbon
-     sheet; there, the legend says "distance from the smoothed sheet (Å)".
-   Reto ruled 2026-10-01: a tinted container STAYS pale (0.25 opacity) —
-   no opaque-while-tinted change.
-   Round 2 (once deployed): the per-block level chip `[E·I·R·z]` on every
+0. **Standing rulings on the viewer.** Reto ruled 2026-10-01: a tinted
+   container STAYS pale (0.25 opacity) — no opaque-while-tinted change;
+   2026-10-03: the smooth slider and the deviation/strain rows stay on
+   every structure, DNA included (only their labels name the reference).
+   Round 2 (deployed): the per-block level chip `[E·I·R·z]` on every
    tree row — click a letter to open or collapse that block alone, click
    the underlined one again to undo. z is a dash everywhere in 3D; whether
    to drop it is review item se-3d-viewer-2; Reto asked whether that is
@@ -116,14 +100,17 @@ up:
      cache is per process and empty after a deploy;
    - 1.14 s download of 1.09 MB gzip (3.86 MB raw). Locally gzip is served
      to Safari's Accept-Encoding; prod behind its proxy is unchecked.
-   Left, in payoff order (proposed in review item se-3d-viewer-6):
-   - **Fetch `target` only when its checkbox is ticked.** The target
-     surface is 426 KB of the 1090 KB gzip and off by default.
-   - **Round the floats to 5 significant digits.** That takes the whole
-     payload from 1090 KB to 588 KB gzip.
-   - Start the `scene3d`/`atomic3d` fetches from an inline script before
-     the module bundle parses (verdict 1c: note it, not now). Reto's
-     reading puts this at ~0.6 s.
+   Payload SHIPPED in round 3: the target surface moved to
+   `target3d.json`, fetched on the first tick of its checkbox; positions
+   are quantised to an absolute 0.001 Å step, not to significant digits,
+   because a nanometre structure can sit a metre from the origin.
+   On prod data the drum's `atomic3d.json` went from 1090 KB to 241 KB
+   gzip (3.86 MB → 0.73 MB raw).
+   The early fetch SHIPPED too: an inline script starts `scene3d` and
+   `atomic3d` before mermaid and the module bundle load
+   (`_takePrefetch`). On prod data the atom request now starts at 155 ms,
+   where it used to wait for the bundle (436–705 ms) and the scene fetch.
+   Left (se-3d-viewer-6, 2026-10-03):
    - **Two three.js copies on the page.** Safari warns "Multiple instances
      of Three.js being imported": the overlay's r160
      `/static/three/three.module.min.js` (166 KB gzip extra) sits beside

@@ -78,7 +78,36 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    - Re-sampling the local zeros flipped 2 of 10, so the 3-task gap is
      inside run-to-run noise at n=40.
    - The proposed promote rule (≥ cloud − 0.05) says no.
-   - Next: review item local-compute-14 asks Reto how to proceed.
+   - **Reto 2026-10-03 (local-compute-14, option 1): measure properly.**
+     200 tasks, prose and non-prose reported separately, each arm run
+     twice. Promote if prose is level and non-prose is within the measured
+     noise. The set (150 prose, 50 non-prose, seed 2) is
+     `summarize_v2_200.json` next to v1.
+   - **200-task compare, 2026-10-03: PASSES the rule.** Run through the
+     fixed `pinned_dispatch` path (this tree's code, slot-accounted, breaker
+     on), so it also exercises the gr464223 fix: no void arm, one cloud 504.
+
+     | arm | run | prose (n=150) | non-prose (n=50) | wall |
+     |---|---|---|---|---|
+     | local `glm-4.7-flash` | 1 / 2 | 0.913 / 0.913 | 0.120 / 0.160 | 266 / 281 s |
+     | cloud `z-ai/glm-4.7-flash` | 1 / 2 | 0.827 / 0.906 | 0.040 / 0.140 | 830 / 911 s |
+
+     - Prose: local is level with cloud's better run and above its worse one.
+       Non-prose: local is at or above cloud in both runs.
+     - Noise, measured: tasks whose pass/fail flipped between the two runs
+       were 12 of 150 prose and 2 of 50 non-prose on the local arm, and 26
+       and 9 on the cloud arm. The local quantisation is the steadier arm.
+     - Both arms score about 0.1 on non-prose. Neither model writes the tag
+       the incumbent chose, so this is the label question (§9), not a
+       local regression.
+     - Local runs 3× faster at concurrency 1.
+   - **Next: the summarise-only local rung.** `llm.chain.small` carries
+     all 354k small calls a week, not just summarise. An `llm.op.<source>`
+     override only picks a tier, and a chain rung pins its model. So
+     promoting summarise alone needs a summarise chain: local
+     `glm-4.7-flash` at the melchior slot (capacity 4, matching
+     `--parallel 4`), with cloud as overflow. Build it under
+     `local-summarizer.md` "In scope", with the slot-capacity note there.
 **Order for putting the big local model to work** (Reto 2026-10-03,
 endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
@@ -87,9 +116,12 @@ service on castor, castor exclusive to it, with its own `resource_slots`
 capacity row (`vllm-per-node-serving.md`); (3) local rungs in the tier
 ladder with cloud overflow (5; after round 2 carries the placement guard);
 (4) the feedback controller holding about 32 in flight, graph maintenance
-as filler (6). Proposed first target: the medium tier plus graph
-maintenance; big stays on the cloud until its own check. **Reto has not
-confirmed the target: ask it with the Slice 0 result.**
+as filler (6). **Reto confirmed 2026-10-03 (local-compute-15, option 1):**
+the server is sized for 64 streams; the controller holds about 32 while
+interactive tiers use it and fills to 64 with graph maintenance. First
+local target: the medium tier plus graph maintenance; big stays on the
+cloud until its own check. The model pick still waits on knowledge-mesh's
+task set.
 
 4. **Three Sparks back on duty; Slice 0 picks model + server.** Reto
    2026-10-02 (review item local-compute-4, ruled 21:03Z) reversed the
@@ -148,10 +180,13 @@ confirmed the target: ask it with the Slice 0 result.**
         (ceiling, setpoint, KV headroom).
       - **SGLang done 2026-10-03; server picked: vLLM.** gpt-oss on SGLang
         gives 198 tok/s at 32 streams against vLLM's 290, and fills its KV
-        pool at 64. Nemotron on SGLang stalls at 11 running requests. The
-        "how many channels" answer and the target confirmation are in
-        review item local-compute-15. The model pick waits on the quality
-        check.
+        pool at 64. Nemotron on SGLang stalls at 11 running requests.
+        Channels ruled (local-compute-15): server limit 64, controller
+        about 32. The model pick waits on the quality check.
+      - **Slice 1 role built, not deployed:** branch
+        `worktree-agent-aad7be76ec69cd553` (role `vllm`, playbook
+        `49-vllm.yml`, model as a variable) is with the orchestrator, held
+        until the model pick. It is untested on a host.
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round

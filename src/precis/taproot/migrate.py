@@ -408,6 +408,10 @@ _NUMBER_TOKEN_STRIP = ".,;:()[]{}\"'"
 _SUPERSCRIPT_RUN_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁻]+")
 _SUPERSCRIPT_TRANS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻", "0123456789-")
 _UNICODE_DASH_TRANS = str.maketrans("–—−‒―", "-----")
+#: A degree sign glued to its number ("19°", "300°C") is split off, so the
+#: extractor's UTF-8 rendering of "19 degrees" reads as the same "19"
+#: (canary passage 2, 2026-10-03: five angles flagged invented).
+_DEGREE_GLUE_RE = re.compile(r"(\d)°")
 
 #: An explicit reference-block marker: everything after it is bibliography,
 #: not claim content. Hub bodies on prod frequently end in "Canonical
@@ -451,8 +455,9 @@ _CITATION_SPAN_RES = (
 def _normalize_number_text(text: str) -> str:
     """Fold unicode notation into the ASCII forms prod hub bodies use:
     superscript runs -> ``^``-prefixed digits (``10⁴`` -> ``10^4``,
-    ``10⁻⁶`` -> ``10^-6``), unicode dashes/minus -> ``-``."""
-    text = text.translate(_UNICODE_DASH_TRANS)
+    ``10⁻⁶`` -> ``10^-6``), unicode dashes/minus -> ``-``, and a glued
+    degree sign split off its number (``19°`` -> ``19 °``)."""
+    text = _DEGREE_GLUE_RE.sub(r"\1 °", text.translate(_UNICODE_DASH_TRANS))
     return _SUPERSCRIPT_RUN_RE.sub(
         lambda m: "^" + m.group(0).translate(_SUPERSCRIPT_TRANS), text
     )
@@ -795,6 +800,7 @@ def dry_run(
     store: Store,
     *,
     limit: int,
+    offset: int = 0,
     cohort: Cohort | None = None,
     controls: int = 0,
     control_seed: int = 0,
@@ -804,7 +810,10 @@ def dry_run(
     """Phase 1: run ``extract_fn`` — never ``block``/``dedup_judge``/
     ``place`` (those decide convergence against *other* hubs, Phase 2's
     concern, not "does this sentence split") — over the top ``limit``
-    scored hubs (optionally restricted to one ``cohort``), plus
+    scored hubs (optionally restricted to one ``cohort``) after skipping the
+    first ``offset`` of them — disjoint ``offset``/``limit`` slices let
+    several processes split one bulk run (each call is a serial ~40 s
+    ``claude -p``) — plus
     ``controls`` hubs drawn as a **uniform random sample**
     (:class:`random.Random`, seeded by ``control_seed``, deterministic by
     default) from the whole likely-atomic cohort, excluding any hub
@@ -836,7 +845,7 @@ def dry_run(
     pool = (
         all_scores if cohort is None else [s for s in all_scores if s.cohort == cohort]
     )
-    selected = list(pool[:limit])
+    selected = list(pool[offset : offset + limit])
     selected_ids = {s.ref_id for s in selected}
 
     control_hubs: list[HubScore] = []

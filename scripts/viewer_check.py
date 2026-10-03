@@ -599,7 +599,8 @@ def strain_probe(base_url: str, slug: str, out_dir: str) -> int:
                         "() => { const t = document.querySelector('.bt3d-atom-tip');"
                         " return t && !t.hidden ? t.textContent : null; }"
                     )
-                    if text and re.match(r"^[A-Z][a-z]? · ", text):
+                    # The hover table's first row: "atom" | "<name> (<el>)".
+                    if text and re.match(r"^atom\s*\S+ \([A-Z][a-z]?\)", text):
                         found = {"text": text, "point": [round(x), round(y)]}
                         break
                 if found:

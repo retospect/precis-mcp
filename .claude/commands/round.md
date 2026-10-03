@@ -5,7 +5,8 @@ allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:
 ---
 
 You are the coordinator of a peer round. Many sessions land onto `main` with
-`/qland` (no pytest); every main push gets a GitHub CI verdict, and one
+`/qland` (no pytest); main's GitHub CI samples the newest sha about once
+per run (~45 min, a running run is never cancelled), and one
 session — you — puts the newest green main sha on the cluster. A round is one pass of that.
 
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
@@ -41,12 +42,23 @@ Note from the user: `$ARGUMENTS`
    scripts/round gate
    ```
    The candidate is the newest main sha whose GitHub CI verdict is fully
-   green (lint + every `test-linux` shard; every main push runs to
-   completion since 2026-10-03). It prints the candidate, its verdict age,
+   green (lint + every `test-linux` shard; main's CI samples the newest
+   sha about once per run and never cancels a running one). It prints the candidate, its verdict age,
    `origin/gated` / `origin/prod`, and how many docs-only and code commits
    main is ahead of it. No local suite runs and no ship lock is taken, so
    peers' qlands never queue behind the round. A peer's sha that is not yet
    under the candidate rides the next round, or wait for its CI run (~12 min).
+
+   **Release branch (slice a).** To freeze what the round ships, run
+   `scripts/round cut` once the marks are in (`--dry-run` first; `--sha S`
+   overrides the candidate). It pushes `release/r<N>` at the candidate, records
+   it in `round.json` (`round status` shows it) and prints the `fleet say`
+   line to send — you send it. `late: <peer> <sha>` lines are marked shas the
+   cut does not contain: they land on main for the next round. It refuses
+   while any `release/*` branch exists, off main's first-parent line, or on a
+   new duplicate migration number. `scripts/round cut --abandon` deletes the
+   branch once everything on it is on main. `gate`/`deploy` still read main
+   until slices (b)/(c) land.
 
 4. **Red verdict → route, do not absorb.** `round gate` names the newest
    failed main sha above the candidate, its failing jobs and the

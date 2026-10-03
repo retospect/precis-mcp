@@ -64,7 +64,15 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - claims-and-evidence re-ran its cite-fallback pass: printed pairs went from 114 to 107, all expected (`scratch/cite-standard/dr173020-printed-pairs-apply28-diff.tsv`).
      - fi191144 no longer appears in the draft because A2 deleted it.
      - fi189548's two bare uses are now pinned inside its signed grounding: dc2445881 >pc40252, dc2445916 >pc40243,pc40252.
-   - **Item 29 (decide, open), corrected 15:39Z after Reto pushed back.** fi189535's claim is supported by its papers; no supersede is needed.
+   - **Item 29 answered 16:06Z, applied 16:10Z.**
+     - Item 26's pins are restored: dc2445860 `[fi189535>pc209495,pc209502,pc209505]` and dc2445859 `[fi189527>pc452187,pc452198]`. All pinned passages are linked.
+     - Pin rule: a pin stays within the signed grounding's papers and names the passage that carries the sentence.
+     - Reto's follow-up, how to stop this recurring and catch it automatically, is filed as **claims-and-evidence-9** (`review-queue/open/claims-and-evidence-9.md`), owned by claims-and-evidence. My three proposals are in it as G3, G1 and G5; the pin rule is G4. I sent:
+       - (f) pin-vs-sentence term coverage and a narrowing warning;
+       - (g) a sign-time check for evidence edges added after review;
+       - (h) absence-claim search discipline.
+     - Case facts: fi189535's publish row was created 09-19 16:06Z; its methods edges pc209502 and pc209509 were linked at 16:29Z; signed 09-22. Of the 15 anchored hubs, fi189535 is the only confirmed front-matter grounding. fi236369 and fi236370 are Nature-letter candidates, unread (`printed-read/grounding-depth.out`).
+   - **Item 29 history, corrected 15:39Z after Reto pushed back.** fi189535's claim is supported by its papers; no supersede is needed.
      - STS is in pa2069: pc209508 and pc209509, and pc209505 (Fig. 2e). TEM is in pa2069 pc209502 (Fig. 1). The graphene buds are shown by HRTEM in pa1120 pc99780.
      - The signed grounding picked an abstract and a definition instead of these passages.
      - My first search needed the literal phrase "tunnelling spectroscopy"; pa2069 writes "microscopy (STM) and spectroscopy (STS)". Log: `printed-read/sts-recheck-29.out`.
@@ -141,8 +149,14 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      hexa-smooth-drum smooth surface looks co-optimized by the tiler);
    - also standard fullerenes generated from a sphere of the right
      diameter.
-   hexfold-toolkit holds the asks. Rebuild the hero from their output and
-   re-file a look-at.
+   **S4 hero delivered 15:47Z (10-03), filed as look-at item 30 (pill12 vs pill24).**
+   - Source: `hexfold-corner/s4_handoff.md`. Rendered by `figs/render_s4.py` (positions from the tethered extxyz, not `stick`) into `figs/render/s4-compare.png`.
+   - The pillar's (6,0)→C₆₀ join has 8 atoms in non-bonded pairs at 1.05–1.33 Å (`figs/s4_closepairs.py`, close-up `s4-neck-az0.png`). This is common to both variants, and hero5/5a have it too: the (6,0) stick joint has had it since the pillar went to (6,0).
+   - **Route (a) failed, 16:00Z.** Under MACE-MP, 4 of the 6 fused (6,0)→C₆₀ seam bonds open to 4.7–4.9 Å, also on a free tube+ball. The fused thin neck is not a bonded minimum.
+     - The `s4_pill12_top*` files are diagnostics only; do not render them.
+     - Item 30 answered 16:06Z: pill12 at azimuth −110. But "proceed with the top-only relax" names the route that failed, so it is re-asked as **item 31** (decide). The options are the capped-(6,0) bud (my pick, hexfold MACE-checking it), a (12,0) lid pillar, or the stick neck. If the bud fails, I fall back to the (12,0) pillar.
+   - The figure is not final until that is fixed and Reto picks a variant.
+   - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
    (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.
