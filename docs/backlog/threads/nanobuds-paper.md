@@ -54,8 +54,18 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - Item 28 touches three: A3 fi191270, B1 fi189544 and B10 fi189548.
      - A3 and B1 change draft prose only.
      - B10 is re-proposed as B10′, which uses bare pc cites so that no link is added to the anchored hub.
-     - Item 26 added pins on anchored fi189527 and fi189535 that fall outside their signed groundings. Item 28's frozen-hub note offers re-pinning them.
      - Check script: `nanobud-fidelity/printed-read/frozen_check_28.py`. Before applying any edit to a cited hub, re-run it; a fix that touches an anchored hub's claim sentence waits for the supersede door.
+   - **Item 28 applied 15:05Z (10-03): all as proposed, B10 as B10′, and the four extras.**
+     `printed-read/apply_28.py` ran 3 link adds, 20 draft edits and 5 link removals, all ok (`apply-28.log`). `verify_finds_28.py --after` read back clean.
+     - A1 removed three pa345 links (pc22030, pc22031, pc22037), not the two the item listed.
+     - fi192819: the matched-mat comparison went in as the bare cite [pc209519]; no hub carries it.
+     - fi189527 and fi189535 are re-pinned to their signed groundings.
+     - fi458948 now says "argues against".
+     - claims-and-evidence was asked by `fleet say` to re-run its cite-fallback pass.
+   - **Item 29 filed 15:11Z (decide):** fi189535's anchored claim is not fully carried by its grounding.
+     - The graphene half rests only on pa1120's definition.
+     - "Scanning tunnelling spectroscopy" does not appear in any source; the grounding has STM.
+     - Recommended: narrow dc2445860 to TEM + STM and pin it to pc209495 and pc32632, then supersede the claim once the door exists.
 0. **Round-1 deploy (567f207f) checks, done 2026-10-02 ~21:00Z:**
    pa2615 now year 2007 / Nature Nanotechnology (`view='bibtex'`
    verified; citekey still `wang22c`, no rename door on paper edit). (fi189540, the SI-only hub, was retired 08-28 and dr173020 does not cite it. The only draft hub on pa2615 is fi190976, which also has pa1483 and pa2069.)
