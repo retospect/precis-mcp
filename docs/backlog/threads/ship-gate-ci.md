@@ -91,8 +91,9 @@ green or the reverse), then tuning and residue.
 ## No action needed
 
 - **backlog/main-stays-gated.md** — all three parts shipped 2026-09-30;
-  delete after a week of real bursts (the file's own rule); deletion is
-  Reto's housekeeping ruling (td461205).
+  Reto ruled (review-queue `organizer-housekeeping-1`): delete it plus its
+  seam mentions (threads/INDEX.md, this file's Seam) in one commit on or
+  after 2026-10-07; git history is the backup.
 
 ## Seam
 
