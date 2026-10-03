@@ -128,8 +128,12 @@ cmd_up() {
   fi
   threads | while IFS=$'\t' read -r slug _effort _review; do
     if has_window "$slug"; then echo "exists: $slug"; continue; fi
+    # Reto 2026-10-03: the main loop keeps design and domain judgment and
+    # hands the rest to subagents (AGENTS.md "Agent sizing"); editors run in
+    # an isolated worktree so they never collide with the thread's own tree.
+    local boot="Resume the work on $slug. Use subagents per AGENTS.md Agent sizing: you keep design and domain judgment; searches to navigator/extract/Explore, decided edits to coder/test-author/documenter, test runs to test-runner, cluster reads to cluster-ops, bug tracing to root-cause, pre-ship review to reviewer; independent pieces as parallel agents in one message; any agent that edits uses isolation worktree."
     tmux new-window -d -n "$slug" -c "$root" \
-      "claude -w $slug --model $model 'Resume the work on $slug'"
+      "claude -w $slug --model $model '$boot'"
     echo "created: $slug"
     sleep "$stagger"
   done
