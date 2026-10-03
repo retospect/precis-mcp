@@ -298,6 +298,19 @@ def _run_score(args: argparse.Namespace) -> None:
         print(f"  fi{s.ref_id:<8} score={s.score}  {s.cohort:<15} [{signals}]  {title}")
 
 
+def _bind_llm_telemetry(store: Any) -> None:
+    """Bind ``store`` to the budget meter (serving-endpoint resolution + breaker
+    gating) and the route log (``llm_call_log`` / ``llm_blob`` rows for every
+    routed extractor call). Telemetry only -- never claim data. Without the
+    route-log bind ``route_log.enabled()`` is False and the router writes no
+    call-log rows, so the run's spend is invisible."""
+    from precis import route_log
+    from precis.budget import meter
+
+    meter.bind_store(store)
+    route_log.bind_store(store)
+
+
 def _resolve_extract_fn(tier: str) -> Any:
     """The strict extractor for a ``--tier`` value. Strict on purpose —
     both callers (dry-run, canary) must tell a dead dispatch apart from a
@@ -314,7 +327,6 @@ def _resolve_extract_fn(tier: str) -> Any:
 
 
 def _run_canary(args: argparse.Namespace) -> None:
-    from precis.budget import meter
     from precis.store import Store
     from precis.taproot.eval_canon import (
         EXTRACTION_PASSAGES_FIXTURE,
@@ -322,7 +334,7 @@ def _run_canary(args: argparse.Namespace) -> None:
     )
 
     store = Store.connect(resolve_dsn(args.database_url))
-    meter.bind_store(store)
+    _bind_llm_telemetry(store)
     try:
         report = canary_extraction(
             args.fixture or EXTRACTION_PASSAGES_FIXTURE,
@@ -357,9 +369,7 @@ def _run_dry_run(args: argparse.Namespace) -> None:
     # falling to the dead 127.0.0.1:4000 default) and this run's LLM spend
     # is gated by the budget breaker. Writes telemetry only (llm_call_log +
     # transient serving-slot rows), never claim data.
-    from precis.budget import meter
-
-    meter.bind_store(store)
+    _bind_llm_telemetry(store)
     try:
         report = dry_run(
             store,
@@ -499,7 +509,6 @@ def _row_regrounding_failed(row: dict[str, Any]) -> str | None:
 
 
 def _run_reground(args: argparse.Namespace) -> None:
-    from precis.budget import meter
     from precis.store import Store
 
     with open(args.json_path, encoding="utf-8") as f:
@@ -511,7 +520,7 @@ def _run_reground(args: argparse.Namespace) -> None:
     # the budget meter and this run's spend is gated by the breaker.
     # Writes telemetry only (llm_call_log), never claim data -- this
     # subcommand makes zero refs/links/meta/chunk writes.
-    meter.bind_store(store)
+    _bind_llm_telemetry(store)
     n_split = 0
     n_errors = 0
     out_rows: list[dict[str, Any]] = []
@@ -611,9 +620,7 @@ def _run_apply(args: argparse.Namespace) -> None:
     # merge_confirm all resolve the host's serving endpoint through the
     # budget meter, and this run's spend is gated by the breaker. Writes
     # telemetry only -- claim writes go through apply_dry_run's own doors.
-    from precis.budget import meter
-
-    meter.bind_store(store)
+    _bind_llm_telemetry(store)
     embedder = make_embedder(args.embedder, dim=store.embedding_dim())
     try:
         report = apply_dry_run(
