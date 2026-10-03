@@ -10,6 +10,13 @@ paper dr173020); triaged against it 2026-10-02.
 
 Created 2026-10-01 from the memory-graph pillar review.
 
+**Resume (2026-10-03, prod 929107f32):** no code in round 3 (marked
+`none`), so nothing to dogfood; the write-latency fix is live and
+verified. Do-next is empty; the next session re-triages Horizon against
+the October paper once nanobuds-paper clears the figure gate. td462081's
+24 h spend read was $0 (parked on `ask-user`), recorded in the review
+file.
+
 ## Do next
 
 Triaged 2026-10-02 against the October paper (dr173020, td459586), in the
