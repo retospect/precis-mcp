@@ -307,6 +307,40 @@ What this build decides:
 - **Migration number:** 0187, assigned by the orchestrator on
   2026-10-03.
 
+**Build A2: fold `rxn_values` in, on a branch to the orchestrator after
+A lands.**
+- **What:** drop `rxn_values`, the third copy of the `material_values`
+  shape, with **no compatibility view**. Reaction values become plain
+  `measures` rows: subject = the rxn ref, measurand = the
+  `rxn_properties` taxon.
+- **Code:** the four SQL sites in `store/_rxn_ops.py` (the insert in
+  the value write, `rxn_values_for_ref` and the two range filters) move
+  to `measures` through `insert_measure` and `measures_for`.
+  `handlers/rxn.py` keeps its verbs and output shape. `tests/test_rxn.py`
+  passes unchanged.
+- **Why:** Reto, 2026-10-03, via the nanobuds-paper session: "I feel the
+  material and reaction properties can be generalized", then "I feel
+  rxn_values is overspecialized." This is the 2026-09-30 option (ii)
+  ruling applied to the reaction table. With 0 rows, a view would
+  protect only code, and that code is ported in the same build.
+- **Why a separate migration:** 0187 was already in its last review.
+  The end state is the same as folding it into 0187.
+- **Size:** in prod on 2026-10-03, `rxn_values` held 0 rows and
+  `rxn_properties` 10, all of them taxa since 0174. The fold therefore
+  only swaps the table for a view.
+
+**A second consumer: LLM model specs** (Reto, 2026-10-03, via
+nanobuds-paper).
+- **Subject:** the `llm` ref.
+- **Measurands:** parameters total and active, memory at a given
+  quantisation, prefill and decode tokens/s, benchmark scores.
+- **Conditions, as input rows:** quantisation, hardware, context length,
+  runtime.
+- **Needs nothing new** beyond "subject is any ref". It names a
+  non-chemistry consumer that Build B's `best_measure` must serve.
+- **Data:** a Perplexity research report on open-weight models, which
+  nanobuds-paper is running.
+
 **Build B (qland, after A deploys):**
 - `best_measure` and `measures_census`;
 - `precis-measure-help`;
