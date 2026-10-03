@@ -150,6 +150,12 @@ spin-paired energy (§22i), so the table stands. Catpath
   writes. qu164903's tier promotion is paused until then (Reto runs the
   meta write; the undo is in design note §19).
 
+- **backlog/cnt-channel-staged-catalysis.md** (dormant, Reto 2026-10-03):
+  a carbon channel whose arc-and-rib interior holds each intermediate of a
+  staged reaction in one pose. Blocked on hexfold building a three-arc
+  cross-section with ribs; no quest until then. 18 papers listed; next
+  is a read-for-question pass for design numbers once they fetch.
+
 ## No action needed
 
 - (none yet)
