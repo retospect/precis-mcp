@@ -332,10 +332,12 @@ _EXTRACT_EXCERPT_CHARS = 1500
 #: Completion cap for every extract call. Without one the openai-compat
 #: transport falls back to ``LlmConfig.max_tokens`` (220, the summarizer's
 #: gloss budget) and 147 of 275 prod extract replies (30 days to
-#: 2026-10-02) stopped at exactly 220 tokens, mid-JSON. PROVISIONAL value,
-#: pending the measured completion-length distribution of those replies
+#: 2026-10-02) stopped at exactly 220 tokens, mid-JSON. Measured: those 147
+#: replayed uncapped (local glm-4.7-flash, temperature 0) needed p99 752,
+#: max 924 completion tokens; 1536 leaves 66% over the max, since another
+#: model can word the same reply longer. The cap bills only generated tokens
 #: (reviews/graph-memory-consumers.md §2).
-_EXTRACT_MAX_TOKENS = 1024
+_EXTRACT_MAX_TOKENS = 1536
 
 
 class ExtractionTruncated(ValueError):
