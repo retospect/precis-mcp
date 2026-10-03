@@ -107,8 +107,13 @@ states that count a paper as usable when it is not, then metadata.
    newer acquire stubs, with the lane trying about 25 refs an hour. Round
    3 ranks a `markup_refetch` pin directly after `prio`. Only these 37
    refs carry the pin.
-   Next, after round 3 deploys: let the 37 finish, then queue the other
-   ~83 non-Elsevier papers. This
+   Resume (2026-10-03 21:45Z): the 37 were all tried before round 3
+   deployed. Of batch 1's 50 non-Elsevier papers, 30 gained a body and
+   20 did not; those 20 keep the pin and sit in normal backoff. Batch 2
+   (the other 83 non-Elsevier) was queued 21:40Z at prio 1 with the pin.
+   It is the first test of round 3's ordering: it should be claimed
+   within about three 32-stub passes. Next: count batch 2's gained
+   bodies, then apply the policy to what is still bodiless. This
    thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
