@@ -141,8 +141,11 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      hexa-smooth-drum smooth surface looks co-optimized by the tiler);
    - also standard fullerenes generated from a sphere of the right
      diameter.
-   hexfold-toolkit holds the asks. Rebuild the hero from their output and
-   re-file a look-at.
+   **S4 hero delivered 15:47Z (10-03), filed as look-at item 30 (pill12 vs pill24).**
+   - Source: `hexfold-corner/s4_handoff.md`. Rendered by `figs/render_s4.py` (positions from the tethered extxyz, not `stick`) into `figs/render/s4-compare.png`.
+   - The pillar's (6,0)→C₆₀ join has 8 atoms in non-bonded pairs at 1.05–1.33 Å (`figs/s4_closepairs.py`, close-up `s4-neck-az0.png`). This is common to both variants; sent to hexfold-toolkit for its tube-top fillet rung.
+   - The figure is not final until that is fixed and Reto picks a variant.
+   - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
    (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.
