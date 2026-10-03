@@ -161,11 +161,13 @@ states that count a paper as usable when it is not, then metadata.
   pooling, a blocker for the Stage B DISCARD ALL): claims-and-evidence
   owns the fix for all three sites. That includes this pipeline's
   `ingest/claim.py` (`Claim`, the per-PDF Marker claim) and
-  `workers/chunk_keywords.py`. The lock held right now is chunk_keywords'
-  `_LOCK_KEY`, on pooled backend pid 11267, measured 2026-10-03. Deploying
-  the fix does not release it; the backend has to recycle or be
-  terminated. The `Claim` leak means two hosts can run Marker on the
-  same PDF until the fix deploys.
+  `workers/chunk_keywords.py`. The leaked lock is chunk_keywords'
+  `_LOCK_KEY`. It recurs on fresh pooled backends: it was on pid 11267,
+  then on 15730 (born 14:14Z) at 14:44Z on 2026-10-03. Recycling one
+  backend therefore does not clear it. Only the code fix does, and Stage
+  B's DISCARD ALL waits on that fix, not on the held lock. The `Claim`
+  leak means two hosts can run Marker on the same PDF until the fix
+  deploys.
 
 - `local-compute` parks the **embed-drain** half of what was one cluster
   (gr456034, gr454865). That is throughput, this thread is fidelity; they
