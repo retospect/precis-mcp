@@ -422,6 +422,14 @@ ATTEMPT_COOLDOWN_MIN = 30
 #: a reason to re-verify it. The other four arms still reach it — a fresh
 #: ``TAPROOT_DUE`` tag from new near evidence must still be able to land a
 #: ``contradicts`` verdict and demote it (module docstring step 5).
+#:
+#: A bump re-runs *discovery* only: a source already attached or in the
+#: rejection memo is filtered out before the verifier (step 3), so a bump
+#: never re-judges an existing verdict. That is why the 2026-10-03 citation
+#: rule (polarity needs the same quantity/system/conditions; passages
+#: combine) did not bump it: verdicts written before that deploy keep the
+#: old semantics, and the fix for them is a targeted re-judge of the live
+#: ``disputes`` edges (docs/backlog/threads/claims-and-evidence.md).
 REFINE_VERSION = "1"
 
 
