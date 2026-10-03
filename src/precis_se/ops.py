@@ -126,6 +126,13 @@ used here as-is or extended with se's own cascades:
   hard/soft/gauge strength (:mod:`precis_se.measures`; stack-up +
   unresolvable-relation findings are :mod:`precis_se.drc`'s read-time
   job — a forward-referenced relation source is legal at write time).
+  ``measurand=`` names a taxon measurand instead of a registry unit,
+  resolved through :attr:`SeTree.measurands`
+  (:mod:`precis_se.properties.measurand`).
+- ``add_pocket`` / ``set_pocket`` / ``remove_pocket`` — a named set of
+  region selectors plus a shape on an ordinary block
+  (:mod:`precis_se.pockets`); inline region measures go through
+  ``add_measure``.
 
 Off-the-shelf rung 1 (docs/backlog/se-off-the-shelf-fabrication.md) adds
 the ops for things you *don't* make:
@@ -370,6 +377,37 @@ from precis_se.measures import (
 )
 from precis_se.modes import ModeError, parse_mode
 from precis_se.notes import NOTE_KINDS, NoteError, NoteSpec, validate_about
+from precis_se.pockets import HULL, PocketSpec
+from precis_se.properties.measurand import Measurand, MeasurandResolver
+
+#: A structure design's slug → its current version (``None`` = no such
+#: design); see :attr:`SeTree.structure_versions`.
+StructureVersionResolver = Callable[[str], "int | None"]
+
+#: Characters a block name may not contain: the region selectors
+#: (:mod:`precis_se.datums`) use ``/`` (``sites:``), ``@`` (``patch:``) and
+#: ``[``/``]`` (``atoms:``) as delimiters, and a block name carrying one
+#: would parse as a different selector. ``.`` is NOT here — selectors split
+#: a block from its face/measure on the LAST dot, so dotted names (the
+#: layout_chain segments ``helix.s0``) stay legal.
+BLOCK_NAME_RESERVED = "/@[]"
+
+
+def _check_block_name_chars(op: dict[str, Any], *, opname: str) -> None:
+    """Refuse a block ``name`` carrying a selector delimiter
+    (:data:`BLOCK_NAME_RESERVED`) — at every place se mints a block name.
+    A missing/blank name falls through to the core's own ``needs 'name'``."""
+    name = str(op.get("name") or "").strip()
+    bad = sorted({c for c in name if c in BLOCK_NAME_RESERVED})
+    if bad:
+        raise OpError(
+            f"{opname} 'name' must not contain {' '.join(repr(c) for c in bad)}: "
+            f"{name!r} — region selectors (patch:b.top@u,v+wxh, "
+            "sites:b/seam/s0..s3, atoms:b[0,3]) use / @ [ ] as delimiters, "
+            "so a block named with one would be read as a different selector "
+            "(dots are fine)"
+        )
+
 
 #: What an L3 realization binding may point at — the *designed*
 #: realizations (a cad node set, an atomistic ``structure`` scene) and the
@@ -609,6 +647,11 @@ class SeBlock(BlockNode):
     #: are :attr:`SeTree.domains`, because each is a fact about a (strand,
     #: helix) pair rather than about one block.
     chain: dict[str, Any] | None = None
+    #: Named pockets (:mod:`precis_se.pockets`), keyed by pocket name —
+    #: each a set of region selectors plus a shape. Template-owned like
+    #: measures; persisted to ``se_pockets`` in lockstep with the block
+    #: row, the ``ports`` pattern.
+    pockets: dict[str, PocketSpec] = field(default_factory=dict)
     #: ``user | proposed`` stamps for authored facets, keyed by facet name
     #: (``'envelope'``, ``'pose'``) — slice 4's freedom vocabulary. An
     #: absent key means ``user`` (the default is never stored); a propose
@@ -697,6 +740,23 @@ class SeTree(Tree[SeBlock, ConnectSpec]):
     #: means undeclared, and the FRET view says so rather than quietly
     #: using :data:`~precis_se.fret.DEFAULT_MEDIUM_INDEX`.
     optics: dict[str, Any] | None = None
+    #: Store-bound measurand resolver
+    #: (:func:`precis_se.properties.measurand.measurand_resolver`) — the
+    #: ``foreign`` pattern: wired by the loader and the store-aware op
+    #: walker, never persisted. ``None`` (a bare tree) makes a
+    #: ``measurand=`` op fail loudly rather than guess.
+    measurands: MeasurandResolver | None = field(
+        default=None, repr=False, compare=False
+    )
+    #: Store-bound structure-version lookup
+    #: (:func:`precis_se.persist.structure_version_resolver`): a structure
+    #: design's slug → its current ``meta['version']``, ``None`` when the
+    #: design is gone. Wired by the loader like :attr:`measurands`; read by
+    #: the pin checks (:func:`precis_se.datums.pin_status`). ``None`` (a
+    #: bare tree) means "cannot tell", never "stale".
+    structure_versions: StructureVersionResolver | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def make_block(self, **kwargs: Any) -> SeBlock:
         return SeBlock(**kwargs)
@@ -997,6 +1057,7 @@ def _op_add_block(tree: SeTree, op: dict[str, Any]) -> None:
     owns no ports yet at this instant, so any ``add_port`` naming its axis
     necessarily comes later in the same call). A bad shape rolls the block
     back out rather than leaving a half-declared node behind."""
+    _check_block_name_chars(op, opname="add_block")
     blocktree.op_add_block(tree, op)
     _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
     dof_raw = op.get("dof")
@@ -1019,6 +1080,7 @@ def _op_instance_block(tree: SeTree, op: dict[str, Any]) -> None:
                 "for a patterned instance"
             )
     _reject_instance_dof(tree, op, opname="instance_block")
+    _check_block_name_chars(op, opname="instance_block")
     blocktree.op_instance_block(tree, op)
     _sync_local_pose(tree, str(op["name"]).strip(), pose=True, rot=True)
 
@@ -1111,6 +1173,7 @@ def _parse_array_spec(op: dict[str, Any]) -> dict[str, Any]:
 
 
 def _op_array_block(tree: SeTree, op: dict[str, Any]) -> None:
+    _check_block_name_chars(op, opname="array_block")
     template, name, parent = _instance_shared(tree, op, opname="array_block")
     _reject_instance_dof(tree, op, opname="array_block")
     spec = _parse_array_spec(op)
@@ -1639,6 +1702,17 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
             relation = validate_relation(op["relation"])
         except MeasureError as exc:
             raise OpError(f"{opname}: {exc}") from exc
+        feature = (relation or {}).get("feature")
+        if feature is not None:
+            from precis_se.datums import parse_selector
+
+            if parse_selector(feature).kind in ("atoms", "sites"):
+                raise OpError(
+                    f"{opname}: relation feature {feature!r} is refused until "
+                    "atom-level computers land (slice B): an atom index has no "
+                    "stable meaning across structure versions without a pin; "
+                    "use it as the measure's datum (pinned) instead"
+                )
     if relation is not None:
         out["relation"] = relation
     strength = _vet_vocab(op, "strength", _STRENGTHS, opname=opname)
@@ -1664,7 +1738,31 @@ def _vet_measure_fields(op: dict[str, Any], *, opname: str) -> dict[str, Any]:
         except MeasureError as exc:
             raise OpError(f"{opname}: {exc}") from exc
         out["datum"] = op["datum"].strip()
+    if op.get("datum_pin") is not None:
+        from precis_se.datums import parse_pin
+
+        pin = op["datum_pin"]
+        if not isinstance(pin, str) or parse_pin(pin) is None:
+            raise OpError(
+                f"{opname} 'datum_pin' must be '<structure-slug>@v<version>' "
+                f"(e.g. 'cnt-55@v3'), got {pin!r} — normally never passed: "
+                "the write stamps it from the block's bound structure"
+            )
+        out["datum_pin"] = pin.strip()
     return out
+
+
+def _check_pin_applies(datum: str | None, pin: str | None, *, opname: str) -> None:
+    """``datum_pin`` pins atom/site indices; any other datum has none."""
+    if pin is None:
+        return
+    from precis_se.datums import parse_selector
+
+    if datum is None or parse_selector(datum).kind not in ("atoms", "sites"):
+        raise OpError(
+            f"{opname}: 'datum_pin' pins atoms:/sites: indices to a structure "
+            f"version; datum {datum or 'frame'!r} has none"
+        )
 
 
 def _check_band(
@@ -1709,7 +1807,10 @@ def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
     default user; ``generated`` is what an atomic generator stamps on the
     length anchors it declares). A relation source that doesn't exist YET is accepted (a
     forward reference inside one ops batch is normal); an unresolvable
-    relation is DRC's read-time finding."""
+    relation is DRC's read-time finding. ``measurand`` (a taxon node under
+    ``measurand``) replaces ``unit`` with the node's own
+    (:mod:`precis_se.properties.measurand`); a contradicting ``unit=`` is
+    refused, and a categorical measurand takes no numbers."""
     block, name = _measure_shared(tree, op, opname="add_measure")
     if _find_measure(tree, block, name) is not None:
         raise OpError(
@@ -1717,13 +1818,96 @@ def _op_add_measure(tree: SeTree, op: dict[str, Any]) -> None:
             "names are unique per block; set_measure to change it)"
         )
     fields = _vet_measure_fields(op, opname="add_measure")
+    msr = _vet_measurand(tree, op, opname="add_measure")
+    if msr is not None:
+        _apply_measurand(fields, msr, opname="add_measure")
+        _check_categorical(
+            fields.get("measurand"),
+            fields.get("unit", "m"),
+            value=fields.get("value"),
+            min_value=fields.get("min_value"),
+            max_value=fields.get("max_value"),
+            relation=fields.get("relation"),
+            opname="add_measure",
+        )
     _check_band(
         fields.get("value"),
         fields.get("min_value"),
         fields.get("max_value"),
         opname="add_measure",
     )
+    _check_pin_applies(
+        fields.get("datum"), fields.get("datum_pin"), opname="add_measure"
+    )
     tree.measures.append(MeasureSpec(block=block, name=name, **fields))
+
+
+def _vet_measurand(
+    tree: SeTree, op: dict[str, Any], *, opname: str
+) -> Measurand | None:
+    """Resolve the op's ``measurand`` (a taxon slug/name/path, ``tn<id>``
+    or id) through the tree's store-bound resolver; ``None`` when the op
+    names none. Unknown, ambiguous and non-measurand references are
+    refused with the resolver's candidate list."""
+    raw = op.get("measurand")
+    if raw is None:
+        return None
+    if tree.measurands is None:
+        raise OpError(
+            f"{opname} 'measurand' needs the term taxonomy, and this tree "
+            "carries no measurand resolver — apply it through put/edit "
+            "(kind='se')"
+        )
+    try:
+        return tree.measurands(raw)
+    except MeasureError as exc:
+        raise OpError(f"{opname}: {exc}") from exc
+
+
+def _apply_measurand(fields: dict[str, Any], msr: Measurand, *, opname: str) -> None:
+    """Snapshot ``msr`` into the vetted measure fields: slug, ref id and
+    the se unit. An explicit ``unit=`` must agree — a measurand carries
+    its own unit, and two claims about one number cannot both stand."""
+    unit = fields.get("unit")
+    if unit is not None and unit != msr.unit:
+        raise OpError(
+            f"{opname}: unit={unit!r} contradicts measurand {msr.slug!r}, "
+            f"whose se unit is {msr.unit or '(none — categorical)'!r} — omit "
+            "unit; the measurand supplies it"
+        )
+    fields["unit"] = msr.unit
+    fields["measurand"] = msr.slug
+    fields["measurand_ref"] = msr.ref_id
+
+
+def _check_categorical(
+    measurand: str | None,
+    unit: str,
+    *,
+    value: float | None,
+    min_value: float | None,
+    max_value: float | None,
+    relation: dict[str, Any] | None,
+    opname: str,
+) -> None:
+    """A categorical measurand (snapshot unit ``''``) carries no numbers:
+    a value, a band or a source relation would be a quantity in no unit."""
+    if measurand is None or unit != "":
+        return
+    numeric = [
+        k
+        for k, v in (("value", value), ("min", min_value), ("max", max_value))
+        if v is not None
+    ]
+    if relation is not None and relation.get("source"):
+        numeric.append("relation.source")
+    if numeric:
+        raise OpError(
+            f"{opname}: measurand {measurand!r} is categorical — "
+            f"{', '.join(numeric)} would be a number in no unit. Declare the "
+            "measure without numbers (the region names the property), or use "
+            "a numeric measurand for a band"
+        )
 
 
 def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
@@ -1752,11 +1936,13 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
         "origin",
         "unit",
         "datum",
+        "measurand",
+        "datum_pin",
     )
     if not any(k in op for k in field_keys):
         raise OpError(
             "set_measure needs at least one of value/relation/strength/"
-            "reason/min/max/origin/unit/datum"
+            "reason/min/max/origin/unit/datum/measurand"
         )
     # An explicit null must push back, not silently no-op (reviewer
     # finding): presence-based updates can't express "clear this field".
@@ -1767,10 +1953,45 @@ def _op_set_measure(tree: SeTree, op: dict[str, Any]) -> None:
             "remove_measure + add_measure to drop a field"
         )
     fields = _vet_measure_fields(op, opname="set_measure")
+    msr = _vet_measurand(tree, op, opname="set_measure")
+    if msr is not None:
+        _apply_measurand(fields, msr, opname="set_measure")
+    elif (
+        m.measurand is not None
+        and fields.get("unit") is not None
+        and fields["unit"] != m.unit
+    ):
+        raise OpError(
+            f"set_measure: {block}.{name} takes its unit from measurand "
+            f"{m.measurand!r} ({m.unit or 'categorical'!r}) — set measurand= "
+            "to change what it measures, or remove_measure + add_measure "
+            "with unit= for a plain registry unit"
+        )
     merged_value: float | None = fields.get("value", m.value)
     merged_min: float | None = fields.get("min_value", m.min_value)
     merged_max: float | None = fields.get("max_value", m.max_value)
+    _check_categorical(
+        fields.get("measurand", m.measurand),
+        fields.get("unit", m.unit),
+        value=merged_value,
+        min_value=merged_min,
+        max_value=merged_max,
+        relation=fields.get("relation", m.relation),
+        opname="set_measure",
+    )
     _check_band(merged_value, merged_min, merged_max, opname="set_measure")
+    if "datum" in fields:
+        from precis_se.datums import same_region
+
+        if not same_region(fields["datum"], m.datum) and "datum_pin" not in fields:
+            # New region, new indices: the old pin described the old one.
+            # The store-aware walker re-stamps it for an atoms:/sites: datum.
+            fields["datum_pin"] = None
+    _check_pin_applies(
+        fields.get("datum", m.datum),
+        fields.get("datum_pin", m.datum_pin),
+        opname="set_measure",
+    )
     if merged_min is not None and merged_max is not None and merged_min > merged_max:
         raise OpError(
             "set_measure: the merged 'min' exceeds the merged 'max' — "
@@ -1796,6 +2017,218 @@ def _op_remove_measure(tree: SeTree, op: dict[str, Any]) -> None:
             f"Measures on {block!r}: {roster}"
         )
     tree.measures.remove(m)
+
+
+# ── pockets (precis_se.pockets) ───────────────────────────────────────────
+
+#: Keys an inline region measure may carry — ``add_measure``'s own minus
+#: the two the region fills in (``block``, ``datum``).
+_REGION_MEASURE_KEYS = frozenset(
+    {
+        "name",
+        "value",
+        "min",
+        "max",
+        "relation",
+        "strength",
+        "reason",
+        "origin",
+        "unit",
+        "measurand",
+    }
+)
+
+
+def _pocket_shared(tree: SeTree, op: dict[str, Any], *, opname: str) -> tuple[str, str]:
+    """``block``/``name`` for every pocket op: an ordinary block (pockets,
+    like measures, live on the template) and a dot-free pocket name."""
+    block = _require_block(tree, op, "block", opname)
+    node = tree.blocks[block]
+    if node.template is not None:
+        raise OpError(
+            f"block {block!r} is an instance (of {node.template!r}) — "
+            "pockets live on the template (same rule as measures/ports); "
+            f"{opname} on {node.template!r} instead"
+        )
+    name = _require_name(op, "name", opname)
+    if "." in name:
+        raise OpError(
+            f"{opname} 'name' must not contain '.': {name!r} — "
+            "'block.pocket' addressing reserves it"
+        )
+    return block, name
+
+
+def _vet_pocket_shape(raw: Any, *, opname: str) -> str:
+    """A cad-DSL envelope string (block-local frame) or ``'hull'``."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise OpError(
+            f"{opname} 'shape' must be a cad DSL string (e.g. "
+            f"'sphere:r5e-10') or {HULL!r}, got {raw!r}"
+        )
+    shape = raw.strip()
+    if shape != HULL:
+        _validate_envelope(shape)
+    return shape
+
+
+def _vet_regions(raw: Any, *, opname: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    """``[{selector, measures?}]`` → ``[(selector, [inline measure ops])]``.
+    Selectors are strict on shape (:func:`precis_se.datums.parse_selector`)
+    and unique per pocket; inline measures may not name ``block``/
+    ``datum`` (the region supplies both)."""
+    from precis_se.datums import parse_selector
+
+    if not isinstance(raw, list):
+        raise OpError(
+            f"{opname} 'regions' must be a list of {{'selector', 'measures'?}} "
+            f"objects, got {raw!r}"
+        )
+    out: list[tuple[str, list[dict[str, Any]]]] = []
+    seen: list[Any] = []
+    for i, region in enumerate(raw):
+        if not isinstance(region, dict):
+            raise OpError(f"{opname} regions[{i}] must be an object, got {region!r}")
+        strays = sorted(set(region) - {"selector", "measures"})
+        if strays:
+            raise OpError(
+                f"{opname} regions[{i}]: unknown key(s) {', '.join(strays)} — a "
+                "region is {'selector': <datum selector>, 'measures'?: [...]}"
+            )
+        sel_raw = region.get("selector")
+        if not isinstance(sel_raw, str) or not sel_raw.strip():
+            raise OpError(
+                f"{opname} regions[{i}] needs 'selector' (patch:/ring:/sites:/"
+                f"atoms: or any datum selector), got {sel_raw!r}"
+            )
+        selector = sel_raw.strip()
+        try:
+            parsed = parse_selector(selector)
+        except MeasureError as exc:
+            raise OpError(f"{opname} regions[{i}]: {exc}") from exc
+        if parsed in seen:
+            raise OpError(
+                f"{opname}: region {selector!r} is listed twice — one region "
+                "per selector; put every measure for it in one 'measures' list"
+            )
+        seen.append(parsed)
+        measures_raw = region.get("measures") or []
+        if not isinstance(measures_raw, list):
+            raise OpError(
+                f"{opname} regions[{i}] 'measures' must be a list of "
+                f"add_measure field objects, got {measures_raw!r}"
+            )
+        inline: list[dict[str, Any]] = []
+        for j, spec in enumerate(measures_raw):
+            if not isinstance(spec, dict):
+                raise OpError(
+                    f"{opname} regions[{i}].measures[{j}] must be an object, "
+                    f"got {spec!r}"
+                )
+            bad = sorted(set(spec) - _REGION_MEASURE_KEYS)
+            if bad:
+                raise OpError(
+                    f"{opname} regions[{i}].measures[{j}]: key(s) "
+                    f"{', '.join(bad)} not accepted — the region supplies "
+                    "block and datum; the rest are add_measure's fields "
+                    f"({', '.join(sorted(_REGION_MEASURE_KEYS))})"
+                )
+            inline.append(dict(spec))
+        out.append((selector, inline))
+    return out
+
+
+def _add_region_measures(
+    tree: SeTree,
+    block: str,
+    regions: list[tuple[str, list[dict[str, Any]]]],
+    *,
+    opname: str,
+) -> None:
+    """Write every inline region measure through ``add_measure`` — all or
+    nothing: a refusal restores the measure list before re-raising."""
+    before = list(tree.measures)
+    try:
+        for selector, inline in regions:
+            for spec in inline:
+                _op_add_measure(
+                    tree,
+                    {**spec, "op": "add_measure", "block": block, "datum": selector},
+                )
+    except OpError as exc:
+        tree.measures[:] = before
+        raise OpError(f"{opname}: {exc}") from exc
+
+
+def _find_pocket(tree: SeTree, block: str, name: str, *, opname: str) -> PocketSpec:
+    pocket = tree.blocks[block].pockets.get(name)
+    if pocket is None:
+        roster = ", ".join(sorted(tree.blocks[block].pockets)) or "(none)"
+        raise OpError(
+            f"{opname}: no pocket {name!r} on block {block!r}. Pockets on "
+            f"{block!r}: {roster}"
+        )
+    return pocket
+
+
+def _op_add_pocket(tree: SeTree, op: dict[str, Any]) -> None:
+    """Mint a named pocket on a block (:mod:`precis_se.pockets`): optional
+    ``shape`` (cad DSL or ``'hull'``) and ``regions``
+    ``[{selector, measures?}]`` — each inline measure is an ``add_measure``
+    written with the pocket's block and the region's selector as datum."""
+    block, name = _pocket_shared(tree, op, opname="add_pocket")
+    node = tree.blocks[block]
+    if name in node.pockets:
+        raise OpError(
+            f"duplicate pocket on block {block!r}: {name!r} (pocket names are "
+            "unique per block; set_pocket to change it)"
+        )
+    shape = (
+        _vet_pocket_shape(op["shape"], opname="add_pocket")
+        if op.get("shape") is not None
+        else None
+    )
+    regions = _vet_regions(op.get("regions") or [], opname="add_pocket")
+    _add_region_measures(tree, block, regions, opname="add_pocket")
+    node.pockets[name] = PocketSpec(
+        name=name, shape=shape, regions=[sel for sel, _ in regions]
+    )
+
+
+def _op_set_pocket(tree: SeTree, op: dict[str, Any]) -> None:
+    """Presence-based update: ``shape`` replaces the shape, ``regions``
+    replaces the region list (its inline measures are added; existing
+    measures keep their datum and rejoin whichever region names it). No
+    explicit nulls — remove_pocket + add_pocket to drop a field."""
+    block, name = _pocket_shared(tree, op, opname="set_pocket")
+    pocket = _find_pocket(tree, block, name, opname="set_pocket")
+    if "shape" not in op and "regions" not in op:
+        raise OpError("set_pocket needs at least one of shape/regions")
+    nulled = [k for k in ("shape", "regions") if k in op and op[k] is None]
+    if nulled:
+        raise OpError(
+            f"set_pocket cannot clear {', '.join(nulled)} with null — "
+            "remove_pocket + add_pocket to drop a field"
+        )
+    shape = (
+        _vet_pocket_shape(op["shape"], opname="set_pocket") if "shape" in op else None
+    )
+    regions = (
+        _vet_regions(op["regions"], opname="set_pocket") if "regions" in op else None
+    )
+    if regions is not None:
+        _add_region_measures(tree, block, regions, opname="set_pocket")
+        pocket.regions = [sel for sel, _ in regions]
+    if shape is not None:
+        pocket.shape = shape
+
+
+def _op_remove_pocket(tree: SeTree, op: dict[str, Any]) -> None:
+    """Drop a pocket. Its region measures are ordinary measures and stay
+    (remove_measure each to drop them)."""
+    block, name = _pocket_shared(tree, op, opname="remove_pocket")
+    _find_pocket(tree, block, name, opname="remove_pocket")
+    del tree.blocks[block].pockets[name]
 
 
 def _template_owned(tree: SeTree, name: str, *, opname: str, what: str) -> SeBlock:
@@ -3643,6 +4076,9 @@ _OPS = {
     "add_measure": _op_add_measure,
     "set_measure": _op_set_measure,
     "remove_measure": _op_remove_measure,
+    "add_pocket": _op_add_pocket,
+    "set_pocket": _op_set_pocket,
+    "remove_pocket": _op_remove_pocket,
     "set_mode": _op_set_mode,
     "set_binding": _op_set_binding,
     "set_process_override": _op_set_process_override,

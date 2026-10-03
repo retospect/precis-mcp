@@ -135,6 +135,37 @@ derived value falling outside it, else ``relation.tol`` around the
 declared value, else exact. ``d_measure`` central-differences over the
 envelope params.
 
+**Region properties** (docs/backlog/se-region-property-layer.md, slice A;
+skill ``precis-se-regions-help``): a measure may name a ``measurand`` — a
+``taxon`` node under the ``measurand`` start node, seeded by core
+migration ``0182_se_measurand_seed.sql`` — resolved at write through
+:attr:`~precis_se.ops.SeTree.measurands`
+(:mod:`precis_se.properties.measurand`) and snapshotted onto the row
+(slug + taxon ref id in ``se_measures.measurand``/``measurand_ref_id``,
+the se unit in ``unit``; migration ``0018_se_regions.sql``). The datum
+grammar gains region selectors (``patch:``, ``ring:`` resolved on the cad
+envelope; ``sites:``, ``atoms:`` parsed, resolution deferred to the bound
+structure). :mod:`precis_se.pockets` names a set of regions plus a shape
+on a block (``add_pocket``/``set_pocket``/``remove_pocket``, table
+``se_pockets``, ``view='pockets'``); a region's measures are derived from
+their ``datum``. :data:`precis_se.properties.COMPUTERS` is the empty
+registry slice B fills; until then DRC's ``measurand_unchecked`` names
+every measure nothing computes.
+
+Review-fix rules on top of that (all in :mod:`precis_se.datums` unless
+noted): a measure's taxon ref id is its identity, its slug a name —
+``MeasureSpec.measurand_live`` is refreshed by id on load while the
+``measurand`` snapshot keys the registries; ``atoms:``/``sites:`` indices
+are **pinned** to the bound structure's version
+(``MeasureSpec.datum_pin``, ``se_measures.datum_pin``, stamped by
+:func:`~precis_se.datums.stamp_region_pins` after the op walk in
+:func:`precis_se.atomic.apply.apply_ops_with_atomic`; a stale pin replaces
+the "not loaded" note and the handler adds ``region_pin_stale``); the
+store-free DRC adds ``datum_unresolved`` and ``patch_exceeds_face``; patch
+``u`` falls back to block ``+y`` within :data:`~precis_se.datums.U_FALLBACK_DEG`
+of ±x; a non-rectangular face says "bounds approximate"; block names may
+not contain ``/ @ [ ]`` (:data:`~precis_se.ops.BLOCK_NAME_RESERVED`).
+
 **Off-the-shelf rung 1** (docs/backlog/se-off-the-shelf-fabrication.md,
 migration ``0003_se_bom.sql``) adds the layer for things you *don't*
 make: :mod:`precis_se.bom` (a bought ``component``/``part`` hung off a

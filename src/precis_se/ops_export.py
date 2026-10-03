@@ -48,6 +48,14 @@ rendered header prints):
   ``bind_structure`` op, which the handler intercepts before ``apply_ops``
   sees it; reproducing them needs the target database to hold the same
   ``structure`` design.
+* **Measurand ids.** A measure written with ``measurand=`` exports its
+  taxon *slug*; replay re-resolves it, so a copy into another database
+  gets that database's node (or a loud refusal when the slug is unknown or
+  ambiguous there).
+* **Pocket removals.** Like every ``remove_*``, ``remove_pocket`` never
+  appears; a pocket's region measures are ordinary measures and replay
+  as such (:mod:`precis_se.pockets` — membership is derived from
+  ``datum``).
 """
 
 from __future__ import annotations
@@ -55,6 +63,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis_se.measures import measurand_name
 from precis_se.ops import SeTree
 
 #: The stated gaps, in the order the rendered header prints them. Kept
@@ -73,6 +82,10 @@ NOT_CARRIED: tuple[str, ...] = (
     "own; re-run layout_chain after the replay",
     "note timestamps — persist stamps created_at on first save, so a "
     "copied ledger is dated when the copy was written, not the original",
+    "measurand taxon ids — a measure carries its measurand's slug, re-resolved "
+    "on replay; the target database needs the same measurand nodes",
+    "remove_pocket — final state only; a removed pocket's region measures "
+    "stay as ordinary measures (remove_pocket never drops them)",
 )
 
 
@@ -326,8 +339,18 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
                 min=m.min_value,
                 max=m.max_value,
                 origin=m.origin,
-                unit=m.unit,
+                # A measurand measure's unit is the measurand's snapshot,
+                # which add_measure re-derives (and would refuse as unit=
+                # whenever it is outside the m|count|ratio|deg registry).
+                # The slug is the portable name; the ref id is re-resolved.
+                unit=m.unit if m.measurand is None else None,
+                # the slug as the taxon reads NOW — the snapshot may have
+                # been renamed away, and replay re-resolves by name
+                measurand=measurand_name(m),
                 datum=m.datum,
+                # carried verbatim, so a replay keeps the indices' version
+                # (a copy bound to another structure shows region_pin_stale)
+                datum_pin=m.datum_pin,
             )
         )
     for b in tree.bom:
@@ -381,6 +404,28 @@ def _ledger_ops(tree: SeTree) -> list[dict[str, Any]]:
     return ops
 
 
+def _pocket_ops(tree: SeTree) -> list[dict[str, Any]]:
+    """One ``add_pocket`` per pocket, regions as bare selectors: a
+    region's measures are ordinary measures (already emitted by
+    :func:`_ledger_ops` with the region's selector as ``datum``), and
+    membership is derived from that datum on replay — emitting them
+    inline as well would mint each twice."""
+    ops: list[dict[str, Any]] = []
+    for name in _block_order(tree):
+        node = tree.blocks[name]
+        for pocket in node.pockets.values():
+            ops.append(
+                _op(
+                    "add_pocket",
+                    block=name,
+                    name=pocket.name,
+                    shape=pocket.shape,
+                    regions=[{"selector": s} for s in pocket.regions],
+                )
+            )
+    return ops
+
+
 def external_refs(tree: SeTree) -> list[str]:
     """Refs in OTHER kinds this design resolves at load time, as
     ``'kind:slug'`` — component/part/cad/structure bindings, and the
@@ -424,6 +469,7 @@ def design_ops(tree: SeTree) -> list[dict[str, Any]]:
         *_connect_ops(tree),
         *_facet_ops(tree),
         *_ledger_ops(tree),
+        *_pocket_ops(tree),
     ]
 
 

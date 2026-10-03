@@ -83,6 +83,13 @@ log = logging.getLogger(__name__)
 #: mechanism by design.
 _SKILL_INDEX_MAX: int = 160
 
+#: Slugs the truncation may never evict. The cap trims alphabetically, so
+#: every new ``precis-s*`` skill pushes ``precis-todo-tree-help`` one place
+#: nearer the edge — it fell off on 2026-07-29 (``component`` skill) and
+#: again on 2026-10-03 (``precis-se-regions-help``). Bumping the cap each
+#: time is not a fix; keeping the planner's manual in the index is.
+_SKILL_INDEX_ALWAYS: frozenset[str] = frozenset({"precis-todo-tree-help"})
+
 
 @dataclass(frozen=True)
 class PlannerPrompts:
@@ -218,7 +225,11 @@ def _build_skill_index(store: Store | None = None) -> str:
         entries.append((slug, summary))
     entries.sort(key=lambda e: e[0])
     if len(entries) > _SKILL_INDEX_MAX:
-        entries = entries[:_SKILL_INDEX_MAX]
+        # Keep the always-listed slugs even when they sort past the cap;
+        # they displace the last alphabetical entries, not each other.
+        pinned = [e for e in entries[_SKILL_INDEX_MAX:] if e[0] in _SKILL_INDEX_ALWAYS]
+        entries = entries[: _SKILL_INDEX_MAX - len(pinned)] + pinned
+        entries.sort(key=lambda e: e[0])
     import textwrap
 
     # break_on_hyphens=False is load-bearing: every slug is hyphenated

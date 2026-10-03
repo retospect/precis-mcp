@@ -61,6 +61,11 @@ end state — what "this thread is done" looks like — and points at the
 document that holds it where one exists. A thread whose end state cannot
 be tied to `docs/mission.md` in a clause is a chore list, not a thread.
 The second says where the thread stands and the rule that orders the list.
+Wherever a thread file says how far out something is — Status, a why-line,
+a Resume block, an eta for the round — the unit is builds or dev cycles
+("slice 2: one build; hero: ~3 cycles"), never a calendar date. Reto,
+2026-10-03: date estimates are time wasted; the number of builds out is
+the estimate he reads.
 
 **Horizon** is the longer-range plan: the ordered milestones that come
 after `## Do next` empties — spec sections, multi-slice items, ADRs, named

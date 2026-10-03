@@ -42,6 +42,7 @@ from precis_se.ops_export import (
     render_ops,
 )
 from precis_se.persist import tree_to_json
+from precis_se.pockets import PocketSpec
 
 
 def _tree(ops: list[dict[str, Any]]) -> SeTree:
@@ -517,6 +518,8 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "pending_state_poses": "derived",
         "pending_states": "derived",
         "pending_transitions": "derived",
+        # add_pocket, emitted per pocket after the measures
+        "pockets": "op",
         "ports": "op",
         "posed_by_state": "derived",
         # the COMPOSED world placement; local_pose/local_rot above are the
@@ -558,7 +561,18 @@ _VERDICTS: dict[str, dict[str, str]] = {
     "MeasureSpec": {
         "block": "op",
         "datum": "op",
+        # add_measure accepts it; the export emits it so a replay keeps the
+        # structure version the atoms:/sites: indices were declared against
+        "datum_pin": "op",
         "max_value": "op",
+        # emitted as the slug; replay re-resolves it (and re-derives unit)
+        "measurand": "op",
+        # derived: the taxon's slug as it reads now, refreshed on load; the
+        # export emits that name (through ``measurand``), never this field
+        "measurand_live": "derived",
+        # re-resolved from the slug on replay — the same node in the same
+        # database; NOT_CARRIED names the cross-database caveat
+        "measurand_ref": "op",
         "min_value": "op",
         "name": "op",
         "origin": "op",
@@ -589,6 +603,7 @@ _VERDICTS: dict[str, dict[str, str]] = {
         "origin": "op",
         "re": "op",
     },
+    "PocketSpec": {"name": "op", "regions": "op", "shape": "op"},
     "ThreadingSpec": {"a": "op", "b": "op"},
     "DomainSpec": {
         "end": "op",
@@ -615,6 +630,7 @@ _RECORDS = {
     "MeasureSpec": MeasureSpec,
     "BomLine": BomLine,
     "NoteSpec": NoteSpec,
+    "PocketSpec": PocketSpec,
     "ThreadingSpec": ThreadingSpec,
     "DomainSpec": DomainSpec,
 }
