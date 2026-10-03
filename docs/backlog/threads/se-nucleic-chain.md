@@ -25,7 +25,8 @@ blocked.
 
 **Resume (2026-10-03):** staple-sequence fill and the orderable strand
 list are deployed (rounds 1–2) and dogfooded on prod; the order refusal's
-repair hint is fixed but not yet deployed (round 3). Do-next 1 is blocked on
+repair hint is deployed (round 3, 929107f3) and dogfooded on prod 2026-10-03
+20:38Z: its `next:` ran verbatim restored all 6 rows. Do-next 1 is blocked on
 hexfold-integration; no review item is open. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
@@ -87,6 +88,10 @@ worktree's code against the prod DB (not the deployed code).
   which refuses once every strand is sequenced — fixed in the commit that
   added this sentence (it now lists one `strand=…, overwrite=true` op per
   sequenced bad strand); the design was repaired by those two ops.
+  Deployed round 3 (929107f3) and dogfooded on prod 2026-10-03: the same
+  injection's refusal listed `fill_complement` with `strand='st3'` and
+  `strand='st4'`, both `overwrite=True`; run verbatim, the export was back
+  to the 6 original rows.
 
 - **staple sequences** — shipped 2026-10-02 in the commit that added this
   line (backlog item deleted): `fill_complement` (pure op; `strand=` or
