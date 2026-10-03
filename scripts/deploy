@@ -300,6 +300,15 @@ _rollout_converged() {
     return 0
 }
 
+# A render worktree deleted under a running ansible surfaces only as a bare
+# `[Errno 2] No such file or directory` on some playbook path (2026-09-27, and
+# again 2026-09-29 as `os.getcwd()`), and the ping step below reads it as "a
+# host is unreachable". Name the real cause whenever ansible fails.
+_say_if_render_tree_gone() {
+    [[ -n "$_DEPLOY_TREE" && ! -d "$_DEPLOY_TREE" ]] || return 0
+    say "the render worktree ${_DEPLOY_TREE} is GONE — ansible lost its playbooks mid-run, so the missing-file error above is that, not a host fault. Something outside this deploy deleted it (a worktree reaper, or a run that judged this one dead). Hosts may be half-converged: re-run the same pinned sha."
+}
+
 # Run one redeploy-precis.yml invocation. Its combined output is ALSO tee'd
 # to $play_out (a scratch capture, separate from the whole-script tee already
 # flowing to console + the deploy log) purely so _rollout_converged can parse
@@ -320,6 +329,7 @@ _run_rollout_playbook() {
     if ! PYTHONUNBUFFERED=1 ansible-playbook "$@" 2>&1 | tee "$play_out"; then
         rc=1
     fi
+    [[ "$rc" -eq 0 ]] || _say_if_render_tree_gone
     if [[ "$rc" -ne 0 ]] && _rollout_converged "$play_out"; then
         say "redeploy-precis.yml exited non-zero, but every rollout host (${ROLLOUT_HOSTS}) converged clean in its own PLAY RECAP line — recording the deploy-state marker before reporting the failure (gr332009)"
         _write_deploy_state_marker
@@ -338,11 +348,21 @@ _run_rollout_playbook() {
 # every worktree of this repo shares one lock. mkdir is the atomic acquire
 # (macOS ships no flock); a dead holder's lock is stolen.
 _LOCK_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/precis-deploy.lock"
+# Does pid $1 exist, whoever owns it? `kill -0` alone answers "may I signal
+# it": for a live pid owned by another user it fails with EPERM, which a bare
+# `kill -0` check reads as dead — and then steals a live deploy's lock or
+# deletes its render tree. This controller runs deploys as both `reto` and
+# `deploy`. EPERM means the process exists; only ESRCH means it is gone.
+_pid_alive() {
+    local err
+    err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
+    [[ "$err" == *"not permitted"* ]]
+}
 _acquire_deploy_lock() {
     local wait="${PRECIS_DEPLOY_LOCK_WAIT:-1800}" waited=0 holder
     while ! mkdir "$_LOCK_DIR" 2>/dev/null; do
         holder="$(cat "${_LOCK_DIR}/pid" 2>/dev/null || true)"
-        if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+        if [[ -n "$holder" ]] && ! _pid_alive "$holder"; then
             say "stealing deploy lock from dead pid ${holder}"
             rm -rf "$_LOCK_DIR"
             continue
@@ -434,7 +454,7 @@ if [[ -n "${PRECIS_DEPLOY_FROM_TREE-1}" && "$REF" =~ ^[0-9a-f]{40}$ ]]; then
         [[ -d "$_stale" ]] || continue
         _stale_pid="${_stale##*-}"
         # Still running (and not us): another deploy legitimately owns it.
-        if [[ "$_stale_pid" != "$$" ]] && kill -0 "$_stale_pid" 2>/dev/null; then
+        if [[ "$_stale_pid" != "$$" ]] && _pid_alive "$_stale_pid"; then
             continue
         fi
         git -C "$REPO_ROOT" worktree unlock "$_stale" 2>/dev/null || true
@@ -603,6 +623,7 @@ _PING_OUT="/tmp/precis-deploy-ping.$$"
 ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >"$_PING_OUT" 2>&1 || {
     cat "$_PING_OUT" >&2
     rm -f "$_PING_OUT"
+    _say_if_render_tree_gone
     die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
 }
 # gr332009: the rollout-host set _run_rollout_playbook checks convergence

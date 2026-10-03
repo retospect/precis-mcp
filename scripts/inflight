@@ -69,11 +69,19 @@ trunc() { # trunc <string> <max>
   if [ "${#s}" -gt "$n" ]; then printf '%s…' "${s:0:$((n-1))}"; else printf '%s' "$s"; fi
 }
 
+pid_alive() { # pid_alive <pid> — exists, whoever owns it. A bare `kill -0`
+  # fails with EPERM on another user's live pid (deploys run as `deploy` too),
+  # which would bucket that user's locked tree dead-lock → removable.
+  local err
+  err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
+  [[ "$err" == *"not permitted"* ]]
+}
+
 session_field() { # session_field <locked-reason>
   local locked=$1 pid=""
   [[ "$locked" =~ pid[[:space:]]+([0-9]+) ]] && pid="${BASH_REMATCH[1]}"
   if [ -n "$pid" ]; then
-    if kill -0 "$pid" 2>/dev/null; then printf 'live#%s' "$pid"; else printf 'dead-lock#%s' "$pid"; fi
+    if pid_alive "$pid"; then printf 'live#%s' "$pid"; else printf 'dead-lock#%s' "$pid"; fi
   elif [ -n "$locked" ]; then printf 'locked'
   else printf '—'; fi
 }

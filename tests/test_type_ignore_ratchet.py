@@ -46,7 +46,7 @@ _IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 # every handler link carries. Then 157 -> 142 and tests 244 -> 240: shapely
 # joined pyproject's mypy ignore_missing_imports overrides, retiring every
 # per-import `import-untyped` ignore on it.
-CEILINGS = {"src": 142, "tests": 240}
+CEILINGS = {"src": 142, "tests": 214}
 
 
 def _count(tree: str) -> Counter[str]:
