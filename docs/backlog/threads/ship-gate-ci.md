@@ -21,7 +21,12 @@ green or the reverse), then tuning and residue.
    walk with a looked-none exit 2; `scripts/round gate|deploy`; design note
    + verdict in `reviews/ship-gate-ci*.md`). Acceptance met 2026-10-03:
    all six main pushes 12:16–12:40Z completed, none cancelled (four inside
-   5 min); f953a5fae was the first green candidate. Open: (b) one week of
+   5 min); f953a5fae was the first green candidate. Prod dogfood 13:55Z:
+   round 2 deployed 63301c5c, whose verdict was fully green (lint + 6
+   shards), and `gated` = `prod` = 63301c5c. The next main push had a green
+   verdict 0.2 h after it landed, and `plan` resolved the last green sha
+   over GraphQL under `checks: read` (run 37125755551:
+   `range=f953a5fae..HEAD`). Open: (b) one week of
    `ci/**` queue delay (created → first job started) before vs after,
    reported here; (c) Reto's max-candidate-age ruling changes only
    `DEFAULT_MAX_CANDIDATE_HOURS`. Baseline: 0 of main's 52 commits in the
