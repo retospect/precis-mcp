@@ -628,7 +628,7 @@ class TestSupplyEscalation:
         self._dry_tick(store, root, fn, "q1")
         assert fn.seen == [False]
         assert _supply_metas(store, cap, "supply_outcome") == [
-            {"key": KEY, "dry": True, "external": False, "queries": ["q1"]}
+            {"v": 2, "key": KEY, "dry": True, "external": False, "queries": ["q1"]}
         ]
         assert "outside searched: no" in _entries(store, cap, "observation")[-1].text
 
@@ -637,6 +637,7 @@ class TestSupplyEscalation:
         assert fn.seen == [False, True]
         assert fn.force_external is False
         assert _supply_metas(store, cap, "supply_outcome")[-1] == {
+            "v": 2,
             "key": KEY,
             "dry": True,
             "external": True,
@@ -702,6 +703,7 @@ class TestSupplyEscalation:
         self._dry_tick(store, root, fn, "q2")
         assert fn.seen == [False, True]
         assert _supply_metas(store, cap, "supply_outcome")[-1] == {
+            "v": 2,
             "key": KEY,
             "dry": True,
             "external": False,
@@ -711,14 +713,102 @@ class TestSupplyEscalation:
         last = _entries(store, cap, "observation")[-1].text
         assert "outside search failed: HTTPError: 429" in last
 
-        # Failed outside searches keep the key escalating and never reach the
-        # two-tick "not found outside" verdict.
+        # A failed outside search never reaches the two-tick "not found
+        # outside" verdict, however many there are.
         for q in ("q3", "q4", "q5"):
             self._dry_tick(store, root, fn, q)
-        assert fn.seen == [False, True, True, True, True]
         assert ledger.supply_history(store, cap, KEY).ext_dry == 0
         assert _supply_metas(store, cap, "supply_not_found_outside") == []
         assert "not found outside" not in _unmet_gap_detail(store, root)
+
+    def test_failed_outside_searches_stop_escalation_and_log_once(
+        self, store: Any
+    ) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _FailingOutsideSearch()
+
+        self._dry_tick(store, root, fn, "q1")  # local-first
+        self._dry_tick(store, root, fn, "q2")  # escalated, fails
+        h = ledger.supply_history(store, cap, KEY)
+        assert (h.ext_failed, h.ext_failed_error) == (1, "HTTPError: 429")
+        assert _supply_metas(store, cap, "supply_outside_failed") == []
+        self._dry_tick(store, root, fn, "q3")  # escalated, fails
+        assert fn.seen == [False, True, True]
+        assert _supply_metas(store, cap, "supply_outside_failed") == []
+        assert "outside search failed (" not in _unmet_gap_detail(store, root)
+
+        # Two failures: the next tick is local-first, the entry is logged once.
+        self._dry_tick(store, root, fn, "q4")
+        assert fn.seen == [False, True, True, False]
+        assert fn.force_external is False
+        (of,) = _supply_metas(store, cap, "supply_outside_failed")
+        assert of == {"key": KEY, "error": "HTTPError: 429", "ticks": 2}
+        failed_text = [
+            e.text
+            for e in _entries(store, cap, "observation")
+            if "escalation stopped" in e.text
+        ]
+        assert len(failed_text) == 1
+        assert "outside search failed on 2 escalated supply ticks" in failed_text[0]
+        assert "HTTPError: 429" in failed_text[0]
+        assert _unmet_gap_detail(store, root).endswith(
+            "; outside search failed (2 ticks: HTTPError: 429)"
+        )
+        assert ledger.outside_failed_note(store, cap, KEY).startswith(
+            "; outside search failed (2 ticks"
+        )
+        assert ledger.outside_failed_note(store, cap, "other") == ""
+
+        # Later dry ticks stay local-first and do not log again; the stop
+        # claims nothing about the literature.
+        self._dry_tick(store, root, fn, "q5")
+        self._dry_tick(store, root, fn, "q6")
+        assert fn.seen == [False, True, True, False, False, False]
+        assert len(_supply_metas(store, cap, "supply_outside_failed")) == 1
+        assert _supply_metas(store, cap, "supply_not_found_outside") == []
+        assert "not found outside" not in _unmet_gap_detail(store, root)
+
+        # A tick that writes a supply clears the stop and the failure count.
+        paper = seed_paper(
+            store,
+            cite_key="dna23",
+            body="DNA origami placement achieved 2.1 nm positional accuracy.",
+        )
+        fn.hits = [(paper, 1.0)]
+        client = ScriptedClient(
+            {"searches": ["q7"]},
+            {
+                "findings": [
+                    {
+                        "claim": "DNA origami placement achieves 2.1 nm accuracy",
+                        "value": 2.1,
+                        "paper": f"pa{paper}",
+                        "quote": "DNA origami placement achieved 2.1 nm positional accuracy.",
+                    }
+                ]
+            },
+        )
+        result = rt.roadmap_tick(store, client, root, search_fn=fn)
+        assert result["supply_written"]["value"] == 2.1
+        assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
+        assert "outside search failed (" not in _unmet_gap_detail(store, root)
+
+    def test_every_supply_outcome_carries_the_version(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _SpySearch()
+        for q in ("q1", "q2", "q3"):
+            self._dry_tick(store, root, fn, q)
+        outcomes = _supply_metas(store, cap, "supply_outcome")
+        assert len(outcomes) == 3
+        assert (
+            [o["v"] for o in outcomes]
+            == [ledger.SUPPLY_OUTCOME_VERSION] * 3
+            == [
+                2,
+                2,
+                2,
+            ]
+        )
 
     def test_plain_search_fn_is_never_escalated(self, store: Any) -> None:
         root, cap = make_root(store, demand=2.0, supply=None)
@@ -776,6 +866,60 @@ class TestSupplyEscalation:
         _outcome(dry=False, external=False, q="wrote again")
         assert ledger.supply_history(store, cap, KEY).not_found_queries is None
         assert ledger.not_found_outside_note(store, cap, KEY) == ""
+
+    def test_history_counts_failed_outside_searches_in_the_streak(
+        self, store: Any
+    ) -> None:
+        _root, cap = make_root(store, demand=2.0, supply=None)
+
+        def _log(meta_key: str, payload: dict[str, Any]) -> None:
+            append_entry(
+                store,
+                cap,
+                text="x",
+                entry_type="observation",
+                by="agent",
+                extra_meta={meta_key: payload},
+            )
+
+        def _outcome(**kw: Any) -> None:
+            _log("supply_outcome", {"key": KEY, "queries": [], **kw})
+
+        _outcome(dry=True, external=False, external_error="old error")
+        _outcome(dry=False, external=False)  # resets the failure count
+        _outcome(dry=True, external=False)  # local-first tick: not a failure
+        _outcome(dry=True, external=False, external_error="HTTPError: 429")
+        _outcome(dry=True, external=False, external_error="ImportError: s2")
+        _outcome(dry=True, external=True)  # an unversioned row, taken as written
+        h = ledger.supply_history(store, cap, KEY)
+        assert (h.streak, h.ext_failed, h.ext_failed_error) == (
+            4,
+            2,
+            "ImportError: s2",
+        )
+        assert h.ext_dry == 1
+        assert h.outside_failed_ticks is None
+        assert ledger.outside_failed_note(store, cap, KEY) == ""
+
+        _log(
+            "supply_outside_failed",
+            {"key": KEY, "error": "ImportError: s2", "ticks": 2},
+        )
+        h = ledger.supply_history(store, cap, KEY)
+        assert (h.outside_failed_ticks, h.outside_failed_error) == (
+            2,
+            "ImportError: s2",
+        )
+        assert ledger.outside_failed_note(store, cap, KEY) == (
+            "; outside search failed (2 ticks: ImportError: s2)"
+        )
+        assert ledger.outside_notes(store, cap, KEY) == (
+            "; outside search failed (2 ticks: ImportError: s2)"
+        )
+        _outcome(dry=False, external=False)
+        h = ledger.supply_history(store, cap, KEY)
+        assert (h.ext_failed, h.outside_failed_ticks) == (0, None)
+        assert ledger.outside_notes(store, cap, KEY) == ""
 
 
 class TestCheckSupplyQuote:

@@ -10,14 +10,21 @@ deed, and neither fail signal fired. Four watched ticks ran; qu453863 was
 tagged `STATUS:active` 2026-10-02 ~02:00Z (no ask, thresholds.md) and now
 ticks unattended. The unattended ticks (04:24–09:57Z 10-02) proved the
 embedder fix live but exposed a supply defect: both cited supply numbers
-are one misread value (see Do next 1). Next evidence: a supply tick after
+are one misread value (see Do next 2). Next evidence: a supply tick after
 the extraction-window fix deploys.
 **Resume (parked 2026-10-03, TIER 3 per Reto's priority review):** start no
 new slice until the organizer reopens this thread. Round 2 (63301c5c) is
 DEPLOYED since 13:49Z 10-03. It carries the verbatim-quote check
 (c12912cb5), the dry-tick escalation (38a575586) and gr462891's ledger fix
-(9ef609810). qu453863 (Bootstrap roadmap root) keeps ticking unattended;
-Do next 3's fail signals are the only reason to act before reopen.
+(9ef609810). qu453863 (Bootstrap roadmap root) is NOT ticking hourly. Its
+last quest_tick, job 462364, ended dry at 21:26Z 10-02, its third dry
+rest in a row. By design (`quest/loop.py::_dry_rest_escalation_active`),
+that holds it out of re-minting for 24h and fires the operator alert
+`quest:dry-rest/453863`. So while every tick is dry, the root ticks about
+once a day. This already caps supply spend; Do next 1 is about coverage
+(the daily tick keeps landing on the same exhausted key). Check that a
+quest_tick re-mints after ~21:26Z 10-03. Do next 4's fail signals are the
+only other reason to act before reopen.
 
 Dogfood 2026-10-03, two CLI ticks via `scripts/prod-precis quest tick
 453863` from this tree fast-forwarded to 63301c5c:
@@ -27,16 +34,29 @@ Dogfood 2026-10-03, two CLI ticks via `scripts/prod-precis quest tick
   `supply_outcome` entry, `dry (outside searched: no)`, so escalation is
   armed. The quote check was not exercised: no finding was proposed. The
   linked papers are off-topic (pa5696, an encyclopedia; pa161500, on
-  multivesicles), which is the local leg admitting anything (Do next 2).
+  multivesicles), which is the local leg admitting anything (Do next 3).
 - **Tick 2 (13:58Z): escalated, the first time the outside leg was forced.**
   It crashed with `ModuleNotFoundError: semanticscholar`: the S2 client is
   the `[paper]` extra and the host venv lacks it. The prod worker venv
   installs `precis-mcp[paper,pourbaix]`, so unattended worker ticks are not
   affected. Nothing was written and qu453863 stays active.
-- **Fixed in round 3** (this commit): the S2 import sits inside the
+- **Fixed in round 3** (a3806549f): the S2 import sits inside the
   external leg's error guard, and an outside search that errored no longer
   counts as "searched", so a 429 or a missing client can never end in "not
   found outside" (`supply_outcome.external_error` records it).
+- **Round 3 DEPLOYED 20:35Z 10-03 (929107f32); dogfood PASSED.** A CLI tick
+  at 20:38Z from this tree at 929107f32 escalated on `placement_error_nm`.
+  All 3 queries logged `outside search failed: ModuleNotFoundError`, and
+  the tick ended `dry (outside search failed: …)` with exit 0. Nothing
+  crashed, and it wrote no "not found outside". It is the first errored
+  `supply_outcome` row in prod.
+- **Round 4, after the round-3 review finding:** escalation stops after 2
+  failed outside searches in a dry run. It logs one `supply_outside_failed`
+  entry, and the gap line shows `outside search failed (N ticks: <error>)`.
+  Every `supply_outcome` row now carries `"v": 2`. Before this, prod held
+  exactly one row, with `external` false, so no old row is ambiguous. This
+  stops repeated S2 calls but not the supply ticks themselves; the real cap
+  is Do next 1.
 - **Still unverified:** an escalated query that reaches S2. The next
   unattended worker tick on this key should log the first `(escalated)`
   line. gr462891's applied-count line also waits for the queued quest_tick
@@ -49,12 +69,40 @@ is kept as a root with `parent_unresolved` and rendered as unplaced; each
 tick logs its applied counts; the dialectic prompt section only shows when
 a block exists. The replay is on the gripe, and the dialectic design is
 `quest-graph-as-dossier.md` open question 2.
-**Last reviewed:** 2026-10-03 (round 2 deployed and dogfooded; parked at TIER 3)
+**Last reviewed:** 2026-10-03 (round 3 deployed and dogfooded; parked at TIER 3)
 **Worktree:** `roadmap-quest`
 
 ## Do next
 
-1. **Watch the first supply tick after the round deploys the extraction
+1. **Role choice skips an exhausted supply key** (orchestrator ruling
+   2026-10-03; one build; this is the cap on supply spend). Today role
+   choice (`roadmap_tick.py`, the `# 2. supply` loop) hands the supply role
+   to the first unmet row with no cited supply on every root tick, and it
+   never reads `roadmap_ledger.supply_history`. So a key with no literature
+   gets the supply tick, with its LLM call and local search, on every root
+   tick, and the other unmet keys never get one. The quest loop's dry-rest
+   hold (3 dry rests, then about one tick a day) caps the spend but not
+   this starvation. The not-found-outside bound (38a575586) and the outside-failed
+   bound (round 3) only stop escalation to S2; neither stops the tick.
+   Build: role choice skips a key once it is not-found-outside, or after 2
+   consecutive outside-failed ticks, and moves on to the next unmet key. It
+   retries a skipped key only after a backoff: the next UTC day, or sooner
+   when a newly ingested paper matches the key's terms. The skip is written
+   into `supply_outcome` (the reason and the retry time), so Reto can see
+   why a key went quiet. The day backoff alone is the minimum. The ingest
+   trigger needs a defined "matches the key's terms" (for example, the
+   key's past queries against new paper titles), so it may come second.
+   **Dormant capabilities stay in the server list** (read 2026-10-03):
+   `gaps._live_servers` drops only retired refs, and
+   `roadmap_ledger.is_capability_quest` checks the kind, the roadmap body
+   marker and the rubric axes. Nothing in `roadmap_tick`, `roadmap_ledger`
+   or `gaps` reads `STATUS`. Every capability under qu453863 (Bootstrap
+   roadmap root) is `STATUS:dormant` (`view='tree'`, 10-03), and the
+   capability ledger lists all of them. So qu453869 (positional accuracy)
+   being dormant changes nothing. That is the design: a capability does
+   not tick itself, the root reads and writes it. The skip must therefore
+   key on the (capability, key) supply history, never on capability status.
+2. **Watch the first supply tick after the round deploys the extraction
    fix** (3b032a98d: `_paper_servers` newest-first, plus a prompt clause
    rejecting a method's own measurement uncertainty) and the verbatim-quote
    check (in build 2026-10-02, orchestrator verdict
@@ -81,7 +129,7 @@ a block exists. The replay is on the gripe, and the dialectic design is
    `edit(kind='quest', id=<cap>, meta={'supply': {...}})`, which replaces
    the whole `supply` dict, so re-send every key you keep (pass `{}` to
    clear it, as on 10-02).
-2. **Local-first never yields to S2.** Every unattended supply query logged
+3. **Local-first never yields to S2.** Every unattended supply query logged
    `[local 10, acquired 0; outside skipped, graph answered]`:
    `relevance_floor()` defaults to 0.0 and the semantic leg's
    `SEMANTIC_DISTANCE_FLOOR` (0.65) admits 10 hits for any query in this
@@ -103,7 +151,7 @@ a block exists. The replay is on the gripe, and the dialectic design is
    count a local hit toward `LOCAL_ENOUGH` only when it carries a
    quantified claim for the key (the better rule; costs a claim read per
    hit).
-3. **Watch qu453863 ticks after the fix deploys** — `STATUS:active`
+4. **Watch qu453863 ticks after the fix deploys** — `STATUS:active`
    confirmed 10:38Z 10-02. ecefede3's embedder fix is LIVE (every query
    since 04:24Z logs `local 10`, no lexical-only clause). Check: no rung
    without a number; deeds do not climb on a flat ledger; a supply number
@@ -135,15 +183,15 @@ a block exists. The replay is on the gripe, and the dialectic design is
    no search, so local-first is still unproven live. Serves
    qu161906 so PRIO flows down to the pathway quests (qu453865–qu453878,
    qu330435, qu347422) once it ticks unattended.
-4. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
+5. **backlog/bootstrap-roadmap-quest.md §Residuals 2, 3, 4** — "lowest unmet
    capability" is the builder's reading not a ruling; supply-absent rows
    route to supply not bridge; first-tick deed baseline seeds silently. All
-   three become decidable only after 1 shows real ticks.
+   three become decidable only after 2 shows real ticks.
 
 ## Horizon
 
 1. **qu453863 ticking cadence** — ticking unattended since 2026-10-02;
-   waits on Do next 3's watch; rungs that carry numbers, driving PRIO down
+   waits on Do next 4's watch; rungs that carry numbers, driving PRIO down
    through qu161906 to the pathway quests.
 2. **backlog/bootstrap-roadmap-quest.md §Residuals 2-4 ruled** — waits on
    real ticks showing which capability the root picks; rulings replace the

@@ -359,14 +359,28 @@ def best_supply(
 # ── supply-outcome history ────────────────────────────────────────────
 
 #: ``extra_meta`` key of the one ``observation`` entry every supply tick
-#: appends on the capability's logbook: ``{"key", "dry", "external",
+#: appends on the capability's logbook: ``{"v", "key", "dry", "external",
 #: "queries"}``, plus ``"external_error"`` when an outside search failed
 #: (``external`` is then false: a failed search does not count as searched).
+#: ``v`` is :data:`SUPPLY_OUTCOME_VERSION`: v2 = written since failed outside
+#: searches stopped counting, so ``external`` true means the outside search
+#: returned. Rows with no ``v`` were written before that (a3806549f's
+#: cutover; prod rows of that age are few) and their ``external: true`` may
+#: include an outside search that errored. The reader takes them as written.
 SUPPLY_OUTCOME_META = "supply_outcome"
+
+#: The ``"v"`` :func:`~precis.quest.roadmap_tick._run_supply` writes into
+#: every ``supply_outcome`` entry.
+SUPPLY_OUTCOME_VERSION = 2
 
 #: ``extra_meta`` key of the one-off entry logged when two escalated supply
 #: ticks on a key both came back dry: ``{"key", "queries"}``.
 SUPPLY_NOT_FOUND_META = "supply_not_found_outside"
+
+#: ``extra_meta`` key of the one-off entry logged when two escalated supply
+#: ticks on a key both failed to search outside (429, outage, no S2 client):
+#: ``{"key", "error", "ticks"}``. It claims nothing about the literature.
+SUPPLY_OUTSIDE_FAILED_META = "supply_outside_failed"
 
 
 @dataclass(frozen=True)
@@ -375,23 +389,32 @@ class SupplyHistory:
 
     ``streak`` is the run of most-recent ``supply_outcome`` entries that are
     dry (it restarts at every tick that wrote a supply); ``ext_dry`` counts
-    those in which the external leg ran; ``ext_queries`` is every query those
-    external-dry ticks ran. ``not_found_queries`` is ``None`` unless a
-    ``supply_not_found_outside`` entry is newer than the last non-dry tick,
-    else the number of queries it names."""
+    those in which the external leg ran and returned; ``ext_queries`` is every
+    query those external-dry ticks ran. ``ext_failed`` counts the streak's
+    ticks whose external leg errored (``external_error`` set, ``external``
+    false) and ``ext_failed_error`` is the latest such error. The one-off
+    entries ``supply_not_found_outside`` / ``supply_outside_failed`` show up
+    as ``not_found_queries`` (its query count) / ``outside_failed_ticks`` and
+    ``outside_failed_error``; each is ``None`` unless its entry is newer than
+    the last non-dry tick."""
 
     streak: int = 0
     ext_dry: int = 0
     ext_queries: tuple[str, ...] = ()
     not_found_queries: int | None = None
+    ext_failed: int = 0
+    ext_failed_error: str | None = None
+    outside_failed_ticks: int | None = None
+    outside_failed_error: str | None = None
 
 
 def supply_history(store: Store, capability_id: int, key: str) -> SupplyHistory:
     """Read the capability's ``supply_outcome`` / ``supply_not_found_outside``
-    logbook entries for ``key`` (oldest to newest, append order) into a
-    :class:`SupplyHistory`."""
+    / ``supply_outside_failed`` logbook entries for ``key`` (oldest to newest,
+    append order) into a :class:`SupplyHistory`."""
     streak: list[dict[str, Any]] = []
     not_found: int | None = None
+    failed: dict[str, Any] | None = None
     for b in store.chunks.list_chunks_for_ref(capability_id):
         if b.chunk_kind != _LOG_KIND:
             continue
@@ -401,29 +424,69 @@ def supply_history(store: Store, capability_id: int, key: str) -> SupplyHistory:
             if outcome.get("dry"):
                 streak.append(outcome)
             else:
-                streak, not_found = [], None
+                streak, not_found, failed = [], None, None
             continue
         nf = meta.get(SUPPLY_NOT_FOUND_META)
         if isinstance(nf, dict) and nf.get("key") == key:
             qs = nf.get("queries")
             not_found = len(qs) if isinstance(qs, list) else 0
+        of = meta.get(SUPPLY_OUTSIDE_FAILED_META)
+        if isinstance(of, dict) and of.get("key") == key:
+            failed = of
     ext = [o for o in streak if o.get("external")]
     queries = tuple(
         str(q) for o in ext for q in (o.get("queries") or []) if isinstance(q, str)
     )
+    errored = [o for o in streak if o.get("external_error") and not o.get("external")]
+    failed_ticks: int | None = None
+    failed_error: str | None = None
+    if failed is not None:
+        n = failed.get("ticks")
+        failed_ticks = n if isinstance(n, int) and not isinstance(n, bool) else 0
+        failed_error = str(failed["error"]) if failed.get("error") else None
     return SupplyHistory(
         streak=len(streak),
         ext_dry=len(ext),
         ext_queries=queries,
         not_found_queries=not_found,
+        ext_failed=len(errored),
+        ext_failed_error=str(errored[-1]["external_error"]) if errored else None,
+        outside_failed_ticks=failed_ticks,
+        outside_failed_error=failed_error,
+    )
+
+
+def _not_found_note(hist: SupplyHistory) -> str:
+    n = hist.not_found_queries
+    return f"; not found outside ({n} queries)" if n is not None else ""
+
+
+def _outside_failed_note(hist: SupplyHistory) -> str:
+    if hist.outside_failed_ticks is None:
+        return ""
+    return (
+        f"; outside search failed ({hist.outside_failed_ticks} ticks: "
+        f"{hist.outside_failed_error or 'unknown error'})"
     )
 
 
 def not_found_outside_note(store: Store, capability_id: int, key: str) -> str:
     """``"; not found outside (N queries)"`` for a gap line when the supply
     role searched outside twice and found nothing — else ``""``."""
-    n = supply_history(store, capability_id, key).not_found_queries
-    return f"; not found outside ({n} queries)" if n is not None else ""
+    return _not_found_note(supply_history(store, capability_id, key))
+
+
+def outside_failed_note(store: Store, capability_id: int, key: str) -> str:
+    """``"; outside search failed (N ticks: <error>)"`` for a gap line when
+    escalation stopped after two failed outside searches — else ``""``."""
+    return _outside_failed_note(supply_history(store, capability_id, key))
+
+
+def outside_notes(store: Store, capability_id: int, key: str) -> str:
+    """Both gap-line notes (not-found-outside, then outside-search-failed)
+    from ONE logbook read."""
+    hist = supply_history(store, capability_id, key)
+    return _not_found_note(hist) + _outside_failed_note(hist)
 
 
 # ── the ledger ────────────────────────────────────────────────────────

@@ -131,6 +131,9 @@ BENIGN_TOKEN = "benign"
 #: Tags every minted rung carries (spec §"Rung minting boundary").
 RUNG_TAGS: tuple[str, ...] = ("STATUS:open", "waiting-for:reto")
 
+#: Escalated supply ticks whose outside search errored, in one dry run, before
+#: escalation stops (``_run_supply``).
+_OUTSIDE_FAIL_BOUND = 2
 #: Cap on the paper cards fed to the supply role's second call.
 _SUPPLY_MAX_PAPERS = 8
 _SUPPLY_CARD_CHARS = 900
@@ -892,7 +895,11 @@ def _run_supply(
     fakes are left alone). Once two ticks that searched outside have both come
     back dry, escalation stops (local-first as usual) and ONE
     ``supply_not_found_outside`` entry is logged per dry run, which the
-    ``unmet-capability`` gap line then shows."""
+    ``unmet-capability`` gap line then shows. Escalated ticks whose outside
+    search FAILED (429, outage, no S2 client) are bounded too: after two of
+    them in a dry run escalation stops the same way and ONE
+    ``supply_outside_failed`` entry is logged — it names the error and says
+    nothing about the literature. Both stops last until a supply lands."""
     from precis.quest.search import AcquiringSearch
 
     hist = ledger.supply_history(store, choice.capability_id, choice.key)
@@ -913,6 +920,26 @@ def _run_supply(
                     ledger.SUPPLY_NOT_FOUND_META: {
                         "key": choice.key,
                         "queries": list(hist.ext_queries),
+                    }
+                },
+            )
+    elif hist.ext_failed >= _OUTSIDE_FAIL_BOUND:
+        if hist.outside_failed_ticks is None:
+            append_entry(
+                store,
+                choice.capability_id,
+                text=(
+                    f"`{choice.key}`: outside search failed on {hist.ext_failed} "
+                    f"escalated supply ticks ({hist.ext_failed_error}); "
+                    f"escalation stopped until a supply lands"
+                ),
+                entry_type="observation",
+                by="agent",
+                extra_meta={
+                    ledger.SUPPLY_OUTSIDE_FAILED_META: {
+                        "key": choice.key,
+                        "error": hist.ext_failed_error,
+                        "ticks": hist.ext_failed,
                     }
                 },
             )
@@ -969,6 +996,7 @@ def _run_supply(
         by="agent",
         extra_meta={
             ledger.SUPPLY_OUTCOME_META: {
+                "v": ledger.SUPPLY_OUTCOME_VERSION,
                 "key": choice.key,
                 "dry": not written,
                 "external": external,
