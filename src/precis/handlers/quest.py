@@ -67,6 +67,7 @@ from precis.store import Ref, Tag
 from precis.store.types import ChunkRow
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
+from precis.workers.working_set import Extent
 
 #: The perpetual lifecycle. A quest is a striving with NO achieved state — it
 #: never completes (``quest-layer`` (git-only)). STATUS is a shared union
@@ -251,6 +252,17 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "series",
     "logbook",
 )
+
+
+#: The eye-ladder rungs ``get(view=…)`` accepts on a concrete quest — the
+#: :class:`~precis.workers.working_set.Extent` labels, as on finding.
+_EYE_LADDER: tuple[str, ...] = tuple(e.label for e in Extent if e is not Extent.NONE)
+
+
+def _is_eye_view(view: str) -> bool:
+    from precis.utils.eye_render import RECALL_SUFFIX
+
+    return view in _EYE_LADDER or view.endswith(RECALL_SUFFIX)
 
 
 #: ``view='results'``/``'frontier'`` default token budget — the tick's own
@@ -786,6 +798,23 @@ class QuestHandler(NumericRefHandler):
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
+        # The eye ladder (fisheye-everywhere AC 2): `fisheye` / `fisheye+1hop` /
+        # `fisheye+2hop`, any rung with a `+recall` suffix. One-hop shows the
+        # quests it serves and the ones serving it under `Roadmap`, plus the
+        # papers/structures that serve it (`served-by`) and findings that
+        # support it (`supported-by`, under `Notes & links`).
+        if concrete and view is not None and _is_eye_view(view):
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            from precis.utils.eye_render import render_eye
+
+            try:
+                body = render_eye(self.store, f"qu{int(ref.id)}", view, q=q)
+            except ValueError as e:
+                raise BadInput(
+                    str(e),
+                    next=f"view ∈ {'|'.join(_EYE_LADDER)}, optionally +recall",
+                ) from e
+            return Response(body=body)
         # An unrecognised view on a concrete id would otherwise fall through to
         # NumericRefHandler.get, whose error lists only links/log/raw — hiding
         # the six quest views above. "deeds" is a shape a caller reaches for
@@ -795,11 +824,13 @@ class QuestHandler(NumericRefHandler):
         if concrete and view is not None and view not in _BASE_VIEWS:
             raise Unsupported(
                 f"unknown view {view!r} for kind='quest'",
-                options=[*_QUEST_CONCRETE_VIEWS, *_BASE_VIEWS],
+                options=[*_QUEST_CONCRETE_VIEWS, *_EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, logbook (quest-specific) · links, log, "
-                    "raw (generic)",
+                    "results, series, logbook (quest-specific) · "
+                    "fisheye ladder (kwd, summary, verbatim, fisheye, "
+                    "fisheye+1hop, fisheye+2hop, optionally +recall) · "
+                    "links, log, raw (generic)",
                     "no 'deeds' view — default get(kind='quest', id=N) shows a "
                     "digest with a logbook tail; view='logbook' is the full lab "
                     "notebook; view='log' is the raw ref-events ledger",

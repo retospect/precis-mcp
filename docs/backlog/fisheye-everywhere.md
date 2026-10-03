@@ -12,9 +12,9 @@ model: opus
 
 Reto's stated goal for the graph (2026-09-30): a richly linked mesh of small
 typed nodes an LLM navigates efficiently, with an excellent fisheye view.
-Today `view='fisheye'` / `'fisheye+1hop'` is live on draft and finding
-chunks only (`precis-fisheye-help` says "partial rollout"); a memory, a
-paper, a quest, a todo or a taxon has no neighbourhood render. The ring
+Today `view='fisheye'` / `'fisheye+1hop'` is live on draft, finding and
+quest (`precis-fisheye-help` says "partial rollout"); a memory, a
+paper, a todo or a taxon has no neighbourhood render. The ring
 set `utils/refeye.py::RING_RELATIONS` is `SEMANTIC ∪ CLAIM`, so kinds that
 hang on other relations (`serves`, `specialises`, `instance-of`,
 `has-prerequisite`, `part-of`) fall into the "Notes" bucket or show empty.
@@ -63,9 +63,11 @@ focus page here renders, it does not act.
 1. For every registered kind, `get(kind=K, id=<one live ref>, view=
    'fisheye')` returns a neighbourhood render or `Unsupported` with a
    one-sentence reason; a totality test walks the kind registry.
-2. `get(kind='quest', id=Q, view='fisheye+1hop')` shows the quests Q
-   serves and the ones serving it, grouped under `serves`; the same for
-   `concept` over `has-prerequisite` and `component` over `contains`.
+2. `get(kind='concept', id=C, view='fisheye+1hop')` shows its
+   `has-prerequisite` edges and `component` its `contains` edges, each
+   grouped under its family heading, as `quest` already does for `serves`
+   (shipped: `handlers/quest.py::QuestHandler.get`,
+   `tests/test_quest_fisheye.py`).
 3. `get(kind='memory', id=M, extent='+recall')` lists the k nearest
    memory/finding chunks by embedding with their gist lines, k capped and
    documented.
@@ -129,3 +131,10 @@ pillar 1, so it carries three more requirements:
    behind `more()`. AC: for a node of each kind that has them, the three
    groups appear above the fold without SQL; a hub with >200 edges
    renders the same bounded page, never the full edge list.
+5. **A quest's `served-by` block mixes sub-quests with papers and
+   structures** (found 2026-10-03 when the quest ladder shipped).
+   qu202467 (NO from exhaust → fertilizer N) has 484 serving papers, so
+   its 8-row `served-by` cap can hide every serving sub-quest. Split the
+   `Roadmap` ring by source kind, or rank sub-quests first. This is a
+   `RING_GROUPS` decision, made when the measures pilot gives the quest
+   ring a "best numbers" group.

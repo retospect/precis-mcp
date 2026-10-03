@@ -1,16 +1,16 @@
 ---
 id: precis-fisheye-help
 title: precis — the fisheye neighborhood render (focus + context)
-summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
+summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk, or a quest — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
 answers:
   - how do I read a chunk along with the text around it, not just the chunk itself?
   - what's the difference between the fisheye neighborhood and fisheye+1hop?
   - how is fisheye different from view='toc'?
   - does the fisheye neighborhood shape change per kind?
   - why does view='fisheye' on a paper or memory raise Unsupported?
-applies-to: get(kind='draft'|'finding', view=)
+applies-to: get(kind='draft'|'finding'|'quest', view=)
 tags: addressing, verbs
-kinds: draft, finding
+kinds: draft, finding, quest
 status: active
 ---
 
@@ -23,8 +23,13 @@ It is pure assembly of data that already exists (reading order, chunk
 summaries/keywords, link edges) — no new storage, no background job.
 
 **Partial rollout.** `view='fisheye'`/`'fisheye+1hop'` is live on
-`get(kind='draft', …)` and `get(kind='finding', …)` today. Every other
-kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp`, `memory` —
+`get(kind='draft', …)`, `get(kind='finding', …)` and
+`get(kind='quest', …)` today. On a quest, `fisheye+1hop` lists the quests
+it serves (`serves`) and the ones serving it (`served-by`) under
+`Roadmap:`, along with the papers and structures linked to it by `serves`
+(also `served-by`); findings that `supports` it show as `supported-by`
+under `Notes & links:`. Each group is capped at 8 with a `… +N more` line.
+Every other kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp`, `memory` —
 raises `Unsupported`; the per-kind renderer described below
 (`precis.utils.eye_render`) exists in code but isn't wired into those
 handlers' `view=` dispatch yet, so it's reachable only internally (the

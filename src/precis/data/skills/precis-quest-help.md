@@ -171,7 +171,12 @@ get(kind="quest", id="/gaps")  # gaps across ALL active quests
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
 leaderboard · results · series · logbook` (quest-specific) plus the generic
-`links · log · raw`. `view='results'` is one row per candidate across
+`links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
+fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
+`view='fisheye+1hop'` shows the quests this one serves and the quests
+serving it under `Roadmap:`, with papers/structures (`served-by`) and
+supporting findings (`supported-by`) capped at 8 per group, see
+`precis-fisheye-help`. `view='results'` is one row per candidate across
 *every* band (not just the frontier), grouped by lineage (dopant, then
 what varies) rather than by band — the same table the tick prompt itself
 embeds, so it doubles as "what would the next tick see right now".

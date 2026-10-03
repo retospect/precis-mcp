@@ -70,8 +70,8 @@ graph-health-metrics, five parked gripes, and the seam with
    `get(kind='part')`.
 5. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
-   2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
-   (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
+   2026-10-02 (in-scope 1 and 3); the ladder is live on draft, finding and
+   quest; open is it on every other kind (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
    the answer to "a viewer for the memory" once 8 lands.
 6. **backlog/measures-substrate.md: the qu202467 pilot, next after
