@@ -42,25 +42,25 @@ green or the reverse), then tuning and residue.
    same day: the tree is pid-suffixed and pid-locked (2026-09-29), every
    tree-deleting liveness check (deploy lock steal and sweep, inflight,
    session-end-reap) reads EPERM as alive, and a vanished tree is named
-   when ansible fails.
-3. **backlog/agent-test-dbs-exhaust-docker-address-pools.md** — idle
-   test-dbs of sessionless `agent-*` trees used up docker's address pools
-   on 2026-10-03 and failed every `scripts/test` fleet-wide. About 8 agent
-   trees of headroom remain, so it recurs within a day.
-4. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
+   when ansible fails. The agent test-db item closed the same day too:
+   `scripts/reap-test-dbs` downs an `agent-*` tree's idle db after 2 h
+   (was 48 h), and `scripts/test` names the reaper on docker's "fully
+   subnetted" error. Its optional fix 2 (teardown in `scripts/test`'s exit
+   path) was skipped because the 2 h age alone stops the recurrence.
+3. **backlog/deploy-renders-only-precis-roles.md** — `scripts/deploy` never
    renders backups, monitoring or pgbouncer roles; a B2 sync fix sat
    unrendered for 7 weeks. Draft, Reto picks (i)/(ii)/(iii).
-5. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
+4. **backlog/orphaned-test-runs-hold-gate-slots-forever.md** — a subagent
    exiting without reaping `scripts/test` holds a slot forever, starving the
    2-slot gate for every tree.
-6. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
+5. **backlog/local-gate-holds-the-ship-lock-for-its-whole-run.md** — a local
    gate serialises the fleet for up to 1h43m; the round no longer runs one
    (2026-10-03), `/go` still does.
-7. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
-   container; the tooling that makes 5 and 6 diagnosable.
-8. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
+6. **backlog/gate-hang-diagnosis.md** — py-spy cannot run inside the gate
+   container; the tooling that makes 4 and 5 diagnosable.
+7. **backlog/policy-gates-must-fail-distinguishably.md** — a secret-scan
    crash reads as a policy violation, sending authors to fix the wrong thing.
-9. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
+8. **backlog/local-gate-red-on-green-main-token-budget.md** — gating CI is
    3.13-only but prod runs 3.12; nightly red on a green main.
 
 ## Horizon

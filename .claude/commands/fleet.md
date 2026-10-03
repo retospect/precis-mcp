@@ -1,5 +1,5 @@
 ---
-description: Bring up (or recover) the thread-session fleet in tmux and take the orchestrator seat — one window per active thread, a review window for Reto, context and design-review watchers, and the release rounds. Idempotent; run it after a crash. Run from the orchestrator's worktree, inside tmux.
+description: Bring up (or recover) the thread-session fleet in tmux and take the orchestrator seat — one window per active thread, a review window for Reto, one `scripts/fleet watch` watcher, and the release rounds. Idempotent; run it after a crash. Run from the orchestrator's worktree, inside tmux.
 argument-hint: "[optional note, e.g. 'after crash' or a thread to leave out]"
 allowed-tools: Bash(scripts/fleet:*), Bash(scripts/round:*), Bash(scripts/inflight:*), Bash(tmux:*), Bash(git:*), Monitor, Read, Write
 ---
@@ -58,7 +58,8 @@ Note from the user: `$ARGUMENTS`
    leaves the message unsent in an idle session's box. Never send a bare
    Enter to a window by hand: it can answer a dialog.
 
-4. **Arm the watcher** (Monitor, 30-minute maximum; re-arm each expiry):
+4. **Arm the watcher** (Monitor, 30-minute maximum; re-arm on expiry only;
+   a re-arm replays nothing):
    `scripts/fleet watch`. One watcher, typed lines on transition only:
    `ctx <win> <pct>% <state>` (see *Compaction*), `note <slug> new|changed`
    (design notes), `dialog <win> <type>`, `ci main <sha9> <conclusion>` (a
@@ -117,7 +118,8 @@ On a `ctx <window> <pct>% <state>` event:
   in lost detail, so compact early and persist what matters in files.
   `compact` refuses window 0, `claude`, `organizer` and the caller's own
   window (exit 3); the orchestrator's own `/compact` stays by hand, below.
-- 30% and up, busy: leave it; act at its next idle.
+- 30% and up, busy: `scripts/fleet compact --at-idle <win>` waits for its
+  next idle and then does the same.
 - 50% and up, busy: `say` it to commit WIP, update its thread file and run
   `/next` at the next stopping point; compact when it goes idle.
 - Never while its dialog is open.
