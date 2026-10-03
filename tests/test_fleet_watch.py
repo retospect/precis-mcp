@@ -572,3 +572,27 @@ def test_watch_ci_caps_one_tick_and_carries_the_rest(wf: Fleet) -> None:
     assert len(second) == 3, second
     assert not set(first) & set(second)
     assert _watch(wf) == []
+
+
+def test_watch_ci_a_run_that_leaves_the_page_and_returns_is_not_re_emitted(
+    wf: Fleet,
+) -> None:
+    """2026-10-03, second burst: one arm re-emitted 20 lines it had already
+    emitted, because the seen-set was rebuilt from the current page each ci
+    tick. Seen ids are carried across ticks inside the window."""
+    _runs(wf, (1, "0" * 40, "success"))
+    assert _watch(wf) == []  # seed
+    _runs(wf, (3, "3" * 40, "failure"), (2, "2" * 40, "cancelled"))
+    assert sorted(_watch(wf)) == [
+        f"ci main {'2' * 9} cancelled",
+        f"ci main {'3' * 9} failure",
+    ]
+    _runs(wf, (4, "4" * 40, "success"))  # 2 and 3 scroll off the page
+    assert _watch(wf) == [f"ci main {'4' * 9} success"]
+    _runs(
+        wf,
+        (4, "4" * 40, "success"),
+        (3, "3" * 40, "failure"),
+        (2, "2" * 40, "cancelled"),
+    )
+    assert _watch(wf) == []  # back on the page: already seen
