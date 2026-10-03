@@ -160,7 +160,14 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
     below a ball relax untethered: holding them to the cylinder folds the
     neck to a 0.83 Å clash.
   - Hole cells whose sheet seam gains 5–7 pairs are refused (gr464341).
-  - The render is still open.
+  - Rendered by nanobuds-paper; Reto's pick between the two pills is
+    pending.
+  - The render shows the pillar's (6,0)→C60 neck at 8 non-bonded pairs
+    of 1.05–1.33 Å. The neck predates S4: hero5 has 8 pairs from 1.053 Å,
+    and a free tube+ball has 7 pairs at 1.07–1.23 Å. It is the stick
+    model's k=3 joint. It is the case for the cap-fillet rung `R_c`
+    (authoring the tube→ball neck). A physics relax of the top alone,
+    with the feet pinned, is the stopgap for a final render.
 
 ## Target + blast radius
 

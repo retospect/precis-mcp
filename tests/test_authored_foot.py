@@ -146,6 +146,24 @@ def test_a_hole_cell_whose_seam_gains_5_7_pairs_is_refused_before_relaxing() -> 
         af.plan_scene((30, 24), (bad,))
 
 
+def test_the_free_band_under_a_ball_stays_authored_and_judged() -> None:
+    # orchestrator, S4a verdict: freeing the tube under a ball is accepted
+    # because the freed atoms stay authored and judged -- every atom of a
+    # feature is in its foot row's set or in its top joint, never neither
+    ks = {"t": af.k_min(6), "q": af.k_min(12)}
+    net = build(af.scene_text((30, 24), (_PILLAR, _BUMP), ks), strict=False)
+    inst = np.array([a.instance for a in net.atoms])
+    authored, tethered, near_top = af._scene_masks(net.bonds, inst, (_PILLAR, _BUMP))
+    freed = authored & ~tethered
+    assert freed.any() and set(inst[freed]) == {"t"}  # the ball's band only
+    for f in (_PILLAR, _BUMP):
+        mine = (inst == f.name) | (inst == f"{f.name}f")
+        foot = mine & tethered & ~near_top
+        joint = af._joint_mask(inst, f, near_top, tethered)
+        assert not (mine & ~foot & ~joint).any()
+    assert not (freed & ~af._joint_mask(inst, _PILLAR, near_top, tethered)).any()
+
+
 def test_a_fallback_k_is_judged_in_the_rebuilt_scene_and_a_miss_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

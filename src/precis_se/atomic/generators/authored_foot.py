@@ -446,6 +446,39 @@ def _hops_from(bonds: Any, start: np.ndarray) -> np.ndarray:
     return hops
 
 
+def _scene_masks(
+    bonds: Any, inst: np.ndarray, features: tuple[SceneFeature, ...]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(authored, tethered, near_top) per atom.
+
+    Authored: on the surface the author wrote (sheet, frustum, tube), and
+    judged.  Tethered: authored, less a band of ``_BALL_FREE_BONDS`` bonds
+    below a ball top -- holding the (6,0) tube to its cylinder right up to
+    the C60 neck folds the neck (0.83 A clash with no band, 1.05 A with 4-6
+    bonds free; s4_topfree probe).  A lid needs the tether up to its seam:
+    freeing the same band crumpled a one-period bump (fillet max 4.6 A) and
+    lifted a pill lid seam's pyramidalisation from 3 to 23 degrees.
+    Near-top: one bond from a top or a bud, that top's seam, not the foot's.
+    """
+    authored = inst == "s"
+    for f in features:
+        authored |= (inst == f.name) | (inst == f"{f.name}f")
+    balls = np.isin(inst, [f"{f.name}c" for f in features if f.top == "ball"])
+    tethered = authored & (_hops_from(bonds, balls) > _BALL_FREE_BONDS)
+    near_top = _hops_from(bonds, ~authored) <= 1
+    return authored, tethered, near_top
+
+
+def _joint_mask(
+    inst: np.ndarray, f: SceneFeature, near_top: np.ndarray, tethered: np.ndarray
+) -> np.ndarray:
+    """A top and its joint: the top's atoms plus the feature's own atoms
+    the foot row leaves out (its seam and the free band), so every atom of
+    the feature is judged in one of the two."""
+    mine = (inst == f.name) | (inst == f"{f.name}f")
+    return (inst == f"{f.name}c") | (mine & (near_top | ~tethered))
+
+
 def _check_seams(
     rings: Any, inst: np.ndarray, features: tuple[SceneFeature, ...]
 ) -> None:
@@ -481,20 +514,7 @@ def _relax_scene(
     seed = np.asarray(net.seed3, dtype=float)
     inst = np.array([a.instance for a in net.atoms])
     _check_seams(net.rings, inst, features)
-    # authored: on the surface the author wrote (sheet, frustum, tube) and
-    # judged against it.  Tethered: authored, less a band of
-    # _BALL_FREE_BONDS bonds below a ball top -- holding the (6,0) tube to
-    # its cylinder right up to the C60 neck folds the neck (0.83 A clash
-    # with no band, 1.05 A with 4-6 bonds free; s4_topfree probe).  A lid
-    # needs the tether up to its seam: freeing the same band crumpled a
-    # one-period bump (fillet max 4.6 A) and lifted a pill lid seam's
-    # pyramidalisation from 3 to 23 degrees.
-    authored = inst == "s"
-    for f in features:
-        authored |= (inst == f.name) | (inst == f"{f.name}f")
-    hops = _hops_from(net.bonds, ~authored)
-    balls = np.isin(inst, [f"{f.name}c" for f in features if f.top == "ball"])
-    tethered = authored & (_hops_from(net.bonds, balls) > _BALL_FREE_BONDS)
+    authored, tethered, near_top = _scene_masks(net.bonds, inst, features)
     feats = []
     for f in features:
         tub = seed[inst == f.name]
@@ -522,8 +542,6 @@ def _relax_scene(
     pos, force, passes = _tethered_relax(net, tether, k_tether, judge)
     findings = tuple(geometry_findings(net, relaxed=Relaxed(pos, force, "tethered")))
 
-    # one bond away from a top or a bud is that top's seam, not the foot's
-    near_top = hops <= 1
     d_all, _ = surface_distance(pos * _FLIP, feats, ds=_DS)
     rows: dict[str, FootRow] = {}
     tops: dict[str, tuple[float, float]] = {}
@@ -577,7 +595,7 @@ def _relax_scene(
             misses=misses,
         )
         if f.top != "open":
-            joint = (inst == f"{f.name}c") | (mine & (near_top | ~tethered))
+            joint = _joint_mask(inst, f, near_top, tethered)
             _rms, tmax, tpyr = angle_stats(pos, net.bonds, net.rings, atoms=joint)
             tops[f.name] = (tmax, tpyr)
     return ScenePlan(
