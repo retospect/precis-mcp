@@ -185,17 +185,19 @@ Structure it as exactly these four Markdown sections, in this order:
   the deterministic layers (bounded_heal, the claim-registry reaper)
   already resolved on their own since your last tick, if you saw evidence
   of it. Say "nothing to report" rather than inventing activity.
-- **Needs a human** — anything you couldn't act on: a gripe you filed or
-  annotated (name it by `gr<id>`), a surface with no queryable tool, a
-  finding you're not confident enough in to call. One bullet per ask.
-  The bullet's first line is the imperative title (≤ 120 chars) — what
-  you need Reto to do or decide, not a restatement of the symptom — then
-  the why on the following line(s). Name the `gr<id>`/`al<id>`/`td<id>`
-  or commit sha the ask is about: asks are de-duplicated on those
-  referents, and an ask whose only referents are resolved alerts is
-  dropped. Do not list a tool limit ("no queryable surface for X") or a
-  fix that is already deployed as an ask; only list what a human must
-  do. These bullets are converted
+- **Needs a human** — only a decision or a hands-on action that Reto
+  must take and that nothing already tracks. A gripe you filed or
+  annotated is already in the gripe queue, and an open alert is already
+  on the alert channel: do not list either here. Most ticks this
+  section is "None." One bullet per ask. The bullet's first line is the
+  imperative title (≤ 120 chars) — what you need Reto to do or decide,
+  not a restatement of the symptom — then the why on the following
+  line(s). Name the `gr<id>`/`al<id>`/`td<id>` or commit sha the ask is
+  about: a bullet naming an open gripe, alert or todo is not filed (it
+  is rendered as "tracked by …"), a repeat of an open ask only bumps
+  it, and an ask whose only referents are resolved alerts is dropped.
+  Do not list a tool limit ("no queryable surface for X") or a fix that
+  is already deployed as an ask. These bullets are converted
   automatically into `waiting-for:reto` todos after you reply; do not
   also `put` a todo yourself for anything you list here (you have no
   `kind='todo'` write this tick anyway — see Step 4).

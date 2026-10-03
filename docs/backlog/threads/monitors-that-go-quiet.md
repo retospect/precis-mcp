@@ -19,14 +19,31 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
 
 ## Do next
 
-1. **Verify gr248866 after deploy.** Each long-running NAS-touching process
+1. **Stop filing tracked asks as Reto todos** (Reto 2026-10-03, this
+   thread's top item). The doctor filed 217 of the 264 open
+   `waiting-for:reto` todos (parent td347578); its prompt told it to list
+   "a gripe you filed or annotated" as an ask. `convert_needs_a_human` now
+   files a bullet only when no open gripe, alert or todo it names already
+   tracks it (`_open_trackers` in `precis.workers.doctor_report`), and the
+   prompt says so. Two more filer gaps from the review session's dedupe
+   analysis are fixed in the same change. First, an ask minted before
+   `doctor_ask_refs` existed is now matched on the handle in its title:
+   td462461 was minted while td456667 on gr456034 was open. Second, a
+   "No queryable surface" tool-gap bullet stays in the report as a
+   non-ask instead of minting (td455178). Check after deploy: doctor
+   ticks mint no todo naming an open `gr`/`al`/`td`. Still owed: items
+   (1) and (2) of that analysis arrived cut off. Get them resent and fix
+   them at source. The dedupe agent closes existing duplicates; this
+   thread does not. Of its two hand-offs, td455178 is now gr463592 and
+   td345821 is closed (caspar runs no daemons by design).
+2. **Verify gr248866 after deploy.** Each long-running NAS-touching process
    now lists `/opt/nas` on boot and every
    `PRECIS_NAS_ATTEST_INTERVAL_SECONDS` (600) and writes
    `host_heartbeat.meta.nas_ok_by_process[<process>]` with its own resolved
@@ -43,7 +60,7 @@ gr346534, soft-deleted)
    That is launchd for the python, ssh for the Remote Login setting, terminal
    for the `.app`, and container processes don't attest. Reto's open call on
    the reconcile-sweep design (gripe_180306) is td461151.
-2. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
+3. **The /mnt/cluster NFS-hang alert** (from local-compute, 2026-10-02). The
    share has hung on every client since 2026-09-30, and the only rule
    (`avail_bytes == 0`) cannot fire on a hang. Branch
    `worktree-agent-a8ce270a39be79437` @ `2443c04d` adds `*Hung`
@@ -53,12 +70,12 @@ gr346534, soft-deleted)
    hang until local-compute-6's recovery. The NAS absence rule renders only
    once a `nas_mount_hosts` group exists, because autofs makes an idle node's
    missing series normal.
-3. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
+4. **diagnose_gripe's spend is now ledgered** (round 2). It writes `cost_usd`
    to the job meta and one `llm_call_log` row (`source='diagnose_gripe'`).
    Reto turned the automatic `diagnose_scan` off 2026-10-02, so rows now come
    only from hand-submitted jobs. fix_gripe has the same gap, but its lane is
    off.
-4. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
+5. **backlog/unnamed-container-host-wrote-211k-worker-logs.md** — its ask 1,
    the attributability journal: one event when a non-fleet identity starts
    writing to prod, carrying whatever provenance exists. The investigation
    half is CLOSED as of 2026-09-30 (answers in the item, read before the prune

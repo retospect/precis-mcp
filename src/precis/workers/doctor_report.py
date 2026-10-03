@@ -25,7 +25,8 @@ tagged ``meta.author='doctor'``. Two halves:
 * :func:`convert_needs_a_human` — piece B of ``docs/backlog/doctor-
   report-and-alert-channel-quality.md``: turns each bullet of the body's
   ``## Needs a human`` section into (or bumps) a ``waiting-for:reto``
-  todo, and rewrites the section with ``- td<id>: ...`` lines so the
+  todo, unless an open gripe, alert or todo it names already tracks it,
+  and rewrites the section with ``- td<id>: ...`` lines so the
   filed report links into Reto's queue. Runs between
   :func:`strip_preamble` and the body append in
   :func:`precis.workers.job_types.doctor_tick.run`.
@@ -149,12 +150,18 @@ _ASK_TITLE_MAX = 160
 #: A bullet that reports the absence of an ask ("No other gaps this
 #: tick", "No action needed on al…", "No new asks for …", "None") — the
 #: model padding the section. Minting one put "nothing to do" rows into
-#: Reto's queue. Narrow on purpose: "No queryable surface for …" is a
-#: real ask and must not match.
+#: Reto's queue. Narrow on purpose: a bullet that merely opens with "No"
+#: is not covered.
 _NULL_ASK_RE = re.compile(
     r"^\W*(?:none\b|nothing\b|no (?:action|other|new|further|asks?)\b)",
     re.IGNORECASE,
 )
+
+#: A tool-gap bullet ("No queryable surface for git-commit ancestry"). The
+#: prompt already forbids listing a tool limit as an ask; td455178 shows
+#: the model does it anyway. A tool gap belongs in a gripe, not in Reto's
+#: queue: it stays in the report as a non-ask and mints nothing.
+_TOOL_GAP_RE = re.compile(r"^\W*no queryable (?:surface|tool)\b", re.IGNORECASE)
 
 
 def _normalize_ask_text(text: str) -> str:
@@ -326,11 +333,15 @@ def _find_open_ask(store: Store, key: str) -> tuple[int, int] | None:
 def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | None:
     """``(ref_id, seen_count)`` of an open ``waiting-for:reto`` todo that
     already covers one of ``refs``: either it was minted for the same
-    referent (``meta.doctor_ask_refs`` overlap) or the bullet names that
-    todo directly (``td<id>``)."""
+    referent (``meta.doctor_ask_refs`` overlap), its title names one
+    (asks minted before ``doctor_ask_refs`` existed carry no meta — td456667
+    on gr456034 did not stop td462461), or the bullet names that todo
+    directly (``td<id>``)."""
     if not refs:
         return None
     td_ids = [int(r[2:]) for r in refs if r.startswith("td")]
+    # refs are [a-z0-9] only (see _ask_refs), so the alternation is safe.
+    title_re = r"\m(" + "|".join(refs) + r")\M"
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -341,6 +352,7 @@ def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | N
                             WHERE rt2.ref_id = r.ref_id
                               AND t2.namespace = 'OPEN' AND t2.value = 'waiting-for:reto')
                AND (jsonb_exists_any(COALESCE(r.meta->'doctor_ask_refs', '[]'::jsonb), %s)
+                    OR r.title ~* %s
                     OR r.ref_id = ANY(%s))
                AND NOT EXISTS (
                      SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
@@ -349,7 +361,7 @@ def _find_open_ask_by_refs(store: Store, refs: list[str]) -> tuple[int, int] | N
              ORDER BY r.ref_id ASC
              LIMIT 1
             """,
-            (refs, td_ids, "won't-do", "auto-timeout"),
+            (refs, title_re, td_ids, "won't-do", "auto-timeout"),
         ).fetchone()
     if row is None:
         return None
@@ -369,6 +381,45 @@ def _only_resolved_alerts(store: Store, refs: list[str]) -> list[str] | None:
         ):
             return None
     return refs
+
+
+def _open_trackers(store: Store, refs: list[str]) -> list[str]:
+    """The handles in ``refs`` that already track the ask: a live gripe
+    not ``done``/``wontfix``, an ``alert-state:open`` alert, or a live
+    todo with no closing STATUS. Reto's 2026-10-03 rule: anything a
+    gripe, alert or open todo makes findable is not filed again as a
+    ``waiting-for:reto`` todo — re-filing it each tick is what put 217
+    duplicates in his queue."""
+    ids = {p: [int(r[2:]) for r in refs if r.startswith(p)] for p in ("gr", "al", "td")}
+    if not any(ids.values()):
+        return []
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.kind, r.ref_id
+              FROM refs r
+             WHERE r.retired_at IS NULL
+               AND (   (r.kind = 'gripe' AND r.ref_id = ANY(%(gr)s)
+                        AND NOT EXISTS (
+                              SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                                 AND t.value IN ('done', 'wontfix')))
+                    OR (r.kind = 'alert' AND r.ref_id = ANY(%(al)s)
+                        AND EXISTS (
+                              SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN'
+                                 AND t.value = %(alert_open)s))
+                    OR (r.kind = 'todo' AND r.ref_id = ANY(%(td)s)
+                        AND NOT EXISTS (
+                              SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                                 AND t.value IN ('done', 'won''t-do', 'auto-timeout'))))
+             ORDER BY r.ref_id
+            """,
+            {**ids, "alert_open": "alert-state:open"},
+        ).fetchall()
+    prefix = {"gripe": "gr", "alert": "al", "todo": "td"}
+    return [f"{prefix[kind]}{ref_id}" for kind, ref_id in rows]
 
 
 def _mint_ask_todo(
@@ -422,6 +473,11 @@ def convert_needs_a_human(
     prose (``docs/backlog/doctor-report-and-alert-channel-quality.md``
     piece B).
 
+    A bullet is filed only when nothing already makes it findable: it
+    bumps an open ask it repeats, is dropped when its only referents are
+    resolved alerts, and is rendered as ``(no ask: tracked by …)`` when
+    it names an open gripe, alert or todo (:func:`_open_trackers`).
+
     Called from :func:`precis.workers.job_types.doctor_tick.run` after
     :func:`strip_preamble`, before the body is appended to the day's
     report draft. No section is a no-op; a parse problem or a DB
@@ -453,6 +509,9 @@ def convert_needs_a_human(
             title = first_line
             if len(title) > _ASK_TITLE_MAX:
                 title = title[: _ASK_TITLE_MAX - 1].rstrip() + "…"
+            if _TOOL_GAP_RE.match(item):
+                rendered.append(f"- (no ask: tool gap) {first_line}")
+                continue
             key = _doctor_ask_key(item)
 
             refs = _ask_refs(item)
@@ -469,6 +528,10 @@ def convert_needs_a_human(
                 seen_count += 1
                 store.stamp_ref_meta(ref_id, {"seen_count": seen_count})
                 rendered.append(f"- td{ref_id}: {first_line} (seen {seen_count}×)")
+            elif trackers := _open_trackers(store, refs):
+                rendered.append(
+                    f"- (no ask: tracked by {', '.join(trackers)}) {first_line}"
+                )
             else:
                 ref_id = _mint_ask_todo(
                     store,

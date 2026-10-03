@@ -12,6 +12,7 @@ from precis import alerts
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import doctor_report
+from tests._gripe import insert_gripe
 
 pytestmark = pytest.mark.db
 
@@ -222,11 +223,10 @@ def test_convert_needs_a_human_skips_null_asks(store: Store) -> None:
 
     new_body = doctor_report.convert_needs_a_human(store, body)
 
-    todos = store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20)
-    assert [t.title for t in todos] == [
-        "**No queryable surface for git-commit ancestry** — add one."
-    ]
+    assert store.list_refs(kind="todo", tags=["waiting-for:reto"], limit=20) == []
     assert "No other gaps" not in new_body
+    # td455178: a tool gap stays visible in the report but is no ask.
+    assert "(no ask: tool gap) **No queryable surface" in new_body
 
 
 def test_convert_needs_a_human_all_null_mints_nothing(store: Store) -> None:
@@ -430,13 +430,102 @@ def test_ask_about_only_resolved_alerts_mints_nothing(store: Store) -> None:
     assert "no ask" in new_body
 
 
-def test_ask_about_an_open_alert_still_mints(store: Store) -> None:
+# ── Reto 2026-10-03: what a gripe/alert/todo tracks is not re-filed ──
+
+
+def test_ask_about_an_open_alert_is_not_filed(store: Store) -> None:
     aid, _ = alerts.raise_alert(
         store, source="nursery:test", fingerprint="fp2", title="t"
     )
 
-    doctor_report.convert_needs_a_human(
+    new_body = doctor_report.convert_needs_a_human(
         store, _body_with_asks(f"Investigate alert al{aid}")
     )
 
-    assert len(_open_asks(store)) == 1
+    assert _open_asks(store) == []
+    assert f"(no ask: tracked by al{aid})" in new_body
+
+
+def test_ask_about_an_open_gripe_is_not_filed(store: Store) -> None:
+    """The doctor's habit: file gr463517 this tick, then list "Review and
+    prioritize gr463517" as an ask. The gripe queue already holds it."""
+    gripe = insert_gripe(store, "structural review races MCP init")
+
+    new_body = doctor_report.convert_needs_a_human(
+        store, _body_with_asks(f"Review and prioritize gr{gripe.id} (filed this tick)")
+    )
+
+    assert _open_asks(store) == []
+    assert f"tracked by gr{gripe.id}" in new_body
+
+
+def test_ask_about_a_closed_gripe_still_mints(store: Store) -> None:
+    done = insert_gripe(store, "fixed", status="done")
+    wontfix = insert_gripe(store, "declined", status="wontfix")
+
+    doctor_report.convert_needs_a_human(
+        store,
+        _body_with_asks(
+            f"Confirm gr{done.id}'s fix reached melchior",
+            f"Decide whether gr{wontfix.id} should be reopened",
+        ),
+    )
+
+    assert len(_open_asks(store)) == 2
+
+
+def test_ask_naming_an_open_non_ask_todo_is_not_filed(store: Store) -> None:
+    leaf = store.insert_ref(kind="todo", slug=None, title="parked leaf", meta={})
+    store.add_tag(int(leaf.id), Tag.closed("STATUS", "open"), set_by="system")
+
+    new_body = doctor_report.convert_needs_a_human(
+        store, _body_with_asks(f"Unpark td{leaf.id}")
+    )
+
+    assert _open_asks(store) == []
+    assert f"tracked by td{leaf.id}" in new_body
+
+
+def test_open_trackers_ignores_closed_and_unknown_refs(store: Store) -> None:
+    open_gripe = insert_gripe(store, "open one")
+    done_gripe = insert_gripe(store, "done one", status="done")
+    aid, _ = alerts.raise_alert(
+        store, source="nursery:test", fingerprint="fp3", title="t"
+    )
+    alerts.resolve_alert(store, aid)
+
+    trackers = doctor_report._open_trackers(
+        store,
+        [
+            f"gr{open_gripe.id}",
+            f"gr{done_gripe.id}",
+            f"al{aid}",
+            "gr999999999",
+            "b58a18a0",
+        ],
+    )
+
+    assert trackers == [f"gr{open_gripe.id}"]
+
+
+def test_ask_whose_title_names_the_referent_dedups_without_meta(
+    store: Store,
+) -> None:
+    """td456667 (minted before doctor_ask_refs existed) named gr456034 only
+    in its title, and td462461 was minted beside it."""
+    old = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="**Assign someone to the embed_batch gap (gr456034).**",
+        meta={},
+    )
+    store.add_tag(int(old.id), Tag.open("waiting-for:reto"), set_by="system")
+    store.add_tag(int(old.id), Tag.closed("STATUS", "open"), set_by="system")
+
+    new_body = doctor_report.convert_needs_a_human(
+        store,
+        _body_with_asks("Check job_inproc claim config for embed_batch (gr456034)"),
+    )
+
+    assert [int(t.id) for t in _open_asks(store)] == [int(old.id)]
+    assert f"td{old.id}:" in new_body
