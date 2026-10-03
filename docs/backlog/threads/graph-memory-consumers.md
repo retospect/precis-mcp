@@ -29,8 +29,11 @@ what a live consumer is already going without.
    - **Slice 2 closes them:** `meta={'hook':…}`, handle-form index,
      `import --sync`, the hook's last-good cache, memory-lint graph mode,
      and the hook wired but silent until the marker.
-   - **Next:** after slice 2 deploys, the three-step cutover in the item's
-     decisions log (sync, pointer, seed + lint).
+   - **Resume (2026-10-03, round 3 live at 929107f32):** slice 2 was
+     dogfooded on prod; cutover step 1 (`--sync`) is done; the sync guard
+     (dry run, graph-marker refusal, retire cap) has landed.
+   - **Next:** cutover steps 2–3 (pointer `MEMORY.md`, then seed and
+     lint) after the orchestrator's go-ahead.
    - **Then:** tests 4b/4c, which need `backlog/file-mirror.md`
      (knowledge-mesh Do-next 7), and porting memory-lint's body checks to
      nodes.

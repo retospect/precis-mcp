@@ -13,12 +13,16 @@ import pytest
 
 from precis.cli import _build_parser
 from precis.cli.memory import (
+    GRAPH_MARKER,
     HOOK_CUT_CHARS,
+    ImportRefused,
+    ImportReport,
     import_memory_dir,
     parse_index,
     render_memory_index,
     strip_frontmatter,
 )
+from precis.cli.memory import run as memory_run
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
@@ -519,3 +523,172 @@ def test_plain_import_never_overwrites_even_when_files_changed(
 def test_sync_flag_is_wired_into_the_cli() -> None:
     assert _build_parser().parse_args(["memory", "import", "d", "--sync"]).sync
     assert not _build_parser().parse_args(["memory", "import", "d"]).sync
+
+
+# ── --dry-run, graph marker, retire cap ────────────────────────────────
+
+
+def _snapshot(store: Store) -> tuple[list[tuple[int, str, str]], int]:
+    """Every live memory (id, title, meta) plus the links count — a write shows."""
+    refs = store.list_refs(kind="memory", limit=1000)
+    return (
+        [(r.id, r.title or "", repr(sorted((r.meta or {}).items()))) for r in refs],
+        _all_link_count(store),
+    )
+
+
+def _truncate_index_at(mem: Path, header: str) -> None:
+    path = mem / "MEMORY.md"
+    head, _, rest = path.read_text(encoding="utf-8").partition(header)
+    assert rest, header
+    path.write_text(head, encoding="utf-8")
+
+
+def _counts(report: ImportReport) -> dict[str, object]:
+    out = dict(vars(report))
+    out.pop("dry_run")
+    return out
+
+
+def test_dry_run_on_an_empty_graph_writes_nothing_and_matches_the_real_run(
+    store: Store, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    before = _snapshot(store)
+    dry = import_memory_dir(store, mem, dry_run=True)
+    assert _snapshot(store) == before
+    real = import_memory_dir(store, mem)
+    assert dry.dry_run and not real.dry_run
+    assert _counts(dry) == _counts(real)
+    assert dry.topics_created == N_BULLETS and dry.links_ensured > 0
+    assert dry.summary().startswith("DRY RUN (nothing written): ")
+    assert not real.summary().startswith("DRY RUN")
+
+
+def test_sync_dry_run_writes_nothing_and_matches_the_real_run(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _edit_index(mem, "shipped and verified; next step", "SHIPPED; next step")
+    _edit_index(mem, CLOCK_BULLET, "")
+    _edit_index(mem, GAMMA_BULLET, "")
+    _edit_index(
+        mem,
+        "- [Beta rollout](beta-rollout.md)",
+        "- [Fresh idea](fresh-idea.md) — brand new bullet\n"
+        "- [Beta rollout](beta-rollout.md)",
+    )
+    (mem / "fresh-idea.md").write_text(
+        "---\nname: f\n---\nsee [[alpha-campaign]]\n", encoding="utf-8"
+    )
+    (mem / "commit-style.md").write_text("new body\n", encoding="utf-8")
+
+    before = _snapshot(store)
+    dry = import_memory_dir(store, mem, sync=True, dry_run=True)
+    assert _snapshot(store) == before
+    assert _body(store, hub, _nodes(store)["commit-style"]) != "new body"
+
+    real = import_memory_dir(store, mem, sync=True)
+    assert _counts(dry) == _counts(real)
+    assert sorted(dry.would_retire) == ["clock-skew", "gamma-redesign"]
+    assert (dry.retired, dry.topics_created) == (2, 1)
+    assert dry.updated > 0 and dry.links_ensured > 0
+    assert "would retire: " in dry.summary()
+    assert "clock-skew" in dry.summary()
+
+
+def test_marker_memory_md_is_refused_with_no_writes(
+    store: Store, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    (mem / "MEMORY.md").write_text(
+        f"{GRAPH_MARKER}\n# Memory index\n\nSee the graph.\n", encoding="utf-8"
+    )
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused, match="memory-index: graph"):
+        import_memory_dir(store, mem)
+    with pytest.raises(ImportRefused, match="memory-index: graph"):
+        import_memory_dir(store, mem, sync=True)
+    with pytest.raises(ImportRefused, match="memory-index: graph"):
+        import_memory_dir(store, mem, sync=True, dry_run=True)
+    assert _snapshot(store) == before
+
+
+def test_marker_refusal_is_a_nonzero_cli_exit(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mem = tmp_path / "mem"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(GRAPH_MARKER + "\n", encoding="utf-8")
+    monkeypatch.setattr("precis.cli.memory.resolve_dsn", lambda *a, **k: "unused")
+    monkeypatch.setattr(Store, "connect", classmethod(lambda cls, dsn: store))
+    monkeypatch.setattr(store, "close", lambda: None)
+    args = _build_parser().parse_args(["memory", "import", str(mem), "--sync"])
+    with pytest.raises(SystemExit) as exc:
+        memory_run(args)
+    assert "memory-index: graph" in str(exc.value)
+
+
+def test_sync_over_the_retire_cap_is_refused_with_no_writes(
+    store: Store, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _truncate_index_at(mem, "## Gotchas")  # 3 sections + 6 bullets gone; cap is 5
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused) as exc:
+        import_memory_dir(store, mem, sync=True)
+    msg = str(exc.value)
+    assert "retire 9 of 16" in msg and "cap of 5" in msg
+    assert "cache-poisoning" in msg and "--dry-run" in msg
+    assert _snapshot(store) == before
+
+    # a dry run reports the plan instead of refusing
+    dry = import_memory_dir(store, mem, sync=True, dry_run=True)
+    assert (dry.retired, len(dry.would_retire)) == (9, 9)
+    assert _snapshot(store) == before
+
+
+def test_allow_retire_lets_an_over_cap_sync_through(
+    store: Store, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _truncate_index_at(mem, "## Gotchas")
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused):  # N below the planned count still refuses
+        import_memory_dir(store, mem, sync=True, allow_retire=8)
+    assert _snapshot(store) == before
+    report = import_memory_dir(store, mem, sync=True, allow_retire=9)
+    assert report.retired == 9
+    assert set(_nodes(store)) == {
+        "threads",
+        "runbooks",
+        "alpha-campaign",
+        "beta-rollout",
+        "gamma-redesign",
+        "restart-worker",
+        "rotate-token",
+    }
+
+
+def test_sync_retiring_exactly_the_cap_still_works(
+    store: Store, tmp_path: Path
+) -> None:
+    mem = _fixture_copy(tmp_path)
+    import_memory_dir(store, mem)
+    _truncate_index_at(mem, "## Workflow")  # Workflow + 2, Reference + 1 = 5
+    report = import_memory_dir(store, mem, sync=True)
+    assert report.retired == 5
+    assert "commit-style" not in _nodes(store)
+
+
+def test_dry_run_and_allow_retire_flags_are_wired_into_the_cli() -> None:
+    ns = _build_parser().parse_args(
+        ["memory", "import", "d", "--sync", "--dry-run", "--allow-retire", "7"]
+    )
+    assert ns.dry_run and ns.allow_retire == 7
+    ns = _build_parser().parse_args(["memory", "import", "d"])
+    assert not ns.dry_run and ns.allow_retire is None

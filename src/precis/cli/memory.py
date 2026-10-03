@@ -11,7 +11,11 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
   existing node is never overwritten — graph-side edits win. ``--sync``
   is the one-shot exception for the cutover: it re-converges the graph on
   the current files (updates, creates, retires), leaving nodes that carry
-  neither key (native writes) alone.
+  neither key (native writes) alone. ``--dry-run`` plans a run and writes
+  nothing; a sync that would retire more than ``max(5, 10%)`` of the
+  imported nodes is refused unless ``--allow-retire N`` covers it; a
+  ``MEMORY.md`` carrying :data:`GRAPH_MARKER` (post-cutover pointer file)
+  is always refused.
 - ``precis memory index [--budget-tok N]`` renders the index back out, one
   ``- <Title> (<handle>) — <hook>`` bullet per node (the handle is what
   ``get``/``edit`` take; the graph node is the truth, not a file), for
@@ -50,11 +54,25 @@ INDEX_TITLE = "# Memory index"
 #: Rough bytes-per-token used for the budget check (memory-lint's ratio).
 _BYTES_PER_TOKEN = 4
 
+#: First-line marker of the post-cutover pointer ``MEMORY.md``: the graph is the
+#: truth, the file only points at it, so importing from it is always wrong.
+GRAPH_MARKER = "<!-- memory-index: graph -->"
+#: A sync may retire up to this many nodes (or :data:`RETIRE_CAP_FRACTION` of
+#: the existing imported nodes, whichever is more) without ``--allow-retire``.
+RETIRE_CAP_FLOOR = 5
+RETIRE_CAP_FRACTION = 0.10
+#: Slugs named in a refusal message / dry-run summary.
+_SLUG_PREVIEW = 10
+
 _BULLET_RE = re.compile(
     r"^- \[(?P<title>[^\]]+)\]\((?P<file>[^)\s]+)\)(?: — (?P<hook>.*))?$"
 )
 _MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s#]+\.md)(?:#[^)]*)?\)")
 _WIKI_LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
+
+
+class ImportRefused(ValueError):
+    """The import was refused before any write (marker file, retire cap)."""
 
 
 @dataclass
@@ -77,8 +95,24 @@ class ImportReport:
     updated: int = 0
     #: ``--sync`` only: nodes whose bullet / header is gone, soft-deleted.
     retired: int = 0
+    #: ``--dry-run``: the plan was computed, nothing was written.
+    dry_run: bool = False
+    #: ``--sync`` only: slugs (``section:<slug>`` for sections) of the nodes
+    #: that were / would be retired.
+    would_retire: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
+        prefix = "DRY RUN (nothing written): " if self.dry_run else ""
+        text = self._counts()
+        if self.dry_run and self.would_retire:
+            shown = ", ".join(self.would_retire[:_SLUG_PREVIEW])
+            more = len(self.would_retire) - _SLUG_PREVIEW
+            text += f"; would retire: {shown}" + (
+                f" (+{more} more)" if more > 0 else ""
+            )
+        return prefix + text
+
+    def _counts(self) -> str:
         return (
             f"sections: {self.sections_created} created, "
             f"{self.sections_existing} existing; "
@@ -186,8 +220,22 @@ def _live_repo_dev_nodes(store: Store) -> list[Any]:
     )
 
 
+def _retire_key(meta: dict[str, Any]) -> str | None:
+    """Label of an imported node (slug, or ``section:<slug>``); ``None`` = native."""
+    if meta.get("slug"):
+        return str(meta["slug"])
+    if meta.get("section"):
+        return f"section:{meta['section']}"
+    return None
+
+
 def import_memory_dir(
-    store: Store, path: Path | str, *, sync: bool = False
+    store: Store,
+    path: Path | str,
+    *,
+    sync: bool = False,
+    dry_run: bool = False,
+    allow_retire: int | None = None,
 ) -> ImportReport:
     """Seed ``SPACE:repo-dev`` memory nodes from a harness memory directory.
 
@@ -205,18 +253,66 @@ def import_memory_dir(
     retired through the handler's soft delete; missing ones are created as
     usual. Nodes carrying neither ``meta.slug`` nor ``meta.section`` (native
     writes) are never touched.
+
+    ``dry_run=True`` runs the same planning path with every store write
+    skipped and returns the counts a real run would (``report.dry_run``,
+    ``report.would_retire``). Raises :class:`ImportRefused`, before any
+    write, when ``MEMORY.md`` carries :data:`GRAPH_MARKER`, or when a sync
+    would retire more than ``max(5, 10%)`` of the existing imported nodes
+    and ``allow_retire`` is below the planned count (a dry run only reports).
     """
     from precis.dispatch import Hub
     from precis.handlers.memory import MemoryHandler
 
     root = Path(path)
     index_text = (root / "MEMORY.md").read_text(encoding="utf-8")
+    if GRAPH_MARKER in index_text:
+        raise ImportRefused(
+            f"{root / 'MEMORY.md'} carries the marker {GRAPH_MARKER}: the graph "
+            "is the truth and this file is only a pointer to it, so importing "
+            "(or syncing) from it is always wrong; nothing was written."
+        )
     sections = parse_index(index_text)
     handler = MemoryHandler(hub=Hub(store=store))
-    report = ImportReport()
+    report = ImportReport(dry_run=dry_run)
+    write = not dry_run
 
     live = _live_repo_dev_nodes(store)
     by_id = {r.id: r for r in live}
+
+    if sync:
+        index_slugs = {b.slug for s in sections for b in s.bullets}
+        index_sections = {s.slug for s in sections}
+        imported = 0
+        for ref in live:
+            meta = ref.meta or {}
+            label = _retire_key(meta)
+            if label is None:
+                continue  # a native write — never touched
+            imported += 1
+            if meta.get("slug"):
+                gone = str(meta["slug"]) not in index_slugs
+            else:
+                gone = str(meta["section"]) not in index_sections
+            if gone:
+                report.would_retire.append(label)
+        cap = max(RETIRE_CAP_FLOOR, int(imported * RETIRE_CAP_FRACTION))
+        n_retire = len(report.would_retire)
+        if (
+            write
+            and n_retire > cap
+            and (allow_retire is None or allow_retire < n_retire)
+        ):
+            first = ", ".join(report.would_retire[:_SLUG_PREVIEW])
+            more = n_retire - _SLUG_PREVIEW
+            raise ImportRefused(
+                f"sync would retire {n_retire} of {imported} imported nodes, over "
+                f"the cap of {cap} (max({RETIRE_CAP_FLOOR}, "
+                f"{RETIRE_CAP_FRACTION:.0%} of existing)); first slugs: {first}"
+                + (f" (+{more} more)" if more > 0 else "")
+                + ". Nothing was written. Run with --dry-run first; if the list "
+                f"is right, re-run with --allow-retire {n_retire}."
+            )
     tag_values: dict[int, set[str]] = {}
     if sync:
         tag_values = {
@@ -238,11 +334,16 @@ def import_memory_dir(
         elif "order" not in meta:
             orphans.setdefault(ref.title or "", ref.id)
 
+    fake_ids = iter(range(-1, -1_000_000_000, -1))
+
     def _create(title: str, body: str, tags: list[str], meta: dict[str, Any]) -> int:
         orphan = orphans.pop(title, None)
         if orphan is not None:
-            store.update_ref(orphan, meta_patch=meta)
+            if write:
+                store.update_ref(orphan, meta_patch=meta)
             return orphan
+        if not write:
+            return next(fake_ids)  # a dry run's stand-in id; never stored
         resp = handler.put(text=body, title=title, tags=tags)
         ref_id = _created_id(resp)
         store.update_ref(ref_id, meta_patch=meta)
@@ -258,10 +359,12 @@ def import_memory_dir(
             return
         changed = False
         if ref.title != sec.title:
-            store.chunks.set_ref_title(sec_id, sec.title, source="agent")
+            if write:
+                store.chunks.set_ref_title(sec_id, sec.title, source="agent")
             changed = True
         if (ref.meta or {}).get("order") != sec.order:
-            store.update_ref(sec_id, meta_patch={"order": sec.order})
+            if write:
+                store.update_ref(sec_id, meta_patch={"order": sec.order})
             changed = True
         report.updated += changed
 
@@ -274,10 +377,12 @@ def import_memory_dir(
         changed = False
         meta = ref.meta or {}
         if ref.title != b.title:
-            store.chunks.set_ref_title(topic_id, b.title, source="agent")
+            if write:
+                store.chunks.set_ref_title(topic_id, b.title, source="agent")
             changed = True
         if handler._body_text(ref) != body:
-            handler.edit(id=topic_id, text=body)
+            if write:
+                handler.edit(id=topic_id, text=body)
             changed = True
         patch: dict[str, Any] = {}
         if meta.get("hook") != b.hook:
@@ -285,7 +390,8 @@ def import_memory_dir(
         if meta.get("order") != b.order:
             patch["order"] = b.order
         if patch:
-            store.update_ref(topic_id, meta_patch=patch)
+            if write:
+                store.update_ref(topic_id, meta_patch=patch)
             changed = True
         want = f"{SECTION_TAG_PREFIX}{sec.slug}"
         have = sorted(
@@ -294,19 +400,21 @@ def import_memory_dir(
             if v.startswith(SECTION_TAG_PREFIX) and v != SECTION_INDEX_TAG
         )
         if have != [want]:
-            handler.tag(
-                id=topic_id,
-                add=[want] if want not in have else None,
-                remove=[v for v in have if v != want] or None,
-            )
+            if write:
+                handler.tag(
+                    id=topic_id,
+                    add=[want] if want not in have else None,
+                    remove=[v for v in have if v != want] or None,
+                )
             changed = True
         for link in store.links_for(topic_id, direction="out", relation="part-of"):
             if link.dst_ref_id != sec_id and link.dst_ref_id in old_section_ids:
-                store.remove_link(
-                    src_ref_id=topic_id,
-                    dst_ref_id=link.dst_ref_id,
-                    relation="part-of",
-                )
+                if write:
+                    store.remove_link(
+                        src_ref_id=topic_id,
+                        dst_ref_id=link.dst_ref_id,
+                        relation="part-of",
+                    )
                 changed = True
         report.updated += changed
 
@@ -354,25 +462,23 @@ def import_memory_dir(
                 report.topics_existing += 1
                 if sync:
                     _sync_topic(topic_id, sec, sec_id, b, body)
-            store.add_link(src_ref_id=topic_id, dst_ref_id=sec_id, relation="part-of")
+            if write:
+                store.add_link(
+                    src_ref_id=topic_id, dst_ref_id=sec_id, relation="part-of"
+                )
 
     if sync:
-        index_slugs = {b.slug for s in sections for b in s.bullets}
-        index_sections = {s.slug for s in sections}
+        retiring = set(report.would_retire)
         for ref in live:
             meta = ref.meta or {}
-            slug, section = meta.get("slug"), meta.get("section")
-            if slug:
-                gone = str(slug) not in index_slugs
-            elif section:
-                gone = str(section) not in index_sections
-            else:
-                continue  # a native write — never touched
-            if gone:
+            label = _retire_key(meta)
+            if label is None or label not in retiring:
+                continue
+            if write:
                 handler.delete(id=ref.id)
-                report.retired += 1
-                if slug:
-                    topic_ids.pop(str(slug), None)
+            report.retired += 1
+            if meta.get("slug"):
+                topic_ids.pop(str(meta["slug"]), None)
 
     # Cross-links last: a topic may cite one that comes later in the index.
     for src_slug, body in topic_bodies.items():
@@ -383,11 +489,12 @@ def import_memory_dir(
             if dst_id is None:
                 report.unresolved_links.append((src_slug, dst_slug))
                 continue
-            store.add_link(
-                src_ref_id=topic_ids[src_slug],
-                dst_ref_id=dst_id,
-                relation="related-to",
-            )
+            if write:
+                store.add_link(
+                    src_ref_id=topic_ids[src_slug],
+                    dst_ref_id=dst_id,
+                    relation="related-to",
+                )
             report.links_ensured += 1
     return report
 
@@ -507,6 +614,25 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "gone. Native nodes (no meta.slug/section) are never touched."
         ),
     )
+    imp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Plan the run (created/updated/retired/links counts, slugs that "
+            "would be retired) and write nothing."
+        ),
+    )
+    imp.add_argument(
+        "--allow-retire",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "--sync only: permit retiring up to N nodes. Without it a sync "
+            "that would retire more than max(5, 10%% of imported nodes) is "
+            "refused; N must be >= the planned retire count (see --dry-run)."
+        ),
+    )
     imp.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     idx = msub.add_parser(
@@ -536,7 +662,16 @@ def run(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     try:
         if args.memory_cmd == "import":
-            report = import_memory_dir(store, Path(args.dir), sync=args.sync)
+            try:
+                report = import_memory_dir(
+                    store,
+                    Path(args.dir),
+                    sync=args.sync,
+                    dry_run=args.dry_run,
+                    allow_retire=args.allow_retire,
+                )
+            except ImportRefused as exc:
+                raise SystemExit(f"precis memory import: refused: {exc}") from exc
             print(report.summary())
         else:
             print(render_memory_index(store, args.budget_tok), end="")
@@ -545,6 +680,8 @@ def run(args: argparse.Namespace) -> None:
 
 
 __all__ = [
+    "GRAPH_MARKER",
+    "ImportRefused",
     "ImportReport",
     "add_parser",
     "import_memory_dir",

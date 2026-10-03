@@ -267,6 +267,27 @@ scripts only — nothing reads the graph at that moment.
     measurement (AC 5). Do not edit them; a recalled file may be stale, so
     get the node before acting on it.
   ```
+- **[cutover step 1 done 2026-10-03 ~20:45Z, prod at 929107f32]**
+  - **Sync:** `--sync` created 3 nodes, updated 67 and retired 0, with 0
+    missing files; 197 links.
+  - **Index:** renders 134 handle-form bullets in 4 sections, matching
+    `MEMORY.md`'s 134.
+  - **Session MCP:** `edit(kind='memory', meta={'hook': …})` lands through
+    it, and a non-`hook` key gets BadInput.
+  - **Not verified:** idempotence (a second sync reporting 0 updated);
+    auto mode denied the re-run.
+- **[built 2026-10-03, after the orchestrator's diff review]** The sync
+  retired every node missing from `MEMORY.md`, with no dry run and no cap.
+  After step 2 the pointer has no bullets, so one `--sync` would have
+  retired all 134 nodes. The import now has three guards:
+  - `--dry-run` writes nothing and reports the plan, including the slugs it
+    would retire.
+  - Any `MEMORY.md` carrying the graph marker is refused, for plain import
+    as well as sync.
+  - A sync that would retire more than max(5, 10% of imported nodes) is
+    refused unless `--allow-retire N` covers the count.
+  Steps 2–3 wait on the orchestrator's go-ahead: step 2 overwrites the
+  global `MEMORY.md` every session loads.
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.
