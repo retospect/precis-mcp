@@ -25,7 +25,9 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
   lifts, start the module moves, ordering them by what catpath needs
   first. Nothing is in flight or unlanded now. The last slice landed in
   a5448a7ef: a guard test that fails when a `precis.cli` module has a
-  parser but no registry row.
+  parser but no registry row. Round 2 (deployed 2026-10-03 at 63301c5c)
+  carried only that test and a thread-file edit from here, so there was
+  no prod dogfood to run.
 - **Waiting on Reto: the PyPI pending publishers** (review item
   plugin-split-2, answered/ with the thread's reply). The publishers he
   registered for `precis-util` and `precis-geom` point at repos
