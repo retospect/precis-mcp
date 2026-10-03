@@ -11,6 +11,13 @@ listen_port = {{ pgbouncer_listen_port }}
 auth_type = md5
 auth_file = /usr/local/etc/pgbouncer/userlist.txt
 pool_mode = transaction
+; gr462726: track default_transaction_read_only per client, so a session-level
+; SET stays with the client that ran it and every other client gets its own
+; value put back. pgbouncer 1.26.0 tracks it by default; drop this line after
+; upgrading. No extra round trip — see README.md.
+track_extra_parameters = default_transaction_read_only
+; Explicit: equals the 1.24+ default that psycopg's prepared statements rely on.
+max_prepared_statements = 200
 max_client_conn = {{ pgbouncer_max_client_conn | default(200) }}
 default_pool_size = {{ pgbouncer_default_pool_size | default(25) }}
 min_pool_size = 5
