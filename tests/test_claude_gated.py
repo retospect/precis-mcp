@@ -10,6 +10,7 @@ ever received the prompt.
 from __future__ import annotations
 
 import json
+import logging
 import stat
 import sys
 import time
@@ -127,6 +128,20 @@ def test_prompt_delivered_once_connected_after_polls(
     # init/assistant/result.
     assert types.count("control_response") >= 3
     assert types[-3:] == ["system", "assistant", "result"]
+
+
+def test_gate_pass_logs_the_wait(
+    fake_claude: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # gr463517: a clean pass alone cannot show the gate ran; this line can.
+    monkeypatch.setenv("FAKE_STATUS_SEQ", "pending,connected")
+    with caplog.at_level(logging.INFO, logger="precis.utils._claude_subprocess"):
+        _gated(fake_claude)
+    [line] = [
+        r.getMessage() for r in caplog.records if "claude gate:" in r.getMessage()
+    ]
+    assert line.startswith("claude gate: precis connected after ")
+    assert line.endswith("(2 mcp_status poll(s))")
 
 
 @pytest.mark.parametrize("bad", ["failed", "needs-auth"])

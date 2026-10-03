@@ -62,12 +62,23 @@ check their state first.
   `reviews/session-mcp-shared-server.md` ("pgbouncer: whole-class
   re-proposal").
 - **gr463517** (structural review ran without precis): the fail-closed
-  MCP gate is qlanded as eebbb9a9f, not deployed. After the deploy, close
-  the gripe on a clean structural pass. Step 3, an image rebuild with a
-  current CLI, belongs to the orchestrator or Reto (review item
-  session-mcp-shared-server-8).
-- **After the round-2 deploy:** check that the drained respawn loads the
-  gr462133 supervisor fix and fairness (c43ddf046), then close gr462133.
+  gate (eebbb9a9f) and the container's blocking MCP wait (3ac3c25d6) are
+  live in round 2 (63301c5c, 13:49Z). First structural pass after the
+  deploy, 13:50Z on melchior: digest written, $0.71, 188 s. A clean pass
+  alone does not prove the gate ran: 35 of the 50 passes in the 12
+  days before were clean too. The gate now logs `claude gate: precis connected after Ns`
+  (landed with this entry, round 3). Close the gripe after that line
+  shows on a structural pass and the passes stay free of tool-starved
+  alerts for a day. Step 3, an image rebuild with a current CLI, belongs
+  to the orchestrator or Reto (review item session-mcp-shared-server-8).
+- **Round-2 dogfood, melchior's shared server (13:52Z):** the checkout
+  watchdog drained generation 1 (0 in-flight calls) and generation 2
+  started at 13:50:16Z on 63301c5c, migration 0181. Session tools work
+  and the log shows no errors since. Fairness (c43ddf046, `server.py`)
+  is therefore loaded. The gr462133 supervisor fix is in
+  `mcp_supervisor.py`, which runs as PID 1 and loads only on a recreate.
+  The organizer-mcp-2 cutover is that recreate; close gr462133 once the
+  new backend is up on a sha at or after 7f006bf09.
 
 0. **gr460711 — any refused window longer than the client's retry budget
    strands sessions; make the server's refused windows short.** Measured

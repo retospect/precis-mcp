@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -24,6 +25,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from precis.utils.claude_oauth import ensure_oauth_token
+
+log = logging.getLogger(__name__)
 
 # Claude emits a one-liner like "Cost: $0.0123" on stderr; capture it
 # for budgeting telemetry. Best-effort — if claude's accounting format
@@ -515,6 +518,14 @@ def run_claude_gated(
                     verdict = gs.verdict()
                     responses, last_error = gs.responses, gs.last_error
             if verdict == "ready":
+                # The one positive trace a gated run leaves: a clean pass
+                # alone cannot show the gate ran (gr463517).
+                log.info(
+                    "claude gate: %s connected after %.1fs (%d mcp_status poll(s))",
+                    "/".join(require_mcp),
+                    time.monotonic() - started,
+                    n,
+                )
                 break
             if verdict == "bad":
                 raise _gate_failure("", gs.required_status())
