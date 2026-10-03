@@ -25,9 +25,10 @@ when that is close, with its dry run redone against it. The last dry run
 (design note §21) would have labelled 196 of 215 selectivity margins
 older-network, changing no ranking: margins are not qu164903 objectives.
 The pause would only have stopped the re-runs, so it is no longer needed.
-The PBE H-flight check (pair plus undoped control, `catalysis-selectivity-26`)
-is approved to run on a Spark, with the host coordinated through
-local-compute; it also feeds the surface-Pourbaix optimizer. Catpath
+The PBE H-flight check (pair plus undoped control, run on spark) agrees
+with MACE: next to Ta the subsurface H goes downhill to the surface at the
+midpoint and the end. The Ta effect at the end is −0.29 eV in both methods
+(design note §22f). The result is with Reto as `catalysis-selectivity-27`. Catpath
 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
@@ -50,8 +51,8 @@ local-compute; it also feeds the surface-Pourbaix optimizer. Catpath
    (`scratch/pdh-pilot/`), and its NEB runs are held until the
    surface-Pourbaix optimizer (Horizon 3) is built, because the bare-surface
    construction may change once the resting state at the operating point is
-   known (Reto, item 23). The PBE check of the H flight from Ta runs only on
-   Reto's ok (`catalysis-selectivity-26`). Precis-side fixes (struct_relax
+   known (Reto, item 23). The PBE check of the H flight from Ta agrees with
+   MACE, so the emptied-site rule stands (§22f, item 27). Precis-side fixes (struct_relax
    lattice write-back, preflight on H-loaded slabs) can start.
 3. **backlog/pathway-diagram-step-annotations.md** +
    **backlog/catpath-desorption-link-kind.md** (its first slice, moved

@@ -91,7 +91,8 @@ and the script is ready (`scratch/pdh-pilot/`).
 - Around the subsurface Ta, MACE pushes the three Ta-vertex top-gap H to
   the surface during the construction relax. Recommended: leave those
   sites empty and record them in `substrate_level.emptied_sites`.
-- Waiting on the §20b verdict and the round-1 deploy.
+  PBE single points agree that the flight is downhill (design note §22f).
+- Held until the surface-Pourbaix work is built (Reto, item 23).
 - Preflight's `domain_straddle` treats H, N and O as organic, so every
   hydride twin and every metal slab carrying an adsorbate gets a false
   "metal-organic, treat energies as qualitative" caveat: gr462730.
