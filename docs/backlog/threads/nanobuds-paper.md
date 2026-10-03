@@ -61,7 +61,9 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - fi192819: the matched-mat comparison went in as the bare cite [pc209519]; no hub carries it.
      - fi189527 and fi189535 are re-pinned to their signed groundings.
      - fi458948 now says "argues against".
-     - claims-and-evidence was asked by `fleet say` to re-run its cite-fallback pass.
+     - claims-and-evidence re-ran its cite-fallback pass: printed pairs went from 114 to 107, all expected (`scratch/cite-standard/dr173020-printed-pairs-apply28-diff.tsv`).
+     - fi191144 no longer appears in the draft because A2 deleted it.
+     - fi189548's two bare uses are now pinned inside its signed grounding: dc2445881 >pc40252, dc2445916 >pc40243,pc40252.
    - **Item 29 filed 15:11Z (decide):** fi189535's anchored claim is not fully carried by its grounding.
      - The graphene half rests only on pa1120's definition.
      - "Scanning tunnelling spectroscopy" does not appear in any source; the grounding has STM.
