@@ -1,5 +1,5 @@
 ---
-status: draft
+status: in-progress
 title: Measures substrate — generalise material_values into `measures` (any subject ref, literal kept, reference state, anchored evidence edges) so quantbind, quests and the mesh share one number record
 prio: high
 model: opus
@@ -120,6 +120,161 @@ load-bearing fields (literal, value, unit, measurand, subject,
 experiment, anchor) into the review record: under append-only that hash
 should never mismatch, which makes it an invariant alarm rather than a
 routine check.
+
+## Pilot build on qu202467 (Reto 2026-10-03, knowledge-mesh-12)
+
+Reto chose to build this item now, with qu202467 (NO from exhaust →
+fertilizer N) as its first consumer. The plan: the measures table,
+hand-minted domain taxa, the quest's 140 findings extracted into
+reviewed measures, and fisheye on the quest. This section is the
+build-time rewrite the amendment above asked for. Where it differs from
+the older text below, this section wins.
+
+**The input.** The quest's findings, read from prod 2026-10-03:
+- **Anchors:** 130 of the 140 have a `corroborates` link from a paper
+  with `src_chunk_id` set, 132 anchors in all, every chunk live, median
+  677 characters.
+- **Numbers:** 17 claims hold no number. Counted over claim sentences,
+  by pattern:
+
+  | measurand | claims |
+  |---|---|
+  | Faradaic efficiency | 52 |
+  | yield rate | 27 |
+  | potential vs RHE | 23 |
+  | partial current density | 16 |
+  | selectivity | 16 |
+  | DFT energies (eV) | 14 |
+  | duration | 11 |
+  | pressure | 9 |
+  | concentration | 9 |
+
+  None of the 79 prod taxa covers any of these.
+
+**Build A: the migration, on a branch to the orchestrator.** Everything
+decided earlier holds:
+- the rename and compatibility views;
+- the `component_spec_values` fold-in (option ii);
+- one canonical unit per measurand, values stored normalised;
+- the four trust gaps;
+- append-only rows.
+
+What this build decides:
+- **The measurand comes from the 0174 seed.** `measurand_ref_id` is
+  backfilled through the taxon's `meta.legacy_source`: every
+  `material_properties`, `component_specs` and `rxn_properties` row
+  became a taxon there. A legacy row whose property maps to no taxon
+  stops the migration and names the property.
+- **Conditions are `direction='input'` rows.** They share the output's
+  `(subject_ref_id, subject, subject_group)`. `conditions jsonb` stays
+  only for the compatibility views.
+- **The `experiment` kind is deferred.** The column
+  `experiment_ref_id bigint NULL` ships now; the kind ships later.
+  Reason: a pilot row's context is one finding's claim, and
+  `subject_group` names that group (the finding's handle) with no new
+  kind. A kind that owns one paper's runs is a separate design, not
+  needed to store these numbers.
+- **The evidence edge gets a new relation, `quantifies`.** It runs
+  from the paper (with `src_chunk_id` set) to the measurand taxon,
+  with edge `meta = {anchor_scheme, span}`.
+  - Why the taxon as the target: "this chunk of this paper quantifies
+    this measurand" is true of every row. A taxon's fisheye then lists
+    the papers that measure it, which is the census.
+  - It is inserted outside `add_link`, as in-scope 2 says.
+- **The ledger learns a fourth target, `reviews.target_kind = 'measure'`.**
+  `precis_target_sha('measure', id)` hashes the load-bearing fields:
+  literal, value, unit, measurand, subject, experiment and anchor. Rows
+  are append-only, so a review never goes stale except through
+  supersession, which is the invariant alarm amendment §4 asks for.
+  This depends on 0185 landing first.
+- **Rows are append-only, enforced by a trigger.**
+  - An UPDATE may set only `superseded_by` and `superseded_at`;
+    anything else is refused, naming the rule.
+  - "Live" means `superseded_by IS NULL`, which a partial index
+    covers.
+  - The compatibility views' legacy UPDATE paths, if the material and
+    component ops have any, become supersede-and-insert inside an
+    INSTEAD OF trigger.
+- **Who wrote each row is two columns, `actor` and `model`,** the same
+  pair as `reviews`, in place of free-text `set_by`. A legacy
+  `set_by` maps into `actor`.
+- **`trusted` stays NULL** until findings-derived trust ships. Nothing
+  sets it.
+- **Units are converted with pint.** It is already a dependency, and
+  `taxonomy/normalise.py::resolve_dimension` parses units. The
+  converter:
+  - normalises Unicode superscripts and `·`;
+  - refuses a unit that has no dimension match with the measurand,
+    naming both units;
+  - keeps the reported unit and literal as provenance;
+  - records `reference` (RHE, SHE, …) beside the value, never folded
+    into the unit.
+- **Store ops:**
+  - `insert_measure`, which:
+    - takes the link and the row in one `tx()`;
+    - computes `extraction_status`: does the literal occur in the
+      span's text?;
+    - enforces the guards from in-scope 3;
+    - enforces `required_keys` on the measurand;
+  - `measures_for(subject_ref_id)`.
+- **Done when:** ACs 1–4, plus a round trip through the reviews ledger
+  (a reviewed measure shows `current`) and a refused UPDATE.
+
+**Build B (qland, after A deploys):**
+- `best_measure` and `measures_census`;
+- `precis-measure-help`;
+- ACs 5–8.
+
+**The pilot's taxa.** About ten, minted by hand in prod under
+`measurand` via `put` plus a `specialises` link. These are ordinary prod
+writes.
+- **Measurands:**
+
+  | taxon | canonical unit |
+  |---|---|
+  | Faradaic efficiency | % |
+  | product yield rate per geometric area | mol s⁻¹ m⁻² |
+  | product yield rate per catalyst mass | mol s⁻¹ kg⁻¹ |
+  | partial current density | A m⁻² |
+  | applied potential | V; the reference is a column |
+  | product selectivity | % |
+  | reactant conversion | % |
+  | adsorption / reaction energy | eV |
+  | stability duration | s |
+
+- **Product-specific measurands carry required context.** Faradaic
+  efficiency, yield rate, selectivity and partial current density each
+  take `contract.required_keys = ['product']`, plus `potential` for
+  Faradaic efficiency and partial current density. That is
+  the spec's own Faradaic-efficiency example. Per-area and per-mass
+  yields are separate taxa because they differ in dimension, so no
+  single canonical unit covers both. That is what `normalization`
+  could not settle.
+- **Inputs:** NO partial pressure, electrolyte concentration and
+  temperature are measurands too, written as `direction='input'` rows.
+- **The full run will reach these taxa.** When the taxonomy run
+  produces `list.v1.yaml` it covers this domain (the NORR/HER survey
+  hubs), and taxon dedup merges its nodes with these.
+
+**Build C: extraction (qland, after A deploys).** One pass over the
+findings:
+- **Extraction:** a mid-tier model turns each claim and its anchored
+  chunk into rows: literal, unit, measurand, subject label (e.g. "Cu
+  NWA"), `subject_group` = the finding handle, the input rows, and the
+  span as raw offsets in the chunk.
+- **Subject:** `subject_ref_id` is the paper, which reaches the quest
+  through `serves`.
+- **Tier:** `measured` only for `own_work` with a matched anchor.
+- **Review:** a bigger model checks each row against the chunk text and
+  writes a `reviews` row with its verdict, model and version.
+- **What Reto gets:**
+  - the anchor-mismatch rows;
+  - the rejections;
+  - the rows the two models disagree on;
+  - a `best_measure` table per route family.
+
+**Build D: fisheye on the quest (qland, independent).** The ladder on
+`kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
 
 ## In scope
 

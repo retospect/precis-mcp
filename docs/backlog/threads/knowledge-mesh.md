@@ -74,11 +74,20 @@ graph-health-metrics, five parked gripes, and the seam with
    (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
    the answer to "a viewer for the memory" once 8 lands.
-6. **backlog/measures-substrate.md** — unblocked (taxon kind shipped 2026-10-01); identity =
-   taxon + reference + convention, and it unblocks
-   knowledge-mesh and the experiment loop. Fold-in ruled 2026-09-30
-   (Reto: `component_spec_values` joins `measures` in the same
-   migration).
+6. **backlog/measures-substrate.md: the qu202467 pilot, next after
+   local-mesh-upkeep slice 1** (Reto 2026-10-03, knowledge-mesh-12,
+   option 1). qu202467 (NO from exhaust → fertilizer N) is the first
+   consumer and stays held until the pilot lands. Plan: §"Pilot build on
+   qu202467", four builds A-D:
+   - **A:** the migration, a branch to the orchestrator;
+   - **B:** `best_measure`;
+   - **C:** extracting the 140 findings, every row reviewed on the
+     ledger;
+   - **D:** fisheye on the quest, in flight.
+
+   The about ten domain taxa are minted by hand in prod. Fold-in ruled
+   2026-09-30 (Reto: `component_spec_values` joins `measures` in the
+   same migration).
 7. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
