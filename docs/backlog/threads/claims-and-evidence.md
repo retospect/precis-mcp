@@ -43,7 +43,13 @@ defect and follow-on cluster below is owned here.
    `taproot-cite-time-attach-or-mint` · `taproot-directed-claim-minting` · `nanopub-supersede-door` ·
    `preprint-to-published-cite-upgrade`.
 4. **Evidence quality** — `evidence-edge-verification` (rubric labels +
-   approve gate; whether the verify/repair runs happened needs prod data) ·
+   approve gate; whether the verify/repair runs happened needs prod data;
+   HOLD 10-03: Reto is auditing whether the read rule demands verbatim
+   support — one linked chunk must carry the whole sentence, and only
+   linked chunks are read — against academic practice. Until his ruling,
+   the dr173020 (nanobuds review) printed-read numbers (61/159 not carrying)
+   are provisional, and the §5 "verdict strictly on the passage" policy is
+   not to be built on.) ·
    `pa-arm-locate-should-capture-a-verbatim-quote` ·
    `taproot-sole-supporter-coverage` (half shipped; open = name a candidate
    originator) · `taproot-numeral-audit` · `taproot-backfill-defects`
