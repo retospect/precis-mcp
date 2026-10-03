@@ -25,11 +25,12 @@ round 3 carries 5d50cd44a (route restores pin swaps
 before the layer sketch, gr464237; refdes slot sets the furniture margin;
 prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
 
-1. **First thing on reopen — gr464240.** Round-2 dogfood (job 464239):
-   the best-state anneal (gr462607) restored a near-via-free state
-   (best_at=17/699) and dogfood-6 routed 20/55, down from 29. Route it
-   again AFTER round 3 deploys (gr464237's fix is in round 3) and compare
-   routed count and best_at before touching the cost model.
+1. **gr464240, round-3 dogfood done (job 464668, prod 929107f32):**
+   22 of 55 routable nets realized (round 2: 20; before gr462607: 29),
+   0 vias, best_at=0/708 (round 2: 17/699): the anneal never beat its
+   start state. gr464237's fix helped by 2 nets, but it did not recover
+   the 29. Still open; do step 2 before touching the cost model, so the
+   v4 generator's effect is measured on its own.
 2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
    route reply carries the stale warning, confirmed live). Re-put its
    generators entry, route, report routed count before/after — after
