@@ -17,8 +17,28 @@ presentation work is the same thread by dependency.
 gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 
-## Resume here (2026-10-02)
+## Resume here (2026-10-03)
 
+- **Idle until 2026-10-16, then resume without waiting for a reopen**
+  (Reto, 2026-10-03). The thread is tier 3 but not open-ended parked,
+  because next month's catpath paper work depends on it. When the hold
+  lifts, start the module moves, ordering them by what catpath needs
+  first. Nothing is in flight or unlanded now. The last slice landed in
+  a5448a7ef: a guard test that fails when a `precis.cli` module has a
+  parser but no registry row.
+- **Waiting on Reto: the PyPI pending publishers** (review item
+  plugin-split-2, answered/ with the thread's reply). The publishers he
+  registered for `precis-util` and `precis-geom` point at repos
+  `retospect/precis-util` / `retospect/precis-geom` with `workflow.yml`.
+  Those repos do not exist, so nothing can publish either name. The reply
+  asks him to re-point both at repo `precis-mcp`, workflow `publish.yml`,
+  environment `pypi`. A pending publisher does not reserve the name; only
+  the first upload does.
+- **PyPI slice, whenever the publishers are fixed:** once the publishers point at this repo, add
+  a manual `workflow_dispatch` job to `publish.yml` that builds two 0.0.1
+  placeholder wheels (README only) through environment `pypi`. Leave the
+  `v*`-tag path alone. Land it as a branch for the organizer's gate, not a
+  qland. Reto triggers the dispatch himself.
 - **Step 4 is done** (2026-10-02): CLI subcommands load lazily from
   `precis.cli.registry`; a plugin adds commands via the `precis.cli`
   entry-point group. Behaviour-neutral at the CLI surface — help output
