@@ -31,7 +31,10 @@ off that gap until it closes.
 - **drc cost** (note §12a): `view='drc'` on unicycle-c1 takes about 17 s. 92% of
   that is `geometry_plausibility._pair_clearance` (about 1 s per connect);
   the fastener insertion pass is about 0.3 s per screw. The profile is on
-  gr450524 (finding 5). No finding for se-3d-viewer.
+  gr450524 (finding 5). No finding for se-3d-viewer. When finding 5 is
+  taken up, the number to beat is 1.9 s per connect under cProfile (about
+  1 s without it). It dominates any design with more than a handful of
+  connects.
 - **Inferred insertion (Reto 2026-10-02):** `moves` stays required.
   Reto asked whether tool travel and bolt insertion can be inferred; the
   proposal is in
