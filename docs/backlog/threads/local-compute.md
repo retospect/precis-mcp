@@ -11,6 +11,13 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 **Last reviewed:** 2026-10-02
 **Worktree:** `local-compute`
 **Active:** yes (2026-10-01, Reto: "Bring it back we will").
+**Resume (2026-10-03, after round 3 deployed 929107f3):**
+- The gr464223 eval fix is verified in prod: a CLI local-vs-cloud compare scored both arms. Gripe closed.
+- `scripts/prod-precis` lacks the LLM base url (gr464670).
+- Waiting on:
+  - Reto, for local-compute-12. The NAS role shares are proposed in `cluster-fileserver-move.md`.
+  - knowledge-mesh, for its km-8 task set (model pick and the vllm Slice 1 branch).
+- Next build: a summarise-only local chain.
 
 ## Do next
 
@@ -57,7 +64,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    | local `glm-4.7-flash` (melchior) | 0.750 | 0.800 | 2/40 | 0/40 |
    | cloud `z-ai/glm-4.7-flash` | 0.825 | 0.850 | 1/40 | 0/40 |
 
-   - The CLI could not run it (gripe gr464223): it never binds its store,
+   - The CLI could not run it then. It runs since round 3 (gr464223, closed): it never bound its store,
      and the operator chain's pinned rung model overrides the candidate id.
      The local arm was driven through `run_eval(dispatch_fn=...)`, using the
      LOCAL transport at the served endpoint: **hook-driven, bypasses the
