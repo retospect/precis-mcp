@@ -11,12 +11,17 @@ import http.server
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: runs scripts/fleet under bash"
+)
 
 FLEET = Path(__file__).resolve().parents[1] / "scripts" / "fleet"
 

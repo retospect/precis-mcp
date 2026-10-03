@@ -19,6 +19,10 @@ import pytest
 
 from precis import mcp_supervisor
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: process groups and POSIX signals"
+)
+
 SUPERVISOR = Path(mcp_supervisor.__file__)
 
 # A stand-in server child: "boots" for BOOT_S, answers one connection with

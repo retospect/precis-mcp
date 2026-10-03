@@ -30,11 +30,19 @@ from pathlib import Path
 # A dropped connection exhausting its retries, or a startup connect on its
 # last retry (a later success line flips it back).
 DOWN_MARKERS = ("giving up", "retry 3/3")
-OK_MARKERS = ("Connection established", "Successfully connected", "completed successfully")
+OK_MARKERS = (
+    "Connection established",
+    "Successfully connected",
+    "completed successfully",
+)
 
 
 def sessions_dir() -> Path:
-    return Path(os.environ.get("PRECIS_FLEET_SESSIONS_DIR", Path.home() / ".claude" / "sessions"))
+    return Path(
+        os.environ.get(
+            "PRECIS_FLEET_SESSIONS_DIR", Path.home() / ".claude" / "sessions"
+        )
+    )
 
 
 def cache_dir() -> Path:
@@ -59,7 +67,9 @@ def panes(directory: Path) -> dict[str, tuple[str, float]]:
     return out
 
 
-def states(cache: Path, server: str, wanted: dict[str, tuple[str, float]]) -> dict[str, str]:
+def states(
+    cache: Path, server: str, wanted: dict[str, tuple[str, float]]
+) -> dict[str, str]:
     """sessionId -> ``ok`` / ``DOWN`` from the newest decisive line in its logs."""
     oldest = min((start for _, start in wanted.values()), default=0)
     latest: dict[str, tuple[str, str]] = {}  # sid -> (timestamp, state)
