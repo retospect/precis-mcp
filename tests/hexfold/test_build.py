@@ -106,6 +106,10 @@ def test_sw_glyph_ring_sizes() -> None:
     net = _net("hexfold 0.1\norigin s\ns: sheet(12, 12) + sw@(4,4,A):0\n")
     sizes = Counter(len(r) for r in net.rings)
     assert sizes[5] == 2 and sizes[7] == 2
+    # a bond rotation: no atom is lost to a cut
+    assert len(net.atoms) == len(
+        _net("hexfold 0.1\norigin s\ns: sheet(12, 12)\n").atoms
+    )
 
 
 def test_57_glyph() -> None:

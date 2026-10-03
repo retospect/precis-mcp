@@ -22,6 +22,7 @@ import numpy as np
 
 from . import __version__, domains, menus
 from .defects import (
+    GLYPHS,
     Defect,
     Patch,
     Vid,
@@ -29,6 +30,7 @@ from .defects import (
     cut_disk,
     defect_apex,
     defect_ray_angle,
+    glyph_bond,
     glyph_footprint,
     run_length,
 )
@@ -469,7 +471,7 @@ def _apply_defects(
     authored: list[Defect] = []
     glyphs: list[tuple[str, Site, int]] = []
     for sd in inst.defects:
-        if sd.kind in ("sw", "57"):
+        if sd.kind in GLYPHS:
             glyphs.append((sd.kind, sd.site, sd.dir))
         else:
             d = _defect_of(sd)
@@ -498,7 +500,37 @@ def _apply_defects(
         elif d.ring > 6:
             patch.insert(d, idx)
         idx += 1
+    # glyphs apply in authored order on the current graph; each one claims
+    # the atoms it removes or turns, so a later rotation whose bond is gone
+    # can name the glyph that consumed it
+    claimed: dict[Vid, str] = {}
     for name, site, gdir in glyphs:
+        label = f"{name}@{site}:{gdir}"
+        if GLYPHS[name] == "bond-rotation":
+            a, b, ccw = glyph_bond(site, gdir, lat)
+            try:
+                dropped = patch.rotate_bond(a, b, ccw)
+            except (KeyError, ValueError):
+                by = [claimed[v] for v in (a, b) if v in claimed]
+                findings.append(
+                    Finding(
+                        "cut.overlap",
+                        Severity.ERROR,
+                        f"glyph {label} turns bond {a}-{b}, which "
+                        + (
+                            f"glyph {by[0]} already consumed"
+                            if by
+                            else "is not a bond of two 3-coordinated atoms here"
+                        ),
+                        where=inst.name,
+                        span=inst.span,
+                    )
+                )
+                continue
+            for v in (a, b, *(x for e in dropped for x in e)):
+                claimed.setdefault(v, label)
+            continue
+        before = set(patch.flatpos)
         fp = glyph_footprint(name, site, gdir, lat)
         if fp is None:
             findings.append(
@@ -517,6 +549,8 @@ def _apply_defects(
             else:
                 patch.insert(gd, idx)
                 idx += 1
+        for v in before - set(patch.flatpos):
+            claimed.setdefault(v, label)
 
 
 def _hexagon_centers(lat: Lattice, site: Site) -> list[np.ndarray]:
@@ -680,9 +714,9 @@ def _disclination_seed(patch: Patch) -> dict[Vid, np.ndarray]:
     """Sheet seed that unstacks inserted wedges (C3, gr459567).
 
     Ring defects whose cores lie within 2.3 lattice cells (4 sigma) of each
-    other, by single linkage, form one cluster -- a 5-7 glyph or a
-    Stone-Wales quad, whose cores sit one cell apart; a lone defect is its
-    own.  Two authored heptagons within that radius therefore merge into
+    other, by single linkage, form one cluster -- a 5-7 glyph, whose cores
+    sit one cell apart; a lone defect is its own.  (A Stone-Wales ``sw`` is
+    a bond rotation: no wedge, no record here.)  Two authored heptagons within that radius therefore merge into
     one K = 2 cluster with a single saddle of order 2 about their centre.
     Each cluster gets one intrinsic angle about its centre: the flat angle
     from a reference direction clear of every member's cut, plus each

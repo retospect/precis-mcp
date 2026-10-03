@@ -61,16 +61,17 @@ waited on happened 09-29 — note at the bottom)
          At plateau the worst bond is no worse than C3: 0.0426 vs 0.0450
          Å on g57.
        - **`geom.seed_short_bond` (WARN, bonded seed pairs under 1.0 Å):
-         shipped.** It fires on three examples: `sheet_pill_bump` (6
-         bonds, min 0.49 Å; feed into gr459812), `sheet_sw` (0.72 Å) and
-         `tube_ring_closure` (0.00 Å, the closure fixture).
-       - **Next, SW: held for a design ruling** (K0 SW note in
-         `reviews/hexfold-toolkit.md`). The `sw` glyph is not a
-         Stone–Wales defect: its two pentagons share an edge, and its two
-         5-7 halves are 60° apart rather than antiparallel. A seed fix
-         cannot meet the SW bars (circuit 0) on it. Proposal: make `sw` a
-         bond rotation on the pristine patch instead of wedge surgery.
-         Today sw30's far field is 0.58–2.07 Å.
+         shipped.** It fires on two examples: `sheet_pill_bump` (6 bonds,
+         min 0.49 Å; feed into gr459812) and `tube_ring_closure` (0.00 Å,
+         the closure fixture). `sheet_sw` (0.72 Å) is clean since the bond
+         rotation.
+       - **SW: `sw` is a bond rotation now** (K0 SW ruling 2026-10-03;
+         `Patch.rotate_bond`, `GLYPHS` construction table). The old wedge
+         footprint was a 5577 dislocation dipole (pentagons adjacent, net
+         b = a), removed. Measured on sw30: circuit 0, seed far field
+         1.420–1.422 Å, plateau worst 0.028 Å. Review-queue item
+         hexfold-toolkit-1 asks Reto whether it rides round 2. Open, not
+         blocking: a test that a cut-free sheet gives `_cut_jump` J = 0.
        - **Later:** compare the planar relaxed 5-7 core (fix seed, 0.042
          Å worst bond) with the buckled one (flat seed, 0.029) by MACE
          energy once the science lane is back. If buckled wins, the seed

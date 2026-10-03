@@ -121,7 +121,7 @@ class Profile:
     seed_overlap_A: float = 0.7
     #: ``geom.seed_short_bond`` (WARN): a *bonded* pair this short in the
     #: placed seed -- two atoms nearly stacked, which the overlap test skips
-    #: because they are bonded (the sw seed's 0.36 A bonds, gr462144)
+    #: because they are bonded (the old wedge sw seed's 0.36 A bonds, gr462144)
     seed_short_bond_A: float = 1.0
 
     DEFAULT: ClassVar[Profile]

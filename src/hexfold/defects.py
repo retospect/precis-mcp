@@ -368,6 +368,79 @@ class Patch:
                 return (ui, vi, s)
         raise ValueError(f"{x!r} is off the lattice in the wedge frame of {d}")
 
+    def _chart_turn(self, x: Vid, y: Vid) -> np.ndarray:
+        """Rotation taking ``y``'s local chart into ``x``'s, from edge x-y's
+        two darts (equal to the identity off every wedge)."""
+        u = -self.dirs[(x, y)]
+        w = self.dirs[(y, x)]
+        t = math.atan2(u[1], u[0]) - math.atan2(w[1], w[0])
+        c, s = math.cos(t), math.sin(t)
+        return np.array([[c, -s], [s, c]])
+
+    def rotate_bond(
+        self, a: Vid, b: Vid, ccw: bool = True
+    ) -> tuple[frozenset[Vid], frozenset[Vid]]:
+        """Turn bond a-b 90 deg about its centre: the Stone-Wales move.
+
+        Each end keeps the neighbour on the side it turns toward and swaps
+        the other for the far end's neighbour on that side, so the two
+        hexagons that shared a-b lose an atom (pentagons, not adjacent) and
+        the two at its ends gain one and now share it (heptagons).  Atoms
+        and Sites are unchanged; ``a`` and ``b`` move to the turned
+        positions, every dart at them is rewritten in its head's chart, and
+        no cut or turn is recorded.  Both ends must be three-coordinated.
+        Returns the two dropped bonds.
+        """
+        na = [x for e in self.edges if a in e for x in e if x not in (a, b)]
+        nb = [y for e in self.edges if b in e for y in e if y not in (a, b)]
+        if frozenset((a, b)) not in self.edges or len(na) != 2 or len(nb) != 2:
+            raise ValueError(f"{a!r}-{b!r} is not a bond of two 3-coordinated atoms")
+        q = 1.0 if ccw else -1.0
+        r90 = np.array([[0.0, -q], [q, 0.0]])
+        # all positions in a's chart, a at the origin
+        d = self.dirs[(a, b)]
+        qb = self._chart_turn(a, b)
+        pa = d / 2.0 - r90 @ (d / 2.0)
+        pb = d / 2.0 + r90 @ (d / 2.0)
+        pos = {x: self.dirs[(a, x)] for x in na}
+        pos |= {y: d + qb @ self.dirs[(b, y)] for y in nb}
+        chart = {x: self._chart_turn(a, x) for x in na}
+        chart |= {y: qb @ self._chart_turn(b, y) for y in nb}
+
+        def near(p: np.ndarray, xs: list[Vid]) -> tuple[Vid, Vid]:
+            k = min(xs, key=lambda x: float(np.linalg.norm(pos[x] - p)))
+            return k, next(x for x in xs if x != k)
+
+        keep_a, drop_a = near(pa, na)
+        keep_b, drop_b = near(pb, nb)
+        dropped = (frozenset((a, drop_a)), frozenset((b, drop_b)))
+        for e in dropped:
+            self.edges.discard(e)
+            x, y = tuple(e)
+            del self.dirs[(x, y)], self.dirs[(y, x)]
+        self.edges |= {frozenset((a, drop_b)), frozenset((b, drop_a))}
+        here = {a: (pa, np.eye(2)), b: (pb, qb)}
+        links = ((a, b), (a, keep_a), (a, drop_b), (b, keep_b), (b, drop_a))
+        for x, y in links:
+            px, cx = here[x]
+            py, cy = here[y] if y in here else (pos[y], chart[y])
+            self.dirs[(x, y)] = cx.T @ (py - px)
+            self.dirs[(y, x)] = cy.T @ (px - py)
+        # the seed reads flatpos (and each disclination's phi as an offset
+        # from the flat angle), so move both and keep the offsets
+        fa, fb = self.flatpos[a], self.flatpos[b]
+        mid = (fa + fb) / 2.0
+        for v, f in ((a, fa), (b, fb)):
+            new = mid + r90 @ (f - mid)
+            for rec in self.discl:
+                if v in rec.phi:
+                    old_t = math.atan2(*(f - rec.core)[::-1])
+                    new_t = math.atan2(*(new - rec.core)[::-1])
+                    turn = math.degrees(new_t - old_t)
+                    rec.phi[v] += (turn + 180.0) % 360.0 - 180.0
+            self.flatpos[v] = new
+        return dropped
+
     # -- faces, rims, words -------------------------------------------------
 
     def degrees(self) -> dict[Vid, int]:
@@ -553,15 +626,37 @@ def disks_disjoint(ds: list[Defect], lat: Lattice) -> bool:
     return True
 
 
+#: glyph name -> how it is built (SPEC 8).  A glyph is defined by its
+#: outcome -- ring signature, adjacency, Burgers vector -- and this says
+#: which checks apply: a ``"wedge"`` glyph is a fixed excise/insert
+#: arrangement (:func:`glyph_footprint`) with cuts, turns and outline atom
+#: loss; a ``"bond-rotation"`` glyph turns one bond of the current graph
+#: (:meth:`Patch.rotate_bond`) and has none of them.
+GLYPHS: dict[str, str] = {"57": "wedge", "sw": "bond-rotation"}
+
+
+def glyph_bond(site: Site, d: int, lat: Lattice) -> tuple[Site, Site, bool]:
+    """The bond a ``"bond-rotation"`` glyph turns, and its sense.
+
+    ``d mod 3`` picks the bond leaving ``site`` (the ``_BOND_ANG`` class),
+    ``d // 3`` the sense: counter-clockwise below 3, clockwise from 3.
+    """
+    p = lat.cart(site) + lat.sigma_A * _unit(_BOND_ANG[site.s][d % 3])
+    other = min(neighbors(site), key=lambda n: float(np.linalg.norm(lat.cart(n) - p)))
+    return site, other, d < 3
+
+
 def glyph_footprint(
     glyph: str, site: Site, d: int, lat: Lattice
 ) -> tuple[tuple[str, Defect], ...] | None:
-    """Fixed cut arrangement for the named glyphs, or None if unknown.
+    """Fixed cut arrangement for the ``"wedge"`` glyphs, or None.
 
     Returns a list of (operation, defect) pairs: 'x' excise, 'i' insert.
-    The footprints were found by searching disclination dipoles for exactly
-    the ring signatures {5,7} and {5,7,7,5}; they are part of the spec, not
-    user-tunable.
+    The 57 footprint was found by searching disclination dipoles for
+    exactly the ring signature {5,7}; it is part of the spec, not
+    user-tunable.  (The search's {5,7,7,5} hit, once ``sw``, was a 5577
+    dislocation dipole -- pentagons adjacent, net b = a -- not a
+    Stone-Wales defect; ``sw`` is a bond rotation since 2026-10-03.)
     """
     sig = lat.sigma_A
 
@@ -579,22 +674,6 @@ def glyph_footprint(
         if d7 is None:
             return None
         return (("x", d5), ("i", d7))
-    if glyph == "sw":
-        d5 = Defect(5, site, d)
-        c1 = defect_apex(d5, lat)
-        t1 = defect_ray_angle(d5, lat)
-        c2 = c1 + SQRT3 * sig * _unit(t1 - 30.0)
-        d7a = _defect_at_center(c2, t1, 7, site, d, lat)
-        # second dipole: excise at c3 = c1 + sqrt3*e(t1+90), insert at
-        # c4 = c3 + sqrt3*e(t1+30), both rays at t1+120
-        c3 = c1 + SQRT3 * sig * _unit(t1 + 90.0)
-        t2 = (t1 + 120.0) % 360.0
-        c4 = c3 + SQRT3 * sig * _unit(t1 + 30.0)
-        d5b = _defect_at_center(c3, t2, 5, site, d, lat)
-        d7b = _defect_at_center(c4, t2, 7, site, d, lat)
-        if d7a is None or d5b is None or d7b is None:
-            return None
-        return (("x", d5), ("i", d7a), ("x", d5b), ("i", d7b))
     return None
 
 

@@ -87,7 +87,7 @@ coined ones: a three-rim part is a *pair of pants* [S3], not a new word.
 | **seam** | an identification of k ≥ 2 rims as the same curve; k = 2 is a *fuse*, k ≥ 3 a *junction line* (§11) |
 | **sheet** | a connected component of the net under fuse identification; seams of k ≥ 3 do not merge sheets (§6.3) |
 | **defect** | a non-hexagonal ring, realised as Volterra surgery (§8); its charge is 6 − n |
-| **glyph** | a named multi-defect footprint (`sw`, `57`) whose disks may overlap (§8) |
+| **glyph** | a named defect construction (§8): a fixed wedge footprint whose disks may overlap (`57`), or a bond rotation (`sw`) |
 | **budget** | the net charge a region must carry (integer; §22.1) |
 | **placement** | which sites carry it (the search; §22.1) |
 | **registry** | the lattice orientation, carried as fuse phases on the discrete side and as a direction field on the smooth side (§12, §20.5) |
@@ -289,14 +289,29 @@ checkable in integer arithmetic before any atom exists. For pentagons the
 disjoint-disk rule is the isolated-pentagon rule [S12]. Overlapping disks are
 legal only through a named **glyph**:
 
-| glyph | meaning | parameters |
-|---|---|---|
-| `sw` | Stone–Wales 5-7-7-5 (90° bond rotation) | site, `dir` of the rotated bond |
-| `57` | pentagon–heptagon pair (elbow / dislocation core) | site, `dir` from 5 to 7 |
+| glyph | construction | meaning | parameters |
+|---|---|---|---|
+| `sw` | bond-rotation | Stone–Wales 5-7-7-5: one bond turned 90° about its centre | site; `dir mod 3` the bond, `dir // 3` the sense (CCW, CW) |
+| `57` | wedge | pentagon–heptagon pair (elbow / dislocation core) | site, `dir` from 5 to 7 |
 
-Glyphs are fixed footprints; their internal cut arrangement is part of this
-spec, not user-tunable. A defect set that neither has disjoint disks nor is a
-glyph is finding `cut.overlap` (ERROR) naming the two defects.
+A glyph is defined by its outcome — ring signature, adjacency, Burgers
+vector — and its construction says which checks apply. A **wedge** glyph is a
+fixed excise/insert arrangement, part of this spec and not user-tunable; it
+cuts, turns and loses outline atoms like any surgery. A **bond-rotation**
+glyph is a pure graph op: no cut, no turn, no atom loss. `sw` keeps the atom
+count; the two hexagons that shared the bond become pentagons that do not
+touch, the two at its ends become heptagons sharing it, and the Burgers
+circuit closes (b = 0). In the seed the turned bond keeps 1.42 Å, its ends'
+new and kept bonds come out at 1.51 Å, and the neighbours they gave up sit
+2.40 Å away. (Until 2026-10-03 `sw` was a wedge footprint found by ring-size
+search; that was a 5577 dislocation dipole — pentagons adjacent, net b = a —
+not a Stone–Wales defect.)
+
+Glyphs apply in authored order, after the plain defects, on the current
+graph. A rotation needs its bond present with both atoms three-coordinated; a
+bond an earlier glyph removed is `cut.overlap` (ERROR) naming both glyphs. A
+defect set that neither has disjoint disks nor is a glyph is finding
+`cut.overlap` (ERROR) naming the two defects.
 
 Symmetric shorthand: `{7×6 @fit}` = six heptagons, sixfold, positions solved
 (§12). Orbit sums: `{5@(u,v,A)·k3 + 7@(u',v',B)·k3}` = each site replicated
@@ -602,7 +617,7 @@ no ERROR. No `__bool__`.
 | `net.components` `[impl 0.2]` | INFO at 1, WARN above | physical pieces of the net — union-find over **all** bonds including `bond`-verb attachments, so a `[2+2]` bud is one piece though it is two sheets (`data.n`, `data.sizes`) |
 | `internal.euler` | ERROR | `V−E+F ≠ χ` per sheet, or combinatorial `B` inconsistent (library bug) |
 | `valence.over` / `valence.under` | ERROR / WARN | atom with >3 (or 4 after `bond`) / <3 bonds not on a rim |
-| `cut.overlap` | ERROR | two surgeries' disks intersect and are not a glyph; also an opening/collar disk that spans the tube circumference or clips an existing rim |
+| `cut.overlap` | ERROR | two surgeries' disks intersect and are not a glyph; a bond-rotation glyph whose bond an earlier glyph consumed (names both); also an opening/collar disk that spans the tube circumference or clips an existing rim |
 | `ring.size.unusual` | WARN | ring outside 4..8 |
 | `port.mismatch` | ERROR | seam: dangling count or edge-word incompatible across its k rims |
 | `port.symmetry` | ERROR | collar order does not divide gcd(n,m) |

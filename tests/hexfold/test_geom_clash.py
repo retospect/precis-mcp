@@ -242,9 +242,10 @@ def test_clash_bar_comes_from_the_profile() -> None:
 def test_stacked_seed_is_an_error_even_when_stick_untangles_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # sheet_sw seeded flat (the pre-C3 seed, kept here as the fixture)
-    # stacks atoms 0.002 A apart; stick happens to relax it to 1.65 A, so
-    # geom.clash alone would call it nearly clean
+    # a 57 seeded flat (the pre-C3 seed, kept here as the fixture) stacks
+    # atoms 0.007 A apart; stick happens to relax it to 1.8 A, so geom.clash
+    # alone would call it clean.  (The fixture was sheet_sw until sw became
+    # a bond rotation, which stacks nothing.)
     import hexfold.build as hb
 
     monkeypatch.setattr(
@@ -254,7 +255,7 @@ def test_stacked_seed_is_an_error_even_when_stick_untangles_it(
             v: np.array([p[0], p[1], 0.0]) for v, p in patch.flatpos.items()
         },
     )
-    r = check((_EX / "sheet_sw.hx").read_text(encoding="utf-8"), geometry=True)
+    r = check("hexfold 0.2\norigin s\ns: sheet(12, 12) + 57@(4,4,A):1\n", geometry=True)
     summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
     seed = [f for f in r.findings if f.code == "geom.seed_overlap"]
     assert seed and all(f.severity == Severity.ERROR for f in seed)
@@ -424,6 +425,132 @@ def test_dislocation_cut_is_the_set_the_bond_deviation_finds(
     assert labelled == suspect
 
 
+# ---------- the Stone-Wales bond rotation (K0 SW) ----------
+
+
+def _sw(defects: str = "+ sw@(15,15,A):0") -> Any:
+    return build(f"hexfold 0.2\norigin s\ns: sheet(30,30) {defects}\n", strict=False)
+
+
+def _atom_at(net: Any, site: Any) -> int:
+    return next(
+        i
+        for i, a in enumerate(net.atoms)
+        if a.path.site == site and a.path.defect is None
+    )
+
+
+def _turned(net: Any, d: int = 0) -> tuple[int, int]:
+    from hexfold.defects import glyph_bond
+    from hexfold.lattice import Lattice, Site
+
+    a, b, _ = glyph_bond(Site(15, 15, 0), d, Lattice())
+    return _atom_at(net, a), _atom_at(net, b)
+
+
+def _ring_pairs(net: Any) -> dict[tuple[int, int], int]:
+    """Bonds shared by two rings, by ring sizes, leaving out 6|6."""
+    by_bond: dict = {}
+    for r in net.rings:
+        for a, b in zip(r, r[1:] + r[:1], strict=True):
+            by_bond.setdefault(frozenset((a, b)), []).append(len(r))
+    out: dict[tuple[int, int], int] = {}
+    for sizes in by_bond.values():
+        if len(sizes) == 2 and sizes != [6, 6]:
+            k = (min(sizes), max(sizes))
+            out[k] = out.get(k, 0) + 1
+    return out
+
+
+def test_sw_is_a_bond_rotation_not_a_dipole() -> None:
+    # the old wedge footprint was a 5577 dislocation dipole: its pentagons
+    # shared an edge and its Burgers vector was one lattice vector
+    net, pristine = _sw(), _sw("")
+    assert not net.report.errors()
+    assert sorted(len(r) for r in net.rings if len(r) != 6) == [5, 5, 7, 7]
+    pairs = _ring_pairs(net)
+    assert pairs.get((7, 7)) == 1 and pairs.get((5, 7)) == 4
+    assert (5, 5) not in pairs
+    assert len(net.atoms) == len(pristine.atoms)
+    assert len(net.bonds) == len(pristine.bonds)
+
+
+def test_sw_seed_turns_the_bond_about_its_centre() -> None:
+    from hexfold.check import geometry_findings
+
+    net, pristine = _sw(), _sw("")
+    pos = np.asarray(net.seed3, dtype=float)
+    ia, ib = _turned(net)
+    old = {frozenset((i, j)) for i, j, _ in pristine.bonds}
+    new = {frozenset((i, j)) for i, j, _ in net.bonds}
+    assert frozenset((ia, ib)) in new
+    assert abs(np.linalg.norm(pos[ia] - pos[ib]) - 1.42) < 0.01
+    # each end keeps one neighbour and takes one from the far end, both
+    # near 1.51 A; the neighbour it gave up sits 2.40 A away
+    for v in (ia, ib):
+        nbrs = [e for e in new if v in e and e != frozenset((ia, ib))]
+        assert len(nbrs) == 2 and len([e for e in nbrs if e not in old]) == 1
+        for e in nbrs:
+            assert abs(np.linalg.norm(np.subtract(*pos[list(e)])) - 1.51) < 0.01
+        [gone] = [e for e in old - new if v in e]
+        assert abs(np.linalg.norm(np.subtract(*pos[list(gone)])) - 2.40) < 0.01
+    codes = {f.code for f in geometry_findings(net)}
+    assert not codes & {"geom.seed_short_bond", "geom.seed_overlap"}
+
+
+def test_sw_burgers_circuit_closes() -> None:
+    net = _sw()
+    pos = np.asarray(stick(net), dtype=float)
+    core = sorted({o for r in net.rings if len(r) != 6 for o in r})
+    steps = _ideal_steps()
+    loop = _ring_loop(net, pos, pos[core, :2].mean(0))
+    b = np.zeros(2)
+    for i, j in zip(loop, loop[1:] + loop[:1], strict=True):
+        v = pos[j, :2] - pos[i, :2]
+        b += steps[np.argmin(np.linalg.norm(steps - v, axis=1))]
+    assert np.linalg.norm(b) < 1e-9, b
+
+
+def _local_shape(net: Any, ia: int, ib: int, radius: int = 8) -> list[int]:
+    """Weisfeiler-Lehman labels of the radius-``radius`` bond neighbourhood
+    of a-b, sorted: equal for isomorphic neighbourhoods."""
+    adj: dict[int, list[int]] = {}
+    for i, j, _ in net.bonds:
+        adj.setdefault(i, []).append(j)
+        adj.setdefault(j, []).append(i)
+    dist = {ia: 0, ib: 0}
+    front = [ia, ib]
+    for k in range(1, radius + 1):
+        front = [w for v in front for w in adj[v] if w not in dist]
+        dist.update((w, k) for w in front)
+    label = {v: hash((dist[v], len(adj[v]))) for v in dist}
+    for _ in range(radius):
+        label = {
+            v: hash((label[v], tuple(sorted(label[w] for w in adj[v] if w in dist))))
+            for v in dist
+        }
+    return sorted(label.values())
+
+
+@pytest.mark.parametrize("d", [1, 2, 3, 4, 5])
+def test_sw_every_dir_builds_the_same_local_graph(d: int) -> None:
+    # the whole sheets differ (the outline is not sixfold); the neighbourhood
+    # of the turned bond is isomorphic for all six dirs (networkx-checked
+    # once at radius 8), and dir d and d+3 are mirror images
+    ref = _sw()
+    net = _sw(f"+ sw@(15,15,A):{d}")
+    assert not net.report.errors()
+    assert _local_shape(net, *_turned(net, d)) == _local_shape(ref, *_turned(ref))
+
+
+def test_a_rotation_of_a_bond_an_earlier_glyph_dropped_names_both() -> None:
+    # sw:0 gives up (15,15,A)-(14,15,B), the bond sw:1 would turn
+    net = _sw("+ sw@(15,15,A):0 + sw@(15,15,A):1")
+    [err] = [f for f in net.report.errors() if f.code == "cut.overlap"]
+    assert "sw@(15,15,A):1" in err.message
+    assert "glyph sw@(15,15,A):0 already consumed" in err.message
+
+
 def test_laplace_solver_cg_agrees_with_dense(monkeypatch: pytest.MonkeyPatch) -> None:
     import hexfold.build as hb
 
@@ -466,7 +593,7 @@ def test_bud_on_a_defected_sheet_sits_off_it(defect: str) -> None:
 
 def test_a_nearly_stacked_bond_in_the_seed_is_a_warn() -> None:
     # the overlap test skips bonded pairs, so a bond seeded at 0.36 A (the
-    # sw seed's, gr462144) went unreported
+    # old wedge sw seed's, gr462144) went unreported
     import dataclasses
 
     from hexfold.check import geometry_findings
