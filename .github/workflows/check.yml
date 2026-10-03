@@ -10,7 +10,11 @@ on:
     # same ref, so the per-ref concurrency group below auto-cancels the
     # superseded run. The main trigger stays: it covers the /qland + /go
     # direct-push escape hatches, which bypass the pre-merge gate.
-    branches: [main, 'ci/**']
+    #
+    # release/** is the round's release branch (`scripts/round cut`): every
+    # push runs the full gate shape — plan never delta-scopes it — and its
+    # verdict is the one the round deploys. See the concurrency note below.
+    branches: [main, 'ci/**', 'release/**']
   pull_request:
   # Nightly FULL matrix (both Pythons + macOS + Windows) on main. The ship
   # gate below runs only the 3.13 Linux legs; the platform/3.12 legs are
@@ -61,6 +65,12 @@ permissions:
 # `ship --remote` gate waited behind them. Reto ruled for the shared group
 # (review-queue ship-gate-ci-1, 2026-10-03).
 #
+# `release/**` pushes are never cancelled either, but each gets a group of its
+# own (the sha is appended to the key for release refs only): a release fix
+# lands every few minutes during the freeze and each push's full run is that
+# fix's gate, so a newer push must not replace the one pending behind it.
+# Main's shared group above is unchanged.
+#
 # Job budget: the ship-gate shape is 8 jobs (plan + lint + 6 shards of one
 # Linux leg); the nightly full shape is 18. The account's standard-runner
 # concurrency cap is 20 (GitHub Free), so TWO concurrent ships fan out
@@ -81,8 +91,8 @@ permissions:
 # (~40 min, well inside ship's 150 min CI timeout, and a CAS race lost while
 # queued re-runs CI per gr343941).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.full) && 'full' || 'gate' }}${{ startsWith(github.ref, 'refs/heads/release/') && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
 
 jobs:
   # Decides the run's shape from the event and the diff:
@@ -158,6 +168,12 @@ jobs:
                       range="${gated}..HEAD"
                     fi
                   fi
+                elif [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+                  # The release gate is always the full shape: no range, so
+                  # never docs-only. (Deferred: skip the matrix when this exact
+                  # sha already has a green check.yml run — the cut sha carries
+                  # main's verdict. Not worth the extra moving part yet.)
+                  range=""
                 else
                   range="origin/main...HEAD"
                 fi ;;

@@ -13,7 +13,11 @@ against the real script and a throwaway repo with a bare `origin`:
     `gated` did not actually move;
   - `--dry-run` prints the gated move and the deploy argv and runs neither;
   - the happy path runs `scripts/deploy <40-char sha> --pinned`;
-  - neither verb takes the ship lock.
+  - neither verb takes the ship lock;
+  - `cut` (release branch, slice a) pushes `release/r<N>` at the candidate,
+    records it, prints late marks, and refuses a second release, a sha off
+    main's first-parent line and a new duplicate migration number; `--abandon`
+    deletes a release whose head is on main.
 
 Seam: `PRECIS_ROUND_ROOT` points the verbs at the throwaway repo, whose
 `scripts/last-gated-main-sha`, `scripts/deploy` are stubs (`LGM_SHA` /
@@ -32,6 +36,7 @@ import sys
 from dataclasses import dataclass
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -408,3 +413,231 @@ def test_deploy_exits_with_the_deploy_scripts_code(rig: Rig) -> None:
     out = rig.round("deploy", DEPLOY_STUB_RC="7", **_fresh(rig, "c2"))
     assert out.returncode == 7
     assert rig.origin_ref("gated") == rig.shas["c2"]
+
+
+# ── cut (release branch, slice a) ───────────────────────────────────────
+
+
+def _open_round(rig: Rig) -> None:
+    assert rig.round("open").returncode == 0
+
+
+def _round_json(rig: Rig) -> dict[str, Any]:
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
+def _child(rig: Rig, parent: str, msg: str) -> str:
+    """A commit on top of `parent` with the same tree (object only, no ref)."""
+    return _git(rig.root, "commit-tree", f"{parent}^{{tree}}", "-p", parent, "-m", msg)
+
+
+def _mig_commit(rig: Rig, *names: str) -> str:
+    for name in names:
+        _commit(rig.root, f"src/precis/migrations/{name}", name)
+    sha = _git(rig.root, "rev-parse", "HEAD")
+    _git(rig.root, "push", "-q", "origin", "main")
+    return sha
+
+
+def test_cut_pushes_the_release_at_the_candidate_and_records_it(rig: Rig) -> None:
+    _open_round(rig)
+    out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r1") == rig.shas["c2"]
+    assert (
+        f"release/r1 cut at {rig.shas['c2'][:9]} — late work lands on main for round 2"
+        in out.stdout
+    )
+    assert 'fleet say -m "release/r1 is cut at' in out.stdout
+    rel = _round_json(rig)["release"]
+    assert (rel["branch"], rel["base"]) == ("release/r1", rig.shas["c2"])
+    assert str(rel["cut_at"]).endswith("Z")
+    assert rig.origin_ref("main") == rig.shas["c3"]  # main untouched
+
+
+def test_cut_sha_overrides_the_candidate(rig: Rig) -> None:
+    _open_round(rig)
+    out = rig.round("cut", "--sha", rig.shas["c1"][:10], **_fresh(rig, "c3"))
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r1") == rig.shas["c1"]
+    assert _round_json(rig)["release"]["base"] == rig.shas["c1"]
+
+
+def test_cut_needs_an_open_round(rig: Rig) -> None:
+    out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 1
+    assert "no round is open" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+
+
+@pytest.mark.parametrize(("rc", "msg"), [("2", _NONE_MSG), ("0", _UNREADABLE_MSG)])
+def test_cut_without_a_candidate_refuses_in_gates_words(
+    rig: Rig, rc: str, msg: str
+) -> None:
+    _open_round(rig)
+    out = rig.round("cut", LGM_SHA="", LGM_AGE="", LGM_RC=rc)
+    assert out.returncode == 1
+    assert msg in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_cut_refuses_while_a_release_branch_exists_on_origin(rig: Rig) -> None:
+    _open_round(rig)
+    _push_branch(rig, "release/r0", rig.shas["c0"])
+    out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 1
+    assert "release/r0" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+    assert "release" not in _round_json(rig)
+
+
+def test_cut_refuses_when_round_json_records_an_open_release(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("cut", **_fresh(rig, "c2")).returncode == 0
+    again = rig.round("cut", **_fresh(rig, "c3"))
+    assert again.returncode == 1
+    assert "already records an open release (release/r1)" in again.stderr
+    assert rig.origin_ref("release/r1") == rig.shas["c2"]
+
+
+def test_cut_refuses_a_sha_off_mains_first_parent_line(rig: Rig) -> None:
+    _open_round(rig)
+    side = _child(rig, rig.shas["c0"], "side")  # not on main at all
+    out = rig.round("cut", "--sha", side, **_fresh(rig, "c3"))
+    assert out.returncode == 1
+    assert "first-parent" in out.stderr
+    # On main, but only as a merge's second parent: still off the line.
+    c1_side = _child(rig, rig.shas["c1"], "merged-side")
+    merge = _git(
+        rig.root,
+        "commit-tree",
+        f"{rig.shas['c3']}^{{tree}}",
+        "-p",
+        rig.shas["c3"],
+        "-p",
+        c1_side,
+        "-m",
+        "merge",
+    )
+    _push_branch(rig, "main", merge)
+    out = rig.round("cut", "--sha", c1_side, **_fresh(rig, "c1"))
+    assert out.returncode == 1
+    assert "first-parent" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.round("cut", "--sha", rig.shas["c3"]).returncode == 0
+
+
+def test_cut_prints_a_late_line_for_each_marked_sha_it_lacks(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("in", rig.shas["c3"], PRECIS_ROUND_PEER="alice").returncode == 0
+    assert rig.round("in", rig.shas["c1"], PRECIS_ROUND_PEER="bob").returncode == 0
+    ghost = "ab" * 20
+    marks = rig.root / ".git" / "precis-round" / "marks"
+    (marks / "carol.json").write_text(
+        json.dumps({"round": 1, "shas": [ghost], "status": "in"}), encoding="utf-8"
+    )
+    out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert f"late: alice {rig.shas['c3'][:9]}" in lines
+    assert f"late: carol {ghost[:9]} (not fetched)" in lines
+    assert not any(ln.startswith("late: bob") for ln in lines)
+    # Printed before the success line.
+    cut_line = next(i for i, x in enumerate(lines) if x.startswith("release/r1 cut at"))
+    assert all(i < cut_line for i, x in enumerate(lines) if x.startswith("late:"))
+
+
+def test_cut_prints_no_late_line_when_every_marked_sha_is_in(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("in", rig.shas["c1"], PRECIS_ROUND_PEER="bob").returncode == 0
+    assert rig.round("none", PRECIS_ROUND_PEER="dan").returncode == 0
+    out = rig.round("cut", **_fresh(rig, "c3"))
+    assert out.returncode == 0, out.stderr
+    assert "late:" not in out.stdout
+
+
+def test_cut_refuses_a_new_duplicate_migration_number(rig: Rig) -> None:
+    _open_round(rig)
+    tip = _mig_commit(rig, "0001_a.sql", "0001_b.sql")
+    out = rig.round("cut", LGM_SHA=tip, LGM_AGE="1")
+    assert out.returncode == 1
+    assert "0001: 0001_a.sql, 0001_b.sql" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+    assert "release" not in _round_json(rig)
+
+
+def test_cut_accepts_a_duplicate_migration_number_prod_already_carries(
+    rig: Rig,
+) -> None:
+    _open_round(rig)
+    tip = _mig_commit(rig, "0001_a.sql", "0001_b.sql", "archive/0002_x.sql")
+    _push_branch(rig, "prod", tip)  # the duplicate shipped: accepted history
+    nxt = _mig_commit(rig, "0002_c.sql")
+    out = rig.round("cut", LGM_SHA=nxt, LGM_AGE="1")
+    assert out.returncode == 0, out.stderr
+    assert rig.origin_ref("release/r1") == nxt
+
+
+def test_cut_dry_run_checks_everything_and_changes_nothing(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("in", rig.shas["c3"], PRECIS_ROUND_PEER="alice").returncode == 0
+    state = rig.root / ".git" / "precis-round" / "round.json"
+    before = state.read_bytes()
+    out = rig.round("cut", "--dry-run", **_fresh(rig, "c2"))
+    assert out.returncode == 0, out.stderr
+    assert (
+        f"dry-run: would push {rig.shas['c2'][:9]} to origin as release/r1"
+        in out.stdout
+    )
+    assert f"late: alice {rig.shas['c3'][:9]}" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert state.read_bytes() == before
+    # A refusing check still refuses under --dry-run.
+    _push_branch(rig, "release/r0", rig.shas["c0"])
+    assert rig.round("cut", "--dry-run", **_fresh(rig, "c2")).returncode == 1
+
+
+def test_status_shows_the_open_release(rig: Rig) -> None:
+    _open_round(rig)
+    assert "release" not in rig.round("status").stdout
+    assert rig.round("cut", **_fresh(rig, "c2")).returncode == 0
+    out = rig.round("status")
+    assert f"release release/r1 at {rig.shas['c2'][:9]}, cut " in out.stdout
+    assert " ago" in out.stdout
+
+
+def test_abandon_deletes_a_release_whose_head_is_on_main(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("cut", **_fresh(rig, "c2")).returncode == 0
+    dry = rig.round("cut", "--abandon", "--dry-run")
+    assert dry.returncode == 0, dry.stderr
+    assert rig.origin_ref("release/r1") == rig.shas["c2"]
+    out = rig.round("cut", "--abandon")
+    assert out.returncode == 0, out.stderr
+    assert "abandoned" in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+    assert "release" not in _round_json(rig)
+    # The slot is free again.
+    assert rig.round("cut", **_fresh(rig, "c3")).returncode == 0
+
+
+def test_abandon_refuses_and_lists_commits_not_on_main(rig: Rig) -> None:
+    _open_round(rig)
+    assert rig.round("cut", **_fresh(rig, "c2")).returncode == 0
+    fix = _child(rig, rig.shas["c2"], "release fix not forwarded")
+    _push_branch(rig, "release/r1", fix)
+    out = rig.round("cut", "--abandon")
+    assert out.returncode == 1
+    assert "release fix not forwarded" in out.stderr
+    assert fix[:7] in out.stderr
+    assert rig.origin_ref("release/r1") == fix
+    assert _round_json(rig)["release"]["branch"] == "release/r1"
+
+
+def test_abandon_without_a_recorded_release_refuses(rig: Rig) -> None:
+    _open_round(rig)
+    out = rig.round("cut", "--abandon")
+    assert out.returncode == 1
+    assert "nothing to abandon" in out.stderr
