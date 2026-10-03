@@ -100,11 +100,13 @@ up:
      cache is per process and empty after a deploy;
    - 1.14 s download of 1.09 MB gzip (3.86 MB raw). Locally gzip is served
      to Safari's Accept-Encoding; prod behind its proxy is unchecked.
+   Payload SHIPPED in round 3: the target surface moved to
+   `target3d.json`, fetched on the first tick of its checkbox; positions
+   are quantised to an absolute 0.001 Å step, not to significant digits,
+   because a nanometre structure can sit a metre from the origin.
+   On prod data the drum's `atomic3d.json` went from 1090 KB to 241 KB
+   gzip (3.86 MB → 0.73 MB raw).
    Left, in Reto's order (se-3d-viewer-6, 2026-10-03):
-   - **Fetch `target` only when its checkbox is ticked.** The target
-     surface is 426 KB of the 1090 KB gzip and off by default.
-   - **Round the floats to 5 significant digits.** That takes the whole
-     payload from 1090 KB to 588 KB gzip.
    - Start the `scene3d`/`atomic3d` fetches from an inline script before
      the module bundle parses (verdict 1c: note it, not now). Reto's
      reading puts this at ~0.6 s.

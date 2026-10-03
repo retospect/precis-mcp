@@ -921,6 +921,28 @@ async function _fetchAtomicPayload(url, progress) {
   }
 }
 
+//: target3d.json lives beside atomic3d.json (same `rev` query).
+function _targetUrl(atomicUrl) {
+  return atomicUrl.replace("/atomic3d.json", "/target3d.json");
+}
+
+//: Parsed target3d.json by URL, so the overlay rebuilt by a scene re-render
+//: reuses it. The promise is cached (concurrent callers share one fetch); a
+//: failure is evicted so the next tick retries.
+const _targetPayloads = new Map();
+function _fetchTargetPayload(url) {
+  let p = _targetPayloads.get(url);
+  if (!p) {
+    p = fetch(url).then((r) => {
+      if (!r.ok) throw new Error(`target3d fetch failed (${r.status})`);
+      return r.json();
+    });
+    p.catch(() => _targetPayloads.delete(url));
+    _targetPayloads.set(url, p);
+  }
+  return p;
+}
+
 //: Yield to the browser so the bar repaints between build slices.
 function _nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1335,40 +1357,61 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
   // ── target surface (smooth_drum's surface_meridian, revolved server-side)
   // One translucent double-sided mesh per block that carries a target, in
   // its own group so it is independent of the atoms toggle. Off by default;
-  // the checkbox is revealed only when some block has a target.
+  // the checkbox is revealed only when some block has a target. The meshes
+  // are built (and target3d.json fetched) the first time it is ticked: the
+  // target is most of the atom payload and most pages never show it.
   const targetGroup = new THREE.Group();
   targetGroup.name = "bt3d-target-overlay";
   targetGroup.visible = false;
-  let hasTarget = false;
-  for (const b of data.blocks) {
-    if (!b.target || !b.target.verts || !b.target.verts.length) continue;
-    const pos = new Float32Array(b.target.verts.length * 3);
-    b.target.verts.forEach((v, i) => {
-      pos[i * 3] = v[0];
-      pos[i * 3 + 1] = v[1];
-      pos[i * 3 + 2] = v[2];
-    });
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    geo.setIndex(b.target.tris.flat());
-    geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(
-      geo,
-      new THREE.MeshBasicMaterial({
-        color: 0x14b8a6,
-        opacity: 0.3,
-        transparent: true,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })
-    );
-    targetGroup.add(mesh);
-    hasTarget = true;
-  }
+  const hasTarget = data.blocks.some((b) => b.has_target);
+  let targetBuilt = false;
   if (hasTarget) scene.add(targetGroup);
 
-  function setTargetVisible(on) {
+  function buildTargetMeshes(targets) {
+    for (const b of data.blocks) {
+      const t = targets[String(b.uid)];
+      if (!t || !t.verts || !t.verts.length) continue;
+      const pos = new Float32Array(t.verts.length * 3);
+      t.verts.forEach((v, i) => {
+        pos[i * 3] = v[0];
+        pos[i * 3 + 1] = v[1];
+        pos[i * 3 + 2] = v[2];
+      });
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geo.setIndex(t.tris.flat());
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color: 0x14b8a6,
+          opacity: 0.3,
+          transparent: true,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
+      );
+      targetGroup.add(mesh);
+    }
+    targetBuilt = true;
+  }
+
+  async function setTargetVisible(on) {
     if (!hasTarget) return;
+    if (on && !targetBuilt) {
+      try {
+        const doc = await _fetchTargetPayload(_targetUrl(atomicUrl));
+        if (isStale()) return;
+        // A second tick during the same fetch awaited it too: build once.
+        if (!targetBuilt) buildTargetMeshes(doc.targets || {});
+      } catch (err) {
+        console.error("blocktree-3d: target surface fetch failed", err);
+        if (smoothEls && smoothEls.targetToggle) smoothEls.targetToggle.checked = false;
+        return;
+      }
+    }
+    // Unticked while the fetch was in flight: stay hidden.
+    if (on && smoothEls && smoothEls.targetToggle && !smoothEls.targetToggle.checked) return;
     targetGroup.visible = on;
     try {
       viewer.update(true);
