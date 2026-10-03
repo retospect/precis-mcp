@@ -122,3 +122,42 @@ def test_rare_kind_is_not_starved_by_nearer_papers(
     dists = [d for _c, _r, d in hits]
     assert dists == sorted(dists), "strict_order must keep the result ordered"
     assert all(0.1 < d < 0.4 for d in dists), dists
+
+
+def test_distance_floor_outside_the_scan_keeps_rows_and_pages(
+    store: Store, force_hnsw: None
+) -> None:
+    """The floor filters the ordered nearest-``limit + offset`` prefix, so a
+    floored page is exactly the unfloored list cut at the floor, then
+    paged. Findings sit at cosine distance ~0.219 / 0.257 / 0.293."""
+    v = _seed(store)
+
+    def titles(rows: list[tuple[Any, Any, Any]]) -> list[str]:
+        return [ref.title for _c, ref, _d in rows]
+
+    unfloored = store.chunks.search_chunks_semantic(
+        query_vec=v, kinds=["finding"], limit=10
+    )
+    within = [r for r in unfloored if r[2] < 0.27]
+    assert titles(within) == ["Finding 0", "Finding 1"]
+
+    floored = store.chunks.search_chunks_semantic(
+        query_vec=v, kinds=["finding"], limit=10, max_distance=0.27
+    )
+    assert titles(floored) == titles(within)
+
+    page2 = store.chunks.search_chunks_semantic(
+        query_vec=v, kinds=["finding"], limit=1, offset=1, max_distance=0.27
+    )
+    assert titles(page2) == ["Finding 1"]
+    page3 = store.chunks.search_chunks_semantic(
+        query_vec=v, kinds=["finding"], limit=1, offset=2, max_distance=0.27
+    )
+    assert page3 == []
+
+    # The fused semantic leg applies the same floor. A query with no lexical
+    # hit leaves only that leg.
+    fused = store.chunks.search_chunks_fused(
+        q="zzqxnomatch", query_vec=v, kind="finding", limit=10, max_distance=0.27
+    )
+    assert sorted(ref.title for _c, ref, *_ in fused) == ["Finding 0", "Finding 1"]
