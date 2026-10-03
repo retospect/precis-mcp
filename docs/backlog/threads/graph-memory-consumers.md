@@ -43,9 +43,12 @@ what a live consumer is already going without.
      (2026-10-03, glm-4.7-flash Q5_K_M, design note §1) found no data
      lost and no wrong-key emissions. It failed the share bar: in 9 of 36
      passages the model omits the `"composite"` key, so the composite is
-     synthesized from the source sentence. **Next:** re-run old vs new on
-     OpenRouter once the key exists (review-queue
-     graph-memory-consumers-3), then reword the field if the drop holds.
+     synthesized from the source sentence. A local reword of the field
+     description (key stays `composite`) restores the slot: 31/36, against
+     30/36 for old. It moves splitting on 5 of 36 passages, with mixed
+     results. **Next:** a three-arm OpenRouter run (old, shipped, reword)
+     once the key exists (review-queue graph-memory-consumers-3). No prompt
+     change ships from the local result.
    - **Note:** prod has run no claim extraction since the 13:49Z deploy.
    - **Tier 2, the nanopub half (0181, round 2):** live and checked on
      prod 2026-10-03. The CHECK is validated and allows claim, composite
