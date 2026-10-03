@@ -144,6 +144,12 @@ accept, the merge/relink itself. Nothing runs unless enabled.
 
 ## Open questions / decisions log
 
+- **[decided 2026-10-03, Reto knowledge-mesh-10]** A proposal that a
+  bigger model reviews skips the per-proposal `waiting-for:reto` todo.
+  It lands as a `proposed` row in `local-mesh-upkeep.md`'s `reviews`
+  ledger, and Reto sees a weekly sample. The per-proposal todo stays for
+  a pass with no reviewing model. Merge and split never auto-apply.
+
 - **[open]** Whether split proposals are worth building in v1 — they
   need a polysemy finding to exist first, and nothing mints those yet.
   Splitting could ship after the annotation path is real.

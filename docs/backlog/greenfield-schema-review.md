@@ -58,3 +58,8 @@ Read-only: `docs/reference/schema.md`, the migrations, prod row counts
 ## Open questions / decisions log
 
 - **[decided 2026-10-02, Reto knowledge-mesh-6]** File it; review only.
+- **[gap, 2026-10-03, from local-mesh-upkeep §2b]** Revision history
+  sits in two tables: `chunk_events` (chunks; drives the embed/summary
+  cascade) and `revisions` (refs and links). A greenfield schema has one
+  log over all targets, plus one `reviews` ledger. The path there: the
+  cascade reads a view, then `chunk_events` folds in.

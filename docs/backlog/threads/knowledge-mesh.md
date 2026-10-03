@@ -37,8 +37,11 @@ graph-health-metrics, five parked gripes, and the seam with
    `reviews` ledger (actor, model, version, content sha) that an edit
    makes stale; fed through graph-maintenance-queue and the dispatch
    controller. Its slice 0 categorise set is 1's test, run once for both
-   threads. Design verdict asked in review item knowledge-mesh-10; the
-   ledger migration goes to the orchestrator as a branch.
+   threads. Reto accepted the design (knowledge-mesh-10), adding version
+   history. That is a `revisions` log off a stable head, written by a
+   trigger: chosen over snapshot refs (§2b). Slice 0 waits on
+   local-compute's castor serving window. Slice 1 is one migration
+   (`reviews` + `revisions`), sent to the orchestrator as a branch.
 3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff

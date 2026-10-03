@@ -1,7 +1,7 @@
 ---
 status: draft
 pillar: memory-graph
-title: Local models keep the mesh — measured per action against two bars (auto-apply, reviewed by a bigger model), with one reviewed-by ledger that an edit makes stale
+title: Local models keep the mesh — measured per action against two bars (auto-apply, reviewed by a bigger model), one reviewed-by ledger an edit makes stale, and a revision log off a stable head
 prio: high
 ---
 
@@ -160,6 +160,103 @@ sha registry, not in separate tables.
 The migration and its backfill go to the orchestrator as a branch,
 never qland (round contract).
 
+### 2b. VERSION HISTORY — every revision keeps the prior state
+
+Reto's add-on (knowledge-mesh-10, 2026-10-03). On every revision, keep
+the prior state, with a reason for the change, in an auditable chain off
+a stable head. Links always point at the head, and a reviewer can diff
+the version they reviewed against the current one. He left the mechanism
+open if a better one has the same properties.
+
+**Chosen: a `revisions` log keyed on the head, not snapshot refs.**
+
+```
+revisions(target_kind  ref|link,
+          target_id    bigint,          -- the head; never changes
+          at           timestamptz,
+          event        edited|retired|restored|deleted|merged-into,
+          actor        text → actors.slug,
+          model        text NULL,
+          reason       text NOT NULL,
+          prev_sha     text,            -- sha of the state below
+          new_sha      text,            -- sha after the change
+          prev_state   jsonb)           -- the full prior row, plus the
+                                        -- replaced body chunks' text
+```
+
+**How each property holds:**
+
+| property | how it holds |
+|---|---|
+| the prior state is kept | `prev_state` is the whole prior row. A body replacement also stores the replaced chunks' text there. |
+| an auditable chain | the target's rows in `at` order, linked by `prev_sha` → `new_sha`. `get(..., view='history')` renders each entry as a "previous version" line: when, who, which model, the reason. |
+| head id stable, links point at the head | the head is never copied, so no link has anywhere else to point |
+| a reason on each entry | `reason` is NOT NULL. `edit` gains a `reason=` arg (finding's `motivation=` is a different field, the hypothesis motivation). Without one, the store writes the verb and actor, e.g. `edit(kind='finding') by mesh-upkeep`. |
+| diff reviewed against current | the review's `content_sha` names a `new_sha` in the chain. `view='diff', args={'since': <sha>}` renders that state against now. |
+
+**What counts as a revision is what the sha covers.** A row is written
+exactly when the target's content sha changes (§2's sha registry), so:
+
+- bookkeeping meta (`verified_*`, `last_refined_*`, counters) makes no
+  history;
+- every change a review could be invalidated by makes exactly one entry.
+
+**Written by a trigger, not by each write path.** Two numbers make the
+case: 153k system and 83k agent links. Too many paths write refs and
+links to trust each one to log.
+
+- An `AFTER UPDATE OR DELETE` trigger on `refs` and `links` writes the
+  row when a covered column changed. It compares columns and meta minus
+  the bookkeeping keys; one SQL list holds those keys, and a test pins it
+  to the sha registry's list.
+- The trigger reads the reason, actor and model from
+  `current_setting('precis.reason', true)` and its siblings. The store
+  sets these with `SET LOCAL`, which is transaction-scoped and safe
+  under pgbouncer (never a session `SET`).
+- A covered write with no reason set still logs, with
+  `reason='(unrecorded)'`. A nightly count of those rows names the write
+  paths to fix.
+
+**Why not snapshot refs tagged `history`** (the first form of the
+add-on):
+
+- **Every reader would have to skip them.** A snapshot is a ref, so
+  search, fisheye rings, embeddings, kind counts and graph-health
+  metrics would each need to learn the tag. Any reader that misses it
+  shows a duplicate, which is the problem hub-duplicate-reconcile exists
+  to remove.
+- **Links have no ref to snapshot.** Their revisions would need a second
+  mechanism anyway.
+- **"Previous version" edges would land in the ring.** They would add
+  history to the head's fisheye and link counts.
+
+The log keeps every property and adds no node.
+
+**Fit with what exists:**
+
+- **`chunk_events` is this mechanism already, for draft chunks.**
+  - It holds a stable handle, an in-place edit, and an `edited` row with
+    `content_sha` and `prev_text`.
+  - `revisions` extends the same design to refs and links.
+  - Chunk history stays in `chunk_events`, which drives the
+    embed/summary cascade; moving it would put that cascade at risk for
+    no new property.
+  - A single reader, `revision_at(target, sha)`, serves the diff for all
+    three target kinds.
+- **The append-only body-chunk rule is untouched.**
+  - A body revision is still DELETE + INSERT on `chunks`, so the cascade
+    re-runs.
+  - The ref-level `revisions` row keeps the replaced text in
+    `prev_state`.
+  - The rule forbids updating a body row in place; it does not forbid
+    keeping a copy.
+- **Greenfield schema review (knowledge-mesh-6).**
+  - A greenfield schema would have one `revisions` and one `reviews`
+    table across all targets.
+  - Built this way, today's gap is just `chunk_events` being separate.
+    That is recorded there as a gap row (fold `chunk_events` into
+    `revisions`, after the cascade reads a view), not done here.
+
 ### 3. FEED — into the maintenance queue, out through the review lane
 
 - **Work in.** `graph-maintenance-queue.md` is the producer. Each queued
@@ -192,6 +289,8 @@ never qland (round contract).
 - Body-chunk prose review (drafts keep `view='review'`, now reading the
   ledger).
 - Auto-apply for merge or split, at any score.
+- Folding `chunk_events` into `revisions`. That is a greenfield-review
+  gap row, done after the cascade reads a view.
 
 ## Acceptance criteria
 
@@ -215,6 +314,15 @@ never qland (round contract).
 7. A local maintenance result lands as `proposed` and applies only on
    `approved` (reviewed actions). An auto-apply action records its prior
    and can be undone in one call.
+8. Editing a finding's title, a memory's body or a link's covered meta
+   writes exactly one `revisions` row with the prior state and a reason.
+   A bookkeeping-only change (a `verified_at` bump) writes none.
+9. Given a review's `content_sha`, `view='diff'` renders that version
+   against the current one. The head's id, its links and its fisheye ring
+   are unchanged by any number of revisions.
+10. A write that sets no reason still logs, as `(unrecorded)`, and the
+    nightly count reports it. Hard-deleting a link logs `deleted` with
+    its last state.
 
 ## Target + blast radius
 
@@ -223,29 +331,40 @@ never qland (round contract).
 `chunk_review` readers (`executors/claude_inproc.py` review tick, draft
 `view='review'`). `workers/hub_refine.py` (due rule, verdict stamp). The
 `links.meta.verified_by` writers (hub_refine, verify-edges, the grounding
-audit). The maintenance queue and review lane (with local-compute).
+audit). The `revisions` trigger runs on every UPDATE and DELETE of `refs`
+and `links`. That makes it the widest blast radius here: it must never
+fail a write, and a trigger error has to log and pass. The maintenance queue and review lane (with local-compute).
 Skills: `precis-review-help`, `precis-gardener-help` when it exists.
 
 ## Slices
 
 0. **Eval, no schema.** Port the taxonomy scorer, build categorise and
    merge sets first (gold exists), then links and findings. Run on castor
-   when Slice 0 serves. Costs only the frontier grading sample.
-1. **Ledger.** Migration, sha registry, backfill, hub_refine on the
-   ledger. A branch to the orchestrator.
+   when Slice 0 serves. Costs only the frontier grading sample. Castor's
+   bench server binds 127.0.0.1 and has no `resource_slots` row, so
+   `llm_eval` cannot reach it. local-compute opens a serving window (a LAN
+   bind plus a temporary slot row, or the harness run on castor) after its
+   above-64-stream load test, and pings when it is open.
+1. **Ledger and history.** One migration for `reviews`, `revisions` and
+   its trigger, plus the sha registry, the backfill, hub_refine on the
+   ledger, `edit(reason=)`, and `view='history'`/`'diff'`. A branch to
+   the orchestrator.
 2. **Feed.** Proposals into the queue, the review lane, the bars applied
    per action. Waits on the queue and the controller existing.
 
 ## Open questions / decisions log
 
-- **[open, Reto]** The two bars: is "≥ the frontier's own test-retest" the
-  right auto-apply bar, and "review cheaper than generation" the right
-  reviewed bar?
-- **[open, Reto]** An 80-item human holdout (20 per action, one sitting):
-  yes, smaller, or frontier gold only?
-- **[open, Reto]** This changes `graph-gardener.md`'s rule. Under that
-  rule every proposal is a `todo` with `waiting-for:reto`; here a bigger
-  model reviews, and Reto samples. At local volume he cannot read each
-  proposal.
+- **[decided 2026-10-03, Reto knowledge-mesh-10]** Accepted all three:
+  - one `reviews` ledger;
+  - the two bars, with auto-apply only for categorise and link-add;
+  - the 80-item human holdout.
+
+  The weekly sample replaces per-proposal todos, so `graph-gardener.md`'s
+  `waiting-for:reto`-per-proposal rule now applies only to passes no
+  bigger model reviews.
+- **[decided 2026-10-03, Reto knowledge-mesh-10 add-on]** Version history
+  on every revision, with a reason, off a stable head (§2b). Reto left the
+  mechanism open. Chosen: a `revisions` log written by a trigger, over
+  snapshot refs tagged `history`; the reasons are in §2b.
 - **[open]** Whether `reviews` should also replace `refs.human_verified_*`
   (27 rows). Leaning yes, as `target_kind='ref'`, `model` NULL.
