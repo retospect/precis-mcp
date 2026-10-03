@@ -154,15 +154,18 @@ spin-paired energy (§22i), so the table stands. Catpath
   cross-section with ribs; no quest until then. 18 papers listed; next
   is a read-for-question pass for design numbers once they fetch.
 
-- **Two dormant quests owned by this thread** (Reto 2026-10-03, td460284).
-  Both are tagged `thread:catalysis-selectivity` and carry a logbook note;
+- **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284
+  for the two NO arms; qu207188 added the same day via review session).
+  All three are tagged `thread:catalysis-selectivity` and carry a logbook note;
   keep them `STATUS:dormant`.
   - qu202468 (Convert NO to fertilizer nitrogen with non-palladium
     solid-state catalysts; Cu-foam electrochemical arm first).
   - qu202469 (Convert NO to fertilizer nitrogen via biocatalysis;
     literature-tracking arm, no compute lane).
+  - qu207188 (Fertilizer from air and sunlight alone: a cheap catalyst of
+    common elements making ammonia).
 
-  Open decision, not yet taken: whether either folds into the NO→NH₃ work
+  Open decision, not yet taken: whether any of them folds into the NO→NH₃ work
   of qu164903 (NO→NH₃ selectivity).
 
 ## No action needed
