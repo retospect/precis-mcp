@@ -1100,6 +1100,40 @@ _AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 _AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
 
 
+#: Env pin for the CPU set seed children run on (``taskset -c``); unset/blank →
+#: unpinned. See :func:`_autocatpath_seed_cpuset`.
+_AUTOCATPATH_SEED_CPUSET_ENV = "PRECIS_AUTOCATPATH_SEED_CPUSET"
+
+#: Same grammar as ``precis_pathway.runner._CPUSET_RE`` (this module is the
+#: pure half of the bridge and does not import ``precis_pathway``).
+_CPUSET_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
+
+
+def _autocatpath_seed_cpuset() -> str | None:
+    """CPU set (``"0-4,10-14"``) to stamp into each seed job's
+    ``params.resources.cpuset``, or None to run unpinned.
+
+    Env-tunable (``PRECIS_AUTOCATPATH_SEED_CPUSET``): it keeps a seed child off
+    the cores a co-tenant needs (the MPI DFT image, or serving) on a 20-core
+    GPU twin. ``precis_pathway.seed_job`` hands the value to
+    ``runner._pinned_cmd``, which prepends ``taskset -c``. Blank or unset →
+    None; a value outside the runner's cpuset grammar logs one warning and
+    returns None (unpinned), as if unset. Stamped on seed jobs only, never the
+    aggregate. Reviewer verdict: ``reviews/chemistry.review.md`` §10.
+    """
+    raw = (os.environ.get(_AUTOCATPATH_SEED_CPUSET_ENV) or "").strip()
+    if not raw:
+        return None
+    if not _CPUSET_RE.match(raw):
+        log.warning(
+            "%s=%r is not a cpuset (e.g. '0-4,10-14'); seeds run unpinned",
+            _AUTOCATPATH_SEED_CPUSET_ENV,
+            raw,
+        )
+        return None
+    return raw
+
+
 def _autocatpath_wall_seconds(tier: str | None = None) -> int:
     """Expected wall-time hint (s) for a autocatpath NEB, stamped into the job's
     ``resources`` so the ssh_node lease outlives a full-network run.
@@ -1729,6 +1763,13 @@ def dispatch_autocatpath(
             },
         )
 
+        seed_cpuset = _autocatpath_seed_cpuset()
+        seed_resources: dict[str, Any] = {
+            "wall_seconds": _autocatpath_wall_seconds(tier)
+        }
+        if seed_cpuset:
+            seed_resources["cpuset"] = seed_cpuset
+
         minted = 0
         for model_index in range(len(specs)):
             for seed_idx, seed in enumerate(seeds):
@@ -1790,7 +1831,7 @@ def dispatch_autocatpath(
                         # (one model, one seed), but sized the same as
                         # before: cheap insurance, and the wedge fix is the
                         # job's SHORT compute duration, not a tighter lease.
-                        "resources": {"wall_seconds": _autocatpath_wall_seconds(tier)},
+                        "resources": dict(seed_resources),
                     },
                 )
     except Exception as e:

@@ -1,0 +1,17 @@
+---
+- name: restart node_exporter
+  when: os_family == "darwin"
+  ansible.builtin.command: /opt/homebrew/bin/brew services restart node_exporter
+  become: true
+  environment:
+    HOME: /Users/deploy
+    USER: deploy
+  # Tolerated like the start task; the verification tasks in tasks/main.yml
+  # (wait for :9100, scrape-error check) are what actually gate the play.
+  failed_when: false
+
+- name: reload colima docker-fs metric daemon
+  ansible.builtin.shell: |
+    launchctl bootout system/com.precis.colima-docker-fs 2>/dev/null || true
+    launchctl bootstrap system /Library/LaunchDaemons/com.precis.colima-docker-fs.plist
+  become: true

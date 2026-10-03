@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+{# {{ ansible_managed }} #}
+{# Runs as the colima VM's owner (the VM is per-user); every 5 min. #}
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.precis.colima-docker-fs</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/colima-docker-fs-metrics</string>
+  </array>
+  <key>UserName</key>
+  <string>{{ node_exporter_colima_user }}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/{{ node_exporter_colima_user }}</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/colima-docker-fs.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/colima-docker-fs.log</string>
+</dict>
+</plist>

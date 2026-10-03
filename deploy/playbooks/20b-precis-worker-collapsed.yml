@@ -312,6 +312,14 @@
           if ((precis_capabilities.autocatpath | default([])) | length > 0) else {}
         )
         | combine(
+          {'PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS': precis_autocatpath_verify_wall_seconds | string}
+          if (precis_autocatpath_verify_wall_seconds is defined) else {}
+        )
+        | combine(
+          {'PRECIS_AUTOCATPATH_SEED_CPUSET': precis_autocatpath_seed_cpuset | string}
+          if (precis_autocatpath_seed_cpuset is defined) else {}
+        )
+        | combine(
           {'PRECIS_LOAD_CEILING': precis_worker_agent_load_ceiling}
           if (precis_worker_agent_load_ceiling | default('')) else {}
         )

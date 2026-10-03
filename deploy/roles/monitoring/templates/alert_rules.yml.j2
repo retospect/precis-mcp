@@ -31,6 +31,38 @@ groups:
         annotations:
           summary: "{% raw %}Memory usage above 90% on {{ $labels.instance }}{% endraw %}"
 
+      # The colima VM's /var/lib/docker is a separate disk inside the VM that
+      # host node_exporter cannot see (98% -> ENOSPC on every gate, 2026-10-03).
+      # Fed by the colima-docker-fs textfile collector (node_exporter role).
+      - alert: ColimaDockerDiskHigh
+        expr: precis_colima_docker_fs_used_bytes / precis_colima_docker_fs_size_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}colima /var/lib/docker above 85% on {{ $labels.instance }}{% endraw %}"
+
+      - alert: ColimaDockerDiskMetricDown
+        expr: precis_colima_docker_fs_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}colima VM unreachable or metric probe timing out on {{ $labels.instance }}{% endraw %}"
+
+      # The .prom file keeps its last `up 1` if the launchd job is unloaded or
+      # dies, so staleness of the file itself is the only signal. (No
+      # absent(precis_colima_docker_fs_up) rule: the node scrape job carries only
+      # per-host instance addresses, no label marking which hosts run colima, so
+      # absent() cannot be scoped without firing on every host that has none.)
+      - alert: ColimaDockerDiskMetricStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*colima_docker_fs.prom"} > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}colima docker-fs metric file not refreshed for 15m on {{ $labels.instance }}{% endraw %}"
+
       - alert: PostgresDown
         expr: pg_up == 0
         for: 2m

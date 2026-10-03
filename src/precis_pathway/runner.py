@@ -494,16 +494,43 @@ def _child_cmd(req_path: str, out_path: str) -> list[str]:
 _CPUSET_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
 
 
+def _parse_cpuset(spec: str) -> set[int]:
+    """Expand taskset list syntax (``"0-4,10-14"``) into CPU ids. ``spec`` must
+    already match :data:`_CPUSET_RE`."""
+    cpus: set[int] = set()
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        cpus.update(range(int(lo), int(hi or lo) + 1))
+    return cpus
+
+
 def _pinned_cmd(cmd: list[str], cpuset: str | None) -> list[str]:
     """Prefix ``cmd`` with ``taskset -c <cpuset>`` to pin the host-process
     child to a CPU set (``params.resources.cpuset``, taskset list syntax such
-    as ``"0-4,10-14"``). Best-effort: a malformed set or a missing
-    ``taskset`` binary logs a warning and returns ``cmd`` unpinned rather
-    than failing the job."""
+    as ``"0-4,10-14"``). Best-effort: a malformed set, a missing ``taskset``
+    binary, a platform without ``os.sched_getaffinity`` (macOS), or a set
+    naming CPUs this node lacks (``taskset`` would die with "Invalid
+    argument") returns ``cmd`` unpinned rather than failing the job. The
+    dispatcher stamps one cpuset on every seed, so the node that runs the
+    child checks its own affinity here."""
     if not cpuset:
         return cmd
     if not _CPUSET_RE.match(cpuset):
         log.warning("ignoring malformed resources.cpuset %r; running unpinned", cpuset)
+        return cmd
+    if not hasattr(os, "sched_getaffinity"):
+        log.debug(
+            "no os.sched_getaffinity; ignoring cpuset %r, running unpinned", cpuset
+        )
+        return cmd
+    requested = _parse_cpuset(cpuset)
+    missing = requested - set(os.sched_getaffinity(0))
+    if missing:
+        log.warning(
+            "resources.cpuset %r names CPUs this node lacks (%s); running unpinned",
+            cpuset,
+            ",".join(str(c) for c in sorted(missing)),
+        )
         return cmd
     if shutil.which("taskset") is None:
         log.warning("taskset not on PATH; ignoring cpuset %r, running unpinned", cpuset)

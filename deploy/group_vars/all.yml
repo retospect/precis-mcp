@@ -39,3 +39,9 @@ precis_max_tree_usd: 30.0
 # PRECIS_AUTOCATPATH_VERSION override is present anywhere.
 # To suspend again: list job_types comma-separated and redeploy.
 precis_suspended_job_types: ""
+
+# Verify-tier autocatpath seed wall (PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS): 2 x the 5 h 05 m measured on job 464221, capped at 8 h; omit to fall back to PRECIS_AUTOCATPATH_WALL_SECONDS.
+precis_autocatpath_verify_wall_seconds: 28800
+
+# Pin autocatpath seed children (taskset -c) to half the cores (0-4, 10-14), leaving 5-9 and 15-19 for co-tenants; omit to run unpinned. The dispatcher stamps it on every seed; a node lacking those CPUs runs the seed unpinned (the runner checks its own affinity).
+precis_autocatpath_seed_cpuset: "0-4,10-14"

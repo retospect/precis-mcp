@@ -167,6 +167,14 @@
     {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
     <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
     <string>{{ precis_capabilities.autocatpath | join(',') }}</string>
+    {% if precis_autocatpath_verify_wall_seconds is defined %}
+    <key>PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS</key>
+    <string>{{ precis_autocatpath_verify_wall_seconds }}</string>
+    {% endif %}
+    {% if precis_autocatpath_seed_cpuset is defined %}
+    <key>PRECIS_AUTOCATPATH_SEED_CPUSET</key>
+    <string>{{ precis_autocatpath_seed_cpuset }}</string>
+    {% endif %}
     {% endif %}
     {# diagram_propose autonomous drawer — agentic path (claude_inproc). #}
     <key>PRECIS_DIAGRAM_AGENTIC</key>

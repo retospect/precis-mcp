@@ -1,0 +1,18 @@
+---
+# node_exporter textfile collector (macOS, brew): drop-in *.prom files here
+# are served on :9100. node_exporter runs as root, so the directory must be
+# world-readable and writable by the producing user.
+node_exporter_textfile_dir: /opt/homebrew/var/node_exporter/textfile
+node_exporter_args_file: /opt/homebrew/etc/node_exporter.args
+
+# colima Docker-VM disk metric. The VM's /var/lib/docker is a separate disk
+# INSIDE the VM, invisible to host node_exporter (it hit 98% and ENOSPC'd every
+# gate container). Installed only on a macOS host where this user owns a colima
+# VM (the colima binary and ~user/.colima/<profile> both exist), so the role
+# stays a no-op on nodes without one.
+node_exporter_colima_disk_enabled: true
+# User that owns the VM (colima is per-user) and which profile to probe.
+node_exporter_colima_user: reto
+node_exporter_colima_profile: default
+node_exporter_colima_bin: /opt/homebrew/bin/colima
+node_exporter_colima_timeout_s: 20

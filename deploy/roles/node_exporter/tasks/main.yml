@@ -15,6 +15,67 @@
     state: present
   become: true
 
+# ── colima Docker-VM disk metric (textfile collector) ──
+- name: Probe for a colima VM owned by the metric user
+  when: os_family == "darwin" and node_exporter_colima_disk_enabled
+  ansible.builtin.stat:
+    path: "/Users/{{ node_exporter_colima_user }}/.colima/{{ node_exporter_colima_profile }}"
+  register: _colima_profile_dir
+
+- name: Probe for the colima binary
+  when: os_family == "darwin" and node_exporter_colima_disk_enabled
+  ansible.builtin.stat:
+    path: "{{ node_exporter_colima_bin }}"
+  register: _colima_bin
+
+- name: Set colima metric gate
+  ansible.builtin.set_fact:
+    _colima_metric: >-
+      {{ os_family == "darwin" and node_exporter_colima_disk_enabled
+         and (_colima_profile_dir.stat.isdir | default(false))
+         and (_colima_bin.stat.exists | default(false)) }}
+
+- name: Ensure node_exporter textfile directory
+  when: _colima_metric | bool
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: "{{ node_exporter_colima_user }}"
+    mode: "0755"
+  become: true
+
+# brew's service runs `node_exporter $(cat node_exporter.args)`; an absent or
+# empty file means defaults (:9100 on all interfaces), which create: true keeps.
+- name: Point node_exporter at the textfile directory
+  when: _colima_metric | bool
+  ansible.builtin.lineinfile:
+    path: "{{ node_exporter_args_file }}"
+    regexp: '^--collector\.textfile\.directory='
+    line: "--collector.textfile.directory={{ node_exporter_textfile_dir }}"
+    create: true
+    mode: "0644"
+  become: true
+  notify: restart node_exporter
+
+- name: Deploy colima docker-fs metric script
+  when: _colima_metric | bool
+  ansible.builtin.template:
+    src: colima-docker-fs-metrics.sh.j2
+    dest: /usr/local/bin/colima-docker-fs-metrics
+    mode: "0755"
+  become: true
+
+- name: Deploy colima docker-fs metric LaunchDaemon
+  when: _colima_metric | bool
+  ansible.builtin.template:
+    src: com.precis.colima-docker-fs.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.colima-docker-fs.plist
+    owner: root
+    group: wheel
+    mode: "0644"
+  become: true
+  notify: reload colima docker-fs metric daemon
+
 - name: Start node_exporter (macOS — brew services as root)
   when: os_family == "darwin"
   ansible.builtin.shell: |
@@ -33,8 +94,49 @@
     state: started
   become: true
 
+- name: Apply pending node_exporter / metric-daemon handlers now
+  ansible.builtin.meta: flush_handlers
+
 - name: Wait for node_exporter
   ansible.builtin.wait_for:
     port: 9100
     host: 127.0.0.1
-    timeout: 10
+    timeout: 60
+
+# ── verify the colima metric end to end ──
+- name: Ensure colima docker-fs daemon is loaded
+  when: _colima_metric | bool
+  ansible.builtin.shell: |
+    launchctl print system/com.precis.colima-docker-fs >/dev/null 2>&1 \
+      || launchctl bootstrap system /Library/LaunchDaemons/com.precis.colima-docker-fs.plist
+  become: true
+  changed_when: false
+
+- name: Run the colima docker-fs probe once
+  when: _colima_metric | bool
+  ansible.builtin.command: launchctl kickstart -k system/com.precis.colima-docker-fs
+  become: true
+  changed_when: false
+
+- name: Wait for the probe to write its metric file
+  when: _colima_metric | bool
+  ansible.builtin.wait_for:
+    path: "{{ node_exporter_textfile_dir }}/colima_docker_fs.prom"
+    timeout: "{{ node_exporter_colima_timeout_s | int + 30 }}"
+
+- name: Read node_exporter metrics
+  when: _colima_metric | bool
+  ansible.builtin.uri:
+    url: http://127.0.0.1:9100/metrics
+    return_content: true
+  register: _ne_metrics
+  until: "'node_textfile_scrape_error 0' in _ne_metrics.content"
+  retries: 6
+  delay: 5
+
+- name: Assert the textfile collector scraped cleanly
+  when: _colima_metric | bool
+  ansible.builtin.assert:
+    that:
+      - "'node_textfile_scrape_error 0' in _ne_metrics.content"
+      - "'precis_colima_docker_fs_up' in _ne_metrics.content"

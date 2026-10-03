@@ -5942,6 +5942,53 @@ class TestDispatchAutocatpath:
         full_meta = {"params": params}
         assert ssh_node._lease_seconds(full_meta) == 9000 + ssh_node._LEASE_MARGIN_S
 
+    def _aggregate_params(self, store: Any, sid: int) -> list[dict]:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT meta FROM refs
+                 WHERE kind = 'todo' AND retired_at IS NULL
+                   AND parent_id = %s
+                   AND meta->>'job_type' = 'autocatpath_aggregate'
+                """,
+                (sid,),
+            ).fetchall()
+        return [(r[0] or {}).get("params") or {} for r in rows]
+
+    def test_seed_cpuset_env_stamps_seed_jobs_only(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_SEED_CPUSET_ENV, "0-4,10-14")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        seeds = self._seed_jobs(store, sid)
+        assert seeds
+        for _jid, jmeta in seeds:
+            assert jmeta["params"]["resources"]["cpuset"] == "0-4,10-14"
+        aggs = self._aggregate_params(store, sid)
+        assert aggs
+        for agg in aggs:
+            assert "cpuset" not in agg["resources"]
+
+    @pytest.mark.parametrize("value", [None, "", "  ", "0-4;10", "abc", "0-"])
+    def test_seed_cpuset_unset_or_malformed_is_absent(
+        self, store: Any, monkeypatch: Any, value: str | None
+    ) -> None:
+        if value is None:
+            monkeypatch.delenv(compute_mod._AUTOCATPATH_SEED_CPUSET_ENV, raising=False)
+        else:
+            monkeypatch.setenv(compute_mod._AUTOCATPATH_SEED_CPUSET_ENV, value)
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        seeds = self._seed_jobs(store, sid)
+        assert seeds
+        for _jid, jmeta in seeds:
+            assert "cpuset" not in jmeta["params"]["resources"]
+        for agg in self._aggregate_params(store, sid):
+            assert "cpuset" not in agg["resources"]
+
     def test_verify_wall_pin_reaches_verify_job_and_lease_only(
         self, store: Any, monkeypatch: Any
     ) -> None:

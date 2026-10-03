@@ -16,7 +16,19 @@ def _stub_child(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "_child_cmd", lambda req, out: ["child", req, out])
 
 
+def _affinity(monkeypatch: pytest.MonkeyPatch, cpus: set[int] | None) -> None:
+    """Fake ``os.sched_getaffinity`` (absent on macOS, hence ``raising=False``);
+    ``None`` removes it."""
+    if cpus is None:
+        monkeypatch.delattr(runner.os, "sched_getaffinity", raising=False)
+    else:
+        monkeypatch.setattr(
+            runner.os, "sched_getaffinity", lambda pid: set(cpus), raising=False
+        )
+
+
 def _which(monkeypatch: pytest.MonkeyPatch, found: bool) -> None:
+    _affinity(monkeypatch, set(range(64)))
     monkeypatch.setattr(
         runner.shutil, "which", lambda name: "/usr/bin/taskset" if found else None
     )
@@ -51,6 +63,39 @@ def test_pinned_cmd_without_taskset_runs_unpinned(
     with caplog.at_level(logging.WARNING, logger=runner.log.name):
         assert runner._pinned_cmd(["x"], "0-3") == ["x"]
     assert "taskset not on PATH" in caplog.text
+
+
+def test_pinned_cmd_missing_cpus_runs_unpinned_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _which(monkeypatch, True)
+    _affinity(monkeypatch, set(range(8)))
+    with caplog.at_level(logging.WARNING, logger=runner.log.name):
+        assert runner._pinned_cmd(["x"], "0-4,10-14") == ["x"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "0-4,10-14" in warnings[0].getMessage()
+    assert "10,11,12,13,14" in warnings[0].getMessage()
+
+
+def test_pinned_cmd_all_cpus_available_is_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _which(monkeypatch, True)
+    _affinity(monkeypatch, {0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 15})
+    assert runner._pinned_cmd(["x"], "0-4,10-14")[:3] == ["taskset", "-c", "0-4,10-14"]
+
+
+def test_pinned_cmd_without_sched_getaffinity_runs_unpinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _which(monkeypatch, True)
+    _affinity(monkeypatch, None)
+    assert runner._pinned_cmd(["x"], "0-3") == ["x"]
+
+
+def test_parse_cpuset() -> None:
+    assert runner._parse_cpuset("0-2,5,7-8") == {0, 1, 2, 5, 7, 8}
 
 
 def test_pinned_cmd_none_is_passthrough() -> None:

@@ -1,0 +1,40 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Writes precis_colima_docker_fs_* gauges for the colima VM's /var/lib/docker
+# to the node_exporter textfile directory (atomic: tmp + rename). On a down VM
+# or a timeout it writes only precis_colima_docker_fs_up 0 so a stale file can
+# never mask an outage.
+set -u
+PROFILE="{{ node_exporter_colima_profile }}"
+COLIMA="{{ node_exporter_colima_bin }}"
+OUT="{{ node_exporter_textfile_dir }}/colima_docker_fs.prom"
+TMP="${OUT%.prom}.tmp.$$"
+trap 'rm -f "$TMP"' EXIT
+
+# macOS has no timeout(1). The probe runs in its own process group so that on
+# alarm the whole tree (colima AND the ssh it spawns) gets SIGTERM, leaving
+# nothing orphaned behind a wedged VM. Exit 124 = timed out.
+raw=$(perl -e 'my $t = shift; my $pid = fork;
+  if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+  $SIG{ALRM} = sub { kill "TERM", -$pid; waitpid($pid, 0); exit 124 };
+  alarm $t; waitpid($pid, 0); exit($? & 127 ? 1 : $? >> 8)' \
+  {{ node_exporter_colima_timeout_s }} \
+  "$COLIMA" ssh -p "$PROFILE" -- df -B1 --output=size,used,avail /var/lib/docker 2>/dev/null)
+rc=$?
+read -r size used avail <<<"$(printf '%s\n' "$raw" | tail -n 1)"
+
+{
+  if [ "$rc" -eq 0 ] && [[ "$size" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && "$avail" =~ ^[0-9]+$ ]]; then
+    echo "# TYPE precis_colima_docker_fs_up gauge"
+    echo "precis_colima_docker_fs_up{profile=\"$PROFILE\"} 1"
+    echo "# TYPE precis_colima_docker_fs_size_bytes gauge"
+    echo "precis_colima_docker_fs_size_bytes{profile=\"$PROFILE\"} $size"
+    echo "# TYPE precis_colima_docker_fs_used_bytes gauge"
+    echo "precis_colima_docker_fs_used_bytes{profile=\"$PROFILE\"} $used"
+    echo "# TYPE precis_colima_docker_fs_avail_bytes gauge"
+    echo "precis_colima_docker_fs_avail_bytes{profile=\"$PROFILE\"} $avail"
+  else
+    echo "# TYPE precis_colima_docker_fs_up gauge"
+    echo "precis_colima_docker_fs_up{profile=\"$PROFILE\"} 0"
+  fi
+} >"$TMP" && chmod 0644 "$TMP" && mv -f "$TMP" "$OUT"
