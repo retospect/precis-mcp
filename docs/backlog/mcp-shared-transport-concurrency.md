@@ -62,10 +62,13 @@ The open work is the tier that needs a real database:
   transaction pooling a session `SET ROLE` neither persists nor stays
   contained. Separate pools per role, or app-level authz keyed on the
   session, are the two candidate shapes.
-- **Fairness.** `server._get_tool_semaphore` is a first-come-first-served
-  singleton, so under a shared process one session bursting calls can
-  hold every permit while another session's cheap read queues. There is
-  no fairness property to assert today; a shared transport needs one.
+- **Fairness — built 2026-10-03.** `server._FairSemaphore` hands a freed
+  permit to the next session with a waiter, and the session giving it
+  back yields its turn. One session's burst can still hold every permit,
+  but another session's call waits for one release, not for the whole
+  burst. `test_a_burst_from_one_session_does_not_queue_ahead_of_another_session`
+  pins it. Not done: a per-session cap on permits held. Add one only if a
+  measured burst starves sessions for longer than one call.
 
 ## Explicitly NOT in scope
 Unwinding the shared transport, or moving spawned callers (agent
@@ -80,7 +83,8 @@ stdio callers; the shared server sets its own via env.
 - The pool-storm and role-isolation tests exist and are honest about
   what they show (the role one is expected to document a gap, not a
   passing property).
-- A fairness policy between sessions, and supervision: one shared
+- ~~A fairness policy between sessions~~ — round-robin by session,
+  built 2026-10-03 (fairness bullet). Supervision: one shared
   process means one crash, or one image rebuild, takes every session
   down at once. Sizing and the pool env knob
   (`pool.resolved_pool_max_size`) already shipped.

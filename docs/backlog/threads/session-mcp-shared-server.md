@@ -155,7 +155,9 @@ capacity and isolation gaps.
    image rebuild bounces every session. The role bullet is closed (Reto,
    item -5, td461159): coding jobs never leave containers and the shared
    server stays interactive-only at `agent_rw`. Its reopen trigger is in
-   Parked. Left: fairness and the pool-storm test.
+   Parked. Fairness is built: permits go round-robin by session
+   (`server._FairSemaphore`). It loads at the next drained respawn after
+   a deploy. Left: the pool-storm test.
 
 ## Runbook
 

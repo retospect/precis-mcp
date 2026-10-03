@@ -117,11 +117,10 @@ def test_tool_concurrency_cap_is_process_wide_not_per_session(
       raises ``PRECIS_MCP_TOOL_CONCURRENCY`` in step with the pool
       instead of running the default.
 
-    Sizing is therefore necessary but not sufficient: the singleton is
-    first-come-first-served, so one session bursting N calls can hold
-    every permit while another session's cheap read queues behind them.
-    Nothing here asserts a fairness property — there isn't one to
-    assert yet. This test pins the scope so that change is deliberate.
+    Sizing is therefore necessary but not sufficient: one session bursting
+    N calls can still hold every permit. What it cannot do is make another
+    session's call wait behind its whole queue — the next test pins that.
+    This test pins the scope so that a change to it is deliberate.
     """
     monkeypatch.setenv(server._TOOL_CONCURRENCY_ENV, "2")
 
@@ -155,6 +154,75 @@ def test_tool_concurrency_cap_is_process_wide_not_per_session(
 
     asyncio.run(_run())
     assert peak == 2, peak
+
+
+def test_a_burst_from_one_session_does_not_queue_ahead_of_another_session(
+    monkeypatch: pytest.MonkeyPatch, _reset_tool_semaphore: None
+) -> None:
+    """A freed permit goes to the next session in turn, not the next call.
+
+    Cap 1. Session A has one call running and two queued when session B
+    asks for one. First-come-first-served would run A, A, A, B; the
+    round-robin hand-off runs B as soon as A's first call ends.
+    """
+    monkeypatch.setenv(server._TOOL_CONCURRENCY_ENV, "1")
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def work(label: str) -> str:
+        """Record the start order, then hold the only permit for a beat."""
+        with lock:
+            started.append(label)
+        time.sleep(0.2)
+        return label
+
+    mcp = build_test_mcp([work], semaphore=None)
+
+    def queued() -> int:
+        return sum(len(q) for q in server._get_tool_semaphore()._waiters.values())
+
+    async def _run() -> None:
+        async with connected_sessions(mcp, 2) as (session_a, session_b):
+            burst = [
+                asyncio.create_task(session_a.call_tool("work", {"label": "a"}))
+                for _ in range(3)
+            ]
+            deadline = time.monotonic() + 5
+            while queued() < 2:
+                assert time.monotonic() < deadline, "session A's burst never queued"
+                await asyncio.sleep(0.01)
+            await asyncio.gather(session_b.call_tool("work", {"label": "b"}), *burst)
+
+    asyncio.run(_run())
+    assert started == ["a", "b", "a", "a"], started
+
+
+def test_a_call_cancelled_while_queued_gives_up_its_place() -> None:
+    """A cancelled waiter leaves the queue, and a cancelled grantee passes
+    the permit on, so neither leaks a permit."""
+
+    async def _run() -> None:
+        sem = server._FairSemaphore(1)
+        await sem.acquire("a")
+        waiter = asyncio.create_task(sem.acquire("b"))
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert sem._waiters == {}
+        sem.release("a")
+        await asyncio.wait_for(sem.acquire("c"), timeout=1)
+
+        # Cancelled after the hand-off but before it resumed.
+        granted = asyncio.create_task(sem.acquire("d"))
+        await asyncio.sleep(0)
+        sem.release("c")
+        granted.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await granted
+        await asyncio.wait_for(sem.acquire("e"), timeout=1)
+
+    asyncio.run(_run())
 
 
 # ── per-session state really is per-session ──────────────────────────

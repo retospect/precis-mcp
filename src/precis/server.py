@@ -45,7 +45,9 @@ or monkeypatch the library, `_offload_sync` wraps every tool function
 real sync body via `anyio.to_thread.run_sync`, bounded by a module-
 level semaphore (`_get_tool_semaphore`, sized by
 `PRECIS_MCP_TOOL_CONCURRENCY`) so a concurrent burst can't open more
-connections than the store's pool allows. See `_offload_sync`'s
+connections than the store's pool allows. Its waiters are served
+round-robin by MCP session, so on the shared server one session's burst
+cannot queue ahead of another session's call. See `_offload_sync`'s
 docstring for how it preserves the wire schema FastMCP derives from
 the wrapped function's introspected signature.
 
@@ -68,6 +70,7 @@ FastMCP over in-memory streams for exactly that.
 from __future__ import annotations
 
 import atexit
+import collections
 import functools
 import inspect
 import logging
@@ -82,6 +85,7 @@ from typing import Any
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.lowlevel.server import request_ctx
 
 from precis import inflight
 from precis.runtime import PrecisRuntime, build_runtime
@@ -117,14 +121,76 @@ _TOOL_KW: dict[str, Any] = {"structured_output": False}
 #:
 #: **Scoped to the PROCESS, not the session.** Under stdio that makes it
 #: a per-caller budget; on the shared streamable-http server it is one
-#: budget for every attached session, first-come-first-served with no
-#: fairness between them — so the shared deployment raises it in step
-#: with the pool rather than running the default.
-#: ``tests/test_mcp_session_concurrency.py`` pins the scope.
+#: budget for every attached session — so the shared deployment raises it
+#: in step with the pool rather than running the default. Waiting calls
+#: are served round-robin by session (:class:`_FairSemaphore`), so one
+#: session's burst cannot make another session's call wait behind it.
+#: ``tests/test_mcp_session_concurrency.py`` pins the scope and the order.
 _TOOL_CONCURRENCY_ENV = "PRECIS_MCP_TOOL_CONCURRENCY"
 _DEFAULT_TOOL_CONCURRENCY = 4
 
-_tool_semaphore: anyio.Semaphore | None = None
+
+class _FairSemaphore:
+    """A counting semaphore that hands freed permits out round-robin by key.
+
+    The key is the MCP session. Plain FIFO lets one session that fires 30
+    calls queue all 30 ahead of another session's single read; here a freed
+    permit goes to the next *session* with a waiter, and that session's own
+    calls keep their FIFO order. With one session it behaves exactly like
+    ``anyio.Semaphore``, so stdio callers see no change. It is
+    work-conserving: no permit sits idle while anyone waits.
+
+    Every method runs on the event-loop thread (the ``_offload_sync``
+    wrapper acquires and releases there, never in the worker thread), so
+    no lock is needed.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._free = limit
+        self._waiters: dict[object, collections.deque[anyio.Event]] = {}
+
+    async def acquire(self, key: object) -> None:
+        """Take a permit for ``key``, waiting for its round-robin turn."""
+        # A released permit goes straight to a waiter, so free > 0 implies
+        # nobody is waiting.
+        if self._free > 0:
+            self._free -= 1
+            return
+        event = anyio.Event()
+        queue = self._waiters.setdefault(key, collections.deque())
+        queue.append(event)
+        try:
+            await event.wait()
+        except BaseException:
+            if event.is_set():
+                # Cancelled after release() handed this call the permit.
+                self.release(key)
+            else:
+                queue.remove(event)
+                if not queue:
+                    del self._waiters[key]
+            raise
+
+    def release(self, releaser: object) -> None:
+        """Hand ``releaser``'s permit to the next session in turn, or free it."""
+        if not self._waiters:
+            self._free += 1
+            return
+        # dicts keep insertion order: the first key is the session whose
+        # turn it is; re-inserting a key sends it to the back. The session
+        # giving the permit back yields its turn when another one waits.
+        key = next(iter(self._waiters))
+        if key == releaser and len(self._waiters) > 1:
+            self._waiters[key] = self._waiters.pop(key)
+            key = next(iter(self._waiters))
+        queue = self._waiters.pop(key)
+        event = queue.popleft()
+        if queue:
+            self._waiters[key] = queue
+        event.set()
+
+
+_tool_semaphore: _FairSemaphore | None = None
 
 
 def _tool_concurrency_limit() -> int:
@@ -139,20 +205,24 @@ def _tool_concurrency_limit() -> int:
     return value if value > 0 else _DEFAULT_TOOL_CONCURRENCY
 
 
-def _get_tool_semaphore() -> anyio.Semaphore:
+def _get_tool_semaphore() -> _FairSemaphore:
     """Return the module-level tool-dispatch semaphore, building it lazily.
 
     Lazy so a test can set ``PRECIS_MCP_TOOL_CONCURRENCY`` before the
-    first tool call and have it take effect; anyio semaphores are also
-    safe to construct outside a running event loop (``Semaphore.__new__``
-    falls back to a loop-agnostic adapter — see ``anyio._core
-    ._synchronization``), so this is a convenience, not a correctness
-    requirement.
+    first tool call and have it take effect. It holds no event-loop
+    state between calls (each waiter makes its own ``anyio.Event``), so
+    one instance serves any loop.
     """
     global _tool_semaphore
     if _tool_semaphore is None:
-        _tool_semaphore = anyio.Semaphore(_tool_concurrency_limit())
+        _tool_semaphore = _FairSemaphore(_tool_concurrency_limit())
     return _tool_semaphore
+
+
+def _calling_session() -> object:
+    """The MCP session of the request being served, or ``None`` outside one."""
+    ctx = request_ctx.get(None)
+    return None if ctx is None else ctx.session
 
 
 def _offload_sync(
@@ -205,36 +275,46 @@ def _offload_sync(
     """
     sig = inspect.signature(fn, eval_str=True)
 
+    async def run(kwargs: dict[str, Any]) -> Any:
+        # Count this call as in-flight for the whole time it can still
+        # produce a result, so a watchdog bounce (checkout swapped under
+        # a shared long-lived server) drains dispatch instead of failing
+        # every session mid-call — precis.inflight, and see its docstring
+        # for why this is a threading counter and not the semaphore.
+        ticket = inflight.enter()
+        try:
+            # abandon_on_cancel=True: a cancelled/dropped MCP request must
+            # not pin its awaiting task (and the whole session's recovery)
+            # to the worker thread's completion — gr337045's server death:
+            # with the default False, one long CPU-bound tool call was
+            # architecturally unstoppable short of killing the process.
+            # The OS thread still runs to completion in the background
+            # (anyio can't kill it), releasing the semaphore early — the
+            # residual thread count stays bounded by anyio's default
+            # thread limiter.
+            return await anyio.to_thread.run_sync(
+                functools.partial(fn, **kwargs), abandon_on_cancel=True
+            )
+        finally:
+            # abandon_on_cancel means a cancelled request returns here
+            # while the OS thread keeps running. Releasing the count with
+            # the awaiting task (not the thread) is deliberate and matches
+            # the semaphore: a dropped request is nobody's result to
+            # protect, so it must not hold a bounce open.
+            inflight.leave(ticket)
+
     @functools.wraps(fn)
     async def wrapper(**kwargs: Any) -> Any:
-        sem = semaphore if semaphore is not None else _get_tool_semaphore()
-        async with sem:
-            # Count this call as in-flight for the whole time it can still
-            # produce a result, so a watchdog bounce (checkout swapped under
-            # a shared long-lived server) drains dispatch instead of failing
-            # every session mid-call — precis.inflight, and see its docstring
-            # for why this is a threading counter and not this semaphore.
-            ticket = inflight.enter()
-            try:
-                # abandon_on_cancel=True: a cancelled/dropped MCP request must
-                # not pin its awaiting task (and the whole session's recovery)
-                # to the worker thread's completion — gr337045's server death:
-                # with the default False, one long CPU-bound tool call was
-                # architecturally unstoppable short of killing the process.
-                # The OS thread still runs to completion in the background
-                # (anyio can't kill it), releasing this semaphore early — the
-                # residual thread count stays bounded by anyio's default
-                # thread limiter.
-                return await anyio.to_thread.run_sync(
-                    functools.partial(fn, **kwargs), abandon_on_cancel=True
-                )
-            finally:
-                # abandon_on_cancel means a cancelled request returns here
-                # while the OS thread keeps running. Releasing the count with
-                # the awaiting task (not the thread) is deliberate and matches
-                # the semaphore above: a dropped request is nobody's result to
-                # protect, so it must not hold a bounce open.
-                inflight.leave(ticket)
+        if semaphore is not None:
+            async with semaphore:
+                return await run(kwargs)
+        fair = _get_tool_semaphore()
+        session = _calling_session()
+        await fair.acquire(session)
+        try:
+            return await run(kwargs)
+        finally:
+            fair.release(session)
 
     wrapper.__signature__ = sig  # type: ignore[attr-defined]
     return wrapper
