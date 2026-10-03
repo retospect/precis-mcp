@@ -84,7 +84,7 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    `nanobud-fidelity/pillar/ztable.py <new id> after`, and fill the "After
    (prod)" table in `reviews/nanobuds-paper.md` (release item). Before
    table recorded: ball 19.5–25.6 Å under a 26.1–27.3 Å lid; expected
-   after: ball 27.9–33.7 Å on the lid. Then mint the hero.
+   after: ball 27.9–33.7 Å on the lid.
    **Items 23/24 answered 06:44Z (10-03).** 23: camera d (el 18°), 55 Å
    sheet kept → done: gsheet22/96 regenerated on prod (st463286/7; round-1
    prod hexfold builds them identically to main, so no wait on round 2;
@@ -96,7 +96,17 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    sublattice schematic is drawn. 24: wider necks + rounder transitions →
    hexfold-toolkit sent hero5/hero5a (`figs/specs-hero/`, compare
    `figs/render/hero5-compare.png`; necks only come in (6k,0) steps, so
-   pill/bump went (6,0)→(12,0)); look-at item 25, which version to mint.
+   pill/bump went (6,0)→(12,0)).
+   **Item 25 answered 11:09Z (10-03): neither.** The hero waits for
+   hexfold's smooth work, so nothing is minted from hero4/5/5a. Reto's ask:
+   - first an ideal smooth surface: sheet, a fillet radius into the tube,
+     a radius into the ball;
+   - then tile it, working backwards from the ideal shape (the
+     hexa-smooth-drum smooth surface looks co-optimized by the tiler);
+   - also standard fullerenes generated from a sphere of the right
+     diameter.
+   hexfold-toolkit holds the asks. Rebuild the hero from their output and
+   re-file a look-at.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
    (merge_1181.py rehearsal/--apply, ref 893 retire SQL); HOMA/NICS stubs
    pa462694/pa462695 in the fetch queue → then re-ground fi449540.
@@ -132,13 +142,20 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
 1. **Figures** (items 5/6): the five kept third-party figures are in
    (dc4291496–dc4291500, permission `requested`, Reto files RightsLink at
    submission; image door = `put(args={'image': b64, …})`, scripts in
-   `nanobud-fidelity/figs/`). Own redraws left: dc3015722 as `own_graph`
-   from pc388398/pc388407 (cap1–7 binding −0.158 to −0.476 eV vs sidewall
-   +0.736/+0.685; DFT-D3 barriers 1.92/0.77 sidewall, 1.52/1.46 cap4; needs
-   a table chunk for `plots=`), dc3015729 as a 2D sublattice schematic,
-   and dc3015720/23/30 from the regenerated structures (no
-   structure→figure door, gr461790; local route viz3d `stick_scene` →
-   `render_svg` → `image=`).
+   `nanobud-fidelity/figs/`). Own redraws drawn 2026-10-03 and filed as
+   look-at item 27; nothing goes into the draft before Reto's ok:
+   - dc3015729: the source's bond-formation rule for the four seam cases
+     (`figs/draw_sublattice.py`). The A–D layouts are only in pa3322's
+     Fig. 1 image.
+   - dc3015722: the energy diagram, drawn as a matplotlib image
+     (`figs/draw_pathways.py`), not `own_graph`, so no table chunk is
+     needed. The source's own figures are inconsistent: "0.46 eV lower"
+     vs 0.40 from its stated barriers.
+   dc3015723 (pyrene-tethered C60) and dc3015730 (MD laddering) are images
+   of computed structures, outside hexfold, so they stay reproduced
+   unless Reto drops them. dc3015720 is done (dc4300876). The
+   dc2445940 NLO clause now cites the new hub fi463611>pc1050540 (pa5887
+   hyperpolarizability, highest in configuration F).
 2. **Citations** (items 7/14, done 2026-10-02 14:40Z except item 15):
    Sharma cut; ASE/pymatgen cited (pa4423, pa1944). `bib_style` +
    Crossref volume/issue/pages + `precis enrich-rearm` landed 6d92b2ba3
@@ -158,8 +175,10 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    Cost: ~610K sonnet tokens. Report: `~/.claude/projects/
    -Users-reto-precis-mcp/nanobud-fidelity/printed-read/REPORT.md`. Noted
    under §1 of reviews/nanobuds-paper.md. Wrong-paper ingest: gr463414.
-   Fixes wait on review item nanobuds-paper-26 (recommended: 16 link
-   removals, 22 re-grounds, 4 hand swaps, then re-read the touched hubs).
+   Orchestrator 08:40Z accepted 61 as a floor. The pre-removal in-paper
+   search flipped 0 of 15 (1 raw flip overruled, cites [28]). Item
+   nanobuds-paper-26 was rewritten per claim: the 16 removals, plus picks
+   for 26 claims (R 18 / S 4 / H 4). Then re-read the touched hubs.
    fi449540 stays provisional until its re-ground lands.
 3. **Reground batches: DONE 2026-10-02 ~20:15Z** (461608, 461803,
    462063, 462112 … 462390). Cited hubs now: 168, 696 evidence edges, 61
