@@ -112,7 +112,7 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # its covering tests. /go opts in; meaningless with --impacted (no coverage
 # runs there).
 # --quick (/qland): skip PYTEST and the diff-coverage gate. ruff + mypy +
-# import contracts + doc/skill hygiene tests still run — the pre-qland lint, ~3 min in the warm gate
+# import contracts + DB-free hygiene tests still run — the pre-qland lint, ~3 min in the warm gate
 # container, no test DB and no fleet gate slot, so it does not queue behind a
 # sibling's suite. They run because their failures are not this ship's problem
 # but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
@@ -885,19 +885,26 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         #
         # Still deliberately deferred to the settle-up /go: anything only
         # pytest sees. That is what /qland is for.
-        # Doc/skill hygiene tests (seconds, -n0) run on EVERY qland, docs-only
-        # included: two qlands landed red on exactly these (gr458977).
-        HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py'
+        # Hygiene tests are the DB-free AST/text walks (~45 s together, -n0).
+        # The docs set runs on EVERY qland, docs-only included: two qlands
+        # landed red on doc pointers / skill prose (gr458977), and a cluster
+        # address in docs/ is as public as one in src/. The code set runs when
+        # src/tests change: the type-ignore ratchet hid red on main for 12 h
+        # behind cancelled CI runs (2026-10-03), and the posix/encoding/
+        # extra-only guards only redden CI legs the local gate never runs
+        # (backlog/release-candidate-verdicts.md slice 1).
+        HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py tests/test_deploy_tree_no_secrets.py tests/test_vocab_lint.py'
+        CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
             setup_gate_infra
             if [[ "$DOCS_ONLY" == 1 ]]; then
-                say "pre-qland lint (docs/config-only: doc-pointer + skill-prose tests) — ${GATE_MODE} gate, no gate slot"
+                say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab tests) — ${GATE_MODE} gate, no gate slot"
                 QLAND_CMD="$HYGIENE"
             else
-                say "pre-qland lint (ruff autofix · mypy · import contracts · doc/skill hygiene tests) — ${GATE_MODE} gate, no gate slot"
-                QLAND_CMD="uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports && $HYGIENE"
+                say "pre-qland lint (ruff autofix · mypy · import contracts · hygiene tests: type-ignore ratchet, posix/encoding/extra-only guards, docs, secret-scan) — ${GATE_MODE} gate, no gate slot"
+                QLAND_CMD="uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run lint-imports && $HYGIENE $CODE_HYGIENE"
             fi
             run_gate "$QLAND_CMD" \
                 || die "pre-qland lint is RED — not shipping. This is the class of failure that reddens the NEXT tree's gate, so it does not get deferred (deliberate override: PRECIS_QLAND_LINT=0). Fix it and re-run scripts/ship --quick."

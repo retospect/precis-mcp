@@ -56,7 +56,7 @@ Optional ship message from the user: `$ARGUMENTS`
    scripts/ship --quick "<message>"
    ```
    Commit WIP → ship-lock → sync → pre-qland lint (ruff autofix · mypy ·
-   import contracts; no test DB, no gate slot) → squash-merge → CAS push. No
+   import contracts · DB-free hygiene tests; no test DB, no gate slot) → squash-merge → CAS push. No
    pytest. Failures: the pre-qland lint is blocking — fix what it prints and
    re-run. The rest is merge machinery only: conflict → resolve, add + commit,
    re-run; CAS rejected → a sibling shipped first, just re-run.

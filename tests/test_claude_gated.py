@@ -15,6 +15,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -93,7 +94,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _gated(binary: Path, **over: object):
-    kw: dict[str, object] = {
+    kw: dict[str, Any] = {
         "prompt": "review the tree",
         "require_mcp": ("precis",),
         "gate_deadline_s": 5.0,
@@ -105,7 +106,7 @@ def _gated(binary: Path, **over: object):
         "poll_s": 0.05,
     }
     kw.update(over)
-    return run_claude_gated([str(binary), "-p"], **kw)  # type: ignore[arg-type]
+    return run_claude_gated([str(binary), "-p"], **kw)
 
 
 # ── run_claude_gated ──────────────────────────────────────────────
@@ -292,7 +293,7 @@ def _fast_gate(monkeypatch: pytest.MonkeyPatch, deadline: float = 3.0) -> None:
 
 
 def _args(**over: object) -> list[str]:
-    kw: dict[str, object] = {
+    kw: dict[str, Any] = {
         "prompt": "hi",
         "model": "claude-opus-4-8",
         "system_prompt": None,
@@ -308,7 +309,7 @@ def _args(**over: object) -> list[str]:
         "extra_args": (),
     }
     kw.update(over)
-    _, args, *_ = _resolve_agent_args(**kw)  # type: ignore[arg-type]
+    _, args, *_ = _resolve_agent_args(**kw)
     return args
 
 

@@ -16,10 +16,11 @@ green or the reverse), then tuning and residue.
 1. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
-   holds the ship lock. Ship the hygiene-tests-into-pre-qland-lint slice
-   first and alone, then no-cancel on main, the time-bounded
+   holds the ship lock. Slice 1 (DB-free hygiene tests in the pre-qland
+   lint) shipped 2026-10-03; next no-cancel on main, the time-bounded
    `last-gated-main-sha`, and `scripts/round gate|deploy` on the newest
-   green main sha. Review item organizer-release-branch-1 (v2) has the
+   green main sha (design note `reviews/ship-gate-ci.md`; 0 of main's 52
+   commits in the 12 h to 12:00Z had a green verdict). Review item organizer-release-branch-1 (v2) has the
    critique and Reto's two open decisions; design-bearing changes go to the
    orchestrator as a design note before they land.
 2. **backlog/fleet-orchestrator-verbs.md** — the orchestrator's repeated

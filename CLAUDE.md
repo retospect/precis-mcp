@@ -35,7 +35,7 @@ budgeted advisory mutation pass
 last all-green shard matrix is 24h old, refuses at 48h — a burst that outran
 its verdicts wants a `/go`, not another qland; never refuses on an age it
 could not look up) → **pre-qland lint** (ruff · mypy ·
-import contracts · doc/skill hygiene tests — no full pytest, no gate slot, ~3 min; `PRECIS_QLAND_LINT=0` to
+import contracts · DB-free hygiene tests (type-ignore ratchet, posix/encoding guards, doc pointers, secret scan) — no full pytest, no gate slot, ~3 min; `PRECIS_QLAND_LINT=0` to
 skip) → squash-merge) for when
 many trees are in flight — qland them one by one, then one
 `/go` gates the integrated `main` + deploys (ship skips the push when the

@@ -11,7 +11,8 @@ suite: qland the burst one by one, then run **one** `/go` (full suite +
 deploy) over the integrated `main`.
 
 `scripts/ship --quick` runs its own **pre-qland lint** (ruff autofix · mypy ·
-import contracts) before the squash-merge — ~3 min in the warm container, no
+import contracts · DB-free hygiene tests such as the `type: ignore` ratchet
+and the posix/encoding guards) before the squash-merge — ~3 min in the warm container, no
 test DB, and no fleet gate slot, so it never queues behind a sibling's suite.
 Do NOT run ruff, mypy or tests yourself beforehand: the ship does the first
 two for you, and running the suite is the congestion this command exists to
@@ -54,10 +55,11 @@ Optional ship message from the user: `$ARGUMENTS`
    `commit-tree` + CAS push → reset the branch to the shipped `main` →
    fast-forward the local `main`. The migration-number and backlog advisories
    still print, and the pre-qland lint (ruff autofix · mypy · import
-   contracts) runs and is blocking; pytest and the diff-coverage gate do not.
+   contracts · DB-free hygiene tests) runs and is blocking; pytest and the diff-coverage gate do not.
 
 4. **Handle failures** — merge machinery, plus the pre-qland lint:
-   - **Pre-qland lint RED** — ruff, mypy or import contracts. Fix the
+   - **Pre-qland lint RED** — ruff, mypy, import contracts or a hygiene
+     test (ratchet, posix/encoding guard, doc pointer, secret scan). Fix the
      failure printed above the `✖` and re-run `scripts/ship --quick`. Do not
      reach for `PRECIS_QLAND_LINT=0` to get past it; that override is for a
      broken toolchain, not a red check.
