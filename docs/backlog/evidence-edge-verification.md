@@ -315,15 +315,26 @@ landed in PARTIAL, which badly undersells it. Add `MISATTRIBUTED`.
 
 For every PARTIAL the pilot had to decide whether to read beyond the passage.
 Doing so changed the verdict's *meaning* three times and cost ~⅓ of its
-queries. Once (`fi177394`) the wider check made the finding **worse**. Policy:
-verdict strictly on the passage; run a bounded whole-paper keyword probe and
-record it in a separate field. Both facts are needed — the passage verdict
-drives the edge repair, the paper verdict protects the claim.
+queries. Once (`fi177394`) the wider check made the finding **worse**.
 
 Confirmed again 2026-10-03 (nanobuds-paper's printed-source read of dr173020
 (nanobuds review), 159 pairs): the pilot, which could look things up, said
 `fi191126`/`pa3755` = yes. The full read, limited to linked chunks, said
 partial. Same pair, different boundary, different verdict.
+
+**Settled by Reto's citation rule (2026-10-03, adopted system-wide; text in
+`precis-review-citation-faithfulness` §"What counts as support"):**
+- The support verdict is judged against the paper's full text, and passages
+  may combine. The passage verdict is a provenance check: it decides whether
+  to re-pin, never whether the source supports the claim.
+- **Polarity is a third axis.** "Does the source run against the clause's
+  direction or strength, for the same quantity and conditions?" is decided
+  separately. A rubric with only support labels files an opposite result as
+  "partial" (fi191152 was first read "yes").
+- A passage count is reported as "N linked passages do not individually carry
+  the full sentence", never as a miscitation count.
+- The printed-read's 61/159 was that passage count. Fable's audit sampled 40
+  of the 61 and judged about 16 real.
 
 ### 6. A right passage on the wrong ref passes every passage check
 

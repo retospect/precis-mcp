@@ -84,7 +84,10 @@ Definitions:
                           the claim as stated (verbatim or close paraphrase).
   supports = "partial"  : the chunk affirmatively supports the claim but
                           only under conditions/regimes listed in caveats —
-                          REAL support that is merely scoped. A chunk that
+                          REAL support that is merely scoped — or it
+                          carries part of the claim and is silent on the
+                          rest (other passages of the same source may carry
+                          the rest; passages combine). A chunk that
                           reports a result RUNNING COUNTER to the claim, or
                           that only shares the topic without testing the
                           claim, is NOT "partial".
@@ -93,14 +96,26 @@ Definitions:
                           a result that runs COUNTER to the claim.
   caveats               : conditions, regimes, applicability limits that
                           qualify genuine support.
-  contradicts           : true iff the chunk reports a result or tendency
-                          OPPOSITE to what the claim asserts. Decide this
-                          INDEPENDENTLY of the supports label and be decisive
+  contradicts           : true iff the chunk reports, for the SAME quantity
+                          in the SAME system under comparable conditions
+                          and method, a result or tendency OPPOSITE to the
+                          claim's direction, or a materially different
+                          strength or value. Decide this INDEPENDENTLY of
+                          the supports label (a polarity verdict, not the
+                          bottom of the supports scale) and be decisive
                           even when the chunk is on the same topic.
                           EXAMPLE: the claim asserts the method yields SMALL
                           (~7 nm) crystals; a chunk stating the method yields
                           BIGGER / LARGER crystallites reports the opposite
                           outcome -> contradicts=true, supports="no".
+                          NOT a contradiction: a different value measured
+                          on a different sample, material, device, method
+                          or condition (a later single-layer device at
+                          5,000 cm2/Vs does not contradict a few-layer film
+                          at 10,000 cm2/Vs; a Raman estimate does not
+                          contradict what nanoindentation measures) -- that
+                          is a different finding: supports="no",
+                          contradicts=false.
                           A chunk that supports PART of the claim and is
                           merely SILENT on the rest (no opposite result)
                           stays "partial" with contradicts=false.

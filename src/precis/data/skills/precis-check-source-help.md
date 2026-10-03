@@ -98,10 +98,17 @@ that only "looks similar" — pull it and read it.
 
 **A fifth check: is this passage the source, or hearsay?** A hit in a
 review's summary, a related-work section, or an introduction citing
-someone else's result supports the point but isn't *the* source — walk
-back to the paper that actually did the work
-([[precis-cite-paper-help]]'s primary-source policy). A hanging claim
-beats a hearsay cite.
+someone else's result supports the point but isn't *the* source. For a
+finding — a value, an effect, a first, or anything the sentence
+attributes to a group — walk back to the paper that actually did the
+work ([[precis-cite-paper-help]]'s primary-source policy); a hanging
+claim beats a hearsay cite. For background and definitions a review is
+acceptable, though the primary is still preferred.
+
+**The passage is where you found it, not the whole test.** Support is
+judged against the paper's full text, and passages may combine: one
+carries the method, another the number. Polarity is its own check —
+see [[precis-review-citation-faithfulness]] for the full rule.
 
 ## I confirmed the passage supports the claim — now what?
 ## Ground a hub on the chunk, cite the hub

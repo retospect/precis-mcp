@@ -1,10 +1,13 @@
 ---
 id: precis-review-citation-faithfulness
 title: precis — one-pass citation-faithfulness review
-summary: For each claim in a draft, check it is cited (sufficiency), the cite supports it (correctness), and prefer the living [fi<hub>] form over a frozen paper cite (living-cite preference); a claim the source contradicts gets corrected when you may write, flagged with exact replacement text when you may not
+summary: For each claim in a draft, check it is cited (sufficiency), the cited source supports it judged against the paper's full text — linked passages are provenance and may combine — and does not contradict its direction or strength (a separate polarity check), and prefer the living [fi<hub>] form; a claim the source contradicts gets corrected when you may write, flagged with exact replacement text when you may not
 answers:
   - how do I check that every claim in a draft is cited and the citation actually supports it?
   - what counts as 'support' for a citation faithfulness check?
+  - the linked passage alone does not carry the sentence — is that a miscitation?
+  - may several passages of a source together support one claim?
+  - may I cite a review or textbook instead of the primary paper?
   - how do I file a finding for each faithfulness problem I find?
   - the cited chunk contradicts the draft claim — do I fix the draft or flag it?
 applies-to: get (kind='draft'|'paper'), put (kind='finding'|'todo')
@@ -13,7 +16,7 @@ kinds: draft, paper, finding, todo
 status: active
 ---
 
-# precis-review-citation-faithfulness — does the cited chunk actually say this?
+# precis-review-citation-faithfulness — does the cited source actually say this?
 
 One review pass, three concerns, all keyed off the citation tokens
 (`[pc<id>]` paper chunk, `[pa<id>]` whole paper, `[pk<id>]` patent,
@@ -22,12 +25,13 @@ One review pass, three concerns, all keyed off the citation tokens
 1. **Sufficiency** — every non-obvious claim carries a cite; a claim
    with none is a gap, filed as a todo (see Output below), not a
    finding.
-2. **Correctness** — the cited chunk **actually supports the claim it
-   backs**. This is the pass's core and the single highest-value
-   finding category in any review.
+2. **Correctness** — the cited source **actually supports the clause
+   it backs**, judged against the paper's full text, and does not
+   contradict it (see "What counts as support"). This is the pass's
+   core and the single highest-value finding category in any review.
 3. **Hub-cite rule** — every cite must be a finding hub `[fi<hub>]`;
    a bare `[pc<id>]`/`[pa<id>]` cite is a legacy form to convert
-   (procedure step 7).
+   (procedure step 8).
 
 **Existence is not this pass's job.** Cite-token resolution and
 paper-held status are checked deterministically before you see this
@@ -51,18 +55,36 @@ not a finding. Then, for each citation handle already present:
 1. Resolve the handle to the exact chunk(s): `[fi<id>]` →
    `get(id='fi<id>', view='evidence')` for its grounding chunks, then
    `get(id='pc<id>')` on each; a legacy `[pc<id>]` → `get(id='pc<id>')`.
-2. Read the chunk's text and compare it against the claim the
-   citation backs in the draft.
-3. If the chunk directly and substantively supports the claim —
-   done, no finding.
-4. If the chunk is topically related but only weakly supports a
-   softened claim — finding: weak / inflated citation. Quote both the
-   draft claim and the chunk's actual passage.
-5. If the chunk supports a *different* claim, or the writer cited the
-   wrong paper for this one — finding: wrong cite.
-6. If the chunk says nothing that bears on the claim — finding:
-   unsupported claim. This is the highest-severity finding type.
-7. If the cite is a bare `[pc<id>]`/`[pa<id>]` — file a change-request:
+2. Read the linked chunks and compare them against the clause the
+   citation backs in the draft. The linked passages are **provenance**
+   — where the support was found and where you start reading — not the
+   test. Several passages may combine: one carries the method, another
+   the number.
+3. If the linked passages, alone or together, carry the clause — done,
+   no finding.
+4. If they do not, **read the paper before you judge**: its TOC, the
+   sections around the linked passages, a search for the clause's key
+   number or term (`precis-check-source-help`). If the full text
+   supports the clause, there is no citation defect — the pin points at
+   the wrong passage. Name the passage that does carry it in your tick
+   conclusion so the hub can be re-grounded; do not file a finding.
+5. If the full text only weakly supports a softened claim — finding:
+   weak / inflated citation. Quote both the draft claim and the
+   source's actual passage.
+6. If the source supports a *different* claim, the writer cited the
+   wrong paper, or the sentence attributes a finding to a group
+   ("Lee et al. measured…") and the cite is not that group's paper —
+   finding: wrong cite.
+7. If nothing in the paper bears on the claim — finding: unsupported
+   claim. This is the highest-severity finding type.
+8. **Polarity, as its own check, even when steps 3–5 passed:** does the
+   source run against the clause's direction or strength? A passage can
+   support half a sentence and contradict the other half. If it does —
+   finding: contradicted claim (SUBSTANTIVE). A contradiction is about the
+   same quantity, system and comparable conditions. A different value
+   measured on a different sample, material, method or condition is a
+   different finding, not a contradiction.
+9. If the cite is a bare `[pc<id>]`/`[pa<id>]` — file a change-request:
    it must become a hub cite. A `◆ taproot:` hint next to it names the
    hub the paper already grounds — switch to `[fi<hub>]`, or
    `[fi<hub>>pc<id>]` to pin this exact passage while riding the living
@@ -79,7 +101,7 @@ here; skip it.
 
 ## The source wins — correct the draft when you are allowed to write
 
-Cases 4, 5 and 6 are **defects in the draft, not authorial intent**. A
+Cases 5–8 are **defects in the draft, not authorial intent**. A
 draft is a record of what is known; a number a held source does not
 support does not become true by surviving review.
 
@@ -156,21 +178,51 @@ either closed (STATUS:done by the writer) or won't-do.
 
 ## What counts as "support"
 
-Support is the cited chunk establishing the claim's substantive core.
-Trivial wording differences between claim and chunk are fine — the
-chunk does not have to echo the sentence. What breaks support:
+The rule (Reto, 2026-10-03, system-wide):
 
-- Different numbers (claim says 12%, chunk says 10% — a SUBSTANTIVE
+> Every cited source must support the clause attributed to it, judged
+> against the paper's full text, and passages may combine to support it.
+> The passage pin is provenance, not the test. The source must not
+> contradict the clause's direction or strength; that is a separate
+> polarity verdict. Secondary sources are allowed for background and
+> definitions, primary preferred. A sentence that attributes a finding
+> to a group must cite that group's paper.
+
+Support is the source establishing the clause's substantive core.
+Paraphrase is fine; the source does not have to echo the sentence, and
+no single passage has to carry all of it. What breaks support, or its
+strength:
+
+- Different numbers (claim says 12%, source says 10% — a SUBSTANTIVE
   finding even if the surrounding text matches).
 - Different units (mM vs M is the same way).
 - Different signs, exponents, ratios.
-- "approximately" present in the chunk but dropped in the claim
+- "approximately" present in the source but dropped in the claim
   (changes claim strength → citation inflation).
-- The claim asserts what the chunk only suggests / is consistent
+- The claim asserts what the source only suggests / is consistent
   with.
 
-When in doubt, write the finding. False positives are cheap; an
-unsupported citation that survives review is expensive.
+**Polarity is a separate verdict.** "Supported" and "contradicted" are
+not two ends of one scale. A source that confirms the method but reports
+the opposite trend supports one clause and contradicts another; record
+both. Contradiction needs the same quantity in the same system under
+comparable conditions. A 5,000 cm²/Vs mobility in a later single-layer
+device does not contradict a 10,000 cm²/Vs few-layer measurement.
+
+**Secondary sources.** A review or textbook may back background and
+definitions; prefer the primary paper when it is held. A finding — a
+measured value, an observed effect, a first demonstration — cites the
+paper that did the work, and a sentence that names who found it must cite
+that group's paper.
+
+**Reporting.** A count of linked passages that fail alone is a grounding
+statistic, not a miscitation count. Write it as "N linked passages do
+not individually carry the full sentence". Use "wrong cite",
+"unsupported" or "contradicted" only for a source judged against its
+full text.
+
+When in doubt after reading the paper, write the finding. False positives
+are cheap; an unsupported citation that survives review is expensive.
 
 **Weak support is not the same as under-qualification.** Prose is allowed
 to lean on its section for scope and on the cite popover for the rest —
@@ -182,8 +234,12 @@ The rule you are reviewing against is [[precis-claim-fidelity-help]].
 
 - "Looks similar" — not a support check. Pull the chunk with
   `get(id='pc<id>')` and read it.
-- Trusting the handle without resolving it. The cited chunk is the
-  *evidence* under test.
+- Trusting the handle without resolving it. The linked chunk is where
+  the evidence starts, not all of it.
+- Calling a cite wrong because one linked passage does not carry the
+  whole sentence. Read the paper first (step 4); passages combine.
+- Scoring only support and skipping polarity. A "yes" on half the
+  sentence can sit next to a contradiction of the other half (step 8).
 - Aggregating findings into one "many cites don't hold" — one finding
   per citation so each can be resolved independently.
 - Treating a `[me<id>]`/`[dc<id>]` link as a citation. Those point at
@@ -193,7 +249,7 @@ The rule you are reviewing against is [[precis-claim-fidelity-help]].
   pre-check run before this pass ever starts — spend the turn on
   *support*, never existence.
 - Ignoring a `◆ taproot:` hub hint. A bare cite next to one is a
-  change-request, not a nice-to-have — file it (step 7).
+  change-request, not a nice-to-have — file it (step 9).
 
 ## See also
 

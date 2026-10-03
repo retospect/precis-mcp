@@ -1138,7 +1138,10 @@ _DEPTH_NOTE = {
     DEPTH_ABSTRACT_OK: (
         "This is a DEFINITION / EXISTENCE claim. An abstract-level "
         "statement is acceptable primary grounding; do not demand a body "
-        "passage for it."
+        "passage for it. A secondary source (review, textbook) stating "
+        "the definition is also acceptable -- primary preferred, but do "
+        "not PRUNE a secondary statement of a definition or background "
+        "fact."
     ),
 }
 
@@ -1161,8 +1164,11 @@ SOURCE: {source_kind} {cite_key}, chunk ord {chunk_ord}{section_note}
 PASSAGE (the edge's grounding chunk):
 {chunk_text}
 
-NEIGHBOURING PASSAGES in the same source (context only -- so you can tell
-front matter from body. NEVER judge support off a neighbour):
+NEIGHBOURING PASSAGES in the same source (so you can tell front matter
+from body, and because passages of one source may combine: if the
+PASSAGE carries part of the claim and a neighbour carries the rest as the
+same source's own work, that is support. A PASSAGE that carries none of
+the claim cannot borrow it from a neighbour):
 {neighbours}
 
 Answer with exactly one verdict:
@@ -1177,7 +1183,10 @@ Answer with exactly one verdict:
                     sentence that states the claim while pointing at
                     uncited references, e.g. "[5-24]", with no data of
                     its own);
-                  - a REVIEW / related-work / background recitation;
+                  - a REVIEW / related-work / background recitation of a
+                    MEASUREMENT or MECHANISM claim (a DEFINITION /
+                    EXISTENCE claim may rest on one -- see the policy
+                    above);
                   - a REVIEW-DEFERRAL of any other shape ("as has been
                     shown", "it is well known that") with no result here;
                   - an ABSTRACT-ONLY statement standing in for a
@@ -1188,15 +1197,26 @@ Answer with exactly one verdict:
                   - a BIBLIOGRAPHY / reference-list entry;
                   - text merely on-topic that never states the claim.
   CONTRADICTS : the passage carries PRIMARY content running COUNTER to
-                the claim -- an opposite result, value, or tendency. Not
-                "silent on part of it": actually against it.
+                the claim for the SAME quantity in the SAME system under
+                comparable conditions and method -- an opposite result or
+                tendency, or a materially different value or strength.
+                Not "silent on part of it": actually against it.
+                NOT CONTRADICTS: a different value measured on a different
+                sample, material, device, method or condition (a later
+                single-layer device at 5,000 cm2/Vs vs a few-layer film at
+                10,000 cm2/Vs; a Raman estimate vs a nanoindentation
+                measurement; a value under an applied field vs the pristine
+                value). That passage does not substantiate THIS claim ->
+                PRUNE, never CONTRADICTS.
 
 RULES:
   - Judge the claim EXACTLY AS STATED, never a looser or more general
     version of it.
   - Be STRICTER than "does this sentence utter the claim?". A passage
-    that utters the claim while attributing it to somebody else's
-    references is a PROXY -> PRUNE.
+    that utters a MEASUREMENT or MECHANISM claim while attributing it to
+    somebody else's references is a PROXY -> PRUNE.
+  - Support and polarity are separate questions: decide CONTRADICTS only
+    on the polarity test above, never because support is weak.
   - DEFAULT TO KEEP WHEN UNCERTAIN. Over-pruning is the dangerous
     direction; a doubtful edge stays.
 

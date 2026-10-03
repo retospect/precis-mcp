@@ -55,9 +55,15 @@ findings as `retracted-source` / `eoc-source` /
 - **Claim ↔ source mismatch.** Pick the 10 most load-bearing
   citations in the paper. For each, open the cited paper if
   in the corpus (`search(kind='paper', q='<title-fragment>')`).
-  Read the cited section. Verify the claim the citing paper
-  attributes to the source actually appears there. Quote both
-  the citing sentence AND the source's actual wording.
+  Read the cited section; if the claim is not there, read the
+  rest of the paper before calling it a mismatch — support is
+  judged against the full text and may span passages. Check
+  polarity separately: does the source run against the claim's
+  direction or strength for the same quantity and conditions?
+  A finding attributed to a group must cite that group's paper;
+  a review is fine for background and definitions. Quote both
+  the citing sentence AND the source's actual wording. The
+  rule in full: [[precis-review-citation-faithfulness]].
 - **Right DOI, wrong paper.** Metadata (title, year, authors)
   for a citation doesn't match the DOI's actual resolution.
   Use `get(kind='provenance', view='verify', ...)` for batch

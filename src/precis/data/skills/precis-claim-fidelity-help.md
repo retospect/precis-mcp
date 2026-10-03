@@ -8,6 +8,8 @@ answers:
   - how strongly may I word a claim whose hub is only Ⓐ / ✍ / ⚠?
   - two held sources disagree — how do I write that without hedging everything?
   - the draft would be unreadable if every claim carried all its conditions — what's the rule?
+  - what does it mean for a cited source to support my sentence?
+  - may I cite a review instead of the primary paper?
 applies-to: put/edit (kind='draft'), get (kind='finding', view='evidence')
 status: active
 tags: [drafting, workflow]
@@ -78,6 +80,32 @@ is two claims stated plainly.
 Trust is worst-of over a block's cites and `unsupported` is never
 softened by an override, so an inflated verb over a weak hub shows up as
 a badge mismatch to every reader of the block.
+
+## What "supported" means — the citation rule
+
+The system-wide rule (Reto, 2026-10-03):
+
+> Every cited source must support the clause attributed to it, judged
+> against the paper's full text, and passages may combine to support it.
+> The passage pin is provenance, not the test. The source must not
+> contradict the clause's direction or strength; that is a separate
+> polarity verdict. Secondary sources are allowed for background and
+> definitions, primary preferred. A sentence that attributes a finding
+> to a group must cite that group's paper.
+
+What it means while writing:
+
+- **The pin is not the test.** `[fi42>pc7]` shows where you read it. If
+  the paper carries the clause across two passages, that is support.
+- **Polarity is checked on its own.** A source that backs your method
+  clause but reports the opposite trend contradicts the sentence. Split
+  it, or write both readings.
+- **Background vs findings.** A review may back a definition or a
+  background statement. A finding — a value, an effect, a first — cites
+  the paper that did the work. "Lee et al. measured…" must cite Lee's
+  paper.
+
+The review side of the same rule is [[precis-review-citation-faithfulness]].
 
 ## Anti-patterns
 
