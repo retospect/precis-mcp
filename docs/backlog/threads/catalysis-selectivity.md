@@ -87,7 +87,10 @@ spin-paired energy (§22i), so the table stands. Catpath
    deploy roles). Left on it: clamp the within-tol note's margin at 0 (a
    ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"), and cite
    materialsproject/pymatgen#4709 at the `process_multientry` workaround
-   so it can be deleted once upstream fixes it. The gate (B) waits on A
+   so it can be deleted once upstream fixes it. The first live job
+   dogfoods on pollux once Reto confirms `PRECIS_MP_API_KEY` is in
+   /secrets (release-2-2, 2026-10-03; the review session relays it).
+   The gate (B) waits on A
    landing, the MP key in the vault (Reto), and qu202468's operating point
    (set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10).
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
@@ -161,8 +164,9 @@ spin-paired energy (§22i), so the table stands. Catpath
 - **backlog/cnt-channel-staged-catalysis.md** (dormant, Reto 2026-10-03):
   a carbon channel whose arc-and-rib interior holds each intermediate of a
   staged reaction in one pose. Blocked on hexfold building a three-arc
-  cross-section with ribs; no quest until then. 18 papers listed; next
-  is a read-for-question pass for design numbers once they fetch.
+  cross-section with ribs; no quest until then. 18 papers listed. The
+  first read pass (4 fetched papers, 2026-10-03) minted 12 hubs, listed in
+  the item. A second pass waits on the other 14 fetches.
 
 - **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284
   for the two NO arms; qu207188 added the same day via review session).

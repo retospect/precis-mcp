@@ -98,6 +98,23 @@ A read-for-question pass over these extracts the design numbers (tunnel
 lengths and diameters, gating mechanisms, what clogged and why) into
 findings the future quest starts from.
 
+First pass, 2026-10-03, over the 4 papers held by 14:40Z:
+- AQP1 (pa35139): fi464246–fi464250 and fi464252. They give the
+  2.8 Å constriction at the start of a ~20 Å filter, the ~4 Å × 15 Å pore
+  beyond it, the ar/R lining, the inward helix dipoles, four non-contiguous
+  filter waters, and ten carbonyls along 25 Å.
+- Tryptophan synthase (pa463584): fi464253 (the active sites are about
+  25 Å apart) and fi464254 (the tunnel is indole-sized). Both rest on the
+  abstract only.
+- HTI motor (pa463588): fi464255 (ΔG‡ 13.1 kcal/mol, giving a 1 kHz
+  maximum), fi464256 (405/490 nm and sunlight PSS), fi464257 (quantum
+  yields) and fi464258 (16-year E half-life).
+- pa345694 (Feringa MHz) is held as SI only, and pa463584 as its abstract
+  plus references: gr464259. No hub covers gating or clogging yet; those
+  wait on the carbamoyl phosphate synthetase (CPS) and KcsA papers.
+- The other 14 were re-queued at 10:40Z and are still unfetched. Run a
+  second pass when they land.
+
 ## Explicitly NOT in scope
 
 - Minting a quest (held by Reto until the cross-section can be built).
