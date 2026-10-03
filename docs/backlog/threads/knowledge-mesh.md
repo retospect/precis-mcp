@@ -20,6 +20,21 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
+**Resume (2026-10-03 20:40Z):** none of the round-3 lands are in the
+929107f32 deploy (quest fisheye c4ea7e1fb and the measures pilot docs);
+they ride the follow-up deploy. Dogfood then:
+`get(kind='quest', id=202467, view='fisheye+1hop')` via
+`scripts/prod-precis`.
+
+Two migration branches are held for the orchestrator, in this order:
+- **0185 (reviews ledger and revisions log):** it is being re-tipped
+  with literal WHEN lists, because its triggers cost about 2x on hot
+  meta updates.
+- **0187 (measures, pilot Build A):** being built, and rebases onto the
+  new 0185 tip.
+
+Next: the domain taxa are minted once 0187 deploys, then Build C
+(extraction).
 
 ## Do next
 

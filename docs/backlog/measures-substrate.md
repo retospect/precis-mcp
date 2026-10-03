@@ -179,10 +179,20 @@ What this build decides:
     handle in the pilot).
   - `conditions jsonb` stays only for the compatibility views.
 - **`insert_measure` writes a run.** It takes one output and its input
-  rows together in one `tx()`, and the `required_keys` check runs over
+  rows together in one `tx()`, and the `required_conditions` check runs over
   that run.
-- **A missing required key flags the row; it is never refused.**
-  `required_keys` writes the miss into `meta.escalation`, and
+- **Required conditions are a new taxon meta key,
+  `required_conditions`** (a list of condition names), allowed on any
+  node and inherited down the `specialises` chain.
+  - **Why not the amendment's start-node `contract.required_keys`:**
+    that key is only allowed on start nodes, and it means "meta keys
+    every descendant taxon must carry". It is not a list of conditions
+    a measure needs.
+  - **What can be a condition:** an input row names one through its
+    measurand taxon. `product` is a categorical taxon whose value is
+    the formula, such as NH3.
+- **A missing required condition flags the row; it is never refused.**
+  `required_conditions` writes the miss into `meta.escalation`, and
   `best_measure` excludes flagged rows. Only 23 of the 140 claims state
   a potential in the sentence, so refusing would drop most of the 52
   Faradaic-efficiency rows.
@@ -262,7 +272,7 @@ What this build decides:
     - computes `extraction_status`: does the literal occur in the
       span's text?;
     - enforces the guards from in-scope 3;
-    - enforces `required_keys` on the measurand;
+    - flags a run that lacks a condition its measurand names in `required_conditions`;
   - `measures_for(subject_ref_id)`.
 - **Done when:**
   - ACs 1–4 pass;
@@ -301,14 +311,17 @@ writes.
 
 - **Product-specific measurands carry required context.** Faradaic
   efficiency, yield rate, selectivity and partial current density each
-  take `contract.required_keys = ['product']`, plus `potential` for
+  take `required_conditions = ["product"]`, plus `potential` for
   Faradaic efficiency and partial current density. That is
   the spec's own Faradaic-efficiency example. Per-area and per-mass
   yields are separate taxa because they differ in dimension, so no
   single canonical unit covers both. That is what `normalization`
   could not settle.
-- **Inputs:** NO partial pressure, electrolyte concentration and
-  temperature are measurands too, written as `direction='input'` rows.
+- **Inputs:** `product` (categorical, valued by formula), NO partial
+  pressure, electrolyte concentration and temperature are measurands
+  too, written as `direction='input'` rows.
+- **Minting waits for Build A to deploy,** because
+  `required_conditions` only exists once Build A ships.
 - **The full run will reach these taxa.** When the taxonomy run
   produces `list.v1.yaml` it covers this domain (the NORR/HER survey
   hubs), and taxon dedup merges its nodes with these.
