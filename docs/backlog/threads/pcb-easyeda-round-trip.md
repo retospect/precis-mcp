@@ -59,13 +59,12 @@ gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
 **Parked 2026-10-03 (TIER 3, Reto's priority review):** start no new
-slice until the organizer reopens the thread. Last landed: 27f5d78f1
-(alignment candidate list in the import report + the `align` measure),
-marked in round 2. Waiting, not owned by this session:
-heater-base-test's prod route (job 462706, idempotent re-`put`
-`op='route', seed=1`) is held until prod writes are back after the
-pgbouncer incident; review-queue `pcb-easyeda-round-trip-2` (Reto opens
-the look-at in Pro). On reopen, resume at Do next 1.
+slice until the organizer reopens the thread. Last landed: 044b67bff
+(round 4): the route dedup key carries `pcb_route.CODE_VERSION`, and the
+sketch SVG restores pin swaps first. Round 3 (403b08026, measure-sort
+crash) is live in 929107f32; its dogfood is job 464286 below. Waiting,
+not owned by this session: review-queue `pcb-easyeda-round-trip-2`
+(Reto opens the look-at in Pro). On reopen, resume at Do next 1.
 **Round-2 dogfood (2026-10-03, prod at 63301c5c):** job 462706 finished
 on round-1 code: 70/89 realized, 19 failed, 0 stripped by the post-route
 gate, 398 vias (unfrozen: the anneal moved parts). That anneal moved the
