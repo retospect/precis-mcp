@@ -69,6 +69,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    axis at all. This is the canonical `()` (not None) example the
     #    gr343755 sentinel split exists for ---------------------------
     ("message", "put"): (),
+    # -- put: paper's sole mode queues an SI discovery+fetch for an
+    #    existing paper (put(id=<slug>, mode='fetch-si')); any other value
+    #    is BadInput (si-attachments build 1) -------------------------
+    ("paper", "put"): ("fetch-si",),
     # -- edit: file kinds, the region-rewrite grammar -------------------
     ("markdown", "edit"): ("find-replace", "append", "insert", "replace"),
     ("plaintext", "edit"): ("find-replace", "append", "insert", "replace"),
