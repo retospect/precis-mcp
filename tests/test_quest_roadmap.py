@@ -584,6 +584,19 @@ class _SpySearch(AcquiringSearch):
         return list(self.hits)
 
 
+class _FailingOutsideSearch(_SpySearch):
+    """A :class:`_SpySearch` whose outside leg runs and fails (S2 429, outage,
+    or a venv without the S2 client)."""
+
+    def __call__(
+        self, store: Any, query: str, exclude_ref_ids: list[int]
+    ) -> list[tuple[int, float | None]]:
+        out = super().__call__(store, query, exclude_ref_ids)
+        if self.force_external:
+            self._reports[query].external_error = "HTTPError: 429"
+        return out
+
+
 def _supply_metas(store: Any, cap: int, meta_key: str) -> list[dict[str, Any]]:
     return [
         b.meta[meta_key]
@@ -679,6 +692,32 @@ class TestSupplyEscalation:
         assert result["supply_written"]["value"] == 2.1
         assert _supply_metas(store, cap, "supply_outcome")[-1]["dry"] is False
         assert ledger.supply_history(store, cap, KEY) == ledger.SupplyHistory()
+        assert "not found outside" not in _unmet_gap_detail(store, root)
+
+    def test_failed_outside_search_does_not_count_as_searched(self, store: Any) -> None:
+        root, cap = make_root(store, demand=2.0, supply=None)
+        fn = _FailingOutsideSearch()
+
+        self._dry_tick(store, root, fn, "q1")
+        self._dry_tick(store, root, fn, "q2")
+        assert fn.seen == [False, True]
+        assert _supply_metas(store, cap, "supply_outcome")[-1] == {
+            "key": KEY,
+            "dry": True,
+            "external": False,
+            "queries": ["q2"],
+            "external_error": "HTTPError: 429",
+        }
+        last = _entries(store, cap, "observation")[-1].text
+        assert "outside search failed: HTTPError: 429" in last
+
+        # Failed outside searches keep the key escalating and never reach the
+        # two-tick "not found outside" verdict.
+        for q in ("q3", "q4", "q5"):
+            self._dry_tick(store, root, fn, q)
+        assert fn.seen == [False, True, True, True, True]
+        assert ledger.supply_history(store, cap, KEY).ext_dry == 0
+        assert _supply_metas(store, cap, "supply_not_found_outside") == []
         assert "not found outside" not in _unmet_gap_detail(store, root)
 
     def test_plain_search_fn_is_never_escalated(self, store: Any) -> None:

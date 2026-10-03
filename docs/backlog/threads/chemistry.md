@@ -54,7 +54,9 @@ paper needs.
    it by hand: set STATUS:active after the deploy, record `meta.tick_count`
    at that moment, and when it reaches +3, re-pause to dormant unless one of
    those ticks cited [pa220629], [pa215329], [pa198891], [pa417969] or
-   [pa202897] or changed the ledger from them. Report the outcome either way. The "six unresolved gold stubs" blocker was
+   [pa202897] or changed the ledger from them. Report the outcome either way.
+   **Restarted 2026-10-03T13:51Z at tick_count 314** (round 2 = 63301c5c
+   live 13:49Z): re-pause check at tick_count 317. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
    tick's literature section shows about 12 of 484 served papers, and the
    cite instruction read "unlisted" as "stub". Fixed in abf642971
@@ -76,11 +78,17 @@ paper needs.
    ever completed in prod** — the paper's authoritative pass. Shipped
    2026-10-03: `PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS` (unset = general
    wall) and the harvest holds a timed-out seed instead of re-running it at
-   the same wall. Left (verdict §8–§9 accepted): after round 2 deploys, one
-   verify seed on pollux at a 7 h lease (CPUs off 5–9,15–19) → name the pin
-   (2 × runtime, cap 8 h) via `scripts/round eta` for the orchestrator's
-   template line → file the Reto item (re-dispatch the 9 qu164903
-   candidates: 3 seeds / 2 seeds / best_first kept, GPU-hours each).
+   the same wall. **Running:** timing seed job 464221 (td464220; pathway
+   449732 seed 0, verify config, pollux, 7 h lease) started
+   2026-10-03T13:57:55Z, unpinned per verdict §10. First sample: about
+   10 of 20 CPUs, GPU 13 %. Kill it if local-compute sees serving latency
+   rise or the MPI DFT image lands on pollux. `params.resources.cpuset`
+   (a `taskset -c` wrapper on the seed child) shipped 2026-10-03, so the
+   2× sizing run can be pinned. Left: read 464221's runtime → name the wall
+   value (2 × runtime, cap 8 h) via `scripts/round eta` for the
+   orchestrator's template line → file the Reto item (re-dispatch the 9
+   qu164903 (NO→NH3 on Pd(111)) candidates: 3 seeds / 2 seeds / best_first
+   kept, GPU-hours each).
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into

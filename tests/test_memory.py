@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -444,6 +445,118 @@ def test_runtime_unknown_memory_renders_error(
     out = runtime_with_store.dispatch("get", {"kind": "memory", "id": 99999})
     assert "[error:NotFound]" in out
     assert "next:" in out
+
+
+# ---------------------------------------------------------------------------
+# meta={'hook': ...} — the index line of a SPACE:repo-dev memory
+# ---------------------------------------------------------------------------
+
+
+def test_put_meta_hook_is_stored(handler: MemoryHandler, store: Store) -> None:
+    mid = id_of(handler.put(text="body", meta={"hook": "  one line  "}).body)
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["hook"] == "one line"
+
+
+def test_edit_meta_only_sets_the_hook(handler: MemoryHandler, store: Store) -> None:
+    mid = id_of(handler.put(text="body stays").body)
+    out = handler.edit(id=mid, meta={"hook": "now hooked"})
+    assert "meta: hook" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert ref.meta["hook"] == "now hooked"
+    assert handler._body_text(ref) == "body stays"
+
+
+def test_edit_meta_with_text_rewrites_both(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = id_of(handler.put(text="v1", meta={"hook": "old"}).body)
+    handler.edit(id=mid, text="v2", meta={"hook": "new"})
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert (handler._body_text(ref), ref.meta["hook"]) == ("v2", "new")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"slug": "x"},
+        {"hook": "ok", "order": 3},
+        {"hook": 5},
+        {"hook": "two\nlines"},
+        {"hook": "   "},
+        {"hook": ""},
+        "not-a-dict",
+    ],
+)
+def test_bad_meta_raises_on_put_and_edit(
+    handler: MemoryHandler, store: Store, bad: Any
+) -> None:
+    mid = id_of(handler.put(text="victim").body)
+    with pytest.raises(BadInput):
+        handler.put(text="never created", meta=bad)
+    with pytest.raises(BadInput):
+        handler.edit(id=mid, meta=bad)
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and "hook" not in ref.meta
+    assert len(store.list_refs(kind="memory", limit=100)) == 1
+
+
+def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
+    with pytest.raises(BadInput, match=r"allowed keys: \['hook'\]"):
+        handler.put(text="x", meta={"nope": "y"})
+
+
+def test_edit_with_nothing_to_change_names_meta(handler: MemoryHandler) -> None:
+    mid = id_of(handler.put(text="x").body)
+    with pytest.raises(BadInput, match="text=, rule=, warrant=, or meta="):
+        handler.edit(id=mid)
+    with pytest.raises(BadInput, match="text=, rule=, warrant=, or meta="):
+        handler.edit(id=mid, meta={})
+
+
+def test_runtime_put_and_edit_route_meta_to_the_handler(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    # The verb layer sends put's meta= as a flat key and edit's through the
+    # ``__extras__`` channel (tools/core.py); both reach the handler.
+    created = runtime_with_store.dispatch(
+        "put",
+        {
+            "kind": "memory",
+            "text": "via the verb layer",
+            "tags": ["SPACE:repo-dev"],
+            "meta": {"hook": "put hook"},
+        },
+    )
+    mid = id_of(created)
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["hook"] == "put hook"
+
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "mode": "replace",
+            "__extras__": {"meta": {"hook": "edit hook"}},
+        },
+    )
+    assert "[error" not in out and "meta: hook" in out
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["hook"] == "edit hook"
+
+    bad = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "mode": "replace",
+            "__extras__": {"meta": {"slug": "x"}},
+        },
+    )
+    assert "[error:BadInput]" in bad and "allowed keys" in bad
 
 
 def test_kindspec_supports_get_search_put(runtime_with_store: PrecisRuntime) -> None:

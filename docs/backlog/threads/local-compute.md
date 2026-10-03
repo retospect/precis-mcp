@@ -45,24 +45,40 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    qualification is the local quantisation against its own cloud original.
    castor/pollux serve nothing. Gold set BUILT 2026-10-02 on melchior's
    prod checkout (40 tasks, 10 non-prose; gitignored
-   `scripts/llm_eval/gold_set/local/summarize_v1.json`). **Next, after the
-   round-2 deploy carries the placement guard (fcf5b1c1, 85c79e02)** (the
-   local endpoint is loopback-only on melchior): `precis llm eval glm-4.7-flash
-   --compare z-ai/glm-4.7-flash --tier small --gold <set> --placement-a
-   local --placement-b cloud`. The placement flags are strict: a local-arm
-   reply that ran on the cloud raises `PlacementMismatch`, and a chain with
-   no reachable local rung errors every task (mean 0), so a false tie is
-   impossible. Still open: whether the router builds a local rung for an
-   explicit `glm-4.7-flash` when `llm.chain.small` is cloud-only; if the
-   first run errors, that is the bug to trace. (`--endpoint-a` is an
-   OpenRouter provider pin, not a local URL; the local base URL comes from
-   the reserved slot.) The compare prints, per arm, the mean with and
-   without the number rule and the number-rule-only zero count; if the arms
-   differ by more than 2 of 40 such zeros the delta is unusable (review
-   verdict 2026-10-02). Proposed promote rule (Reto to confirm with the
-   result): candidate mean ≥ incumbent mean − 0.05 and no transport errors.
-   No absolute mean goes on a model card until the false-zero share is
-   known.
+   `scripts/llm_eval/gold_set/local/summarize_v1.json`; rebuilt 2026-10-03
+   with the same 40 prompts plus the 220-token cap per task). It lives in
+   reto's prod clone on melchior (`~/precis-mcp-prod`, reto-owned; `ssh
+   melchior` lands as `deploy`, which cannot write there). Run builds and
+   compares as reto, with the env from the web service plist.
+   **First compare, 2026-10-03, deployed 63301c5c.**
+
+   | arm | mean | without number rule | number-rule-only zeros | hit cap |
+   |---|---|---|---|---|
+   | local `glm-4.7-flash` (melchior) | 0.750 | 0.800 | 2/40 | 0/40 |
+   | cloud `z-ai/glm-4.7-flash` | 0.825 | 0.850 | 1/40 | 0/40 |
+
+   - The CLI could not run it (gripe gr464223): it never binds its store,
+     and the operator chain's pinned rung model overrides the candidate id.
+     The local arm was driven through `run_eval(dispatch_fn=...)`, using the
+     LOCAL transport at the served endpoint: **hook-driven, bypasses the
+     breaker and slot accounting** (concurrency 1 on an idle slot). This is
+     the measurement of record until the CLI fix lands (orchestrator §9a).
+     Past damage (§9c, read-only 2026-10-03): **zero `record=True` eval
+     runs affected.** Prod has no `record_eval` entry at all. The one
+     `measured-eval` review (2026-08-10, deepseek-v4-flash) is a manual
+     note with no axis or ordinal. CLI runs never saw the DB chains, so
+     they kept the candidate id; only a settings-bound process would have
+     hit the override. The number-rule zeros differ by
+     1, so the delta is usable.
+   - The gap is non-prose tagging, not summary quality. 8 of the local
+     arm's 10 zeros and 6 of the cloud arm's 7 are chunks the incumbent
+     labelled non-prose (references, credits, metadata) where the model
+     wrote a prose brief instead of a tag. On the 30 prose chunks the arms
+     have 2 and 1 zeros.
+   - Re-sampling the local zeros flipped 2 of 10, so the 3-task gap is
+     inside run-to-run noise at n=40.
+   - The proposed promote rule (≥ cloud − 0.05) says no.
+   - Next: review item local-compute-14 asks Reto how to proceed.
 **Order for putting the big local model to work** (Reto 2026-10-03,
 endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
@@ -130,8 +146,12 @@ confirmed the target: ask it with the Slice 0 result.**
         knowledge-mesh when castor serves gpt-oss. When the server is
         picked, a review item answers Reto's "how many channels"
         (ceiling, setpoint, KV headroom).
-      - SGLang has no image route yet (ghcr only). No route by about
-        2026-10-04 → pick on vLLM alone and say so (Reto, local-compute-13).
+      - **SGLang done 2026-10-03; server picked: vLLM.** gpt-oss on SGLang
+        gives 198 tok/s at 32 streams against vLLM's 290, and fills its KV
+        pool at 64. Nemotron on SGLang stalls at 11 running requests. The
+        "how many channels" answer and the target confirmation are in
+        review item local-compute-15. The model pick waits on the quality
+        check.
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round

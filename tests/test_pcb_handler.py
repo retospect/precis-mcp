@@ -2378,3 +2378,34 @@ def test_op_move_group_deepening_a_standing_overlap_is_refused_shallower_passes(
     # Away by 0.2 mm: shallower passes.
     pcb.put(id="mv-deep", args={"op": "move", "refdes": "ARR1", "x": -0.2, "y": 0.0})
     assert _poses(store, ref.id)["ARR1"][:2] == (-0.2, 0.0)
+
+
+def test_route_status_headers_split_dangling_from_routed(pcb, store):
+    """A dangling net is stored 'realized' (so route_complete is never
+    wedged) but both summaries -- the route-status view header and the
+    board's default `## route status:` line -- count it as dangling, not
+    routed, and say 'routed' for the stored 'realized'."""
+    from precis.pcb import DANGLING_NET_NOTE
+
+    pcb.put(id="sensor-node", args=_DESIGN)
+    ref = store.get_ref(kind="pcb", id="sensor-node")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    store.pcb_routes_write(
+        ref.id,
+        board_id,
+        {
+            "VCC3V3": {"status": "realized"},
+            "GND": {"status": "failed"},
+            "I2C_SCL": {"status": "realized", "note": DANGLING_NET_NOTE},
+        },
+    )
+    want = (
+        "3 net(s): 1 routed, 1 failed, 1 dangling (fewer than 2 pins, nothing to route)"
+    )
+    status_view = pcb.get(id="sensor-node", view="route-status").body
+    assert f"# route status — {want}" in status_view
+    # the per-net table keeps the stored status column
+    assert "realized (dangling net" in status_view
+    board_view = pcb.get(id="sensor-node").body
+    assert f"## route status: {want}" in board_view

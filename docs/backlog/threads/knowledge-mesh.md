@@ -52,13 +52,22 @@ graph-health-metrics, five parked gripes, and the seam with
    `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
    (an errored dedup judgment read as "different") is owned by
    claims-and-evidence.
-4. **Part refs post-deploy** (shipped 2026-10-02, undeployed; design in
-   the `precis.handlers.part` docstring): lazy part refs on first link,
-   `pn` handles, datasheet `datasheet-of` dual-write, component `link`,
-   and board `contains` part edges reconciled by every `pcb_apply`. After
-   the round deploys: `precis pcb link-parts --dry-run` on prod
-   (read-only), then hand Reto the real run as a command; then read one
-   board's part in `get(kind='part')`.
+4. **Part refs: live, but inert until the prod catalog fills.** Shipped
+   2026-10-02 and deployed in round 2 (63301c5c); the design is in the
+   `precis.handlers.part` docstring. Prod read 2026-10-03:
+   - **The catalog is empty.** `parts` has 0 rows (pcb-platform thread,
+     gr458878), so nothing can mint.
+   - **The backfill has nothing to do.** `precis pcb link-parts
+     --dry-run` reports 2 boards, 0 mints, 0 edges, and 1 placed
+     C-number not in the catalog. A real run is a no-op, so no command
+     goes to Reto yet.
+   - **The refusal works.** `link(kind='memory', target='part:C25804')`
+     is refused with `NotFound: part C25804 is not in the catalog and
+     has no ref`, and nothing is written.
+
+   When pcb-platform fills the catalog: re-run the dry run, hand Reto
+   the real run as a command, then read one board's part with
+   `get(kind='part')`.
 5. **backlog/fisheye-everywhere.md** — status ready, no blocker. Per-family
    ring groups, `fisheye+2hop` and the `+recall` suffix shipped
    2026-10-02 (in-scope 1 and 3); open are the ladder on every kind
@@ -169,6 +178,19 @@ items.
   worth measuring the spectrum of.
 
 ## No action needed
+
+- `+recall` and the filtered-ANN fix were dogfooded on prod 2026-10-03,
+  after the round-2 deploy:
+  - `fisheye+1hop+recall` on fi176861 lists fi178441 (0.84) and
+    fi177675 (0.81).
+  - A rare-kind semantic search (taxon) fills 10 of 10 in 168 ms.
+  - Just after the deploy, a distance floor inside the ANN query took
+    12-14 s, against 0.1 s for the same rows with the floor outside, in
+    three paired runs. Twenty minutes later both took 0.1-0.2 s.
+  - The floor now filters outside the ordered `LIMIT`, in both
+    `search_chunks_semantic` and the fused semantic leg. Same rows,
+    pinned by a test.
+  - Revisit trigger: a p95 regression on `search` or `canon.block`.
 
 - relation constraints — shipped 2026-10-02 (migration 0180, one validator
   `_link_tag_ops.py::check_relation_constraints` at both link doors, the

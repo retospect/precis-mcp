@@ -61,6 +61,52 @@ from __future__ import annotations
 
 from typing import Any
 
+#: The note ``pcb_route`` writes on a dangling net (fewer than 2 members,
+#: nothing to route). The row's status is ``'realized'`` (so route_complete
+#: is never wedged), so this prefix is the ONE marker that tells a read-side
+#: summary the net was never actually routed. Writer and both readers
+#: (``pcb_route`` job, ``view='route-status'`` header, board ``## route
+#: status``) use it, so they cannot drift.
+DANGLING_NET_NOTE_PREFIX = "dangling net"
+DANGLING_NET_NOTE = f"{DANGLING_NET_NOTE_PREFIX} (<2 members) — nothing to route"
+
+#: The pseudo-status a dangling net counts under in a route-status summary.
+ROUTE_DANGLING = "dangling"
+
+
+def route_summary_status(status: str | None, note: str | None) -> str:
+    """The summary bucket for one net: its stored status, except a dangling
+    net (stored ``'realized'``) which counts as ``'dangling'``."""
+    st = status or "unrouted"
+    if st == "realized" and (note or "").startswith(DANGLING_NET_NOTE_PREFIX):
+        return ROUTE_DANGLING
+    return st
+
+
+def format_route_summary(counts: dict[str, int]) -> str:
+    """``"58 net(s): 29 routed, 26 failed, 3 dangling (fewer than 2 pins,
+    nothing to route)"`` -- routed, failed, any other status (sorted), then
+    dangling. ``'realized'`` reads as ``routed`` here only."""
+    total = sum(counts.values())
+    order = ["realized", "failed"]
+    order += sorted(
+        k for k in counts if k not in ("realized", "failed", ROUTE_DANGLING)
+    )
+    order.append(ROUTE_DANGLING)
+    parts: list[str] = []
+    for k in order:
+        n = counts.get(k, 0)
+        if not n:
+            continue
+        if k == "realized":
+            parts.append(f"{n} routed")
+        elif k == ROUTE_DANGLING:
+            parts.append(f"{n} dangling (fewer than 2 pins, nothing to route)")
+        else:
+            parts.append(f"{n} {k}")
+    return f"{total} net(s): {', '.join(parts)}"
+
+
 #: The v1 default stackup (pcb-guided-place-route Slice 1) — 4-layer rigid
 #: FR-4, SIG/GND/PWR/SIG. Roles only (no material/thickness_mm) in v1; the
 #: schema (``pcb_boards.stackup``) is shaped to carry dielectric detail

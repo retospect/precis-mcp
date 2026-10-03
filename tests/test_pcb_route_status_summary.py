@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from precis.pcb import DANGLING_NET_NOTE, format_route_summary, route_summary_status
 from precis.pcb.generators import GeneratorExpansion
 from precis.store import Store
 
@@ -144,7 +145,12 @@ def _detail_tally(store: Store, ref_id: int) -> tuple[dict[str, int], int]:
     -- the per-net detail list :meth:`Store._pcb_board_meta`'s summary must
     agree with net-for-net."""
     detail = store.pcb_route_status(ref_id)
-    return dict(Counter(row["status"] for row in detail)), len(detail)
+    return (
+        dict(
+            Counter(route_summary_status(row["status"], row["note"]) for row in detail)
+        ),
+        len(detail),
+    )
 
 
 def test_summary_matches_detail_across_all_three_shapes(
@@ -216,3 +222,29 @@ def test_live_net_with_no_route_row_counts_as_unrouted(
     unrouted_names = {name for name, status in detail.items() if status == "unrouted"}
     assert unrouted_names == {"NET_B", "GEN1_OWN"}
     assert summary["unrouted"] == len(unrouted_names)
+
+
+def test_dangling_net_splits_out_of_realized_in_summary_and_detail(
+    store: Store, fake_gen: dict[str, Any]
+) -> None:
+    """A dangling net is stored 'realized' with the shared note; the summary
+    must count it as 'dangling' (not routed) and still agree net-for-net with
+    the detail list."""
+    ref_id = _build_design(store, fake_gen, "route-status-4")
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_routes_write(
+        ref_id,
+        board_id,
+        {"NET_B": {"status": "realized", "note": DANGLING_NET_NOTE}},
+    )
+
+    tally, total = _detail_tally(store, ref_id)
+    # NET_A routed, NET_B dangling, fresh GEN1_OWN unrouted.
+    assert tally == {"realized": 1, "dangling": 1, "unrouted": 1}
+    assert total == 3
+    assert store.pcb_load(ref_id)["route_status"] == tally
+    assert store.pcb_graph(ref_id)["route_status"] == tally
+    assert format_route_summary(tally) == (
+        "3 net(s): 1 routed, 1 unrouted, "
+        "1 dangling (fewer than 2 pins, nothing to route)"
+    )

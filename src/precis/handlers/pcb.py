@@ -85,7 +85,15 @@ from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import epro_write as pcb_epro_write
 from precis.pcb import export as pcb_export
-from precis.pcb import eyes, gerber_view, padplace, place, ratsnest
+from precis.pcb import (
+    eyes,
+    format_route_summary,
+    gerber_view,
+    padplace,
+    place,
+    ratsnest,
+    route_summary_status,
+)
 from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb import gerber as pcb_gerber
@@ -2182,11 +2190,14 @@ class PcbHandler(Handler):
         # clearance further out, and a furniture box that clears the hull
         # but not the stroke still clips that stroke below legibility —
         # exactly the C14 drop above, reproduced at hull-only inflation.
-        court_margin = (
-            pcb_silk.silk_clearance_mm(
-                capability, stroke_width_mm=pcb_silk.DEFAULT_SILK_WIDTH_MM
-            )
-            + 1.0
+        # At least the slot a refdes label hung above/below the box needs
+        # (`refdes_label_slot_mm`): a tighter margin lets furniture settle
+        # where every label candidate is blocked -> silk_missing.
+        silk_clearance = pcb_silk.silk_clearance_mm(
+            capability, stroke_width_mm=pcb_silk.DEFAULT_SILK_WIDTH_MM
+        )
+        court_margin = max(
+            silk_clearance + 1.0, pcb_silk.refdes_label_slot_mm(silk_clearance)
         )
         courtyard_avoid = [
             pcb_silk.obstacle_from_bbox(
@@ -3004,8 +3015,8 @@ class PcbHandler(Handler):
             return Response(body="no nets on this design yet")
         counts: dict[str, int] = {}
         for r in rows:
-            counts[r["status"]] = counts.get(r["status"], 0) + 1
-        summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
+            key = route_summary_status(r["status"], r.get("note"))
+            counts[key] = counts.get(key, 0) + 1
         table_rows = [
             {
                 "net": r["name"],
@@ -3016,7 +3027,7 @@ class PcbHandler(Handler):
             for r in rows
         ]
         return Response(
-            body=f"# route status — {len(rows)} net(s): {summary}\n"
+            body=f"# route status — {format_route_summary(counts)}\n"
             + render_agent_table(
                 table_rows, schema=["net", "class", "domain", "status"]
             )
@@ -4000,9 +4011,9 @@ class PcbHandler(Handler):
         route_status = design.get("route_status") or {}
         if n_nets:
             if route_status:
-                summary = ", ".join(f"{n} {s}" for s, n in sorted(route_status.items()))
+                summary = format_route_summary(route_status)
             else:
-                summary = f"{n_nets} unrouted"
+                summary = f"{n_nets} net(s): {n_nets} unrouted"
             parts.append(f"## route status: {summary}")
         return "\n".join(parts)
 

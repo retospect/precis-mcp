@@ -418,6 +418,25 @@ _CANDIDATES: tuple[tuple[float, float, str, str, str], ...] = _refdes_candidates
 _BOTTOM_EDGE_INSET_STROKES = 2.0
 
 
+def refdes_label_slot_mm(
+    clearance_mm: float,
+    *,
+    height_mm: float = DEFAULT_REFDES_HEIGHT_MM,
+    stroke_width_mm: float = DEFAULT_SILK_WIDTH_MM,
+) -> float:
+    """The band between a part's courtyard hull and the nearest
+    non-silk obstacle (board furniture) that a refdes label hung ABOVE or
+    BELOW the box needs in order to fit: the label's own text height, a
+    silk clearance on each of its two sides, and the
+    :data:`_BOTTOM_EDGE_INSET_STROKES` gap :func:`_below_box_candidates`
+    leaves between the courtyard line and the glyph cap. A caller keeping
+    furniture off courtyards (``handlers/pcb.py::_board_furniture``) must
+    leave at least this much, else a part with nothing free on its other
+    sides loses its label (``silk_missing``) — ewod-dogfood-6's bottom
+    sink sat 1.385 mm from a furniture rect against a ~1.75 mm need."""
+    return height_mm + 2.0 * clearance_mm + _BOTTOM_EDGE_INSET_STROKES * stroke_width_mm
+
+
 def _bottom_edge_candidates(
     box_local: list[Point], stroke_width_mm: float
 ) -> tuple[tuple[Point, str, str, str], ...]:
@@ -3304,6 +3323,7 @@ __all__ = [
     "build_title_block",
     "fiducial_candidate_sites",
     "obstacle_from_bbox",
+    "refdes_label_slot_mm",
     "silk_clearance_mm",
     "soldermask_expansion_mm",
     "via_obstacles",

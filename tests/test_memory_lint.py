@@ -126,11 +126,16 @@ def home_and_mem(lint_repo: Path, tmp_path: Path) -> tuple[Path, Path]:
     return home, mem
 
 
-def _run(repo: Path, home: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo: Path, home: Path, *, cache: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HOME": str(home)}
+    if cache is not None:
+        env["PRECIS_MEMORY_CACHE"] = str(cache)
     return subprocess.run(
         [str(repo / "scripts" / "memory-lint")],
         cwd=str(repo),
-        env={**os.environ, "HOME": str(home)},
+        env=env,
         capture_output=True,
         text=True,
         timeout=30,
@@ -220,3 +225,67 @@ def test_kebab_case_broken_link_is_reported(
 
     assert res.returncode == 0
     assert "broken link → some-missing-topic.md" in res.stdout, res.stdout
+
+
+_POINTER = (
+    "<!-- memory-index: graph -->\n"
+    "# Memory index\n\nThe index is rendered from the graph at session start.\n"
+)
+
+
+def test_graph_mode_lints_the_cached_render_not_the_topic_files(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """After the cutover MEMORY.md is a pointer and the topic files are the
+    import snapshot: an unindexed or landed-looking file must not be flagged,
+    and the size check reads the session-start hook's cached render."""
+    home, mem = home_and_mem
+    sha = _landed_sha(lint_repo)
+    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
+    (mem / "some-topic.md").write_text(
+        f"state: SHIPPED. commit {sha} landed in main.\n", encoding="utf-8"
+    )
+    cache = tmp_path / "cache" / "memory-index.md"
+    cache.parent.mkdir()
+    cache.write_text(
+        "# Memory index\n\n## Threads\n\n- Alpha (me1) — x\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache)
+
+    assert res.returncode == 0
+    assert "memory-lint: graph mode — index from the session-start render" in res.stdout
+    assert "unindexed" not in res.stdout, res.stdout
+    assert "landed thread" not in res.stdout, res.stdout
+    assert "no `## Threads` heading" not in res.stdout, res.stdout
+    size = len(cache.read_bytes())
+    assert f"memory-lint: ✓ clean ({size} B rendered index" in res.stdout, res.stdout
+    assert "preamble: CLAUDE.md+memory index" in res.stdout, res.stdout
+
+
+def test_graph_mode_flags_a_rendered_index_past_high_water(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> None:
+    home, mem = home_and_mem
+    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
+    cache = tmp_path / "memory-index.md"
+    cache.write_text("- Alpha (me1) — " + "x" * 20_100 + "\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache)
+
+    assert res.returncode == 0
+    assert "memory index past high-water" in res.stdout, res.stdout
+    assert "MEMORY.md past high-water" not in res.stdout, res.stdout
+
+
+def test_graph_mode_without_a_cached_render_says_so(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> None:
+    home, mem = home_and_mem
+    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=tmp_path / "absent.md")
+
+    assert res.returncode == 0
+    assert "graph mode — no cached render yet" in res.stdout, res.stdout
+    assert "hygiene issue" not in res.stdout, res.stdout

@@ -970,32 +970,43 @@ class ChunkStore:
             where_params.append(list(include_ref_ids))
             clauses.append("c.ref_id = ANY(%s)")
 
-        distance_clause = ""
+        # The relevance floor filters OUTSIDE the ordered ANN subquery. The
+        # nearest ``limit + offset`` rows are a distance-ordered prefix, so
+        # cutting them at ``max_distance`` returns exactly the rows the
+        # in-scan predicate would. Measured on prod 2026-10-03 (a finding
+        # recall under strict_order iterative scan): in-scan 12-14 s vs
+        # outside 0.1 s for identical rows, in three paired runs just
+        # after a deploy. Twenty minutes later both took ~0.1-0.2 s. So
+        # the in-scan form has a slow tail under load, and this form
+        # costs nothing when the box is quiet.
+        outer_where = ""
         distance_params: list[Any] = []
         if max_distance is not None:
-            distance_clause = " AND (ce.vector <=> %s::vector) < %s"
-            distance_params = [query_vec, float(max_distance)]
+            outer_where = "WHERE s.dist < %s "
+            distance_params = [float(max_distance)]
 
         params: list[Any] = [
             query_vec,
             embedder,
             *where_params,
-            *distance_params,
             query_vec,
-            limit,
+            limit + offset,
+            *distance_params,
             offset,
         ]
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         sql = (
+            "SELECT * FROM ("
             f"SELECT {proj}, {_REFS_COLS_ALIASED}, "
             "       (ce.vector <=> %s::vector) AS dist "
             "FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id "
             "JOIN chunk_embeddings ce "
             "  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s "
-            f"WHERE {' AND '.join(clauses)}{distance_clause} "
-            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s OFFSET %s"
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY ce.vector <=> %s::vector ASC LIMIT %s"
+            f") s {outer_where}ORDER BY s.dist ASC OFFSET %s"
         )
         with self.pool.connection() as conn:
             _prepare_filtered_ann(conn, limit + offset)
@@ -1100,9 +1111,12 @@ class ChunkStore:
 
         where_extra = (" AND " + " AND ".join(clauses)) if clauses else ""
 
-        sem_distance_clause = ""
+        # Relevance floor outside the ordered ANN subquery, as in
+        # search_chunks_semantic (same rows; the in-scan form showed a
+        # 12-14 s tail under post-deploy load).
+        sem_outer_where = ""
         if max_distance is not None:
-            sem_distance_clause = " AND (ce.vector <=> %s::vector) < %s"
+            sem_outer_where = "WHERE x.d < %s"
 
         proj = _CHUNK_PROJ.format(embedding="NULL::vector")
         sql = f"""
@@ -1120,18 +1134,21 @@ class ChunkStore:
                 LIMIT %s
             ),
             sem AS (
-                SELECT c.chunk_id AS cid,
-                       row_number() OVER (
-                           ORDER BY ce.vector <=> %s::vector ASC
-                       ) AS rnk
-                FROM chunks c
-                JOIN refs r ON r.ref_id = c.ref_id
-                JOIN chunk_embeddings ce
-                  ON ce.chunk_id = c.chunk_id AND ce.embedder = %s
-                WHERE ce.vector IS NOT NULL
-                      AND ce.status = 'ok'
-                      {where_extra}{sem_distance_clause}
-                LIMIT %s
+                SELECT x.cid, row_number() OVER (ORDER BY x.d ASC) AS rnk
+                FROM (
+                    SELECT c.chunk_id AS cid,
+                           (ce.vector <=> %s::vector) AS d
+                    FROM chunks c
+                    JOIN refs r ON r.ref_id = c.ref_id
+                    JOIN chunk_embeddings ce
+                      ON ce.chunk_id = c.chunk_id AND ce.embedder = %s
+                    WHERE ce.vector IS NOT NULL
+                          AND ce.status = 'ok'
+                          {where_extra}
+                    ORDER BY ce.vector <=> %s::vector ASC
+                    LIMIT %s
+                ) x
+                {sem_outer_where}
             ),
             fused AS (
                 SELECT cid,
@@ -1166,8 +1183,8 @@ class ChunkStore:
 
         # Param construction sequence:
         #   lex: q + WHERE params + inner_limit
-        #   sem: query_vec + embedder + WHERE params
-        #        + [optional: query_vec, max_distance] + inner_limit
+        #   sem: query_vec + embedder + WHERE params + query_vec
+        #        + inner_limit + [optional: max_distance]
         #   fused: k + k
         #   outer: limit + offset
         full_params: list[Any] = []
@@ -1177,10 +1194,10 @@ class ChunkStore:
         full_params.append(query_vec)
         full_params.append(embedder)
         full_params.extend(params)
-        if max_distance is not None:
-            full_params.append(query_vec)
-            full_params.append(float(max_distance))
+        full_params.append(query_vec)
         full_params.append(inner_limit)
+        if max_distance is not None:
+            full_params.append(float(max_distance))
         full_params.extend([k, k])
         full_params.append(limit)
         full_params.append(offset)

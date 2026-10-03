@@ -31,6 +31,8 @@ import io
 import json
 import logging
 import os
+import re
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -489,6 +491,26 @@ def _child_cmd(req_path: str, out_path: str) -> list[str]:
     return [sys.executable, "-u", "-m", "precis_pathway.runner", req_path, out_path]
 
 
+_CPUSET_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
+
+
+def _pinned_cmd(cmd: list[str], cpuset: str | None) -> list[str]:
+    """Prefix ``cmd`` with ``taskset -c <cpuset>`` to pin the host-process
+    child to a CPU set (``params.resources.cpuset``, taskset list syntax such
+    as ``"0-4,10-14"``). Best-effort: a malformed set or a missing
+    ``taskset`` binary logs a warning and returns ``cmd`` unpinned rather
+    than failing the job."""
+    if not cpuset:
+        return cmd
+    if not _CPUSET_RE.match(cpuset):
+        log.warning("ignoring malformed resources.cpuset %r; running unpinned", cpuset)
+        return cmd
+    if shutil.which("taskset") is None:
+        log.warning("taskset not on PATH; ignoring cpuset %r, running unpinned", cpuset)
+        return cmd
+    return ["taskset", "-c", cpuset, *cmd]
+
+
 def run_seed_partial_subprocess(
     config: dict[str, Any],
     seed: int,
@@ -497,6 +519,7 @@ def run_seed_partial_subprocess(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     timeout: int = _DEFAULT_SEED_TIMEOUT_S,
+    cpuset: str | None = None,
 ) -> SeedPartialResult:
     """Run :func:`run_seed_partial` in a FRESH child process — killable + isolated.
 
@@ -537,7 +560,7 @@ def run_seed_partial_subprocess(
         with open(req_path, "w", encoding="utf-8") as fh:
             json.dump(request, fh)
 
-        cmd = _child_cmd(req_path, out_path)
+        cmd = _pinned_cmd(_child_cmd(req_path, out_path), cpuset)
         try:
             proc = subprocess.run(
                 cmd,
@@ -750,6 +773,7 @@ def submit_seed_partial_detached(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     work_dir: str | None = None,
+    cpuset: str | None = None,
 ) -> DetachedHandle:
     """Launch :func:`run_seed_partial` in a DETACHED child — the ssh_node
     ``submit`` half of the detached submit/poll protocol (gr187627). Where
@@ -795,7 +819,7 @@ def submit_seed_partial_detached(
     with open(req_path, "w", encoding="utf-8") as fh:
         _json.dump(request, fh)
 
-    cmd = _child_cmd(req_path, out_path)
+    cmd = _pinned_cmd(_child_cmd(req_path, out_path), cpuset)
     with (
         open(os.path.join(scratch, "stdout.log"), "wb") as out_fh,
         open(os.path.join(scratch, "stderr.log"), "wb") as err_fh,

@@ -11,6 +11,16 @@ container stack, never a bare local binary pointed at ad-hoc state:
   databases only (dev pgvector container at `127.0.0.1:5432`,
   `POSTGRES_USER=postgres`). It does not reach prod — see
   `scripts/prod-psql` for that.
+- `scripts/prod-psql` → the live prod DB through pgbouncer, as `agent_rw`;
+  `--ro` connects as `agent_ro` inside `BEGIN READ ONLY`, the guard to use
+  for reads. **Never a session-level `SET`/`RESET` through the prod DSN**:
+  pgbouncer pools by transaction, so the setting sticks to a shared server
+  connection and every later client inherits it — one
+  `SET default_transaction_read_only = on` "read-only guard" broke every
+  agent_rw write fleet-wide on 2026-10-02. The script refuses those
+  statements; `SET LOCAL` inside your own transaction is fine.
+  `scripts/guide-web`'s header comment records the same trap from 2026-09-04
+  and why it uses `agent_ro`.
 - Compose file: `docker/dev/compose.yaml` (checked into this repo; the
   dev-loop scripts default to it, resolved relative to their own location —
   override with `$PRECIS_COMPOSE` to point at a different/shared stack).

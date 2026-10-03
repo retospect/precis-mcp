@@ -55,6 +55,47 @@ _BODY_KIND = "memory_body"
 #: pass an explicit ``title=``. Matches the migration-0050 backfill rule.
 _TITLE_MAX = 80
 
+#: ``meta=`` keys a caller may write on put/edit. ``hook`` is the one-line
+#: index text of a ``SPACE:repo-dev`` memory (``precis memory index``).
+_META_ALLOWED = ("hook",)
+
+
+def _validate_meta(meta: Any) -> dict[str, Any]:
+    """Check a caller's ``meta=`` and return the cleaned patch.
+
+    Only ``hook`` is writable: a non-empty single-line ``str`` (stripped).
+    Anything else raises :class:`BadInput` naming the allowed keys.
+    """
+    example = "meta={'hook': 'one-line index text'}"
+    if not isinstance(meta, dict):
+        raise BadInput(
+            f"meta= must be a dict, got {type(meta).__name__}; "
+            f"allowed keys: {list(_META_ALLOWED)}",
+            next=example,
+        )
+    unknown = sorted(str(k) for k in meta if k not in _META_ALLOWED)
+    if unknown:
+        raise BadInput(
+            f"meta= key(s) {unknown} not writable on kind='memory'; "
+            f"allowed keys: {list(_META_ALLOWED)}",
+            next=example,
+        )
+    out: dict[str, Any] = {}
+    if "hook" in meta:
+        hook = meta["hook"]
+        if not isinstance(hook, str):
+            raise BadInput(
+                f"meta['hook'] must be a str, got {type(hook).__name__}",
+                next=example,
+            )
+        hook = hook.strip()
+        if not hook:
+            raise BadInput("meta['hook'] must be non-empty", next=example)
+        if "\n" in hook or "\r" in hook:
+            raise BadInput("meta['hook'] must be one line (no newline)", next=example)
+        out["hook"] = hook
+    return out
+
 
 class MemoryHandler(NumericRefHandler):
     spec: ClassVar[KindSpec] = KindSpec(
@@ -126,6 +167,9 @@ class MemoryHandler(NumericRefHandler):
     #: validated by precis.
     _pending_rule: str | None = None
     _pending_warrant: str | None = None
+
+    #: Validated ``put(meta=)`` patch (``hook``) for the duration of one create.
+    _pending_meta: dict[str, Any] | None = None
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -218,6 +262,7 @@ class MemoryHandler(NumericRefHandler):
         auto_refresh_days: int | None = None,
         rule: str | None = None,
         warrant: str | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
@@ -234,7 +279,12 @@ class MemoryHandler(NumericRefHandler):
         ``warrant`` free-text prose for *why* the step holds. Author
         assertions; precis stores and surfaces them, never verifies
         validity. Meaningless (but harmless) on a non-inference memory.
+
+        ``meta={'hook': '...'}`` sets the memory's one-line index text
+        (``refs.meta.hook``); ``hook`` is the only writable key.
         """
+        # Validate before any state is set or any row is written.
+        self._pending_meta = _validate_meta(meta) if meta is not None else None
         self._pending_title = (
             title.strip() if isinstance(title, str) and title.strip() else None
         )
@@ -260,6 +310,7 @@ class MemoryHandler(NumericRefHandler):
             self._pending_title = None
             self._pending_rule = None
             self._pending_warrant = None
+            self._pending_meta = None
 
     def _create(
         self,
@@ -308,6 +359,8 @@ class MemoryHandler(NumericRefHandler):
             meta["rule"] = self._pending_rule
         if self._pending_warrant is not None:
             meta["warrant"] = self._pending_warrant
+        if self._pending_meta:
+            meta.update(self._pending_meta)
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
@@ -387,6 +440,7 @@ class MemoryHandler(NumericRefHandler):
         title: str | None = None,
         rule: str | None = None,
         warrant: str | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """In-place rewrite of a memory's body prose, and/or its argument-graph
@@ -403,8 +457,10 @@ class MemoryHandler(NumericRefHandler):
         ``rule=`` / ``warrant=`` patch a ``kind:inference`` memory's
         reasoning-step label / free-text justification without requiring a
         body rewrite — pass either (or both) alone to refine the warrant as
-        understanding sharpens, no ``text=`` required. At least one of
-        ``text=``, ``rule=``, ``warrant=`` must be given.
+        understanding sharpens, no ``text=`` required. ``meta={'hook': '...'}``
+        sets the one-line index text (``refs.meta.hook``), likewise alone or
+        with ``text=``. At least one of ``text=``, ``rule=``, ``warrant=``,
+        ``meta=`` must be given.
 
         Distinct from ``supersede`` (the consolidate-into-new verb): replace
         keeps the same id and every inbound link — the "polish the wording"
@@ -421,14 +477,22 @@ class MemoryHandler(NumericRefHandler):
         warrant_clean = (
             warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
         )
-        if not has_text and rule_clean is None and warrant_clean is None:
+        meta_clean = _validate_meta(meta) if meta is not None else {}
+        if (
+            not has_text
+            and rule_clean is None
+            and warrant_clean is None
+            and not meta_clean
+        ):
             raise BadInput(
                 "edit(kind='memory', mode='replace') requires text=, rule=, "
-                "or warrant=",
+                "warrant=, or meta=",
                 next=(
                     "edit(kind='memory', id=N, mode='replace', text='new body') "
                     "or edit(kind='memory', id=N, mode='replace', "
-                    "warrant='updated justification')"
+                    "warrant='updated justification') "
+                    "or edit(kind='memory', id=N, mode='replace', "
+                    "meta={'hook': 'one-line index text'})"
                 ),
             )
         ref_id = self._coerce_id(id)
@@ -441,8 +505,9 @@ class MemoryHandler(NumericRefHandler):
             meta_patch["rule"] = rule_clean
         if warrant_clean is not None:
             meta_patch["warrant"] = warrant_clean
+        meta_patch.update(meta_clean)
         if not has_text:
-            # Meta-only patch (rule=/warrant=, no body rewrite) — skip the
+            # Meta-only patch (rule=/warrant=/meta=, no body rewrite) — skip the
             # chunk delete+reinsert and mention re-sync entirely; nothing
             # in the prose changed.
             with self.store.tx() as conn:
@@ -451,7 +516,9 @@ class MemoryHandler(NumericRefHandler):
                     self.store.chunks.set_ref_title(
                         ref.id, new_title, source="agent", conn=conn
                     )
-            changed = ", ".join(k for k in ("rule", "warrant") if k in meta_patch)
+            changed = ", ".join(
+                k for k in ("rule", "warrant", "hook") if k in meta_patch
+            )
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
             if new_title is not None:
                 out += f". title now: {new_title!r}"

@@ -2667,3 +2667,86 @@ def test_refdes_candidate_rejected_outside_the_outline_relocates_to_one_inside()
                     _point_to_segment_dist(pt, a, b) >= margin - 1e-6
                     for a, b in itertools.pairwise(ring)
                 )
+
+
+# ── refdes slot vs board furniture (ewod-dogfood-6 silk_missing) ─────────
+def _furniture_frame(
+    ring: list[tuple[float, float]], gap: float, depth: float = 60.0
+) -> list[dict[str, Any]]:
+    """Four furniture rects hugging a courtyard bbox from ``gap`` outside
+    it on every side — a part with nothing free around it, the squeezed
+    case the slot exists for."""
+    x0, x1 = min(p[0] for p in ring), max(p[0] for p in ring)
+    y0, y1 = min(p[1] for p in ring), max(p[1] for p in ring)
+    span_x, span_y = (x1 - x0) + 2 * (gap + depth), (y1 - y0) + 2 * (gap + depth)
+    return [
+        _obstacle(x0 - gap - depth / 2, (y0 + y1) / 2, depth, span_y),
+        _obstacle(x1 + gap + depth / 2, (y0 + y1) / 2, depth, span_y),
+        _obstacle((x0 + x1) / 2, y0 - gap - depth / 2, span_x, depth),
+        _obstacle((x0 + x1) / 2, y1 + gap + depth / 2, span_x, depth),
+    ]
+
+
+def _bottom_part_with_furniture(gap: float) -> tuple[Any, Any]:
+    ir = from_graph(_graph("U1", 200, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    (ring,) = silk.world_courtyard_rings(ir)
+    x0, x1 = min(p[0] for p in ring), max(p[0] for p in ring)
+    y0, y1 = min(p[1] for p in ring), max(p[1] for p in ring)
+    # One pad over the whole body: no label fits inside or flush to an
+    # edge, so the label must hang in the band between courtyard and
+    # furniture — the squeezed bottom-side sink of ewod-dogfood-6.
+    body = {
+        "shape": "rect",
+        "x": (x0 + x1) / 2,
+        "y": (y0 + y1) / 2,
+        "w": x1 - x0,
+        "h": y1 - y0,
+        "net": "N",
+    }
+    result = build_silk(
+        ir,
+        pads=[body],
+        instance_sides={"U1": "bottom"},
+        reserved={"bottom": _furniture_frame(ring, gap)},
+    )
+    return ring, result
+
+
+def test_refdes_slot_is_derived_from_the_ladders_own_geometry():
+    cl = silk_clearance_mm(None, stroke_width_mm=silk.DEFAULT_SILK_WIDTH_MM)
+    slot = silk.refdes_label_slot_mm(cl)
+    assert slot == pytest.approx(
+        silk.DEFAULT_REFDES_HEIGHT_MM
+        + 2 * cl
+        + silk._BOTTOM_EDGE_INSET_STROKES * silk.DEFAULT_SILK_WIDTH_MM
+    )
+    # the old furniture margin (clearance + 1.0) is strictly smaller
+    assert cl + 1.0 < slot
+
+
+def test_refdes_label_renders_once_furniture_gap_reaches_the_slot():
+    cl = silk_clearance_mm(None, stroke_width_mm=silk.DEFAULT_SILK_WIDTH_MM)
+    slot = silk.refdes_label_slot_mm(cl)
+    outcomes: dict[float, str] = {}
+    for gap in [1.0 + 0.05 * i for i in range(21)]:
+        _ring, result = _bottom_part_with_furniture(gap)
+        row = next(c for c in result.census if c.refdes == "U1" and c.kind == "refdes")
+        outcomes[round(gap, 2)] = row.outcome
+    first_ok = min(g for g, o in outcomes.items() if o != "dropped")
+    # the slot is sufficient (measured need 1.70 mm at this fixture) ...
+    assert first_ok <= slot
+    # ... and the old furniture margin (clearance + 1.0) was NOT.
+    assert first_ok > cl + 1.0
+    assert all(o == "dropped" for g, o in outcomes.items() if g < first_ok)
+    for gap, outcome in outcomes.items():
+        if gap >= slot:
+            assert outcome in ("placed", "relocated"), (gap, outcome)
+    assert outcomes[1.0] == "dropped", "sweep must start in the failing regime"
+
+
+def test_bottom_part_label_is_drawn_at_the_new_furniture_margin():
+    cl = silk_clearance_mm(None, stroke_width_mm=silk.DEFAULT_SILK_WIDTH_MM)
+    _ring, result = _bottom_part_with_furniture(silk.refdes_label_slot_mm(cl))
+    row = next(c for c in result.census if c.refdes == "U1" and c.kind == "refdes")
+    assert row.outcome in ("placed", "relocated")
+    assert result.draws["bottom"]

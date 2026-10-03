@@ -472,6 +472,18 @@ def _print_number_rule_lines(
         )
 
 
+def _first_error(report: Any, axis: str) -> str | None:
+    """First distinct transport/dispatch error of ``axis``, truncated."""
+    res = next((r for r in report.results if r.axis == axis), None)
+    if res is None:
+        return None
+    for ts in res.per_task:
+        if ts.error:
+            err = str(ts.error)
+            return err if len(err) <= 200 else err[:199] + "…"
+    return None
+
+
 def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
     from precis.llm_eval import compare as _compare
     from precis.llm_eval import run_eval
@@ -492,6 +504,13 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
             if not isinstance(ep, dict):
                 raise BadInput(f"--endpoint-{side}: must be a JSON object")
             endpoints[side] = ep
+        if not (
+            getattr(args, "placement_a", None) and getattr(args, "placement_b", None)
+        ):
+            print(
+                "warning: --compare without --placement-a/-b routes through the "
+                "operator chain, which may override the candidate model."
+            )
         reports = _compare(
             store,
             model_a=args.model,
@@ -521,6 +540,11 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
                 else:
                     cells.append(f"{res.ordinal} ({res.mean_score:.3f}/{res.n})")
             print(f"{axis:<24} {cells[0]:>22} {cells[1]:>22}")
+        for name in (args.model, args.compare):
+            for axis in axes:
+                err = _first_error(reports[name], axis)
+                if err:
+                    print(f"{name} {axis}: first error: {err}")
         _print_number_rule_lines(reports, (args.model, args.compare), args.gold)
         skipped = reports[args.model].skipped
         if skipped:
@@ -542,6 +566,9 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
                 f"  {res.axis:<24} VOID — {res.errors}/{res.n + res.errors} "
                 f"transport errors [{mark}]"
             )
+            err = _first_error(report, res.axis)
+            if err:
+                print(f"    first error: {err}")
             continue
         print(
             f"  {res.axis:<24} ordinal {res.ordinal}  "
@@ -654,8 +681,25 @@ def _cmd_op(store: Store, args: argparse.Namespace) -> None:
         _cmd_op_clear(store, args)
 
 
+def _bind_process_store(store: Store) -> None:
+    """Bind ``store`` as the process store, as ``precis worker`` does: vault,
+    route-log, budget meter, DB settings. Without it ``llm eval`` finds no
+    local slot, ignores ``llm.chain.*`` settings and cannot resolve vault keys.
+    """
+    from precis import route_log as _route_log
+    from precis import secrets as _secrets
+    from precis import settings as _settings
+    from precis.budget import bind_store as _bind_budget_store
+
+    _secrets.adopt_process_store(store)
+    _route_log.bind_store(store)
+    _bind_budget_store(store)
+    _settings.bind_store(store)
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
+    _bind_process_store(store)
     if args.llm_cmd == "seed":
         _cmd_seed(
             store,

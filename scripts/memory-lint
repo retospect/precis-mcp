@@ -51,7 +51,33 @@ if [[ ! -d "$MEMDIR" ]]; then
     echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
 fi
 INDEX="$MEMDIR/MEMORY.md"
+IDX_LABEL="MEMORY.md"
 problems=0
+
+# Graph mode (docs/backlog/memory-native-authoring.md, cutover 2026-10-03).
+# MEMORY.md is then a pointer carrying GRAPH_MARKER, and the index is rendered
+# from SPACE:repo-dev memory nodes by scripts/hooks/session-start-memory.sh,
+# which saves its last good render to the same cache path computed here. The
+# topic files are a frozen snapshot of the import, so every check that reads
+# them (1a, 1b, 2, 3b, 5, 6) would lint the snapshot, not the memory: those
+# are skipped. Size, preamble and the reconsolidation clock run on the
+# cached render.
+GRAPH_MARKER='<!-- memory-index: graph -->'
+GRAPH=0
+if grep -qF "$GRAPH_MARKER" "$INDEX" 2>/dev/null; then
+    GRAPH=1
+    INDEX="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
+    IDX_LABEL="memory index"
+    if [[ -s "$INDEX" ]]; then
+        rendered=$(date -u -r "$INDEX" +%Y-%m-%dT%H:%MZ)
+        echo "memory-lint: graph mode — index from the session-start render cached $rendered; topic-file checks skipped (the files are the cutover snapshot)"
+    else
+        echo "memory-lint: graph mode — no cached render yet (scripts/hooks/session-start-memory.sh writes it); size checks skipped"
+        INDEX=/dev/null
+    fi
+fi
+
+if (( ! GRAPH )); then
 
 # 1a. broken links: [text](file.md) whose target is absent. The char class
 # allows a hyphen — every real topic file is kebab-case
@@ -104,14 +130,20 @@ while IFS= read -r b; do
         problems=$((problems+1))
     fi
 done <<< "$threads"
+fi  # ! GRAPH (checks 1a, 1b, 2)
 
 # 3. index size — hysteresis: silent inside the band, flag only past high-water
 bytes=$(wc -c < "$INDEX" | tr -d ' ')
 if (( bytes > HIGH_WATER )); then
-    echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: relocate detail into topic files + promote matured memories to permanent docs (make them permanent); delete only landed threads (git has them). NOT lossy word-trimming."
+    if (( GRAPH )); then
+        echo "  memory index past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: move detail from hooks into bodies (edit(kind='memory', meta={'hook': …})), promote matured memories to permanent docs; retire only landed threads (delete(kind='memory'))."
+    else
+        echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: relocate detail into topic files + promote matured memories to permanent docs (make them permanent); delete only landed threads (git has them). NOT lossy word-trimming."
+    fi
     problems=$((problems+1))
 fi
 
+if (( ! GRAPH )); then
 # 3b. payload-smell — a topic file carrying fenced code blocks is holding a
 # PAYLOAD (recipe body) where memory should hold a trigger + pointer
 # (docs/runbooks/ owns recipe bodies — dev-context-diet). Advisory.
@@ -123,8 +155,11 @@ for tf in "$MEMDIR"/*.md; do
         problems=$((problems+1))
     fi
 done
+fi  # ! GRAPH (check 3b)
 
-if (( problems == 0 )); then
+if (( problems == 0 )) && (( GRAPH )); then
+    echo "memory-lint: ✓ clean ($bytes B rendered index, within high-water)"
+elif (( problems == 0 )); then
     echo "memory-lint: ✓ clean ($bytes B, links resolve, no landed threads lingering)"
 else
     echo "memory-lint: $problems hygiene issue(s) above"
@@ -141,9 +176,9 @@ pre_tok=$(( (bytes + claude_b) / 4 ))
 # decision rather than a default. dev-context-diet.md still stands.
 PRE_BUDGET_TOK=8000
 if (( pre_tok > PRE_BUDGET_TOK )); then
-    echo "preamble OVER budget: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
+    echo "preamble OVER budget: CLAUDE.md+${IDX_LABEL} ≈ ${pre_tok} tok > ${PRE_BUDGET_TOK} — diet per docs/backlog/dev-context-diet.md"
 else
-    echo "preamble: CLAUDE.md+MEMORY.md ≈ ${pre_tok} tok (budget ${PRE_BUDGET_TOK})"
+    echo "preamble: CLAUDE.md+${IDX_LABEL} ≈ ${pre_tok} tok (budget ${PRE_BUDGET_TOK})"
 fi
 
 # 5. per-claim currency ledger (--currency) — the cheap, deterministic half of
@@ -152,7 +187,9 @@ fi
 #    judgment pass. Each finding is a SUSPECT for a human/Opus to resolve
 #    (adjust the anchor / kill the memory / promote a decision to an ADR), never
 #    an auto-delete: a gone branch may be shipped-and-pruned OR stranded work.
-if (( CURRENCY )); then
+if (( CURRENCY )) && (( GRAPH )); then
+    echo "— currency ledger: not run in graph mode (it reads topic files, which are the cutover snapshot) —"
+elif (( CURRENCY )); then
     echo "— currency ledger (git+fs anchors; suspects only) —"
     # try every ref spelling a bare name could wear; 0 = exists, 1 = gone
     branch_gone() {
@@ -295,7 +332,9 @@ sib_last_e=$( [[ -n "$sib_last" ]] && epoch_of "$sib_last" || true )
 sib_days=999999
 [[ -n "${sib_last_e:-}" ]] && sib_days=$(( ($(date +%s) - sib_last_e) / 86400 ))
 
-if (( sib_days <= SIB_WINDOW_DAYS )); then
+if (( GRAPH )); then
+    :   # reads topic files, the cutover snapshot — skipped in graph mode
+elif (( sib_days <= SIB_WINDOW_DAYS )); then
     echo "sibling-repo check: ok (last $sib_last, ${sib_days}d ago; due in $(( SIB_WINDOW_DAYS - sib_days ))d)"
 else
     echo "sibling-repo check: DUE (last ${sib_last:-never}) — running now"

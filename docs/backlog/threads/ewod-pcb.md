@@ -18,6 +18,27 @@ landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
 Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
+## Resume (parked at TIER 3, Reto's 2026-10-03 priority review)
+
+Start no new slice until the organizer reopens this thread. State at park:
+everything is landed; round 3 carries 5d50cd44a (route restores pin swaps
+before the layer sketch, gr464237; refdes slot sets the furniture margin;
+prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
+
+1. **First thing on reopen — gr464240.** Round-2 dogfood (job 464239):
+   the best-state anneal (gr462607) restored a near-via-free state
+   (best_at=17/699) and dogfood-6 routed 20/55, down from 29. Route it
+   again AFTER round 3 deploys (gr464237's fix is in round 3) and compare
+   routed count and best_at before touching the cost model.
+2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
+   route reply carries the stale warning, confirmed live). Re-put its
+   generators entry, route, report routed count before/after — after
+   step 1, so the two effects are not confounded.
+3. Then Do-next 1's remaining invariant paths (`pcb_apply`,
+   `op='footprint'`, `op='class_rules'`) and Do-next 2 (datasheet pull).
+Owed to pcb-easyeda-round-trip's version-stamp item if picked up from
+here: a code-version input to `content_hash` (round-2 review finding 1).
+
 ## Do next
 
 0. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
@@ -29,9 +50,13 @@ Do-next renumbered)
    2026-10-02 (dogfood after the round-1 deploy, route job 462600):**
    ewod-dogfood-6 reports `silk_missing` for ARR1_SINK_0's bottom refdes
    ("every candidate placement overlaps a pad, a via, or silk already
-   committed"); it read 0 geometric errors before. Check whether the
-   shared-label-spot change (c24c2db8, live in that deploy) or the run's
-   new placement caused it.
+   committed"); it read 0 geometric errors before. **Root-caused
+   2026-10-02:** not the silk commits (reproduced on code before both);
+   the run moved the sink's courtyard to 1.385 mm from a bottom-side
+   furniture rect, and `_board_furniture`'s `court_margin` (silk clearance
+   + 1.0 = 1.375 mm) leaves less than the ~1.75 mm a below-box refdes needs.
+   Fixed 2026-10-03: `silk.refdes_label_slot_mm` (text height + 2 ×
+   clearance + inset) sets the furniture margin's floor.
 1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02
    (all undeployed): the route job DRCs its own router copper and strips a
    violating net (`drc:<rule>`); `op='move'` on a generator member moves
@@ -40,8 +65,16 @@ Do-next renumbered)
    13 strips on pcb 460559 were router faults, fixed by
    pcb-easyeda-round-trip (0 strips after). Gripe 462607 fixed 2026-10-02: the anneal restores its best state
    (judged at the reporting schedule), so `cost_after <= cost_before`
-   always; job summaries show `best_at=N/M`. Still owed: a job-level
-   determinism test for `pcb_route`. The pose half of the move check is a
+   always; job summaries show `best_at=N/M`. It changes route output for
+   the same seed. **Do not re-route prod boards for dogfood until it
+   deploys** (orchestrator, 2026-10-02): until then every prod route job
+   stores a placement worse than it found. Still owed: a job-level
+   determinism test for `pcb_route` — **built 2026-10-03**, together with the
+   fix for a second defect: the job restored the per-segment layer/side
+   sketch BEFORE pin swaps, so every segment on a swapped pin restarted
+   unlayered (the 1.08 cost gap between runs). Pin swaps now restore first,
+   unmatched sketch entries are reported in the job summary, and a test
+   holds run 2's `before` equal to run 1's `after`. The pose half of the move check is a
    delta now too (verdict 2026-10-02). The multi-pose `op='move'`
    (ruling 2) is built too. **Next:** the remaining mutation paths in the
    item's Acceptance (`pcb_apply`, `op='footprint'`, `op='class_rules'`);

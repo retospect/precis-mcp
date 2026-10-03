@@ -130,6 +130,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         timeout_s = int(resources.get("wall_seconds") or 0)
     except (TypeError, ValueError):
         timeout_s = 0
+    cpuset = resources.get("cpuset")
 
     ctx.append_chunk(
         "job_event",
@@ -150,6 +151,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         }
         if timeout_s > 0:
             kw["timeout"] = timeout_s
+        if cpuset:
+            kw["cpuset"] = cpuset
         result = runner.run_seed_partial_subprocess(config, seed, model_index, **kw)
     except runner.ChildKilledError as exc:
         # INFRA-class (parked-leaf-recovery, docs/backlog/
@@ -233,12 +236,17 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
     try:
         from precis_pathway import runner
 
+        submit_kw: dict[str, Any] = {}
+        cpuset = (params.get("resources") or {}).get("cpuset")
+        if cpuset:
+            submit_kw["cpuset"] = cpuset
         return runner.submit_seed_partial_detached(
             config,
             seed,
             model_index,
             force_backend=force_backend,
             slab_extxyz=slab_extxyz,
+            **submit_kw,
         )
     except Exception as exc:  # pragma: no cover - spawn/env dependent
         log.warning("autocatpath_seed: submit failed", exc_info=True)

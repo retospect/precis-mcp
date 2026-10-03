@@ -937,18 +937,30 @@ def _run_supply(
         if escalate:
             search_fn.force_external = prior
 
+    # Only an outside search that returned counts toward the two-tick bound:
+    # a failed one (429, outage, missing S2 client) says nothing about the
+    # literature, so it must not end in "not found outside".
     external = False
+    external_error: str | None = None
     for q in queries:
         rep = getattr(search_fn, "report_for", lambda _q: None)(q)
-        external = external or bool(rep is not None and rep.external_ran)
+        if rep is None or not rep.external_ran:
+            continue
+        if rep.external_error:
+            external_error = external_error or rep.external_error
+        else:
+            external = True
     written = result.get("supply_written")
     unit = f" {choice.unit}" if choice.unit else ""
-    text = (
-        f"supply on `{choice.key}` wrote {written['value']:g}{unit}"
-        if written
-        else f"supply on `{choice.key}` dry (outside searched: "
-        f"{'yes' if external else 'no'})"
-    )
+    if written:
+        text = f"supply on `{choice.key}` wrote {written['value']:g}{unit}"
+    elif external_error and not external:
+        text = f"supply on `{choice.key}` dry (outside search failed: {external_error})"
+    else:
+        text = (
+            f"supply on `{choice.key}` dry (outside searched: "
+            f"{'yes' if external else 'no'})"
+        )
     append_entry(
         store,
         choice.capability_id,
@@ -961,6 +973,7 @@ def _run_supply(
                 "dry": not written,
                 "external": external,
                 "queries": queries,
+                **({"external_error": external_error} if external_error else {}),
             }
         },
     )

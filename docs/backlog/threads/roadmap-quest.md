@@ -13,26 +13,43 @@ embedder fix live but exposed a supply defect: both cited supply numbers
 are one misread value (see Do next 1). Next evidence: a supply tick after
 the extraction-window fix deploys.
 **Resume (parked 2026-10-03, TIER 3 per Reto's priority review):** start no
-new slice until the organizer reopens this thread. Landed, not yet deployed:
-round 2, c12912cb5 (verbatim-quote check, text-less papers dropped) and
-38a575586 (dry-tick escalation). Prod ran round 1, 567f207f, at park time.
-No review-queue item, background job or held prod write is open. On reopen,
-check first whether round 2 is deployed (`origin/prod`). If it is, read
-qu453869 (positional accuracy capability) supply ticks since the deploy for
-Do next 1's quote check and Do next 2's first `(escalated)` query line.
-qu453863 (Bootstrap roadmap root) keeps ticking unattended while parked;
-Do next 3's fail signals are the only reason to act before reopen. Built
-while parked, on the orchestrator's ask (design note §5, accepted):
-gr462891 / td462893.
-- The ledger now resolves a quoted prefix of at least 40 characters.
-- An `add` whose parent does not resolve is kept as a root node with
-  `parent_unresolved` and is rendered as unplaced.
-- Each tick logs one line with its applied counts.
-- The dialectic prompt section is gated on an existing block.
-- The replay against the fixed code is on the gripe.
-- The dialectic design question is in `quest-graph-as-dossier.md`, open
-  question 2.
-**Last reviewed:** 2026-10-03 (parked at TIER 3; round 2 landed, undeployed)
+new slice until the organizer reopens this thread. Round 2 (63301c5c) is
+DEPLOYED since 13:49Z 10-03. It carries the verbatim-quote check
+(c12912cb5), the dry-tick escalation (38a575586) and gr462891's ledger fix
+(9ef609810). qu453863 (Bootstrap roadmap root) keeps ticking unattended;
+Do next 3's fail signals are the only reason to act before reopen.
+
+Dogfood 2026-10-03, two CLI ticks via `scripts/prod-precis quest tick
+453863` from this tree fast-forwarded to 63301c5c:
+- **Tick 1 (13:55Z): supply @big on qu453869 (positional accuracy
+  capability) `placement_error_nm`.** 3 queries, all `local 10, outside
+  skipped`, 7 papers linked, 0 hubs, dry. It logged the first
+  `supply_outcome` entry, `dry (outside searched: no)`, so escalation is
+  armed. The quote check was not exercised: no finding was proposed. The
+  linked papers are off-topic (pa5696, an encyclopedia; pa161500, on
+  multivesicles), which is the local leg admitting anything (Do next 2).
+- **Tick 2 (13:58Z): escalated, the first time the outside leg was forced.**
+  It crashed with `ModuleNotFoundError: semanticscholar`: the S2 client is
+  the `[paper]` extra and the host venv lacks it. The prod worker venv
+  installs `precis-mcp[paper,pourbaix]`, so unattended worker ticks are not
+  affected. Nothing was written and qu453863 stays active.
+- **Fixed in round 3** (this commit): the S2 import sits inside the
+  external leg's error guard, and an outside search that errored no longer
+  counts as "searched", so a 429 or a missing client can never end in "not
+  found outside" (`supply_outcome.external_error` records it).
+- **Still unverified:** an escalated query that reaches S2. The next
+  unattended worker tick on this key should log the first `(escalated)`
+  line. gr462891's applied-count line also waits for the queued quest_tick
+  job 463449 on qu164903 (NO→NH3 selectivity), which is waiting for its
+  scheduled time. Close gr462891 when that line appears.
+
+The gr462891 fix itself (design note §5, accepted): the ledger resolves a
+quoted prefix of at least 40 characters; an `add` with an unresolved parent
+is kept as a root with `parent_unresolved` and rendered as unplaced; each
+tick logs its applied counts; the dialectic prompt section only shows when
+a block exists. The replay is on the gripe, and the dialectic design is
+`quest-graph-as-dossier.md` open question 2.
+**Last reviewed:** 2026-10-03 (round 2 deployed and dogfooded; parked at TIER 3)
 **Worktree:** `roadmap-quest`
 
 ## Do next
@@ -72,10 +89,11 @@ gr462891 / td462893.
    runs. The `drift_per_cycle_nm` supply ticks at 08:36 and 09:57Z came back
    dry this way. Post-deploy: 4 supply ticks after the 15:05Z round-1
    deploy were all dry (jc4292690: 6 papers linked, 0 hubs), still
-   `outside skipped`. BUILT 2026-10-02 (round 2, awaiting deploy; state
+   `outside skipped`. BUILT 2026-10-02 and DEPLOYED 10-03 13:49Z (state
    in `supply_outcome` / `supply_not_found_outside` logbook meta, read by
-   `roadmap_ledger.supply_history`). Next: watch for the first
-   `(escalated)` query line. ACCEPTED (orchestrator 2026-10-02): wait for
+   `roadmap_ledger.supply_history`). Escalation arms and fires; see the
+   Resume block's dogfood. Next: the first `(escalated)` query line from a
+   worker tick. ACCEPTED (orchestrator 2026-10-02): wait for
    one supply tick after the deploy; if it is still dry, build "escalate on
    a dry tick for that key". After a supply tick on (capability, key) writes nothing,
    the next supply tick on that key runs the external leg whatever the

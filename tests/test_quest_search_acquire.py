@@ -15,6 +15,7 @@ both stubbed, matching the style of ``tests/test_quest_tick_job.py``.
 from __future__ import annotations
 
 import inspect
+import sys
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -786,3 +787,19 @@ class TestForceExternal:
         rep = fn.report_for("q")
         assert rep is not None and rep.external_ran and not rep.forced
         assert "graph thin, outside searched" in qsearch._sources_clause(rep)
+
+    def test_missing_s2_client_is_recorded_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A venv without the [paper] extra (prod CLI tick 2026-10-03): the
+        # S2 import fails inside the external leg, the local hits survive.
+        monkeypatch.setitem(sys.modules, "precis.ingest.semantic_scholar", None)
+        fn = qsearch.make_acquiring_search(1, _fake_hub(), force_external=True)
+        store: Any = FakeStore(held_ids=[10, 11, 12])
+        out = fn(store, "q", [])
+        assert out == [(10, 1.0), (11, 1.0), (12, 1.0)]
+        rep = fn.report_for("q")
+        assert rep is not None and rep.external_ran
+        assert rep.external_error is not None
+        assert rep.external_error.startswith(("ImportError", "ModuleNotFoundError"))
+        assert "outside search failed" in qsearch._sources_clause(rep)

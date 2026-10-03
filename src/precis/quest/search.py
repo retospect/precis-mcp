@@ -240,12 +240,15 @@ class AcquiringSearch:
         """The external leg: S2 free-text search, then queue each DOI-bearing
         candidate via ``PaperHandler.acquire``. Returns ``(acquired ids,
         error)`` — an S2 failure is recorded, never raised (the caller keeps
-        its local hits); a per-candidate acquire failure is swallowed."""
+        its local hits); a per-candidate acquire failure is swallowed. The S2
+        client is the ``[paper]`` extra, so its import sits inside the same
+        guard: a venv without it records an error instead of failing the tick."""
         from precis.handlers.paper import PaperHandler
-        from precis.ingest.semantic_scholar import search_s2_papers
 
         error: str | None = None
         try:
+            from precis.ingest.semantic_scholar import search_s2_papers
+
             candidates = search_s2_papers(query, limit=_acquire_per_query())
         except Exception as exc:
             log.debug("quest %s: S2 search failed for %r", self.quest_id, query[:80])

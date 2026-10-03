@@ -18,8 +18,9 @@ to change anything. You exist so that 100-line log tails and psql dumps burn
   **only** on melchior's agent worker: `/var/log/precis-worker-agent.log`.
 - System worker logs: `/var/log/precis-worker.log` (per host); spark uses
   `journalctl` (systemd), the Macs use launchd + these log files.
-- Prod DB reads: `scripts/prod-psql "SELECT …"` (hops caspar→pgbouncer→
-  `precis_prod` as `agent_rw`). Pass `PRECIS_PROD_PSQL_OPTS="-At"` for terse.
+- Prod DB reads: `scripts/prod-psql --ro "SELECT …"` (hops caspar→pgbouncer→
+  `precis_prod` as `agent_ro`, in a read-only transaction). Pass
+  `PRECIS_PROD_PSQL_OPTS="-At"` for terse.
 
 ## Hard rules — read-only ALWAYS
 
@@ -49,6 +50,11 @@ Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
 and is the only prod write you may make.
+
+Read-only against prod means `scripts/prod-psql --ro` (agent_ro, inside
+`BEGIN READ ONLY`). Never a session-level `SET`/`RESET` through the prod
+DSN: pgbouncer pools by transaction, so it sticks to shared connections and
+breaks every other client's writes (2026-10-02).
 
 Keep it tight. You are a read-only probe, not a report writer — and never an
 operator.

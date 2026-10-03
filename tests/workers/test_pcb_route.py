@@ -1070,3 +1070,132 @@ def test_pcb_route_leaves_the_board_untouched_when_the_post_route_gate_raises(
     assert len(ctx.failures) == 1 and ctx.failures[0][1] == "infra"
     assert "rule npth_clearance: ValueError: drc exploded" in ctx.failures[0][0]
     assert "post-route DRC gate raised" in ctx.summaries[-1][1]
+
+
+# ── sketch restore ORDER: pin swaps first, then the layer/side sketch ────
+def _segment_for_pins(ir: Any, refdes: str, pin: str) -> int:
+    pid = next(
+        p
+        for p in range(ir.n_pins)
+        if str(ir.pin_label[p]) == pin
+        and str(ir.instance_refdes[int(ir.pin_instance[p])]) == refdes
+    )
+    return next(
+        s
+        for s in range(ir.n_segments)
+        if pid in (int(ir.seg_pin_a[s]), int(ir.seg_pin_b[s]))
+    )
+
+
+def _fresh_pin_swap_ir(store: Store, ref_id: int) -> Any:
+    return pcb_session.build_ir(store.pcb_graph(ref_id))
+
+
+def test_sketch_restore_after_pin_swap_matches_what_was_written(
+    store: Store,
+) -> None:
+    """The persisted sketch is keyed by the POST-swap IR's segment endpoint
+    pins, so the job must re-apply swaps BEFORE the sketch. In the job's
+    order every segment on a swapped pin comes back with its layer/side;
+    in the old order they all miss their key and stay UNSET."""
+    ref_id = _seed(store, "route-sketch-order", _PIN_SWAP_DESIGN)
+
+    ir = _fresh_pin_swap_ir(store, ref_id)
+    baseline = ir.pin_net.copy()
+    _swap_u0_pins(ir)
+    layer = pcb_session.signal_layers(ir)[-1]
+    written: dict[str, tuple[int, int]] = {}
+    for refdes, pin in (("U0", "left"), ("U0", "right")):
+        seg = _segment_for_pins(ir, refdes, pin)
+        ir.set_layer(seg, layer)
+        ir.set_side(seg, 1)
+        written[pcb_session.segment_key(ir, seg)] = (layer, 1)
+    assert len(written) == 2
+    sketch = pcb_session.extract_sketch(ir)
+    swaps = pcb_session.pin_swap_diff(ir, baseline)
+    assert swaps
+
+    def _restored(ir2: Any) -> dict[str, tuple[int, int]]:
+        return {
+            pcb_session.segment_key(ir2, s): (
+                int(ir2.seg_layer[s]),
+                int(ir2.seg_side[s]),
+            )
+            for s in range(ir2.n_segments)
+        }
+
+    good = _fresh_pin_swap_ir(store, ref_id)
+    pcb_session.apply_pin_swap_overrides(good, swaps)
+    assert pcb_session.apply_route_overrides(good, sketch) == 0
+    got = _restored(good)
+    for key, want in written.items():
+        assert got[key] == want
+
+    old = _fresh_pin_swap_ir(store, ref_id)
+    assert pcb_session.apply_route_overrides(old, sketch) > 0
+    pcb_session.apply_pin_swap_overrides(old, swaps)
+    assert any(_restored(old).get(k) != v for k, v in written.items())
+
+
+def _capture_optimize(monkeypatch: pytest.MonkeyPatch, force_swap: bool) -> list[Any]:
+    real_optimize = pcb_route.optimize
+    results: list[Any] = []
+
+    def _wrap(ir: Any, config: Any) -> Any:
+        if force_swap:
+            _swap_u0_pins(ir)
+        res = real_optimize(ir, config)
+        results.append(res)
+        return res
+
+    monkeypatch.setattr(pcb_route, "optimize", _wrap)
+    return results
+
+
+def test_pcb_route_second_run_starts_where_the_first_ended(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run 2's ``cost_before`` equals run 1's ``cost_after``: the stored
+    sketch + swaps rebuild exactly the state run 1 settled in."""
+    res1 = _capture_optimize(monkeypatch, force_swap=True)
+    ref_id = _seed(store, "route-resume-cost", _PIN_SWAP_DESIGN)
+    ctx1 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx1, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx1.failures
+    assert store.pcb_pin_swaps_list(ref_id)
+
+    res2 = _capture_optimize(monkeypatch, force_swap=False)
+    ctx2 = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "seed": 1})
+    pcb_route._dispatch(ctx2, pcb_route.SPEC)  # type: ignore[arg-type]
+    assert not ctx2.failures
+    assert abs(res2[-1].cost_before - res1[-1].cost_after) < 1e-6, (
+        res2[-1].cost_before,
+        res1[-1].cost_after,
+    )
+
+
+def test_pcb_route_is_deterministic_from_the_same_seeded_state(
+    store: Store,
+) -> None:
+    """Two fresh boards with identical args and the same seed settle to
+    identical statuses, poses and copper."""
+
+    def _run(slug: str) -> tuple[Any, Any, Any]:
+        ref_id = _seed(store, slug, _PIN_SWAP_DESIGN)
+        ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 60, "seed": 7})
+        pcb_route._dispatch(ctx, pcb_route.SPEC)  # type: ignore[arg-type]
+        statuses = {
+            n: (r or {}).get("status") for n, r in store.pcb_routes_get(ref_id).items()
+        }
+        graph = store.pcb_graph(ref_id)
+        board_id = int(graph["board"]["board_id"])
+        poses = pcb_session.positions(_fresh_pin_swap_ir(store, ref_id))
+        copper = sorted(
+            repr(sorted(c.items())) for c in store.pcb_copper_list(board_id)
+        )
+        return statuses, poses, copper
+
+    a = _run("route-det-a")
+    b = _run("route-det-b")
+    assert a == b
+    assert a[2], "vacuous: no copper written"

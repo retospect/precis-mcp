@@ -2650,6 +2650,22 @@ def _record_dispatch(
         log.debug("route_log: dispatch record failed", exc_info=True)
 
 
+def record_dispatch(
+    req: LlmRequest,
+    result: LlmResult,
+    *,
+    transport: Transport,
+    duration_ms: int,
+    routed: str | None = None,
+) -> None:
+    """Public handle on :func:`_record_dispatch` for callers that dispatch a
+    provider directly (the eval harness's pinned rung) yet still want the call
+    in the route-log. Same best-effort, dark-until-bound behaviour."""
+    _record_dispatch(
+        req, result, transport=transport, duration_ms=duration_ms, routed=routed
+    )
+
+
 def _is_unavailability(exc: BaseException) -> bool:
     """Classify a caught transport exception: unavailability (skip-and-retry,
     :attr:`LlmResult.paused`) vs. a genuine semantic failure
