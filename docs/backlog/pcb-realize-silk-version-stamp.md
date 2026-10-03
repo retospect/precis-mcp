@@ -31,6 +31,15 @@ bump before negotiation is ever default-on. The round-1 diff review
   a fixed fixture's realized copper pinned to `REALIZER_VERSION`, so
   changing copper without a bump reddens the gate.
 
+- The same versions (plus the DRC pad model's) feed `session.content_hash`,
+  the content half of the job idempotency key. Without it a resubmitted
+  route or export on an unchanged board dedups to the job that ran under
+  the old code. Round-2 review found this live: 29feaef48 changed oblique
+  pad geometry (polygon ring, `land_min_mm` annular ring) with no version
+  input, so a re-put returns the old pad geometry while a fresh board gets
+  the new DRC/gerber output. Each bump changes every board's key once,
+  which is the point.
+
 ## Explicitly NOT in scope
 
 - Automatically re-routing stale boards. A route op moves parts (thread
@@ -40,6 +49,8 @@ bump before negotiation is ever default-on. The round-1 diff review
 
 - A board routed at version N shows STALE in `view='route-status'`
   after the code moves to N+1, and does not before.
+- A re-put of `op='route'` on an unchanged board enqueues a new job after
+  a version bump and dedups before it.
 - The tripwire fails when realize output changes on its fixture
   without a version bump.
 
