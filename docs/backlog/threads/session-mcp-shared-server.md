@@ -65,9 +65,9 @@ check their state first.
     `round in` it.
   - **Stage B** (`DISCARD ALL` + `server_reset_query_always = 1`): this
     thread owns the switch, in the restart window after gr463966 is on
-    main. gr463966 owners: `src/precis/ingest/claim.py` →
-    claims-and-evidence; `src/precis/workers/chunk_keywords.py` →
-    ingest-and-fetch. Each tells this thread when its fix lands.
+    main. claims-and-evidence owns all three gr463966 sites
+    (`ingest/claim.py`, `workers/chunk_keywords.py`,
+    `workers/anki_sync.py`) and tells this thread when the fix lands.
   - **The leaked lock is chunk_keywords' `_LOCK_KEY`** (pg_locks classid
     3815272043, objid 1600878336). At 14:44Z it was held on pooled backend
     15730, born 14:14Z. Backend 11267, named at 12:38Z, has since been
