@@ -13,20 +13,25 @@ off that gap until it closes.
 **Worktree:** `se-machine-design`
 **Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
 
-## Resume state (2026-10-02)
+## Resume state (2026-10-03)
 
-- **Region slice A** (Do next 1): built and CI-green, handed to the
-  orchestrator to squash-land after 0181 (round 2). Branch
-  `worktree-agent-a48fe82af9f90530b`, tip 47677a6b7; migrations core
-  `0182_se_measurand_seed.sql` + se `0018_se_regions.sql`. Grammar, review
-  verdicts and three open calls (taxon-id identity, pin scope,
-  unbound-block exemption):
+- **Region slice A** (Do next 1): built and CI-green, and NOT in round 2
+  (prod 63301c5c has neither core 0182 nor se 0018). Landing is held:
+  the classifier refused the orchestrator's quick-land and the decision
+  waits on Reto. Branch `worktree-agent-a48fe82af9f90530b`, tip
+  f330ca43e; migrations core `0182_se_measurand_seed.sql` and se
+  `0018_se_regions.sql`. Grammar and review verdicts:
   `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`
-  §3–§5. After it lands, dogfood on prod when the round deploys.
-- **Joint sweep** shipped c5a2e8624 (`params.range` + required
-  `params.moves`). Residual gr462067: rigidly connected, unparented blocks
-  stay still during the sweep. Its first consumer is
-  `hexfold-t-handle-bearing` (hexfold-toolkit).
+  §3–§5. Dogfood it on prod in the round that deploys it.
+- **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
+  (round 2): a throwaway design gave `joint_sweep_interference` at 90° as
+  specified, and was then retired (note §12a). Residual gr462067: rigidly
+  connected, unparented blocks stay still during the sweep. Its first
+  consumer is `hexfold-t-handle-bearing` (hexfold-toolkit).
+- **drc cost** (note §12a): `view='drc'` on unicycle-c1 takes about 17 s. 92% of
+  that is `geometry_plausibility._pair_clearance` (about 1 s per connect);
+  the fastener insertion pass is about 0.3 s per screw. The profile is on
+  gr450524 (finding 5). No finding for se-3d-viewer.
 - **Inferred insertion (Reto 2026-10-02):** `moves` stays required.
   Reto asked whether tool travel and bolt insertion can be inferred; the
   proposal is in
