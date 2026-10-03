@@ -18,6 +18,27 @@ landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
 Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
+## Resume (parked at TIER 3, Reto's 2026-10-03 priority review)
+
+Start no new slice until the organizer reopens this thread. State at park:
+everything is landed; round 3 carries 5d50cd44a (route restores pin swaps
+before the layer sketch, gr464237; refdes slot sets the furniture margin;
+prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
+
+1. **First thing on reopen — gr464240.** Round-2 dogfood (job 464239):
+   the best-state anneal (gr462607) restored a near-via-free state
+   (best_at=17/699) and dogfood-6 routed 20/55, down from 29. Route it
+   again AFTER round 3 deploys (gr464237's fix is in round 3) and compare
+   routed count and best_at before touching the cost model.
+2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
+   route reply carries the stale warning, confirmed live). Re-put its
+   generators entry, route, report routed count before/after — after
+   step 1, so the two effects are not confounded.
+3. Then Do-next 1's remaining invariant paths (`pcb_apply`,
+   `op='footprint'`, `op='class_rules'`) and Do-next 2 (datasheet pull).
+Owed to pcb-easyeda-round-trip's version-stamp item if picked up from
+here: a code-version input to `content_hash` (round-2 review finding 1).
+
 ## Do next
 
 0. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
