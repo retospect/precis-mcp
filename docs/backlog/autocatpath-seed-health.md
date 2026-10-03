@@ -44,7 +44,8 @@ failed 26 of 28 seeds in August on the older wall.
 
 Consequence: **no verify-tier pathway has completed in prod**, so the
 authoritative exhaustive pass the tier ladder promises does not exist for
-any candidate. Proposed fix (needs a verdict, cost-bearing): a tier-aware
+any candidate. Fix (accepted 2026-10-03; mechanism shipped, value pending the
+measurement): a tier-aware
 wall — verify gets its own hint (e.g. 4× = 6 h, 7 h lease), set in
 `_apply_tier_config`'s caller where `resources.wall_seconds` is stamped,
 with the env pin kept for the other tiers. Measure first on one re-run

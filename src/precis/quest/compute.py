@@ -1095,7 +1095,12 @@ _AUTOCATPATH_ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 _AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 
 
-def _autocatpath_wall_seconds() -> int:
+#: Env pin for the verify-tier wall hint (see :func:`_autocatpath_wall_seconds`);
+#: unset → the general value.
+_AUTOCATPATH_VERIFY_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS"
+
+
+def _autocatpath_wall_seconds(tier: str | None = None) -> int:
     """Expected wall-time hint (s) for a autocatpath NEB, stamped into the job's
     ``resources`` so the ssh_node lease outlives a full-network run.
 
@@ -1107,7 +1112,22 @@ def _autocatpath_wall_seconds() -> int:
     the field ``ssh_node._lease_seconds`` reads) by
     ``TestDispatchAutocatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease``
     in ``tests/test_quest_compute.py``.
+
+    The ``verify`` tier has its own pin
+    (``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS``; unset → the general value).
+    Verify seeds are exhaustive coadsorbed NEB (no best_first), so they run
+    far longer than the fast-screening tiers: the 2026-10-03 prod read had
+    24/27 verify seeds killed at the 2.5 h lease while the successes took
+    1.9–2.25 h. Size the pin at 2 × the measured runtime, capped at 8 h.
+    Same clamp; a malformed verify pin falls back to the general value.
     """
+    if tier == _TIER_VERIFY:
+        raw = os.environ.get(_AUTOCATPATH_VERIFY_WALL_SECONDS_ENV)
+        if raw is not None:
+            try:
+                return max(60, min(86_400, int(raw)))
+            except ValueError:
+                pass  # malformed pin → the general value, as if unset
     try:
         n = int(os.environ.get(_AUTOCATPATH_WALL_SECONDS_ENV, "5400"))
     except ValueError:
@@ -1704,7 +1724,7 @@ def dispatch_autocatpath(
                     "force_backend": force,
                     "content_key": key,
                     "target_node": node,
-                    "resources": {"wall_seconds": _autocatpath_wall_seconds()},
+                    "resources": {"wall_seconds": _autocatpath_wall_seconds(tier)},
                 },
             },
         )
@@ -1770,7 +1790,7 @@ def dispatch_autocatpath(
                         # (one model, one seed), but sized the same as
                         # before: cheap insurance, and the wedge fix is the
                         # job's SHORT compute duration, not a tighter lease.
-                        "resources": {"wall_seconds": _autocatpath_wall_seconds()},
+                        "resources": {"wall_seconds": _autocatpath_wall_seconds(tier)},
                     },
                 )
     except Exception as e:
@@ -2732,7 +2752,7 @@ def _stuck_seed_failure(
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT j.meta
+            SELECT j.meta, j.ref_id
               FROM refs t_agg
               JOIN refs seed_todo ON seed_todo.parent_id = t_agg.ref_id
                                   AND seed_todo.kind = 'todo'
@@ -2778,7 +2798,8 @@ def _stuck_seed_failure(
         ).fetchone()
     if row is None:
         return None
-    return "failed", dict(row[0] or {})
+    # `_job_ref_id`: lets the harvest dedup per-seed-job notes (timeout hold).
+    return "failed", {**dict(row[0] or {}), "_job_ref_id": int(row[1])}
 
 
 def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> None:
@@ -2795,6 +2816,49 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
 #: Not an env dial — retry-once-then-gripe is the whole point:
 #: a higher ceiling would let a genuinely wedged executor silently spin.
 _MAX_INFRA_RETRIES = 1
+
+
+def _seed_timeout_held(
+    store: Store,
+    cand: Any,
+    handle: str,
+    seed_meta: dict[str, Any],
+    notes: list[str],
+) -> bool:
+    """True iff a failed seed was deadline-killed (``meta.failure_class ==
+    'timeout'``, stamped by ssh_node) and a retry would get no longer wall.
+
+    A same-wall retry only times out again, and a timeout is a sizing
+    problem, not an infra fault: the caller then skips the re-dispatch, the
+    gripe and the retry counter (and never rules the candidate out). When
+    the retry tier's wall is strictly longer than the one the seed ran with
+    (an operator raised the pin) this returns False and the normal retry
+    proceeds. The note is appended once per seed job, deduped by stamping the
+    job id on the candidate (``quest_seed_timeout_noted``).
+    """
+    if seed_meta.get("failure_class") != "timeout":
+        return False
+    params = seed_meta.get("params")
+    res = params.get("resources") if isinstance(params, dict) else None
+    ran = res.get("wall_seconds") if isinstance(res, dict) else None
+    try:
+        ran_wall = int(ran) if ran is not None else _autocatpath_wall_seconds()
+    except (TypeError, ValueError):
+        ran_wall = _autocatpath_wall_seconds()
+    tier = _retry_tier(store, seed_meta)
+    if _autocatpath_wall_seconds(tier) > ran_wall:
+        return False
+    job_id = seed_meta.get("_job_ref_id")
+    if (
+        job_id is not None
+        and (cand.meta or {}).get("quest_seed_timeout_noted") != job_id
+    ):
+        store.stamp_ref_meta(cand.id, {"quest_seed_timeout_noted": job_id})
+        notes.append(
+            f"seed for [{handle}] timed out at the {tier} wall ({ran_wall}s) "
+            "— held until the wall is raised, not an infra fault"
+        )
+    return True
 
 
 def _file_infra_gripe(
@@ -3360,6 +3424,10 @@ def harvest_measures(
                     notes.append(
                         f"stuck seed for [{handle}] (retry-eligible, not re-dispatched)"
                     )
+                elif _seed_timeout_held(store, s, handle, cp_job_meta, notes):
+                    # Deadline-killed at a wall the retry would not raise: no
+                    # dispatch, no gripe, no counter bump (not an infra fault).
+                    pass
                 else:
                     sk_retries = _seed_infra_retry_count(store, s.id)
                     if sk_retries < _MAX_INFRA_RETRIES:

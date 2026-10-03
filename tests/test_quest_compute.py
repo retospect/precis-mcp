@@ -1487,7 +1487,12 @@ class TestHarvest:
     # ── stuck-seed repair (qu164903) — the seed-level fallback ─────────
 
     def _stuck_seed(
-        self, store: Any, sid: int, *, todo_status: str | None = None
+        self,
+        store: Any,
+        sid: int,
+        *,
+        todo_status: str | None = None,
+        job_meta: dict[str, Any] | None = None,
     ) -> tuple[int, int]:
         """The state ``_stuck_seed_failure`` exists to see: a failed
         ``autocatpath_seed`` job under a still-open seed todo, with NO
@@ -1519,11 +1524,104 @@ class TestHarvest:
             kind="job",
             slug=None,
             title="autocatpath_seed",
-            meta={"job_type": "autocatpath_seed"},
+            meta={"job_type": "autocatpath_seed", **(job_meta or {})},
             parent_id=seed_todo.id,
         )
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
         return agg_todo.id, seed_todo.id
+
+    def _timeout_harness(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch, *, ran_wall: int | None
+    ) -> tuple[int, int, list[int], list[dict[str, Any]]]:
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        jm: dict[str, Any] = {"failure_class": "timeout"}
+        if ran_wall is not None:
+            jm["params"] = {"resources": {"wall_seconds": ran_wall}}
+        self._stuck_seed(store, sid, job_meta=jm)
+        calls: list[int] = []
+        gripes: list[dict[str, Any]] = []
+
+        def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return "autocatpath[ml]"
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                pass
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripes.append({"text": text})
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, raising=False)
+        monkeypatch.delenv(
+            compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
+        )
+        return qid, sid, calls, gripes
+
+    def test_timeout_seed_at_same_wall_is_held_and_noted_once(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid, sid, calls, gripes = self._timeout_harness(
+            store,
+            monkeypatch,
+            ran_wall=None,  # missing → general default
+        )
+        hub = object()
+        step1 = compute_mod.harvest_measures(store, qid, hub=hub)
+        step2 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert calls == []
+        assert gripes == []
+        assert step1.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "quest_seed_infra_retries" not in meta
+        assert meta.get("quest_seed_timeout_noted")
+        held = [n for n in step1.notes if "timed out at the neb wall (5400s)" in n]
+        assert len(held) == 1 and "not an infra fault" in held[0]
+        assert not any("timed out" in n for n in step2.notes)  # noted once
+
+    def test_timeout_seed_with_raised_retry_wall_is_redispatched(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid, sid, calls, gripes = self._timeout_harness(
+            store, monkeypatch, ran_wall=5400
+        )
+        monkeypatch.setattr(compute_mod, "_retry_tier", lambda *_a: "verify")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "20000")
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        assert gripes == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+        assert not any("timed out" in n for n in step.notes)
+
+    def test_non_timeout_failed_seed_still_retries_with_pinned_wall(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """failure_class='infra' at an unraised wall: the old retry path."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid, job_meta={"failure_class": "infra"})
+        calls: list[int] = []
+        monkeypatch.setattr(
+            compute_mod,
+            "dispatch_autocatpath",
+            lambda _s, structure_ref_id, _c, **_kw: calls.append(structure_ref_id),
+        )
+        compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == [sid]
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+        assert "quest_seed_timeout_noted" not in meta
 
     def test_stuck_seed_with_hub_retries_once_then_gripes_on_recurrence(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -5843,6 +5941,50 @@ class TestDispatchAutocatpath:
         # the full job meta (as stored) is what ssh_node's claim loop reads
         full_meta = {"params": params}
         assert ssh_node._lease_seconds(full_meta) == 9000 + ssh_node._LEASE_MARGIN_S
+
+    def test_verify_wall_pin_reaches_verify_job_and_lease_only(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """``PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS`` sizes the verify tier's
+        job + lease; the general value still governs other tiers."""
+        from precis.workers.executors import ssh_node
+
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "28800")
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_VERIFY
+        )
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        params = jmeta.get("params") or {}
+        assert params["resources"]["wall_seconds"] == 28800
+        assert ssh_node._lease_seconds({"params": params}) == (
+            28800 + ssh_node._LEASE_MARGIN_S
+        )
+        assert compute_mod._autocatpath_wall_seconds("neb") == 9000
+        assert compute_mod._autocatpath_wall_seconds() == 9000
+
+    def test_unset_verify_pin_falls_back_to_general_wall(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
+        monkeypatch.delenv(
+            compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, raising=False
+        )
+        assert compute_mod._autocatpath_wall_seconds("verify") == 9000
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_VERIFY
+        )
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
+        assert jmeta["params"]["resources"]["wall_seconds"] == 9000
+        # clamp; a malformed verify pin falls back to the general value
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "999999")
+        assert compute_mod._autocatpath_wall_seconds("verify") == 86_400
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "x")
+        assert compute_mod._autocatpath_wall_seconds("verify") == 9000
 
     def test_unrouted_job_leaves_device_unset(
         self, store: Any, monkeypatch: Any

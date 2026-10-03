@@ -73,9 +73,14 @@ paper needs.
    (2026-10-03). Cause found 2026-10-03: all 24 are verify-tier seeds
    (24 of 27 failed; neb 54/54, screening 61/61), which get the same
    90 min hint / 2.5 h lease as every tier, so **no verify pathway has
-   ever completed in prod** — the paper's authoritative pass. Left: a
-   tier-aware verify wall, pending the orchestrator's verdict
-   (reviews/chemistry.md §8); measure one verify seed's real runtime first.
+   ever completed in prod** — the paper's authoritative pass. Shipped
+   2026-10-03: `PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS` (unset = general
+   wall) and the harvest holds a timed-out seed instead of re-running it at
+   the same wall. Left (verdict §8–§9 accepted): after round 2 deploys, one
+   verify seed on pollux at a 7 h lease (CPUs off 5–9,15–19) → name the pin
+   (2 × runtime, cap 8 h) via `scripts/round eta` for the orchestrator's
+   template line → file the Reto item (re-dispatch the 9 qu164903
+   candidates: 3 seeds / 2 seeds / best_first kept, GPU-hours each).
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into
