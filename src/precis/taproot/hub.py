@@ -1473,7 +1473,7 @@ def remove_disputes(
     store: Store,
     *,
     hub_ref_id: int,
-    src_ref_id: int,
+    link_id: int,
     reason: str,
     judged: dict[str, Any] | None = None,
     llm_request_hash: str | None = None,
@@ -1484,6 +1484,10 @@ def remove_disputes(
     """Delete one ``source --disputes--> hub`` link a re-audit found was not a
     real contradiction, and log it. Returns the number of rows deleted (``0``
     when no such link exists — nothing is logged then).
+
+    Keyed on ``link_id``, not the paper: one paper can dispute a hub from
+    several chunks, each its own link, and the re-audit judges each passage
+    separately.
 
     The delete (``DELETE … RETURNING meta``) and the log append share one
     transaction; the log entry's action is exactly ``"disputes removed
@@ -1501,14 +1505,14 @@ def remove_disputes(
                 f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
                 next="disputes belong to claim hubs — pick a TAPROOT:claim finding",
             )
-        cur = c.execute(
-            "DELETE FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
-            "AND relation = 'disputes' RETURNING meta",
-            (src_ref_id, hub_ref_id),
-        )
-        deleted = cur.fetchall()
-        if not deleted:
+        deleted = c.execute(
+            "DELETE FROM links WHERE link_id = %s AND dst_ref_id = %s "
+            "AND relation = 'disputes' RETURNING src_ref_id, src_chunk_id, meta",
+            (link_id, hub_ref_id),
+        ).fetchone()
+        if deleted is None:
             return 0
+        src_ref_id, src_chunk_id, removed = deleted
         fields = {**(judged or {})}
         if llm_request_hash:
             fields["llm_request_hash"] = llm_request_hash
@@ -1518,19 +1522,19 @@ def remove_disputes(
             [
                 reground_log_entry(
                     src_ref_id=src_ref_id,
-                    src_chunk_id=None,
+                    src_chunk_id=src_chunk_id,
                     relation="disputes",
                     verdict=verdict,
                     reason=reason,
                     action="disputes removed (re-audit)",
                     sha=claim_sha,
-                    removed_meta=dict(deleted[0][0] or {}),
+                    removed_meta=dict(removed or {}),
                     **fields,
                 )
             ],
             conn=c,
         )
-        return len(deleted)
+        return 1
 
     if conn is not None:
         return _do(conn)

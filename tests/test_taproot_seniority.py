@@ -747,10 +747,16 @@ def test_remove_disputes_deletes_logs_and_counts_as_removed(store: Any) -> None:
     # a filed contradiction is NOT "removed"
     assert "removed" not in handler.get(id=hub, view="evidence").body
 
+    with store.pool.connection() as conn:
+        link_id = conn.execute(
+            "SELECT link_id FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'disputes'",
+            (paper, hub),
+        ).fetchone()[0]
     n = remove_disputes(
         store,
         hub_ref_id=hub,
-        src_ref_id=paper,
+        link_id=link_id,
         reason="re-audit: different sample, not a contradiction",
         judged={"claim_setup": "A", "passage_setup": "B", "same_setup": False},
         llm_request_hash="f" * 64,
@@ -778,7 +784,7 @@ def test_remove_disputes_deletes_logs_and_counts_as_removed(store: Any) -> None:
     body = handler.get(id=hub, view="evidence").body
     assert "judging: 1 removed — view='judgments' for detail" in body
     # a second call finds nothing: no deletion, no extra log entry
-    assert remove_disputes(store, hub_ref_id=hub, src_ref_id=paper, reason="again") == 0
+    assert remove_disputes(store, hub_ref_id=hub, link_id=link_id, reason="again") == 0
     judged = handler.get(id=hub, view="judgments").body
     assert judged.count("disputes removed (re-audit)") == 1
 

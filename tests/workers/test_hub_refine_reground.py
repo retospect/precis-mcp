@@ -29,6 +29,7 @@ from precis.taproot.hub import (
     live_evidence_handles,
     mint_hub,
     reattach_as_disputes,
+    remove_disputes,
     remove_evidence,
 )
 from precis.workers._chase_llm import SourceIdentity
@@ -457,6 +458,45 @@ def test_contradictor_is_reattached_never_dropped(store: Any) -> None:
     entries = _hub_meta(store, hub)[META_REGROUND_LOG]
     assert entries[-1]["verdict"] == "CONTRADICTS"
     assert entries[-1]["action"].startswith("reattached-disputes")
+
+
+def test_remove_disputes_takes_one_link_not_every_chunk_of_the_paper(
+    store: Any,
+) -> None:
+    """``reattach_as_disputes`` writes paper-level links today, but the links
+    table allows one ``disputes`` link per (paper, chunk, hub): clearing one
+    by ``link_id`` must leave a sibling chunk's link standing."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="The formula predicts an 85 degree angle.")
+    p1, c1 = _seed_paper(
+        store, embedder, cite_key="twice", texts=["predicts 83.6", "measures 80"]
+    )
+    with store.pool.connection() as conn:
+        first, _second = (
+            conn.execute(
+                "INSERT INTO links (src_ref_id, src_chunk_id, dst_ref_id, "
+                "relation, set_by) VALUES (%s, %s, %s, 'disputes', 'system') "
+                "RETURNING link_id",
+                (p1, chunk_id, hub),
+            ).fetchone()[0]
+            for chunk_id in c1
+        )
+
+    assert (
+        remove_disputes(store, hub_ref_id=hub, link_id=first, reason="other sample")
+        == 1
+    )
+
+    with store.pool.connection() as conn:
+        left = conn.execute(
+            "SELECT src_chunk_id FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'disputes'",
+            (p1, hub),
+        ).fetchall()
+    assert [r[0] for r in left] == [c1[1]]
+    entry = _hub_meta(store, hub)[META_REGROUND_LOG][-1]
+    assert entry["action"] == "disputes removed (re-audit)"
+    assert (entry["src_ref_id"], entry["src_chunk_id"]) == (p1, c1[0])
 
 
 # ══ the applier: add-first, in code ═════════════════════════════════
