@@ -156,8 +156,8 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
      - The `s4_pill12_top*` files are diagnostics only; do not render them.
      - Item 30 answered 16:06Z: pill12 at azimuth −110, top-only relax, caption says so.
      - **Correction 16:25Z: the "fused neck tears" result is not established.** The same MACE-MP-small protocol also tears the literature-stable [9-6] (10,10) control. Only the (6,0) [2+2] bud failure is credible, because its control holds.
-     - hexfold is re-running on GFN-xTB, controls first. If xTB holds the neck, Reto's answer is carried out as written; the handoff goes to `hexfold-corner/s4_pill12_top_xtb.extxyz`.
-     - Item 31 says there is no decision until then. Fused (9,0) cannot be built (`port.mismatch`).
+     - **GFN2-xTB, 16:33Z, also tears the neck** (4 of 6 seam bonds at 4.6–4.8 Å). The [2+2] control holds (1.578 Å) and the [9-6] control tears, as under MACE. The top-only relax is therefore off. hexfold files the [9-6] construction against itself; the stick start's crowded pairs may force the tear. Wording: "could not relax", never "unstable".
+     - Item 31 revised 16:35Z: (1) the (12,0) lid pillar from hero3, only if hexfold's two-method relax of it passes (handoff `hexfold-corner/s4_pill12_lid.hx`/`.extxyz`), else (2) the fused neck captioned "idealised stick model; the pillar–ball junction is unrelaxed". Fused (9,0) cannot be built (`port.mismatch`).
    - The figure is not final until that is fixed and Reto picks a variant.
    - A prod se record of this spec is not this scene until S4b.
    **Items 15/16 (answered 21:34Z):** 15 done except Reto's hands-on item 20
