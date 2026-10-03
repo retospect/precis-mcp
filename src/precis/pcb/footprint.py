@@ -48,12 +48,21 @@ def ensure_footprint(
         cached = store.part_footprint_get(lcsc)
         if cached is not None:
             return cached
-    fetch = fetcher or _easyeda_fetch
-    data = fetch(lcsc)
+    data = fetch_footprint(lcsc, fetcher=fetcher)
     if data is None:
         return None
     store.part_footprint_put(lcsc, data)
     return store.part_footprint_get(lcsc)
+
+
+def fetch_footprint(
+    lcsc: str, *, fetcher: Fetcher | None = None
+) -> dict[str, Any] | None:
+    """The network half of :func:`ensure_footprint`: fetch only, no store
+    access, so a caller can keep it outside a database transaction and do
+    just the ``part_footprint_put`` inside one."""
+    fetch = fetcher or _easyeda_fetch
+    return fetch(lcsc.strip().upper())
 
 
 def _easyeda_fetch(lcsc: str) -> dict[str, Any] | None:  # pragma: no cover

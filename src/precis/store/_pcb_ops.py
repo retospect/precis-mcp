@@ -2866,6 +2866,28 @@ class PcbMixin:
         with self._pcb_tx() as conn:
             self._pcb_local_footprint_upsert(conn, ref_id, name, data)
 
+    def pcb_designs_using_part(
+        self, lcsc: str, *, exclude_ref_id: int | None = None
+    ) -> list[str]:
+        """Slugs of the live pcb designs with a live instance of C-number
+        ``lcsc`` (the footprint cache is catalogue-wide), ``exclude_ref_id``
+        left out. Sorted."""
+        with self._pcb_conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ri.id_value FROM refs r "
+                "JOIN ref_identifiers ri "
+                "  ON ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+                "JOIN pcb_instances i ON i.ref_id = r.ref_id "
+                "JOIN pcb_components c ON c.component_id = i.component_id "
+                "WHERE r.kind = 'pcb' AND r.retired_at IS NULL "
+                "  AND i.retired_at IS NULL "
+                "  AND upper(btrim(coalesce(c.part_lcsc, ''))) = %s "
+                "  AND r.ref_id <> %s "
+                "ORDER BY ri.id_value",
+                (lcsc.strip().upper(), exclude_ref_id if exclude_ref_id else -1),
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
     def pcb_local_footprints_for(self, ref_id: int) -> dict[str, dict[str, Any]]:
         """Every design-local footprint (pcb-ewod-multitile Slice 1),
         keyed by name — the local-authoring counterpart to

@@ -37,11 +37,12 @@ prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
 3. Build 4 is in (pcb_apply + class_rules judged). Left in Do-next 1:
    `op='footprint'` (ruled ewod-pcb-4). Then Do-next 2 (datasheet pull,
    build 5). Order confirmed by Reto (ewod-pcb-3).
-Pending Reto's ruling on review item se-machine-design-7 (shared 2-D sheet
-job): this thread builds the pcb model -> sheet-job adapter (edge-cut->cut,
-NPTH->drill, silk->engrave-vector, copper/gasket->drag-knife cut), one build
-after build 4, against the input shape se-machine-design defines and sends
-here for review. Start nothing on it before the ruling.
+Reto approved se-machine-design-7 option 1 (2026-10-03): the shared 2-D
+sheet job lives under flat-pack; pcb only emits into it. This thread builds
+the pcb model -> sheet-job adapter (edge-cut->cut, NPTH->drill,
+silk->engrave-vector, gasket outline->drag-knife cut) after build 4, against
+the input shape se-machine-design defines in its build 1; that thread
+reviews it. Start nothing until that shape arrives.
 Owed to pcb-easyeda-round-trip's version-stamp item if picked up from
 here: a code-version input to `content_hash` (round-2 review finding 1).
 
@@ -86,9 +87,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    `op='class_rules'` run in one judged transaction (`Store.pcb_judged_tx`,
    `PcbHandler._judged_mutation`): new or worse pad/fixed/courtyard findings
    refuse, router copper that now conflicts is ripped, class-requirement
-   shortfalls between pads are listed as now visible. **Next:** `op='footprint'`
-   per ruling ewod-pcb-4 (store, rip router copper, report pad/pose collisions
-   as now visible — the `refuse=False` seam exists, unwired);
+   shortfalls between pads are listed as now visible. `op='footprint'` is built too
+   (ruling ewod-pcb-4: stored always, colliding router copper ripped, pad/pose
+   collisions listed as now visible, other designs using the part named);
 
    Dogfood after the deploy: re-route ewod-dogfood-6, expect 0 in the
    summary's "stripped by post-route DRC" count.

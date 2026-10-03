@@ -251,6 +251,11 @@ get(kind="pcb", id="s", view="footprints")  # confirm U1's C-number is cached
 `error` in that part's own row instead of raising, so one bad C-number
 doesn't lose the rest. `force=True` re-pulls even when already cached.
 
+The real footprint always wins and is stored. Router copper it now collides
+with is ripped (`<net> ripped: … — re-route`); pad or placement collisions
+are listed as `now visible (real footprint)` and stand until a re-place. The
+cache is shared, so the reply also names other designs using the part.
+
 `pin_name_mismatch` is a different finding: the footprint IS cached, but
 a declared pin name matches none of its pads, so that pin still sits at a
 synthesized bound. Re-pulling cannot fix it; rename the pin. A design
