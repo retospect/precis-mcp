@@ -217,7 +217,8 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     """The concrete model id for ``tier`` — the ONE place model selection
     lives.
 
-    Resolution order: a web-set ``app_settings`` override
+    Resolution order: a per-process ``PRECIS_LLM_MODEL_<TIER>`` env var, then
+    a web-set ``app_settings`` override
     (:func:`precis.utils.llm.live_config.model_override`) → env var →
     compiled default in :data:`_TIER_MODEL`. No override row (or no store
     bound) ⇒ no-op, byte-for-byte the model in use today.
@@ -1587,7 +1588,10 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     compiled default (:func:`_default_chain`).
 
     An ``llm.chain.<tier>`` override is honoured regardless of
-    ``PRECIS_LLM_FAILOVER``. No override ⇒ :func:`_default_chain`.
+    ``PRECIS_LLM_FAILOVER``. No override ⇒ :func:`_default_chain`. A
+    ``PRECIS_LLM_CHAIN_<TIER>`` env var (same value format) beats the DB row
+    for this process; a malformed env chain (or rung) raises ``BadInput``
+    instead of falling back.
 
     A configured override
     (:func:`~precis.utils.llm.live_config.chain_override`) is a list of rung
@@ -1613,6 +1617,16 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
         return _default_chain(tier, tools_needed=tools_needed, backend=backend)
 
     def _fallback(reason: str, i: int, detail: object) -> list[Rung]:
+        if live_config.chain_env_active(tier):
+            # A per-process env chain is a deliberate one-off: a bad rung
+            # fails loudly rather than silently running the default chain.
+            from precis.errors import BadInput
+
+            var = live_config.chain_env_var(tier)
+            raise BadInput(
+                f"{var} rung {i} {reason} ({detail!r})",
+                next=f"fix {var}: each rung needs a model and a known transport",
+            )
         log.warning(
             "llm-chain: %s rung %d %s (%r) — falling back to the default chain",
             live_config.chain_key(tier),

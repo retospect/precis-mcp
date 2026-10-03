@@ -11,7 +11,10 @@ This module is the **read** side: a small TTL-cached layer the router's
 the chain, before the compiled failover ladder — capability tiers + placement chains, Phase A).
 
 Resolution order (per key): **app_settings DB row → env default → compiled
-default**. Ships **dark**: with no store bound (tests, DB-free CLI) or no row
+default**. The one exception is the per-process ``PRECIS_LLM_CHAIN_<TIER>`` /
+``PRECIS_LLM_MODEL_<TIER>`` env vars (:data:`ENV_CHAIN_PREFIX`), which sit
+*above* the DB row so a one-off CLI run can target another model/transport
+without touching the fleet-wide ``app_settings`` rows. Ships **dark**: with no store bound (tests, DB-free CLI) or no row
 written, every read returns ``None`` and the router falls back to env — so with
 nothing set, behavior is byte-identical to before.
 
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 
@@ -61,6 +65,15 @@ OP_KEY_PREFIX = "llm.op."
 #: dispatch is byte-identical.
 CLOUD_ENABLED_KEY = "llm.cloud_enabled"
 
+#: Per-process env overrides (one-off runs on a different model/transport
+#: without touching the fleet-wide ``app_settings`` rows): ``PRECIS_LLM_CHAIN_<TIER>``
+#: holds the exact value format of ``llm.chain.<tier>``; ``PRECIS_LLM_MODEL_<TIER>``
+#: the exact format of ``llm.model.<tier>``. ``<TIER>`` is the upper-cased
+#: ``Tier`` value (``SMALL``/``MEDIUM``/``BIG``/``FRONTIER``). When set they WIN
+#: over the DB row, for this process only.
+ENV_CHAIN_PREFIX = "PRECIS_LLM_CHAIN_"
+ENV_MODEL_PREFIX = "PRECIS_LLM_MODEL_"
+
 #: How long a read is reused before re-querying. Matches the budget meter's
 #: cache window; short enough that a console flip is seen promptly.
 _TTL_S = 15.0
@@ -86,6 +99,33 @@ def op_key(source: str) -> str:
     return f"{OP_KEY_PREFIX}{source}"
 
 
+def chain_env_var(tier: Tier) -> str:
+    """The env var name that overrides ``tier``'s chain for this process."""
+    return f"{ENV_CHAIN_PREFIX}{tier.value.upper()}"
+
+
+def model_env_var(tier: Tier) -> str:
+    """The env var name that overrides ``tier``'s model for this process."""
+    return f"{ENV_MODEL_PREFIX}{tier.value.upper()}"
+
+
+def chain_env_active(tier: Tier) -> bool:
+    """Whether ``tier``'s chain is currently overridden by env (non-blank)."""
+    return bool(os.environ.get(chain_env_var(tier), "").strip())
+
+
+#: Env vars already announced — the "overridden" WARNING fires once per var.
+_env_warned: set[str] = set()
+
+
+def _warn_env_override(what: str, tier: Tier, var: str) -> None:
+    with _lock:
+        if var in _env_warned:
+            return
+        _env_warned.add(var)
+    log.warning("llm %s for %s overridden by %s", what, tier.value, var)
+
+
 def backend_override() -> str | None:
     """The web-set backend family (``"anthropic"`` / ``"openai"``), or ``None``.
 
@@ -103,7 +143,16 @@ def backend_override() -> str | None:
 
 
 def model_override(tier: Tier) -> str | None:
-    """The web-set model id for ``tier``, or ``None`` (→ env / compiled)."""
+    """The model id for ``tier``, or ``None`` (→ env / compiled).
+
+    A per-process ``PRECIS_LLM_MODEL_<TIER>`` env var wins over the web-set
+    ``llm.model.<tier>`` row (one-off runs; the DB row is left untouched).
+    """
+    var = model_env_var(tier)
+    env = os.environ.get(var, "").strip()
+    if env:
+        _warn_env_override("model", tier, var)
+        return env
     return _cached_setting(model_key(tier))
 
 
@@ -118,7 +167,20 @@ def chain_override(tier: Tier) -> list[dict] | None:
     validation (a known ``transport``, a ``model`` present) is the router's
     job (:func:`~precis.utils.llm.router.resolve_chain`) — this layer only
     guarantees "a list of *something*, or nothing at all."
+
+    A per-process ``PRECIS_LLM_CHAIN_<TIER>`` env var (same JSON format as the
+    row) wins over the DB row. Unlike the DB path it is **not** degrade-safe:
+    an operator who set it for a one-off run wants that chain or nothing, so
+    invalid JSON / a non-list / an empty list raises
+    :class:`~precis.errors.BadInput` naming the var rather than silently
+    running on the fleet chain.
     """
+    var = chain_env_var(tier)
+    env = os.environ.get(var, "").strip()
+    if env:
+        parsed_env = _parse_env_chain(var, env)
+        _warn_env_override("chain", tier, var)
+        return parsed_env
     raw = _cached_setting(chain_key(tier))
     if raw is None:
         return None
@@ -134,6 +196,28 @@ def chain_override(tier: Tier) -> list[dict] | None:
             type(parsed).__name__,
         )
         return None
+    return parsed
+
+
+def _parse_env_chain(var: str, raw: str) -> list[dict]:
+    from precis.errors import BadInput
+
+    example = (
+        '[{"placement": "local", "model": "<served model id>", "transport": "local"}]'
+    )
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise BadInput(
+            f"{var} is not valid JSON ({exc})",
+            next=f"set {var} to a JSON list of rung objects, e.g. {example}",
+        ) from exc
+    if not isinstance(parsed, list) or not parsed:
+        raise BadInput(
+            f"{var} must be a non-empty JSON list of rung objects "
+            f"(got {type(parsed).__name__})",
+            next=f"set {var} to e.g. {example}",
+        )
     return parsed
 
 
@@ -225,13 +309,18 @@ __all__ = [
     "BACKEND_KEY",
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
+    "ENV_CHAIN_PREFIX",
+    "ENV_MODEL_PREFIX",
     "MODEL_KEY_PREFIX",
     "OP_KEY_PREFIX",
     "backend_override",
     "bust_cache",
+    "chain_env_active",
+    "chain_env_var",
     "chain_key",
     "chain_override",
     "cloud_enabled",
+    "model_env_var",
     "model_key",
     "model_override",
     "op_key",

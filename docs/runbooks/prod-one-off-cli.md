@@ -26,6 +26,45 @@ ssh -o IdentityAgent=none melchior 'DSN="$(/usr/libexec/PlistBuddy -c "Print :En
   prod-MUTATING command this way — prep the exact command + success
   criterion, then hand it to the user.
 
+## One-off on a different model
+
+**When.** One process (e.g. `precis taproot-migrate canary --tier small`)
+should run a tier on another model/transport, without touching the
+`app_settings` rows `llm.chain.<tier>` / `llm.model.<tier>` that every worker
+reads.
+
+**Env var.** `PRECIS_LLM_CHAIN_<TIER>` (`SMALL`/`MEDIUM`/`BIG`/`FRONTIER`),
+holding a value in exactly the format of `llm.chain.<tier>`: a JSON list of
+rungs `{"placement": "cloud"|"local", "model": <id>, "transport": <name>}`
+(optional `"bare": true`). For this process only it beats the DB row and the
+env/code defaults; other tiers are untouched. `PRECIS_LLM_MODEL_<TIER>`
+likewise beats `llm.model.<tier>`, but a chain rung's own `model` already wins
+for dispatch, so the chain var alone is normally enough.
+
+Example — `small` on the local qwen3-next-80b, served by melchior's llama-swap:
+
+```
+PRECIS_LLM_CHAIN_SMALL='[{"placement": "local", "model": "qwen3-next-80b-a3b-q4_k_m", "transport": "local"}]' \
+  /opt/precis/venv/bin/precis taproot-migrate canary --tier small --database-url "$DSN" ...
+```
+
+**Must run on melchior.** The `local` rung finds its endpoint through the
+model's `served_by` card and takes a slot of the `llm:qwen3-next-80b-a3b-q4_k_m`
+`resource_slots` row (capacity 1 — one in-flight call, so expect it to be slow
+and to back off while busy). The endpoint is loopback-only, so any other host
+has no live endpoint for it; `model` must be the served id above, not a short
+alias. No extra keys are needed in the rung.
+
+**Notes.**
+
+- Bad JSON, a non-list/empty list, or a bad rung (unknown `transport`, no
+  `model`) raises `BadInput` naming the variable at first LLM call — it never
+  falls back to the DB chain.
+- A WARNING (`llm chain for small overridden by PRECIS_LLM_CHAIN_SMALL`) is
+  logged once per process.
+- `llm_call_log` records the model and transport that actually ran (here
+  `qwen3-next-80b-a3b-q4_k_m` / `local`).
+
 ## When no CLI verb *or* MCP arg exposes the field
 
 The seven-verb wrapper `precis/tools/core.py::edit` declares a fixed param
