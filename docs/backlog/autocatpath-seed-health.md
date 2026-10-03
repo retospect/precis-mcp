@@ -28,9 +28,28 @@ Read-only prod pass over 2026-09-03..10-03 (`refs` kind='job', STATUS tags,
   infra failures (two never got a lease host; jb348535 and jb413788 were
   reclaimed 5× and 2× across node restarts).
 
-Left: why the 09-14/09-21 seeds ran past 5 h while this week's finish
-at about 2.5 h — a config or candidate mix change, or host load. Compare
-their run configs before raising any wall.
+**Cause of the 09-14/09-21 failures (prod read 2026-10-03): the verify
+tier does not fit the wall.** All 24 failures are verify-tier seeds
+(`template: coadsorbed` pinned, 3 seeds, no `best_first` overlay; see
+`quest/compute.py::_apply_tier_config`): 24 of 27 failed, across 9
+pathways (346764, 346772, 346780, 348494, 348502, 348510, 449716, 449724,
+449732), dispatched 09-18..09-24. The neb tier (template unset,
+`best_first`) went 54/54 and screening (`parked`) 61/61 over the same 30
+days. "Week of 09-28 clean" means no verify seeds were dispatched, not a
+fix. Every tier gets the same `_autocatpath_wall_seconds()` hint (5400 s →
+a 2.5 h ssh_node lease); the 3 verify successes took 1.9–2.25 h of event
+span, the failures hit 2.5 h (two ran longer across a worker re-adoption).
+Host is not a factor (castor and pollux both fail). The same template
+failed 26 of 28 seeds in August on the older wall.
+
+Consequence: **no verify-tier pathway has completed in prod**, so the
+authoritative exhaustive pass the tier ladder promises does not exist for
+any candidate. Proposed fix (needs a verdict, cost-bearing): a tier-aware
+wall — verify gets its own hint (e.g. 4× = 6 h, 7 h lease), set in
+`_apply_tier_config`'s caller where `resources.wall_seconds` is stamped,
+with the env pin kept for the other tiers. Measure first on one re-run
+verify seed with the larger wall to get its real runtime before fixing the
+multiplier.
 
 ## autocatpath: on-spark dev loop (measure + iterate on the GPU box)
 

@@ -70,8 +70,12 @@ paper needs.
    churn are gone in the last 30 days; all 24 seed failures are 5–7.5 h
    wall kills from the weeks of 09-14/09-21, and the week of 09-28 has 68
    succeeded, 0 failed. Wall kills now stamp `failure_class='timeout'`
-   (2026-10-03). Left: why those weeks overran (compare run configs
-   before touching the wall).
+   (2026-10-03). Cause found 2026-10-03: all 24 are verify-tier seeds
+   (24 of 27 failed; neb 54/54, screening 61/61), which get the same
+   90 min hint / 2.5 h lease as every tier, so **no verify pathway has
+   ever completed in prod** — the paper's authoritative pass. Left: a
+   tier-aware verify wall, pending the orchestrator's verdict
+   (reviews/chemistry.md §8); measure one verify seed's real runtime first.
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into
