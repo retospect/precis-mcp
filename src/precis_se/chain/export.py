@@ -556,24 +556,34 @@ def to_order(tree: SeTree, *, design: str) -> str:
     indels = helix_indels(tree)
     rows: list[tuple[str, str]] = []
     problems: list[str] = []
+    # The repair ops the refusal hands back: one bare fill covers every
+    # unsequenced strand; a sequenced bad one must be named with overwrite.
+    fixes: list[str] = []
     for name in sorted(strands):
         seq = _sequence(tree, name)
         want = strand_length_nt(strands[name], indels)
         if seq is None:
             problems.append(f"{name}: unsequenced")
-        elif "N" in seq.upper():
+            if "{'op': 'fill_complement'}" not in fixes:
+                fixes.insert(0, "{'op': 'fill_complement'}")
+            continue
+        if "N" in seq.upper():
             problems.append(f"{name}: holds N at {seq.upper().count('N')} base(s)")
         elif len(seq) != want:
             problems.append(f"{name}: sequence is {len(seq)} nt, route holds {want}")
         else:
             rows.append((f"{design}-{name}", seq.upper()))
+            continue
+        fixes.append(
+            f"{{'op': 'fill_complement', 'strand': '{name}', 'overwrite': True}}"
+        )
     if problems:
         raise Unsupported(
             "export order: "
             + "; ".join(problems)
             + ". Fill staples with fill_complement, or author the sequence with "
             "declare_strand; view='drc' names each length or pairing error",
-            next="edit(kind='se', id=…, ops=[{'op': 'fill_complement'}])",
+            next=f"edit(kind='se', id=…, ops=[{', '.join(fixes)}])",
         )
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")

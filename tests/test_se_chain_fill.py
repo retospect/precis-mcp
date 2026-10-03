@@ -342,6 +342,28 @@ def test_order_refuses_naming_every_strand_it_cannot_order() -> None:
     assert "st3: holds N at 1 base(s)" in message
     assert "st4: sequence is 12 nt, route holds 8" in message
     assert "st0" not in message  # a good strand is not named
+    # The hint is runnable: a bare fill refuses once every strand is sequenced.
+    assert exc.value.next == (
+        "edit(kind='se', id=…, ops=["
+        "{'op': 'fill_complement', 'strand': 'st3', 'overwrite': True}, "
+        "{'op': 'fill_complement', 'strand': 'st4', 'overwrite': True}])"
+    )
+
+
+def test_order_refusal_hint_repairs_what_it_names() -> None:
+    tree = _tree({"op": "declare_strand", "block": "st4", "sequence": "A" * 12})
+    with pytest.raises(Unsupported) as exc:
+        _order(tree)
+    assert exc.value.next == (
+        "edit(kind='se', id=…, ops=[{'op': 'fill_complement'}, "
+        "{'op': 'fill_complement', 'strand': 'st4', 'overwrite': True}])"
+    )
+    repaired = _tree(
+        {"op": "declare_strand", "block": "st4", "sequence": "A" * 12},
+        {"op": "fill_complement"},
+        {"op": "fill_complement", "strand": "st4", "overwrite": True},
+    )
+    assert _order(repaired).count("\n") == 1 + 6  # header + scaf, st0..st4
 
 
 def test_order_is_one_of_the_export_formats() -> None:

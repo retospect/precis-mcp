@@ -23,12 +23,10 @@ blocked.
 **Last reviewed:** 2026-10-02 (handoff)
 **Worktree:** `se-nucleic-chain`
 
-**Resume (handoff 2026-10-02):** staple-sequence fill is deployed (round 1,
-567f207f) and dogfooded on prod. Do-next 1 is blocked on
-hexfold-integration; review item se-nucleic-chain-1 asks Reto whether the
-orderable strand list was next — Reto ruled yes 2026-10-02; built in the
-commit that rewrote this block (`view='export'`, `format='order'`), not
-yet deployed or dogfooded on prod. Traps: a chain design laid out before the
+**Resume (2026-10-03):** staple-sequence fill and the orderable strand
+list are deployed (rounds 1–2) and dogfooded on prod; the order refusal's
+repair hint is fixed but not yet deployed (round 3). Do-next 1 is blocked on
+hexfold-integration; no review item is open. Traps: a chain design laid out before the
 residue-row/loop-relax changes of 2026-09-30 needs `layout_chain` then
 `realize_chain` re-run before pick or findings read it; a deleted offset's
 O3'–P step is stretched (~7 Å) by design until the oxDNA tier (Horizon 3)
@@ -82,8 +80,13 @@ worktree's code against the prod DB (not the deployed code).
   scaffold included; refuses naming every unsequenced, N-holding or
   wrong-length strand. Docs split out of the chain skill into
   `precis-se-chain-export-help` (the chain skill was 79 bytes under its
-  cap). Dogfood on prod after the round deploys: fill a tile, export
-  `order`, and check the rows against the scadnano export.
+  cap). Deployed round 2 (63301c5c) and dogfooded on prod 2026-10-03
+  (`dogfood-staple-fill-1`): 6 rows, each identical to the scadnano
+  export's sequence; an N in st3 plus a 12-nt st4 on an 8-nt route
+  refused naming both. The refusal's `next:` was a bare `fill_complement`,
+  which refuses once every strand is sequenced — fixed in the commit that
+  added this sentence (it now lists one `strand=…, overwrite=true` op per
+  sequenced bad strand); the design was repaired by those two ops.
 
 - **staple sequences** — shipped 2026-10-02 in the commit that added this
   line (backlog item deleted): `fill_complement` (pure op; `strand=` or
