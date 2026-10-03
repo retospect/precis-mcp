@@ -82,7 +82,8 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       FS fix is a priority now ("it is when it is", no round window).
       - Plan approved with phase 1 revised: no retained DB backups on the
         DB node.
-      - Next: Reto creates the NAS export (local-compute-10).
+      - Next: Reto creates the NAS export in the TOS web UI (TOS has no
+        CLI; local-compute-12), then agents verify, test-mount and copy.
       - The deploy-role branch is `worktree-agent-af6719b05abd3f35e`. It
         changes no behaviour at the overlay defaults; a restore_test /
         drill_pull fix for verified-only mode is in progress. It goes to
@@ -96,15 +97,14 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       never needed the share. The gate came from sequencing: the bench was
       on spark, and spark's host-prep list put "unhang the NFS mount"
       first for the eval-run-spine. castor is the box the model will
-      serve on anyway. 2026-10-02 23:50Z castor read:
-      - 3.1 TB of local NVMe free; GPU idle.
-      - Missing: the nvidia docker runtime (the fix needs a docker daemon
-        restart, so it goes to Reto), any vLLM/SGLang image (Docker Hub and
-        nvcr.io unreachable), and the candidate weights.
-      - Staging started: the gpt-oss 120B download into
-        `/home/deploy/models/hf/`, and the vLLM image from spark via
-        `docker save | docker load`.
-      - SGLang has no image route yet.
+      serve on anyway. castor's docker has the GPU (local-compute-11),
+      both weight sets and the vLLM image are on local disk.
+      - **vLLM × Nemotron done 2026-10-03:** 14 / 56 / 108 / 142 out tok/s
+        at 1 / 8 / 32 / 64 streams; 3.5 tok/s per stream at 32; KV 50% at
+        64 (table in the item).
+      - vLLM × gpt-oss: first start failed (no `config.json`); re-run in
+        flight.
+      - SGLang has no image route yet (ghcr only).
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
       plus scheduled OS/driver updates for all three Sparks inside the round

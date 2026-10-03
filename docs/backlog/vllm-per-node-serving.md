@@ -176,6 +176,28 @@ embeddings and ad-hoc compute, and its share is hung. Slice 0 does not need
 `/mnt/cluster`: weights and images go to castor's local disk. The frozen
 eval world stays wherever `eval-run-spine.md` places it.
 
+**Slice 0 result, vLLM arm, Nemotron 3 Super NVFP4 on castor (2026-10-03).**
+vLLM v0.20.1, `--trust-remote-code`, no other flag changes; server start
+641 s to `/health`; no `precis-aizynth` container ran during any level.
+Output tok/s is the bench's `output_throughput`; per-stream is 1000 / mean
+TPOT.
+
+| C | out tok/s | per-stream tok/s | TTFT p50 / p95 (ms) | peak KV % |
+|---|---|---|---|---|
+| 1 | 14.4 | 15.4 | 896 / 7809 | 0.8 |
+| 8 | 56.4 | 7.6 | 2584 / 19746 | 6.2 |
+| 32 | 107.9 | 3.5 | 2758 / 24657 | 24.9 |
+| 64 | 141.5 | 2.3 | 3973 / 47462 | 49.8 |
+
+- Aggregate still climbs at 64 but flattens: ×1.9 from 8 to 32, ×1.3 from
+  32 to 64. KV is half used at 64, so memory is not the limit.
+- 3.5 tok/s per stream at the 32-stream target is slow for interactive use;
+  acceptable only for bulk work where aggregate counts.
+- C=1 TTFT p95 7.8 s is likely first-request warm-up (p50 0.9 s).
+- Raw results: castor `/home/deploy/slice0/results/`. gpt-oss 120B failed to
+  start (its folder lacked `config.json`); re-run pending. SGLang arm: no
+  image route yet (ghcr only).
+
 **Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
 world (`eval-run-spine.md`) run there, not on a serving box. It is the same
 128 GB hardware as castor, so the concurrency curve transfers exactly; it
