@@ -21,7 +21,9 @@ check first whether round 2 is deployed (`origin/prod`). If it is, read
 qu453869 (positional accuracy capability) supply ticks since the deploy for
 Do next 1's quote check and Do next 2's first `(escalated)` query line.
 qu453863 (Bootstrap roadmap root) keeps ticking unattended while parked;
-Do next 3's fail signals are the only reason to act before reopen.
+Do next 3's fail signals are the only reason to act before reopen. Taken
+over while parked: td462893 / gr462891 (quest_tick rejects its own ledger
+ops), filed at Horizon 11, not started.
 **Last reviewed:** 2026-10-03 (parked at TIER 3; round 2 landed, undeployed)
 **Worktree:** `roadmap-quest`
 
@@ -150,19 +152,27 @@ the chemistry thread's):
 10. **backlog/quest-loop-safety.md** — the "rubric key never produced"
     warning (the anti-spin breaker shipped, gr170252); a silent empty
     frontier is the failure it names.
-11. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
+11. **gr462891 (todo td462893, owned here since 2026-10-03)** — quest_tick
+    rejects its own `ledger_ops` / `dialectic_ops` entries: 34 "not applied"
+    log lines in 7 days across 7 quests and no "applied" line, e.g.
+    qu347484's `fi_au_bdt_registry` hypothesis `open` op rejected on 4 ticks.
+    So the ledger's near-duplicate match does not find its own earlier
+    nodes, and the "stops re-treading ruled-out ideas" promise fails. Not
+    root-caused. Start at `run_quest_tick`'s ledger_ops / dialectic_ops
+    apply step.
+12. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
     one grandfathered breach of the plugin import boundary (plugin-split
     owns the boundary; the fix is in quest code).
-12. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
+13. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
     cadence or why-not-ticking.
-13. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
+14. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
     checklist.
-14. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
+15. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
-15. **backlog/todo-tree-plan.md** — remaining fold candidates of the
+16. **backlog/todo-tree-plan.md** — remaining fold candidates of the
     todo-tree plan; the todo tree is the quest loop's work substrate, so it
     sequences after the loop ticks. Platform pass 2026-10-02.
-16. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
+17. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
     has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.
     So a refuted hub, such as fi460566 or fi460856 (marked 2026-10-02 by
     claims-and-evidence with a `support: "no"` edge verdict), can still
