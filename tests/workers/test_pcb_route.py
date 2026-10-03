@@ -1205,3 +1205,82 @@ def test_pcb_route_is_deterministic_from_the_same_seeded_state(
     b = _run("route-det-b")
     assert a == b
     assert a[2], "vacuous: no copper written"
+
+
+# ── sketch SVG view: same restore order as the job ───────────────────────
+def _persist_swapped_sketch(store: Store, slug: str) -> tuple[int, dict[str, int]]:
+    """Seed ``_PIN_SWAP_DESIGN``, then persist what a route run that swapped
+    U0's pins would have: the derived swap plus a layer-assigned sketch keyed
+    by the POST-swap endpoint pins. Returns ``(ref_id, written)`` where
+    ``written`` maps segment key -> layer for the two U0 segments."""
+    ref_id = _seed(store, slug, _PIN_SWAP_DESIGN)
+    ir = _fresh_pin_swap_ir(store, ref_id)
+    baseline = ir.pin_net.copy()
+    _swap_u0_pins(ir)
+    layer = pcb_session.signal_layers(ir)[-1]
+    written: dict[str, int] = {}
+    for pin in ("left", "right"):
+        seg = _segment_for_pins(ir, "U0", pin)
+        ir.set_layer(seg, layer)
+        written[pcb_session.segment_key(ir, seg)] = layer
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_routes_write(ref_id, board_id, pcb_session.extract_sketch(ir))
+    store.pcb_pin_swaps_replace_derived(
+        ref_id, board_id, pcb_session.pin_swap_diff(ir, baseline)
+    )
+    return ref_id, written
+
+
+def _capture_sketch_ir(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    from precis.handlers import pcb as pcb_handler
+
+    seen: list[Any] = []
+    real = pcb_handler.pcb_svg.render_sketch
+
+    def _spy(ir: Any, **kw: Any) -> str:
+        seen.append(ir)
+        return real(ir, **kw)
+
+    monkeypatch.setattr(pcb_handler.pcb_svg, "render_sketch", _spy)
+    return seen
+
+
+def test_svg_sketch_view_restores_pin_swaps_before_the_layer_sketch(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Swapped-pin segments must render with their stored layer, not UNSET
+    (the read-side twin of the job's ordering bug)."""
+    ref_id, written = _persist_swapped_sketch(store, "svg-sketch-swap")
+    assert store.pcb_pin_swaps_list(ref_id)
+    seen = _capture_sketch_ir(monkeypatch)
+
+    resp = PcbHandler(hub=Hub(store=store)).get(
+        id="svg-sketch-swap", view="svg", args={"level": "sketch"}
+    )
+    assert "<svg" in resp.body and "warning" not in resp.body
+    assert len(seen) == 1
+    ir = seen[0]
+    got = {
+        pcb_session.segment_key(ir, s): int(ir.seg_layer[s])
+        for s in range(ir.n_segments)
+    }
+    for key, layer in written.items():
+        assert got[key] == layer
+
+
+def test_svg_sketch_view_warns_when_a_stored_segment_matches_nothing(
+    store: Store,
+) -> None:
+    ref_id = _seed(store, "svg-sketch-stale", _PIN_SWAP_DESIGN)
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_routes_write(
+        ref_id,
+        board_id,
+        {"A": {"layer_assign": [{"a": "ZZ9.1", "b": "U1.1", "layer": 0}]}},
+    )
+    resp = PcbHandler(hub=Hub(store=store)).get(
+        id="svg-sketch-stale", view="svg", args={"level": "sketch"}
+    )
+    assert resp.body.startswith("<?xml")
+    assert "<!-- warning: 1 stored sketch entry matched no segment" in resp.body
+    assert "<svg" in resp.body

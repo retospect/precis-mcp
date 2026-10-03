@@ -59,6 +59,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Part of the job's dedup key (`_enqueue_op` in handlers/pcb.py): bump it
+# whenever a change alters what the route job produces for an unchanged
+# board, or a pending/complete job keeps serving the old result.
+# 2 = pin swaps restored before the layer sketch (5d50cd44a).
+CODE_VERSION = 2
+
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {

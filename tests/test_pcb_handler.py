@@ -995,6 +995,34 @@ def test_op_place_enqueues_and_is_idempotent_per_content_hash(pcb, store):
     assert n == 1
 
 
+def test_op_route_dedup_key_carries_the_route_code_version(pcb, store, monkeypatch):
+    """Re-putting op='route' on an unchanged board dedupes to the same job;
+    a route-code version bump enqueues a NEW one (the old job's result was
+    produced by older code)."""
+    from precis.workers.job_types import pcb_route as pcb_route_job
+
+    pcb.put(id="idem-route", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="idem-route")
+    assert ref is not None
+
+    def _n_jobs() -> int:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
+                (ref.id,),
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    pcb.put(id="idem-route", args={"op": "route"})
+    pcb.put(id="idem-route", args={"op": "route"})
+    assert _n_jobs() == 1
+
+    monkeypatch.setattr(pcb_route_job, "CODE_VERSION", pcb_route_job.CODE_VERSION + 1)
+    pcb.put(id="idem-route", args={"op": "route"})
+    assert _n_jobs() == 2
+
+
 def test_op_place_never_computes_inline(pcb, store, monkeypatch):
     """The serve thread-pool starvation lesson (backlog, verbatim): heavy
     compute must never run in the MCP request path. Patches the optimizer

@@ -865,12 +865,19 @@ class PcbHandler(Handler):
             ),
         }
         digest = pcb_session.content_hash(graph, params, session_state=session_state)
+        idem_key = f"pcb_{op}:{ref.id}:{digest}"
+        if op == "route":
+            # Route code changes alter the result for an unchanged board;
+            # the version keeps an old pending/complete job from deduping it.
+            from precis.workers.job_types import pcb_route as pcb_route_job
+
+            idem_key = f"pcb_route:{ref.id}:v{pcb_route_job.CODE_VERSION}:{digest}"
         job_resp = self.hub.sibling("job").put(
             job_type=f"pcb_{op}",
             executor="job_inproc",
             parent_id=ref.id,
             params=params,
-            idem_key=f"pcb_{op}:{ref.id}:{digest}",
+            idem_key=idem_key,
         )
         status_view = "route-status" if op == "route" else "crossings"
         from precis.handlers.skill import code_stamp
@@ -3955,10 +3962,29 @@ class PcbHandler(Handler):
                     "Next: put(kind='pcb', id='slug', args={'components':[...]})"
                 )
             ir = self._build_ir(ref_id, graph)
-            pcb_session.apply_route_overrides(ir, self.store.pcb_routes_get(ref_id))
-            return Response(
-                body=pcb_svg.render_sketch(ir, title=f"{slug} — sketch (L3)")
+            # Same order as the pcb_route job: stored sketch keys are
+            # endpoint pins of the POST-swap IR.
+            pcb_session.apply_pin_swap_overrides(
+                ir, self.store.pcb_pin_swaps_list(ref_id)
             )
+            unmatched = pcb_session.apply_route_overrides(
+                ir, self.store.pcb_routes_get(ref_id)
+            )
+            svg_text = pcb_svg.render_sketch(ir, title=f"{slug} — sketch (L3)")
+            if unmatched:
+                # The body is raw SVG, so the note rides as an XML comment
+                # right after the (optional) XML declaration.
+                note = (
+                    f"<!-- warning: {unmatched} stored sketch "
+                    f"entr{'y' if unmatched == 1 else 'ies'} matched no segment "
+                    "(netlist changed since the sketch was saved) -->\n"
+                )
+                if svg_text.startswith("<?xml"):
+                    head, _, rest = svg_text.partition("?>")
+                    svg_text = f"{head}?>\n{note}{rest.lstrip()}"
+                else:
+                    svg_text = note + svg_text
+            return Response(body=svg_text)
         if level == "fab":
             return self._render_fab_svg(ref_id, slug)
         if level != "board":

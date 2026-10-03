@@ -38,7 +38,11 @@ bump before negotiation is ever default-on. The round-1 diff review
   pad geometry (polygon ring, `land_min_mm` annular ring) with no version
   input, so a re-put returns the old pad geometry while a fresh board gets
   the new DRC/gerber output. Each bump changes every board's key once,
-  which is the point.
+  which is the point. The route job's own half exists: `pcb_route.
+  CODE_VERSION` goes into the `op='route'` dedup key (`_enqueue_op`), hand
+  bumped. Still open: the realizer, silk and DRC pad-model versions, and
+  any key for the export ops. Fold `CODE_VERSION` into `REALIZER_VERSION`
+  or derive one from the other, so two counters cannot drift.
 
 ## Explicitly NOT in scope
 
