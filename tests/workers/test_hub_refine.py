@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from precis.store.types import ChunkInsert, Tag
 from precis.taproot.canon import CanonicalClaim, claim_sha
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
@@ -75,6 +77,7 @@ _VERIFY_PARTIAL_CONTRADICTS = {
     "support_reason": "on-topic but the result runs counter to the claim",
     "caveats": ["reports larger crystallites, contradicting the small-domain claim"],
     "contradicts": True,
+    "same_setup": True,
     "cited_others": [],
     "terminal": True,
 }
@@ -293,6 +296,74 @@ def test_contradicting_partial_is_memoed_and_filed_as_disputes(
     assert str(paper) in rejected
     assert rejected[str(paper)]["supports"] == "partial"
     assert rejected[str(paper)]["contradicts"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides,allowed",
+    [
+        ({}, True),  # control: contradicts + same_setup + terminal
+        ({"terminal": False}, False),  # a recitation of someone else's result
+        ({"same_setup": False}, False),  # different sample/material/method
+        ({"same_setup": "unclear"}, False),
+        ({"same_setup": None}, False),
+    ],
+)
+def test_disputes_need_same_setup_and_terminal(
+    store: Any, overrides: dict[str, Any], allowed: bool
+) -> None:
+    """The widen arm's write gate (review item claims-and-evidence-4): a
+    contradiction files a ``disputes`` link + queues a demotion only when the
+    verdict says same_setup is True AND terminal is True. Otherwise it stays
+    a memo note carrying terminal/same_setup/support_reason."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="MOF crystallites are ~7 nm single-crystal cubes.")
+    paper, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="gate", text="A conflicting measurement statement."
+    )
+    verdict = {**_VERIFY_NO, "contradicts": True, "same_setup": True, **overrides}
+    queued: list[Any] = []
+
+    def _fake_demote(_store: Any, requests: Any) -> list[Any]:
+        queued.extend(requests or [])
+        return []
+
+    with (
+        patch(_VERIFY_PATH, return_value=verdict),
+        patch("precis.workers.hub_refine.run_demotions", _fake_demote),
+    ):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    relations = [rel for _dst, rel, _m in _edges_from(store, paper)]
+    assert relations == (["disputes"] if allowed else [])
+    assert [d.hub_ref_id for d in queued] == ([hub] if allowed else [])
+    entry = (_hub_meta(store, hub).get("taproot_rejected") or {})[str(paper)]
+    assert entry["contradicts"] is True
+    assert entry["terminal"] is verdict["terminal"]
+    assert entry["same_setup"] == verdict["same_setup"]
+    assert entry["support_reason"] == verdict["support_reason"]
+
+
+def test_claim_source_text_reaches_the_widen_verifier(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A claim whose origin passage the verifier sees.")
+    origin, origin_chunk = _seed_paper_chunk(
+        store, embedder, cite_key="origin", text="ORIGIN: measured at 300 K"
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=origin,
+        role="establishes",
+        meta={"source_handle": f"pc{origin_chunk}", "support": "yes"},
+        set_by="system",
+        check_retraction=False,
+    )
+    _seed_paper_chunk(store, embedder, cite_key="cand", text="A candidate statement.")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mock_verify.call_count >= 1
+    for call in mock_verify.call_args_list:
+        assert call.kwargs["claim_source_text"] == "ORIGIN: measured at 300 K"
 
 
 def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
