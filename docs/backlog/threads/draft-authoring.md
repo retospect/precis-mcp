@@ -19,23 +19,15 @@ Evidence: jo461157, the placeholder-figure export, compiled 34 pages and 121
 citations with no warnings beyond the ten placeholders and 160 unsigned hubs;
 `view='hygiene'` reports only "all 8 cited papers have a validated DOI".
 
-1. **`draft-write-latency-whole-draft-rescan`** — the findings check is a burst
-   of edits on a ~190-chunk draft. Root-caused 2026-10-02 from prod
-   `tool_calls` (09-27..10-01): latency splits by input shape, not by time.
-   Text writes (`edit` find+text p50 47 s, `put` text p50 33 s) pay
-   `sync_draft_links`' re-upsert of every edge (dr173020: 193 chunks, 209
-   links, ~1,000–1,500 serial round trips); `move`/`not_abbrev` edits skip it
-   and run in 0.3 s. Built 2026-10-02: a chunk-scoped write re-resolves only
-   that chunk, carries the others' edges over, and skips edges whose stored
-   meta is unchanged. The hub-mint cost (`put(kind='finding', supporters=)`
-   94–182 s: ~10 serial MEDIUM dedup judges) is fixed by
-   `canon.judge_candidates` (concurrent judges). Deployed in 567f207f
-   (15:05Z 2026-10-02): the first 2 text edits after it ran in 0.23 s and
-   0.26 s, against a 24 s p50 before. Round 2 (d9a4c6568) makes export run
-   a full link sync before its edge-reading gates and caps the judges at 4.
-   Next: re-read text-write latency at n≥20 and the first
-   `put(kind='finding', supporters=)` after the deploy (log in
-   `reviews/draft-authoring.8df403606.md`), then close the item.
+(none open; the write-latency fix shipped and was verified on prod
+2026-10-03: text edits p50 24 s → 0.27 s (n=39), finding mints p50 129 s →
+23 s (n=11), 0 errored dedup judges in 106; round 2's pre-gate full sync,
+run by export jo464073 on 63301c5c, left all 217 `cites` edges of dr173020
+byte-identical, so the chunk-scoped writes had kept them correct.)
+
+Blocking the October export, owned by `nanobuds-paper`: jo464073 failed the
+figure clearance gate, 9 of 11 figures not cleared (5 third-party figures
+with permission requested, 4 with no image yet).
 
 Hit, owned by another thread: `draft-authoring-graph-affordances`
 (graph-memory-consumers) — (b) chunk history and (c) "did my edit land" are
@@ -82,7 +74,10 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 ## No action needed
 
-- (none)
+- `canon.JUDGE_MAX_WORKERS` = 4 since round 2 (round 1 ran 8 at p50 23 s per
+  mint). Revisit if prod `put(kind='finding', supporters=)` p50 climbs past
+  ~45 s, or if `taproot:dedup` rows start erroring (gr462136 reads an error
+  as "different").
 
 ## Seam
 

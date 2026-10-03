@@ -44,9 +44,9 @@ Reto's call, 2026-09-29: *"copying a decided convention smells like not
 DRY."* The links cap already existed and the lesson did not transfer to
 comments; a second cap constant beside the first would repeat that.
 
-3. **`draft-write-latency-whole-draft-rescan`** — needs a design pass, not a
-   patch: chunk-grounded `src_pos` has to survive whatever replaces the
-   whole-draft rescan.
+3. **`draft-write-latency-whole-draft-rescan`** — shipped 2026-10-02/03
+   (chunk-scoped `sync_draft_links`, concurrent dedup judges, a full sync
+   before export's gates): prod text edits p50 24 s → 0.27 s (n=39).
 4. **Ledger instrumentation** — `mcp-surface-economy.md`, the
    "Instrumentation blocker" section: `result_bytes`, the reserved-but-NULL
    `result_count`, and a correlation key that is actually populated
