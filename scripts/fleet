@@ -606,25 +606,48 @@ watch_notes() {
 # Newly completed check.yml push runs on main, oldest first. The conclusion and
 # the tested sha are printed as gh reports them; a gh failure is silent and
 # retried at the next ci tick. The first successful listing only seeds.
+#
+# Two bounds (2026-10-03, a re-armed watch emitted 20 month-old `failure` runs
+# in one tick): the seen-set holds only ids from the current page, so a run
+# that drops off the page and comes back reads as new. Only runs CREATED within
+# PRECIS_FLEET_CI_WINDOW_HOURS (default 6) are eligible, and at most
+# PRECIS_FLEET_CI_MAX_LINES (default 5) are emitted per tick; the rest stay
+# unseen and go out next tick. A createdAt watermark would be wrong: a run
+# queued behind others completes after a younger one and would be skipped.
 watch_ci() {
-  local out runs id sha concl seeded bound=()
+  local out runs id sha concl seeded bound=() emitted=0
+  local cap="${PRECIS_FLEET_CI_MAX_LINES:-5}"
   # A hung gh would stall the tick and with it the queue drain. macOS ships no
   # `timeout`; perl's alarm is on both platforms (SIGALRM ends gh, the leg
   # retries at the next ci tick).
   command -v perl >/dev/null && bound=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_FLEET_GH_TIMEOUT:-30}")
   out=$(${bound[@]+"${bound[@]}"} gh run list --workflow check.yml --branch main --event push --status completed \
-    --limit 20 --json databaseId,headSha,conclusion 2>/dev/null) || return 0
+    --limit 20 --json databaseId,headSha,conclusion,createdAt 2>/dev/null) || return 0
   runs=$(printf '%s' "$out" | python3 -c '
 import json, sys
+from datetime import datetime, timedelta, timezone
+cutoff = datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[1]))
 for r in reversed(json.load(sys.stdin)):
+    created = r.get("createdAt") or ""
+    try:
+        when = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        continue  # no usable date: never eligible
+    if when < cutoff:
+        continue
     print(r["databaseId"], str(r["headSha"])[:9], r.get("conclusion") or "unknown")
-' 2>/dev/null) || return 0
+' "${PRECIS_FLEET_CI_WINDOW_HOURS:-6}" 2>/dev/null) || return 0
   seeded=$(st_get seed ci)
   wn_ci_ran=1
   while read -r id sha concl; do
     [ -n "$id" ] || continue
+    if [ -n "$seeded" ] && [ -z "$(st_get ci "$id")" ]; then
+      # Over the cap: leave it unseen, so it goes out next tick.
+      [ "$emitted" -lt "$cap" ] || continue
+      echo "ci main $sha $concl"
+      emitted=$((emitted + 1))
+    fi
     wn_ci="$wn_ci$(st_line ci "$id" 1)"$'\n'
-    if [ -n "$seeded" ] && [ -z "$(st_get ci "$id")" ]; then echo "ci main $sha $concl"; fi
   done <<EOF
 $runs
 EOF

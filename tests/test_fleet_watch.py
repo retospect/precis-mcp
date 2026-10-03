@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -342,11 +343,17 @@ def test_mcp_check_rejects_a_bad_flag(wf: Fleet) -> None:
 # --- watch ---------------------------------------------------------------------
 
 
-def _runs(f: Fleet, *runs: tuple[int, str, str]) -> None:
-    """Newest first, the way gh prints them."""
+def _runs(f: Fleet, *runs: tuple[int, str, str], age_hours: float = 0.1) -> None:
+    """Newest first, the way gh prints them; created `age_hours` ago."""
+    created = (datetime.now(UTC) - timedelta(hours=age_hours)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     Path(f.env["FAKE_GH_DIR"], "runs.json").write_text(
         json.dumps(
-            [{"databaseId": i, "headSha": sha, "conclusion": c} for i, sha, c in runs]
+            [
+                {"databaseId": i, "headSha": sha, "conclusion": c, "createdAt": created}
+                for i, sha, c in runs
+            ]
         ),
         encoding="utf-8",
     )
@@ -540,3 +547,28 @@ def test_watch_a_hung_gh_is_cut_off_and_the_tick_finishes(wf: Fleet) -> None:
     started = time.monotonic()
     assert _watch(wf) == []
     assert time.monotonic() - started < 15
+
+
+def test_watch_ci_never_emits_a_run_created_outside_the_window(wf: Fleet) -> None:
+    """2026-10-03: a re-armed watch emitted 20 month-old `failure` runs in one
+    tick, because a run that leaves the page and comes back reads as new. Only
+    runs created within the window are eligible."""
+    _runs(wf, (5, "c" * 40, "success"))
+    assert _watch(wf) == []  # seed
+    _runs(wf, (9, "f" * 40, "failure"), (5, "c" * 40, "success"), age_hours=24 * 30)
+    assert _watch(wf) == []
+
+
+def test_watch_ci_caps_one_tick_and_carries_the_rest(wf: Fleet) -> None:
+    _runs(wf, (1, "0" * 40, "success"))
+    assert _watch(wf) == []  # seed
+    new = [
+        (i, f"{i:x}" * 40, "success") for i in range(20, 12, -1)
+    ]  # 8 new, newest first
+    _runs(wf, *new, (1, "0" * 40, "success"))
+    first = _watch(wf)
+    assert len(first) == 5, first
+    second = _watch(wf)
+    assert len(second) == 3, second
+    assert not set(first) & set(second)
+    assert _watch(wf) == []
