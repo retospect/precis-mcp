@@ -30,7 +30,8 @@ order"):
   each port's connect peer (``view='ports'``), measures + stack-up (``view='measures'`` —
   :mod:`precis_se.measures`), the deterministic datum ranking and which
   measures hang off each datum (``view='datums'`` —
-  :mod:`precis_se.datums`), feasibility findings with the
+  :mod:`precis_se.datums`), every pocket's regions with their measure
+  specs (``view='pockets'`` — :mod:`precis_se.pockets`), feasibility findings with the
   filled-fraction honesty header (``view='validate'`` —
   :mod:`precis_se.validate`), the signed envelope gap between two blocks
   (``view='clearance'``, ``args={'a': ..., 'b': ...}``, the cad kernel
@@ -156,6 +157,7 @@ from precis_se.chain.vocab import (
     group_domains,
 )
 from precis_se.identity import AmbiguousLabel, block_by_uid, resolve_block
+from precis_se.measures import LEGACY_MEASURANDS, measurand_name
 from precis_se.measures import stackup as se_stackup
 from precis_se.ops import (
     PortSpec,
@@ -168,6 +170,8 @@ from precis_se.ops import (
     effective_ports,
     resolve_template,
 )
+from precis_se.pockets import region_measures as se_region_measures
+from precis_se.properties import is_checked
 from precis_se.state_arg import merged_occupancy, resolve_state_arg
 
 log = logging.getLogger(__name__)
@@ -186,6 +190,7 @@ class SeHandler(Handler):
             "(add_block/instance_block/array_block/set_pose/set_envelope/"
             "remove_block/add_port/remove_port/set_port_pose/connect/disconnect/"
             "set_joint/set_load/add_measure/set_measure/remove_measure/"
+            "add_pocket/set_pocket/remove_pocket/"
             "set_mode/set_binding/add_bom/remove_bom/add_note/"
             "remove_note/formfind/declare_threading/remove_threading/"
             "declare_dof/clear_dof/bind_structure/unbind_structure/"
@@ -222,7 +227,7 @@ class SeHandler(Handler):
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|"
-            "'ports'|'topology'|'chain'|'measures'|'datums'|'validate'|"
+            "'ports'|'topology'|'chain'|'measures'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
@@ -269,7 +274,10 @@ class SeHandler(Handler):
             "cycles, on blocks or connects; fixed=true|['x','y','z'...] "
             "on a block grounds its translations (stability supports). "
             "Measures (add_measure; "
-            "unit m default | count | ratio | deg) carry tolerance "
+            "unit m default | count | ratio | deg, or measurand=<taxon "
+            "measurand> for any property — charge, contact angle, field; "
+            "add_pocket names a set of region selectors (patch:/ring:/"
+            "sites:/atoms:) — see precis-se-regions-help) carry tolerance "
             "RELATIONS between named measures ({'source':"
             "'block.measure','scale':<×, default 1>,'offset','tol'} + "
             "hard/soft/gauge); prefer declaring an acceptable SET over "
@@ -420,6 +428,7 @@ class SeHandler(Handler):
             "chain",
             "measures",
             "datums",
+            "pockets",
             "validate",
             "clearance",
             "sweep",
@@ -825,6 +834,8 @@ class SeHandler(Handler):
             return Response(body=_render_measures(tree))
         if v == "datums":
             return Response(body=_render_datums(tree))
+        if v == "pockets":
+            return Response(body=_render_pockets(tree))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id))
         if v == "mechanics":
@@ -893,7 +904,9 @@ class SeHandler(Handler):
             "occupancy, strands with their routes, derived pairing) | "
             "view='measures' "
             "(+ stack-up) | view='datums' (datum ranking + which "
-            "measures hang off each) | view='validate' | view='clearance' "
+            "measures hang off each) | view='pockets' (each pocket's "
+            "regions and their measure specs) | view='validate' | "
+            "view='clearance' "
             "(args={'a':...,'b':...}, or omit args for an all-pairs "
             "CONNECTS digest) | view='sweep' (does anything collide in ANY "
             "declared state? — the cross product of every state-carrying "
@@ -3339,7 +3352,7 @@ def _fmt_in_unit(v: float | None, unit: str) -> str:
         return "—"
     if unit == "m":
         return _fmt_len(v)
-    return f"{v:g} {unit}"
+    return f"{v:g} {unit}".rstrip()
 
 
 def _fmt_band(m: Any) -> str:
@@ -3377,7 +3390,10 @@ def _measure_row(m: Any, tree: Any = None) -> dict[str, str]:
                 else rel + f" · feature {m.relation['feature']}"
             )
     row = {
-        "measure": f"{m.block}.{m.name}",
+        # The measurand rides in the name cell only when there is one, so
+        # a legacy measure's row stays byte-identical.
+        "measure": f"{m.block}.{m.name}"
+        + (f" [{measurand_name(m)}]" if getattr(m, "measurand", None) else ""),
         "value": _fmt_in_unit(m.value, m.unit),
         "band": _fmt_band(m),
         "relation": rel,
@@ -3552,6 +3568,73 @@ def _render_datums(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
+def _region_measure_line(m: Any, tree: SeTree | None = None) -> str:
+    """One region measure as one line: measurand, unit, band/value,
+    strength, and whether anything computes it (slice B's computers) — and
+    a pinned ``atoms:``/``sites:`` region that has gone stale."""
+    if m.measurand is not None:
+        what = f"measurand {measurand_name(m)} (tn{m.measurand_ref})"
+    else:
+        legacy = LEGACY_MEASURANDS.get(m.unit)
+        what = f"unit {m.unit}" + (f" (≙ measurand {legacy})" if legacy else "")
+    parts = [f"{m.block}.{m.name}", what]
+    if m.measurand is not None:
+        parts.append(f"unit {m.unit or '(categorical)'}")
+    parts.append(f"band {_fmt_band(m)}")
+    if m.value is not None:
+        parts.append(f"value {_fmt_in_unit(m.value, m.unit)}")
+    parts.append(m.strength)
+    parts.append(
+        "realised: —"
+        if is_checked(m.measurand)
+        else "realised: — (no computer — measurand_unchecked)"
+    )
+    if tree is not None and se_datums.stale_pin_note(tree, m) is not None:
+        parts.append(f"pin {m.datum_pin} STALE (region_pin_stale)")
+    return "  - " + " · ".join(parts)
+
+
+def _render_pockets(tree: SeTree) -> str:
+    """``view='pockets'`` — every pocket (:mod:`precis_se.pockets`), one
+    H2 per pocket so the pager breaks between pockets, then one line per
+    region and one per region measure (membership derived from each
+    measure's ``datum``). No pockets is an empty list, never an error."""
+    found = [
+        (name, pocket)
+        for name in sorted(tree.blocks)
+        for pocket in tree.blocks[name].pockets.values()
+    ]
+    lines = [
+        f"# se pockets — {len(found)} pocket(s)  (a region's measures are "
+        "the measures whose datum names its selector)"
+    ]
+    if not found:
+        lines.append(
+            "\n(no pockets declared)\n\n"
+            "Next: edit(kind='se', id=..., ops=[{'op':'add_pocket',"
+            "'block':'cavity','name':'site','regions':[{'selector':"
+            "'patch:cavity.top@0,0+1e-9x1e-9','measures':[{'name':'q_top',"
+            "'measurand':'surface charge density','min':-1.0,'max':-0.5,"
+            "'strength':'hard'}]}]}])"
+        )
+        return "\n".join(lines)
+    for block, pocket in found:
+        lines.append(f"\n## {block}.{pocket.name}")
+        lines.append(
+            f"shape: {pocket.shape or '— (unshaped)'} · regions: {len(pocket.regions)}"
+        )
+        for selector in pocket.regions:
+            # Grouped by measurand identity (the taxon ref id — a slug is
+            # only its current name), legacy unit-only measures first.
+            members = sorted(
+                se_region_measures(tree, block, selector),
+                key=lambda m: (m.measurand_ref or 0, m.name),
+            )
+            lines.append(f"- region {selector} — {len(members)} measure(s)")
+            lines.extend(_region_measure_line(m, tree) for m in members)
+    return "\n".join(lines)
+
+
 def _anchor_resolves(tree: SeTree, anchor: str) -> bool:
     """An ``about`` anchor resolves as a block name, or as a
     ``'block.measure'`` pair (split on the last dot, the relation-source
@@ -3688,6 +3771,31 @@ def _render_freedom(tree: SeTree) -> str:
     return "\n".join(lines)
 
 
+def _region_pin_findings(store: Any, tree: SeTree) -> list[se_validate.ValidationIssue]:
+    """``region_pin_stale`` (warn): one per ``atoms:``/``sites:`` measure
+    whose block is bound to a different structure (or a later version of
+    it) than the one the indices were declared against
+    (:func:`precis_se.datums.stale_pin_note`). Store-aware — the current
+    version is a ``structure`` ref's ``meta['version']`` — so it lives
+    here, beside the other store-read passes, not in the store-free
+    ``se_drc.drc``."""
+    if tree.structure_versions is None:
+        tree.structure_versions = persist.structure_version_resolver(store)
+    out: list[se_validate.ValidationIssue] = []
+    for m in tree.measures:
+        note = se_datums.stale_pin_note(tree, m)
+        if note is not None:
+            out.append(
+                se_validate.ValidationIssue(
+                    rule="region_pin_stale",
+                    subject=f"{m.block}.{m.name}",
+                    detail=note,
+                    severity="warn",
+                )
+            )
+    return out
+
+
 def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") -> str:
     """``view='drc'`` — the graph-tier report (:mod:`precis_se.drc`):
     findings under the filled-fraction header (same honesty rule as
@@ -3717,6 +3825,7 @@ def _render_drc(tree: SeTree, store: Any, ref_id: int, scenario_line: str = "") 
     report = se_drc.drc(tree)
     report.findings.extend(se_precedent.findings(store, tree, ref_id))
     report.findings.extend(se_kinematics_drc.findings(store, tree, ref_id))
+    report.findings.extend(_region_pin_findings(store, tree))
     chain_extra = se_chain_findings.findings(store, tree, ref_id)
     if chain_extra.supersedes:
         report.findings = [
@@ -4813,6 +4922,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "export": frozenset({"format"}),
     "measures": frozenset(),
     "datums": frozenset(),
+    "pockets": frozenset(),
     "validate": frozenset(),
     "clearance": frozenset({"a", "b", "state"}),
     "sweep": frozenset(),

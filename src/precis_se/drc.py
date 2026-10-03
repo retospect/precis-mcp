@@ -36,6 +36,19 @@ pure ``chain_*`` rules the same way ``fasten`` does — computed by
 :func:`precis_se.chain.drc.findings`, folded into the one findings list
 here, detailed in that module's docstring.
 
+**Declared-but-unchecked measurands** (``measurand_unchecked``, warn):
+a measure naming a taxon measurand that no computer in
+:data:`precis_se.properties.COMPUTERS` evaluates — every non-geometric
+measurand until the region property layer's slice B lands its first.
+
+**Region datums** (warn, store-free): ``datum_unresolved`` — a measure's
+datum resolves to an error (missing block/face, patch centre off its
+face, no envelope; a ``sites:``/``atoms:`` selector on an existing block is
+declared intent and exempt), subject ``<block>.<measure>``;
+``patch_exceeds_face`` — a ``patch:`` rectangle reaching past its face
+(usually a units slip). The pin rule ``region_pin_stale`` is store-aware and
+lives in the handler (:func:`precis_se.handler._region_pin_findings`).
+
 **Connect geometric plausibility** (:mod:`precis_se.geometry_plausibility`,
 gr337040 + gr338426) closes the gap the DOF probe and the mechanism-demand
 checks (§3/3b above) both leave open: neither ever looks at whether the
@@ -57,14 +70,23 @@ from precis.cad import bulk as cad_bulk
 from precis.cad import relate as cad_relate
 from precis.cad.graph import Design as CadDesign
 from precis.utils.units import format_quantity
+from precis_se import datums as se_datums
 from precis_se import fasten as se_fasten
 from precis_se import geometry_plausibility as se_geometry
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
 from precis_se import stability as se_stability
 from precis_se.chain import drc as se_chain_drc
-from precis_se.measures import StackupResult, stackup
+from precis_se.measures import (
+    MeasureError,
+    StackupResult,
+    declared_band,
+    is_geometric,
+    measurand_name,
+    stackup,
+)
 from precis_se.ops import SeBlock, SeTree, effective_envelope
+from precis_se.properties import is_checked
 from precis_se.validate import (
     _KERNEL_BAND,
     _KERNEL_TARGET,
@@ -527,15 +549,92 @@ def drc(tree: SeTree) -> DrcReport:
                 )
             )
 
+    # 5a. declared-but-unchecked measurands (se-kind.md's rule; the
+    # region property layer's slice A): a measure naming a measurand no
+    # registered computer evaluates is stored intent nothing checks —
+    # say so on every read rather than let a band look enforced.
+    for m in tree.measures:
+        if is_checked(m.measurand):
+            continue
+        band = declared_band(m)
+        declared = (
+            f"band [{band[0]:g}, {band[1]:g}] {m.unit}".rstrip()
+            if band is not None
+            else (
+                f"value {m.value:g} {m.unit}".rstrip()
+                if m.value is not None
+                else "declaration"
+            )
+        )
+        findings.append(
+            ValidationIssue(
+                rule="measurand_unchecked",
+                subject=f"{m.block}.{m.name}",
+                detail=(
+                    f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) has no "
+                    f"registered computer — its {declared} on "
+                    f"{m.datum or 'frame'} is stored but nothing computes a "
+                    "realised value to check it against"
+                ),
+                severity="warn",
+            )
+        )
+
+    # 5a'. region datums (se_datums.resolve, store-free): a datum that
+    # resolves to an error is a reference that points at nothing
+    # (``datum_unresolved``) — except the lenient sites:/atoms: kind, which
+    # is declared intent until a computer exists, and a stale pin, which
+    # the handler reports as ``region_pin_stale``; a patch rectangle
+    # reaching past its face is almost always a units slip
+    # (``patch_exceeds_face``).
+    for m in tree.measures:
+        if not m.datum or m.block not in tree.blocks:
+            continue
+        subject = f"{m.block}.{m.name}"
+        try:
+            rdat = se_datums.resolve(tree, tree.blocks[m.block], m.datum)
+        except MeasureError as exc:
+            findings.append(
+                ValidationIssue(
+                    rule="datum_unresolved",
+                    subject=subject,
+                    detail=f"datum {m.datum!r}: {exc}",
+                    severity="warn",
+                )
+            )
+            continue
+        if rdat.error is not None:
+            if not rdat.expected:
+                findings.append(
+                    ValidationIssue(
+                        rule="datum_unresolved",
+                        subject=subject,
+                        detail=f"datum {m.datum!r} does not resolve: {rdat.error}",
+                        severity="warn",
+                    )
+                )
+            continue
+        if "patch_exceeds_face" in rdat.flags:
+            findings.append(
+                ValidationIssue(
+                    rule="patch_exceeds_face",
+                    subject=subject,
+                    detail=next((n for n in rdat.notes if "extends past" in n), ""),
+                    severity="warn",
+                )
+            )
+
     # 5b. unit-slip advisory: a declared value dwarfing the whole posed
     # design is millimetres-as-metres until proven otherwise. Honest skip
     # (no finding either way) when nothing has an envelope to scale by.
     extent = _design_extent(tree)
     if extent > 0.0:
         for m in tree.measures:
-            if m.unit != "m":
+            if not is_geometric(m):
                 # counts/ratios/degrees have no business being compared
-                # to a spatial extent (slice 4's unit registry).
+                # to a spatial extent (slice 4's unit registry), and
+                # neither has a metre-valued measurand that is not a
+                # feature distance (an absorption wavelength).
                 continue
             if m.value is not None and abs(m.value) > _MAGNITUDE_FACTOR * extent:
                 findings.append(
