@@ -398,6 +398,34 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
             )
         )
 
+    # a bonded pair is skipped by the overlap test above, but a bond seeded
+    # far under any bond length is two atoms nearly on top of each other
+    short_bonds: list[tuple[float, int, int]] = []
+    if net.seed3 is not None and net.bonds:
+        seed = np.asarray(net.seed3)
+        bij = np.array([(i, j) for i, j, _o in net.bonds])
+        blen = np.linalg.norm(seed[bij[:, 0]] - seed[bij[:, 1]], axis=1)
+        short_bonds = sorted(
+            (float(blen[k]), int(bij[k, 0]), int(bij[k, 1]))
+            for k in np.flatnonzero(blen < profile.seed_short_bond_A)
+        )
+    for d, i, j in short_bonds[:10]:
+        out.append(
+            Finding(
+                "geom.seed_short_bond",
+                Severity.WARN,
+                f"bonded atoms {i} ({inst[i]}) and {j} ({inst[j]}) are seeded "
+                f"{d:.2f} A apart (under {profile.seed_short_bond_A:.2f} A): "
+                "nearly stacked",
+                where=str(i),
+                data=(
+                    ("atoms", [i, j]),
+                    ("instances", [inst[i], inst[j]]),
+                    ("distance", round(d, 3)),
+                ),
+            )
+        )
+
     b_arr = np.array([x[0] for x in bond_dev]) if bond_dev else np.zeros(1)
     a_arr = np.array([x[0] for x in ang_dev]) if ang_dev else np.zeros(1)
     out.append(
@@ -422,12 +450,14 @@ def _geometry_findings(net: Net, profile: Profile) -> list[Finding]:
                     "seed_clash_min",
                     round(seed_clashes[0][0], 3) if seed_clashes else None,
                 ),
+                ("seed_short_bond_count", len(short_bonds)),
                 (
                     "suppressed",
                     max(0, len(bond_bad) - 10)
                     + max(0, len(ang_bad) - 10)
                     + max(0, len(clashes) - 10)
-                    + max(0, len(seed_overlaps) - 10),
+                    + max(0, len(seed_overlaps) - 10)
+                    + max(0, len(short_bonds) - 10),
                 ),
                 ("max_force_final", round(max_force, 4)),
             ),

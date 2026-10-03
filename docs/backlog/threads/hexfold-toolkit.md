@@ -60,13 +60,17 @@ waited on happened 09-29 — note at the bottom)
          field is 1.40–1.44 Å and the snapped circuit reads a = 2.46 Å.
          At plateau the worst bond is no worse than C3: 0.0426 vs 0.0450
          Å on g57.
-       - **Next, SW (commit 2 of the K0 slice):** one shared cut ray for
-         every member of a K = 0 cluster, so the two halves' jumps cancel.
-         Bars: snapped circuit 0 round the SW and ±a round each half; no
-         bond over 1.6 Å beyond 10 Å; far field 1.40–1.44 Å. Today sw30's
-         far field is 0.58–2.07 Å. Same commit: `geom.seed_overlap` gains
-         a WARN for bonded pairs under 1.0 Å; C3 seeded 0.36 Å bonded
-         pairs on sw30 and nothing flagged them.
+       - **`geom.seed_short_bond` (WARN, bonded seed pairs under 1.0 Å):
+         shipped.** It fires on three examples: `sheet_pill_bump` (6
+         bonds, min 0.49 Å; feed into gr459812), `sheet_sw` (0.72 Å) and
+         `tube_ring_closure` (0.00 Å, the closure fixture).
+       - **Next, SW: held for a design ruling** (K0 SW note in
+         `reviews/hexfold-toolkit.md`). The `sw` glyph is not a
+         Stone–Wales defect: its two pentagons share an edge, and its two
+         5-7 halves are 60° apart rather than antiparallel. A seed fix
+         cannot meet the SW bars (circuit 0) on it. Proposal: make `sw` a
+         bond rotation on the pristine patch instead of wedge surgery.
+         Today sw30's far field is 0.58–2.07 Å.
        - **Later:** compare the planar relaxed 5-7 core (fix seed, 0.042
          Å worst bond) with the buckled one (flat seed, 0.029) by MACE
          energy once the science lane is back. If buckled wins, the seed

@@ -462,3 +462,23 @@ def test_bud_on_a_defected_sheet_sits_off_it(defect: str) -> None:
     if side.mean() < 0:
         side = -side
     assert side.min() > 0.5, side.min()
+
+
+def test_a_nearly_stacked_bond_in_the_seed_is_a_warn() -> None:
+    # the overlap test skips bonded pairs, so a bond seeded at 0.36 A (the
+    # sw seed's, gr462144) went unreported
+    import dataclasses
+
+    from hexfold.check import geometry_findings
+
+    net = build("hexfold 0.2\norigin s\ns: sheet(8,8)\n", strict=False)
+    assert not [f for f in geometry_findings(net) if f.code == "geom.seed_short_bond"]
+    i, j, _o = net.bonds[0]
+    seed = np.asarray(net.seed3, dtype=float).copy()
+    seed[j] = seed[i] + 0.36 * (seed[j] - seed[i]) / np.linalg.norm(seed[j] - seed[i])
+    found = geometry_findings(dataclasses.replace(net, seed3=tuple(map(tuple, seed))))
+    short = [f for f in found if f.code == "geom.seed_short_bond"]
+    assert len(short) == 1 and short[0].severity == Severity.WARN
+    assert sorted(dict(short[0].data)["atoms"]) == sorted([i, j])
+    summary = next(dict(f.data) for f in found if f.code == "geom.summary")
+    assert summary["seed_short_bond_count"] == 1
