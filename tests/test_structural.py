@@ -598,46 +598,60 @@ def _starved_pending_result() -> AgentResult:
     )
 
 
-def test_pending_init_starve_is_retried_once_then_succeeds(
+def test_pending_init_starve_is_not_retried_anymore(
     store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """gr245505: ``precis=pending`` at init + zero precis calls is a startup
-    race; the pass is re-dispatched once and the good second run is kept."""
-    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
-    cfg = tmp_path / "mcp.json"
-    cfg.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
-    good = AgentResult(
-        final_text="Reviewed the tree; no issues.",
-        cost_usd=0.05,
-        duration_s=5.0,
-        turns_used=3,
-        tool_calls=1,
-        raw_stdout=_stream(_assistant_tool_use("mcp__precis__search")),
-    )
-    calls = _stub_agent_sequence(monkeypatch, [_starved_pending_result(), good])
-    result = run_structural_pass(store)
-    assert len(calls) == 2
-    assert (result.ok, result.failed) == (1, 0)
-    assert _structural_digest_count(store) == 1
-    assert _tool_starved_alerts(store) == []
-
-
-def test_pending_init_starve_twice_is_recorded_without_looping(
-    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    """A second starve is recorded as tool-starved exactly as before: two
-    dispatches total, no third."""
+    """gr463517: the readiness gate replaced the gr245505 retry-once — a pass
+    that nevertheless reports ``precis=pending`` + zero precis calls is one
+    dispatch, recorded as tool-starved, no second run."""
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
     cfg = tmp_path / "mcp.json"
     cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
     calls = _stub_agent_sequence(monkeypatch, [_starved_pending_result()])
     result = run_structural_pass(store)
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
     assert _structural_digest_count(store) == 0
     assert len(_tool_starved_alerts(store)) == 1
+
+
+def test_mcp_not_ready_result_marks_failure_alerts_and_never_retries(
+    store: Store, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """gr463517: the MCP readiness gate refused to start the pass. One
+    dispatch (it asked for ``require_mcp=("precis",)``), NO retry, NO digest, a
+    failure marker (backoff) and the tool-starved alert naming the status."""
+    from precis.workers.review import _recent_failure
+    from precis.workers.structural import STRUCTURAL
+
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("PRECIS_MCP_CONFIG", str(cfg))
+    seen: list[dict[str, object]] = []
+
+    def _gate_refuses(*a: object, **kw: object) -> AgentResult:
+        seen.append(dict(kw))
+        raise ClaudeAgentError(
+            "precis MCP not connected (status=failed) after 3s — pass not started",
+            mcp_not_ready=True,
+            mcp_status={"precis": "failed"},
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _gate_refuses)
+    result = run_structural_pass(store)
+    assert len(seen) == 1
+    assert seen[0]["require_mcp"] == ("precis",)
+    assert (result.claimed, result.ok, result.failed) == (1, 0, 1)
+    assert _structural_digest_count(store) == 0
+    assert _recent_failure(store, STRUCTURAL) is True
+    alerts = _tool_starved_alerts(store)
+    assert len(alerts) == 1
+    detail = str(alerts[0]["detail"])
+    assert "precis MCP not connected before the pass started" in detail
+    assert "status=failed" in detail
+    assert _empty_alerts(store) == []
 
 
 def test_failed_init_starve_is_not_retried(

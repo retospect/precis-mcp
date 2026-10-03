@@ -44,6 +44,7 @@ from precis.utils._claude_subprocess import (
     resolve_binary,
     run_claude,
     run_claude_async,
+    run_claude_gated,
     to_str,
 )
 from precis.utils.claude_oauth import (
@@ -204,6 +205,7 @@ def call_claude_agent(
     require_container: bool = False,
     mounts: tuple[Mount, ...] = (),
     workdir: str | None = None,
+    require_mcp: tuple[str, ...] = (),
 ) -> AgentResult:
     """Run an agentic ``claude -p`` session and return the audit result.
 
@@ -269,13 +271,30 @@ def call_claude_agent(
         workdir: Container ``-w`` working directory, threaded the same way
             as ``mounts``; ignored in-process (``cwd`` covers that path).
             ``None`` leaves the image's default workdir.
+        require_mcp: MCP server names that must report ``connected`` before the
+            prompt is sent (gr463517). Non-empty AND ``mcp_config`` set ⇒ the
+            run is *gated*: launched with ``--input-format stream-json`` and no
+            positional prompt, then :func:`~precis.utils._claude_subprocess.
+            run_claude_gated` polls the Agent SDK's ``mcp_status`` control
+            request (SDK ``mcpServerStatus()``) and only delivers the prompt
+            once every named server is ``connected``. Otherwise NO model turn
+            runs ($0) and a :class:`ClaudeAgentError` with
+            ``mcp_not_ready=True`` is raised. Why: the container image's CLI
+            (2.1.143) caps the first-turn MCP wait at 2 s, and even newer CLIs
+            start the pass with a ``failed`` server, so a pass could answer
+            tool-less and look like a success. ``output_format`` must be
+            ``stream-json`` (``ValueError`` otherwise). Empty (default) ⇒
+            byte-identical to the ungated path.
 
     Returns:
         :class:`AgentResult` with the raw stdout + telemetry.
 
     Raises:
         ClaudeAgentError: subprocess exited non-zero, timed out, or the
-            binary was missing.
+            binary was missing; with ``require_mcp``, also a required server
+            was not ready (``exc.mcp_not_ready``).
+        ValueError: ``require_mcp`` with an ``output_format`` other than
+            ``stream-json``.
         ContainerRequiredError: ``require_container=True`` and the container
             path is unavailable.
         InertDenyListError: the effective deny list (``disallowed_tools`` +
@@ -283,6 +302,9 @@ def call_claude_agent(
             ``PRECIS_MCP_PROFILE=command`` is active, where that name would
             be silently inert — see :class:`InertDenyListError`.
     """
+    # Gated only when there is an MCP config to gate on (no config ⇒ no
+    # server to wait for; the ungated argv is unchanged).
+    gated = bool(require_mcp) and mcp_config is not None
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
         model=model,
@@ -297,6 +319,7 @@ def call_claude_agent(
         disallowed_tools=disallowed_tools,
         envelope=envelope,
         extra_args=extra_args,
+        gated=gated,
     )
     proc_env = _prepare_agent_env(
         active_env=active_env, bare=bare, env_overlay=env_overlay, env_base=env_base
@@ -373,6 +396,9 @@ def call_claude_agent(
             mode=container_mode,
             mounts=mounts,
             workdir=workdir,
+            # A gated run feeds the prompt over stdin, which ``docker run``
+            # only forwards with ``-i``.
+            interactive=gated,
         )
         run_binary = run_argv[0]
         containerized = True
@@ -398,18 +424,39 @@ def call_claude_agent(
     # ``_prepare_agent_env`` deliberately skipped.
     res: Any
     try:
-        res = run_claude(
-            run_argv,
-            binary=run_binary,
-            label="claude -p (agent)",
-            timeout_s=timeout_s,
-            error_cls=ClaudeAgentError,
-            env=proc_env,
-            stdin_devnull=True,
-            cwd=cwd_str,
-            bootstrap_oauth=env_base is None,
-        )
+        if gated:
+            res = run_claude_gated(
+                run_argv,
+                prompt=prompt,
+                require_mcp=require_mcp,
+                gate_deadline_s=MCP_GATE_DEADLINE_S,
+                binary=run_binary,
+                label="claude -p (agent)",
+                timeout_s=timeout_s,
+                error_cls=ClaudeAgentError,
+                env=proc_env,
+                cwd=cwd_str,
+                bootstrap_oauth=env_base is None,
+            )
+        else:
+            res = run_claude(
+                run_argv,
+                binary=run_binary,
+                label="claude -p (agent)",
+                timeout_s=timeout_s,
+                error_cls=ClaudeAgentError,
+                env=proc_env,
+                stdin_devnull=True,
+                cwd=cwd_str,
+                bootstrap_oauth=env_base is None,
+            )
     except ClaudeAgentError as exc:
+        if exc.mcp_not_ready:
+            # The gate refused to start the pass: the MCP server (in-container
+            # or on the host) is not usable. Not a container-infra failure and
+            # not a recoverable exhaustion — re-raise as is, so the caller sees
+            # ``mcp_not_ready`` rather than a silent in-proc retry.
+            raise
         if containerized and _container_infra_failure(exc):
             # The *container* failed to run (image missing, daemon unreachable,
             # socket perm, OOM 137) — NOT a claude/model error inside it. Latch
@@ -447,6 +494,8 @@ def call_claude_agent(
                 proc_env,
                 cwd_str,
                 bootstrap_oauth=env_base is None,
+                prompt=prompt if gated else None,
+                require_mcp=require_mcp if gated else (),
             )
         else:
             # A non-container failure (or a claude/model error inside the
@@ -506,7 +555,9 @@ async def call_claude_agent_async(
 
     Container-executor support is deliberately OUT OF SCOPE here — this
     always runs the in-process subprocess path, unlike the sync function's
-    container-or-in-proc branch.
+    container-or-in-proc branch. The MCP readiness gate (``require_mcp``,
+    gr463517) is likewise sync-only: this twin never passes ``gated`` and
+    keeps the plain positional-prompt argv.
 
     Raises:
         ClaudeAgentError: subprocess exited non-zero, timed out, or the
@@ -584,6 +635,7 @@ def _resolve_agent_args(
     disallowed_tools: tuple[str, ...],
     envelope: Any | None,
     extra_args: tuple[str, ...],
+    gated: bool = False,
 ) -> tuple[str, list[str], str, float, float, Any]:
     """Resolve model/timeout/budget and build the full ``claude -p`` argv.
 
@@ -594,12 +646,25 @@ def _resolve_agent_args(
     max_usd, active_env)`` — ``active_env`` (the resolved envelope, if any)
     is threaded to :func:`_prepare_agent_env` so it isn't re-resolved.
 
+    ``gated`` (the MCP readiness gate, gr463517) swaps the trailing
+    ``-- <prompt>`` for ``--input-format stream-json`` — the prompt is then
+    delivered over stdin by :func:`run_claude_gated`.
+
     Raises:
         InertDenyListError: the merged deny list (explicit
             ``disallowed_tools`` + the envelope's tier-1 deny) names a
             ``mcp__precis__*`` tool while ``PRECIS_MCP_PROFILE=command`` is
             active — see :func:`_check_deny_list_profile_safety`.
+        ValueError: ``gated`` with an ``output_format`` other than
+            ``stream-json`` (the gate reads and the result parsers expect the
+            event stream).
     """
+    if gated and output_format != "stream-json":
+        raise ValueError(
+            "call_claude_agent: require_mcp needs output_format='stream-json' "
+            f"(got {output_format!r}) — the readiness gate speaks the "
+            "stream-json control protocol."
+        )
     binary = resolve_binary()
     model = (
         model or os.environ.get("PRECIS_CLAUDE_AGENT_MODEL") or _default_agent_model()
@@ -642,6 +707,8 @@ def _resolve_agent_args(
         "--output-format",
         output_format,
     ]
+    if gated:
+        args.extend(["--input-format", "stream-json"])
     if output_format == "stream-json" and "--verbose" not in extra_args:
         # ``claude -p`` (``--print``) rejects ``--output-format stream-json``
         # unless ``--verbose`` is also passed. Guarded so a caller that
@@ -691,14 +758,16 @@ def _resolve_agent_args(
         }
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
-    # ``--`` end-of-options sentinel, then the prompt as the sole trailing
-    # positional. The prompt is UNTRUSTED (e.g. raw Discord messages), and
-    # claude's Commander.js CLI parses any argv token starting with ``-`` as
-    # an option — without ``--``, a prompt beginning with a dash exits the
-    # binary 1 with "unknown option". MUST stay after ``extra_args`` and
-    # immediately precede the prompt.
-    args.append("--")
-    args.append(prompt)
+    if not gated:
+        # ``--`` end-of-options sentinel, then the prompt as the sole trailing
+        # positional. The prompt is UNTRUSTED (e.g. raw Discord messages), and
+        # claude's Commander.js CLI parses any argv token starting with ``-`` as
+        # an option — without ``--``, a prompt beginning with a dash exits the
+        # binary 1 with "unknown option". MUST stay after ``extra_args`` and
+        # immediately precede the prompt. (A gated run sends the prompt as a
+        # stream-json message over stdin instead — no argv parsing involved.)
+        args.append("--")
+        args.append(prompt)
 
     log.debug(
         "claude_agent: invoking model=%s max_turns=%d max_usd=%.4f "
@@ -772,6 +841,12 @@ MCP_STARTUP_WAIT_MS: str = "30000"
 #: container's older CLI, which blocks on it once ``MCP_CONNECTION_NONBLOCKING``
 #: is ``false`` instead of honouring the startup wait above (gr463517).
 MCP_CONNECT_TIMEOUT_MS: str = "60000"
+
+#: Seconds the MCP readiness gate (``require_mcp``) waits for every required
+#: server to report ``connected`` before failing the pass with $0 spent
+#: (gr463517). Sized just above the per-server connect timeout so the CLI's
+#: own failure verdict normally lands first.
+MCP_GATE_DEADLINE_S: float = 60.0
 
 
 def _prepare_agent_env(
@@ -992,6 +1067,10 @@ def _recover_exhaustion_or_raise(exc: ClaudeAgentError) -> Any:
     exhaustion is resumable, not failed, and callers must not lose that work
     behind a bare undiagnosable ``exited 1:``.
     """
+    if exc.mcp_not_ready:
+        # A readiness-gate refusal ran no turn: nothing to recover, and the
+        # enrich branch below would drop the ``mcp_not_ready`` marker.
+        raise exc
     reason = _recoverable_exhaustion(exc.stdout or "")
     if reason is None:
         # Genuine failure. The CLI's bare "exited N: " is undiagnosable when
@@ -1023,6 +1102,8 @@ def _run_inproc_fallback(
     cwd: str | None = None,
     *,
     bootstrap_oauth: bool = True,
+    prompt: str | None = None,
+    require_mcp: tuple[str, ...] = (),
 ) -> Any:
     """Retry the SAME agentic call in-process after a container-infra failure.
 
@@ -1034,8 +1115,26 @@ def _run_inproc_fallback(
     ``bootstrap_oauth`` threads the same isolation decision the primary run
     made — an env-isolated caller's fallback must not have the worker's
     real OAuth token re-injected here either.
+
+    ``prompt``/``require_mcp`` carry a *gated* call's readiness gate onto the
+    fallback: its ``args`` have no positional prompt, so it must run through
+    :func:`run_claude_gated` too, or the CLI would wait on stdin forever.
     """
     try:
+        if prompt is not None and require_mcp:
+            return run_claude_gated(
+                args,
+                prompt=prompt,
+                require_mcp=require_mcp,
+                gate_deadline_s=MCP_GATE_DEADLINE_S,
+                binary=binary,
+                label="claude -p (agent · in-proc fallback)",
+                timeout_s=timeout_s,
+                error_cls=ClaudeAgentError,
+                env=proc_env,
+                cwd=cwd,
+                bootstrap_oauth=bootstrap_oauth,
+            )
         return run_claude(
             args,
             binary=binary,

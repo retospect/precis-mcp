@@ -923,6 +923,13 @@ class LlmResult:
     timed_out: bool = False
     cli_unavailable: bool = False
     quota_exhausted: bool = False
+    #: ``True`` when a gated ``claude_agent`` run (``require_mcp``, gr463517)
+    #: refused to START the pass because the required MCP server (``precis``)
+    #: never reported ``connected`` — no model turn ran, so it cost $0. A
+    #: host-wiring defect, not ``paused`` (retrying the identical call at once
+    #: would fail the same way): the caller raises a visible alert and backs
+    #: off. ``error`` carries the status and wait.
+    mcp_not_ready: bool = False
     #: OpenAI ``usage.total_tokens`` for the local/openai-compat transports
     #: (``None`` for claude, which reports cost not tokens). Kept so a
     #: direct-``LlmClient`` pass folded through :class:`DispatchClient` still
@@ -1300,6 +1307,15 @@ class ClaudeAgentProvider:
                 log_event=req.log_event,
                 env_overlay=req.env_overlay,
                 cwd=req.cwd,
+                # gr463517: a tool-using pass with an MCP config only starts
+                # once ``precis`` reports connected (fail closed, $0 otherwise).
+                # Derived here, not a new LlmRequest field. The async twin
+                # (``_dispatch_claude_agent_async``) is deliberately ungated.
+                require_mcp=(
+                    ("precis",)
+                    if req.tools_needed and req.mcp_config is not None
+                    else ()
+                ),
             )
         except ClaudeProcessError as exc:
             return _error_result(exc, model=model, tier=req.tier)
@@ -3133,6 +3149,8 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         # gr335087: structural (never string-sniffed) signal that this
         # host's claude CLI itself is missing — see LlmResult.cli_unavailable.
         cli_unavailable=getattr(exc, "binary_missing", False),
+        # gr463517: the MCP readiness gate refused to start the pass.
+        mcp_not_ready=getattr(exc, "mcp_not_ready", False),
     )
 
 

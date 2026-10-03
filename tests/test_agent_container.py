@@ -418,6 +418,53 @@ def test_no_mounts_no_workdir_is_byte_identical() -> None:
     )
     assert "-v" not in argv
     assert "-w" not in argv
+    assert "-i" not in argv
+
+
+def test_interactive_emits_dash_i_only_when_asked() -> None:
+    """gr463517: a gated claude reads its control requests + prompt from stdin,
+    which ``docker run`` only forwards with ``-i``."""
+    cenv, net = _default_cenv_net()
+    kw = {
+        "container_bin": "podman",
+        "name": "agent-1",
+        "image": "precis-agent:x",
+        "cenv": cenv,
+        "net": net,
+        "detached": False,
+    }
+    plain = ac.build_agent_run_argv(**kw)
+    gated = ac.build_agent_run_argv(**kw, interactive=True)
+    assert "-i" not in plain
+    assert gated[:3] == ["podman", "run", "-i"]
+    # Nothing else differs: dropping the flag restores the plain argv.
+    assert [a for a in gated if a != "-i"] == plain
+
+
+def test_containerize_claude_argv_interactive_only_when_gated() -> None:
+    env = Envelope(egress="api-only", write="full")
+    host = ["claude", "-p", "--input-format", "stream-json"]
+    plain = ac.containerize_claude_argv(
+        host, env, name="agent-x", model="opus", image="precis-agent:x"
+    )
+    gated = ac.containerize_claude_argv(
+        host,
+        env,
+        name="agent-x",
+        model="opus",
+        image="precis-agent:x",
+        interactive=True,
+    )
+    assert "-i" not in plain
+    assert "-i" in gated
+    assert [a for a in gated if a != "-i"] == plain
+    # the command tail (after the image) is untouched by the flag
+    assert gated[gated.index("precis-agent:x") + 1 :] == [
+        "claude",
+        "-p",
+        "--input-format",
+        "stream-json",
+    ]
 
 
 def test_containerize_claude_argv_threads_mounts_and_workdir(tmp_path) -> None:

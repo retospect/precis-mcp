@@ -519,6 +519,7 @@ def build_agent_run_argv(
     command: Sequence[str] = (),
     mounts: tuple[Mount, ...] = (),
     workdir: str | None = None,
+    interactive: bool = False,
 ) -> list[str]:
     """Assemble the ``docker/podman run`` argv for one agentic job.
 
@@ -537,10 +538,17 @@ def build_agent_run_argv(
     ``docker run``. ``workdir`` emits ``-w <path>`` (must be absolute).
     Both default to nothing, so an unmounted, workdir-less call (every
     caller before fix_gripe) is byte-identical.
+
+    ``interactive`` emits ``-i`` (keep stdin open): a gated ``claude -p``
+    (``call_claude_agent(require_mcp=…)``, gr463517) reads its control
+    requests and the prompt from stdin, which ``docker run`` drops without it.
+    Off by default, so every ungated argv is byte-identical.
     """
     argv = [container_bin, "run"]
     if detached:
         argv += ["-d"]
+    if interactive:
+        argv += ["-i"]
     argv += ["--rm", "--name", name]
     argv += container_limit_flags()
     for m in mounts:
@@ -630,6 +638,7 @@ def containerize_claude_argv(
     mode: str | None = None,
     mounts: tuple[Mount, ...] = (),
     workdir: str | None = None,
+    interactive: bool = False,
 ) -> list[str]:
     """Wrap an already-built host ``claude -p …`` argv into a synchronous
     ``docker/podman run`` that execs the SAME command inside the container.
@@ -664,6 +673,10 @@ def containerize_claude_argv(
     workspace (fix_gripe's git clone) binds it in and ``cd``s the container
     there; both default to nothing, byte-identical for every caller that
     doesn't need a workspace (the review-pass callers).
+
+    ``interactive`` threads ``-i`` to :func:`build_agent_run_argv` for a gated
+    run whose prompt arrives over stdin (see there); the host argv it wraps has
+    no positional prompt in that case.
     """
     command = ["claude", *_rebase_mcp_config(list(host_argv)[1:])]
     return build_agent_run_argv(
@@ -676,6 +689,7 @@ def containerize_claude_argv(
         command=command,
         mounts=mounts,
         workdir=workdir,
+        interactive=interactive,
     )
 
 

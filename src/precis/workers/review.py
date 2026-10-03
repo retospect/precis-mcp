@@ -256,20 +256,20 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         output_format="stream-json",
         extra_args=("--verbose",),
     )
+    # The claude_agent rung is MCP-gated (gr463517): ``route`` only sends the
+    # prompt once ``precis`` reports connected, so the old "init said precis
+    # was still pending, retry once" race (gr245505) can no longer reach here.
     res = route(request)
-    if _is_tool_starved(res, mcp_config) and _precis_init_pending(res):
-        # gr245505: the model started before the precis MCP server finished
-        # its handshake (init status ``pending``) and ended in one turn with
-        # no tools. A transient race, not a defect — retry ONCE. A second
-        # starve falls through to the tool-starved handling below, unchanged
-        # (no loop, max_turns untouched).
-        log.warning(
-            "review[%s]: tool-starved with precis MCP still pending at init; "
-            "retrying once (%s)",
-            reviewer.name,
-            _tool_starved_evidence(res),
-        )
-        res = route(request)
+    if res.mcp_not_ready:
+        # The readiness gate refused to start the pass: ``precis`` was failed /
+        # needs-auth / never connected, so NO model turn ran ($0). Retrying the
+        # identical call would fail identically, so back off (marker) and keep
+        # a dead precis visible with the same alert a tool-starved pass raises.
+        evidence = f"precis MCP not connected before the pass started: {res.error}"
+        log.error("review[%s]: %s — raising alert", reviewer.name, evidence)
+        _write_failure_marker(store, reviewer, f"mcp-not-ready: {res.error}")
+        _raise_tool_starved_alert(store, reviewer, evidence=evidence, not_started=True)
+        return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     if res.error:
         if res.paused:
             # Window-scoped breaker trip (dollar cap / claude-OAuth quota), not a
@@ -514,14 +514,6 @@ def _tool_starved_evidence(res: LlmResult) -> str:
     )
 
 
-def _precis_init_pending(res: LlmResult) -> bool:
-    """True when the stream's init event listed the precis server as pending."""
-    from precis.utils.claude_agent import stream_mcp_server_status
-
-    servers = stream_mcp_server_status(res.raw_text or "")
-    return servers is not None and servers.get("precis") == "pending"
-
-
 def _is_tool_starved(res: LlmResult, mcp_config: Path | None) -> bool:
     """True when tools were on offer but the pass never touched precis (gr197478).
 
@@ -596,18 +588,49 @@ def _tool_starved_alert_source(reviewer: Reviewer) -> str:
 
 
 def _raise_tool_starved_alert(
-    store: Store, reviewer: Reviewer, *, evidence: str = ""
+    store: Store,
+    reviewer: Reviewer,
+    *,
+    evidence: str = "",
+    not_started: bool = False,
 ) -> None:
     """Surface a tool-starved pass as a ``warn`` alert (gr197478).
 
     ``evidence`` is :func:`_tool_starved_evidence`'s line — it goes into the
     detail so the alert names its cause class instead of restating the
     2026-08-02 hypothesis for every occurrence (gr245505).
+
+    ``not_started`` is the MCP readiness gate's variant (gr463517): the pass
+    never ran because ``precis`` wasn't connected. Same source + fingerprint,
+    so the next good digest resolves it, but the title and detail say no digest
+    was written and no model turn ran.
     """
     host = _resolve_host_name()
     # Fingerprint is per-reviewer, NOT per-host — symmetric with the resolve,
     # same reasoning as :func:`_raise_empty_pass_alert`.
     fingerprint = f"{reviewer.name}:tool-starved"
+    if not_started:
+        raise_alert(
+            store,
+            source=_tool_starved_alert_source(reviewer),
+            fingerprint=fingerprint,
+            title=(
+                f"[review-tool-starved] {reviewer.name} not started on {host}: "
+                "precis MCP not connected"
+            ),
+            detail=(
+                f"The {reviewer.name} reviewer's MCP readiness gate refused to "
+                "start the pass — the precis MCP server never reported "
+                f"connected. No model turn ran ($0) and no digest was written. "
+                f"Evidence: {evidence or 'n/a'}. failed/needs-auth ⇒ the server "
+                "could not register on this host (DB auth, PGPASSFILE, "
+                "container health — gr197478's shape); pending at the deadline "
+                "⇒ it is too slow to start. The pass is backed off for its "
+                "normal interval and will retry."
+            ),
+            severity="warn",
+        )
+        return
     title = (
         f"[review-tool-starved] {reviewer.name} wrote a digest with zero "
         f"precis tool calls on {host}"
