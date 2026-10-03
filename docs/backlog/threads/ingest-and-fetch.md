@@ -111,11 +111,14 @@ states that count a paper as usable when it is not, then metadata.
    `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
    call covers 500 ids. Re-arm runs in batches of 500 at least an hour
    apart, each row stamped `meta.s2_rearm.batch` (which also stops a
-   re-enriched-but-still-venueless row being re-armed). Batch 1 (13:23Z):
-   58% gained a venue. Batches 2-3 done; 4-7 run 2 h apart from a
-   detached `s2-rearm.sh` (Reto: ample breaks). Open: the
-   1,200 *held* venue-less papers no lane re-enriches — Crossref fallback
-   (`backlog/crossref-enrichment.md`) or a held-paper S2 pass.
+   re-enriched-but-still-venueless row being re-armed). Re-arm done
+   2026-10-03 14:53Z: 7 batches, 3,128 papers, all re-enriched, and
+   1,658 (53%) now carry a venue (`meta.journal`; 27–64% per batch). S2
+   holds no venue for the other 1,470, so a further S2 pass gains
+   nothing. Open: those 1,470, plus the 1,200 *held* venue-less papers no
+   lane re-enriches. Both need the Crossref fallback
+   (`backlog/crossref-enrichment.md`); the held papers could also take a
+   held-paper S2 pass.
 
 ## Horizon
 
