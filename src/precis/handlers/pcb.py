@@ -108,7 +108,7 @@ from precis.pcb import session as pcb_session
 from precis.pcb import silk as pcb_silk
 from precis.pcb import svg as pcb_svg
 from precis.pcb.capabilities import CapabilityRow, capability_for
-from precis.pcb.footprint import ensure_footprint
+from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import place_points, rotate_offset
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.protocol import Handler, KindSpec
@@ -370,6 +370,17 @@ def _margin_delta[T](
             else:
                 standing.append(payload)
     return worse, standing
+
+
+_FOOTPRINT_SCHEMA = [
+    "lcsc",
+    "cached",
+    "source",
+    "n_pads",
+    "n_pins",
+    "courtyard",
+    "error",
+]
 
 
 @dataclasses.dataclass
@@ -1635,22 +1646,15 @@ class PcbHandler(Handler):
             except ValueError as exc:
                 raise BadInput(f"pcb: {exc}") from exc
             data["source"] = "authored"
-            self.store.part_footprint_put(lcsc, data)
+            judged = self._put_footprints_judged(ref, {lcsc: data})
             row = self.store.part_footprint_get(lcsc)
             return Response(
                 body=f"# footprint {lcsc} — authored\n"
                 + render_agent_table(
                     [self._footprint_summary_row(lcsc, row, error=None)],
-                    schema=[
-                        "lcsc",
-                        "cached",
-                        "source",
-                        "n_pads",
-                        "n_pins",
-                        "courtyard",
-                        "error",
-                    ],
+                    schema=_FOOTPRINT_SCHEMA,
                 )
+                + self._footprint_judge_lines(ref, [lcsc], judged)
             )
 
         if not parts:
@@ -1661,19 +1665,30 @@ class PcbHandler(Handler):
                 "'part':'C639448'})",
             )
         force = bool(args.get("force"))
-        rows: list[dict[str, str]] = []
-        n_ok = 0
+        # Fetch first, outside any transaction (a network round-trip must
+        # not hold one open); only the cache writes run in the judged tx.
+        fetched: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
         for raw in parts:
             lcsc = raw.upper()
-            error: str | None = None
             try:
-                ensure_footprint(self.store, lcsc, force=force)
+                if not force and self.store.part_footprint_get(lcsc) is not None:
+                    continue
+                pulled = fetch_footprint(lcsc)
+                if pulled is not None:
+                    fetched[lcsc] = pulled
             except Exception as exc:
                 # Broad on purpose — per-part isolation is the whole point
                 # (gr341532 fix 3's spec: "must NOT raise for the batch"); a
                 # vendor/network failure on one C-number reports in that
                 # row, the rest of the batch still runs.
-                error = f"{type(exc).__name__}: {exc}"
+                errors[lcsc] = f"{type(exc).__name__}: {exc}"
+        judged = self._put_footprints_judged(ref, fetched) if fetched else JudgeReport()
+        rows: list[dict[str, str]] = []
+        n_ok = 0
+        for raw in parts:
+            lcsc = raw.upper()
+            error = errors.get(lcsc)
             row = self.store.part_footprint_get(lcsc)
             if row is None and error is None:
                 error = (
@@ -1686,19 +1701,54 @@ class PcbHandler(Handler):
         return Response(
             body=head
             + "\n"
-            + render_agent_table(
-                rows,
-                schema=[
-                    "lcsc",
-                    "cached",
-                    "source",
-                    "n_pads",
-                    "n_pins",
-                    "courtyard",
-                    "error",
-                ],
-            )
+            + render_agent_table(rows, schema=_FOOTPRINT_SCHEMA)
+            + self._footprint_judge_lines(ref, list(fetched), judged)
         )
+
+    def _put_footprints_judged(
+        self, ref: Any, footprints: dict[str, dict[str, Any]]
+    ) -> JudgeReport:
+        """Write footprint cache rows inside a judged transaction on ``ref``
+        (the real footprint wins: ``refuse=False``). Router copper the new
+        pads or courtyard now collide with is ripped; pad/placement
+        collisions are kept in ``JudgeReport.visible``."""
+
+        def apply(_conn: Any) -> None:
+            # part_footprint_put joins the ambient judged transaction.
+            for lcsc, data in footprints.items():
+                self.store.part_footprint_put(lcsc, data)
+
+        _, judged = self._judged_mutation(ref.id, apply, refuse=False)
+        return judged
+
+    def _footprint_judge_lines(
+        self, ref: Any, lcscs: list[str], judged: JudgeReport
+    ) -> str:
+        """The footprint op's judge report: ripped nets, what is now visible
+        (first 8), and the other designs sharing the catalogue-wide cache
+        rows just written."""
+        out = [
+            f"{net} ripped: {rule} after this footprint change — re-route\n"
+            for net, rule in sorted(judged.ripped.items())
+        ]
+        shown = [*judged.margins, *judged.visible]
+        out.extend(
+            f"now visible (real footprint): {v} — standing until a re-place\n"
+            for v in shown[:8]
+        )
+        if len(shown) > 8:
+            out.append(f"+{len(shown) - 8} more\n")
+        for lcsc in lcscs:
+            others = self.store.pcb_designs_using_part(lcsc, exclude_ref_id=ref.id)
+            if others:
+                names = ", ".join(others[:5]) + (
+                    f" (+{len(others) - 5} more)" if len(others) > 5 else ""
+                )
+                out.append(
+                    f"{len(others)} other design(s) use {lcsc}: {names} — "
+                    "check view='drc' there\n"
+                )
+        return "".join(out)
 
     @staticmethod
     def _footprint_summary_row(

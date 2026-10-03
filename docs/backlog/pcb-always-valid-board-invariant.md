@@ -352,8 +352,12 @@ extracted *affinity*, which is a different fact.
   as a delta before/after; a new or worsened finding naming router copper
   rips that net, one naming only pads/authored copper refuses and rolls
   back, a standing one is counted in the response. A part with no real
-  footprint (synthesized bound) is not judged. Still open:
-  `op='footprint'` (ruled 2026-10-03, ewod-pcb-4: the real footprint wins — store and report; router copper that collides is ripped, pad/placement collisions are reported as now visible and stand until a re-place; not built yet; `_judged_mutation(refuse=False)` is the seam) and `view='route'`
+  footprint (synthesized bound) is not judged. `op='footprint'` is
+  built (ruled 2026-10-03, ewod-pcb-4: the real footprint wins — stored
+  always; router copper that now collides is ripped, pad/placement collisions
+  are reported as now visible and stand until a re-place; the fetch runs
+  before, and the cache writes inside, a `_judged_mutation(refuse=False)`;
+  other designs using the part are named). Still open: `view='route'`
   (`backlog/pcb-freerouting-view-replaces-without-legality.md`); rulings 1
   and 2 are built.
 - On put and class_rules, courtyard/outline findings carry no margin, so a

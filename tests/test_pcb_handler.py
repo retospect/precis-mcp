@@ -2635,3 +2635,169 @@ def test_validity_findings_wall_time(pcb, store, capsys):
     per = (time.perf_counter() - t0) / 5
     with capsys.disabled():
         print(f"\n_validity_findings: {per * 1000:.0f} ms/call (2 parts, 1 track)")
+
+
+# ── always-valid board: op='footprint' (ruling ewod-pcb-4) ───────────────
+_FP_P1, _FP_P2 = "C990001", "C990002"
+
+
+def _fp_small(**extra):
+    return {
+        "pads": [{"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}],
+        **extra,
+    }
+
+
+def _author_fp(pcb, slug, lcsc, footprint):
+    return pcb.put(
+        id=slug,
+        args={"op": "footprint", "part": lcsc, "footprint": footprint},
+    )
+
+
+def _fp_board(pcb, store, slug, *, routed=False):
+    """P1/P2 are catalog parts whose cached footprints are 1 mm pads; P2 sits
+    10 mm from P1. ``routed`` stores a router track of net A at x=11, 0.4 mm
+    right of P2's pad edge."""
+    pcb.put(id="fp-scratch", args={"nets": [{"name": "S"}]})
+    for lcsc in (_FP_P1, _FP_P2):
+        _author_fp(pcb, "fp-scratch", lcsc, _fp_small())
+    comps = [
+        {
+            "refdes": r,
+            "label": "p",
+            "part": lcsc,
+            "x": x,
+            "y": 0.0,
+            "pins": [{"name": "1"}],
+        }
+        for r, lcsc, x in (("P1", _FP_P1, 0.0), ("P2", _FP_P2, 10.0))
+    ]
+    pcb.put(
+        id=slug,
+        args={
+            "components": comps,
+            "nets": [{"name": "A"}, {"name": "B"}],
+            "connections": [
+                {"net": "A", "refdes": "P1", "pin": "1"},
+                {"net": "B", "refdes": "P2", "pin": "1"},
+            ],
+        },
+    )
+    ref = store.get_ref(kind="pcb", id=slug)
+    assert ref is not None
+    board_id = int(store.pcb_graph(ref.id)["board"]["board_id"])
+    if routed:
+        nets = store.pcb_net_ids(ref.id)
+        store.pcb_routes_write(ref.id, board_id, {"A": {"status": "realized"}})
+        store.pcb_copper_replace(
+            board_id,
+            [
+                {
+                    "ctype": "track",
+                    "layer": "F.Cu",
+                    "net_id": nets["A"],
+                    "geom": {
+                        "segments": [
+                            {"shape": "line", "start": [11.0, -3.0], "end": [11.0, 3.0]}
+                        ],
+                        "width_mm": 0.2,
+                    },
+                }
+            ],
+        )
+    return ref, board_id
+
+
+def test_footprint_bigger_pads_rip_router_copper_and_store_the_footprint(pcb, store):
+    ref, board_id = _fp_board(pcb, store, "fpj-rip", routed=True)
+    assert store.pcb_nets_with_router_copper(board_id) == {"A"}
+    resp = _author_fp(
+        pcb,
+        "fpj-rip",
+        _FP_P2,
+        {"pads": [{"pin": "1", "shape": "rect", "x": 0, "y": 0, "w": 3.0, "h": 1.0}]},
+    )
+    assert "A ripped: clearance after this footprint change — re-route" in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == set()
+    row = store.part_footprint_get(_FP_P2)
+    assert row is not None and row["pads"][0]["w"] == 3.0
+    assert "now visible" not in resp.body
+
+
+def test_footprint_bigger_courtyard_is_not_refused_and_is_listed(pcb, store):
+    """The courtyard is the hull of the pads + 0.4 mm, so the new pad sits
+    0.4 mm clear of P1's pad (legal) while the courtyards now overlap."""
+    _fp_board(pcb, store, "fpj-court")
+    resp = _author_fp(
+        pcb,
+        "fpj-court",
+        _FP_P2,
+        {"pads": [{"pin": "1", "shape": "rect", "x": -8.6, "y": 0, "w": 1, "h": 1}]},
+    )
+    assert "now visible (real footprint): courtyard_overlap" in resp.body
+    assert "standing until a re-place" in resp.body
+    assert "ripped" not in resp.body
+    row = store.part_footprint_get(_FP_P2)
+    assert row is not None and row["pads"][0]["x"] == -8.6
+
+
+def test_footprint_that_changes_nothing_illegal_is_silent(pcb, store):
+    _, board_id = _fp_board(pcb, store, "fpj-ok", routed=True)
+    resp = _author_fp(pcb, "fpj-ok", _FP_P2, _fp_small(note="same pads"))
+    assert "ripped" not in resp.body
+    assert "now visible" not in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == {"A"}
+
+
+def test_footprint_fetch_runs_outside_the_transaction(pcb, store, monkeypatch):
+    from precis.pcb import footprint as pcb_footprint_mod
+    from precis.store._pcb_ops import _AMBIENT_CONN
+
+    _fp_board(pcb, store, "fpj-fetch")
+    events: list[str] = []
+
+    def fake_fetch(lcsc):
+        events.append(f"fetch:{'in-tx' if _AMBIENT_CONN.get() else 'no-tx'}")
+        return {
+            "pads": [
+                {
+                    "number": "1",
+                    "shape": "RECT",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "w": 1.0,
+                    "h": 1.0,
+                    "rot": 0.0,
+                    "layer": "F.Cu",
+                    "drill": None,
+                }
+            ],
+            "pin_map": {"1": {"name": "1", "tags": []}},
+            "courtyard": {"bbox": [-0.5, -0.5, 0.5, 0.5]},
+            "centroid": {"x": 0.0, "y": 0.0},
+            "source": "easyeda:test",
+            "raw": {},
+        }
+
+    real_put = store.part_footprint_put
+
+    def spy_put(lcsc, data):
+        events.append(f"put:{'in-tx' if _AMBIENT_CONN.get() else 'no-tx'}")
+        return real_put(lcsc, data)
+
+    monkeypatch.setattr(pcb_footprint_mod, "_easyeda_fetch", fake_fetch)
+    monkeypatch.setattr(store, "part_footprint_put", spy_put)
+    pcb.put(id="fpj-fetch", args={"op": "footprint", "part": _FP_P2, "force": True})
+    assert events == ["fetch:no-tx", "put:in-tx"]
+    row = store.part_footprint_get(_FP_P2)
+    assert row is not None and row["source"] == "easyeda:test"
+
+
+def test_footprint_names_other_designs_using_the_part(pcb, store):
+    _fp_board(pcb, store, "fpj-a")
+    _fp_board(pcb, store, "fpj-b")
+    resp = _author_fp(pcb, "fpj-a", _FP_P2, _fp_small())
+    assert (
+        f"1 other design(s) use {_FP_P2}: fpj-b — check view='drc' there" in resp.body
+    )

@@ -137,3 +137,51 @@ def test_multiple_rows_one_malformed_others_preserved() -> None:
     assert _row_regrounding_failed(results[1]) is not None
     assert _row_regrounding_failed(results[2]) is None
     assert results[2]["hub"] == 2
+
+
+# --- telemetry binding -------------------------------------------------------
+
+
+def test_canary_and_dry_run_bind_route_log_and_meter(monkeypatch: Any) -> None:
+    """Both the budget meter and the route log must be bound, else
+    ``route_log.enabled()`` is False and the router logs no ``llm_call_log``."""
+    import argparse
+    from types import SimpleNamespace
+
+    from precis import route_log
+    from precis.budget import meter
+    from precis.cli import taproot_migrate as tm
+    from precis.store import Store
+    from precis.taproot import eval_canon
+    from precis.taproot import migrate as migrate_mod
+
+    calls: list[str] = []
+    store = SimpleNamespace(close=lambda: None)
+    fake_report = SimpleNamespace(ok=True, outcomes=[])
+    monkeypatch.setattr(Store, "connect", lambda *_a, **_k: store)
+    monkeypatch.setattr(tm, "resolve_dsn", lambda *_a, **_k: "dsn")
+    monkeypatch.setattr(route_log, "bind_store", lambda s: calls.append("route_log"))
+    monkeypatch.setattr(meter, "bind_store", lambda s: calls.append("meter"))
+    monkeypatch.setattr(eval_canon, "canary_extraction", lambda *_a, **_k: fake_report)
+    monkeypatch.setattr(migrate_mod, "dry_run", lambda *_a, **_k: fake_report)
+    monkeypatch.setattr(migrate_mod, "render_report", lambda *_a, **_k: "")
+
+    canary_args = argparse.Namespace(database_url=None, fixture=None, tier="small")
+    tm._run_canary(canary_args)
+    assert sorted(calls) == ["meter", "route_log"]
+
+    calls.clear()
+    dry_args = argparse.Namespace(
+        database_url=None,
+        escalate=False,
+        tier="small",
+        limit=1,
+        offset=0,
+        cohort=None,
+        controls=0,
+        control_seed=0,
+        out=None,
+        json=None,
+    )
+    tm._run_dry_run(dry_args)
+    assert sorted(calls) == ["meter", "route_log"]
