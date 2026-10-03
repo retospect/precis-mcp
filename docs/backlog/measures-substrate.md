@@ -165,15 +165,31 @@ What this build decides:
   `material_properties`, `component_specs` and `rxn_properties` row
   became a taxon there. A legacy row whose property maps to no taxon
   stops the migration and names the property.
-- **Conditions are `direction='input'` rows.** They share the output's
-  `(subject_ref_id, subject, subject_group)`. `conditions jsonb` stays
-  only for the compatibility views.
+- **The migration is one transaction,** so a stop leaves prod
+  untouched.
+- **Conditions are `direction='input'` rows joined to their output by
+  `run_key text NOT NULL`** (orchestrator fix, 2026-10-03).
+  - An output and exactly its own inputs share one `run_key`. Grouping
+    by finding is not enough: "FE 95% at −0.5 V and 61% at −0.9 V" is
+    two outputs and two potentials in one claim, and it must become two
+    runs.
+  - Extraction mints one key per claim × condition set; the
+    compatibility views set it from the legacy row id.
+  - `subject_group` stays as the paper-local group label (the finding
+    handle in the pilot).
+  - `conditions jsonb` stays only for the compatibility views.
+- **`insert_measure` writes a run.** It takes one output and its input
+  rows together in one `tx()`, and the `required_keys` check runs over
+  that run.
+- **A missing required key flags the row; it is never refused.**
+  `required_keys` writes the miss into `meta.escalation`, and
+  `best_measure` excludes flagged rows. Only 23 of the 140 claims state
+  a potential in the sentence, so refusing would drop most of the 52
+  Faradaic-efficiency rows.
 - **The `experiment` kind is deferred.** The column
-  `experiment_ref_id bigint NULL` ships now; the kind ships later.
-  Reason: a pilot row's context is one finding's claim, and
-  `subject_group` names that group (the finding's handle) with no new
-  kind. A kind that owns one paper's runs is a separate design, not
-  needed to store these numbers.
+  `experiment_ref_id bigint NULL` ships now, and the kind fills it from
+  `run_key` one to one when it ships. A kind that owns one paper's runs
+  is a separate design and isn't needed to store these numbers.
 - **The evidence edge gets a new relation, `quantifies`.** It runs
   from the paper (with `src_chunk_id` set) to the measurand taxon,
   with edge `meta = {anchor_scheme, span}`.
@@ -181,25 +197,45 @@ What this build decides:
     this measurand" is true of every row. A taxon's fisheye then lists
     the papers that measure it, which is the census.
   - It is inserted outside `add_link`, as in-scope 2 says.
+  - The insert bypasses `add_link`, so `quantifies` must be registered
+    wherever the relation vocabulary is checked: the `Relation`
+    literal, the relations table if there is one, the walker's
+    allow-lists and the `precis-relations` skill table.
+  - Input rows carry their own `primary_link_id` too, since a stated
+    temperature is a sourced claim. AC 2's refusal covers
+    `tier='measured'` inputs.
+- **The load-bearing fields are frozen by a trigger.**
+  - **Frozen:** `literal`, `value_*`, `reported_unit`,
+    `measurand_ref_id`, `subject*`, `run_key`, `experiment_ref_id`,
+    `direction`, `tier`, `reference`, `normalization*`,
+    `primary_link_id`, `actor` and `model`. An UPDATE to any of them
+    is refused, naming the rule.
+  - **Updatable:**
+    - `superseded_by` and `superseded_at`;
+    - `trusted`, computed from findings later;
+    - `extraction_status`, but only to `human_checked`.
+
+    These are annotations, not content.
+  - "Live" means `superseded_by IS NULL`, which a partial index covers.
+    Both compatibility views filter on it.
+  - **No INSTEAD OF UPDATE trigger.** No store op updates
+    `material_values` or `component_spec_values`; a grep of
+    `src/precis/store` is empty.
 - **The ledger learns a fourth target, `reviews.target_kind = 'measure'`.**
-  `precis_target_sha('measure', id)` hashes the load-bearing fields:
-  literal, value, unit, measurand, subject, experiment and anchor. Rows
-  are append-only, so a review never goes stale except through
-  supersession, which is the invariant alarm amendment §4 asks for.
-  This depends on 0185 landing first.
-- **Rows are append-only, enforced by a trigger.**
-  - An UPDATE may set only `superseded_by` and `superseded_at`;
-    anything else is refused, naming the rule.
-  - "Live" means `superseded_by IS NULL`, which a partial index
-    covers.
-  - The compatibility views' legacy UPDATE paths, if the material and
-    component ops have any, become supersede-and-insert inside an
-    INSTEAD OF trigger.
+  `precis_target_sha('measure', id)` hashes the frozen fields only.
+  - **Why only those:** an annotation update never stales a review,
+    and the frozen fields never change, so a stale measure review is
+    an invariant alarm, which is what amendment §4 asks for.
+  - **Order:** 0185 has to land first. 0185 and 0187 go to the
+    orchestrator as two branches, in that order.
 - **Who wrote each row is two columns, `actor` and `model`,** the same
-  pair as `reviews`, in place of free-text `set_by`. A legacy
-  `set_by` maps into `actor`.
-- **`trusted` stays NULL** until findings-derived trust ships. Nothing
-  sets it.
+  pair as `reviews`, in place of free-text `set_by`. A legacy `set_by`
+  maps into `actor`; a NULL one becomes `actor='legacy'`.
+- **`trusted` stays NULL** until findings-derived trust ships.
+- **A taxon with live measures refuses a change to `canonical_unit`.**
+  This check goes in the taxon handler, with one test. It means a
+  later dedup against `list.v1.yaml` cannot re-base stored values
+  silently.
 - **Units are converted with pint.** It is already a dependency, and
   `taxonomy/normalise.py::resolve_dimension` parses units. The
   converter:
@@ -208,7 +244,18 @@ What this build decides:
     naming both units;
   - keeps the reported unit and literal as provenance;
   - records `reference` (RHE, SHE, …) beside the value, never folded
-    into the unit.
+    into the unit;
+  - converts mass rates to amount rates through the product's molar
+    mass, which is computed from the product's formula, a required key
+    on yield rate. Most yield rates in this domain are mass rates: in
+    the quest's text, 17 are `mg` or `µg h⁻¹ cm⁻²` / `mg_cat⁻¹` and 8 are
+    `mol h⁻¹ cm⁻²`. A product with no formula flags the row;
+  - moves a subscript basis label on a denominator into
+    `normalization`, such as `mg_cat⁻¹` (per catalyst mass) or
+    `mg_Fe⁻¹` (per metal mass). The column also keeps geometric area
+    and electrochemically active surface area (ECSA) apart: both are
+    mol s⁻¹ m⁻², and they must never compare (AC 3's 3.7 vs 9.25
+    pair).
 - **Store ops:**
   - `insert_measure`, which:
     - takes the link and the row in one `tx()`;
@@ -217,8 +264,18 @@ What this build decides:
     - enforces the guards from in-scope 3;
     - enforces `required_keys` on the measurand;
   - `measures_for(subject_ref_id)`.
-- **Done when:** ACs 1–4, plus a round trip through the reviews ledger
-  (a reviewed measure shows `current`) and a refused UPDATE.
+- **Done when:**
+  - ACs 1–4 pass;
+  - a reviewed measure round-trips through the ledger and shows
+    `current`;
+  - an UPDATE to a frozen field is refused, while one to `trusted`
+    passes and does not stale the review;
+  - two AC 3 fixtures pass:
+    - an output with two potentials in one finding lands as two runs;
+    - a `µg h⁻¹ cm⁻²` yield-rate literal converts to the canonical unit
+      through the product's molar mass.
+- **Migration number:** 0187, assigned by the orchestrator on
+  2026-10-03.
 
 **Build B (qland, after A deploys):**
 - `best_measure` and `measures_census`;
