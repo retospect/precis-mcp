@@ -82,6 +82,8 @@
 #      enough compose networks that docker ran out of address pools ("all
 #      predefined address pools have been fully subnetted") and every
 #      scripts/test in the fleet failed before its first test.
+#      scripts/test now tears an agent tree's project down itself at exit
+#      (unless PRECIS_TEST_KEEP_DB=1), so this 2 h reap is the backstop.
 # All four together are meant to be far more conservative than "would
 # scripts/inflight call this safe_remove" — this sweep never removes the
 # worktree itself, only its docker footprint, so a false negative (leaving a
