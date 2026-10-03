@@ -44,10 +44,28 @@ recreate). Embedder admission is answered (gr459844). Since 2026-10-01
 since 23:13Z its caches live on a host mount that survives a recreate
 (gr460339). Next: stop recreates stranding interactive sessions, then the
 capacity and isolation gaps.
-**Last reviewed:** 2026-10-02 (handoff: Do-next 0 + Runbook added)
+**Last reviewed:** 2026-10-03 (handoff: Waiting-on block added)
 **Worktree:** `session-mcp-shared-server`
 
 ## Do next
+**Waiting on the orchestrator or Reto (2026-10-03).** Do not rebuild these;
+check their state first.
+- **Branch `mcp-http-proxy` @ bbe473c46** (organizer-mcp-1): an always-up
+  Caddy proxy plus blue-green backends, which supersedes Do-next 0's
+  refused windows. The orchestrator gates it. Reto does the cutover per
+  machine; the steps are in `deploy/mcp-http/README.md` on the branch.
+  Tell the orchestrator the minute before.
+- **Branch `pgbouncer-reset-readonly` @ 5fcb38b71** (organizer-pgbouncer-1):
+  `track_extra_parameters`. Held for Reto. DISCARD ALL waits on gr463966
+  and gr463967.
+- **gr463517** (structural review ran without precis): the fail-closed
+  MCP gate is qlanded as eebbb9a9f, not deployed. After the deploy, close
+  the gripe on a clean structural pass. Step 3, an image rebuild with a
+  current CLI, belongs to the orchestrator or Reto (review item
+  session-mcp-shared-server-8).
+- **After the round-2 deploy:** check that the drained respawn loads the
+  gr462133 supervisor fix and fairness (c43ddf046), then close gr462133.
+
 0. **gr460711 — any refused window longer than the client's retry budget
    strands sessions; make the server's refused windows short.** Measured
    2026-10-02 on Claude Code v2.1.285 (MCP client logs under
