@@ -369,7 +369,8 @@ def test_restore_ignores_numerical_noise() -> None:
     assert cell["domain_restored"] is False
     assert cell["domain"] == ["Cu2O(s)"]  # pymatgen's domain kept
     assert cell["verdict"] == "stable"
-    assert "note" in cell
+    # The noise margin prints as 0, never "-0.000 eV/atom above".
+    assert "Cu is 0.000 eV/atom above" in cell["note"]
 
 
 def test_restore_on_a_real_negative_is_flagged() -> None:

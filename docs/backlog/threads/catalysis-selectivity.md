@@ -84,10 +84,8 @@ spin-paired energy (§22i), so the table stands. Catpath
    dissolves across the operating window cannot be the catalyst, so it is
    ruled out before selectivity is spent on it (qu202468). The job (A)
    is on main (e167f4859, landed by the orchestrator because it changes
-   deploy roles). Left on it: clamp the within-tol note's margin at 0 (a
-   ΔG in (−1e-6, 0) prints "-0.000 eV/atom above"), and cite
-   materialsproject/pymatgen#4709 at the `process_multientry` workaround
-   so it can be deleted once upstream fixes it. The first live job
+   deploy roles); its note clamp and the pymatgen#4709 citation followed
+   in round 3. The first live job
    dogfoods on pollux once Reto confirms `PRECIS_MP_API_KEY` is in
    /secrets (release-2-2, 2026-10-03; the review session relays it).
    The gate (B) waits on A
