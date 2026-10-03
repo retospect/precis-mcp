@@ -221,6 +221,14 @@ same.
 - Throughput only: no quality comparison yet. On vLLM, gpt-oss leads on
   speed; the pick waits on the SGLang arm (no image route yet, ghcr only)
   and a quality check on the target workloads.
+- **Quality check = the knowledge-mesh task set** (Reto 2026-10-03): the
+  big local model is judged by what it does for the mesh (fix it, add
+  links, add findings, alone or at reviewable quality). knowledge-mesh owns
+  that eval and review-ledger spec and runs both candidates through the
+  `llm_eval` compare harness; the km-8 taxonomy set goes first. No separate
+  quality set here.
+- **When the server is picked**, answer Reto in the review queue: how many
+  channels, as measured ceiling, chosen setpoint and KV headroom.
 
 **Bench host: `spark` (decided 2026-09-29; superseded above for Slice 0).** Slice 0 and the frozen eval
 world (`eval-run-spine.md`) run there, not on a serving box. It is the same

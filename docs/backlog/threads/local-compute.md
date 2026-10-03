@@ -63,6 +63,18 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    result): candidate mean ≥ incumbent mean − 0.05 and no transport errors.
    No absolute mean goes on a model card until the false-zero share is
    known.
+**Order for putting the big local model to work** (Reto 2026-10-03,
+endorsed; sequence and ETA in review item local-compute-13):
+(1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
+set, then pick model and server (4b); (2) Slice 1: a permanent managed
+service on castor, castor exclusive to it, with its own `resource_slots`
+capacity row (`vllm-per-node-serving.md`); (3) local rungs in the tier
+ladder with cloud overflow (5; after round 2 carries the placement guard);
+(4) the feedback controller holding about 32 in flight, graph maintenance
+as filler (6). Proposed first target: the medium tier plus graph
+maintenance; big stays on the cloud until its own check. **Reto has not
+confirmed the target: ask it with the Slice 0 result.**
+
 4. **Three Sparks back on duty; Slice 0 picks model + server.** Reto
    2026-10-02 (review item local-compute-4, ruled 21:03Z) reversed the
    2026-08-29 paper-box rule: castor, pollux and spark (all GB10) split
@@ -105,8 +117,11 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
       - **vLLM × gpt-oss done 2026-10-03:** 32 / 144 / 290 / 400 out
         tok/s at 1 / 8 / 32 / 64; 9.6 tok/s per stream at 32; KV 20% at
         64. About 2.8× Nemotron throughout. Needs the harmony vocab staged
-        offline (item has the recipe). Next: C above 64, then a quality
-        check.
+        offline (item has the recipe). Next: C above 64, then the quality
+        check on knowledge-mesh's task set (km-8 taxonomy first; Reto
+        2026-10-03, co-owned with knowledge-mesh). When the server is
+        picked, a review item answers Reto's "how many channels"
+        (ceiling, setpoint, KV headroom).
       - SGLang has no image route yet (ghcr only).
       It picks the model 3 may run on, and unblocks 5 and 6. Also **backlog/local-serving-eval.md** (moved here 2026-10-01).
    c. **backlog/spark-provisioning.md** — nvidia docker runtime in a role,
@@ -127,7 +142,8 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    running/waiting/KV metrics; card `max_parallel`, slot capacity and the
    server limit set from one number; overflow to the cloud rung;
    `graph-maintenance-queue.md` (Horizon 1) as the deferrable feed. After
-   Slice 0 (4b) and Slice 1 serving.
+   Slice 0 (4b) and Slice 1 serving. This and the queue are the path that
+   puts castor to work (Reto 2026-10-03).
 7. **backlog/embedder-capacity-ownership.md** — decided (Reto 20:47Z
    2026-10-02, td461158, §Decided in the item): this thread holds aggregate
    embedder capacity; owner is the embedder service; provisional capacity
