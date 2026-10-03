@@ -191,6 +191,13 @@ check their state first.
   Shared Resources"). Reto runs the `cp`; the session prepares the
   staged file, diffs it, and verifies the result. Tell the orchestrator
   before any `--recreate`, so it can count drops and sweep.
+- **The ensure script is under version control** (organizer-mcp-1, on a
+  branch awaiting review): `deploy/mcp-http/precis-mcp-http-ensure.sh` plus
+  its README, with an always-up Caddy proxy in front (blue-green backend
+  swaps, `--migrate` is the one-time gap Reto runs). It needs
+  `~/.secrets/pw/PRECIS_MCP_DB_HOST` (the DB node's hostname, no longer a
+  literal in the script). Rig: `tests/test_mcp_http_proxy_rig.py`
+  (`PRECIS_MCP_PROXY_RIG=1`).
 - **A rig never uses the live name:** use scratch `rig*.sh` with their
   own `PRECIS_MCP_HTTP_NAME`. The installed script refuses
   PORT/STATE/IMAGE/SRC overrides on `precis-mcp-http` unless
