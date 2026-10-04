@@ -23,6 +23,14 @@ thread and is flagged on the Horizon for an owner.
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
+**Resume (2026-10-03, session closed to save usage):**
+- Done and verified on prod: the doctor filer fix (tick 464516), the
+  diagnose_gripe cost ledger (job 464662), and gr248866.
+- Waiting on others:
+  - Do-next 1: the review session's resend of dedupe items 1 and 2.
+  - Do-next 2: the orchestrator's round, for the NFS-hang branch.
+- Next to build (no outside wait): the Do-next 3 design note, then
+  Do-next 4 once the item is ruled ready.
 
 ## Do next
 
