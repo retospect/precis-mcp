@@ -54,6 +54,10 @@ only; everything this thread built is on main and was live by round 4.
     `uv lock -P autocatpath` (Do-next 1). Then one build here: the lock,
     the engine-guard check, and the neb-tier re-run once the holds lift;
   - fetches: 13 of the 15 papers the CNT item waits on (Parked).
+- Open question for the orchestrator (raised 2026-10-04): chemistry's
+  Resume block expects the next qu164903 tick to re-mint 23 failed verify
+  seeds. If that counts as a re-run under the item-25 hold, it needs a
+  ruling before the tick.
 - Next step: when the catpath sha arrives, run `uv lock -P autocatpath`.
   The holds of items 23/25 (no re-runs, no hydride pilot) stay until
   Reto lifts them.
