@@ -171,3 +171,6 @@ docs/codebase-map.md
 
 # Real paper text sampled by scripts/llm_eval/build_summarize_gold.py -- never commit.
 scripts/llm_eval/gold_set/local/
+
+# Root-level run logs (ship/test output redirected into a worktree) — never tracked.
+/*.log
