@@ -80,6 +80,7 @@ import itertools
 import json
 import logging
 import math
+import re
 import tempfile
 import time
 from collections.abc import Callable, Iterable
@@ -1607,6 +1608,7 @@ class SeHandler(Handler):
                 "view='fab' for the whole fabrication plan)"
             )
         sections = []
+        mesh_skipped: list[str] = []
         for root in se_printgroup.group_roots(tree):
             try:
                 group = se_printgroup.report_for(
@@ -1628,7 +1630,11 @@ class SeHandler(Handler):
                     str(exc), next="pip install --force-reinstall 'precis-mcp'"
                 ) from exc
             assert report is not None
+            if _summary_skips_mesh_checks(report):
+                mesh_skipped.append(name)
             sections.append(_render_print_summary(report))
+        if mesh_skipped:
+            sections.append(_mesh_checks_not_run_line(mesh_skipped))
         return (
             "\n\n".join(sections)
             + "\n\nNext: view='fab' for the whole fabrication plan."
@@ -3921,10 +3927,31 @@ def _frame_origin(report: se_printing.BlockPrintReport) -> str:
     return "pinned" if report.pinned else "proposed"
 
 
+def _summary_skips_mesh_checks(report: se_printing.BlockPrintReport) -> bool:
+    """True when a ``mesh_checks=False`` report is realized with a build
+    frame — the shipped-mesh rules (``floating_island``,
+    ``slicer_cantilever``) had a mesh to judge but did not run."""
+    return (
+        not report.mesh_checked
+        and report.printed is not None
+        and report.chosen_down is not None
+    )
+
+
+def _mesh_checks_not_run_line(blocks: list[str]) -> str:
+    """The summary's one-line notice that the shipped-mesh rules did not run."""
+    names = blocks[0] if len(blocks) == 1 else "<block>"
+    return (
+        "shipped-mesh checks (floating_island, slicer_cantilever) not run in "
+        f"this summary — view='print' args={{'block': '{names}'}} runs them"
+    )
+
+
 def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
     """One ``## block`` section of ``view='print'``'s no-args summary —
     mode, realized/unrealized, the proposed/pinned frame with its score,
-    then findings."""
+    then findings. The shipped-mesh rules do not run here, and a section
+    without findings says so rather than reading as a clean mesh."""
     lines = [f"## {report.block} — mode {report.mode}"]
     if report.printed is None:
         lines.append("unrealized — no bound cad design yet")
@@ -3948,11 +3975,51 @@ def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
                 lines.append(f"vs best: {report.best_other}")
             if report.search_skipped:
                 lines.append(report.search_skipped)
+    skipped = _summary_skips_mesh_checks(report)
     if report.findings:
         lines.append(_findings_table(report.findings))
     else:
-        lines.append("no findings")
+        lines.append(
+            "no findings from the checks run here" if skipped else "no findings"
+        )
     return "\n".join(lines)
+
+
+def _mesh_check_counts_line(report: se_printing.BlockPrintReport) -> str:
+    """The block view's one line on the shipped-mesh rules: the counts
+    (``0`` included) when they ran, ``not run`` plus the reason when not."""
+    skip_reasons = [
+        f.detail
+        for f in report.findings
+        if f.rule in ("floating_island", "slicer_cantilever")
+        and f.severity == "info"
+        and "skipped" in f.detail
+    ]
+    if report.pitch is None and report.print_mesh is not None:
+        skip_reasons.append("the mode's layer_height does not resolve")
+    if not report.mesh_checked or report.print_mesh is None:
+        reason = "; ".join(skip_reasons)
+        return "shipped-mesh checks: not run" + (f" — {reason}" if reason else "")
+    pm = report.print_mesh
+    if skip_reasons:
+        return "shipped-mesh checks: not run — " + "; ".join(skip_reasons)
+    shipped = [f for f in report.findings if f.severity != "info"]
+    islands = 0
+    for f in shipped:
+        if f.rule != "floating_island":
+            continue
+        m = re.search(r"\((\d+) in total\)", f.detail)
+        # the overflow line stands for every island past the listed ones
+        islands += int(m.group(1)) - se_printing.MAX_LISTED_ISLANDS if m else 1
+    canti = [f for f in shipped if f.rule == "slicer_cantilever"]
+    n_err = sum(f.severity == "error" for f in canti)
+    n_warn = sum(f.severity == "warn" for f in canti)
+    return (
+        f"shipped-mesh checks ({len(pm.parts)} part(s), build frame, welded"
+        + (f", tail lift tol {pm.tol_mm:.3g} mm" if pm.tol_mm is not None else "")
+        + f"): floating_island {islands} · slicer_cantilever {n_err} error / "
+        f"{n_warn} warn"
+    )
 
 
 def _render_print_block(report: se_printing.BlockPrintReport) -> str:
@@ -3999,15 +4066,9 @@ def _render_print_block(report: se_printing.BlockPrintReport) -> str:
                     schema=["down", "score", *term_keys],
                 )
             )
-    if report.mesh_checked and report.print_mesh is not None:
-        pm = report.print_mesh
+    if report.chosen_down is not None:
         lines.append("")
-        lines.append(
-            "floating-region check: ran on the mesh the export writes "
-            f"({len(pm.parts)} part(s), build frame, welded"
-            + (f", tail lift tol {pm.tol_mm:.3g} mm" if pm.tol_mm is not None else "")
-            + ")"
-        )
+        lines.append(_mesh_check_counts_line(report))
     lines.append("")
     lines.append(_findings_table(report.findings) if report.findings else "no findings")
     return "\n".join(lines)

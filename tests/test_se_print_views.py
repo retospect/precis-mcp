@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -36,8 +37,9 @@ from precis.store import Store
 from precis_se import modes as se_modes
 from precis_se import persist
 from precis_se import printing as se_printing
-from precis_se.handler import SeHandler
+from precis_se.handler import SeHandler, _render_print_block
 from precis_se.ops import SeTree
+from precis_se.validate import ValidationIssue
 from tests.test_cad_printability import _T_SHAPE
 from tests.test_se_fasten_seatclamp import _ensure_fastener_specs, _seat_clamp
 
@@ -238,14 +240,64 @@ class TestBuildFrameProposal:
         assert full is not None
         assert full.print_mesh is not None and full.mesh_checked
         # the cheap status callers and the all-blocks summary skip the mesh
+        summary = handler.get(id="print4-lazy-se", view="print").body
         assert (
-            "floating-region check"
-            not in handler.get(id="print4-lazy-se", view="print").body
-        )
+            "shipped-mesh checks (floating_island, slicer_cantilever) not run in "
+            "this summary — view='print' args={'block': 'part'} runs them"
+        ) in summary
         body = handler.get(
             id="print4-lazy-se", view="print", args={"block": "part"}
         ).body
-        assert "floating-region check: ran on the mesh the export writes" in body
+        assert "floating-region check" not in body
+        assert "shipped-mesh checks: not run" not in body
+        # 0 islands / 0 cantilevers is stated, not left to silence
+        assert (
+            "shipped-mesh checks (1 part(s), build frame, welded, tail lift tol "
+            "0.1 mm): floating_island 0 · slicer_cantilever 0 error / 0 warn"
+        ) in body
+        assert body.rstrip().endswith("no findings")
+
+        # counts come from the findings: listed islands + the overflow line's
+        # remainder, cantilevers by severity
+        def issue(rule: str, severity: str, detail: str) -> ValidationIssue:
+            return ValidationIssue(
+                rule=rule, subject="part", detail=detail, severity=severity
+            )
+
+        islands = [issue("floating_island", "error", "island") for _ in range(10)]
+        islands.append(
+            issue("floating_island", "error", "2 further island(s) (12 in total)")
+        )
+        counted = _render_print_block(
+            replace(
+                full,
+                findings=[
+                    *islands,
+                    issue("slicer_cantilever", "error", "c"),
+                    issue("slicer_cantilever", "warn", "c"),
+                    issue("slicer_cantilever", "warn", "c"),
+                    issue("mesh_cleanup", "info", "m"),
+                ],
+            )
+        )
+        assert "floating_island 12 · slicer_cantilever 1 error / 2 warn" in counted
+        # a check that was skipped says so, with its reason, not "0"
+        skipped = _render_print_block(
+            replace(
+                full,
+                print_mesh=None,
+                mesh_checked=False,
+                findings=[
+                    issue(
+                        "floating_island", "info", "floating-region check skipped: boom"
+                    )
+                ],
+            )
+        )
+        assert (
+            "shipped-mesh checks: not run — floating-region check skipped: boom"
+        ) in skipped
+        assert "floating_island 0" not in skipped
 
     def test_no_fdm_block_is_honest(self, handler: SeHandler) -> None:
         handler.put(

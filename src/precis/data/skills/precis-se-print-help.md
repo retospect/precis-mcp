@@ -183,6 +183,10 @@ choice is a contract, the slice-4 `origin` rule.
 | `unrealized` | info | see above |
 | `abstract_joint` | warn | see above |
 
+`floating_island` and `slicer_cantilever` judge the built mesh, so the
+no-`block` summary skips them and says so; `view='print' args={'block':
+'<name>'}` runs them and states both counts on one line, even when 0.
+
 Every threshold above comes from `se_capabilities.json` through
 `capabilities.resolve()` — a block override
 (`set_process_override(block=, field=, value=)`) beats the house figure,

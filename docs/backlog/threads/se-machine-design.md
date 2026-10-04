@@ -33,11 +33,15 @@ off that gap until it closes.
   - The load test is still owed, in item se-machine-design-6. The solver
     predicts about 0.04 mm tip drop at 1 kg and 0.08 mm at 2 kg.
   - O1 shipped 264f412c0 (round 4, 2026-10-04): gr464340 and gr464343 are closed, and the gr464343 repro designs are retired.
-  - **The print check and the download button ship in round 4.**
+  - **The print check and the download button are live on prod** (round 4, 727728cc9, 2026-10-04T04:40Z), with the fieldops version stamp (2c440745c).
     - `precis/cad/mesh_check.py` checks the shipped mesh for Bambu's floating-region rule and Studio 02.08.02.61's cantilever rule, and the 3MF package against the core spec. It also does a guarded export-time tail lift, which Reto allowed at 19:32Z with nothing stored.
     - `fieldops.flat_bed` cuts a flat bed face in the field.
     - `GET /se/{slug}/print/{block}.3mf|.stl` serves the file, with a "Print files" section on the 3-D page.
-    After the round-4 deploy, re-dogfood the print checks on prod (`view='print'` on `organic-bracket-1` should list `floating_island`, `slicer_cantilever` and `mesh_cleanup`), and download the button's file once.
+    Dogfooded on prod at 04:50Z:
+    - `view='print' args={'block':'bracket'}` on `organic-bracket-1` runs on the shipped mesh: flat bed contact applied, cleanup dropped 8740 degenerate triangles, 109 slivers left, 47 vertices lifted at tol 0.5 mm, no findings. The 3MF export writes 3.3 MB.
+    - Two message gaps were fixed in 68b78e230 (round 5). The summary view said "no findings" though it skips the mesh checks, and the block view gave no count line when the counts were 0.
+    - The web route could not be checked by an agent, because the web UI needs a login. Reto's first click on "Print files" on the bracket's 3-D page is the check.
+    - The old bracket field has no `fieldops` provenance key, as expected: it was minted before the stamp.
     gr464493: print-group and manufacture 3MFs still skip the check.
   - **Scaled downloads (se-3d-viewer-7, Reto answered A1/B1/C1/D1).**
     Mine:
