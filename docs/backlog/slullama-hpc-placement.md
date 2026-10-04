@@ -296,6 +296,32 @@ submit/poll/kill + `ssh_node` for pilot; seed job gains explicit remote opt-in
 later, preserving current local defaults/partial shape. Existing metadata
 and plugin entry points; no new MCP verb or schema migration.
 
+## Reviewed staging seam correction — explicit profile, no cap bypass
+
+Chemistry sourcef22165a prepares newly built pristine0.24 and separately labeled
+0.24+meluxina.pilot1 wheels. Generic `_name` must allow literal `+` in safe
+relative artifact names; preserve traversal/absolute/option/control/shell-token
+rejection. Transfer and hash commands remain argv/quoted positional arguments.
+No alias/relabeling of the pilot distribution as a pristine release.
+
+Pinned candidate dependency bytes2,960,292,950 plus model32,581,838 total
+2,992,874,788 before wheel/input/manifest/runtime script. Generic2GiB default
+stays unchanged. Proposed pilot profile explicitly supplies
+`Limits(max_bundle_bytes=3 * 1024**3)` (3,221,225,472 bytes), leaving228,350,684
+bytes for bounded reviewed extras; every staged byte counts. Review/freeze
+actual inventory/runtime/bootstrap hash and exact total <=profile limit; no
+expensive downloads or actual staging before supported auth/discovery. Profile
+storage budget must also fit actual allocation/quota, independent of compute cap.
+
+Ready marker and local stage manifest persist actual bundle byte count and
+configured byte limit; submitted durable intent carries both. This exposes any
+chosen override in review/provenance rather than changing the default silently.
+Synthetic tests use small bundles with low explicit limits to prove over-limit
+rejection before remote calls and accepted overrides with recorded bounds;
+no multi-GiB test buffers or fixture downloads. Separate internal narrow runner/
+profile review precedes enabling that pilot configuration. Actual credential
+format currently blocks live auth; staging fix does not bypass that gate.
+
 ## Lifecycle / recovery
 
 | Operation | Required behavior |

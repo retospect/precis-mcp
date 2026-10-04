@@ -212,3 +212,85 @@ def test_submit_requires_hash_verified_stage(tmp_path: Path) -> None:
     with pytest.raises(RemoteError, match="stage_unverified"):
         runner.submit(spec({"stage_id": "b" * 64}), TOKEN)
     assert not (tmp_path / (TOKEN + ".json")).exists()
+
+
+def test_local_version_wheel_name_is_safe_and_budgets_explicit(tmp_path: Path) -> None:
+    import json
+
+    from precis.remote.slurm import _name
+
+    name = "wheelhouse/autocatpath-0.24.0+meluxina.pilot1-py3-none-any.whl"
+    assert _name(name) == name
+    for bad in [
+        "../escape+name",
+        "/absolute+name",
+        "-option+name",
+        "name+$(id)",
+        "name+;id",
+        "name+\nline",
+    ]:
+        with pytest.raises(RemoteError, match="path_invalid"):
+            _name(bad)
+    transport = FakeTransport()
+    data = b"12345"
+    hashes = {name: hashlib.sha256(data).hexdigest()}
+    runner = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path / "default",
+        user="fixture",
+        profile_id="fixture",
+        limits=Limits(max_bundle_bytes=4),
+    )
+    with pytest.raises(RemoteError, match="bundle_invalid"):
+        runner.stage({name: data}, hashes)
+    assert not transport.files
+    reviewed = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path / "explicit",
+        user="fixture",
+        profile_id="reviewed",
+        limits=Limits(max_bundle_bytes=5),
+    )
+    stage = reviewed.stage({name: data}, hashes)
+    assert stage["bundle_bytes"] == 5 and stage["max_bundle_bytes"] == 5
+    persisted = json.loads(
+        (
+            tmp_path / "explicit" / ("stage-" + stage["stage_id"] + ".manifest")
+        ).read_text()
+    )
+    assert persisted["bundle_bytes"] == 5 and persisted["max_bundle_bytes"] == 5
+    assert Limits().max_bundle_bytes == 2 * 1024**3  # Generic default unchanged.
+
+
+def test_submitted_intent_records_explicit_staging_budget(tmp_path: Path) -> None:
+    runner = make_runner(tmp_path, FakeTransport())
+    job = staged_job(runner)
+    handle = runner.submit(job, TOKEN)
+    assert handle["bundle_bytes"] == len(b"#!/bin/bash\ntrue\n")
+    assert handle["max_bundle_bytes"] == 2 * 1024**3
+
+
+def test_submit_cannot_silently_adopt_larger_staging_cap(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    high = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path,
+        user="fixture",
+        profile_id="fixture",
+        limits=Limits(max_bundle_bytes=64),
+    )
+    job = staged_job(high)
+    low = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path,
+        user="fixture",
+        profile_id="fixture",
+        limits=Limits(max_bundle_bytes=32),
+    )
+    with pytest.raises(RemoteError, match="bundle_invalid"):
+        low.submit(job, TOKEN)
+    assert transport.submit_count == 0 and not (tmp_path / (TOKEN + ".json")).exists()

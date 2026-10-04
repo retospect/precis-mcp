@@ -3,6 +3,10 @@
 No vault/workload imports. A receipt or unique scheduler token can establish
 acceptance; missing evidence never permits automatic resubmission. Journal
 locks serialize controller budgets across processes sharing its directory.
+
+Literal plus signs preserve artifact local-version names. The default staging
+cap stays2GiB; callers must supply reviewed overrides explicitly, and actual
+bytes/selected cap accompany ready markers and durable submission intents.
 """
 
 from __future__ import annotations
@@ -51,7 +55,7 @@ def _name(value: str) -> str:
     if (
         path.is_absolute()
         or ".." in path.parts
-        or not re.fullmatch(r"[A-Za-z0-9_./-]+", value)
+        or not re.fullmatch(r"[A-Za-z0-9_./+-]+", value)
     ):
         raise RemoteError("path_invalid")
     if not path.parts or value.startswith("-"):
@@ -111,6 +115,8 @@ class SlurmRunner:
             or limits.max_inflight < 1
             or limits.status_interval < 0
             or limits.submission_interval < 0
+            or limits.max_bundle_bytes < 1
+            or limits.max_output_bytes < 1
         ):
             raise RemoteError("limits_invalid")
         journal_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -151,10 +157,11 @@ class SlurmRunner:
     def stage(
         self, bundle: Mapping[str, bytes], hashes: Mapping[str, str]
     ) -> dict[str, Any]:
+        bundle_bytes = sum(map(len, bundle.values()))
         if (
             not bundle
             or set(bundle) != set(hashes)
-            or sum(map(len, bundle.values())) > self.limits.max_bundle_bytes
+            or bundle_bytes > self.limits.max_bundle_bytes
         ):
             raise RemoteError("bundle_invalid")
         for name, data in bundle.items():
@@ -176,7 +183,13 @@ class SlurmRunner:
             actual = self._run(["sha256sum", path]).decode().split()[0]
             if actual != hashes[name]:
                 raise RemoteError("artifact_hash_mismatch")
-        stage = {"stage_id": stage_id, "remote_dir": directory, "hashes": dict(hashes)}
+        stage = {
+            "stage_id": stage_id,
+            "remote_dir": directory,
+            "hashes": dict(hashes),
+            "bundle_bytes": bundle_bytes,
+            "max_bundle_bytes": self.limits.max_bundle_bytes,
+        }
         # Ready marker is written only after every upload was hash verified.
         self._run(
             [
@@ -251,6 +264,22 @@ class SlurmRunner:
                 "stage_id"
             ) != stage or script not in staged_manifest.get("hashes", {}):
                 raise RemoteError("stage_unverified")
+            actual_bytes, staged_cap = (
+                staged_manifest.get("bundle_bytes"),
+                staged_manifest.get("max_bundle_bytes"),
+            )
+            if (
+                not isinstance(actual_bytes, int)
+                or not isinstance(staged_cap, int)
+                or actual_bytes < 1
+                or actual_bytes > staged_cap
+            ):
+                raise RemoteError("stage_unverified")
+            if (
+                actual_bytes > self.limits.max_bundle_bytes
+                or staged_cap > self.limits.max_bundle_bytes
+            ):
+                raise RemoteError("bundle_invalid")
             active = [
                 json.loads(p.read_text())
                 for p in self.journal_root.glob("*.json")
@@ -283,6 +312,8 @@ class SlurmRunner:
                 "job_id": None,
                 "submitted_at": now,
                 "resources": resources,
+                "bundle_bytes": staged_manifest["bundle_bytes"],
+                "max_bundle_bytes": staged_manifest["max_bundle_bytes"],
                 "task_ids": list(job_spec.get("task_ids", [token])),
             }
             if not state["task_ids"] or len(set(state["task_ids"])) != len(
