@@ -1390,16 +1390,17 @@ class TestRunMarkupCascade:
             ("no_oa_version", "eprint_is_pdf")
         ]
 
-    def test_eprint_gzip_payload_still_lands(
+    def test_eprint_corrupt_gzip_skipped_unrecognised(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         staged, _, rows = self._run_eprint(
             store, tmp_path, monkeypatch, b"\x1f\x8b\x08\x00" + b"x" * 100
         )
-        assert staged is not None
-        assert staged.staged_path.name == "eprint2022.tar.gz"
-        assert staged.staged_path.exists()
-        assert [r[1] for r in rows] == ["fetch_ok"]
+        assert staged is None
+        assert list((tmp_path / ".staging").glob("*")) == []
+        assert [(r[1], r[2]["reason"]) for r in rows] == [
+            ("no_oa_version", "eprint_unrecognised")
+        ]
 
     def test_eprint_garbage_payload_skipped_unrecognised(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1411,6 +1412,86 @@ class TestRunMarkupCascade:
         assert list((tmp_path / ".staging").glob("*")) == []
         assert [(r[1], r[2]["reason"]) for r in rows] == [
             ("no_oa_version", "eprint_unrecognised")
+        ]
+
+    _TEX = "\\documentclass{article}\n\\begin{document}\nHello 5 eV.\n\\end{document}\n"
+
+    def test_eprint_gzipped_single_tex_staged_as_tex(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gzip
+
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, gzip.compress(self._TEX.encode())
+        )
+        assert staged is not None
+        assert staged.staged_path.name == "eprint2022.tex"
+        assert staged.final_path.name == "eprint2022.tex"
+        assert staged.staged_path.read_text(encoding="utf-8") == self._TEX
+        assert [r[1] for r in rows] == ["fetch_ok"]
+        sc = fetch_oa.read_sidecar(staged.staged_path)
+        assert sc is not None and sc.source_format == "latex"
+        assert list((tmp_path / ".staging").glob("*.tar.gz")) == []
+
+    def test_eprint_bare_tex_staged_as_tex(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, self._TEX.encode("latin-1")
+        )
+        assert staged is not None
+        assert staged.staged_path.name == "eprint2022.tex"
+        assert staged.staged_path.read_text(encoding="latin-1") == self._TEX
+        assert [r[1] for r in rows] == ["fetch_ok"]
+
+    def test_eprint_gzipped_tar_stays_tar_gz(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            data = self._TEX.encode()
+            info = tarfile.TarInfo("main.tex")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        payload = buf.getvalue()
+        staged, _, rows = self._run_eprint(store, tmp_path, monkeypatch, payload)
+        assert staged is not None
+        assert staged.staged_path.name == "eprint2022.tar.gz"
+        assert staged.staged_path.read_bytes() == payload
+        assert [r[1] for r in rows] == ["fetch_ok"]
+
+    def test_eprint_gzip_of_non_tex_unrecognised(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gzip
+
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, gzip.compress(b"\\section{x} just text")
+        )
+        assert staged is None
+        assert list((tmp_path / ".staging").glob("*")) == []
+        assert [(r[1], r[2]["reason"]) for r in rows] == [
+            ("no_oa_version", "eprint_unrecognised")
+        ]
+
+    def test_eprint_oversize_gzip_too_large(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import gzip
+
+        from precis.ingest import markup
+
+        monkeypatch.setattr(markup, "_LATEX_MAX_TOTAL_BYTES", 1 << 20)
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, gzip.compress(b"a" * (3 << 20))
+        )
+        assert staged is None
+        assert list((tmp_path / ".staging").glob("*")) == []
+        assert [(r[1], r[2]["reason"]) for r in rows] == [
+            ("no_oa_version", "eprint_too_large")
         ]
 
 

@@ -385,6 +385,19 @@ We used a \textbf{spectrometer}.
     assert refs and "Foo et al" in refs[0]["text"]
 
 
+def test_parse_latex_single_tex_file(tmp_path: Path) -> None:
+    """A staged single ``.tex`` (gunzipped / bare e-print) parses directly."""
+    tex = tmp_path / "single2022.tex"
+    tex.write_text(
+        "\\documentclass{article}\\title{Single File}\\begin{document}\n"
+        "\\section{Intro}\nThe spectrometer worked well here.\n\\end{document}\n",
+        encoding="utf-8",
+    )
+    ext = parse_latex(tex)
+    assert ext.title == "Single File"
+    assert any("spectrometer" in b["text"] for b in ext.blocks)
+
+
 def test_parse_latex_title_strips_bare_linebreak_macro(tmp_path: Path) -> None:
     # Confirmed prod artifact: a bare `\\` (LaTeX forced-linebreak, no brace
     # arg) survived `_strip_tex` verbatim and leaked into todo titles. It must

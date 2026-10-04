@@ -2087,20 +2087,74 @@ def _download_markup(
     return size
 
 
-def _eprint_skip_reason(path: Path) -> str | None:
-    """Why an arXiv e-print payload is not a source bundle, else ``None``.
+def _looks_like_tex(data: bytes) -> bool:
+    """True when ``data`` is plain-text TeX (not merely ``%``/``\\``-led).
+
+    Decodes as UTF-8 or latin-1 with no NUL in the first 4 KiB, and the
+    first 64 KiB names a document (``\\documentclass`` / ``\\documentstyle``
+    / ``\\begin{document}``).
+    """
+    if b"\x00" in data[:4096]:
+        return False
+    head = data[:65536]
+    try:
+        text = head.decode("utf-8")
+    except UnicodeDecodeError:
+        text = head.decode("latin-1")
+    return any(
+        marker in text
+        for marker in ("\\documentclass", "\\documentstyle", "\\begin{document}")
+    )
+
+
+def _classify_eprint(path: Path) -> tuple[str | None, bytes | None]:
+    """Classify an arXiv e-print payload as ``(skip_reason, tex_bytes)``.
 
     PDF-only submissions serve the PDF itself at ``/e-print/<id>`` (gr465473).
-    Accepts gzip (also covers a gzipped single ``.tex``) and a bare tar
-    (``ustar`` magic at offset 257).
+    ``(None, None)``: a tar or gzipped tar bundle, stage as-is. ``(None,
+    data)``: a single TeX file (bare, or gzipped -- arXiv's usual form for
+    single-file submissions), to be staged as ``.tex`` so the LaTeX reader's
+    single-file branch handles it. Gzip is inflated in memory under the
+    LaTeX reader's total-bytes cap (``eprint_too_large`` past it).
     """
+    import gzip
+    import zlib
+
+    from precis.ingest import markup
+
     with path.open("rb") as fh:
         head = fh.read(512)
-    if head.startswith(b"\x1f\x8b") or head[257:262] == b"ustar":
-        return None
+    if head[257:262] == b"ustar":
+        return None, None
     if head.startswith(b"%PDF-"):
-        return "eprint_is_pdf"
-    return "eprint_unrecognised"
+        return "eprint_is_pdf", None
+    cap = markup._LATEX_MAX_TOTAL_BYTES
+    if head.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(path, "rb") as gz:
+                inner_head = gz.read(512)
+                if inner_head[257:262] == b"ustar":
+                    return None, None
+                chunks = [inner_head]
+                total = len(inner_head)
+                while total <= cap:
+                    chunk = gz.read(1 << 20)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+        except (OSError, EOFError, zlib.error):
+            return "eprint_unrecognised", None
+        if total > cap:
+            return "eprint_too_large", None
+        data = b"".join(chunks)
+    else:
+        data = path.read_bytes()
+        if len(data) > cap:
+            return "eprint_too_large", None
+    if _looks_like_tex(data):
+        return None, data
+    return "eprint_unrecognised", None
 
 
 @dataclass(frozen=True)
@@ -2295,7 +2349,7 @@ def _run_markup_cascade(
             )
             continue
         if leg.source == _SOURCE_ARXIV_SOURCE:
-            skip_reason = _eprint_skip_reason(staged_path)
+            skip_reason, tex_bytes = _classify_eprint(staged_path)
             if skip_reason is not None:
                 staged_path.unlink(missing_ok=True)
                 store.append_event(
@@ -2306,6 +2360,15 @@ def _run_markup_cascade(
                     duration_ms=_ms(t0),
                 )
                 continue
+            if tex_bytes is not None:
+                # Single-file TeX: restage under a ``.tex`` name so the
+                # watcher's reader takes its single-file branch (the sidecar
+                # and publish step key on the staged filename).
+                staged_path.unlink(missing_ok=True)
+                final_path = inbox_dir / (_stub_filename(stub) + ".tex")
+                staged_path = staging_dir / final_path.name
+                staged_path.write_bytes(tex_bytes)
+                size = len(tex_bytes)
         write_sidecar(
             staged_path,
             ref_id=stub.ref_id,
