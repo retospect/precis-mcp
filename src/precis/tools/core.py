@@ -1560,8 +1560,7 @@ def edit(
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
-    Distinct from `put` (which creates new refs). Each mode has a
-    fixed required-argument set encoded in the JSON Schema:
+    `put` creates refs; `edit` changes them. Required arguments by mode:
 
     - `find-replace` (default): **Required** `find=` AND `text=`.
       Pass `text=''` to delete the matched span (canonical idiom).
