@@ -142,7 +142,7 @@ states that count a paper as usable when it is not, then metadata.
    corrupt bucket (repair or OCR), not another re-fetch. Seen on 6 of
    batch 2's no-body refs and 5 of batch 1's. Side defects filed:
    gr465473 (the arXiv e-print of a PDF-only submission is parsed as a
-   LaTeX tarball) and gr465474 (an arXiv fetch for ref 202942 minted
+   LaTeX tarball; fixed by a magic-byte check in the arxiv_source leg) and gr465474 (an arXiv fetch for ref 202942 minted
    anon ref 465241 instead of folding into it). Next: once batch 2
    drains, apply the policy to what is still bodiless, routing
    Pdfium-unreadable PDFs to repair. This

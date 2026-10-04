@@ -2087,6 +2087,22 @@ def _download_markup(
     return size
 
 
+def _eprint_skip_reason(path: Path) -> str | None:
+    """Why an arXiv e-print payload is not a source bundle, else ``None``.
+
+    PDF-only submissions serve the PDF itself at ``/e-print/<id>`` (gr465473).
+    Accepts gzip (also covers a gzipped single ``.tex``) and a bare tar
+    (``ustar`` magic at offset 257).
+    """
+    with path.open("rb") as fh:
+        head = fh.read(512)
+    if head.startswith(b"\x1f\x8b") or head[257:262] == b"ustar":
+        return None
+    if head.startswith(b"%PDF-"):
+        return "eprint_is_pdf"
+    return "eprint_unrecognised"
+
+
 @dataclass(frozen=True)
 class _MarkupLeg:
     """One markup-first source: how to build its URL and name its file."""
@@ -2278,6 +2294,18 @@ def _run_markup_cascade(
                 duration_ms=_ms(t0),
             )
             continue
+        if leg.source == _SOURCE_ARXIV_SOURCE:
+            skip_reason = _eprint_skip_reason(staged_path)
+            if skip_reason is not None:
+                staged_path.unlink(missing_ok=True)
+                store.append_event(
+                    stub.ref_id,
+                    source=leg.source,
+                    event="no_oa_version",
+                    payload={"url": url, "reason": skip_reason, "bytes": size},
+                    duration_ms=_ms(t0),
+                )
+                continue
         write_sidecar(
             staged_path,
             ref_id=stub.ref_id,

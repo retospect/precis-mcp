@@ -1345,6 +1345,74 @@ class TestRunMarkupCascade:
         assert sc is not None
         assert sc.companion_pdf == "widgets2025.pdf"
 
+    def _run_eprint(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: bytes,
+    ) -> tuple[fetch_oa._StagedMarkup | None, int, list[tuple[str, str, Any]]]:
+        monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
+        ref_id = _seed_paper_stub(store, cite_key="eprint2022")
+
+        def _fake(url: str, target: Path, *, extra_headers: Any = None) -> int:
+            if "/e-print/" not in url:
+                raise ValueError("html leg unavailable")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            return len(payload)
+
+        monkeypatch.setattr(fetch_oa, "_download_markup", _fake)
+        staged = fetch_oa._run_markup_cascade(
+            store,
+            _stub(ref_id=ref_id, arxiv="2201.09281", cite_key="eprint2022"),
+            tmp_path,
+            "",
+        )
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event, payload FROM ref_events "
+                "WHERE ref_id = %s AND source = 'fetcher:arxiv_source'",
+                (ref_id,),
+            ).fetchall()
+        return staged, ref_id, rows
+
+    def test_eprint_pdf_payload_skips_markup_trigger(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr465473: PDF-only arXiv submissions serve the PDF at /e-print/."""
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, b"%PDF-1.5\n" + b"x" * 600
+        )
+        assert staged is None
+        assert list((tmp_path / ".staging").glob("*")) == []
+        assert [(r[1], r[2]["reason"]) for r in rows] == [
+            ("no_oa_version", "eprint_is_pdf")
+        ]
+
+    def test_eprint_gzip_payload_still_lands(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, b"\x1f\x8b\x08\x00" + b"x" * 100
+        )
+        assert staged is not None
+        assert staged.staged_path.name == "eprint2022.tar.gz"
+        assert staged.staged_path.exists()
+        assert [r[1] for r in rows] == ["fetch_ok"]
+
+    def test_eprint_garbage_payload_skipped_unrecognised(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        staged, _, rows = self._run_eprint(
+            store, tmp_path, monkeypatch, b"<html>not found</html>"
+        )
+        assert staged is None
+        assert list((tmp_path / ".staging").glob("*")) == []
+        assert [(r[1], r[2]["reason"]) for r in rows] == [
+            ("no_oa_version", "eprint_unrecognised")
+        ]
+
 
 class TestSweepStaleStaging:
     """gr170366: orphaned ``.staging`` entries (a staged markup trigger +
