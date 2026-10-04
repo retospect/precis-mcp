@@ -37,6 +37,12 @@ that nanopubs signed here attribute to), sign-out, podcast subscribe URL
 only other source). Sign-out = 401 with a fresh challenge (evicts cached
 Basic credential) + session-cookie delete.
 
+**Secrets.** Add/replacement controls offer a write-only multiline editor;
+existing values never populate it. Password inputs discard pasted line breaks,
+so multiline values use a textarea and cannot switch to a password input while
+line breaks remain. Blank replacement leaves the stored value unchanged; the
+editor reads only masked inventory.
+
 Nav (template ``templates/base.html.j2``; badges ``nav.py::nav_badges``):
 Daily (Drive, Tags, ToDo, Design) always visible; Browse ▾ (Quests,
 Schedules, Clusters, Structures, CAD, Figures, Mermaid); Attention (Needs

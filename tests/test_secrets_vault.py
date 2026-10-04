@@ -70,6 +70,45 @@ def test_set_get_roundtrip(vault_store: Store) -> None:
     )
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_web_multiline_create_replace_roundtrip(
+    vault_store: Store, monkeypatch: pytest.MonkeyPatch, newline: str
+) -> None:
+    """HTTP form values survive encryption/reveal; blank replacement is inert."""
+    pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from precis_web.routes import secrets as route
+
+    name = "TEST_WEB_MULTILINE"
+    monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(route, "get_store", lambda request: vault_store)
+    app = FastAPI()
+    app.include_router(route.router)
+    with TestClient(app) as client:
+        for body in ("FIRST_SYNTHETIC_VALUE", "REPLACEMENT_SYNTHETIC_VALUE"):
+            value = newline.join(["BEGIN", body, "", "END", ""])
+            response = client.post(
+                "/secrets/set",
+                data={"name": name, "value": value},
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
+            assert response.headers["location"] == "/secrets"
+            assert body not in response.text
+            vault.invalidate(name)
+            assert vault.get_secret(name, store=vault_store) == value
+        response = client.post(
+            "/secrets/set",
+            data={"name": name, "value": ""},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        vault.invalidate(name)
+        assert vault.get_secret(name, store=vault_store) == value
+
+
 def test_stored_value_is_encrypted(vault_store: Store) -> None:
     secret = "super-secret-value-xyz"
     vault.set_secret("SOME_TOKEN", secret, store=vault_store)
