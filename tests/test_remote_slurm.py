@@ -97,6 +97,13 @@ def spec(stage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def staged_job(runner: SlurmRunner) -> dict[str, Any]:
+    data = b"#!/bin/bash\ntrue\n"
+    return spec(
+        runner.stage({"job.sh": data}, {"job.sh": hashlib.sha256(data).hexdigest()})
+    )
+
+
 def test_reconnect_collect_and_lost_ack_never_resubmit(tmp_path: Path) -> None:
     transport = FakeTransport()
     runner = make_runner(tmp_path, transport)
@@ -132,7 +139,7 @@ def test_every_task_gets_outcome(tmp_path: Path, scheduler: str, expected: str) 
     transport = FakeTransport()
     transport.state = scheduler
     runner = make_runner(tmp_path, transport)
-    job = spec({"stage_id": "b" * 64})
+    job = staged_job(runner)
     job["task_ids"] = ["task0", "task1"]
     handle = runner.submit(job, TOKEN)
     assert runner.collect(handle, ["result.json"])["outcomes"] == {
@@ -145,7 +152,7 @@ def test_hash_budget_and_intent_conflict(tmp_path: Path) -> None:
     runner = make_runner(tmp_path, FakeTransport())
     with pytest.raises(RemoteError, match="artifact_hash_mismatch"):
         runner.stage({"job.sh": b"script"}, {"job.sh": "0" * 64})
-    job = spec({"stage_id": "b" * 64})
+    job = staged_job(runner)
     job["resources"]["wall_seconds"] = 601
     with pytest.raises(RemoteError, match="budget_exceeded"):
         runner.submit(job, TOKEN)
@@ -159,7 +166,7 @@ def test_hash_budget_and_intent_conflict(tmp_path: Path) -> None:
 def test_scheduler_identity_and_exit_status_fail_closed(tmp_path: Path) -> None:
     transport = FakeTransport()
     runner = make_runner(tmp_path, transport)
-    handle = runner.submit(spec({"stage_id": "b" * 64}), TOKEN)
+    handle = runner.submit(staged_job(runner), TOKEN)
     transport.user = "somebody_else"
     with pytest.raises(RemoteError, match="scheduler_identity_mismatch"):
         runner.status(handle)
@@ -176,7 +183,7 @@ def test_unknown_submission_counts_against_budget_and_cancel_is_request(
     transport = FakeTransport()
     transport.accept_then_disconnect = True
     runner = make_runner(tmp_path, transport)
-    job = spec({"stage_id": "b" * 64})
+    job = staged_job(runner)
     handle = runner.submit(job, TOKEN)
     with pytest.raises(RemoteError, match="inflight_limit"):
         runner.submit(job, "c" * 32)
@@ -198,3 +205,10 @@ def test_stage_ready_and_journal_survive_reconnect(tmp_path: Path) -> None:
         runner.stage(
             {"../escape": data}, {"../escape": hashlib.sha256(data).hexdigest()}
         )
+
+
+def test_submit_requires_hash_verified_stage(tmp_path: Path) -> None:
+    runner = make_runner(tmp_path, FakeTransport())
+    with pytest.raises(RemoteError, match="stage_unverified"):
+        runner.submit(spec({"stage_id": "b" * 64}), TOKEN)
+    assert not (tmp_path / (TOKEN + ".json")).exists()

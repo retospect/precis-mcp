@@ -243,6 +243,14 @@ class SlurmRunner:
                 if state["job_hash"] != job_hash:
                     raise RemoteError("intent_conflict")
                 return state  # Existing intent is NEVER a second submission.
+            stage_path = self.journal_root / ("stage-" + stage + ".manifest")
+            if not stage_path.exists():
+                raise RemoteError("stage_unverified")
+            staged_manifest = json.loads(stage_path.read_text())
+            if staged_manifest.get(
+                "stage_id"
+            ) != stage or script not in staged_manifest.get("hashes", {}):
+                raise RemoteError("stage_unverified")
             active = [
                 json.loads(p.read_text())
                 for p in self.journal_root.glob("*.json")
@@ -269,6 +277,9 @@ class SlurmRunner:
                 "stage_id": stage,
                 "remote_dir": remote_dir,
                 "phase": "submitting",
+                "state": "submission_unknown",
+                "exit_code": None,
+                "signal": None,
                 "job_id": None,
                 "submitted_at": now,
                 "resources": resources,
@@ -314,12 +325,13 @@ class SlurmRunner:
                 raise RemoteError("submission_unknown")
             with self._lock():
                 state = self._load(token)
-                state.update(job_id=match[1], phase="submitted")
+                state.update(job_id=match[1], phase="submitted", state="pending")
                 self._save(state)
         except (RemoteError, UnicodeError):
             with self._lock():
                 state = self._load(token)
                 state["phase"] = "submission_unknown"
+                state["state"] = "submission_unknown"
                 self._save(state)
         return state
 
@@ -391,9 +403,10 @@ class SlurmRunner:
         with self._lock():
             state = self._load(state["token"])
             if matches:
-                state.update(job_id=matches.pop(), phase="submitted")
+                state.update(job_id=matches.pop(), phase="submitted", state="pending")
             else:
                 state["phase"] = "submission_unknown"
+                state["state"] = "submission_unknown"
             self._save(state)
         return state
 
@@ -473,7 +486,15 @@ class SlurmRunner:
                     "REVOKED",
                 }:
                     state["phase"] = "terminal"
-            elif not queue.strip():
+            elif queue.strip():
+                for line in queue.decode().splitlines():
+                    identifier, _, scheduler = line.partition("|")
+                    if identifier == state["job_id"]:
+                        state["scheduler_state"] = scheduler
+                        state["state"] = (
+                            "running" if scheduler == "RUNNING" else "pending"
+                        )
+            else:
                 state["scheduler_state"] = "accounting_pending"
                 state["state"] = "pending"
             self._save(state)
