@@ -1,9 +1,10 @@
 """PaperHandler — read scientific papers from the v2 store.
 
 Bodies are read-only via ``get`` / ``search``; ingest happens
-out-of-band via :func:`precis.ingest.add.precis_add` (or the
-top-level ``precis add`` / ``precis ingest --watch`` CLI), so ``put`` is not
-exposed. ``edit`` is supported but scoped to *bibliographic metadata*
+out-of-band via :func:`precis.ingest.add.precis_add`, ``precis add FILE.pdf``,
+or ``precis watch`` with a PDF in ``inbox/papers/``. ``put`` requests paper
+stubs or queues supplementary-information acquisition with ``mode='fetch-si'``;
+it never writes a body. ``edit`` is scoped to *bibliographic metadata*
 (authors / year / title / abstract / doi / arxiv / journal / entry_type)
 — it never touches block text.
 
@@ -276,16 +277,18 @@ class PaperHandler(Handler):
             "Scientific paper. Addressable by slug (e.g. 'wang2020dopamine') "
             "OR by bare DOI (e.g. '10.1038/nature10352') — `get` and "
             "`search` resolve DOIs transparently. One ref per paper, "
-            "blocks per chunk. Ingested from .acatome bundles (paper "
-            "bodies are import-only). Use tag / link to classify and "
+            "blocks per chunk. Ingest PDF bodies with `precis add FILE.pdf` "
+            "or drop a PDF into `inbox/papers/` for `precis watch`. "
+            "`put` requests stubs or queues `mode='fetch-si'`; it never "
+            "writes a body. Use tag / link to classify and "
             "cross-cite."
         ),
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
-        # Paper *bodies* are import-only (arrive via .acatome bundle
-        # ingest, never authored from the agent surface). ``put`` is
-        # exposed for **stub minting only** — ``put(kind='paper',
+        # Paper *bodies* arrive via PDF ingest, never authored from the
+        # agent surface. ``put`` exposes stub requests and ``fetch-si``;
+        # ``put(kind='paper',
         # doi=… / arxiv=… / title=…)`` requests a paper into the
         # "papers we need" backlog (the fetch_oa worker chases it); it
         # never writes a body. ``edit`` is scoped to *bibliographic
@@ -338,9 +341,10 @@ class PaperHandler(Handler):
         door: it queues a supplementary-information fetch for an existing
         paper (:meth:`_queue_si_fetch`).
 
-        Paper *bodies* stay import-only (``.acatome`` ingest); ``put``
-        only ever requests a paper into the "papers we need" backlog,
-        where the ``fetch_oa`` worker chases an OA PDF. Shapes:
+        Ingest paper *bodies* with ``precis add FILE.pdf`` or drop a PDF
+        into ``inbox/papers/`` for ``precis watch``. Stub requests enter
+        the "papers we need" backlog, where the ``fetch_oa`` worker chases
+        an OA PDF. Shapes:
 
             put(kind='paper', doi='10.1038/nature10352')
             put(kind='paper', arxiv='2401.00001', title='…')
@@ -363,14 +367,15 @@ class PaperHandler(Handler):
             return self._queue_si_fetch(id)
         # ``put`` mints stubs; it never writes a body. A caller passing
         # ``text=`` is trying to rewrite a paper body — reject loudly
-        # rather than silently drop the text into ``_kw``. Bodies stay
-        # import-only (``.acatome`` ingest).
+        # rather than silently drop the text into ``_kw``. Bodies arrive
+        # through the PDF ingest pipeline.
         if _kw.get("text") is not None:
             raise Unsupported(
-                "paper does not support put with text= — bodies are "
-                "import-only (.acatome ingest); put(kind='paper') only "
-                "mints stubs",
-                next="put(kind='paper', doi='10.1038/nature10352')",
+                "paper does not support put with text= — ingest PDF bodies "
+                "with `precis add FILE.pdf` or drop a PDF into `inbox/papers/` "
+                "for `precis watch`; put(kind='paper') requests stubs or "
+                "queues mode='fetch-si', never writes bodies",
+                next="precis add FILE.pdf",
             )
         ident = identifier.strip() if identifier and identifier.strip() else None
         if ident is None:
