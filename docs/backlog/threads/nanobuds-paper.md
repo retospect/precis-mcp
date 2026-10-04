@@ -15,7 +15,7 @@ Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 and non-covalent buds. RSC reviews go through a proposal form first.
 **Resume (2026-10-03 22:10Z):** round 3 deployed at 929107f3. This thread's round-3 lands were thread-file edits only, so there is no code to dogfood. The prod work was data edits (items 27–29 applied, td450082 merged), each verified when it was applied.
 - **Open, waiting on others:**
-  - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at hexfold's cycle 3.
+  - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at least 5 dev cycles out (Reto, hexfold-toolkit-5 (b): spread-pentagon rows first, which keep the ball round after relax); the fused-neck stick model stays as captioned.
   - claims-and-evidence-9 is with its owner.
   - **Round-4 dogfood, 2026-10-04 04:45Z (prod 727728cc):** `scripts/prod-precis draft export 173020 --bib-style rsc` (the numeric id; `dr173020` gives "no draft") ran clean. It printed 37 pin warnings, as measured; 9 "pinned pa… but derived originator is …" notes; and 4 placeholder figures (dc3015722, dc3015723, dc3015729, dc3015730).
     - Output is in `nanobud-fidelity/export-r4/`. Triage table: `printed-read/pin-triage-r4.md` (read-only agent).
@@ -28,7 +28,7 @@ and non-covalent buds. RSC reviews go through a proposal form first.
       - B, Ahangari "corroborated these MD results": reword;
       - C, the lithium clause, which no hub carries: cut;
       - D, uncited background numbers in the Novoselov sentence: leave.
-    - Background for the queued item below.
+
     - Measured before deploy: 37 of 89 pins warn, none for G4. In a sample about 6 in 10 are real gaps, e.g. DFT, DFTB or HOMO/LUMO missing from the pinned chunk. Known noise: negated terms, words glued by extraction, numeric locants, range endpoints.
     - Each warning suggests up to 3 better chunks: re-pin to one if it carries the term; if none does, file the gap.
     - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. Its fix is still a supersede, which waits on the unbuilt supersede door. This thread owns it.
