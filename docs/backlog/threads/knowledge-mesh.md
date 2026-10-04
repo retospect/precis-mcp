@@ -20,7 +20,7 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
-**Resume (2026-10-04 06:55Z, round 6):**
+**Resume (2026-10-04, round 6, end of day):**
 - **Live in prod:** 0185 (reviews ledger, revisions log), 0187
   (`measures` table), builds B (the `measure` kind, `best_measure`, quest
   `view='measures'`), C (`put`/`edit(kind='measure')`, `note=`) and D
@@ -30,20 +30,22 @@ graph-health-metrics, five parked gripes, and the seam with
   tn460160); 122 runs, mx86–mx378. The Opus review approved 114, rejected
   3 (corrected as mx373, mx376, mx378) and left 5 undecided. Logs and
   scripts are in the projects scratch dir, `qu202467-*`.
-- **In flight, not on main:** 0188 (A2: legacy units to SI, drop
-  `rxn_values`), branch `km-0188-measures-si`, being reworked after the
-  remote gate went red at b23403bb7. A legacy mint in a convertible unit
-  now succeeds and re-bases at mint (SI canonical unit, display unit as
-  given, a `measure_unit_compat` row), so se tests pass unedited. It goes
-  to the orchestrator as a branch, with the broad test list, never by
-  qland. Its deploy needs a serve restart right after migrate; then verify
-  the converted legacy rows.
+- **0188 (A2: legacy units to SI, drop `rxn_values`) is on main as
+  06af6d85b, not yet live.** It deploys with round 6 (the organizer's),
+  serve restart right after migrate. A legacy mint in a convertible unit
+  succeeds and gets a `measure_unit_compat` row; se tests pass unedited.
+  No agent or job is running; no unfinished code on any branch.
+- **First step next session:** once 0188 is live, verify the converted
+  legacy rows in prod: a few `material_values` / `component_spec_values`
+  reads return the legacy number while `measures` holds SI, and
+  `measure_unit_compat` has its 30 seed rows plus any minted.
 - **0188 and ids:** `material_values.id` and `component_spec_values.id` change
   for converted rows (0187's note said ids are kept; a converted row is a new
   `measures` row), and a rxn put's `id=` is now a `measures.id`.
   `price_per_gram` keeps USD/g (currency is outside SI).
 - **Next:** the six pilot gaps in the measures spec §"Found by the pilot
-  write", about 2 builds. FE grouped by product and review-aware ranking
+  write" plus the unparseable-unit mint log (§"Found landing 0188"),
+  about 2 builds. FE grouped by product and review-aware ranking
   in `best_measure` go first. Then local-mesh-upkeep slice 1b.
 
 ## Do next
