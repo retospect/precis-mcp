@@ -12,9 +12,24 @@ ticks unattended. The unattended ticks (04:24–09:57Z 10-02) proved the
 embedder fix live but exposed a supply defect: both cited supply numbers
 are one misread value (see Do next 2). Next evidence: a supply tick after
 the extraction-window fix deploys.
-**Resume (parked 2026-10-03, TIER 3 per Reto's priority review):** start no
-new slice until the organizer reopens this thread. Round 2 (63301c5c) is
-DEPLOYED since 13:49Z 10-03. It carries the verbatim-quote check
+**Resume (session closed 2026-10-03 ~22:00Z; parked at TIER 3 per Reto's
+priority review):** start no new slice until the organizer reopens this
+thread. Done: rounds 2 and 3 deployed (round 3 is 929107f32, with
+a3806549f, dogfooded and passed). The round-4 supply cap and the
+`supply_outcome` v2 stamp landed as 4178a62d6 and are marked round in,
+not yet deployed. Next, all of them waits:
+- qu453863 had NOT re-minted a quest_tick by 21:36Z 10-03, 10 minutes
+  after its 24h hold expired. On 10-02 re-mints took 26 to 100 minutes
+  after a hold ended. If none appears by about 23:30Z, read
+  `quest/loop.py::reconcile_quest_loops`; it is the stall suspect.
+- After the round-4 deploy, check the cap in prod: one more escalated
+  failure on `placement_error_nm` should log `supply_outside_failed`.
+- Close gr462891 and td462893 when job 463449's "ledger_ops applied" line
+  appears.
+- The first escalated query that reaches S2 needs a worker tick; worker
+  ticks have the `[paper]` extra.
+- Do next 1 (role-choice skip) waits for the thread to reopen.
+Round 2 (63301c5c) is DEPLOYED since 13:49Z 10-03. It carries the verbatim-quote check
 (c12912cb5), the dry-tick escalation (38a575586) and gr462891's ledger fix
 (9ef609810). qu453863 (Bootstrap roadmap root) is NOT ticking hourly. Its
 last quest_tick, job 462364, ended dry at 21:26Z 10-02, its third dry
