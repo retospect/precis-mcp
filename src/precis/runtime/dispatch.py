@@ -1390,8 +1390,15 @@ class DispatchMixin(RuntimeShape):
         method = getattr(handler, verb)
 
         # local-mesh-upkeep §2b: edit's reason= belongs to the revision
-        # log, not the handler — consume it before the kwargs gate.
-        reason = args.pop("reason", None) if verb == "edit" else None
+        # log, not the handler — consume it before the kwargs gate. put's
+        # reason= is consumed the same way unless the handler's own put
+        # declares it (paper/message put: an acquisition reason, not a
+        # revision reason).
+        reason = None
+        if verb == "edit" or (
+            verb == "put" and "reason" not in self._accepted_kwargs(method)
+        ):
+            reason = args.pop("reason", None)
 
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:

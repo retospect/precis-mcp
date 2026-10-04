@@ -461,25 +461,24 @@ findings:
   - the rejections;
   - the rows the two models disagree on;
   - a `best_measure` table per route family.
-- **The write verbs ship first, as code** (decided 2026-10-04). The
-  extraction writes prod rows, and a prod write outside the verbs would
-  have to go to Reto as a command. So Build C ships the verbs, and the
-  pass then runs through them like any agent write.
-  - **`put(kind='measure', text=<literal>, meta={...}, items=[...])`**
-    writes one run: the output in `text` and `meta`, the input rows in
-    `items`. It is a thin door over `insert_measure` that returns the
-    run's measure ids and anything flagged, each with a one-line reason.
-    `reason=` reaches the revision log through the existing dispatch
-    context.
-  - **`edit(kind='measure', id=N, review='approved'|'rejected', note=)`**
-    records a review on the ledger:
-    - The actor comes from the revision context.
-    - `model` comes from `meta={'model': …}` or is NULL for a human. A
-      model review must name its model.
-    - The sha is taken now, so a later change to the row stales the
-      review.
-  - **No other edit exists.** Rows are append-only, so a correction is
-    a new `put` with `meta.supersedes`.
+- **The write verbs shipped 2026-10-04.** `precis-measure-help` ("Write
+  a run", "Review a row") is the contract; this records only the calls
+  made.
+  - `put(kind='measure', text=, meta=, items=)` writes one run.
+  - **`edit` follows draft's `review=` vocabulary:**
+    `edit(kind='measure', id=, review='model'|'human', verdict=, text=<note>,
+    meta=)`.
+    - A model review names its model.
+    - A human review takes `meta.actor` and has no model. It is a
+      sign-off relayed by the session, plain text on the ledger: a
+      claim, not proof.
+    - Any other edit is refused, because rows are append-only.
+  - **Inputs inherit the output's subject, group and anchor.** So a
+    condition whose literal is not in the chunk is flagged
+    `anchor_mismatch`, not refused.
+  - **`reason=` on put** reaches the revision context, except for kinds
+    whose own `put` declares `reason` (paper and message, where it is the
+    acquisition reason).
 - **The pass itself is an operation, not code.** It runs after deploy,
   and the recipe goes in `precis-measure-help`:
   1. Subagents at the mid tier read each finding with its anchored

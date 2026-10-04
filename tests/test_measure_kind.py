@@ -8,12 +8,13 @@ are pure and need no DB.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, Unsupported
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.measure import MeasureHandler, parse_query
 from precis.handlers.quest import QuestHandler
 from precis.store import Store
@@ -1040,3 +1041,365 @@ class TestQuestMeasuresView:
         assert "measures" in str(ei.value) or "measures" in " ".join(
             getattr(ei.value, "options", []) or []
         )
+
+
+# ── Build C: the write verbs ───────────────────────────────────────────────
+
+
+class TestPutRun:
+    @staticmethod
+    def _meta(w: dict[str, Any], **over: Any) -> dict[str, Any]:
+        meta: dict[str, Any] = {
+            "measurand": "measurand/faradaic-efficiency",
+            "subject": f"pa{w['paper']}",
+            "subject_label": "Cu NWA",
+            "subject_group": "fi1",
+            "reported_unit": "%",
+            "reference": "RHE",
+            "tier": "measured",
+            "anchor": {
+                "chunk": f"pc{w['chunk']}",
+                "anchor_scheme": "sentence",
+                "span": "s1",
+            },
+        }
+        meta.update(over)
+        return meta
+
+    @staticmethod
+    def _items() -> list[dict[str, Any]]:
+        return [
+            {
+                "measurand": "measurand/potential",
+                "literal": "-0.5",
+                "reported_unit": "V",
+                "reference": "RHE",
+            },
+            {
+                "measurand": "measurand/reaction-product",
+                "text": "NH3",
+                "condition": "product",
+            },
+        ]
+
+    def test_round_trip_output_and_two_inputs(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=self._meta(w), items=self._items()).body
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", body, re.M)]
+        assert len(ids) == 3, body
+        assert body.splitlines()[0].startswith("run run:")
+        rows = [store.measure_detail(i) for i in ids]
+        assert len({r["run_key"] for r in rows}) == 1
+        out, pot, prod = rows
+        assert (out["direction"], pot["direction"], prod["direction"]) == (
+            "output",
+            "input",
+            "input",
+        )
+        assert out["value_num"] == pytest.approx(0.95)
+        assert pot["value_num"] == pytest.approx(-0.5)
+        assert (out["subject"], out["subject_group"]) == ("Cu NWA", "fi1")
+        assert pot["subject_group"] == "fi1"  # inherited from the output
+        assert prod["literal"] == "NH3" and prod["meta"]["condition"] == "product"
+        assert out["extraction_status"] == "anchor_matched"
+        assert out["anchor"]["chunk_id"] == w["chunk"]
+        assert out["actor"] == "agent"
+        # the required conditions were met by the inputs: no escalation flag
+        assert "escalation" not in (out["meta"] or {})
+        # the product 'NH3' is not in the chunk: the inherited anchor flags it
+        assert f"mx{prod['id']} anchor_mismatch" in body and "flagged:" in body
+
+    def test_an_explicit_run_key_and_model_are_kept(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=self._meta(w, run_key="fi1#1", model="mid-1")).body
+        assert body.startswith("run fi1#1:")
+        (mid,) = [int(m) for m in re.findall(r"^mx(\d+) ", body, re.M)]
+        assert store.measure_detail(mid)["model"] == "mid-1"
+
+    def test_missing_required_condition_is_flagged_in_the_answer(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        body = h.put(text="95", meta=self._meta(w)).body
+        assert "escalation required_condition_missing" in body
+        assert "condition=potential" in body
+
+    def test_a_missing_measurand_is_refused_naming_the_field(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        meta = self._meta(w)
+        del meta["measurand"]
+        with pytest.raises(BadInput, match=r"meta\.measurand") as ei:
+            h.put(text="95", meta=meta)
+        assert "put(kind='measure'" in (ei.value.next or "")
+
+    def test_an_input_error_names_its_index(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        with pytest.raises(BadInput, match=r"items\[1\]\.measurand"):
+            h.put(
+                text="95",
+                meta=self._meta(w),
+                items=[
+                    {"measurand": "measurand/potential", "literal": "-0.5"},
+                    {"literal": "NH3"},
+                ],
+            )
+        with pytest.raises(BadInput, match=r"items\[0\]: unknown field"):
+            h.put(
+                text="95",
+                meta=self._meta(w),
+                items=[{"measurand": "measurand/potential", "literal": "1", "x": 1}],
+            )
+
+    def test_other_field_errors_are_named(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        with pytest.raises(BadInput, match=r"meta\.value_num"):
+            h.put(text="95", meta=self._meta(w, value_num="x"))
+        with pytest.raises(BadInput, match=r"meta\.subject"):
+            h.put(text="95", meta=self._meta(w, subject="nonsense"))
+        with pytest.raises(BadInput, match=r"meta\.anchor\.chunk"):
+            h.put(
+                text="95",
+                meta=self._meta(
+                    w, anchor={"chunk": "zz9", "anchor_scheme": "x", "span": "s"}
+                ),
+            )
+        with pytest.raises(BadInput, match="unknown field"):
+            h.put(text="95", meta=self._meta(w, bogus=1))
+        with pytest.raises(BadInput, match="literal"):
+            h.put(text="  ", meta=self._meta(w))
+        with pytest.raises(BadInput, match="append-only"):
+            h.put(text="95", meta=self._meta(w), id=3)
+
+    def test_measured_without_an_anchor_is_refused(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        meta = self._meta(w)
+        del meta["anchor"]
+        with pytest.raises(BadInput, match="anchored primary edge"):
+            h.put(text="95", meta=meta)
+        # a refusal wrote nothing
+        assert store.search_measures(w["fe"], include_all=True).rows == []
+
+    def test_supersedes_through_put(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        first = h.put(text="95", meta=self._meta(w)).body
+        found = re.search(r"^mx(\d+) ", first, re.M)
+        assert found is not None
+        old = int(found.group(1))
+        h.put(text="96", meta=self._meta(w, supersedes=f"mx{old}"))
+        assert store.measure_detail(old)["superseded_by"] is not None
+
+
+def _output_id(body: str) -> int:
+    found = re.search(r"^mx(\d+) output", body, re.M)
+    assert found is not None, body
+    return int(found.group(1))
+
+
+class TestPutEditThroughTheVerbs:
+    @pytest.fixture
+    def verbs(self, runtime_with_store: Any) -> Any:
+        from precis.tools import core
+
+        core._runtime = runtime_with_store
+        try:
+            yield core
+        finally:
+            core._runtime = None
+
+    @staticmethod
+    def _text(out: Any) -> str:
+        content = getattr(out, "content", None)
+        return content[0].text if content else str(out)
+
+    def _put(self, verbs: Any, w: dict[str, Any], **kw: Any) -> str:
+        return self._text(
+            verbs.put(
+                kind="measure",
+                text="95",
+                meta=TestPutRun._meta(w),
+                items=[
+                    {
+                        "measurand": "measurand/potential",
+                        "literal": "-0.5",
+                        "reported_unit": "V",
+                    }
+                ],
+                **kw,
+            )
+        )
+
+    def test_put_reason_reaches_the_revision_context(
+        self,
+        store: Store,
+        w: dict[str, Any],
+        verbs: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from precis.store.revision_context import current_revision_context
+
+        seen: dict[str, Any] = {}
+        real = Store.insert_measure
+
+        def spy(self: Store, *a: Any, **kw: Any) -> Any:
+            ctx = current_revision_context()
+            seen["ctx"] = ctx and (ctx.reason, ctx.actor)
+            with self.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT current_setting('precis.reason', true)"
+                ).fetchone()
+                seen["guc"] = row[0] if row else None
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(Store, "insert_measure", spy)
+        out = self._put(verbs, w, reason="qu202467 pilot extraction")
+        assert out.startswith("run run:"), out
+        assert seen["ctx"] == ("qu202467 pilot extraction", "agent")
+        assert seen["guc"] == "qu202467 pilot extraction"
+        # no reason=: the verb names itself, as for edit
+        self._put(verbs, w)
+        assert seen["ctx"] == ("put(kind='measure')", "agent")
+
+    def test_model_review_lands_current_and_shows_in_get(
+        self, store: Store, w: dict[str, Any], verbs: Any
+    ) -> None:
+        mid = _output_id(self._put(verbs, w))
+        out = self._text(
+            verbs.edit(
+                kind="measure",
+                id=f"mx{mid}",
+                review="model",
+                verdict="approved",
+                text="95 is printed in the anchor",
+                meta={"model": "opus-5"},
+            )
+        )
+        assert out.startswith(f"reviewed mx{mid}: review ") and "approved" in out
+        (rv,) = store.reviews_for("measure", mid)
+        assert (rv.verdict, rv.actor, rv.model, rv.current) == (
+            "approved",
+            "agent",
+            "opus-5",
+            True,
+        )
+        assert rv.content_sha[:12] in out
+        shown = self._text(verbs.get(kind="measure", id=mid))
+        assert "approved by agent / opus-5" in shown and "current" in shown
+        assert "95 is printed in the anchor" in shown
+
+    def test_two_reviews_append(
+        self, store: Store, w: dict[str, Any], verbs: Any
+    ) -> None:
+        mid = _output_id(self._put(verbs, w))
+        for verdict in ("rejected", "approved"):
+            verbs.edit(
+                kind="measure",
+                id=mid,
+                review="model",
+                verdict=verdict,
+                meta={"model": "opus-5"},
+            )
+        assert [r.verdict for r in store.reviews_for("measure", mid)] == [
+            "approved",
+            "rejected",
+        ]
+
+    def test_a_model_review_without_a_model_is_refused(
+        self, store: Store, w: dict[str, Any], verbs: Any
+    ) -> None:
+        mid = _output_id(self._put(verbs, w))
+        out = self._text(verbs.edit(kind="measure", id=mid, review="model"))
+        assert "error" in out.lower(), out
+        assert "a model review must name its model" in out
+        assert store.reviews_for("measure", mid) == []
+
+    def test_a_human_review_over_the_verb_names_the_person(
+        self, store: Store, w: dict[str, Any], verbs: Any
+    ) -> None:
+        mid = _output_id(self._put(verbs, w))
+        out = self._text(
+            verbs.edit(
+                kind="measure",
+                id=mid,
+                review="human",
+                verdict="approved",
+                meta={"actor": "reto"},
+            )
+        )
+        assert f"reviewed mx{mid}" in out and "by reto" in out, out
+        (rv,) = store.reviews_for("measure", mid)
+        assert (rv.actor, rv.model, rv.current) == ("reto", None, True)
+        # no meta.actor: the single human identity, as for draft
+        verbs.edit(kind="measure", id=mid, review="human")
+        assert store.reviews_for("measure", mid)[0].actor == "human"
+        out = self._text(
+            verbs.edit(
+                kind="measure",
+                id=mid,
+                review="human",
+                meta={"actor": "reto", "model": "opus-5"},
+            )
+        )
+        assert "a human review has no model" in out
+
+    def test_a_non_review_edit_is_refused(
+        self, store: Store, w: dict[str, Any], verbs: Any
+    ) -> None:
+        mid = _output_id(self._put(verbs, w))
+        for kw in (
+            {"mode": "replace", "text": "96"},
+            {"meta": {"trusted": True}},
+            {"find": "95", "text": "96"},
+        ):
+            out = self._text(verbs.edit(kind="measure", id=mid, **kw))
+            assert "error" in out.lower() and "append-only" in out, out
+            assert "supersedes" in out
+        assert store.measure_detail(mid)["literal"] == "95"
+
+
+class TestReviewHandler:
+    @pytest.fixture
+    def mid(self, store: Store, w: dict[str, Any], h: MeasureHandler) -> int:
+        return _output_id(h.put(text="95", meta=TestPutRun._meta(w)).body)
+
+    def test_a_person_may_review_without_a_model(
+        self, store: Store, h: MeasureHandler, mid: int
+    ) -> None:
+        from precis.store.revision_context import revision_context
+
+        with revision_context("manual", actor="reto"):
+            out = h.edit(id=mid, review="human", verdict="rejected", text="why").body
+        (rv,) = store.reviews_for("measure", mid)
+        assert (rv.actor, rv.model, rv.verdict, rv.note) == (
+            "reto",
+            None,
+            "rejected",
+            "why",
+        )
+        assert f"review {rv.review_id} rejected by reto" in out
+
+    def test_a_person_names_no_model(self, h: MeasureHandler, mid: int) -> None:
+        from precis.store.revision_context import revision_context
+
+        with revision_context("manual", actor="reto"):
+            with pytest.raises(BadInput, match="a human review has no model"):
+                h.edit(id=mid, review="human", meta={"model": "x"})
+            with pytest.raises(BadInput, match="a model review must name its model"):
+                h.edit(id=mid, review="model")
+            with pytest.raises(BadInput, match="meta.actor names the person"):
+                h.edit(id=mid, review="model", meta={"model": "m", "actor": "reto"})
+
+    def test_bad_verdicts_and_ids(self, h: MeasureHandler, mid: int) -> None:
+        with pytest.raises(BadInput, match="approved or rejected"):
+            h.edit(id=mid, review="model", verdict="retract", meta={"model": "m"})
+        with pytest.raises(BadInput, match="'human' or 'model'"):
+            h.edit(id=mid, review="cites", meta={"model": "m"})
+        with pytest.raises(BadInput, match="needs id"):
+            h.edit(review="model", meta={"model": "m"})
+        with pytest.raises(NotFound, match="not found"):
+            h.edit(id=999999, review="model", meta={"model": "m"})

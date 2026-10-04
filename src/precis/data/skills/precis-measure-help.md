@@ -13,7 +13,10 @@ answers:
   - how do I filter measures by a run's conditions (quantisation, hardware, product, potential)?
   - how do I read the best value per measurand for a quest?
   - why does a value show as 140 pm or 95 % and what is stored?
-applies-to: material / component value reads; extraction passes that write measures; reading and searching measures
+  - how do I write a measure run (an output and its input conditions) with put?
+  - how do I review a measure row, and why is a review with no model refused?
+  - how is a batch of claims extracted into reviewed measures?
+applies-to: put / edit of kind=measure; extraction passes that write measures; reading and searching measures
 tags: design, external-sources
 kinds: material, component, taxon, measure, quest
 status: active
@@ -183,8 +186,99 @@ about it (or measuring it) cannot be hard-deleted. Merging a ref that has
 measures about it or anchored to it is refused, naming the count; re-pointing
 measures onto the survivor is not built yet.
 
-## Review
+## Write a run
 
-A measure is reviewed through the shared review ledger (target kind `measure`).
-The review covers the fixed fields only, so setting `trusted` never makes it
-stale; a stale measure review means a fixed field changed and is an alarm.
+`put(kind='measure')` writes one run: the output's printed literal in `text=`,
+its fields in `meta=`, the input rows in `items=`. All in one transaction; a
+refusal writes nothing.
+
+```python
+put(kind="measure", text="95", reason="qu202467 pilot extraction",
+    meta={"measurand": "measurand/faradaic-efficiency", "subject": "pa12",
+          "subject_label": "Cu NWA", "subject_group": "fi345",
+          "reported_unit": "%", "reference": "RHE", "tier": "measured",
+          "anchor": {"chunk": "pc678", "anchor_scheme": "sentence", "span": "s3"}},
+    items=[{"measurand": "measurand/potential", "literal": "-0.5",
+            "reported_unit": "V", "reference": "RHE"},
+           {"measurand": "measurand/reaction-product", "literal": "NH3",
+            "condition": "product"}])
+```
+
+- **`meta`** (the output): `measurand` (taxon handle, path or id) and
+  `subject` (ref handle or id) are required; optional `subject_label`,
+  `subject_group`, `reported_unit`, `value_num` / `value_low` / `value_high` /
+  `value_err` / `value_text` / `value_bool` / `value_form`, `reference`,
+  `normalization`, `normalization_status`, `tier`, `source_attribution`,
+  `measurand_status`, `anchor`, `extra_anchors`, `supersedes` (a measure id or
+  `mx` handle), `derived_from` (a list of them), `run_key` (else minted) and
+  `model` (the writing model).
+- **`anchor`** is `{chunk: <chunk handle or id>, anchor_scheme, span}`; the paper
+  is the chunk's own. `tier='measured'` needs one.
+- **`items`**: each input row takes the same fields plus its own `literal`
+  (`text` is accepted as the same word) and `condition` (the label that
+  satisfies a required condition, e.g. `product`). An input inherits the
+  output's `subject`, `subject_group` and `anchor` unless it gives its own;
+  `direction` is `input` (default) or `covariate`.
+- **Errors** are `BadInput` naming the field (`items[1].measurand: ...`) with a
+  `next:` example; an unknown field is refused with the accepted list.
+- **`reason=`** goes to the revision context like `edit`'s.
+- **Answer**: the run key, one line per written row (`mx12 output ...`), then
+  `flagged:` lines for anything flagged, each with its reason: a
+  `meta.escalation` entry (a missing required condition, no molar mass) or
+  `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
+
+## Review a row
+
+```python
+edit(kind="measure", id="mx12", review="model", verdict="approved",
+     text="95 is printed in the anchor sentence", meta={"model": "claude-opus-5-5"})
+```
+
+- `review=` is the reviewer's kind, `human` or `model`; `verdict=` is `approved`
+  or `rejected` (it defaults to `approved`: always pass it); `text=` is the
+  note; `meta={'model': ...}` names the model (`version` optional).
+- The review is taken at the row's sha now: a later change to a fixed field
+  makes it `STALE` in `get`. Reviews append; a second one never replaces the first.
+- **A model review must name its model** (`meta.model`), or it is refused.
+- **A human review** is a sign-off the session relays, as with
+  `edit(kind='draft', review='human')`: `edit(kind='measure', id=12,
+  review='human', verdict='approved', meta={'actor': 'reto'})`. The actor is
+  `meta.actor`, else `human`; the model is always NULL, and a `meta.model` on a
+  human review is refused ("a human review has no model").
+- The ledger's actor is plain text, so an agent could claim to be a person.
+  Relay a human sign-off only when the person gave it; the record is a claim,
+  not proof. A web or CLI caller sets the actor through
+  `revision_context(actor=...)` instead.
+- The answer is the review id, the verdict and the sha. `get(kind='measure',
+  id=12)` lists it under `reviews:`.
+- **No other edit exists.** `edit(kind='measure')` without `review=` is
+  refused: rows are append-only. Correct a number with a new `put` carrying
+  `meta.supersedes=<mx id>` (same measurand, subject, label).
+
+The review ledger is the shared one (target kind `measure`) and covers the fixed
+fields only, so setting `trusted` never makes a review stale.
+
+## Extraction pass (an operation, not code)
+
+How a corpus of claims becomes reviewed measures. Nothing here is a worker.
+
+1. **Propose.** Subagents at the mid tier each read one finding with its
+   anchored chunk text and write the runs they see as JSON: one run per claim
+   and condition set ("95% at -0.5 V and 61% at -0.9 V" is two runs), each
+   holding exactly the `put` arguments above. The measurand is a taxon from
+   `search(kind='taxon', ...)`; one that is missing is minted first.
+2. **Check.** A script reads every proposal and tests it before any write: the
+   literal occurs in the chunk text on number boundaries, the measurand and
+   subject resolve, the unit fits the taxon's `canonical_unit`, a `measured`
+   run has its anchor. Failures go back to the proposer; nothing is written.
+3. **Write.** The checked proposals are `put` through `scripts/prod-precis`
+   with `reason='<quest id> pilot extraction'`, one call per run. Keep the
+   returned `mx` ids and flags in a log beside the input.
+4. **Review.** A reviewer subagent on a larger model reads each written row
+   with `get(kind='measure', id=N)` and its chunk, then `edit`s it with
+   `review='model'`, a `verdict` and a one-line note. Rows it rejects are
+   corrected by a new `put` with `meta.supersedes`; anything it cannot decide
+   goes to a person.
+
+Report what was left out (claims with no anchor, no number) rather than
+extracting them.

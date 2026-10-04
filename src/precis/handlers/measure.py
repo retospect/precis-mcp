@@ -2,8 +2,9 @@
 per row (``docs/backlog/measures-substrate.md``, pilot Build B).
 
 A measure is a row, not a ref, so this is a handler-searched kind like ``tag``
-and ``skill``: addressed by ``measures.id`` (``12`` or the handle ``mx12``),
-read-only here (rows are written by ``Store.insert_measure``).
+and ``skill``: addressed by ``measures.id`` (``12`` or the handle ``mx12``).
+Rows are append-only (``Store.insert_measure`` writes a run); the two write
+verbs are listed below.
 
 * ``get(kind='measure', id=12)`` — the row with everything a review needs: the
   literal and its value in the display unit (SI beside it), the measurand and
@@ -18,6 +19,16 @@ read-only here (rows are written by ``Store.insert_measure``).
   (``quant=Q4 potential<-0.5``) matched against the run's input rows, and any
   other word matches the subject label. One line per row.
 
+* ``put(kind='measure', text=<output literal>, meta={measurand, subject, ...,
+  anchor}, items=[<input rows>])`` — writes one run through ``insert_measure``
+  and answers with the run's ``mx`` handles plus anything flagged
+  (:mod:`precis.handlers._measure_write` lists the fields). ``reason=`` reaches
+  the revision context in dispatch.
+* ``edit(kind='measure', id=N, review='human'|'model', verdict='approved'|
+  'rejected', text=<note>, meta={'model': ...})`` — one ledger review at the
+  row's sha now. No other edit exists: a correction is a new ``put`` with
+  ``meta.supersedes``.
+
 A measure has no neighbourhood, so the fisheye ladder is ``Unsupported``.
 """
 
@@ -31,9 +42,12 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _measure_render as render
-from precis.protocol import Handler, KindSpec
+from precis.handlers._measure_write import RunParser, flag_lines
+from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
 from precis.store._measures_ops import ConditionFilter
+from precis.store._salience import current_background_actor
+from precis.store.revision_context import current_revision_context
 from precis.taxonomy.measure_units import (
     format_number,
     is_unit,
@@ -118,10 +132,14 @@ class MeasureHandler(Handler):
             "search(kind='measure', property='measurand/faradaic-efficiency', "
             "min=90, q='product=NH3 potential<-0.5 V', unit='%') filters by "
             "measurand, numeric range (in unit=) and the run's conditions. "
-            "Read-only. See precis-measure-help."
+            "put writes one run (text=literal, meta={measurand, subject, anchor}, "
+            "items=[inputs]); edit(review=, verdict=) records a ledger review; "
+            "rows are append-only. See precis-measure-help."
         ),
         supports_get=True,
         supports_search=True,
+        supports_put=True,
+        supports_edit=True,
         supports_search_hits=False,
         is_numeric=True,
         id_required=True,
@@ -307,6 +325,171 @@ class MeasureHandler(Handler):
         span = f" {r['anchor_scheme']}: {r['span']}" if r["anchor_scheme"] else ""
         title = f" {a['title']}" if a["title"] else ""
         return f"anchor: {paper}{title} · {chunk} ·{span}"
+
+    # ── put: one run ─────────────────────────────────────────────────
+
+    def put(
+        self,
+        *,
+        text: str | None = None,
+        meta: dict[str, Any] | None = None,
+        items: list[dict[str, Any]] | None = None,
+        id: str | int | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Write one run: the output (``text`` + ``meta``) and its input rows
+        (``items``), tied by one ``run_key``, in one transaction."""
+        if id is not None and str(id).strip():
+            raise BadInput(
+                "put(kind='measure') writes a new run; it takes no id=. Rows are "
+                "append-only",
+                next="to correct a row, put the corrected number with "
+                "meta={'supersedes': <mx id>, ...} (same measurand, subject and label)",
+            )
+        parsed = RunParser(self.store, lambda spec: self._taxon(spec)[0]).run(
+            text, meta, items
+        )
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
+        model = parsed.model or (ctx.model if ctx else None)
+        run = self.store.insert_measure(
+            parsed.output,
+            parsed.inputs,
+            actor=actor,
+            model=model,
+            run_key=parsed.run_key,
+        )
+        details = {
+            mid: self.store.measure_detail(mid)
+            for mid in (run.output_id, *run.input_ids)
+        }
+        lines = [f"run {run.run_key}: {len(details)} measure(s) written"]
+        for mid, r in details.items():
+            mx = handle_registry.format_handle("measure", mid)
+            lines.append(
+                f"{mx} {r['direction']} {render.subject_label(r)}: {r['measurand']} "
+                f"{render.value_text(r)} [{r['literal']}] {r['extraction_status']}"
+            )
+        flagged = flag_lines(details)
+        if flagged:
+            lines.append("flagged:")
+            lines.extend(f"  {line}" for line in flagged)
+        return Response(body="\n".join(lines))
+
+    # ── edit: one ledger review ──────────────────────────────────────
+
+    @tolerates_extra_kwargs
+    def edit(
+        self,
+        *,
+        id: str | int | None = None,
+        review: str | None = None,
+        verdict: str = "approved",
+        text: str | None = None,
+        meta: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Record one review of a row at its sha now. The only edit a measure
+        has: rows are append-only."""
+        # mode= is the verb's wrapper default; anything else supplied is an
+        # attempt to change the row (the dispatch gate would otherwise name it
+        # as an unknown kwarg without saying why).
+        touched = sorted(k for k in _kw if k != "mode")
+        if review is None or touched:
+            if review is None:
+                touched = sorted(
+                    {*touched, *(k for k, v in (("text", text), ("meta", meta)) if v)}
+                )
+            raise BadInput(
+                "a measure row is append-only: edit(kind='measure') records a "
+                "review and changes nothing else"
+                + (f" (got {', '.join(touched)})" if touched else ""),
+                next="to correct a number put the corrected run with "
+                "meta={'supersedes': <mx id>, ...}; to review: edit(kind='measure', "
+                "id=N, review='model', verdict='approved'|'rejected', "
+                "meta={'model': '<model id>'}, text='<why>')",
+            )
+        if id is None or (isinstance(id, str) and not id.strip()):
+            raise BadInput(
+                "edit(kind='measure', review=...) needs id=<measure id or mx handle>",
+                next="search(kind='measure', property='<measurand>') lists rows with ids",
+            )
+        if review not in ("human", "model"):
+            raise BadInput(
+                f"review= names the reviewer's kind, 'human' or 'model', got {review!r}",
+                next="edit(kind='measure', id=N, review='model', verdict='approved', "
+                "meta={'model': '<model id>'})",
+            )
+        if verdict not in ("approved", "rejected"):
+            raise BadInput(
+                f"verdict {verdict!r} is not approved or rejected",
+                next="edit(kind='measure', id=N, review='model', verdict='rejected', "
+                "text='the literal is not in the chunk')",
+            )
+        extra = sorted(set(meta or {}) - {"model", "version", "actor"})
+        if extra:
+            raise BadInput(
+                f"meta keys {extra} are not review fields; a review takes "
+                "meta={'model': ..., 'version': ..., 'actor': ...}",
+                next="to change the row, put a corrected run with meta.supersedes",
+            )
+        model = (meta or {}).get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise BadInput("meta.model must be a non-empty model id string")
+        version = (meta or {}).get("version", "0")
+        named = (meta or {}).get("actor")
+        if named is not None and (not isinstance(named, str) or not named.strip()):
+            raise BadInput("meta.actor must be a non-empty name, e.g. 'reto'")
+
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or current_background_actor() or "agent"
+        if review == "human":
+            # Like draft's review='human': a sign-off the session relays. The
+            # ledger's actor is plain text, so this records a claim, not proof.
+            if model is not None:
+                raise BadInput(
+                    f"a human review has no model (got meta.model={model!r}); "
+                    "a model review is review='model'",
+                    next="edit(kind='measure', id=N, review='model', ..., "
+                    "meta={'model': '<model id>'})",
+                )
+            if named is not None:
+                actor = named.strip()
+            elif actor == "agent":  # the dispatch default, not a caller's choice
+                actor = "human"
+        else:
+            if model is None:
+                raise BadInput(
+                    "a model review must name its model",
+                    next="edit(kind='measure', id=N, review='model', "
+                    "verdict='approved', meta={'model': '<your model id>'})",
+                )
+            if named is not None:
+                raise BadInput(
+                    "meta.actor names the person for review='human'; a model "
+                    "review's actor is the calling session",
+                    next="edit(kind='measure', id=N, review='human', "
+                    "meta={'actor': 'reto'})",
+                )
+
+        measure_id = self._coerce_id(id)
+        self.store.measure_detail(measure_id)  # NotFound with a hint when absent
+        rv = self.store.record_target_review(
+            "measure",
+            measure_id,
+            actor=actor,
+            verdict=verdict,
+            model=model,
+            version=str(version),
+            note=text.strip() if isinstance(text, str) and text.strip() else None,
+        )
+        who = actor + (f" / {model}" if model else "")
+        return Response(
+            body=(
+                f"reviewed {handle_registry.format_handle('measure', measure_id)}: "
+                f"review {rv.review_id} {rv.verdict} by {who} @ {rv.content_sha[:12]}"
+            )
+        )
 
     # ── search ───────────────────────────────────────────────────────
 

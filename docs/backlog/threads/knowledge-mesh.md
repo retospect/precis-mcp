@@ -35,8 +35,11 @@ After the round-4 deploy, and not before (orchestrator):
 Builds, in the measures spec §"Pilot build on qu202467":
 - **B (measure kind, range search with `unit=`, quest `view='measures'`):**
   qlanded 2026-10-04; rides the round-4 deploy.
-- **C (put/edit verbs for measures, then the extraction pass on the 130
-  anchored findings, as an operation):** next.
+- **C:** the put/edit verbs for measures were qlanded on 2026-10-04 and
+  ride the round-4 deploy. Next is the extraction pass on the 130
+  anchored findings, an operation after deploy that follows
+  `precis-measure-help` "Extraction pass". The input is
+  `scratch/qu202467-findings.jsonl`.
 - **A2 (legacy taxa to SI, drop `rxn_values`):** a migration branch to
   the orchestrator.
 
