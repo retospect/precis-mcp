@@ -246,10 +246,18 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
   novel prod diagnosis; memory *reconsolidation*.
 
-Default: start cheap, hand a decided change to the sonnet tier, keep genuine
-design/domain judgment on Opus. An agent def with no `model:` line inherits the
+Default down, escalate up: start each task on the cheapest agent or model that
+can do it, and move up only when that attempt fails or the task is a design
+call. Hand a decided change to the sonnet tier; keep genuine design/domain
+judgment on Opus. Thread sessions follow the same rule: the `model` column of
+`.claude/fleet/threads.tsv` defaults to sonnet. An agent def with no `model:` line inherits the
 session model (= Opus), so a mechanical task runs expensive by accident; use the
 Agent tool's `model:` for one-off downgrades.
+
+Every subagent prompt you write must forbid `docker ... prune` of any kind and
+forbid writing or running scripts in the shared `/tmp` (use the worktree or the
+session scratch directory). If the disk fills, the agent reports it instead of
+pruning.
 
 For a build too large for one `coder` call to finish cleanly (many files, many
 test-fix cycles), use the `coder-chain` skill: sequential fresh `coder` rounds

@@ -728,3 +728,38 @@ def test_refs_fetch_failure_is_a_stderr_note_not_an_error(fleet: Fleet) -> None:
     assert cp.returncode == 0
     assert "fetch failed" in cp.stderr
     assert cp.stdout.splitlines()[0].startswith("main ")
+
+
+# --- model -----------------------------------------------------------------
+
+
+def _table(fleet: Fleet, rows: str) -> None:
+    (fleet.repo / ".claude" / "fleet" / "threads.tsv").write_text(
+        "# slug\teffort\tdesign-review\tmodel\n" + rows, encoding="utf-8"
+    )
+
+
+def test_model_column_decides_and_missing_or_empty_is_sonnet(fleet: Fleet) -> None:
+    _table(
+        fleet,
+        "alpha\thigh\tno\topus\nbeta\tmedium\tno\n"
+        "gamma\tmedium\tno\t\ndelta\thigh\tno\tsonnet\n",
+    )
+    fleet.env.pop("PRECIS_FLEET_MODEL", None)
+    got = {
+        s: fleet.run("model", s).stdout.strip()
+        for s in ("alpha", "beta", "gamma", "delta")
+    }
+    assert got == {
+        "alpha": "opus",
+        "beta": "sonnet",
+        "gamma": "sonnet",
+        "delta": "sonnet",
+    }
+
+
+def test_model_env_overrides_every_row(fleet: Fleet) -> None:
+    _table(fleet, "alpha\thigh\tno\topus\nbeta\tmedium\tno\n")
+    fleet.env["PRECIS_FLEET_MODEL"] = "haiku"
+    assert fleet.run("model", "alpha").stdout.strip() == "haiku"
+    assert fleet.run("model", "beta").stdout.strip() == "haiku"

@@ -25,7 +25,10 @@ Note from the user: `$ARGUMENTS`
    a design call, a correctness risk or shared infrastructure, else
    `medium`; `design-review` is `yes` where a plausible-but-wrong method
    would pass the gate (routing methods, geometry constructions, network
-   completeness).
+   completeness). `model` is `sonnet` by default, `opus` only where the
+   thread's work is design judgment the gate cannot check (the same threads
+   that carry that correctness risk). The orchestrator's design review is
+   what lets thread sessions run the cheaper model.
 
 2. **Bring it up.** `scripts/fleet up`. It creates only the windows that
    are missing, so after a crash it restores the dead ones and leaves the

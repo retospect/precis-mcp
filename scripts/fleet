@@ -5,7 +5,7 @@
 # window at index 1 that walks Reto through what the sessions need from him.
 # The orchestrator session (`/fleet`) runs this; nothing here lands or
 # deploys. State is derived from tmux at call time; the only stored input is
-# `.claude/fleet/threads.tsv` (slug, effort, design-review flag), which
+# `.claude/fleet/threads.tsv` (slug, effort, design-review flag, model), which
 # follows the active set in `docs/roadmap.md`.
 #
 #   scripts/fleet up [--stagger N]   create every missing window (idempotent)
@@ -36,6 +36,8 @@
 #       nothing (a first start seeds silently). Also drains the held queue.
 #       PRECIS_FLEET_WATCH_TICK 15 s, PRECIS_FLEET_CTX_FLOOR 30
 #   scripts/fleet effort             send each window its /effort level
+#   scripts/fleet model <slug>       the model `up` starts that thread on (its row, else
+#       sonnet; PRECIS_FLEET_MODEL overrides every row)
 #   scripts/fleet watch-ctx          the old ctx-only watcher (kept; `watch` supersedes it)
 #   scripts/fleet queue-dir          print the review-queue directory
 #
@@ -54,11 +56,19 @@ state="${PRECIS_FLEET_STATE:-$HOME/.claude/projects/$(printf '%s' "$root" | tr '
 queue="$state/review-queue"
 reviews="${PRECIS_FLEET_REVIEWS:-$state/reviews}"
 held="$state/fleet-queue"
+# The review window's model; thread windows take thread_model's.
 model="${PRECIS_FLEET_MODEL:-opus}"
 
 tmux() { command tmux ${PRECIS_FLEET_TMUX_SOCKET:+-L "$PRECIS_FLEET_TMUX_SOCKET"} "$@"; }
 threads() { grep -v -e '^#' -e '^[[:space:]]*$' "$table"; }
 windows() { tmux list-windows -F '#{window_name}'; }
+# Model for a thread window: PRECIS_FLEET_MODEL overrides every row, else the
+# row's fourth column, else sonnet (missing or empty column).
+thread_model() {
+  [ -z "${PRECIS_FLEET_MODEL:-}" ] || { printf '%s\n' "$PRECIS_FLEET_MODEL"; return; }
+  local m; m=$(threads | awk -F'\t' -v s="$1" '$1 == s { print $4; exit }')
+  printf '%s\n' "${m:-sonnet}"
+}
 has_window() { windows | grep -q -x -- "$1"; }
 # Every dialog marker this build shows; status, send, dialogs and the drain all key on it.
 dialog_re='Enter to select|Do you want to|Do you trust the files'
@@ -148,14 +158,14 @@ cmd_up() {
     fi
     echo "created: review"
   fi
-  threads | while IFS=$'\t' read -r slug _effort _review; do
+  threads | while IFS=$'\t' read -r slug _effort _review _model; do
     if has_window "$slug"; then echo "exists: $slug"; continue; fi
     # Reto 2026-10-03: the main loop keeps design and domain judgment and
     # hands the rest to subagents (AGENTS.md "Agent sizing"); editors run in
     # an isolated worktree so they never collide with the thread's own tree.
     local boot="Resume the work on $slug. Use subagents per AGENTS.md Agent sizing: you keep design and domain judgment; searches to navigator/extract/Explore, decided edits to coder/test-author/documenter, test runs to test-runner, cluster reads to cluster-ops, bug tracing to root-cause, pre-ship review to reviewer; independent pieces as parallel agents in one message; any agent that edits uses isolation worktree."
     tmux new-window -d -n "$slug" -c "$root" \
-      "claude -w $slug --model $model '$boot'"
+      "claude -w $slug --model $(thread_model "$slug") '$boot'"
     echo "created: $slug"
     sleep "$stagger"
   done
@@ -753,7 +763,7 @@ cmd_effort() {
   # `/effort` saves its level as the default for new sessions, last write
   # wins: send medium first so the saved default ends on high.
   for level in medium high; do
-    threads | while IFS=$'\t' read -r slug effort _review; do
+    threads | while IFS=$'\t' read -r slug effort _review _model; do
       [ "$effort" = "$level" ] || continue
       has_window "$slug" && send "$slug" "/effort $level"
     done
@@ -793,6 +803,7 @@ case "${1:-}" in
   mcp-check) shift; cmd_mcp_check "$@" ;;
   watch) cmd_watch ;;
   effort) cmd_effort ;;
+  model) thread_model "${2:?usage: scripts/fleet model <slug>}" ;;
   watch-ctx) cmd_watch_ctx ;;
   queue-dir) echo "$queue" ;;
   *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

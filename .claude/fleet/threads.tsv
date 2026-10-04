@@ -1,26 +1,28 @@
 # The fleet: one row per active thread in docs/roadmap.md, tab-separated.
 # Change this file in the same commit as the roadmap's active set.
-#   slug	effort	design-review
+#   slug	effort	design-review	model
 # effort: the /effort level the session runs at.
 # design-review: yes = design-bearing changes get the orchestrator's review
 # before they land (.claude/fleet/msg-design-review.txt).
-nanobuds-paper	high	no
-catalysis-selectivity	high	yes
-chemistry	medium	no
-draft-authoring	medium	no
-claims-and-evidence	high	no
-session-mcp-shared-server	high	no
-knowledge-mesh	high	no
-graph-memory-consumers	high	no
-ingest-and-fetch	medium	no
-hexfold-toolkit	high	yes
-se-3d-viewer	medium	no
-se-nucleic-chain	medium	no
-se-machine-design	high	no
-ewod-pcb	medium	no
-pcb-easyeda-round-trip	high	yes
-local-compute	medium	no
-roadmap-quest	high	no
-monitors-that-go-quiet	medium	no
-plugin-split	medium	no
-ship-gate-ci	high	yes
+# model: the --model the session starts on; empty = sonnet. opus only where
+# the thread's work is design judgment the gate cannot check.
+nanobuds-paper	high	no	sonnet
+catalysis-selectivity	high	yes	opus
+chemistry	medium	no	sonnet
+draft-authoring	medium	no	sonnet
+claims-and-evidence	high	no	opus
+session-mcp-shared-server	high	no	sonnet
+knowledge-mesh	high	no	opus
+graph-memory-consumers	high	no	sonnet
+ingest-and-fetch	medium	no	sonnet
+hexfold-toolkit	high	yes	opus
+se-3d-viewer	medium	no	sonnet
+se-nucleic-chain	medium	no	sonnet
+se-machine-design	high	no	sonnet
+ewod-pcb	medium	no	sonnet
+pcb-easyeda-round-trip	high	yes	sonnet
+local-compute	medium	no	sonnet
+roadmap-quest	high	no	sonnet
+monitors-that-go-quiet	medium	no	sonnet
+plugin-split	medium	no	sonnet
+ship-gate-ci	high	yes	sonnet
