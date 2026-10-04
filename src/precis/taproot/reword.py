@@ -247,6 +247,7 @@ _COHORT_SQL = f"""
               WHERE np.claim_ref_id = r.ref_id AND np.state <> 'candidate'
            )
        {{hub_clause}}
+       {{after_clause}}
      ORDER BY r.ref_id
 """
 
@@ -301,11 +302,18 @@ def _blocking_codes(sentence: str) -> tuple[str, ...]:
 
 
 def select_reword_cohort(
-    store: Store, *, hub: int | None = None, limit: int | None = None
+    store: Store,
+    *,
+    hub: int | None = None,
+    limit: int | None = None,
+    after_ref_id: int | None = None,
 ) -> list[RewordCandidate]:
     """The rewordable cohort, ``ref_id`` order.
 
-    ``hub`` restricts to one hub (it still has to qualify); ``limit``
+    ``hub`` restricts to one hub (it still has to qualify);
+    ``after_ref_id`` is keyset pagination (``ref_id > N``, in SQL, so the
+    scan itself skips the earlier hubs) -- feed it the previous batch's
+    ``last_ref_id`` to walk the cohort in bounded batches; ``limit``
     applies in Python, **after** the lint and rejected-memo filters, so
     a limited run is a stable prefix of the filtered cohort rather than
     of the candidate scan (the :func:`~precis.taproot.repair_evidence.
@@ -318,7 +326,11 @@ def select_reword_cohort(
     if hub is not None:
         hub_clause = "AND r.ref_id = %(hub)s"
         params["hub"] = hub
-    sql = _COHORT_SQL.format(hub_clause=hub_clause)
+    after_clause = ""
+    if after_ref_id is not None:
+        after_clause = "AND r.ref_id > %(after)s"
+        params["after"] = after_ref_id
+    sql = _COHORT_SQL.format(hub_clause=hub_clause, after_clause=after_clause)
     with store.pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
     out: list[RewordCandidate] = []
@@ -770,6 +782,7 @@ def run_reword_sweep(
     apply: bool = False,
     limit: int | None = None,
     hub: int | None = None,
+    after_ref_id: int | None = None,
     out: str | Path | IO[str] | None = None,
     propose_fn: ProposeFn | None = None,
 ) -> dict[str, Any]:
@@ -778,7 +791,9 @@ def run_reword_sweep(
 
     ``apply=False`` (the default) computes and reports every proposal
     and writes NOTHING. ``limit`` caps the cohort (a stable prefix, so
-    the first real run can be small); ``hub`` scopes to one hub;
+    the first real run can be small); ``after_ref_id`` starts after that
+    hub (keyset batching: pass the previous run's ``last_ref_id``);
+    ``hub`` scopes to one hub;
     ``out`` (path or text stream) gets the per-hub JSONL rows;
     ``propose_fn`` is the injectable LLM seam (tests; default
     :func:`propose_reword`).
@@ -787,13 +802,18 @@ def run_reword_sweep(
 
         {"cohort": int, "processed": int, "applied": int,
          "warned": int, "counts": {status: int, ...}, "apply": bool,
-         "out": str|None}
+         "out": str|None, "last_ref_id": int|None}
+
+    ``last_ref_id`` is the highest hub ``ref_id`` processed (``None`` for
+    an empty cohort) -- the ``--after-ref-id`` of the next batch.
 
     ``warned`` counts hubs carrying an advisory grounding warning (an
     unseen epistemic mode, or no pinned passage to check against). It is
     a review pointer into the JSONL, never a gate.
     """
-    candidates = select_reword_cohort(store, hub=hub, limit=limit)
+    candidates = select_reword_cohort(
+        store, hub=hub, limit=limit, after_ref_id=after_ref_id
+    )
     fn = propose_fn or propose_reword
     results = [_reword_one(store, cand, fn, apply=apply) for cand in candidates]
     out_path = _write_rows([r.to_row() for r in results], out)
@@ -806,4 +826,5 @@ def run_reword_sweep(
         "counts": dict(sorted(counts.items())),
         "apply": apply,
         "out": out_path,
+        "last_ref_id": max((c.hub_ref_id for c in candidates), default=None),
     }

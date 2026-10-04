@@ -358,6 +358,14 @@ def add_parser(subparsers: Any) -> None:
         "Default: the whole cohort.",
     )
     rw.add_argument(
+        "--after-ref-id",
+        type=int,
+        default=None,
+        help="Start after this hub ref_id (keyset batching: the previous "
+        "batch's `last ref_id` line). Combine with --limit to walk the "
+        "cohort in bounded, budget-sized batches. Default: from the start.",
+    )
+    rw.add_argument(
         "--out",
         default=None,
         help="Write the JSONL rows (hub, old, new, status, lint_codes, "
@@ -1394,6 +1402,7 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
     error (BadInput) exits nonzero -- same convention as verify-edges,
     whose per-edge failures are counted rows, not a crash.
     """
+    from precis import route_log
     from precis.budget import meter
     from precis.errors import BadInput
     from precis.store import Store
@@ -1405,8 +1414,11 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
     # Same bind as repair-evidence/verify-edges: the reword dispatch
     # resolves its endpoint through the budget meter and this run's spend
     # is gated by the breaker. The only claim-data writes are the
-    # refine_claim_sentence retitles, and only under --apply.
+    # refine_claim_sentence retitles, and only under --apply. route_log is
+    # bound too: without it ``route_log.enabled()`` is False and the
+    # ``taproot:reword`` calls never reach ``llm_call_log``.
     meter.bind_store(store)
+    route_log.bind_store(store)
     try:
         hub_ref_id: int | None = None
         if args.hub:
@@ -1421,6 +1433,7 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
             apply=apply,
             limit=args.limit,
             hub=hub_ref_id,
+            after_ref_id=args.after_ref_id,
             out=args.out if args.out else sys.stdout,
         )
     except BadInput as exc:
@@ -1446,6 +1459,8 @@ def _run_reword_sweep(args: argparse.Namespace) -> None:
         f"{breakdown}, applied={summary['applied']}{warn_note}{suffix}",
         file=sys.stderr,
     )
+    # The resume point: the next batch is `--after-ref-id <this>`.
+    print(f"last ref_id: {summary['last_ref_id']}", file=sys.stderr)
 
 
 def _run_direct_mint(args: argparse.Namespace) -> None:

@@ -12,6 +12,7 @@ change together.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 
@@ -163,6 +164,105 @@ def test_cohort_hub_and_limit(store: Any) -> None:
     assert [c.hub_ref_id for c in select_reword_cohort(store)] == [first, second]
     assert [c.hub_ref_id for c in select_reword_cohort(store, limit=1)] == [first]
     assert [c.hub_ref_id for c in select_reword_cohort(store, hub=second)] == [second]
+
+
+def test_cohort_after_ref_id_skips_earlier_hubs_and_combines_with_limit(
+    store: Any,
+) -> None:
+    first = _mint(store, _FAILING)
+    second = _mint(store, _FAILING_2)
+    third = _mint(store, "Diamond melts at 3800 K.")
+
+    def ids(**kw: Any) -> list[int]:
+        return [c.hub_ref_id for c in select_reword_cohort(store, **kw)]
+
+    assert ids() == [first, second, third]
+    # Strictly greater-than: the boundary hub itself is skipped.
+    assert ids(after_ref_id=first) == [second, third]
+    assert ids(after_ref_id=second) == [third]
+    assert ids(after_ref_id=third) == []
+    assert ids(after_ref_id=first, limit=1) == [second]
+
+
+def test_sweep_reports_last_ref_id_and_batches_resume_after_it(store: Any) -> None:
+    first = _mint(store, _FAILING)
+    second = _mint(store, _FAILING_2)
+    third = _mint(store, "Diamond melts at 3800 K.")
+    sink = io.StringIO()
+
+    batch1 = run_reword_sweep(store, limit=2, out=sink, propose_fn=_stub(_ADMISSIBLE))
+    assert batch1["processed"] == 2
+    assert batch1["last_ref_id"] == second
+
+    batch2 = run_reword_sweep(
+        store,
+        limit=2,
+        after_ref_id=batch1["last_ref_id"],
+        out=sink,
+        propose_fn=_stub(_ADMISSIBLE),
+    )
+    assert batch2["processed"] == 1
+    assert batch2["last_ref_id"] == third
+    assert first < second < third
+
+    empty = run_reword_sweep(store, after_ref_id=third, out=sink, propose_fn=_never)
+    assert empty["processed"] == 0
+    assert empty["last_ref_id"] is None
+
+
+def test_reword_sweep_cli_binds_route_log_and_meter_and_prints_last_id(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """Without the route_log bind ``route_log.enabled()`` is False and the
+    ``taproot:reword`` calls never reach ``llm_call_log``."""
+    import argparse
+    from types import SimpleNamespace
+
+    from precis import route_log
+    from precis.budget import meter
+    from precis.cli import taproot as cli
+    from precis.store import Store
+    from precis.taproot import reword as reword_mod
+
+    calls: list[str] = []
+    seen: dict[str, Any] = {}
+
+    def fake_sweep(_store: Any, **kw: Any) -> dict[str, Any]:
+        seen.update(kw)
+        return {
+            "cohort": 1,
+            "processed": 1,
+            "applied": 0,
+            "warned": 0,
+            "counts": {"reworded": 1},
+            "apply": False,
+            "out": None,
+            "last_ref_id": 4242,
+        }
+
+    monkeypatch.setattr(
+        Store, "connect", lambda *_a, **_k: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(cli, "resolve_dsn", lambda *_a, **_k: "dsn")
+    monkeypatch.setattr(route_log, "bind_store", lambda s: calls.append("route_log"))
+    monkeypatch.setattr(meter, "bind_store", lambda s: calls.append("meter"))
+    monkeypatch.setattr(reword_mod, "run_reword_sweep", fake_sweep)
+
+    cli._run_reword_sweep(
+        argparse.Namespace(
+            database_url=None,
+            apply=False,
+            hub=None,
+            limit=5,
+            after_ref_id=100,
+            out=None,
+        )
+    )
+
+    assert sorted(calls) == ["meter", "route_log"]
+    assert seen["after_ref_id"] == 100
+    assert seen["limit"] == 5
+    assert "last ref_id: 4242" in capsys.readouterr().err
 
 
 # ── dry run ──────────────────────────────────────────────────────────────
@@ -572,6 +672,7 @@ def _cli_args(**overrides: Any) -> Any:
         "apply": False,
         "hub": None,
         "limit": None,
+        "after_ref_id": None,
         "out": None,
         "database_url": _active_dsn(),
     }
