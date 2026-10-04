@@ -6,6 +6,8 @@ from typing import Any
 
 from habanero import Crossref
 
+from precis.utils.http import retry_transient
+
 
 def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
     """Raw CrossRef ``message`` dict for a DOI, or ``None`` if not found.
@@ -21,7 +23,7 @@ def fetch_message(doi: str, mailto: str = "") -> dict[str, Any] | None:
     """
     cr = Crossref(mailto=mailto) if mailto else Crossref()
     try:
-        result = cr.works(ids=doi)
+        result = retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org")
     except Exception:
         return None
     if not result or "message" not in result:

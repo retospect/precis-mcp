@@ -384,7 +384,15 @@ def discover(doi: str, fetch: FetchFn) -> DiscoveryResult:
 
     # b. Crossref relation
     component_dois: list[str] = []
-    cr = _safe_fetch(fetch, f"{_CROSSREF_API}/{doi}", SOURCE_CROSSREF, result)
+    from precis.utils.http import retry_transient
+
+    cr_url = f"{_CROSSREF_API}/{doi}"
+    cr = _safe_fetch(
+        lambda u: retry_transient(lambda: fetch(u), host=u),
+        cr_url,
+        SOURCE_CROSSREF,
+        result,
+    )
     if cr is not None:
         component_dois = parse_crossref_components(cr.text, doi)
 

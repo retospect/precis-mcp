@@ -591,9 +591,11 @@ def _fetch_crossref_message(doi: str, mailto: str | None) -> dict[str, Any] | No
     """
     from habanero import Crossref
 
+    from precis.utils.http import retry_transient
+
     cr = Crossref(mailto=mailto) if mailto else Crossref()
     try:
-        result = cr.works(ids=doi)
+        result = retry_transient(lambda: cr.works(ids=doi), host="api.crossref.org")
     except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = (
@@ -645,8 +647,10 @@ def _search_crossref_works(
         kwargs["query_bibliographic"] = title
     if author:
         kwargs["query_author"] = author
+    from precis.utils.http import retry_transient
+
     try:
-        result = cr.works(**kwargs)
+        result = retry_transient(lambda: cr.works(**kwargs), host="api.crossref.org")
     except Exception:
         return []
     if not result or "message" not in result:
@@ -1639,14 +1643,16 @@ def _fetch_doi_validity(doi: str, *, mailto: str | None) -> DoiStatus | None:
     caller must not stamp a ``None`` — that would poison the TTL on an
     answer we never actually got.
     """
-    from precis.utils.http import http_client
+    from precis.utils.http import http_client, retry_transient
     from precis.utils.safe_fetch import safe_get
 
     url = f"{_CROSSREF_WORKS_BASE}/{doi}"
     params = {"mailto": mailto} if mailto else None
     try:
         with http_client(timeout=_DOI_VALIDATE_TIMEOUT_S) as client:
-            resp = safe_get(client, url, params=params)
+            resp = retry_transient(
+                lambda: safe_get(client, url, params=params), host=url
+            )
     except Exception:
         return None
     if resp.status_code == 404:

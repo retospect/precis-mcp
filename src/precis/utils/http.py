@@ -24,14 +24,19 @@ venv into a typed, actionable error instead of an ImportError.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
     import httpx
     from tenacity import RetryCallState
+
+log = logging.getLogger(__name__)
 
 #: Default User-Agent for precis outbound requests. Individual callers
 #: may override (e.g. the ORCID client appends a contact URL, the web
@@ -131,9 +136,64 @@ def external_retry(
     )
 
 
+def _is_connect_failure(exc: BaseException) -> bool:
+    """True for a failure to *establish* the connection (TCP/TLS handshake) —
+    never a read timeout, an HTTP status error, or anything after a response.
+    Covers httpx and ``requests`` (habanero's transport)."""
+    httpx = require_httpx()
+    if isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return True
+    try:
+        from requests import exceptions as rex
+    except ImportError:  # pragma: no cover - requests ships with habanero
+        return False
+    return isinstance(exc, rex.ConnectTimeout)
+
+
+def retry_transient[T](
+    fn: Callable[[], T],
+    *,
+    host: str = "",
+    attempts: int = 2,
+    backoff_s: tuple[float, ...] = (3.0,),
+    sleep: Callable[[float], None] | None = None,
+) -> T:
+    """Call ``fn()``, retrying only on a connect-phase failure.
+
+    Retries ``httpx.ConnectTimeout`` / ``httpx.ConnectError`` (and
+    ``requests`` ``ConnectTimeout`` for habanero) up to ``attempts`` total
+    tries with a short fixed backoff (``backoff_s[i]`` before retry ``i+1``,
+    last entry reused). Motivation: the fetcher host intermittently stalls
+    the TLS handshake to a single ``api.crossref.org`` IP and recovers within
+    a minute (gr465931). Anything else — read timeouts, HTTP status errors,
+    errors after a response — propagates immediately. ``host`` is only for
+    the INFO log line (a URL is reduced to its netloc).
+    """
+    do_sleep = sleep if sleep is not None else time.sleep
+    label = (urlparse(host).netloc or host) if "//" in host else host
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            if attempt + 1 >= attempts or not _is_connect_failure(exc):
+                raise
+            delay = backoff_s[min(attempt, len(backoff_s) - 1)] if backoff_s else 0.0
+            log.info(
+                "retry_transient: %s on %s, retrying in %.1fs (attempt %d/%d)",
+                type(exc).__name__,
+                label or "?",
+                delay,
+                attempt + 2,
+                attempts,
+            )
+            do_sleep(delay)
+    raise AssertionError("unreachable")  # pragma: no cover (attempts < 1)
+
+
 __all__ = [
     "DEFAULT_USER_AGENT",
     "external_retry",
     "http_client",
     "require_httpx",
+    "retry_transient",
 ]

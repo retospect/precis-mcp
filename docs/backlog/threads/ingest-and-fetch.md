@@ -84,7 +84,10 @@ states that count a paper as usable when it is not, then metadata.
      timeouts show on a second worker host too. Egress problem, ops
      gripe gr465931 (`safe_fetch` pins the first resolved address only,
      so a pass keeps hitting the stalled IP). Until fixed, the SI
-     re-arm absorbs it.
+     re-arm absorbs it. Crossref and bib_parse calls now retry once on a
+     connect failure (`utils/http.py::retry_transient`). The safe_fetch
+     next-address fallback design is accepted (reviews §3) and goes
+     through the orchestrator's gate as a branch.
    Delete this item once walker and web triggers are seen on prod.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was

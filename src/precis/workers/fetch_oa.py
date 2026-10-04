@@ -84,6 +84,7 @@ from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
+from precis.utils.http import retry_transient
 from precis.workers import activity
 
 if TYPE_CHECKING:
@@ -2702,7 +2703,9 @@ def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
     with httpx.Client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
-        resp = client.get(url, params={"mailto": email})
+        resp = retry_transient(
+            lambda: client.get(url, params={"mailto": email}), host=url
+        )
         resp.raise_for_status()
         data = resp.json()
     links = (data.get("message") or {}).get("link") or []
