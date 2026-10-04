@@ -50,6 +50,8 @@ _HANDLE_API = "https://doi.org/api/handles"
 #: Component DOIs probed per parent (``.s001`` .. ``.s005``).
 MAX_COMPONENT_PROBES = 5
 _API_TIMEOUT_S = 20.0
+#: Connect cap: a dead host must not eat the pass budget (read stays 20 s).
+_API_CONNECT_TIMEOUT_S = 10.0
 
 _COMPONENT_SUFFIX_RE = re.compile(r"\.s\d+$", re.IGNORECASE)
 #: Words that say "supplement". A bare ``si`` is too common (SI units, the
@@ -440,16 +442,19 @@ class _HostThrottle:
 def default_fetch(email: str = "") -> FetchFn:
     """The production ``fetch``: ``safe_get`` through a pinned client, >=1 s
     between requests to one host. A 403 comes back as a status, never raises."""
+    import httpx
+
     from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
+    timeout = httpx.Timeout(_API_TIMEOUT_S, connect=_API_CONNECT_TIMEOUT_S)
     throttle = _HostThrottle(1.0)
     ua = f"precis-mcp/8.0 (mailto:{email or 'noreply@example.com'})"
 
     def _fetch(url: str) -> HttpResult:
         throttle.wait(urlparse(url).netloc)
         with http_client(
-            timeout=_API_TIMEOUT_S,
+            timeout=timeout,
             headers={"Accept": "application/json,text/html;q=0.9,*/*;q=0.5"},
             user_agent=ua,
         ) as client:

@@ -41,7 +41,16 @@ states that count a paper as usable when it is not, then metadata.
    accepted under the "walkers touch" ruling. Off switch:
    `si.attention_enabled` (env `PRECIS_SI_ATTENTION`). After deploy:
    watch the SI-pass yield and how much of each fetch pass it takes;
-   delete this item once the two quest papers are done.
+   delete this item once the two quest papers are done. First prod run,
+   2026-10-04 00:44Z (build 1): pa5303 (chen23g) got its SI from Figshare,
+   minted as pa465134 (chen23gsi), 32 chunks. pa166889 (chen24p) found
+   its Figshare SI, but the download was skipped on `deadline`: from the
+   fetcher host, Crossref and doi.org connect timeouts used up the
+   shared 120 s pass budget. A budget-cut parent was then never retried.
+   Fixed: it is re-armed for the next pass, up to 3 times, and discovery
+   requests are capped at 10 s connect / 20 s read. pa166889 was
+   re-queued by hand. Open: why the fetcher host times out on
+   api.crossref.org.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new

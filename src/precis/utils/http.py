@@ -52,7 +52,7 @@ def require_httpx() -> Any:
 
 def http_client(
     *,
-    timeout: float,
+    timeout: float | httpx.Timeout,
     headers: dict[str, str] | None = None,
     follow_redirects: bool = False,
     user_agent: str | None = DEFAULT_USER_AGENT,

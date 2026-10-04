@@ -13,6 +13,12 @@ from precis.workers import fetch_oa, si_fetch
 DOI = "10.1021/acscatal.3c01963"
 
 
+def _expire_after_discovery(monkeypatch) -> None:
+    """Budget alive for the pass start + pre-discovery check, dead afterwards."""
+    ticks = iter([0.0, 0.0])
+    monkeypatch.setattr(si_fetch.time, "monotonic", lambda: next(ticks, 1e9))
+
+
 def _seed(store) -> int:
     ref = store.insert_ref(kind="paper", slug="smith2023cat", title="Parent", meta={})
     with store.pool.connection() as conn:
@@ -93,7 +99,8 @@ def test_deadline_records_deadline_misses(store, tmp_path, monkeypatch) -> None:
     pid = _seed(store)
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")
     monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
-    res = si_fetch.run_si_pass(store, tmp_path, fetch=_files(3), deadline_s=-1.0)
+    _expire_after_discovery(monkeypatch)
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=_files(3), deadline_s=10.0)
     assert res["fetched"] == 0
     meta = _meta(store, pid)
     assert meta["si_found"] == 3 and meta["si_fetched"] == 0
@@ -162,3 +169,112 @@ def test_si_pass_exception_does_not_stop_stub_claim(
     monkeypatch.setattr(fetch_oa, "claim_stubs_to_fetch", spy_claim)
     fetch_oa.run_oa_fetch_pass(store, email="x@example.org")
     assert claimed  # the stub claim still ran
+
+
+def _no_si(url: str) -> HttpResult:
+    return HttpResult(404)
+
+
+def test_deadline_miss_rearms_and_next_claim_reclaims(
+    store, tmp_path, monkeypatch
+) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    _expire_after_discovery(monkeypatch)
+    si_fetch.run_si_pass(store, tmp_path, fetch=_files(2), deadline_s=10.0)
+    monkeypatch.undo()
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    meta = _meta(store, pid)
+    sf = meta["si_fetch"]
+    assert sf["deadline_retries"] == 1 and sf["by"] == "agent"
+    assert sf["requested_at"] > meta["si_checked_at"]
+    # the miss is still recorded; the next pass (budget intact) fetches it
+    again = si_fetch.run_si_pass(store, tmp_path, fetch=_files(2))
+    assert again["claimed"] == 1 and again["fetched"] == 2
+
+
+def test_deadline_event_payload_says_rearmed(store, tmp_path, monkeypatch) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    _expire_after_discovery(monkeypatch)
+    si_fetch.run_si_pass(store, tmp_path, fetch=_files(1), deadline_s=10.0)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
+            (pid, si_fetch.SI_EVENT_SOURCE),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "si_found"
+    assert row[1]["rearmed"] is True and row[1]["deadline_retries"] == 1
+
+
+def test_deadline_retries_cap_at_three(store, tmp_path, monkeypatch) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    for n in (1, 2, 3):
+        res = si_fetch.run_si_pass(store, tmp_path, fetch=_files(1), deadline_s=-1.0)
+        assert res["claimed"] == 1
+        assert _meta(store, pid)["si_fetch"]["deadline_retries"] == n
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=_files(1), deadline_s=-1.0)
+    assert res["claimed"] == 1  # 4th claim: misses stand, no re-arm
+    meta = _meta(store, pid)
+    assert meta["si_fetch"]["deadline_retries"] == 3
+    assert meta["si_checked_at"] > meta["si_fetch"]["requested_at"]
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_files(1))["claimed"] == 0
+
+
+def test_parent_claimed_after_deadline_runs_no_discovery(
+    store, tmp_path, monkeypatch
+) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    calls: list[str] = []
+
+    def spy(url: str) -> HttpResult:
+        calls.append(url)
+        return HttpResult(404)
+
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=spy, deadline_s=-1.0)
+    assert calls == [] and res["claimed"] == 1
+    meta = _meta(store, pid)
+    assert meta["si_fetch"]["deadline_retries"] == 1
+    assert meta["si_fetch"]["requested_at"] > meta["si_checked_at"]
+    assert "si_misses" not in meta
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 1
+
+
+def test_complete_parent_without_deadline_miss_not_rearmed(
+    store, tmp_path, monkeypatch
+) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    si_fetch.run_si_pass(store, tmp_path, fetch=_files(2))
+    meta = _meta(store, pid)
+    assert "deadline_retries" not in meta["si_fetch"]
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_files(2))["claimed"] == 0
+
+
+def test_late_claim_at_retry_cap_records_miss_and_event(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    for _ in range(3):
+        si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
+    assert "si_misses" not in _meta(store, pid)
+    si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
+    meta = _meta(store, pid)
+    assert meta["si_misses"] == [
+        {"url": None, "source": "si_pass", "reason": "deadline"}
+    ]
+    assert meta["si_found"] == 0 and meta["si_fetched"] == 0
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
+            (pid, si_fetch.SI_EVENT_SOURCE),
+        ).fetchall()
+    assert [r[0] for r in rows] == ["si_blocked"]
+    assert rows[0][1]["deadline_retries"] == 3
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 0

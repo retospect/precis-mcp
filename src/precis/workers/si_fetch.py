@@ -13,7 +13,11 @@ PARENT ``ref_id`` — the watcher then mints each file as its own linked ref
 Whatever happens, the parent records the check (``meta.si_checked_at``,
 ``si_found``, ``si_fetched``, ``si_misses``, ``si_skipped``) plus one
 ``ref_events`` row, so a paper is tried once per request: it is re-claimed only
-by a newer ``si_fetch.requested_at``.
+by a newer ``si_fetch.requested_at``. Exception: a check cut short by the pass
+budget (any ``deadline`` miss, or a parent claimed after the deadline, which
+runs no discovery) is re-armed — ``si_fetch.requested_at`` is bumped past the
+claim stamp and ``si_fetch.deadline_retries`` incremented — so the next pass
+re-claims it; after ``MAX_DEADLINE_RETRIES`` (3) the misses stand as recorded.
 
 The event source is ``si_fetch``, deliberately NOT ``fetcher:*``: those
 sources arm the stub claim's retry window / backoff (``claim_stubs_to_fetch``),
@@ -55,6 +59,8 @@ MAX_SI_PDFS_PER_PARENT = 8
 #: Wall-clock budget of one ``run_si_pass``; untried candidates are recorded
 #: as ``deadline`` misses. Keeps the pass from monopolising the fetch lane.
 SI_PASS_DEADLINE_S = 120.0
+#: Budget-cut re-arms per request before the ``deadline`` misses stand.
+MAX_DEADLINE_RETRIES = 3
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,30 @@ def _download_reason(exc: BaseException) -> str:
     return f"error:{type(exc).__name__}"
 
 
+def _rearm(conn: Connection, ref_id: int) -> int | None:
+    """Re-arm a budget-cut parent: bump ``si_fetch.requested_at`` to a fresh
+    stamp (later than the claim's ``si_checked_at``) and count the retry.
+    Returns the new ``deadline_retries``, or ``None`` when the cap is reached
+    (nothing changed) or the parent carries no ``si_fetch``."""
+    row = conn.execute(
+        """
+        UPDATE refs
+           SET meta = jsonb_set(
+                 meta, '{si_fetch}',
+                 (meta->'si_fetch') || jsonb_build_object(
+                   'requested_at', %s::text,
+                   'deadline_retries',
+                   COALESCE((meta->'si_fetch'->>'deadline_retries')::int, 0) + 1))
+         WHERE ref_id = %s
+           AND jsonb_exists(meta, 'si_fetch')
+           AND COALESCE((meta->'si_fetch'->>'deadline_retries')::int, 0) < %s
+        RETURNING (meta->'si_fetch'->>'deadline_retries')::int
+        """,
+        (utc_stamp(), ref_id, MAX_DEADLINE_RETRIES),
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
 def _fetch_one_parent(
     store: Store,
     parent: SiParent,
@@ -143,6 +173,43 @@ def _fetch_one_parent(
     """Discover + download one parent's SI, then record the outcome."""
     from precis.workers import fetch_oa  # late: fetch_oa imports this module
 
+    if deadline is not None and time.monotonic() >= deadline:
+        # Claimed after the budget ran out: no network, just try again next pass.
+        with store.pool.connection() as conn:
+            late_retries = _rearm(conn, parent.ref_id)
+            if late_retries is None:
+                # Retry cap reached: record the miss so the parent does not
+                # vanish silently (the claim stamp already blocks a re-claim).
+                miss = [{"url": None, "source": "si_pass", "reason": "deadline"}]
+                conn.execute(
+                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                    (
+                        Jsonb(
+                            {
+                                "si_found": 0,
+                                "si_fetched": 0,
+                                "si_misses": miss,
+                                "si_skipped": [],
+                            }
+                        ),
+                        parent.ref_id,
+                    ),
+                )
+            conn.commit()
+        if late_retries is None:
+            store.append_event(
+                parent.ref_id,
+                source=SI_EVENT_SOURCE,
+                event="si_blocked",
+                payload={
+                    "candidates": [],
+                    "queued": [],
+                    "skipped": [],
+                    "misses": miss,
+                    "deadline_retries": MAX_DEADLINE_RETRIES,
+                },
+            )
+        return {"found": 0, "fetched": 0}
     if parent.doi:
         found: DiscoveryResult = discover(parent.doi, fetch)
     else:
@@ -216,11 +283,14 @@ def _fetch_one_parent(
         "si_misses": misses,
         "si_skipped": skipped,
     }
+    retries: int | None = None
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
             (Jsonb(patch), parent.ref_id),
         )
+        if any(m["reason"] == "deadline" for m in misses):
+            retries = _rearm(conn, parent.ref_id)
         conn.commit()
     if queued:
         event = "si_found"
@@ -251,6 +321,7 @@ def _fetch_one_parent(
             "queued": queued,
             "skipped": skipped,
             "misses": misses,
+            **({"rearmed": True, "deadline_retries": retries} if retries else {}),
         },
     )
     return {"found": len(cands), "fetched": len(queued)}
