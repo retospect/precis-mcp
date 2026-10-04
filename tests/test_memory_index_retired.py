@@ -42,12 +42,17 @@ def _cache(tmp_path: Path) -> Path:
     return tmp_path / "cache" / "memory-index.md"
 
 
+def _nodes(tmp_path: Path) -> Path:
+    return tmp_path / "cache" / "memory-nodes"
+
+
 def _run_hook(
     tmp_path: Path,
     dsn: str,
     *,
     claude_md_bytes: int = 100,
     memory_md: Path | None = None,
+    nodes: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
@@ -59,6 +64,7 @@ def _run_hook(
             "PRECIS_MEMORY_CLI": f"{sys.executable} -m precis.cli.main",
             "CLAUDE_PROJECT_DIR": str(project),
             "PRECIS_MEMORY_CACHE": str(_cache(tmp_path)),
+            "PRECIS_MEMORY_NODES": str(nodes or _nodes(tmp_path)),
             "PRECIS_HARNESS_MEMORY_MD": str(
                 memory_md or tmp_path / "absent" / "MEMORY.md"
             ),
@@ -77,6 +83,10 @@ def _run_hook(
 def _fixture_index_lines() -> list[str]:
     text = (FIXTURE / "MEMORY.md").read_text(encoding="utf-8")
     return [ln for ln in text.splitlines() if ln.startswith(("## ", "- ["))]
+
+
+def _fixture_bullets() -> list[str]:
+    return [ln for ln in _fixture_index_lines() if ln.startswith("- [")]
 
 
 def _assert_matches_fixture(got: list[str]) -> None:
@@ -119,6 +129,42 @@ def test_hook_over_budget_prints_cut_hooks_and_the_overage_line(
     assert "budget 0 tok" in lines[-1]
     alpha = next(ln for ln in lines if ln.startswith("- Alpha campaign (me"))
     assert alpha.endswith("…") and len(alpha.split(" — ", 1)[1]) == 60
+
+
+def test_hook_exports_the_node_bodies_next_to_the_cache(
+    store: Store, tmp_path: Path
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    proc = _run_hook(tmp_path, _active_dsn())
+    assert proc.returncode == 0, proc.stderr
+    files = sorted(_nodes(tmp_path).glob("me*.md"))
+    assert len(files) == len(_fixture_bullets())  # one per topic node, no sections
+    assert all(f.read_text(encoding="utf-8").startswith("# ") for f in files)
+    # every exported handle is one the printed index names
+    for f in files:
+        assert f"({f.stem})" in proc.stdout
+
+    # a dead DB leaves the last good node set (and the index copy) untouched
+    before = {f.name: f.read_text(encoding="utf-8") for f in files}
+    dead = _run_hook(tmp_path, "postgresql://nobody@localhost:1/none?connect_timeout=3")
+    assert dead.returncode == 0, dead.stderr
+    assert {
+        f.name: f.read_text(encoding="utf-8") for f in _nodes(tmp_path).glob("*.md")
+    } == before
+
+
+def test_hook_unwritable_node_dir_does_not_change_the_index_or_exit_code(
+    store: Store, tmp_path: Path
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, so the node dir cannot be created", encoding="utf-8")
+    proc = _run_hook(tmp_path, _active_dsn(), nodes=blocker / "memory-nodes")
+    assert proc.returncode == 0, proc.stderr
+    got = [ln for ln in proc.stdout.splitlines() if ln.startswith(("## ", "- "))]
+    _assert_matches_fixture(got)
+    assert "node export" in proc.stderr
+    assert _cache(tmp_path).read_text(encoding="utf-8") == proc.stdout
 
 
 def test_hook_dead_dsn_prints_one_line_and_exits_zero(tmp_path: Path) -> None:

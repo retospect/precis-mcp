@@ -22,6 +22,13 @@
 # the copy's age, so a session started during a prod outage still gets an
 # index. PRECIS_MEMORY_CACHE overrides the path (tests).
 #
+# Node cache: the same CLI call passes `--export-dir "$nodes"`, which writes each
+# topic node's body to $nodes/<handle>.md (`# title`, blank line, body; swapped
+# in whole by the CLI). scripts/memory-lint lints those bodies in graph mode.
+# Default ~/.cache/precis/memory-nodes; PRECIS_MEMORY_NODES overrides (tests).
+# A failed render leaves the previous set as it was; a failed export prints one
+# stderr line and does not change the index output or the exit code.
+#
 # Never blocks a session: any failure exits 0, printing the cached copy and
 # one line, or just the one line when no copy exists.
 set -uo pipefail
@@ -29,6 +36,7 @@ set -uo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 project="${CLAUDE_PROJECT_DIR:-$repo}"
 cache="${PRECIS_MEMORY_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-index.md}"
+nodes="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
 
 # Same memory-dir derivation as scripts/memory-lint (main checkout root, path
 # separators escaped). Same marker string too.
@@ -70,7 +78,7 @@ errf="$(mktemp)" || fail "no temp file"
 trap 'rm -f "$errf"' EXIT
 
 cd "$repo" || fail "cannot enter repo root"
-out="$("${cli[@]}" memory index --budget-tok "$budget" 2>"$errf")"
+out="$("${cli[@]}" memory index --budget-tok "$budget" --export-dir "$nodes" 2>"$errf")"
 rc=$?
 if [ "$rc" -ne 0 ]; then
     # Last stderr line, connection URLs redacted, capped — one line only.
@@ -81,6 +89,8 @@ if [ -z "$out" ]; then
     fail "precis memory index printed nothing"
 fi
 printf '%s\n' "$out"
+# A successful render can still carry the CLI's one-line export failure.
+grep -F 'memory index: node export' "$errf" | tail -n 1 | cut -c1-300 >&2
 # Save the last-good copy; per-process temp + rename, so sessions starting
 # together never read a half-written file. A failed save is not an error.
 if mkdir -p "$(dirname "$cache")" 2>/dev/null &&

@@ -16,10 +16,12 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
   imported nodes is refused unless ``--allow-retire N`` covers it; a
   ``MEMORY.md`` carrying :data:`GRAPH_MARKER` (post-cutover pointer file)
   is always refused.
-- ``precis memory index [--budget-tok N]`` renders the index back out, one
-  ``- <Title> (<handle>) — <hook>`` bullet per node (the handle is what
-  ``get``/``edit`` take; the graph node is the truth, not a file), for
-  ``scripts/hooks/session-start-memory.sh``.
+- ``precis memory index [--budget-tok N] [--export-dir DIR]`` renders the
+  index back out, one ``- <Title> (<handle>) — <hook>`` bullet per node (the
+  handle is what ``get``/``edit`` take; the graph node is the truth, not a
+  file), for ``scripts/hooks/session-start-memory.sh``. ``--export-dir``
+  also writes each topic node's body to ``DIR/<handle>.md`` (same query,
+  swapped in whole) so ``scripts/memory-lint`` can lint node bodies.
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
@@ -31,7 +33,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
+import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -541,9 +546,19 @@ def render_memory_index(store: Store, budget_tok: int | None = None) -> str:
     :data:`HOOK_CUT_CHARS` characters and one trailing line names the
     overage — a tripwire, not a hard limit.
     """
-    refs = _live_repo_dev_nodes(store)
-    tags = store.ref_tags_bulk([r.id for r in refs])
+    return _render_loaded(_load_nodes(store), budget_tok)
 
+
+def _load_nodes(store: Store) -> tuple[list[Any], dict[int, Any]]:
+    """Live ``SPACE:repo-dev`` memory refs and their tags (the renderer's query)."""
+    refs = _live_repo_dev_nodes(store)
+    return refs, store.ref_tags_bulk([r.id for r in refs])
+
+
+def _render_loaded(
+    loaded: tuple[list[Any], dict[int, Any]], budget_tok: int | None
+) -> str:
+    refs, tags = loaded
     sections: list[Any] = []
     topics: dict[str, list[Any]] = {}
     for ref in refs:
@@ -580,6 +595,74 @@ def render_memory_index(store: Store, budget_tok: int | None = None) -> str:
         cut + f"(memory index over budget: ~{size_tok} tok full, ~{cut_tok} tok "
         f"with hooks cut to {HOOK_CUT_CHARS} chars, budget {budget_tok} tok)\n"
     )
+
+
+#: Handle → section-slug manifest written beside the exported node files.
+SECTIONS_MANIFEST = "_sections.tsv"
+
+
+def export_memory_nodes(
+    store: Store,
+    dest: Path | str,
+    *,
+    loaded: tuple[list[Any], dict[int, Any]] | None = None,
+) -> int:
+    """Write each topic node's body to ``<dest>/<handle>.md``; return the count.
+
+    A topic node is a live ``SPACE:repo-dev`` memory that is not a
+    ``section:index`` node. A file is ``# <title>``, a blank line, then the
+    body exactly as :meth:`MemoryHandler._body_text` returns it. The set is
+    written into a sibling temp dir and swapped in with renames, so a reader
+    sees the old set or the new one, never a half-written one (the one gap is
+    the instant between the two renames, when ``dest`` is briefly absent).
+    ``<dest>/_sections.tsv`` maps each handle to its section slug (the
+    renderer's rule: first ``section:*`` tag), so ``scripts/memory-lint`` can
+    scope its landed-thread scan to ``threads``.
+    ``loaded`` reuses a :func:`_load_nodes` result.
+    """
+    from precis.dispatch import Hub
+    from precis.handlers.memory import MemoryHandler
+    from precis.utils import handle_registry
+
+    refs, tags = loaded if loaded is not None else _load_nodes(store)
+    handler = MemoryHandler(hub=Hub(store=store))
+    final = Path(dest)
+    tmp = final.with_name(f"{final.name}.tmp.{os.getpid()}")
+    old = final.with_name(f"{final.name}.old.{os.getpid()}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    try:
+        count = 0
+        manifest: list[str] = []
+        for ref in refs:
+            values = {v for _ns, v in tags.get(ref.id, [])}
+            if SECTION_INDEX_TAG in values:
+                continue
+            handle = handle_registry.try_format("memory", ref.id) or str(ref.id)
+            text = f"# {ref.title}\n\n{handler._body_text(ref)}"
+            (tmp / f"{handle}.md").write_text(text, encoding="utf-8")
+            section = next(
+                (
+                    v[len(SECTION_TAG_PREFIX) :]
+                    for v in sorted(values)
+                    if v.startswith(SECTION_TAG_PREFIX)
+                ),
+                "",
+            )
+            manifest.append(f"{handle}\t{section}\n")
+            count += 1
+        (tmp / SECTIONS_MANIFEST).write_text("".join(manifest), encoding="utf-8")
+        if final.exists():
+            os.replace(final, old)
+        os.replace(tmp, final)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if old.exists() and not final.exists():
+            os.replace(old, final)  # put the previous set back
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +732,16 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "names the overage."
         ),
     )
+    idx.add_argument(
+        "--export-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Also write each topic node's body to DIR/<handle>.md ('# title', "
+            "blank line, body), swapped in whole. A failed export prints one "
+            "stderr line and leaves the index output and exit code alone."
+        ),
+    )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
     return mp
 
@@ -674,7 +767,17 @@ def run(args: argparse.Namespace) -> None:
                 raise SystemExit(f"precis memory import: refused: {exc}") from exc
             print(report.summary())
         else:
-            print(render_memory_index(store, args.budget_tok), end="")
+            loaded = _load_nodes(store)
+            print(_render_loaded(loaded, args.budget_tok), end="", flush=True)
+            if args.export_dir:
+                try:
+                    export_memory_nodes(store, args.export_dir, loaded=loaded)
+                except Exception as exc:  # the index is already out; stay exit 0
+                    print(
+                        f"precis memory index: node export to {args.export_dir} "
+                        f"failed: {type(exc).__name__}: {exc}"[:300],
+                        file=sys.stderr,
+                    )
     finally:
         store.close()
 
@@ -684,6 +787,7 @@ __all__ = [
     "ImportRefused",
     "ImportReport",
     "add_parser",
+    "export_memory_nodes",
     "import_memory_dir",
     "render_memory_index",
     "run",

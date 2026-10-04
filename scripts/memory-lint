@@ -9,15 +9,30 @@
 # holds only live threads + durable knowledge; landed work is DELETED (the
 # precis-mcp repo git log + ADRs are its record) — no ARCHIVE.md.
 #
+# GRAPH MODE (MEMORY.md carries the graph marker; cutover 2026-10-03, see
+# docs/backlog/memory-native-authoring.md): the index is rendered from
+# SPACE:repo-dev memory nodes and the memory dir's topic files are a frozen
+# snapshot, so checks 2, 3b, 5 and 6 read the NODE bodies instead — the
+# `precis memory index --export-dir` cache that scripts/hooks/session-start-
+# memory.sh refreshes each session (one `<handle>.md` per node; default
+# ~/.cache/precis/memory-nodes, PRECIS_MEMORY_NODES overrides). Findings name
+# the handle and the graph fix (delete / edit(kind='memory')). Checks 1a/1b
+# have nothing to read and stay skipped; with no node cache yet, 2/3b/5/6 are
+# skipped with one line. Graph mode adds a stray-write check: a memory-dir file
+# edited after MEMORY.md.pre-cutover was written to a file the graph never
+# reads (a session that started before the cutover) and needs porting by hand.
+#
 # Checks (all advisory — always exits 0; for `/whatneedsdoing`, not a gate):
-#   1. broken index links + unindexed topic files.
+#   1. broken index links + unindexed topic files (file mode only).
 #   2. landed-thread scan: a bullet whose every cited commit is in main + no
 #      open-work words → shipped; verify + delete (the auto diagram-catch).
 #      Runs over every linked topic file, not just those grouped under
 #      `## Threads` — the live index is a flat list, and a missing/empty
-#      `## Threads` section is itself flagged rather than silently no-op'd.
-#   3. MEMORY.md over byte budget.
-#   4. reconsolidation cadence (once/day).
+#      `## Threads` section is itself flagged rather than silently no-op'd
+#      (file mode). Graph mode scans every node file.
+#   3. MEMORY.md (graph mode: the rendered index) over byte budget; 3b: payload
+#      smell (fenced code blocks in a topic file / node body).
+#   4. reconsolidation cadence (once/day; same clock and log in both modes).
 #   5. (--currency only) per-claim currency ledger — treat each memory as a set
 #      of falsifiable anchors and run the exact git+fs oracle for each, so the
 #      once/day judgment pass gets a punch-list instead of re-reading every file.
@@ -41,6 +56,8 @@ for _a in "$@"; do [[ "$_a" == "--currency" ]] && CURRENCY=1; done
 
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
+# Graph-mode node bodies, exported by scripts/hooks/session-start-memory.sh.
+NODEDIR="${PRECIS_MEMORY_NODES:-${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-nodes}"
 # Size is HYSTERETIC — don't fiddle at the margin. Let the index grow untouched
 # up to the high-water mark; only then reconsolidate, and cut it back DOWN to
 # ~low-water (not just under the mark) so it stays quiet for a long time after.
@@ -59,9 +76,9 @@ problems=0
 # from SPACE:repo-dev memory nodes by scripts/hooks/session-start-memory.sh,
 # which saves its last good render to the same cache path computed here. The
 # topic files are a frozen snapshot of the import, so every check that reads
-# them (1a, 1b, 2, 3b, 5, 6) would lint the snapshot, not the memory: those
-# are skipped. Size, preamble and the reconsolidation clock run on the
-# cached render.
+# them would lint the snapshot, not the memory. Size and preamble run on the
+# cached render; checks 2, 3b, 5 and 6 run over the exported node bodies
+# (NODEDIR); 1a/1b have nothing to read and are skipped.
 GRAPH_MARKER='<!-- memory-index: graph -->'
 GRAPH=0
 if grep -qF "$GRAPH_MARKER" "$INDEX" 2>/dev/null; then
@@ -70,11 +87,50 @@ if grep -qF "$GRAPH_MARKER" "$INDEX" 2>/dev/null; then
     IDX_LABEL="memory index"
     if [[ -s "$INDEX" ]]; then
         rendered=$(date -u -r "$INDEX" +%Y-%m-%dT%H:%MZ)
-        echo "memory-lint: graph mode — index from the session-start render cached $rendered; topic-file checks skipped (the files are the cutover snapshot)"
+        echo "memory-lint: graph mode — index from the session-start render cached $rendered; checks 1a/1b skipped (the topic files are the cutover snapshot)"
     else
         echo "memory-lint: graph mode — no cached render yet (scripts/hooks/session-start-memory.sh writes it); size checks skipped"
         INDEX=/dev/null
     fi
+fi
+
+# SCAN_DIR: where checks 2, 3b, 5 and 6 read topic bodies — the memory dir in
+# file mode, the node cache in graph mode (empty = those checks are skipped).
+# ident/label_of name a file in findings: the file name in file mode, the
+# handle (+ title) in graph mode.
+SCAN_DIR="$MEMDIR"
+if (( GRAPH )); then
+    SCAN_DIR=""
+    if compgen -G "$NODEDIR/*.md" >/dev/null; then
+        SCAN_DIR="$NODEDIR"
+        echo "memory-lint: graph mode — node bodies from $NODEDIR (exported $(date -u -r "$NODEDIR" +%Y-%m-%dT%H:%MZ)); checks 2, 3b, 5, 6 run over them"
+    else
+        echo "memory-lint: graph mode — no node cache yet — scripts/hooks/session-start-memory.sh writes it"
+    fi
+fi
+is_topic() { [[ "$1" != MEMORY.md && "$1" != memory_consolidation_log.md ]]; }
+ident() { if (( GRAPH )); then printf '%s' "${1%.md}"; else printf '%s' "$1"; fi; }
+label_of() {   # label_of <basename> <path>
+    if (( GRAPH )); then
+        printf '%s (%s)' "${1%.md}" "$(head -n 1 "$2" 2>/dev/null | sed -E 's/^# +//' | cut -c1-60)"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# Graph mode only: a file edited in the memory dir after the cutover is a stray
+# write — the graph never reads it. Reference point: MEMORY.md.pre-cutover (the
+# index as it stood at the cutover); absent = nothing to compare against.
+# Once ported, `touch -r` back to the reference clears the finding.
+if (( GRAPH )) && [[ -f "$MEMDIR/MEMORY.md.pre-cutover" ]]; then
+    for sf in "$MEMDIR"/*.md; do
+        [[ -f "$sf" ]] || continue
+        b=$(basename "$sf"); is_topic "$b" || continue
+        if [[ "$sf" -nt "$MEMDIR/MEMORY.md.pre-cutover" ]]; then
+            echo "  stray write → $b (edited after the cutover; the graph never reads it — port the body into its node by handle, then clear this with: touch -r \"$MEMDIR/MEMORY.md.pre-cutover\" \"$sf\")"
+            problems=$((problems+1))
+        fi
+    done
 fi
 
 if (( ! GRAPH )); then
@@ -94,6 +150,7 @@ for tf in "$MEMDIR"/*.md; do
     grep -qE "\($b\)|\[\[$slug\]\]" "$INDEX" 2>/dev/null \
         || { echo "  unindexed → $b (index it, or if landed delete it — git log is the record)"; problems=$((problems+1)); }
 done
+fi  # ! GRAPH (checks 1a, 1b)
 
 # 2. landed-thread scan. The `## Threads` section is where the oracle below
 # is meant to look, but the live index is a flat bullet list (no `##`
@@ -108,15 +165,29 @@ done
 # the "widened" scan still matched nothing on the live index — same failure
 # mode, one level down.
 open_re='unshipped|not deployed|NOT shipped|deferred|remain|residual|pending|blocked|dark|NEXT|TODO|WIP|design-only|proposal|roadmap|backlog'
-threads_slice=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null || true)
-if [[ -z "${threads_slice//[[:space:]]/}" ]]; then
-    echo "  MEMORY.md has no \`## Threads\` heading — landed-thread scan is disabled"
-    problems=$((problems+1))
+# Graph mode has no index links to follow. The export's _sections.tsv
+# (handle<TAB>section) scopes the scan to `threads` nodes: runbooks and
+# gotchas routinely cite the sha of a landed fix with no open-work words, and
+# they are durable knowledge, not landed threads (first graph run, 2026-10-03:
+# 11 of 11 flags were runbooks/gotchas). No manifest → every node is scanned.
+threads=""
+if (( GRAPH )); then
+    if [[ -n "$SCAN_DIR" && -f "$SCAN_DIR/_sections.tsv" ]]; then
+        threads=$(awk -F'\t' '$2 == "threads" { print $1 ".md" }' "$SCAN_DIR/_sections.tsv")
+    elif [[ -n "$SCAN_DIR" ]]; then
+        threads=$(cd "$SCAN_DIR" && ls -- *.md 2>/dev/null || true)
+    fi
+else
+    threads_slice=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null || true)
+    if [[ -z "${threads_slice//[[:space:]]/}" ]]; then
+        echo "  MEMORY.md has no \`## Threads\` heading — landed-thread scan is disabled"
+        problems=$((problems+1))
+    fi
+    threads=$(grep -oE '\([a-z0-9_-]+\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u || true)
 fi
-threads=$(grep -oE '\([a-z0-9_-]+\.md\)' "$INDEX" 2>/dev/null | tr -d '()' | sort -u || true)
 while IFS= read -r b; do
     [[ -z "$b" ]] && continue
-    tf="$MEMDIR/$b"; [[ -f "$tf" ]] || continue
+    tf="$SCAN_DIR/$b"; [[ -f "$tf" ]] || continue
     if grep -qiE "$open_re" "$tf"; then continue; fi     # open-work words → keep
     shas=$(grep -oiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)  # need a letter
     [[ -z "$shas" ]] && continue
@@ -126,11 +197,14 @@ while IFS= read -r b; do
         git merge-base --is-ancestor "$s" main 2>/dev/null || { landed=0; break; }
     done <<< "$shas"
     if (( landed )); then
-        echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
+        if (( GRAPH )); then
+            echo "  landed thread → $(label_of "$b" "$tf") — verify, then delete(kind='memory', id='${b%.md}')"
+        else
+            echo "  landed thread → $b (all cited commits in main, no open-work words) — verify + delete"
+        fi
         problems=$((problems+1))
     fi
 done <<< "$threads"
-fi  # ! GRAPH (checks 1a, 1b, 2)
 
 # 3. index size — hysteresis: silent inside the band, flag only past high-water
 bytes=$(wc -c < "$INDEX" | tr -d ' ')
@@ -143,19 +217,23 @@ if (( bytes > HIGH_WATER )); then
     problems=$((problems+1))
 fi
 
-if (( ! GRAPH )); then
-# 3b. payload-smell — a topic file carrying fenced code blocks is holding a
-# PAYLOAD (recipe body) where memory should hold a trigger + pointer
-# (docs/runbooks/ owns recipe bodies — dev-context-diet). Advisory.
-for tf in "$MEMDIR"/*.md; do
-    b=$(basename "$tf"); [[ "$b" == MEMORY.md || "$b" == memory_consolidation_log.md ]] && continue
+if [[ -n "$SCAN_DIR" ]]; then
+# 3b. payload-smell — a topic file (graph mode: node body) carrying fenced code
+# blocks is holding a PAYLOAD (recipe body) where memory should hold a trigger
+# + pointer (docs/runbooks/ owns recipe bodies — dev-context-diet). Advisory.
+for tf in "$SCAN_DIR"/*.md; do
+    b=$(basename "$tf"); is_topic "$b" || continue
     fences=$(grep -c '^```' "$tf" 2>/dev/null || true); fences=${fences:-0}
     if (( fences >= 2 )); then
-        echo "  payload-smell → $b ($((fences / 2)) code fence(s) — recipe body? move to docs/runbooks/, keep a symptom→pointer line)"
+        if (( GRAPH )); then
+            echo "  payload-smell → $(label_of "$b" "$tf") ($((fences / 2)) code fence(s) — recipe body? move to docs/runbooks/, keep a symptom→pointer body: edit(kind='memory', id='${b%.md}'))"
+        else
+            echo "  payload-smell → $b ($((fences / 2)) code fence(s) — recipe body? move to docs/runbooks/, keep a symptom→pointer line)"
+        fi
         problems=$((problems+1))
     fi
 done
-fi  # ! GRAPH (check 3b)
+fi  # SCAN_DIR (check 3b)
 
 if (( problems == 0 )) && (( GRAPH )); then
     echo "memory-lint: ✓ clean ($bytes B rendered index, within high-water)"
@@ -187,8 +265,8 @@ fi
 #    judgment pass. Each finding is a SUSPECT for a human/Opus to resolve
 #    (adjust the anchor / kill the memory / promote a decision to an ADR), never
 #    an auto-delete: a gone branch may be shipped-and-pruned OR stranded work.
-if (( CURRENCY )) && (( GRAPH )); then
-    echo "— currency ledger: not run in graph mode (it reads topic files, which are the cutover snapshot) —"
+if (( CURRENCY )) && [[ -z "$SCAN_DIR" ]]; then
+    :   # graph mode, no node cache yet — the one-line note above already said so
 elif (( CURRENCY )); then
     echo "— currency ledger (git+fs anchors; suspects only) —"
     # try every ref spelling a bare name could wear; 0 = exists, 1 = gone
@@ -201,9 +279,9 @@ elif (( CURRENCY )); then
         return 0
     }
     cur_suspect=0
-    for tf in "$MEMDIR"/*.md; do
+    for tf in "$SCAN_DIR"/*.md; do
         b=$(basename "$tf")
-        [[ "$b" == MEMORY.md || "$b" == memory_consolidation_log.md ]] && continue
+        is_topic "$b" || continue
         findings=()
         has_open=0; grep -qiE "$open_re" "$tf" && has_open=1
 
@@ -236,14 +314,19 @@ elif (( CURRENCY )); then
         #     English words that follow "branch"/"worktree" in prose ("branch
         #     deleted", "worktree files"); bare real names (newenv, bettersearch)
         #     still surface via their hyphenated `worktree-<name>` spelling.
+        #     `[[slug]]` links are stripped first: a memory slug like
+        #     [[worktree-switch-breaks-subagent-bash]] names a memory, not a branch.
         if (( has_open )) && (( ! has_landing )); then
+            prose=$(sed -E 's/\[\[[^]]*\]\]//g' "$tf")
             while IFS= read -r n; do
                 [[ -z "$n" ]] && continue
                 n="${n%%[.,;:)\`]*}"                         # strip trailing punctuation
                 [[ "$n" == *-* ]] || continue                # kebab-only → drops prose words
                 branch_gone "$n" && findings+=("branch/worktree '$n' gone — shipped-and-pruned (prune) or stranded dark work (recover)?")
-            done < <( { grep -oiE 'branch +`?[a-z0-9][a-z0-9._-]+' "$tf" | sed -E 's/^branch +`?//I';
-                        grep -oiE 'worktree-? *`?[a-z0-9][a-z0-9-]+' "$tf" | sed -E 's/^worktree-? *`?//I'; } | sort -u )
+            # `|| true` on each: under set -e + pipefail a no-match grep ends the
+            # subshell, so the worktree grep never ran when no "branch" matched.
+            done < <( { grep -oiE 'branch +`?[a-z0-9][a-z0-9._-]+' <<< "$prose" | sed -E 's/^branch +`?//I' || true;
+                        grep -oiE 'worktree-? *`?[a-z0-9][a-z0-9-]+' <<< "$prose" | sed -E 's/^worktree-? *`?//I' || true; } | sort -u )
         fi
 
         # NB: no commit-sha currency check. Cross-repo shas (memories legitimately
@@ -267,12 +350,14 @@ elif (( CURRENCY )); then
 
         if (( ${#findings[@]} )); then
             cur_suspect=$((cur_suspect+1))
-            echo "  $b:"
+            echo "  $(label_of "$b" "$tf"):"
             for f in "${findings[@]}"; do echo "    - $f"; done
         fi
     done
     if (( cur_suspect == 0 )); then
         echo "  ✓ all git+fs anchors verify"
+    elif (( GRAPH )); then
+        echo "  currency: $cur_suspect memory node(s) with stale anchors — adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc (judgment pass)"
     else
         echo "  currency: $cur_suspect file(s) with stale anchors — adjust / kill / promote-to-doc (judgment pass)"
     fi
@@ -305,6 +390,8 @@ if [[ -z "$last" ]]; then
     echo "reconsolidation: DUE (no consolidation log yet)"
 elif [[ "$last" == "$today" ]]; then
     echo "reconsolidation: done today ($last) — skip the heavy pass"
+elif (( GRAPH )); then
+    echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger over the memory nodes, then judgment-resolve each suspect (adjust via edit(kind='memory', id=…) / kill via delete(kind='memory', id=…) / promote-to-doc) + delete(kind='memory') any landed thread flagged above. Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
 else
     echo "reconsolidation: DUE (last $last) — run 'scripts/memory-lint --currency' for the per-claim ledger, then judgment-resolve each suspect (adjust / kill / promote-to-doc) + delete any landed thread flagged above. Compact for SIZE only if past the high-water mark. Append a dated line to memory_consolidation_log.md"
 fi
@@ -332,22 +419,22 @@ sib_last_e=$( [[ -n "$sib_last" ]] && epoch_of "$sib_last" || true )
 sib_days=999999
 [[ -n "${sib_last_e:-}" ]] && sib_days=$(( ($(date +%s) - sib_last_e) / 86400 ))
 
-if (( GRAPH )); then
-    :   # reads topic files, the cutover snapshot — skipped in graph mode
+if [[ -z "$SCAN_DIR" ]]; then
+    :   # graph mode, no node cache yet — nothing scanned, so nothing to stamp
 elif (( sib_days <= SIB_WINDOW_DAYS )); then
     echo "sibling-repo check: ok (last $sib_last, ${sib_days}d ago; due in $(( SIB_WINDOW_DAYS - sib_days ))d)"
 else
     echo "sibling-repo check: DUE (last ${sib_last:-never}) — running now"
     sib_findings=()
-    for tf in "$MEMDIR"/*.md; do
+    for tf in "$SCAN_DIR"/*.md; do
         b=$(basename "$tf")
-        [[ "$b" == MEMORY.md || "$b" == memory_consolidation_log.md ]] && continue
+        is_topic "$b" || continue
         while IFS= read -r root; do
             [[ -z "$root" ]] && continue
             name="${root##*/}"
             [[ "$name" == "precis-mcp" ]] && continue   # this repo — no signal
             expanded="${root/#\~/$HOME}"
-            [[ -e "$expanded" ]] || sib_findings+=("$b: $root — no longer on disk (repo retired/renamed? fix or drop the ref)")
+            [[ -e "$expanded" ]] || sib_findings+=("$(ident "$b"): $root — no longer on disk (repo retired/renamed? fix or drop the ref)")
         done < <(grep -ohE '~/work/projects/code/[A-Za-z0-9_-]+|~/work/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/projects/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/[A-Za-z0-9_-]+' "$tf" 2>/dev/null \
                        | sed -E 's#^/Users/[A-Za-z0-9_-]+/work/#~/work/#' | sort -u)
     done

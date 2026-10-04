@@ -15,8 +15,11 @@ from precis.cli import _build_parser
 from precis.cli.memory import (
     GRAPH_MARKER,
     HOOK_CUT_CHARS,
+    SPACE_TAG,
     ImportRefused,
     ImportReport,
+    _created_id,
+    export_memory_nodes,
     import_memory_dir,
     parse_index,
     render_memory_index,
@@ -692,3 +695,122 @@ def test_dry_run_and_allow_retire_flags_are_wired_into_the_cli() -> None:
     assert ns.dry_run and ns.allow_retire == 7
     ns = _build_parser().parse_args(["memory", "import", "d"])
     assert not ns.dry_run and ns.allow_retire is None
+
+
+# ---------------------------------------------------------------------------
+# precis memory index --export-dir
+# ---------------------------------------------------------------------------
+
+
+def _run_index_cli(store: Store, monkeypatch: pytest.MonkeyPatch, *argv: str) -> None:
+    monkeypatch.setattr("precis.cli.memory.resolve_dsn", lambda *a, **k: "unused")
+    monkeypatch.setattr(Store, "connect", classmethod(lambda cls, dsn: store))
+    monkeypatch.setattr(store, "close", lambda: None)
+    memory_run(_build_parser().parse_args(["memory", "index", *argv]))
+
+
+def _handle(ref_id: int) -> str:
+    h = handle_registry.try_format("memory", ref_id)
+    assert h is not None
+    return h
+
+
+def test_export_dir_flag_is_wired_into_the_cli() -> None:
+    ns = _build_parser().parse_args(["memory", "index", "--export-dir", "d"])
+    assert ns.export_dir == "d"
+    assert _build_parser().parse_args(["memory", "index"]).export_dir is None
+
+
+def test_export_dir_writes_one_file_per_topic_node_by_handle(
+    store: Store,
+    hub: Hub,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    handler = MemoryHandler(hub=hub)
+    native_id = _created_id(
+        handler.put(
+            text="A native body.\n\n```\ncode\n```",
+            title="Native note",
+            tags=[SPACE_TAG],
+        )
+    )
+    dest = tmp_path / "cache" / "memory-nodes"
+    dest.mkdir(parents=True)
+    (dest / "me1.md").write_text("stale set member", encoding="utf-8")
+
+    _run_index_cli(store, monkeypatch, "--export-dir", str(dest))
+    out = capsys.readouterr()
+
+    assert out.out == render_memory_index(store)  # export never alters the index
+    assert out.err == ""
+    # topic nodes = every live node but the section nodes (meta.section, no slug)
+    topics = [
+        r
+        for r in store.list_refs(kind="memory", tags=[SPACE_TAG], limit=1000)
+        if (r.meta or {}).get("slug") or not (r.meta or {}).get("section")
+    ]
+    assert len(topics) == N_BULLETS + 1  # the fixture's bullets + the native node
+    assert sorted(p.name for p in dest.iterdir()) == sorted(
+        [f"{_handle(r.id)}.md" for r in topics] + ["_sections.tsv"]
+    )  # one per topic, no section node, the stale file gone
+    # handle<TAB>section for every topic: imported topics carry their section
+    # slug, the native node (no section tag) an empty one
+    manifest = dict(
+        line.split("\t")
+        for line in (dest / "_sections.tsv").read_text(encoding="utf-8").splitlines()
+    )
+    assert sorted(manifest) == sorted(_handle(r.id) for r in topics)
+    assert manifest.pop(_handle(native_id)) == ""
+    assert all(manifest.values()), manifest
+    for r in topics:
+        assert (dest / f"{_handle(r.id)}.md").read_text(encoding="utf-8") == (
+            f"# {r.title}\n\n{handler._body_text(r)}"
+        )
+    assert (
+        (dest / f"{_handle(native_id)}.md")
+        .read_text(encoding="utf-8")
+        .startswith("# Native note\n\nA native body.")
+    )
+    # no temp / old sibling dirs left behind
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["memory-nodes"]
+
+
+def test_export_failure_leaves_the_index_output_and_exit_code_alone(
+    store: Store,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, so mkdir under it fails", encoding="utf-8")
+    dest = blocker / "nodes"
+
+    _run_index_cli(store, monkeypatch, "--export-dir", str(dest))  # must not raise
+    out = capsys.readouterr()
+
+    assert out.out == render_memory_index(store)
+    assert len(out.err.strip().splitlines()) == 1
+    assert "node export" in out.err and str(dest) in out.err
+
+
+def test_export_failure_keeps_the_previous_node_set(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    dest = tmp_path / "nodes"
+    assert export_memory_nodes(store, dest) == N_BULLETS
+    before = {p.name: p.read_text(encoding="utf-8") for p in dest.iterdir()}
+
+    def boom(self: MemoryHandler, ref: object) -> str:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(MemoryHandler, "_body_text", boom)
+    with pytest.raises(RuntimeError):
+        export_memory_nodes(store, dest)
+
+    assert {p.name: p.read_text(encoding="utf-8") for p in dest.iterdir()} == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["nodes"]

@@ -33,13 +33,14 @@ what a live consumer is already going without.
      Harness memory is in the graph: `MEMORY.md` is the pointer, and the
      old index is kept as `MEMORY.md.pre-cutover`. The sync guard
      (31fc2a3c) has landed but is not deployed.
-   - **Next: the memory-lint graph port.** Port the landed-thread scan and
-     the currency ledger to node bodies, and run the reconsolidation clock
-     in graph mode. Today `--currency` is a no-op there, but the clock
-     still reports DUE. Add a stray-write check: a topic file newer than
-     `MEMORY.md.pre-cutover` is an edit the graph missed (one at 21:29Z,
-     ported to me464663; gotcha me464696).
-   - **Then:** tests 4b/4c, which need `backlog/file-mirror.md`
+   - **memory-lint graph mode now lints node bodies.** Bodies come from the
+     cache that `memory index --export-dir` writes, and a stray-write check
+     is added. The first graph reconsolidation ran on 2026-10-03 and is
+     logged in `memory_consolidation_log.md`. The landed scan is now
+     scoped to thread nodes.
+   - **Next on this item:** memory `edit` needs `find-replace` (decisions
+     log, 2026-10-03).
+   - **Blocked:** tests 4b/4c, which need `backlog/file-mirror.md`
      (knowledge-mesh Do-next 7).
 2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the

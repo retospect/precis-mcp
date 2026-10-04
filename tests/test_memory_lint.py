@@ -127,13 +127,20 @@ def home_and_mem(lint_repo: Path, tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run(
-    repo: Path, home: Path, *, cache: Path | None = None
+    repo: Path,
+    home: Path,
+    *,
+    cache: Path | None = None,
+    nodes: Path | None = None,
+    args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "HOME": str(home)}
     if cache is not None:
         env["PRECIS_MEMORY_CACHE"] = str(cache)
+    # Never let the real ~/.cache node export leak into a test.
+    env["PRECIS_MEMORY_NODES"] = str(nodes or home / "no-nodes-here")
     return subprocess.run(
-        [str(repo / "scripts" / "memory-lint")],
+        [str(repo / "scripts" / "memory-lint"), *args],
         cwd=str(repo),
         env=env,
         capture_output=True,
@@ -289,3 +296,250 @@ def test_graph_mode_without_a_cached_render_says_so(
     assert res.returncode == 0
     assert "graph mode — no cached render yet" in res.stdout, res.stdout
     assert "hygiene issue" not in res.stdout, res.stdout
+
+
+# ---------------------------------------------------------------------------
+# graph mode over the node cache (`precis memory index --export-dir`)
+# ---------------------------------------------------------------------------
+
+_NO_NODES = "no node cache yet — scripts/hooks/session-start-memory.sh writes it"
+
+
+@pytest.fixture
+def graph_setup(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> tuple[Path, Path, Path, Path]:
+    """(home, memory dir with a pointer MEMORY.md, cache, node dir)."""
+    home, mem = home_and_mem
+    (mem / "MEMORY.md").write_text(_POINTER, encoding="utf-8")
+    cache = tmp_path / "cache" / "memory-index.md"
+    cache.parent.mkdir()
+    cache.write_text("# Memory index\n\n- Alpha (me1) — x\n", encoding="utf-8")
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    return home, mem, cache, nodes
+
+
+def test_graph_mode_flags_landed_and_payload_nodes_by_handle(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me464085.md").write_text(
+        f"# Old campaign\n\nstate: SHIPPED. commit {sha} landed in main.\n",
+        encoding="utf-8",
+    )
+    (nodes / "me464086.md").write_text(
+        f"# Live work\n\nSHIPPED at {sha} but NEXT slice pending.\n", encoding="utf-8"
+    )
+    (nodes / "me464087.md").write_text(
+        "# Recipe\n\n```\nrun this\n```\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert (
+        "landed thread → me464085 (Old campaign) — verify, then "
+        "delete(kind='memory', id='me464085')" in res.stdout
+    ), res.stdout
+    assert "me464086" not in res.stdout, res.stdout  # open-work words keep it
+    assert "payload-smell → me464087 (Recipe) (1 code fence(s)" in res.stdout
+    assert "edit(kind='memory', id='me464087')" in res.stdout, res.stdout
+    assert "no `## Threads` heading" not in res.stdout, res.stdout
+    assert "unindexed" not in res.stdout, res.stdout
+    assert "memory-lint: 2 hygiene issue(s) above" in res.stdout, res.stdout
+
+
+def test_graph_mode_landed_scan_reads_only_threads_nodes_from_the_manifest(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # A gotcha citing the sha of a landed fix is durable knowledge, not a
+    # landed thread: with the export's _sections.tsv present, only `threads`
+    # nodes are scanned.
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    body = f"state: SHIPPED. commit {sha} landed in main.\n"
+    (nodes / "me464085.md").write_text(f"# Old campaign\n\n{body}", encoding="utf-8")
+    (nodes / "me464160.md").write_text(f"# Fixed trap\n\n{body}", encoding="utf-8")
+    (nodes / "_sections.tsv").write_text(
+        "me464085\tthreads\nme464160\tgotchas\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert "landed thread → me464085 (Old campaign)" in res.stdout, res.stdout
+    assert "me464160" not in res.stdout, res.stdout
+    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+
+
+def test_graph_mode_currency_runs_over_the_nodes(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me464090.md").write_text(
+        "# Stale anchor\n\nSee src/precis/not_a_real_file.py for the NEXT step.\n",
+        encoding="utf-8",
+    )
+    (nodes / "me464091.md").write_text("# Fine\n\nNo anchors here.\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",))
+
+    assert res.returncode == 0
+    assert "not run in graph mode" not in res.stdout, res.stdout
+    assert "— currency ledger (git+fs anchors; suspects only) —" in res.stdout
+    assert "  me464090 (Stale anchor):" in res.stdout, res.stdout
+    assert "path src/precis/not_a_real_file.py missing on main" in res.stdout
+    assert "me464091" not in res.stdout, res.stdout
+    assert (
+        "1 memory node(s) with stale anchors — adjust via edit(kind='memory'"
+        in res.stdout
+    ), res.stdout
+
+
+def test_currency_ignores_worktree_named_memory_links(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    # [[worktree-…]] is a memory slug, not a branch; a bare worktree name in
+    # prose still counts.
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me464116.md").write_text(
+        "# Build\n\nNEXT slice. See [[worktree-switch-breaks-subagent-bash]].\n",
+        encoding="utf-8",
+    )
+    (nodes / "me464117.md").write_text(
+        "# Other\n\nNEXT slice in worktree gone-away-tree.\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",))
+
+    assert res.returncode == 0
+    assert "switch-breaks-subagent-bash" not in res.stdout, res.stdout
+    assert "branch/worktree 'gone-away-tree' gone" in res.stdout, res.stdout
+
+
+def test_graph_mode_sibling_check_scans_nodes_and_stamps(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    log = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
+    log.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    (nodes / "me464092.md").write_text(
+        "# Sibling\n\nSee ~/work/long-retired-sibling-repo for it.\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "sibling-repo check: DUE" in res.stdout, res.stdout
+    assert (
+        "me464092: ~/work/long-retired-sibling-repo — no longer on disk" in res.stdout
+    ), res.stdout
+    assert "1 stale path(s): me464092:" in log.read_text(encoding="utf-8")
+
+
+def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    log = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
+    log.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    before = log.read_text(encoding="utf-8")
+
+    for nodedir in (nodes, nodes / "absent"):  # empty, then missing
+        res = _run(lint_repo, home, cache=cache, nodes=nodedir, args=("--currency",))
+        assert res.returncode == 0
+        assert res.stdout.count(_NO_NODES) == 1, res.stdout
+        assert "landed thread" not in res.stdout, res.stdout
+        assert "payload-smell" not in res.stdout, res.stdout
+        assert "currency ledger" not in res.stdout, res.stdout
+        assert "sibling-repo check" not in res.stdout, res.stdout
+        assert "hygiene issue" not in res.stdout, res.stdout
+        assert log.read_text(encoding="utf-8") == before  # nothing scanned, no stamp
+
+
+def test_graph_mode_stray_write_check_compares_to_pre_cutover(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, mem, cache, nodes = graph_setup
+    pre = mem / "MEMORY.md.pre-cutover"
+    pre.write_text("- old index\n", encoding="utf-8")
+    old = mem / "frozen-snapshot.md"
+    old.write_text("snapshot\n", encoding="utf-8")
+    stray = mem / "fleet-say-drops-first-line.md"
+    stray.write_text("edited after the cutover\n", encoding="utf-8")
+    log = mem / "memory_consolidation_log.md"
+    log.write_text("2026-10-03 pass\n", encoding="utf-8")
+    os.utime(pre, (1_700_000_000, 1_700_000_000))
+    os.utime(old, (1_699_999_000, 1_699_999_000))  # older than the reference
+    for f in (stray, log, mem / "MEMORY.md"):  # newer; the last two are exempt
+        os.utime(f, (1_700_001_000, 1_700_001_000))
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert (
+        "stray write → fleet-say-drops-first-line.md (edited after the cutover; "
+        "the graph never reads it — port the body into its node by handle, then "
+        "clear this with: touch -r " in res.stdout
+    ), res.stdout
+    assert "frozen-snapshot.md" not in res.stdout, res.stdout
+    assert "stray write → memory_consolidation_log.md" not in res.stdout
+    assert "stray write → MEMORY.md" not in res.stdout, res.stdout
+    assert "memory-lint: 1 hygiene issue(s) above" in res.stdout, res.stdout
+
+    pre.unlink()  # no reference point -> the check has nothing to compare
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+    assert "stray write" not in res.stdout, res.stdout
+
+
+def test_graph_mode_reconsolidation_due_names_the_graph_verbs(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, mem, cache, nodes = graph_setup
+    (mem / "memory_consolidation_log.md").write_text(
+        "2020-01-01 an old pass\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    line = next(ln for ln in res.stdout.splitlines() if ln.startswith("reconsol"))
+    assert "DUE (last 2020-01-01)" in line
+    assert "edit(kind='memory'" in line and "delete(kind='memory'" in line
+    assert "topic files" not in line, line
+
+    # file mode keeps the original wording
+    (mem / "MEMORY.md").write_text("- flat\n", encoding="utf-8")
+    res = _run(lint_repo, home)
+    line = next(ln for ln in res.stdout.splitlines() if ln.startswith("reconsol"))
+    assert "edit(kind='memory'" not in line, line
+    assert "adjust / kill / promote-to-doc" in line
+
+
+def test_file_mode_ignores_the_node_cache_and_the_stray_check(
+    lint_repo: Path, home_and_mem: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Without the graph marker nothing reads the node dir, and a file newer
+    than a leftover MEMORY.md.pre-cutover is not a finding."""
+    home, mem = home_and_mem
+    sha = _landed_sha(lint_repo)
+    (mem / "MEMORY.md").write_text(
+        "## Threads\n\n- some campaign — [detail](some-topic.md)\n", encoding="utf-8"
+    )
+    (mem / "some-topic.md").write_text(
+        f"state: SHIPPED. commit {sha} landed in main.\n", encoding="utf-8"
+    )
+    pre = mem / "MEMORY.md.pre-cutover"
+    pre.write_text("x\n", encoding="utf-8")
+    os.utime(pre, (1_700_000_000, 1_700_000_000))
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    (nodes / "me1.md").write_text("# N\n\n```\nx\n```\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, nodes=nodes)
+
+    assert res.returncode == 0
+    assert "landed thread → some-topic.md (all cited commits in main" in res.stdout
+    assert "stray write" not in res.stdout, res.stdout
+    assert "me1" not in res.stdout, res.stdout
+    assert "graph mode" not in res.stdout, res.stdout

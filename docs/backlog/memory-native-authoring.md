@@ -230,11 +230,14 @@ scripts only — nothing reads the graph at that moment.
     `MEMORY.md` carries `<!-- memory-index: graph -->`, so it is wired into
     `.claude/settings.json` now without doubling the index.
   - memory-lint gains a graph mode keyed on the same marker. It checks size
-    and the preamble budget on the cached render. The topic-file checks
-    (links, landed-thread scan, payload smell, currency ledger,
-    sibling-repo paths) are skipped: the files are the snapshot.
-    **Follow-up:** port the landed-thread scan and currency ledger to node
-    bodies (a `precis memory` export the lint runs over).
+    and the preamble budget on the cached render. The link checks (1a/1b)
+    are skipped: there is no index file. The landed-thread scan, payload
+    smell, currency ledger and sibling-repo paths run over node bodies:
+    `precis memory index --export-dir` (called by the hook) writes one
+    `<handle>.md` per topic node to `~/.cache/precis/memory-nodes`
+    (`PRECIS_MEMORY_NODES`). A stray-write check lists memory-dir files
+    newer than `MEMORY.md.pre-cutover`, and the reconsolidation DUE line
+    names the graph verbs.
 - **[cutover sequence, after slice 2 is deployed]**
   1. `scripts/prod-precis memory import <memory dir> --sync`.
   2. Replace `MEMORY.md` with the pointer below. It is global and loaded by
@@ -309,6 +312,16 @@ scripts only — nothing reads the graph at that moment.
     before the cutover edited `fleet-say-drops-first-line.md` by hand.
     The edit was ported to me464663, and gotcha me464696 records the
     `find -newer` check.
+- **[open, found in the first graph reconsolidation, 2026-10-03]** Memory
+  `edit` has no `find-replace`: its only text mode is `replace`, which
+  rewrites the whole body.
+  - **Cost:** fixing one stale path in me464095 (38 KB) meant re-sending
+    all 38 KB. The MCP call cannot do a partial fix at all, so the 7 fixes
+    went through `scripts/prod-precis tools edit --mode replace` from a
+    script.
+  - **Wanted:** `find-replace` / `insert` on memory bodies, with the same
+    anchors as the file kinds. Harness memory is now edited this way every
+    day.
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.
