@@ -875,7 +875,13 @@ def _field_sha(fld: Field, provenance: dict[str, Any]) -> str:
 
 
 def _provenance(root: str, block: str, form: str) -> dict[str, Any]:
-    return {"source": JOB_TYPE, "root": root, "block": block, "form": form}
+    return {
+        "source": JOB_TYPE,
+        "root": root,
+        "block": block,
+        "form": form,
+        "fieldops": fieldops.FIELDOPS_VERSION,
+    }
 
 
 def _dof_partners(plan: JointPlan) -> dict[str, list[str]]:

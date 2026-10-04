@@ -256,6 +256,11 @@ than `2r` it erased, never silently), `close(r)` (exact concave fillet,
 fills necks), `from_density(rho, pitch=…, origin=…)`. `rd` on a field is
 refused; export is always the field backend; `step` refuses it.
 
+Field results carry `fieldops` version N in their provenance (realize
+summaries too). v2 (closest-point redistance) changed open/close/round
+results versus v1; a field over `MAX_REDISTANCE_VOXELS` (10M) is refused
+— coarsen the pitch.
+
 ## Read the design — `get`
 
 ```python

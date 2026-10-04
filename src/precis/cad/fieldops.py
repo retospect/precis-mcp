@@ -65,6 +65,22 @@ from precis.cad.vec import Vec3, as_vec3
 #: argument below is coerced through :func:`~precis.cad.vec.as_vec3`.
 Point3 = Vec3 | Sequence[float]
 
+#: Version of the field-morphology algorithms (redistance/offset/open/close).
+#: Bump whenever the same inputs give a different zero set, so a stored
+#: result can be told from a regenerated one. 1: bool redistance (surface
+#: half a pitch outside the last inside sample). 2: closest-point
+#: redistance keeping the sub-voxel zero set (gr464340, 264f412c0).
+FIELDOPS_VERSION = 2
+
+#: Largest field (voxel count) :func:`_redistance_field` accepts. Its
+#: closest-point transform holds float64 feet, int64 index arrays and runs
+#: 26 neighbour passes: measured peak ~160 B/voxel on a sphere, ~190 B/voxel
+#: on pure noise (tracemalloc, 32^3..96^3), so 10M voxels stays under
+#: ~2 GiB. ``realize(simp)`` already caps its solve grid at
+#: ``MAX_ELEMENTS`` (500k), far below this; the cap guards cad morphology
+#: on large stored fields.
+MAX_REDISTANCE_VOXELS = 10_000_000
+
 #: Wire-format magic of an encoded field payload (:func:`encode_field`).
 FIELD_MAGIC = b"PSDF"
 
@@ -242,6 +258,11 @@ def _redistance_field(grid: NDArray[np.float64], pitch: float) -> NDArray[np.flo
     Re-placing the surface half a pitch outside the last inside sample
     instead (the bool path) snaps an offset back to the lattice, which
     biased :func:`open`/:func:`close` by up to half a pitch."""
+    if grid.size > MAX_REDISTANCE_VOXELS:
+        raise ValueError(
+            f"redistance: field has {grid.size} voxels, over the "
+            f"{MAX_REDISTANCE_VOXELS}-voxel cap (memory) — coarsen the pitch"
+        )
     inside = grid <= 0.0
     band, feet = _interface_feet(grid)
     flat_feet = feet.reshape(-1, 3)

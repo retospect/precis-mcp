@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 
 from precis.cad import fieldops
+from precis.cad.fieldops import FIELDOPS_VERSION
 from precis.dispatch import Hub, _try
 from precis.errors import BadInput
 from precis.store import Store
@@ -160,6 +161,7 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     header, fld = store.get_field(sha)
     assert header["provenance"]["source"] == "se_simp"
     assert header["provenance"]["build_dir"] == "z+"
+    assert header["provenance"]["fieldops"] == FIELDOPS_VERSION
     assert fld.pitch == pytest.approx(_PITCH)
     # the run summary, on the se ref's meta under one key
     ref = store.get_ref(kind="se", id="simp-cant")
@@ -168,6 +170,7 @@ def test_cantilever_op_enqueues_and_the_job_realizes_a_field_leaf_design(
     assert summary["cad"] == "simp-cant-beam" and summary["field_sha"] == sha
     assert summary["grid"] == [12, 6, 6] and summary["active_elements"] == 432
     assert summary["engine"] == "simp/1" and len(summary["inputs_sha"]) == 64
+    assert summary["fieldops"] == FIELDOPS_VERSION
     assert summary["compliance_last"] < summary["compliance_first"]
     assert summary["volume_fraction"] == pytest.approx(0.4, abs=0.05)
     assert summary["overhang_violation_count"] == 0
@@ -555,11 +558,13 @@ def test_morphology_moves_the_volume_the_expected_way() -> None:
     base = simp_bridge.solve_simp(tree, plain)
     v0 = _volume(base.field)
     assert base.summary["morphology"] == {}
+    assert base.summary["fieldops"] == FIELDOPS_VERSION
     res_c = simp_bridge.solve_simp(tree, closed)
     res_o = simp_bridge.solve_simp(tree, opened)
     # closing fills necks/concave steps: never less material
     assert _volume(res_c.field) > v0
     assert res_c.summary["morphology"]["close_m"] == pytest.approx(_PITCH)
+    assert res_c.summary["morphology"]["fieldops"] == FIELDOPS_VERSION
     assert (
         res_c.summary["morphology"]["volume_after_m3"]
         > (res_c.summary["morphology"]["volume_before_m3"])

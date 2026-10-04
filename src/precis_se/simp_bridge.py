@@ -82,6 +82,7 @@ import numpy as np
 from precis.cad import bulk as cad_bulk
 from precis.cad import dsl as cad_dsl
 from precis.cad import fieldops
+from precis.cad.fieldops import FIELDOPS_VERSION
 from precis.cad.fieldops import open as open_field
 from precis.cad.graph import Design as CadDesign
 from precis.cad.primitives import Field
@@ -956,11 +957,13 @@ def solve_simp(
             findings=findings,
         )
     if morphology:
+        morphology["fieldops"] = FIELDOPS_VERSION
         morphology["volume_before_m3"] = volume_raw
         morphology["volume_after_m3"] = volume_final
 
     summary: dict[str, Any] = {
         "engine": ENGINE_VERSION,
+        "fieldops": FIELDOPS_VERSION,
         "inputs_sha": inputs_sha(tree, req),
         "block": req.block,
         "mode": req.mode,
@@ -1092,6 +1095,7 @@ def realize_simp(
             "build_dir": req.build_dir,
             "inputs_sha": solve.summary["inputs_sha"],
             "engine": ENGINE_VERSION,
+            "fieldops": FIELDOPS_VERSION,
         },
     )
     slug, note = _unique_cad_slug(store, f"{design_slug}-{req.block}")

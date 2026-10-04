@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from precis.cad.fieldops import FIELDOPS_VERSION
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis.dispatch import Hub
 from precis.errors import BadInput
@@ -1168,6 +1169,7 @@ def test_eroded_member_is_one_field_leaf_sized_to_its_own_box(
             "root": "hinge",
             "block": m,
             "form": "field (gap)",
+            "fieldops": FIELDOPS_VERSION,
         }
         assert fld.pitch == _PITCH
         span = (np.array(fld.shape) - 1) * fld.pitch

@@ -20,10 +20,12 @@ import numpy as np
 import pytest
 
 from precis.cad import export as cad_export
+from precis.cad import fieldops as fieldops_mod
 from precis.cad.dsl import DslError, build, build_config, format_spec, parse
 from precis.cad.fieldmesh import field_mesh
 from precis.cad.fieldops import (
     FIELD_MIME,
+    FIELDOPS_VERSION,
     OpenResult,
     _edt_1d_pass,
     _edt_sq,
@@ -214,6 +216,24 @@ def test_redistance_refuses_empty_and_full_and_pads_a_bool_input() -> None:
     # boundary samples read +0.5 / -0.5 either side of the surface
     assert f.grid[4, 4, 4] == pytest.approx(-0.5)
     assert f.grid[3, 4, 4] == pytest.approx(0.5)
+
+
+def test_redistance_of_a_field_refuses_one_over_the_voxel_cap(monkeypatch) -> None:
+    fld, _c = _sphere_field()
+    n = int(np.asarray(fld.grid).size)
+    # at the cap exactly it still runs ...
+    monkeypatch.setattr(fieldops_mod, "MAX_REDISTANCE_VOXELS", n)
+    assert redistance(fld).shape == fld.shape
+    # ... one voxel under, it is refused with the count, the cap and the fix
+    monkeypatch.setattr(fieldops_mod, "MAX_REDISTANCE_VOXELS", n - 1)
+    with pytest.raises(ValueError, match=rf"{n} voxels.*{n - 1}-voxel cap.*coarsen"):
+        redistance(fld)
+    with pytest.raises(ValueError, match="coarsen the pitch"):
+        close(fld, 1.0)
+
+
+def test_fieldops_version_is_two_for_the_closest_point_redistance() -> None:
+    assert FIELDOPS_VERSION == 2
 
 
 # ---------------------------------------------------------------------------
