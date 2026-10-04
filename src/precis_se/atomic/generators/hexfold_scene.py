@@ -32,6 +32,15 @@ WARNs: ``scene.top.bar`` (a bar missed on the scene), ``scene.top.R_mismatch``
 ``scene.top.relaxed_shape`` (relaxed p95 over the 0.5 A band; the stored scene
 stays the tethered one).
 
+**Plan table.** The default tops are measured once and checked in
+(:data:`~precis_se.atomic.generators.authored_foot.TOP_TABLE_PATH`): a sphere
+with the default fillet at n = 12, 18, 24, 30 and 36, and a rounded lid with
+``top_fillet`` equal to the tube radius rounded down to 0.01 A (4.69 at
+n = 12) at n = 12, 18 and 24. A
+tabled top builds no candidate, and ``plan["top_plans"]`` says
+``planned: table``. The cost ceilings in :func:`_normalize` count only the
+tops planned live.
+
 **Judgement travels with the block.** The coordinates are the tethered
 relaxation, not a free one, so the geometry findings are judged on them and
 labelled ``relax=tethered`` (:class:`hexfold.check.Relaxed`). On top of
@@ -58,22 +67,27 @@ from hexfold.report import Finding, HexfoldError, Report, Severity
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.authored_foot import (
     RELAXED_P95_A,
+    TABLE_LID_N,
+    TABLE_SPHERE_N,
     SceneFeature,
     ScenePlan,
     TopPlan,
     TopRow,
     plan_scene,
+    table_lid_fillet,
+    top_tabled,
 )
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, _internal_message
 
 _PARAM_KEYS = ("sheet", "features", "extra", "k_tether")
 _FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
-_MAX_SPHERES = 1  # sphere tops per call: ~95 s each, see _normalize
-# Cost ceilings until the per-n plan table lands (see _normalize): a sphere
-# plans 9 candidate builds, a rounded lid 4 (identical (n, top_fillet) lids
-# are planned once and cached), and one scene op is budgeted 16 in total.
-# The budget is per scene op: a put with several ops sums their times.
+_MAX_SPHERES = 1  # live-planned sphere tops per call: ~95 s each
+# Cost ceilings on the tops the per-n plan table does not hold (see
+# _normalize): a live sphere plans 9 candidate builds, a live rounded lid 4
+# (identical (n, top_fillet) lids are planned once and cached), and one scene
+# op is budgeted 16 in total.  A tabled top costs nothing.  The budget is per
+# scene op: a put with several ops sums their times.
 _MAX_SPHERE_N = 12
 _SPHERE_CANDIDATES = 9
 _LID_CANDIDATES = 4
@@ -156,35 +170,49 @@ def _normalize(
     if not isinstance(raw_features, list | tuple) or not raw_features:
         raise GeneratorError("features must be a non-empty list of objects")
     features = tuple(_feature(raw, i) for i, raw in enumerate(raw_features))
-    spheres = [f.name for f in features if f.top == "sphere"]
+    k_tether = params.get("k_tether", 1.0)
+    if not _is_number(k_tether):
+        raise GeneratorError(f"k_tether must be a number; got {k_tether!r}")
+    k_tether = float(k_tether)
+    live = [
+        f
+        for f in features
+        if f.top in ("sphere", "lid")
+        and (f.top == "sphere" or f.top_fillet is not None)
+        and not top_tabled(f.n, f.top, f.top_fillet, k_tether)
+    ]
+    lid_keys = ", ".join(f"{table_lid_fillet(n)} at n={n}" for n in TABLE_LID_N)
+    tabled = (
+        "tabled tops (a sphere with the default fillet at n="
+        f"{'/'.join(map(str, TABLE_SPHERE_N))}; a lid with top_fillet {lid_keys}) "
+        "plan from the table and cost nothing"
+    )
+    spheres = [f.name for f in live if f.top == "sphere"]
     if len(spheres) > _MAX_SPHERES:
         raise GeneratorError(
-            f"hexfold_scene plans one top: 'sphere' per scene op; got {len(spheres)} "
-            f"({spheres}). Each sphere top plans 9 candidates, about 95 s, and a "
-            "scene op stays near 2 minutes; the budget is per scene op, so a put "
-            "with several round-top ops takes their sum. The per-n plan table (next cycle) lifts the limit. Rounded "
-            "lids (top: 'lid' with top_fillet) are bounded by the scene op's candidate "
-            f"budget ({_CANDIDATE_BUDGET})."
+            f"hexfold_scene plans one untabled top: 'sphere' per scene op; got "
+            f"{len(spheres)} ({spheres}). Each such top plans 9 candidates, about "
+            "95 s, and a scene op stays near 2 minutes; the budget is per scene "
+            "op, so a put with several round-top ops takes their sum. Split the "
+            f"scene; {tabled}. Rounded "
+            "lids (top: 'lid' with top_fillet) are bounded by the scene op's "
+            f"candidate budget ({_CANDIDATE_BUDGET})."
         )
     # an n that is not a multiple of 6 is left to the planner's own refusal,
     # which names the real reason
     big = sorted(
         f"{f.name} (n={f.n})"
-        for f in features
+        for f in live
         if f.top == "sphere" and f.n > _MAX_SPHERE_N and f.n % 6 == 0
     )
     if big:
         raise GeneratorError(
-            f"hexfold_scene plans a top: 'sphere' only up to n={_MAX_SPHERE_N} for "
-            f"now; got {big}. n=24 plans in about 100 s alone (9 candidates, each a "
-            "full build and relax), so a sphere above n=12 would outlast a client "
-            "timeout; the per-n plan table (next cycle) lifts the ceiling."
+            f"hexfold_scene plans an untabled top: 'sphere' only up to "
+            f"n={_MAX_SPHERE_N}; got {big}. n=24 plans in about 100 s alone (9 "
+            "candidates, each a full build and relax), so a live sphere above "
+            f"n=12 would outlast a client timeout; {tabled}."
         )
-    lids = {
-        (f.n, f.top_fillet)
-        for f in features
-        if f.top == "lid" and f.top_fillet is not None
-    }
+    lids = {(f.n, f.top_fillet) for f in live if f.top == "lid"}
     cost = _SPHERE_CANDIDATES * len(spheres) + _LID_CANDIDATES * len(lids)
     if cost > _CANDIDATE_BUDGET:
         raise GeneratorError(
@@ -192,17 +220,13 @@ def _normalize(
             f"this scene needs {cost} ({len(spheres)} sphere top x "
             f"{_SPHERE_CANDIDATES} + {len(lids)} distinct rounded lid(s) x "
             f"{_LID_CANDIDATES}; lids with the same n and top_fillet are planned "
-            "once). Split the scene across puts, one round-top scene op per put; "
-            "the per-n plan table (next "
-            "cycle) lifts the budget."
+            f"once). Split the scene across puts, one round-top scene op per put; "
+            f"{tabled}."
         )
     extra = params.get("extra", "")
     if not isinstance(extra, str):
         raise GeneratorError(f"extra must be a string of .hx lines; got {extra!r}")
-    k_tether = params.get("k_tether", 1.0)
-    if not _is_number(k_tether):
-        raise GeneratorError(f"k_tether must be a number; got {k_tether!r}")
-    return sheet, features, extra, float(k_tether)
+    return sheet, features, extra, k_tether
 
 
 _R_MISMATCH_A = 0.5  # an authored top_R this far from the realised R is flagged
@@ -257,6 +281,7 @@ def _top_record(tp: TopPlan, scene_row: TopRow) -> dict[str, Any]:
     candidate the planner measured."""
     return {
         "kind": tp.kind,
+        "planned": tp.source,
         "k": tp.k,
         "L": tp.length,
         "dome_rows": tp.dome_rows,

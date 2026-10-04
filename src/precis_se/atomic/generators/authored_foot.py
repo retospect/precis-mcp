@@ -48,9 +48,11 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -687,6 +689,7 @@ class TopPlan:
     authored_fillet: float | None
     chosen: TopRow
     rows: tuple[TopRow, ...]
+    source: str = "live"  # "table": read from TOP_TABLE_PATH, no build
 
     @property
     def meets(self) -> bool:
@@ -1131,6 +1134,107 @@ def _failed_row(
     )
 
 
+# ── the per-n plan table ───────────────────────────────────────────────
+# A plan depends only on (n, kind, top_fillet, k_tether, theta_p_max), never
+# on the sheet, so the default keys are measured once and checked in: a
+# tabled top plans in no time, and the scene's cost ceilings count only the
+# grids planned live.  Regenerate after any planner or hexfold change:
+#   uv run --with numba python -m precis_se.atomic.generators.authored_foot
+TOP_TABLE_PATH = Path(__file__).with_name("hexfold_top_plans.json")
+TABLE_SPHERE_N = (12, 18, 24, 30, 36)  # sphere tops, default fillet
+TABLE_LID_N = (12, 18, 24)  # rounded lids, top_fillet = r_tube down to 0.01 A
+_TABLE_K_TETHER = 1.0
+
+
+def table_lid_fillet(n: int) -> float:
+    """The tabled rounded-lid fillet on ``(n, 0)``: the tube radius rounded
+    down to 0.01 A, so it never exceeds ``r`` (4.69 A at n = 12: the
+    hemisphere)."""
+    return math.floor(tube_radius(n, 0) * 100.0) / 100.0
+
+
+def table_keys() -> list[tuple[str, int, float | None]]:
+    """(kind, n, top_fillet) of every tabled plan; ``None`` is the default
+    fillet."""
+    return [("sphere", n, None) for n in TABLE_SPHERE_N] + [
+        ("lid", n, table_lid_fillet(n)) for n in TABLE_LID_N
+    ]
+
+
+def _table_key(kind: str, n: int, top_fillet: float | None) -> str:
+    return f"{kind}:{n}:" + ("default" if top_fillet is None else f"{top_fillet:.3f}")
+
+
+@functools.lru_cache(maxsize=1)
+def _load_table() -> dict[str, tuple[TopRow, ...]]:
+    """The checked-in plans, or ``{}`` when the file is missing or was
+    measured under another hexfold version (every top then plans live; the
+    staleness test fails until the table is regenerated)."""
+    from hexfold import __version__ as hexfold_version
+
+    try:
+        doc = json.loads(TOP_TABLE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if doc.get("hexfold") != hexfold_version:
+        return {}
+    return {
+        key: tuple(
+            TopRow(
+                **{
+                    **row,
+                    "errors": tuple(row["errors"]),
+                    "misses": tuple(row["misses"]),
+                }
+            )
+            for row in rows
+        )
+        for key, rows in doc["plans"].items()
+    }
+
+
+def _tabled_rows(
+    n: int,
+    kind: str,
+    top_fillet: float | None,
+    k_tether: float,
+    theta_p_max: float,
+) -> tuple[TopRow, ...] | None:
+    if k_tether != _TABLE_K_TETHER or theta_p_max != THETA_P_MAX_DEG:
+        return None
+    return _load_table().get(_table_key(kind, n, top_fillet))
+
+
+def top_tabled(
+    n: int, kind: str, top_fillet: float | None, k_tether: float = 1.0
+) -> bool:
+    """True when :func:`plan_top` would read this top from the table and
+    build no candidate."""
+    return _tabled_rows(n, kind, top_fillet, k_tether, THETA_P_MAX_DEG) is not None
+
+
+def build_top_table() -> dict[str, Any]:
+    """Measure every :func:`table_keys` grid live; the JSON document
+    :data:`TOP_TABLE_PATH` holds."""
+    from hexfold import __version__ as hexfold_version
+
+    plans = {
+        _table_key(kind, n, fillet): [
+            dataclasses.asdict(r)
+            for r in _top_grid(n, kind, fillet, _TABLE_K_TETHER, THETA_P_MAX_DEG)
+        ]
+        for kind, n, fillet in table_keys()
+    }
+    return {
+        "hexfold": hexfold_version,
+        "k_tether": _TABLE_K_TETHER,
+        "theta_p_max": THETA_P_MAX_DEG,
+        "regenerate": "uv run --with numba python -m "
+        "precis_se.atomic.generators.authored_foot",
+        "plans": plans,
+    }
+
+
 def plan_top(
     n: int,
     kind: str,
@@ -1192,7 +1296,10 @@ def plan_top(
     for key, val in (("top_R", top_R), ("top_fillet", top_fillet)):
         if val is not None and not val > 0.0:
             raise ValueError(f"{key} must be positive; got {val}")
-    rows = _top_grid(n, kind, top_fillet, k_tether, theta_p_max)
+    rows = _tabled_rows(n, kind, top_fillet, k_tether, theta_p_max)
+    source = "table"
+    if rows is None:
+        rows, source = _top_grid(n, kind, top_fillet, k_tether, theta_p_max), "live"
     best = pick_top(rows, top_R)
     if not best.meets:
         why = "; ".join(
@@ -1217,6 +1324,7 @@ def plan_top(
         authored_fillet=top_fillet,
         chosen=best,
         rows=rows,
+        source=source,
     )
 
 
@@ -1444,3 +1552,11 @@ def plan_scene(
     if any(ks[name] != k for name, k in redo.items()):
         plan = _relax_scene(sheet, features, {**ks, **redo}, extra, k_tether, **tkw)
     return plan
+
+
+if __name__ == "__main__":  # regenerate the per-n plan table (minutes)
+    TOP_TABLE_PATH.write_text(
+        json.dumps(build_top_table(), indent=1, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"wrote {TOP_TABLE_PATH}")

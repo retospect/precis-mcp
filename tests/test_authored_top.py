@@ -33,6 +33,11 @@ _SPHERE: dict[str, Any] = {
 }
 
 
+# a sphere off the plan table (a non-default fillet): planned live, so it
+# counts toward the scene's cost ceilings
+_LIVE_SPHERE: dict[str, Any] = {**_SPHERE, "top_fillet": 3.5}
+
+
 def _scene(**feature: Any) -> Any:
     return GENERATORS["hexfold_scene"](
         {"sheet": [30, 30], "features": [{**_SPHERE, **feature}]}
@@ -483,16 +488,21 @@ def test_two_sphere_tops_in_one_call_are_refused_before_any_planning(
         raise AssertionError("planning started")
 
     monkeypatch.setattr(mod, "plan_scene", boom)
-    second = {**_SPHERE, "name": "r", "at": [5, 5]}
+    second = {**_LIVE_SPHERE, "name": "r", "at": [5, 5]}
     with pytest.raises(
         GeneratorError,
-        match=r"one top: 'sphere' per scene op.*95 s.*budget is per scene op",
+        match=r"one untabled top: 'sphere' per scene op.*95 s.*budget is per scene op"
+        r".*tabled tops",
     ):
-        GENERATORS["hexfold_scene"]({"sheet": [40, 30], "features": [_SPHERE, second]})
+        GENERATORS["hexfold_scene"](
+            {"sheet": [40, 30], "features": [_LIVE_SPHERE, second]}
+        )
     # a rounded lid beside a sphere is not capped
     lid = {**_SPHERE, "name": "r", "at": [5, 5], "top": "lid", "top_fillet": 3.0}
     with pytest.raises(AssertionError, match="planning started"):
-        GENERATORS["hexfold_scene"]({"sheet": [40, 30], "features": [_SPHERE, lid]})
+        GENERATORS["hexfold_scene"](
+            {"sheet": [40, 30], "features": [_LIVE_SPHERE, lid]}
+        )
 
 
 def _calls_plan_scene(monkeypatch: pytest.MonkeyPatch) -> list[int]:
@@ -531,17 +541,17 @@ def test_sphere_above_n12_is_refused_before_planning(
 ) -> None:
     seen = _calls_plan_scene(monkeypatch)
     with pytest.raises(
-        GeneratorError, match=r"only up to n=12.*n=24.*100 s.*plan table"
+        GeneratorError, match=r"only up to n=12.*n=18.*100 s.*tabled tops"
     ):
-        _call([{**_SPHERE, "n": 18}])
+        _call([{**_LIVE_SPHERE, "n": 18}])
     assert not seen
 
 
 @pytest.mark.parametrize(
     ("features", "cost"),
     [
-        ([_SPHERE, _lid(1, 3.0)], 13),
-        ([_SPHERE, _lid(1, 3.0), _lid(2, 4.0)], 17),
+        ([_LIVE_SPHERE, _lid(1, 3.0)], 13),
+        ([_LIVE_SPHERE, _lid(1, 3.0), _lid(2, 4.0)], 17),
         ([_lid(i, 2.0 + i) for i in range(4)], 16),
         ([_lid(i, 2.0 + i) for i in range(5)], 20),
     ],
@@ -569,5 +579,82 @@ def test_identical_lids_count_once_toward_the_budget(
     seen = _calls_plan_scene(monkeypatch)
     same = [_lid(i, 3.0) for i in range(6)]  # one distinct lid: 4
     with pytest.raises(AssertionError, match="planning started"):
-        _call([_SPHERE, *same])
+        _call([_LIVE_SPHERE, *same])
     assert seen
+
+
+# ── the per-n plan table ───────────────────────────────────────────────
+
+
+def test_the_plan_table_matches_this_hexfold_and_holds_every_key() -> None:
+    # A stale table (another hexfold version) is ignored at run time and every
+    # top plans live; this test is what says "regenerate":
+    #   uv run --with numba python -m precis_se.atomic.generators.authored_foot
+    import json
+
+    from hexfold import __version__ as hexfold_version
+
+    doc = json.loads(af.TOP_TABLE_PATH.read_text(encoding="utf-8"))
+    assert doc["hexfold"] == hexfold_version, "regenerate the plan table"
+    assert doc["k_tether"] == 1.0 and doc["theta_p_max"] == af.THETA_P_MAX_DEG
+    for kind, n, fillet in af.table_keys():
+        assert af.top_tabled(n, kind, fillet), (kind, n, fillet)
+        rows = af._tabled_rows(n, kind, fillet, 1.0, af.THETA_P_MAX_DEG)
+        assert rows is not None
+        assert len(rows) == len(af._candidates(n, kind))
+        assert af.pick_top(rows).meets, (kind, n, [r.misses for r in rows])
+
+
+def test_a_tabled_top_builds_no_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: object, **_k: object) -> object:
+        raise AssertionError("a candidate was built")
+
+    monkeypatch.setattr(af, "_measure_top", boom)
+    p = af.plan_top(24, "sphere")
+    assert p.source == "table" and p.meets
+    lid = af.plan_top(12, "lid", top_fillet=af.table_lid_fillet(12))
+    assert lid.source == "table" and lid.fillet == af.table_lid_fillet(12)
+    # an authored top_R picks among the tabled rows, still without a build
+    near = af.plan_top(12, "sphere", top_R=12.0)
+    assert near.source == "table" and near.authored_R == 12.0
+    # off the table (another fillet, another tether): planned live
+    assert not af.top_tabled(12, "lid", 3.0)
+    assert not af.top_tabled(12, "sphere", None, k_tether=2.0)
+
+
+def test_tabled_tops_do_not_count_toward_the_scene_ceilings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _calls_plan_scene(monkeypatch)
+    spheres = [
+        {**_SPHERE, "name": f"s{i}", "at": [6 + 12 * i, 8], "n": n}
+        for i, n in enumerate((12, 24, 36))
+    ]
+    hemis = [_lid(i, af.table_lid_fillet(12)) for i in range(5, 9)]
+    live = {**_LIVE_SPHERE, "name": "live", "at": [50, 20]}
+    with pytest.raises(AssertionError, match="planning started"):
+        _call([*spheres, *hemis, live])
+    assert seen
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("kind", "n", "fillet"),
+    [("lid", 12, af.table_lid_fillet(12)), ("sphere", 12, None)],
+    ids=["lid12", "sphere12"],
+)
+def test_the_tabled_rows_are_what_the_planner_measures_today(
+    kind: str, n: int, fillet: float | None
+) -> None:
+    # The version check misses a planner change landed without a hexfold
+    # bump; re-planning the two n=12 keys live catches one on either path.
+    live = af._top_grid(n, kind, fillet, 1.0, af.THETA_P_MAX_DEG)
+    table = af._tabled_rows(n, kind, fillet, 1.0, af.THETA_P_MAX_DEG)
+    assert table is not None and len(live) == len(table)
+    for a, b in zip(live, table, strict=True):
+        da, db = dataclasses.asdict(a), dataclasses.asdict(b)
+        for key, va in da.items():
+            if isinstance(va, float):
+                assert va == pytest.approx(db[key], abs=1e-3), (key, a, b)
+            else:
+                assert va == db[key], (key, a, b)

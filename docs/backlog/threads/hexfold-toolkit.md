@@ -30,17 +30,24 @@ waited on happened 09-29 — note at the bottom)
 
 ## Resume
 
-- State at the round-6 ship-all (2026-10-04 06:48Z):
-  - Landed and on prod: cycle 1 round tops (ebe4aedb1, 58bb0a6ee,
-    727728cc9). On main, not yet deployed: the per-scene-op budget wording
-    and hexfold 0.3.1 (0adb12e7f, bbd013d99).
-  - Open: cycle 2 (per-n plan table first), then the spread-pentagon dome
-    rows. Their scoping probe (hexfold-corner/sp_*) is running; the build
-    count goes to Reto via the review window when it reports.
+- State at 2026-10-04 07:21Z (round 6):
+  - On prod: cycle 1 round tops (ebe4aedb1, 58bb0a6ee, 727728cc9).
+  - On main, not yet deployed: the per-scene-op budget wording and hexfold
+    0.3.1 (0adb12e7f, bbd013d99).
+  - This land: cycle 2 step 1, the per-n plan table.
+  - Spread-pentagon rows are scoped at about 2 cycles; under MACE they
+    pay. hexfold-toolkit-6 confirms Reto's (b).
+  - Open, in this order:
+    1. the rest of cycle 2;
+    2. the spread build's pre-check (MACE on the other spread rows and on
+       washer k4 L2 / k5 L3);
+    3. the spread build itself;
+    4. then the buds.
   - Not on any branch: the bud-in-scene fix (lead: lopsided seam bonds,
     under Do next 1, S4).
-  - Next step: read the sp_* probe result, write the scope note to
-    reviews/hexfold-toolkit.md, then start cycle 2.
+  - Next step: prod dogfood after the deploy. One put with spheres at
+    n=12 and 24 must report `planned: table` and plan in seconds. Then
+    the θp band and the R_min refusal.
 - Round 4 dogfood (prod 727728cc9, 2026-10-04 04:43Z): design
   `hexfold-dogfood-r4` → **pass**, with the warnings as designed. The put
   took 143 s and holds two generates:
@@ -152,12 +159,36 @@ waited on happened 09-29 — note at the bottom)
          - on prod since round 4 (`hexfold-dogfood-r4`); the n=12 washer ball
            relaxes ~0.9 Å flatter (stick), ~2 Å (MACE/xTB), so the
            relaxed-shape WARN fires;
-       - cycle 2: the per-n plan table first (lifts the cost ceilings), then
+       - cycle 2, step 1 **built**: the per-n plan table
+         (`hexfold_top_plans.json` beside `authored_foot.py`). It holds:
+         - spheres with the default fillet at n = 12/18/24/30/36;
+         - lids with `top_fillet` = r rounded down to 0.01 Å at n = 12/18/24;
+         - all keys meeting the bars, with hexfold 0.3.1 recorded.
+
+         Tabled tops build nothing and are stored as `planned: table`; the
+         ceilings count only live tops. A slow test re-plans lid12 and
+         sphere12 live. To regenerate: `uv run --with numba python -m
+         precis_se.atomic.generators.authored_foot`, ~10 min.
+       - cycle 2, rest:
          the θp finding plus its band and the R_min refusal on the ball, and
          the MACE/xTB verdict as product evidence;
        - next: spread-pentagon rows on the dome, so a ball stays round after
          relax (Reto 2026-10-04, hexfold-toolkit-5 option b: ahead of the
-         buds). At least 2 cycles; scoping in progress;
+         buds). Scoped 2026-10-04, about 2 cycles. Under MACE the 6+3+3
+         graded top moves 0.42 Å RMS against the washer's 0.81, and its pole
+         drops 0.72 Å against 2.01. The stick relax called them a tie, so
+         the chooser's roundness number must come from MACE (offline, in the
+         plan table). Reviews 07:04Z and 07:07Z, hexfold-corner/sp_*;
+         hexfold-toolkit-6 confirms (b). The orchestrator's conditions
+         (review.md, "Spread tops under MACE"):
+         - before the build, MACE the other five clean spread rows and the
+           washer k4 L2 and k5 L3;
+         - prefilter on the five bars only, with every passing candidate
+           MACE'd offline into the table;
+         - fmax 0.01 for tabled numbers, with the model named;
+         - if a washer key's chosen row changes on regeneration, bump the
+           hexfold version and say so in the skill;
+         - one xTB cross-check at the build's start;
        - then buds on tethered tubes;
        - then spec v0, Reto's CAD grammar (`plane`, `hole_tube`,
          `ball_on`/`lid_on`, `round` defaulting to min(1.5 × the θp-derived

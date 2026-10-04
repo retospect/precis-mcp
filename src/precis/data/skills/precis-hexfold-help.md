@@ -387,16 +387,17 @@ hemisphere) and every top atom is held to it, like the foot.
   the block carries `scene.top.relaxed_shape`: "tethered geometry stored;
   relaxes ~X Å flatter at the pole". It is judged on the planner's bare
   trial tube (no sheet); `scene.top.bar` uses the scene re-measurement.
-- Cost: one sphere top is about 95 s for `n = 12` (9 candidates planned on
-  bare tubes, ~35 s, then the scene relax); a rounded lid about 20 s (4
-  candidates). Until the per-n plan table lands a call is refused before any
-  planning if: it has more than one `top: "sphere"`; a sphere has `n > 12`
-  (`n = 24` plans in ~100 s alone); or its candidate budget exceeds 16
-  (sphere 9, each distinct `(n, top_fillet)` rounded lid 4, identical lids
-  counted once). So sphere + one lid is 13, four distinct lids 16; sphere +
-  two lids 17 and five lids 20 are refused, stating the count. The budget
-  is per scene op, not per put: put **one scene op with a round top per
-  put** (two such ops in one put ran 143 s on prod, past a client timeout).
+  The stick number is a lower bound and does not rank tops: MACE separates
+  tops the stick relax scores alike.
+- Cost: **tabled tops are free** — a sphere with the default fillet at
+  `n` = 12/18/24/30/36, and a lid with `top_fillet` = r rounded down to
+  0.01 Å (4.69 at `n = 12`, 7.04 at 18, 9.39 at 24) come from the plan table
+  (`planned: "table"`). Any other top plans live: a sphere ~35 s at
+  `n = 12` (9 candidates), ~100 s at 24; a lid ~20 s (4). Refused before
+  planning: more than one live sphere; a live sphere with `n > 12`; or live
+  candidates over 16 (sphere 9, each distinct `(n, top_fillet)` lid 4).
+  The budget is per scene op: put **one scene op with a live round top per
+  put** (two such ops in one put ran 143 s on prod).
 - Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
   top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
   top_fillet`.
