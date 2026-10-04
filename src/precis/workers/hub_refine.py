@@ -773,16 +773,28 @@ def _release_unstarted_hubs(store: Store, hub_ids: list[int]) -> None:
     tag the claim popped, so a refined-but-reopened/re-triggered hub — which
     :func:`_is_hub_due` sees only via that tag — is picked up next tick. A
     never-refined hub is due regardless; the tag is harmless there (popped at
-    its next claim)."""
-    if not hub_ids:
-        return
-    with store.pool.connection() as conn:
-        for ref_id in hub_ids:
-            store.remove_tag(ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
-            store.add_tag(
-                ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), set_by="system", conn=conn
+    its next claim).
+
+    Each hub is released in its own transaction and a failure is logged, never
+    raised: one bad release must not fail the pass or strand the other hubs'
+    leases. A hub whose release failed keeps its lease and is re-claimed once
+    the lease expires."""
+    for ref_id in hub_ids:
+        try:
+            with store.pool.connection() as conn:
+                store.remove_tag(
+                    ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn
+                )
+                store.add_tag(
+                    ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), set_by="system", conn=conn
+                )
+                conn.commit()
+        except Exception:
+            log.exception(
+                "hub_refine: releasing unstarted hub #%d failed -- it waits out its "
+                "attempt lease",
+                ref_id,
             )
-        conn.commit()
 
 
 def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

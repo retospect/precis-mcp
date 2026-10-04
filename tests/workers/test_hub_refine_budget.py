@@ -176,3 +176,68 @@ def test_per_hub_verify_cap_with_a_dead_verifier_does_not_redue(
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert mock_verify.call_count == 2
     assert not _is_tagged_due(store, hub)
+
+
+def test_a_failed_release_neither_fails_the_pass_nor_strands_the_others(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each unstarted hub is released on its own: one raising release is
+    logged, the pass still returns, and the other hubs get their tag back."""
+    embedder = make_mock_bge_m3()
+    hubs = [
+        _seed_hub(store, sentence=f"Release failure claim number {i} about a device.")
+        for i in range(3)
+    ]
+    real_remove = store.remove_tag
+
+    def remove_tag(ref_id: int, tag: Tag, **kw: Any) -> Any:
+        if ref_id == hubs[1] and tag.prefix == _ATTEMPT_NS:
+            raise RuntimeError("release failed")
+        return real_remove(ref_id, tag, **kw)
+
+    monkeypatch.setattr(store, "remove_tag", remove_tag)
+    monkeypatch.setenv(_WALL_ENV, "0")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 3, "ok": 1, "failed": 0, "deferred": 2}
+    assert _has_lease(store, hubs[1])
+    assert _is_tagged_due(store, hubs[2])
+    assert not _has_lease(store, hubs[2])
+
+
+def test_a_capped_hub_goes_behind_the_other_due_hubs(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap's stamp moves ``last_refined_at`` to now, so the re-marked hub
+    sorts behind every due hub refined earlier and cannot hold the front of
+    each pass."""
+    embedder = make_mock_bge_m3()
+    hubs = [
+        _seed_hub(
+            store, sentence=f"A claim number {i} with many near candidate papers."
+        )
+        for i in range(2)
+    ]
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    for i in range(4):
+        _seed_paper_chunk(
+            store, embedder, cite_key=f"order{i}", text=f"Candidate passage {i}."
+        )
+    for hub in hubs:
+        store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+    monkeypatch.setenv(_CAP_ENV, "2")
+
+    def memo(hub: int) -> int:
+        return len(_hub_meta(store, hub).get("taproot_rejected") or {})
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        run_hub_refine_pass(store, limit=1, embedder=embedder, topk=8)
+        capped = next(h for h in hubs if memo(h) == 2)
+        other = next(h for h in hubs if h != capped)
+        assert _is_tagged_due(store, capped)
+        assert memo(other) == 0
+
+        run_hub_refine_pass(store, limit=1, embedder=embedder, topk=8)
+    assert memo(other) == 2
+    assert memo(capped) == 2
