@@ -12,4 +12,9 @@ The bridge uses stdlib IPC rather than a new crypto/SSH dependency; credentials
 never enter manifests, argv, inherited environments or remote workers. Host
 keys must be independently pinned; no first-use acceptance or keyscan trust.
 No construction, import or web status render triggers authentication.
+
+Staging preflights canonical inventory paths against generated and temporary
+names, then rechecks all hashes before readiness. Collection failures journal
+every task without erasing scheduler evidence; retries reuse the same intent.
+These filesystem/ledger guarantees stay generic; adapters own domain validation.
 """

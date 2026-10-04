@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import posixpath
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ class FakeTransport:
         self.state = "COMPLETED"
         self.user = "fixture"
         self.exit_code = "0:0"
+        self.calls: list[list[str]] = []
 
     def run(
         self,
@@ -33,11 +36,18 @@ class FakeTransport:
         max_output: int = 16777216,
     ) -> CommandResult:
         argv = remote_argv
+        self.calls.append(list(argv))
         kwargs = {"input_data": input_data}
         if argv[0] in {"mkdir", "cp", "scancel"}:
             return CommandResult(0, b"", b"")
+        if argv[0] == "rm":
+            for path in argv[3:]:
+                self.files.pop(posixpath.normpath(path), None)
+            return CommandResult(0, b"", b"")
         if argv[0] == "sh" and argv[3] == "stage":
-            self.files[argv[4]] = kwargs["input_data"]
+            path = posixpath.normpath(argv[4])
+            self.files[path + ".tmp"] = kwargs["input_data"]
+            self.files[path] = self.files.pop(path + ".tmp")
             return CommandResult(0, b"", b"")
         if argv[0] == "sha256sum":
             return CommandResult(
@@ -294,3 +304,215 @@ def test_submit_cannot_silently_adopt_larger_staging_cap(tmp_path: Path) -> None
     with pytest.raises(RemoteError, match="bundle_invalid"):
         low.submit(job, TOKEN)
     assert transport.submit_count == 0 and not (tmp_path / (TOKEN + ".json")).exists()
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        {"job.sh": b"A", "./job.sh": b"B"},
+        {"job.sh.tmp": b"B", "job.sh": b"A"},
+        {"ready.json": b"caller metadata"},
+        {"ready.json.tmp": b"caller temp"},
+        {"ready.json/child": b"file vs generated directory"},
+        {"job.sh": b"A", "job.sh.tmp/child": b"temp vs directory"},
+        {"input": b"A", "input/child": b"file vs directory"},
+        {"nested//input": b"noncanonical"},
+    ],
+)
+def test_stage_path_conflicts_refused_before_remote_writes(
+    tmp_path: Path, bundle: dict[str, bytes]
+) -> None:
+    transport = FakeTransport()
+    runner = make_runner(tmp_path, transport)
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in bundle.items()}
+    with pytest.raises(RemoteError, match="bundle_paths_invalid"):
+        runner.stage(bundle, hashes)
+    assert transport.calls == [] and transport.files == {}
+    assert not list(tmp_path.glob("*.manifest"))
+    stage_id = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    with pytest.raises(RemoteError, match="stage_unverified"):
+        runner.submit(spec({"stage_id": stage_id}), TOKEN)
+    assert transport.submit_count == 0 and not (tmp_path / (TOKEN + ".json")).exists()
+
+
+@pytest.mark.parametrize("restage", [False, True])
+def test_final_inventory_drift_prevents_readiness_and_submit(
+    tmp_path: Path, restage: bool
+) -> None:
+    class DriftTransport(FakeTransport):
+        corrupt = False
+
+        def run(self, remote_argv: Sequence[str], **kwargs: Any) -> CommandResult:
+            result = super().run(remote_argv, **kwargs)
+            if (
+                self.corrupt
+                and remote_argv[0] == "sh"
+                and remote_argv[3] == "stage"
+                and remote_argv[4].endswith("/input")
+            ):
+                self.files[remote_argv[4].removesuffix("input") + "job.sh"] = b"drift"
+            return result
+
+    transport = DriftTransport()
+    runner = make_runner(tmp_path, transport)
+    bundle = {"job.sh": b"script", "input": b"input"}
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in bundle.items()}
+    if restage:
+        first = runner.stage(bundle, hashes)
+        assert first["remote_dir"] + "/ready.json" in transport.files
+    transport.corrupt = True
+    with pytest.raises(RemoteError, match="artifact_hash_mismatch"):
+        runner.stage(bundle, hashes)
+    assert not any(path.endswith("/ready.json") for path in transport.files)
+    manifest = json.loads(next(tmp_path.glob("*.manifest")).read_text())
+    assert "hashes" not in manifest
+    with pytest.raises(RemoteError, match="stage_unverified"):
+        runner.submit(spec(manifest), TOKEN)
+    assert transport.submit_count == 0 and not (tmp_path / (TOKEN + ".json")).exists()
+
+
+@pytest.mark.parametrize(
+    "fault, code, outcome",
+    [
+        ("transport", "transport_timeout", "collection_pending"),
+        ("checksum_transport", "transport_unavailable", "collection_pending"),
+        ("checksum_command", "output_checksum_failed", "collection_pending"),
+        ("checksum_mismatch", "output_hash_mismatch", "invalid_output"),
+        ("checksum_malformed", "checksum_invalid", "invalid_output"),
+        ("output_cap", "output_limit", "invalid_output"),
+        ("oversize_response", "output_limit", "invalid_output"),
+        ("unclassified", "collection_transport_failed", "collection_pending"),
+        ("status_transport", "transport_timeout", "collection_pending"),
+    ],
+)
+def test_collection_failure_journals_every_task_and_retries_same_intent(
+    tmp_path: Path, fault: str, code: str, outcome: str
+) -> None:
+    class FailingTransport(FakeTransport):
+        active = False
+
+        def run(self, remote_argv: Sequence[str], **kwargs: Any) -> CommandResult:
+            if self.active:
+                command = remote_argv[0]
+                if command == "squeue" and fault == "status_transport":
+                    raise RemoteError("transport_timeout")
+                if remote_argv[1].endswith("/second.json"):
+                    if command == "cat":
+                        if fault == "transport":
+                            raise RemoteError("transport_timeout")
+                        if fault == "output_cap":
+                            raise RemoteError("output_limit")
+                        if fault == "oversize_response":
+                            return CommandResult(0, b"x" * 65, b"")
+                        if fault == "unclassified":
+                            raise RemoteError("SYNTHETIC_PRIVATE_SENTINEL")
+                    if command == "sha256sum":
+                        if fault == "checksum_transport":
+                            raise RemoteError("transport_unavailable")
+                        if fault == "checksum_command":
+                            return CommandResult(1, b"", b"SYNTHETIC_PRIVATE_SENTINEL")
+                        if fault == "checksum_mismatch":
+                            return CommandResult(0, b"0" * 64 + b"  file\n", b"")
+                        if fault == "checksum_malformed":
+                            return CommandResult(0, b"", b"")
+            return super().run(remote_argv, **kwargs)
+
+    transport = FailingTransport()
+    runner = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path,
+        user="fixture",
+        profile_id="fixture",
+        limits=Limits(submission_interval=0, status_interval=0, max_output_bytes=64),
+    )
+    job = staged_job(runner)
+    job["task_ids"] = ["task0", "task1"]
+    handle = runner.submit(job, TOKEN)
+    known = runner.status(handle)
+    transport.files[handle["remote_dir"] + "/first.json"] = b"first"
+    transport.files[handle["remote_dir"] + "/second.json"] = b"second"
+    transport.active = True
+    with pytest.raises(RemoteError, match=code) as caught:
+        runner.collect(handle, ["first.json", "second.json"])
+    assert str(caught.value) == code and caught.value.__cause__ is None
+    journal_text = (tmp_path / (TOKEN + ".json")).read_text()
+    saved = json.loads(journal_text)
+    assert "SYNTHETIC_PRIVATE_SENTINEL" not in journal_text
+    assert saved["outcomes"] == {"task0": outcome, "task1": outcome}
+    assert saved["collection"]["error"] == code
+    assert saved["collection"]["status"] == (
+        "failed" if outcome == "invalid_output" else "pending"
+    )
+    for key in [
+        "phase",
+        "state",
+        "scheduler_state",
+        "accounting",
+        "job_id",
+        "job_hash",
+        "resources",
+    ]:
+        assert saved[key] == known[key]
+    assert saved["collection"]["attempts"] == 1
+    assert saved["collection"]["failed_attempts"] == 1
+    if fault != "status_transport":
+        assert saved["output_hashes"] == {
+            "first.json": hashlib.sha256(b"first").hexdigest()
+        }
+    # A new controller adopts the journal and retries collection, never submit.
+    resumed = SlurmRunner(
+        transport,
+        remote_root="/project/fixture",
+        journal_root=tmp_path,
+        user="fixture",
+        profile_id="fixture",
+        limits=runner.limits,
+    )
+    assert resumed.submit(job, TOKEN)["collection"] == saved["collection"]
+    assert transport.submit_count == 1
+    transport.active = False
+    collected = resumed.collect(handle, ["first.json", "second.json"])
+    assert collected["files"] == {"first.json": b"first", "second.json": b"second"}
+    assert collected["outcomes"] == {"task0": "collected", "task1": "collected"}
+    saved = json.loads((tmp_path / (TOKEN + ".json")).read_text())
+    assert saved["collection"] == {
+        "status": "complete",
+        "error": None,
+        "last_error": code,
+        "attempts": 2,
+        "failed_attempts": 1,
+        "at": saved["collection"]["at"],
+    }
+    assert saved["job_id"] == handle["job_id"] and transport.submit_count == 1
+
+
+@pytest.mark.parametrize("scheduler", ["FAILED", "TIMEOUT", "CANCELLED"])
+def test_collection_transport_failure_preserves_terminal_scheduler_evidence(
+    tmp_path: Path, scheduler: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport = FakeTransport()
+    transport.state = scheduler
+    runner = make_runner(tmp_path, transport)
+    job = staged_job(runner)
+    job["task_ids"] = ["task0", "task1"]
+    handle = runner.submit(job, TOKEN)
+    known = runner.status(handle)
+    original = transport.run
+
+    def fail(remote_argv: Sequence[str], **kwargs: Any) -> CommandResult:
+        if remote_argv[0] == "cat":
+            raise RemoteError("transport_unavailable")
+        return original(remote_argv, **kwargs)
+
+    monkeypatch.setattr(transport, "run", fail)
+    with pytest.raises(RemoteError, match="transport_unavailable"):
+        runner.collect(handle, ["result.json"])
+    saved = json.loads((tmp_path / (TOKEN + ".json")).read_text())
+    assert saved["outcomes"] == {
+        "task0": "collection_pending",
+        "task1": "collection_pending",
+    }
+    assert saved["scheduler_state"] == scheduler and saved["state"] == known["state"]
+    assert saved["accounting"] == known["accounting"] and saved["phase"] == "terminal"
+    assert transport.submit_count == 1

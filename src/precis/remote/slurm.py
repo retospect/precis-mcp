@@ -7,6 +7,11 @@ locks serialize controller budgets across processes sharing its directory.
 Literal plus signs preserve artifact local-version names. The default staging
 cap stays2GiB; callers must supply reviewed overrides explicitly, and actual
 bytes/selected cap accompany ready markers and durable submission intents.
+
+Artifact names must be canonical and disjoint from generated/temp paths;
+the full inventory is rechecked before readiness, since per-upload checks
+alone miss later overwrites. Collection errors journal every task before
+raising, preserving scheduler evidence and the same intent for collection retry.
 """
 
 from __future__ import annotations
@@ -66,6 +71,31 @@ def _name(value: str) -> str:
 def _token(value: str) -> str:
     if not re.fullmatch(r"[a-f0-9]{16,64}", value):
         raise RemoteError("token_invalid")
+    return value
+
+
+def _stage_paths(names: Sequence[str]) -> None:
+    """Reject filesystem aliases and file/directory or temporary collisions."""
+    for name in names:
+        if _name(name) != str(PurePosixPath(name)):
+            raise RemoteError("bundle_paths_invalid")
+    paths = [*names, *(name + ".tmp" for name in names), "ready.json", "ready.json.tmp"]
+    occupied = set(paths)
+    if len(paths) != len(occupied) or any(
+        str(parent) in occupied
+        for name in paths
+        for parent in PurePosixPath(name).parents
+    ):
+        raise RemoteError("bundle_paths_invalid")
+
+
+def _checksum(output: bytes) -> str:
+    try:
+        value = output.decode("ascii").split()[0]
+    except (UnicodeError, IndexError):
+        raise RemoteError("checksum_invalid") from None
+    if not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise RemoteError("checksum_invalid")
     return value
 
 
@@ -164,15 +194,22 @@ class SlurmRunner:
             or bundle_bytes > self.limits.max_bundle_bytes
         ):
             raise RemoteError("bundle_invalid")
+        _stage_paths(list(bundle))
         for name, data in bundle.items():
-            _name(name)
             if hashlib.sha256(data).hexdigest() != hashes[name]:
                 raise RemoteError("artifact_hash_mismatch")
         stage_id = hashlib.sha256(
             json.dumps(dict(hashes), sort_keys=True).encode()
         ).hexdigest()
         directory = f"{self.remote_root}/stage-{stage_id}"
+        manifest = self.journal_root / ("stage-" + stage_id + ".manifest")
+        with self._lock():
+            # A failed restage cannot retain an earlier local verified inventory.
+            _atomic_json(manifest, {"stage_id": stage_id})
         self._run(["mkdir", "-p", "-m", "700", directory])
+        self._run(
+            ["rm", "-f", "--", f"{directory}/ready.json", f"{directory}/ready.json.tmp"]
+        )
         for name, data in bundle.items():
             path = f"{directory}/{name}"
             self._run(["mkdir", "-p", "-m", "700", str(PurePosixPath(path).parent)])
@@ -180,8 +217,13 @@ class SlurmRunner:
             self._run(
                 ["sh", "-c", script, "stage", path], input_data=data, timeout_s=120
             )
-            actual = self._run(["sha256sum", path]).decode().split()[0]
+            actual = _checksum(self._run(["sha256sum", path]))
             if actual != hashes[name]:
+                raise RemoteError("artifact_hash_mismatch")
+        # Verify the complete inventory after the last upload, not just each
+        # artifact immediately after its own write.
+        for name, expected in hashes.items():
+            if _checksum(self._run(["sha256sum", f"{directory}/{name}"])) != expected:
                 raise RemoteError("artifact_hash_mismatch")
         stage = {
             "stage_id": stage_id,
@@ -202,7 +244,7 @@ class SlurmRunner:
             input_data=json.dumps(stage, sort_keys=True).encode(),
         )
         with self._lock():
-            _atomic_json(self.journal_root / ("stage-" + stage_id + ".manifest"), stage)
+            _atomic_json(manifest, stage)
         return stage
 
     def _resources(self, resources: Mapping[str, Any]) -> list[str]:
@@ -556,23 +598,80 @@ class SlurmRunner:
     def collect(
         self, handle: Mapping[str, Any], outputs: Sequence[str]
     ) -> dict[str, Any]:
-        state = self.status(handle)
-        if state["phase"] not in {"terminal", "collected"}:
-            raise RemoteError("job_not_terminal")
+        names = [_name(name) for name in outputs]
+        with self._lock():
+            state = self._load(str(handle["token"]))
         files: dict[str, bytes] = {}
         missing: list[str] = []
-        for name in outputs:
-            path = f"{state['remote_dir']}/{_name(name)}"
-            result = self.transport.run(
-                ["cat", path], max_output=self.limits.max_output_bytes
-            )
-            if result.returncode:
-                missing.append(name)
-                continue
-            checksum = self._run(["sha256sum", path]).decode().split()[0]
-            if hashlib.sha256(result.stdout).hexdigest() != checksum:
-                raise RemoteError("output_hash_mismatch")
-            files[name] = result.stdout
+        try:
+            state = self.status(handle)
+            if state["phase"] not in {"terminal", "collected"}:
+                raise RemoteError("job_not_terminal")
+            for name in names:
+                path = f"{state['remote_dir']}/{name}"
+                result = self.transport.run(
+                    ["cat", path], max_output=self.limits.max_output_bytes
+                )
+                if result.returncode:
+                    missing.append(name)
+                    continue
+                if len(result.stdout) > self.limits.max_output_bytes:
+                    raise RemoteError("output_limit")
+                try:
+                    checksum = _checksum(self._run(["sha256sum", path]))
+                except RemoteError as error:
+                    if str(error) == "remote_command_failed":
+                        raise RemoteError("output_checksum_failed") from None
+                    raise
+                if hashlib.sha256(result.stdout).hexdigest() != checksum:
+                    raise RemoteError("output_hash_mismatch")
+                files[name] = result.stdout
+        except (RemoteError, UnicodeError) as error:
+            if str(error) == "job_not_terminal":
+                raise
+            code = str(error)
+            if code not in {
+                "transport_timeout",
+                "transport_unavailable",
+                "output_limit",
+                "output_checksum_failed",
+                "output_hash_mismatch",
+                "checksum_invalid",
+                "remote_command_failed",
+                "scheduler_identity_mismatch",
+                "accounting_invalid",
+            }:
+                code = "collection_transport_failed"
+            invalid = code in {
+                "output_limit",
+                "output_hash_mismatch",
+                "checksum_invalid",
+            }
+            with self._lock():
+                state = self._load(state["token"])
+                previous = state.get("collection", {})
+                state["collection"] = {
+                    "status": "failed" if invalid else "pending",
+                    "error": code,
+                    "last_error": code,
+                    "attempts": previous.get("attempts", 0) + 1,
+                    "failed_attempts": previous.get("failed_attempts", 0) + 1,
+                    "at": self.clock(),
+                }
+                state["outcomes"] = {
+                    task: "invalid_output" if invalid else "collection_pending"
+                    for task in state["task_ids"]
+                }
+                state["missing"] = missing
+                state["output_hashes"] = {
+                    **state.get("output_hashes", {}),
+                    **{
+                        name: hashlib.sha256(data).hexdigest()
+                        for name, data in files.items()
+                    },
+                }
+                self._save(state)
+            raise RemoteError(code) from None
         scheduler = str(state.get("scheduler_state", "unknown"))
         classification = {"TIMEOUT": "timeout", "CANCELLED": "cancelled"}.get(
             scheduler, "failed"
@@ -584,6 +683,7 @@ class SlurmRunner:
         outcomes = {task: classification for task in state["task_ids"]}
         with self._lock():
             state = self._load(state["token"])
+            previous = state.get("collection", {})
             state.update(
                 phase="collected",
                 outcomes=outcomes,
@@ -591,6 +691,14 @@ class SlurmRunner:
                 output_hashes={
                     name: hashlib.sha256(data).hexdigest()
                     for name, data in files.items()
+                },
+                collection={
+                    "status": "complete",
+                    "error": None,
+                    "last_error": previous.get("last_error"),
+                    "attempts": previous.get("attempts", 0) + 1,
+                    "failed_attempts": previous.get("failed_attempts", 0),
+                    "at": self.clock(),
                 },
             )
             self._save(state)

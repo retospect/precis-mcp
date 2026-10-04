@@ -333,6 +333,24 @@ format currently blocks live auth; staging fix does not bypass that gate.
 
 ## Lifecycle / recovery
 
+Independent original-core review requires two bounded corrections before PASS:
+stage preflights canonical distinct artifact paths, rejecting generated ready
+and upload temporary-path collisions (including file/directory ancestors),
+then verifies the complete inventory again before publishing readiness. Restaging
+invalidates prior local/remote readiness before writes; no partial inventory is
+advertised. Literal `+` names and reviewed explicit payload caps stay supported.
+
+Collection failures persist constant classified evidence and an outcome for
+every submitted task before propagating the error. Transport/checksum-command
+failures remain collection-pending; corrupt or over-cap output is invalid-output
+evidence. Preserve scheduler state/accounting, intent/job identity and prior
+verified output hashes. Retrying `collect` on that same handle can resolve the
+failure; it never submits again. Evidence stays bounded to latest error/attempt
+counts and hashes, with no raw exception/transport text. The returned success
+contract is unchanged; chemistry owns scientific/domain envelopes. Synthetic
+regressions cover all three reported filename counterexamples, final-inventory
+drift, transport/checksum/output-cap failure, durable all-task outcomes and retry.
+
 | Operation | Required behavior |
 |---|---|
 | Stage | Profile-controlled project scratch/run/hash path; bounded transfer, restrictive permissions, hash verification, atomic ready marker; no credentials/DSN remotely. |
