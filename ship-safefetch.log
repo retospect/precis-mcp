@@ -1,0 +1,9 @@
+
+[1m▶ re-asserted session lock → pid 736 (tree had no live lock; clean+merged buckets safe_remove)[0m
+
+[33m⚠ deploy lag: oldest undeployed commit is 2h old (>1h) — consider scripts/deploy or /go[0m
+
+[1m▶ rebuilding Tailwind CSS (static production build)[0m
+→ src/precis_web/static/tailwind.css
+
+[1m▶ committing WIP[0m
