@@ -515,6 +515,29 @@ Two code gaps, each worked around in the pilot data and still open:
     group key.
   - It applies to FE, selectivity, yield rates and partial current. A
     group then reads "FE · product=NH3".
+- **`best_measure` ignores review verdicts.** A row whose current review
+  is `rejected` still ranks. One example is mx278: a measurand error
+  that supersession cannot replace, because supersession keeps the
+  measurand.
+  - The fix: exclude rows whose newest current review is rejected, and
+    show the review state beside each best.
+- **No measure dedup across findings.** One chunk value extracted under
+  two findings becomes two rows: mx212/mx218 and mx215/mx221. The values
+  are right, but the census and the row counts double them.
+  - The fix: at put, refuse or merge a run whose anchor span, measurand
+    and value equal a live row's.
+- **Bounds display as points.** `get(kind='measure')` and the quest view
+  print a lower or upper bound (mx373, mx376) without its `>` or `<`.
+  The stored `value_form` is correct.
+
+**Pilot review result** (2026-10-04): four Opus reviewers checked each
+of the 122 outputs against its chunk.
+- **114 approved.**
+- **3 rejected and corrected:**
+  - mx282 → mx373 and mx286 → mx376, both as lower bounds;
+  - mx278 → the new partial-current row mx378.
+- **5 undecided**, put to Reto as knowledge-mesh-14.
+- **The batch files** are `scratch/qu202467-review-0{0..3}.jsonl`.
 
 **Build D: fisheye on the quest (qland, independent).** The ladder on
 `kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.

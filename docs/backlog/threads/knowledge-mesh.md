@@ -56,11 +56,16 @@ their conditions, mx86–mx370.
 groups. Faradaic efficiency is ranked across products, which is a
 `best_measure` group-key gap filed in the spec.
 
-**In flight:**
-- Four Opus reviewers record a model verdict per output row. The brief
-  is `scratch/qu202467-review-brief.md`, and the results go to
-  `scratch/qu202467-review-0{0..3}.jsonl`. Undecided rows go to Reto.
-  Next is a knowledge-mesh-13 item with the results and the quest table.
+**Review done** (2026-10-04 05:40Z):
+- 114 approved, 3 rejected and corrected (mx373, mx376, mx378), and 5
+  undecided.
+- **Waiting on Reto:**
+  - knowledge-mesh-13: resume qu202467? My recommendation is to resume
+    and re-run the extraction on new findings each round.
+  - knowledge-mesh-14: the 5 undecided rows.
+- The six gaps the pilot found are in the measures spec §"Found by the
+  pilot write". They are about 2 builds; do the FE-by-product grouping
+  and review-aware ranking first.
 - 0188 (A2) is accepted at b23403bb7, and the orchestrator is landing it
   through the remote gate. It rebases legacy taxa only, and the pilot
   taxa are already SI. Deploy needs a serve restart right after migrate.
