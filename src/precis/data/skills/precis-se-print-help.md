@@ -177,6 +177,9 @@ choice is a contract, the slice-4 `origin` rule.
 | `hole_undersize` | warn | a stamped hole (from `precis-se-fasten-help`'s pass) is smaller than `min_hole` |
 | `hole_shrink_absorbed` | info | the printed-hole compensation already folded into every stamped hole's diameter (`hole_diameter_compensation` — e.g. +0.20 mm for fdm/pla, +0.25 mm for fdm/petg/abs/asa, +0.35 mm for fdm/tpu) — a receipt, not a new number |
 | `layer_vs_load` | warn | the block declares a load with some component along the chosen build-z (the weak, layer-normal direction); `strength_z_ratio` (uncharacterized today) is the tensile-across-layers ÷ in-plane figure to weigh it against |
+| `floating_island` | error | the exported mesh, sliced at the house `layer_height`, has a layer polygon that overlaps neither of the two layers below it — the slicer's SharpTail test, i.e. Bambu's "floating regions". Runs on every block (a SIMP block too, beside its voxel rule) on the very mesh the file carries; up to 10 are listed, the total is stated. Sub-voxel tails are lifted before export (a vertex or flat floor shallower than half a layer below everything around it; for a field-rooted block such as SIMP, shallower than half the field's solve pitch if that is larger — a voxel mesh cannot carry a real feature smaller than that). The lift never moves a vertex more than that, skips thin walls and any lift that would flip a face, and is abandoned (welded mesh shipped as is, said in a `mesh_cleanup` line) if it would change the volume by more than 0.1%, so what remains is a real overhang |
+| `slicer_cantilever` | error / warn | Bambu Studio's own "floating cantilever" test on the exported mesh: features narrower than one line width (0.42 mm) are dropped, then a layer region reaching more than 6 mm past what supports it is flagged. `error` when the layer is one tree support cannot reach (the first layers off the bed — supports=on adds nothing), `warn` higher up (supports can fix it). A field-rooted block (SIMP) is first given flat bed contact in field space so a 1-voxel wall does not stand on a rounded knife-edge foot; if the build-down is not an axis of the field, that step is skipped and a `mesh_cleanup` line says so |
+| `mesh_cleanup` | info | before export: degenerate triangles dropped on welding, zero-area slivers remaining, sub-layer tail vertices lifted (silent when all are 0) |
 | `unrealized` | info | see above |
 | `abstract_joint` | warn | see above |
 
@@ -205,7 +208,10 @@ core dependency — a missing one is the same `Unsupported` + install hint
 every mesh export in this repo raises). **The body echoes the path, size,
 build frame, and every error-severity finding** — a file never leaves
 without its warnings; an `abstract_joint` or other warn-tier finding does
-not block the write.
+not block the write. The same checked file is a browser download:
+the se reader page's "Print files" section links
+`/se/<design>/print/<block>.3mf` for each printable block (error/finding
+counts in the `X-Precis-Print-Errors`/`-Findings` response headers).
 
 ## 2d — print groups: `intent='model'` on an ancestor block
 

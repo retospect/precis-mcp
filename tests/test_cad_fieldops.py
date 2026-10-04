@@ -739,3 +739,119 @@ def test_field_chunks_are_skipped_by_the_embed_and_summarize_cascades() -> None:
 
     assert "field" in EmbedHandler.skip_chunk_kinds
     assert "field" in RakeLemmaHandler.skip_chunk_kinds
+
+
+# -- flat_bed: pad a field so its lowest surface can be cut flat ------------
+
+
+def _box_sdf_field(lo=(0.3, 0.45, 0.2), hi=(4.7, 3.3, 4.1), pitch=0.5) -> Field:
+    """An exact box SDF sampled on a lattice that puts the box's faces
+    BETWEEN samples (a flat bottom at y = 0.45, not a lattice plane)."""
+    lo_a, hi_a = np.array(lo), np.array(hi)
+    n = np.array([14, 10, 12])
+    origin = np.array([-1.0, -1.0, -1.0])
+    ii = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), axis=-1)
+    p = origin + ii * pitch
+    d = np.maximum(lo_a - p, p - hi_a)
+    out = np.linalg.norm(np.maximum(d, 0.0), axis=-1) + np.minimum(d.max(-1), 0.0)
+    return Field(grid=out, pitch=pitch, origin=origin, exact=True)
+
+
+def test_flat_bed_leaves_a_flat_bottomed_field_unchanged_above_the_bed() -> None:
+    from precis.cad.fieldops import flat_bed
+
+    fld = _box_sdf_field()
+    new, bed = flat_bed(fld, axis=1, sign=-1)
+    assert bed == pytest.approx(0.45, abs=1e-6)  # the box's own bottom face
+    rng = np.random.default_rng(0)
+    lo, hi = new.aabb_local()
+    pts = rng.uniform(lo, hi, size=(4000, 3))
+    pts = pts[pts[:, 1] > bed + fld.pitch]  # beyond the first, bevelled cell
+    old_d = fld.distance_local_np(pts)
+    new_d = np.maximum(new.distance_local_np(pts), bed - pts[:, 1])
+    # inside the part and just beyond its walls the field is the same
+    near = np.abs(old_d) < 0.2
+    assert near.sum() > 50
+    assert new_d[near] == pytest.approx(old_d[near], abs=1e-6)
+    assert not new.exact  # an extrusion is no longer a Euclidean distance
+
+
+def test_flat_bed_high_side_mirrors_the_low_side() -> None:
+    from precis.cad.fieldops import flat_bed
+
+    fld = _box_sdf_field()
+    flipped = Field(
+        grid=np.asarray(fld.grid)[:, ::-1, :],
+        pitch=fld.pitch,
+        origin=fld.origin,
+        exact=True,
+    )
+    low, bed_lo = flat_bed(fld, axis=1, sign=-1)
+    high, bed_hi = flat_bed(flipped, axis=1, sign=1)
+    # the flipped box's bottom (index-high end) sits at the mirrored coordinate
+    top = fld.origin[1] + (fld.shape[1] - 1) * fld.pitch
+    assert bed_hi == pytest.approx(top - (bed_lo - fld.origin[1]), abs=1e-6)
+    assert low.shape == high.shape
+    assert np.allclose(np.asarray(high.grid), np.asarray(low.grid)[:, ::-1, :])
+
+
+def test_flat_bed_refuses_an_empty_field() -> None:
+    from precis.cad.fieldops import flat_bed
+
+    empty = Field(grid=np.ones((3, 3, 3)), pitch=1.0, origin=np.zeros(3))
+    with pytest.raises(ValueError, match="no material"):
+        flat_bed(empty, axis=1, sign=-1)
+
+
+def _ball_field(radius: float = 10.0, pitch: float = 1.0) -> Field:
+    n = int(2 * radius / pitch) + 6
+    origin = np.array([-(n // 2) * pitch] * 3) + 0.37  # lattice off the centre
+    ii = np.stack(np.meshgrid(*[np.arange(n)] * 3, indexing="ij"), axis=-1)
+    p = origin + ii * pitch
+    return Field(grid=np.linalg.norm(p, axis=-1) - radius, pitch=pitch, origin=origin)
+
+
+def _near_bed_volume(
+    sample, bed: float, depth: float, half: float, h: float = 0.1
+) -> float:
+    """Volume of {sample(p) <= 0 and s >= bed} for s within ``depth`` of the
+    bed, x/z within +-half (the field's y axis is the build axis)."""
+    xs = np.arange(-half, half, h) + h / 2
+    ys = np.arange(bed, bed + depth, h) + h / 2
+    pts = np.stack(np.meshgrid(xs, ys, xs, indexing="ij"), axis=-1).reshape(-1, 3)
+    return float((sample(pts) <= 0.0).sum()) * h**3
+
+
+def test_flat_bed_does_not_fill_a_smooth_bottom_down_to_the_bed() -> None:
+    from precis.cad.fieldops import flat_bed
+
+    radius = 30.0
+    fld = _ball_field(radius)
+    new, bed = flat_bed(fld, axis=1, sign=-1)
+    assert bed == pytest.approx(-radius, abs=0.5)  # the sphere's lowest point
+    old_v = _near_bed_volume(fld.distance_local_np, bed, 1.5, 12.0)
+    new_v = _near_bed_volume(
+        lambda q: np.maximum(new.distance_local_np(q), bed - q[:, 1]), bed, 1.5, 12.0
+    )
+    # contact footprint = the disc of columns whose bottom lies within a
+    # quarter pitch of the bed: pi * (2 R * 0.25 p); it may grow by that
+    # times 0.25 p. (Squaring the whole lowest slab grows it by 12.4 mm3.)
+    footprint = np.pi * 2 * radius * 0.25 * fld.pitch
+    assert 0.0 <= new_v - old_v <= footprint * 0.25 * fld.pitch
+
+
+def test_flat_bed_does_not_fill_a_tilted_bottom() -> None:
+    from precis.cad.fieldops import flat_bed
+
+    pitch = 0.5
+    n = np.array([24, 12, 10])
+    origin = np.array([0.0, -1.0, 0.0])
+    ii = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), axis=-1)
+    p = origin + ii * pitch
+    # bottom plane y = 0.2 * x (rises 2 mm over 10 mm), a block above it
+    f = (0.2 * p[..., 0] - p[..., 1]) / np.sqrt(1.04)
+    fld = Field(grid=f, pitch=pitch, origin=origin)
+    new, bed = flat_bed(fld, axis=1, sign=-1)
+    # far along the slope the bottom is 1.6 mm above the bed: still empty
+    probe = np.array([[8.0, bed + 0.5, 2.0], [8.0, bed + 1.2, 2.0]])
+    assert (np.maximum(new.distance_local_np(probe), bed - probe[:, 1]) > 0.0).all()

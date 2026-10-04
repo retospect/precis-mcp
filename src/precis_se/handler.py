@@ -1385,7 +1385,9 @@ class SeHandler(Handler):
             family = se_modes.family_of(node.mode)
             if family is None or family.key != "fdm":
                 continue
-            report = se_printing.report_for(tree, name, cad_store_reader=self.store)
+            report = se_printing.report_for(
+                tree, name, cad_store_reader=self.store, mesh_checks=False
+            )
             assert report is not None  # already gated on family.key == 'fdm'
             out.append((name, report))
         return out
@@ -1451,11 +1453,6 @@ class SeHandler(Handler):
             raise BadInput(
                 f"view='print': fmt= must be 'stl' or '3mf', got {fmt_arg!r}"
             )
-        if report.printed is None or report.chosen_down is None:
-            raise BadInput(
-                f"block {block!r} has nothing to export "
-                f"({'unrealized' if report.printed is None else 'net-empty solid'})"
-            )
         raw_path = args.get("path")
         out = (
             Path(str(raw_path)).expanduser()
@@ -1463,15 +1460,17 @@ class SeHandler(Handler):
             else Path(tempfile.gettempdir()) / f"{ref.slug}-{block}.{fmt}"
         )
         try:
-            path = se_printing.write_mesh(
-                report.printed, report.chosen_down, fmt, out, pitch=report.pitch
+            exported = se_printing.export_block_mesh(
+                report, fmt, out, title=f"{ref.slug}-{block}"
             )
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
             ) from exc
-        except ExportError as exc:
+        except (se_printing.NothingToExport, ExportError) as exc:
             raise BadInput(str(exc)) from exc
+        path = exported.path
+        assert report.printed is not None and report.chosen_down is not None
         size = path.stat().st_size
         if needs_field_backend(report.printed.spec):
             kernel = (
@@ -1485,7 +1484,8 @@ class SeHandler(Handler):
             )
         else:
             kernel = "manifold3d mesh"
-        error_findings = [f for f in report.findings if f.severity == "error"]
+        shown = exported.findings
+        error_findings = [f for f in shown if f.severity == "error"]
         lines = [
             f"# exported {ref.slug}:{block} → {fmt.upper()} ({kernel})",
             f"{path}  ({size:,} bytes)",
@@ -1620,7 +1620,9 @@ class SeHandler(Handler):
             sections.append(_render_group_summary(group))
         for name in names:
             try:
-                report = se_printing.report_for(tree, name, cad_store_reader=self.store)
+                report = se_printing.report_for(
+                    tree, name, cad_store_reader=self.store, mesh_checks=False
+                )
             except se_printing.PrintUnsupported as exc:
                 raise Unsupported(
                     str(exc), next="pip install --force-reinstall 'precis-mcp'"
@@ -1687,7 +1689,7 @@ class SeHandler(Handler):
                 key, source = "fdm", mode
                 try:
                     report = se_printing.report_for(
-                        tree, name, cad_store_reader=self.store
+                        tree, name, cad_store_reader=self.store, mesh_checks=False
                     )
                 except se_printing.PrintUnsupported as exc:
                     raise Unsupported(
@@ -3997,6 +3999,15 @@ def _render_print_block(report: se_printing.BlockPrintReport) -> str:
                     schema=["down", "score", *term_keys],
                 )
             )
+    if report.mesh_checked and report.print_mesh is not None:
+        pm = report.print_mesh
+        lines.append("")
+        lines.append(
+            "floating-region check: ran on the mesh the export writes "
+            f"({len(pm.parts)} part(s), build frame, welded"
+            + (f", tail lift tol {pm.tol_mm:.3g} mm" if pm.tol_mm is not None else "")
+            + ")"
+        )
     lines.append("")
     lines.append(_findings_table(report.findings) if report.findings else "no findings")
     return "\n".join(lines)

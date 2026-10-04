@@ -207,6 +207,46 @@ class TestBuildFrameProposal:
         assert report.chosen_down is not None
         assert np.allclose(report.chosen_down, [0.0, 0.0, 1.0], atol=1e-6)
 
+    def test_mesh_checks_are_lazy_and_the_block_report_says_they_ran(
+        self, handler: SeHandler, hub: Hub
+    ) -> None:
+        CadHandler(hub=hub).put(id="print4-lazy", text=_T_SHAPE)
+        handler.put(
+            id="print4-lazy-se",
+            text=json.dumps(
+                {
+                    "ops": [
+                        {"op": "add_block", "name": "part"},
+                        {
+                            "op": "set_binding",
+                            "block": "part",
+                            "kind": "cad",
+                            "design": "print4-lazy",
+                        },
+                        {"op": "set_mode", "block": "part", "mode": "fdm/pla"},
+                    ]
+                }
+            ),
+        )
+        tree = _load(handler, "print4-lazy-se")
+        cheap = se_printing.report_for(
+            tree, "part", cad_store_reader=handler.store, mesh_checks=False
+        )
+        assert cheap is not None
+        assert cheap.print_mesh is None and not cheap.mesh_checked
+        full = se_printing.report_for(tree, "part", cad_store_reader=handler.store)
+        assert full is not None
+        assert full.print_mesh is not None and full.mesh_checked
+        # the cheap status callers and the all-blocks summary skip the mesh
+        assert (
+            "floating-region check"
+            not in handler.get(id="print4-lazy-se", view="print").body
+        )
+        body = handler.get(
+            id="print4-lazy-se", view="print", args={"block": "part"}
+        ).body
+        assert "floating-region check: ran on the mesh the export writes" in body
+
     def test_no_fdm_block_is_honest(self, handler: SeHandler) -> None:
         handler.put(
             id="print4-nofdm",

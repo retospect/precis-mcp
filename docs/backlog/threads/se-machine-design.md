@@ -13,19 +13,16 @@ off that gap until it closes.
 **Worktree:** `se-machine-design`
 **Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
 
-## Resume state (2026-10-03)
+## Resume state (2026-10-04)
 
 - **Round 3 is deployed** (929107f32, 2026-10-03T20:35Z). It was
   dogfooded on prod data with main's code: `view='print'`, the 3MF export
   and `view='drc'` render. The joint sweep was not exercised: no prod
   design declares a joint `params.range` (gr464669).
-- **Region slice A** (Do next 1): on main at 7d7d9902a, with migrations
-  core `0182_se_measurand_seed.sql` and se `0018_se_regions.sql`. It is not
-  in round 3; it deploys with Reto's follow-up deploy (verdict §13).
-  Dogfood it on prod after that deploy. Grammar and
-  review verdicts are in
-  `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`
-  §3–§5.
+- **Region slice A** (Do next 1) is live on prod (4181421ce, 2026-10-04T00:15Z, migrations core 0182 and se 0018). Dogfooded there through a throwaway design, now retired:
+  - every documented op works as precis-se-regions-help says: measures with measurands, patch and ring selectors, add/set/remove pocket, `set_measure measurand=`, `unit_mismatch` in drc, and `view='ops'` round-trip;
+  - every documented refusal fires.
+  Five polish issues are in gr465128: reason-column noise in `view='measures'`, unit drift in a taxon's text, unclear "declaration on frame" wording, `atoms:` accepted on an unbound block, and taxon `under=` leaking. Grammar and review verdicts are in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` §3–§5.
 - **Organic print** (Do next 2): print 1, se `organic-bracket-1` as
   file v3, is printing in PLA (Reto, 2026-10-03T21:18Z). Bambu Studio
   02.08.02.61 showed only "invalid config", a Studio bug for every
@@ -35,22 +32,13 @@ off that gap until it closes.
     Smoother would be goooder." So print 2 wants O2–O4.
   - The load test is still owed, in item se-machine-design-6. The solver
     predicts about 0.04 mm tip drop at 1 kg and 0.08 mm at 2 kg.
-  - O1 (gr464340, gr464343) was CI-green twice. Its ship was stopped
-    2026-10-03 ~22Z for the orchestrator's landing window: re-run it when
-    the window closes, then close both gripes with the sha and retire the
-    gr464343 repro `se-simp-dogfood-1003` and its two cad designs.
-  - **The print check and the download button are built, not landed.**
-    Branch `worktree-agent-af50546850428f7d5` (1014fa6bf) holds:
-    - `precis/cad/mesh_check.py`: floating islands and the Studio
-      02.08.02.61 cantilever rule, a guarded export-time tail lift that
-      Reto allowed at 19:32Z with nothing stored, and the 3MF core-spec
-      check;
-    - a flat bed face cut in the field (`fieldops.flat_bed`);
-    - `GET /se/{slug}/print/{block}.3mf|.stl`, with a "Print files"
-      section on the 3-D page.
-    Squash-land it after O1. Then tell se-3d-viewer the final parameter
-    names and re-dogfood the print checks on prod. gr464493: print-group
-    and manufacture 3MFs still skip the check.
+  - O1 shipped 264f412c0 (round 4, 2026-10-04): gr464340 and gr464343 are closed, and the gr464343 repro designs are retired.
+  - **The print check and the download button ship in round 4.**
+    - `precis/cad/mesh_check.py` checks the shipped mesh for Bambu's floating-region rule and Studio 02.08.02.61's cantilever rule, and the 3MF package against the core spec. It also does a guarded export-time tail lift, which Reto allowed at 19:32Z with nothing stored.
+    - `fieldops.flat_bed` cuts a flat bed face in the field.
+    - `GET /se/{slug}/print/{block}.3mf|.stl` serves the file, with a "Print files" section on the 3-D page.
+    After the round-4 deploy, re-dogfood the print checks on prod (`view='print'` on `organic-bracket-1` should list `floating_island`, `slicer_cantilever` and `mesh_cleanup`), and download the button's file once.
+    gr464493: print-group and manufacture 3MFs still skip the check.
   - **Scaled downloads (se-3d-viewer-7, Reto answered A1/B1/C1/D1).**
     Mine:
     - the writer scale, ½ build: `scale=` on `write_mesh`/`_write_3mf`,
@@ -60,8 +48,7 @@ off that gap until it closes.
     - the print check at printed size;
     - the atom models in `backlog/printable-atomic-models.md`.
     The dialog is se-3d-viewer's. The writer scale is
-    `backlog/print-file-scale.md` (ready; it needs the print-check branch on
-    main).
+    `backlog/print-file-scale.md` (ready).
   - **Open question to Reto** (item -6): declared flat faces with O5 (load
     ports with a solid contact boss), about 1 build, ahead of O2–O4?
 - **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
@@ -91,16 +78,12 @@ off that gap until it closes.
 1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
    axes (charge, field, optical); the peer session (unicycle) is already
    the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
-   (measurands, selectors, pockets) on main, prod dogfood after the
-   follow-up deploy (Resume state); B waits on
+   (measurands, selectors, pockets) live on prod and dogfooded (Resume
+   state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 lists it as
-   O1–O4, none with a migration:
-   - O1: gr464340 and gr464343. Built and CI-green; landing (Resume
-     state).
-   - Print check and download button: built, landing after O1 (Resume
-     state).
+   O2–O5, none with a migration (O1 shipped 264f412c0):
    - O5 + declared flat faces: about 1 build. Its rank against O2–O4
      waits on Reto (item -6).
    - O2: `realize(min_member=)` mapped to the filter radius, a pitch guard

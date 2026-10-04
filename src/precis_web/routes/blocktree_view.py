@@ -156,6 +156,7 @@ from precis_web.blocktree_svg import (
     validator_summary,
 )
 from precis_web.deps import get_store, templates
+from precis_web.routes import se_print
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -949,6 +950,13 @@ async def _view3d_page(
         if kind == "se"
         else None
     )
+    # Print-file downloads (routes/se_print.py): se only, current revision
+    # only (the download exports the live tree). Cheap report, no mesh build.
+    printable = (
+        await asyncio.to_thread(se_print.print_files, store, tree, str(ref.slug))
+        if kind == "se" and not axis.read_only
+        else []
+    )
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -980,6 +988,7 @@ async def _view3d_page(
             "has_record": axis.has_record,
             "revision": revision,
             "chat": chat,
+            "print_files": printable,
         },
     )
 

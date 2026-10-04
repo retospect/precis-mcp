@@ -22,6 +22,12 @@ the analytic IR. Three routes, in order of fidelity vs weight:
 
 The design / probe loop needs none of this — meshing happens here and
 nowhere else.
+
+A written 3MF carries model-level ``Title`` / ``Application`` /
+``CreationDate`` metadata and nothing else (no ``Metadata/`` directory, no
+slicer project config — a partial project config is what trips Bambu
+Studio's config check); :func:`precis.cad.mesh_check.package_findings`
+validates such a package against the core-spec essentials.
 """
 
 from __future__ import annotations
@@ -30,8 +36,10 @@ import struct
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape, quoteattr
 
 import numpy as np
 
@@ -395,9 +403,18 @@ def _field_pitch(design: Design, pitch: float | None) -> float:
 
 
 def _field_mesh_of(
-    design: Design, spec: SceneSpec, comps: list[str], pitch: float, name: str
+    design: Design,
+    spec: SceneSpec,
+    comps: list[str],
+    pitch: float,
+    name: str,
+    lattice: tuple[int, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Mesh the (min-)union of components ``comps`` from the folded field."""
+    """Mesh the (min-)union of components ``comps`` from the folded field.
+    ``lattice = (axis, coord)`` puts a sample plane at ``axis = coord`` (the
+    box's low corner snaps onto ``coord + k * pitch`` along that axis, the
+    other axes keep the box corner) — how a flat cut at a known plane lands
+    its first sample plane beside it instead of at a random phase."""
     exprs = [design.components[c] for c in comps if c in design.components]
     if not exprs:
         raise ExportError(f"{name}: no solid geometry to export")
@@ -409,6 +426,10 @@ def _field_mesh_of(
     # k/4 beyond the hard union; pad by k/2 so the band sees all of it.
     pad = 0.5 * max((n.blend for n in spec.nodes if n.component in comps), default=0.0)
     lo, hi = box[0] - pad, box[1] + pad
+    if lattice is not None:
+        origin = lo.copy()
+        origin[lattice[0]] = lattice[1]
+        lo = snap_lo(lo, origin, pitch)
 
     def sdf(pts: np.ndarray) -> np.ndarray:
         return component_sdf_np(design, expr, pts)
@@ -536,7 +557,10 @@ def _object_meshes_of(
 
 
 def _solid_mesh(
-    spec: SceneSpec, *, pitch: float | None = None
+    spec: SceneSpec,
+    *,
+    pitch: float | None = None,
+    lattice: tuple[int, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Fold the design and return its final welded ``(verts, tris)`` mesh.
 
@@ -547,12 +571,15 @@ def _solid_mesh(
     if needs_field_backend(spec):
         design = build_design(spec)
         p = _field_pitch(design, pitch)
-        return _field_mesh_of(design, spec, list(spec.components), p, "design")
+        return _field_mesh_of(design, spec, list(spec.components), p, "design", lattice)
     return _mesh_of(_design_solid(spec))
 
 
 def _component_meshes(
-    spec: SceneSpec, *, pitch: float | None = None
+    spec: SceneSpec,
+    *,
+    pitch: float | None = None,
+    lattice: tuple[int, float] | None = None,
 ) -> list[tuple[str, np.ndarray, np.ndarray]]:
     """One ``(name, verts, tris)`` per component (parts kept separate).
     ``pitch`` as in :func:`_solid_mesh`."""
@@ -560,7 +587,12 @@ def _component_meshes(
         design = build_design(spec)
         p = _field_pitch(design, pitch)
         return [
-            (comp, *_field_mesh_of(design, spec, [comp], p, f"component {comp!r}"))
+            (
+                comp,
+                *_field_mesh_of(
+                    design, spec, [comp], p, f"component {comp!r}", lattice
+                ),
+            )
             for comp in spec.components
             if comp in design.components
         ]
@@ -603,28 +635,46 @@ _3MF_RELS = (
 
 
 def _3mf_object(obj_id: int, name: str, verts: np.ndarray, tris: np.ndarray) -> str:
-    vs = "".join(f'<vertex x="{x:.6g}" y="{y:.6g}" z="{z:.6g}"/>' for x, y, z in verts)
+    # ``.9g`` round-trips the float32-grade coordinates marching cubes and
+    # manifold3d produce, so a slicer reads the very mesh
+    # :mod:`precis.cad.mesh_check` judged (``.6g`` quantised a 100 mm
+    # coordinate to 1 um and could collapse neighbouring vertices).
+    vs = "".join(f'<vertex x="{x:.9g}" y="{y:.9g}" z="{z:.9g}"/>' for x, y, z in verts)
     ts = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in tris)
     return (
-        f'<object id="{obj_id}" name="{name}" type="model"><mesh>'
+        f'<object id="{obj_id}" name={quoteattr(name)} type="model"><mesh>'
         f"<vertices>{vs}</vertices><triangles>{ts}</triangles>"
         "</mesh></object>"
     )
 
 
-def _write_3mf(path: Path, parts: list[tuple[str, np.ndarray, np.ndarray]]) -> None:
+def _write_3mf(
+    path: Path,
+    parts: list[tuple[str, np.ndarray, np.ndarray]],
+    *,
+    title: str | None = None,
+) -> None:
     """Write a 3MF package. Each part is its **own** ``<object>`` referenced
     by the ``<build>`` — so a multi-component assembly stays separable in
-    the slicer (3MF natively carries multiple objects)."""
+    the slicer (3MF natively carries multiple objects). Model-level
+    ``Title`` (``title``, else ``"precis export"``), ``Application`` and
+    ``CreationDate`` (UTC) metadata ride in the core namespace; nothing is
+    written under ``Metadata/`` (module docstring)."""
     objects = "".join(
         _3mf_object(i, name, v, t) for i, (name, v, t) in enumerate(parts, start=1)
     )
     items = "".join(f'<item objectid="{i}"/>' for i in range(1, len(parts) + 1))
+    meta = (
+        f'<metadata name="Title">{escape(title or "precis export")}</metadata>'
+        '<metadata name="Application">precis</metadata>'
+        f'<metadata name="CreationDate">{datetime.now(UTC).date().isoformat()}'
+        "</metadata>"
+    )
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US" '
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
-        f"<resources>{objects}</resources>"
+        f"{meta}<resources>{objects}</resources>"
         f"<build>{items}</build></model>"
     )
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -642,6 +692,7 @@ def export_mesh(
     *,
     fmt: str | None = None,
     pitch: float | None = None,
+    title: str | None = None,
 ) -> Path:
     """Fold ``spec`` to a watertight mesh and write it as STL or 3MF.
 
@@ -663,7 +714,8 @@ def export_mesh(
     — components that print as one object) exports 3MF as one object per
     entry through :func:`object_meshes` (the field route, at ``pitch`` or
     the design's ``meta.export_lattice`` pitch), and refuses STL when it
-    names more than one object."""
+    names more than one object. ``title`` is the 3MF ``Title`` metadata
+    (the design's name when the caller has one)."""
     objects = export_objects_of(spec)
     spec = _scaled_for_export(spec)
     mm_pitch = None if pitch is None else pitch * _MM_PER_M
@@ -687,6 +739,7 @@ def export_mesh(
             _object_meshes_of(spec, objects, mm_pitch)
             if objects
             else _component_meshes(spec, pitch=mm_pitch),
+            title=title,
         )
     else:
         raise ExportError(

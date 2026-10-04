@@ -1331,7 +1331,7 @@ class CadHandler(Handler):
             path = (
                 export_step(spec, out)
                 if fmt == "step"
-                else export_mesh(spec, out, fmt=fmt, pitch=pitch)
+                else export_mesh(spec, out, fmt=fmt, pitch=pitch, title=slug)
             )
         except ExportError as exc:
             raise BadInput(str(exc)) from exc

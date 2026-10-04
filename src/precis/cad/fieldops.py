@@ -645,6 +645,87 @@ def from_density(
     return redistance(arr >= threshold, pitch, origin, pad=pad)
 
 
+#: Fraction of a pitch within which a column's lowest crossing must lie of
+#: the bed plane for :func:`flat_bed` to square its foot.
+_FLAT_BED_BAND = 0.25
+
+
+def flat_bed(
+    fld: Field, axis: int, sign: int, *, n_pad: int = 2
+) -> tuple[Field, float]:
+    """The field with a FLAT bed face, for printing — ``(field, bed)``.
+
+    ``axis`` (0/1/2) and ``sign`` (``-1`` = the bed is on the low-index
+    side, ``+1`` = the high side) name the build-down direction ``sign *
+    e_axis``. A voxel-derived SDF has its lowest surface rounded off (the
+    zero set between the lowest material slab and the empty slab below it
+    bevels in at the wall columns), so a 1-voxel fin stands on a knife edge
+    and the slicer's first layer shrinks below one line width. This pads
+    the field instead of touching any mesh: the slabs beyond the lowest
+    material slab are replaced by ``n_pad`` copies of that slab (walls run
+    straight on, past the old bottom) — in the columns whose own bottom is
+    already within a quarter pitch of the lowest surface, i.e. the flat
+    face the staircase rounded off; a smooth or tilted bottom keeps its
+    shape — and ``bed`` — the lowest zero
+    crossing of the ORIGINAL field along ``axis``, in the field's own
+    coordinates and unit — is where a half-space cut must be applied
+    (intersect with everything on the far side of ``bed``) to leave a flat
+    bottom. The cut is not baked in: between samples it would only be
+    approximate. The result's ``exact`` flag is cleared (the extrusion is
+    not a Euclidean distance below the old bed). Raises :class:`ValueError`
+    when the field holds no material."""
+    if axis not in (0, 1, 2) or sign not in (-1, 1):
+        raise ValueError(f"axis must be 0/1/2 and sign +/-1, got {axis}, {sign}")
+    g = np.moveaxis(np.asarray(fld.grid, dtype=np.float32), axis, 0)
+    if sign > 0:
+        g = g[::-1]
+    inside = g <= 0.0
+    cols = inside.any(axis=0)
+    if not cols.any():
+        raise ValueError("flat_bed: the field holds no material")
+    first_all = np.argmax(inside, axis=0)
+    first = first_all[cols]
+    i0 = int(first.min())
+    cc = np.nonzero(cols)
+    below = g[np.maximum(first - 1, 0), cc[0], cc[1]].astype(np.float64)
+    here = g[first, cc[0], cc[1]].astype(np.float64)
+    denom = below - here
+    cross = np.where(
+        (first > 0) & (denom > 0.0),
+        first - 1 + below / np.where(denom > 0.0, denom, 1.0),
+        first.astype(np.float64),
+    )
+    x_bed = float(cross.min())
+    # Bevel repair only: extrude a column when ITS lowest zero crossing lies
+    # within a quarter pitch of the bed plane (the voxel's own flat face,
+    # which the staircase SDF rounds off), plus the empty columns that touch
+    # one, so the wall between them stays square. A smooth bottom (a
+    # sphere, a tilted face) has only a small contact patch within that band
+    # and is not filled down to the bed.
+    near_bed = np.zeros(cols.shape, dtype=bool)
+    near_bed[cc] = cross <= x_bed + _FLAT_BED_BAND
+    ring = near_bed.copy()
+    padq = np.pad(near_bed, 1)
+    for da in (-1, 0, 1):
+        for db in (-1, 0, 1):
+            ring |= padq[
+                1 + da : 1 + da + cols.shape[0], 1 + db : 1 + db + cols.shape[1]
+            ]
+    extrude = near_bed | (ring & (g[i0] > 0.0))
+    slabs = [np.where(extrude, g[i0], g[max(i0 - n_pad + j, 0)]) for j in range(n_pad)]
+    padded = np.concatenate([np.stack(slabs, axis=0), g[i0:]], axis=0)
+    origin = np.array(fld.origin, dtype=np.float64)
+    p = float(fld.pitch)
+    if sign > 0:
+        padded = padded[::-1]
+        bed = float(origin[axis] + (g.shape[0] - 1 - x_bed) * p)
+    else:
+        origin[axis] += (i0 - n_pad) * p
+        bed = float(fld.origin[axis] + x_bed * p)
+    out = Field(grid=np.moveaxis(padded, 0, axis), pitch=p, origin=origin, exact=False)
+    return out, bed
+
+
 # ---------------------------------------------------------------------------
 # wire format — what the store keeps in chunk_blobs
 # ---------------------------------------------------------------------------

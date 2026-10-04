@@ -573,7 +573,7 @@ async def cad_export(request: Request, slug: str, fmt: str) -> Response:
             if fmt == "step":
                 export_step(spec, out)
             else:
-                export_mesh(spec, out, fmt=fmt)
+                export_mesh(spec, out, fmt=fmt, title=export_stem)
             return out.read_bytes()
 
     try:

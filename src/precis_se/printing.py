@@ -45,6 +45,20 @@ cannot know because they need the se tree, not just a mesh:
 Every rule above is skipped outright when its threshold doesn't resolve —
 the same "no rule runs on a ``None`` threshold" honesty
 :mod:`precis.cad.printability` already keeps for its own terms.
+
+**Floating regions** — ``floating_island`` (error), every branch (SIMP
+included, beside its voxel rule): the mesh that is actually written
+(:func:`build_print_mesh` — build frame, welded, sub-layer tails lifted by
+:mod:`precis.cad.mesh_check` with ``tol = max(layer, source field pitch) /
+2``: a mesh tessellated from a voxel field cannot carry a real feature
+under half that field's pitch, so a shallower dip is a meshing artefact;
+a B-rep block gets half a layer) is sliced at the house ``layer_height``
+*after* the lift, and every layer polygon overlapping neither layer below
+it is reported, the slicer's own SharpTail test — what survives is never
+hidden. :func:`write_mesh` ships that same mesh (the
+report carries it, so it is computed once), plus a ``mesh_cleanup`` info
+line counting welded/dropped degenerate triangles, remaining slivers and
+lifted tail vertices.
 """
 
 from __future__ import annotations
@@ -68,7 +82,20 @@ from precis.cad.export import (
     _write_binary_stl,
     manifold_available,
 )
+from precis.cad.fieldops import flat_bed
+from precis.cad.mesh_check import (
+    CANTILEVER_WARN_MM,
+    Cantilever,
+    Island,
+    count_slivers,
+    floating_islands,
+    lift_rejection,
+    lift_sharp_tails_checked,
+    slicer_cantilevers,
+    weld_and_drop_degenerate,
+)
 from precis.cad.printability import BuildCandidate, rotate_to_frame
+from precis.cad.scene import NodeSpec, SceneSpec
 from precis.cad.vec import Vec3, as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.structsolve.simp import overhang_violations
@@ -94,6 +121,18 @@ SIMP_FRAME_ORIGIN = "simp"
 #: (``handlers/cad.py::_PRINTABILITY_TOP_N``); a render-width judgment,
 #: not a capability figure.
 CANDIDATE_TABLE_N = 5
+
+
+#: The first layer's thickness Bambu Studio slices with (it is 0.2 mm
+#: whatever the layer height) and the default line width of its 0.4 mm
+#: nozzle — the figures :func:`~precis.cad.mesh_check.slicer_cantilevers`
+#: mirrors when the block's capability row gives no ``line_width``.
+SLICER_FIRST_LAYER_MM = 0.2
+SLICER_LINE_WIDTH_MM = 0.42
+
+#: ``floating_island`` findings listed individually per block; the rest are
+#: summarised in one line (the total is always stated).
+MAX_LISTED_ISLANDS = 10
 
 
 class PrintUnsupported(RuntimeError):
@@ -132,6 +171,44 @@ class BlockPrintReport:
     #: the stored field measured — rendered as its own line, so the
     #: report never reads as a search that happened to agree.
     search_skipped: str | None = None
+    #: The post-processed build-frame mesh the findings above were judged on
+    #: and :func:`write_mesh` will ship (``None`` when nothing was built).
+    print_mesh: PrintMesh | None = field(default=None, repr=False)
+    #: Pitch (metres) of the stored field a field-rooted block was solved at,
+    #: ``None`` for a B-rep block or an unrecoverable field — what
+    #: :func:`write_mesh` needs to rebuild the same mesh the report judged.
+    source_pitch: float | None = None
+    #: ``True`` when the mesh above was built and the floating-region check
+    #: ran on it (``report_for(mesh_checks=True)``, the default).
+    mesh_checked: bool = False
+
+
+@dataclass
+class PrintMesh:
+    """The mesh a block ships: ``(name, verts, tris)`` per part in the build
+    frame (millimetres, bed at ``z = 0``), already welded and tail-lifted
+    (:func:`build_print_mesh`), with what that cleanup did."""
+
+    parts: list[tuple[str, np.ndarray, np.ndarray]]
+    #: The tail-lift tolerance used, mm (``None`` when none could be set).
+    tol_mm: float | None = None
+    n_dropped: int = 0
+    n_slivers: int = 0
+    n_lifted: int = 0
+    #: Plateaus the lift left alone: too little material above / a face
+    #: would flip or collapse (:func:`~precis.cad.mesh_check.lift_sharp_tails_checked`).
+    n_kept_thin: int = 0
+    n_kept_flip: int = 0
+    #: Per part, why the lift was abandoned and the welded mesh shipped
+    #: unlifted (:func:`~precis.cad.mesh_check.lift_rejection`).
+    lift_abandoned: list[str] = field(default_factory=list)
+    #: Flat bed contact (:func:`flat_bed_spec`): a receipt when it was applied
+    #: to the field, or why it was skipped on a field-rooted block.
+    flat_bed: str | None = None
+    flat_bed_skipped: str | None = None
+    #: Extrusion line width (mm) the slicer-cantilever check drops narrower
+    #: features by; ``None`` takes :data:`SLICER_LINE_WIDTH_MM`.
+    line_width_mm: float | None = None
 
 
 def format_down(v: Vec3) -> str:
@@ -429,8 +506,40 @@ def _simp_field_overhangs(
     return overhang_violations(np.ascontiguousarray(solid), plate_at_first_solid=True)
 
 
+def source_field_pitch(
+    printed: PrintedSolid, cad_store_reader: Store
+) -> tuple[bool, float | None]:
+    """``(field_rooted, pitch)`` — whether the printed solid's root leaf is a
+    stored sampled field (SIMP / any ``field:<sha>`` block), and that
+    field's own pitch in metres (the resolution the solver produced it at,
+    NOT the narrow-band remesh pitch the export meshes it at), read from the
+    stored header without loading the samples
+    (:meth:`~precis.store.Store.field_header`). ``pitch`` is ``None`` when
+    the root is not a field, the store has no such grid (or the prefix is
+    ambiguous), or the header carries no usable pitch; a database error
+    propagates."""
+    if not printed.spec.nodes:
+        return False, None
+    config = str(printed.spec.nodes[0].config or "")
+    if not config.startswith("field:"):
+        return False, None
+    header = cad_store_reader.field_header(config[len("field:") :])
+    raw = (header or {}).get("pitch_m")
+    if raw is None:
+        return True, None
+    try:
+        pitch = float(raw)
+    except (TypeError, ValueError):
+        return True, None
+    return True, (pitch if pitch > 0.0 else None)
+
+
 def report_for(
-    tree: SeTree, block: str, *, cad_store_reader: Store
+    tree: SeTree,
+    block: str,
+    *,
+    cad_store_reader: Store,
+    mesh_checks: bool = True,
 ) -> BlockPrintReport | None:
     """Everything ``view='print'`` needs for one block, or ``None`` when
     the block's resolved mode family isn't ``fdm`` at all — not this
@@ -440,7 +549,13 @@ def report_for(
     missing and a solid needs tessellating (mirrors ``handlers/cad.py``'s
     own ``view='printability'`` gate) — never for a block with nothing to
     tessellate (``unrealized``/net-empty), which reports honestly with no
-    backend needed at all."""
+    backend needed at all.
+
+    ``mesh_checks`` (default on) builds the shipped mesh and runs the
+    floating-region check on it (:func:`build_print_mesh`) — seconds on a
+    big field mesh, so the cheap status callers (the ``drc``/``validate``
+    pointers, the all-blocks summary, ``view='fab'``) pass ``False`` and
+    keep their old cost; the per-block report and the export keep it on."""
     node = tree.blocks.get(block)
     if node is None:
         return None
@@ -587,6 +702,44 @@ def report_for(
                 best_other=best_other,
             )
         )
+    print_mesh: PrintMesh | None = None
+    source_pitch: float | None = None
+    if chosen_down is not None and mesh_checks:
+        # The mesh the file will carry, judged the way a slicer will: the
+        # SIMP voxel rule above cannot see a marching-cubes tail, and the
+        # mesh `overhang` rule is blind to a sub-facet one.
+        field_rooted, source_pitch = source_field_pitch(printed, cad_store_reader)
+        if field_rooted and source_pitch is None:
+            findings.append(
+                ValidationIssue(
+                    rule="mesh_cleanup",
+                    subject=block,
+                    detail=(
+                        "the block's root field has no readable pitch, so its "
+                        "solve pitch is unknown — the sub-voxel tail lift fell "
+                        "back to half a layer"
+                    ),
+                    severity="info",
+                )
+            )
+        try:
+            print_mesh = build_print_mesh(
+                printed,
+                chosen_down,
+                pitch=pitch,
+                source_pitch=source_pitch,
+                line_width=rules.get("line_width"),
+            )
+            findings.extend(_mesh_findings(block, print_mesh, pitch))
+        except (ExportError, ValueError) as exc:
+            findings.append(
+                ValidationIssue(
+                    rule="floating_island",
+                    subject=block,
+                    detail=f"floating-region check skipped: {exc}",
+                    severity="info",
+                )
+            )
     findings.extend(frame_free_findings(tree, node, block, printed, rules))
 
     return BlockPrintReport(
@@ -601,7 +754,428 @@ def report_for(
         findings=findings,
         pitch=pitch,
         search_skipped=search_skipped,
+        print_mesh=print_mesh,
+        source_pitch=source_pitch,
+        mesh_checked=print_mesh is not None,
     )
+
+
+#: Name of the half-space node :func:`flat_bed_spec` inserts after the
+#: field leaf (``intersect`` with everything beyond the bed plane).
+FLAT_BED_NODE = "_flat_bed"
+#: Where the mesher's first sample plane sits past the cut, in mesh pitches.
+FLAT_BED_PHASE = 0.25
+
+
+def flat_bed_spec(
+    scaled: SceneSpec, down: Vec3, mesh_pitch: float | None = None
+) -> tuple[SceneSpec, str | None, str | None, tuple[int, float] | None]:
+    """``(spec, applied, skipped)`` — flat bed contact for a field-rooted
+    block, done in FIELD space before any tessellation (the mesh is output
+    only and never edited).
+
+    A voxel field's lowest surface bevels in at the wall columns: a 1-voxel
+    fin stands on a knife edge a few tenths of a millimetre wide, narrower
+    than the nozzle line, and the slicer drops its first layer.
+    :func:`precis.cad.fieldops.flat_bed` pads the field one voxel-slab
+    further along ``down`` (walls run straight on); this intersects the
+    root field leaf — and only it, the node goes right after it — with the
+    half-space on the material side of the old bed plane, so the bottom is
+    a flat cut and the walls meet the bed square.
+
+    The mesher's sample lattice is phased so a plane sits ``FLAT_BED_PHASE * mesh_pitch``
+    on the material side of the cut: marching cubes then closes the foot
+    within a twentieth of a cell instead of up to a whole one (the 4th
+    return, ``(axis, coord)``, for ``_component_meshes(lattice=)``; ``None``
+    without ``mesh_pitch``).
+
+    ``scaled`` is the millimetre spec; ``down`` is in the block frame. Only
+    an axis-aligned ``down`` in an unrotated field frame can be done: any
+    other returns the spec unchanged with ``skipped`` naming why. A spec
+    whose root is not a field returns ``(scaled, None, None, None)``."""
+    if not scaled.nodes:
+        return scaled, None, None, None
+    node = scaled.nodes[0]
+    if not str(node.config).startswith("field:"):
+        return scaled, None, None, None
+    d = np.asarray(down, dtype=np.float64)
+    axis = int(np.argmax(np.abs(d)))
+    if abs(d[axis]) < 1.0 - 1e-6:
+        return (
+            scaled,
+            None,
+            f"build-down {format_down(down)} is not axis-aligned in the field's "
+            "frame, so the field cannot be padded along it",
+            None,
+        )
+    if any(abs(r) > 1e-12 for r in node.rot) or node.pattern is not None:
+        return (
+            scaled,
+            None,
+            "the root field leaf is rotated or patterned in the block frame",
+            None,
+        )
+    ref = cad_dsl.parse(node.config).ref
+    if scaled.field_loader is None or ref is None:
+        return scaled, None, "the field cannot be loaded (no loader attached)", None
+    sign = 1 if d[axis] > 0 else -1
+    fld = scaled.field_loader(ref)
+    padded, bed = flat_bed(fld, axis, sign)
+    lo, hi = padded.aabb_local()
+    off = np.asarray(node.loc, dtype=np.float64)
+    lo, hi, bed_w = lo + off, hi + off, bed + float(off[axis])
+    pad = float(padded.pitch)
+    blo, bhi = lo - pad, hi + pad
+    span = float(bhi[axis] - blo[axis])
+    if sign < 0:
+        blo[axis], bhi[axis] = bed_w, bed_w + span
+    else:
+        blo[axis], bhi[axis] = bed_w - span, bed_w
+    size = bhi - blo
+    box = cad_dsl.ShapeSpec(
+        alias="box",
+        params={"w": float(size[0]), "d": float(size[1]), "h": float(size[2])},
+    )
+    cut = NodeSpec(
+        name=FLAT_BED_NODE,
+        op="intersect",
+        config=cad_dsl.format_spec(box),
+        component=node.component,
+        loc=(
+            float((blo[0] + bhi[0]) / 2),
+            float((blo[1] + bhi[1]) / 2),
+            float(blo[2]),
+        ),
+    )
+    loader = scaled.field_loader
+
+    def patched(r: str) -> Any:
+        return padded if r == ref else loader(r)
+
+    spec = SceneSpec(
+        nodes=[scaled.nodes[0], cut, *scaled.nodes[1:]],
+        components=list(scaled.components),
+        meta=dict(scaled.meta),
+        field_loader=patched,
+    )
+    lattice: tuple[int, float] | None = None
+    if mesh_pitch is not None:
+        lattice = (axis, bed_w - sign * FLAT_BED_PHASE * mesh_pitch)
+    applied = (
+        f"field extruded two voxel slabs along {'-+'[sign > 0]}{'xyz'[axis]} and cut flat at "
+        f"{'xyz'[axis]} = {bed_w:.4g} mm (the old bed plane)"
+    )
+    return spec, applied, None, lattice
+
+
+def build_print_mesh(
+    printed: PrintedSolid,
+    down: Vec3,
+    *,
+    pitch: float | None = None,
+    source_pitch: float | None = None,
+    welded: bool = False,
+    flat_bed_contact: bool = True,
+    line_width: float | None = None,
+) -> PrintMesh:
+    """The mesh ``printed`` ships in the build frame ``down`` names: folded
+    in millimetres (:func:`precis.cad.export._scaled_for_export` first —
+    never scale twice), each part rotated to ``-z`` = ``down`` with its
+    lowest point on the bed (:func:`precis.cad.printability.rotate_to_frame`),
+    then :func:`~precis.cad.mesh_check.weld_and_drop_degenerate` and
+    :func:`~precis.cad.mesh_check.lift_sharp_tails` with ``tol = max(layer/2,
+    source_pitch/2)``: a mesh tessellated from a voxel field cannot carry a
+    real feature smaller than half that field's pitch, so a dip shallower
+    than that is a meshing artefact by construction. ``pitch`` is the house
+    layer height and ``source_pitch`` the pitch (both metres) of the field
+    the solver produced — ``None`` for a B-rep / non-field block, which
+    gets half a layer. ``welded`` folds every component into ONE body (STL has no
+    parts) instead of one part per component (3MF). The one place the
+    report and the writer both take their mesh from.
+
+    A field-rooted block first gets flat bed contact in field space
+    (:func:`flat_bed_spec`; ``flat_bed_contact=False`` disables it): ``PrintMesh.
+    flat_bed`` / ``flat_bed_skipped`` say what happened."""
+    scaled = _scaled_for_export(printed.spec)
+    mm_pitch = None if pitch is None else pitch * _MM_PER_M
+    applied = skipped = lattice = None
+    if flat_bed_contact:
+        scaled, applied, skipped, lattice = flat_bed_spec(scaled, down, mm_pitch)
+    source_mm = None if source_pitch is None else source_pitch * _MM_PER_M
+    if welded:
+        raw = [("design", *_solid_mesh(scaled, pitch=mm_pitch, lattice=lattice))]
+    else:
+        raw = _component_meshes(scaled, pitch=mm_pitch, lattice=lattice)
+    halves = [h / 2.0 for h in (mm_pitch, source_mm) if h is not None]
+    tol_mm = max(halves) if halves else None
+    out = PrintMesh(
+        parts=[],
+        tol_mm=tol_mm,
+        flat_bed=applied,
+        flat_bed_skipped=skipped,
+        line_width_mm=None if line_width is None else line_width * _MM_PER_M,
+    )
+    for name, v, t in raw:
+        v = rotate_to_frame(v, down)
+        v, t, dropped = weld_and_drop_degenerate(v, t)
+        out.n_dropped += dropped
+        if tol_mm is not None and len(v):
+            res = lift_sharp_tails_checked(v, t, bed_z=float(v[:, 2].min()), tol=tol_mm)
+            why = lift_rejection(v, res.vertices, t) if res.n_lifted else None
+            if why is not None:
+                out.lift_abandoned.append(f"{name}: {why}")
+            else:
+                v = res.vertices
+                out.n_lifted += res.n_lifted
+                out.n_kept_thin += res.n_kept_thin
+                out.n_kept_flip += res.n_kept_flip
+        out.n_slivers += count_slivers(v, t)
+        out.parts.append((name, v, t))
+    return out
+
+
+def _island_issue(
+    block: str, isl: Island, index: int, total: int, layer_mm: float
+) -> ValidationIssue:
+    return ValidationIssue(
+        rule="floating_island",
+        subject=block,
+        detail=(
+            f"island {index}/{total}: a {isl.area:.3g} mm² layer polygon at "
+            f"z = {isl.z:.2f} mm, centred ({isl.x:.1f}, {isl.y:.1f}) mm, "
+            "overlaps neither of the two layers below it — the slicer sees "
+            "it as a floating region (SharpTail) with nothing to print on"
+        ),
+        severity="error",
+        measured=f"z = {isl.z:.2f} mm, {isl.area:.3g} mm²",
+        expected=f"0 islands at {layer_mm:.3g} mm layers",
+        suggested_fix=(
+            "add support under it, change the build frame, or reshape "
+            "the feature so each layer grows out of the one below"
+        ),
+    )
+
+
+#: The rules judged on the mesh that is actually written. An STL of a
+#: multi-component block ships the welded union, which is judged again — its
+#: findings replace every one of these from the per-component report.
+SHIPPED_MESH_RULES = ("floating_island", "slicer_cantilever", "mesh_cleanup")
+
+
+def _shared_bed(built: PrintMesh) -> float:
+    """The bed height of the whole plate: the lowest point of ALL parts, so
+    a component resting on another is not judged as if it sat on the bed."""
+    return min(float(v[:, 2].min()) for _n, v, _t in built.parts)
+
+
+def _cantilever_findings(
+    block: str, built: PrintMesh, layer_mm: float
+) -> list[ValidationIssue]:
+    """``slicer_cantilever`` — Bambu Studio's floating-cantilever test
+    (:func:`~precis.cad.mesh_check.slicer_cantilevers`): ``error`` for a
+    region more than :data:`~precis.cad.mesh_check.CANTILEVER_WARN_MM` from
+    what supports it in a layer tree support cannot reach (it skips the
+    first layers off the bed, so supports=on adds nothing), ``warn`` for the
+    same distance higher up (supports can fix it). Errors first, then by
+    distance; at most :data:`MAX_LISTED_ISLANDS` listed, the total stated."""
+    lw = built.line_width_mm or SLICER_LINE_WIDTH_MM
+    hits: list[Cantilever] = []
+    bed = _shared_bed(built)
+    for _name, v, t in built.parts:
+        hits.extend(
+            slicer_cantilevers(
+                v,
+                t,
+                layer_mm,
+                first_layer=SLICER_FIRST_LAYER_MM,
+                line_width=lw,
+                bed_z=bed,
+            )
+        )
+    hits = [c for c in hits if c.distance > CANTILEVER_WARN_MM]
+    hits.sort(key=lambda c: (not c.unreachable, -c.distance))
+    out: list[ValidationIssue] = []
+    for i, c in enumerate(hits[:MAX_LISTED_ISLANDS], start=1):
+        out.append(
+            ValidationIssue(
+                rule="slicer_cantilever",
+                subject=block,
+                detail=(
+                    f"region {i}/{len(hits)}: {c.area:.3g} mm² at z = "
+                    f"{c.bottom_z:.2f}-{c.z:.2f} mm, centred ({c.x:.1f}, "
+                    f"{c.y:.1f}) mm, reaches {c.distance:.1f} mm past what "
+                    "supports it (features under one line width, "
+                    f"{lw:.2g} mm, do not count as support) — "
+                    + (
+                        "tree support cannot reach this layer, so the slicer's "
+                        "floating-cantilever error cannot be cured with supports"
+                        if c.unreachable
+                        else "the slicer warns; supports can cure it"
+                    )
+                ),
+                severity="error" if c.unreachable else "warn",
+                measured=f"{c.distance:.1f} mm",
+                expected=f"<= {CANTILEVER_WARN_MM:g} mm",
+                suggested_fix=(
+                    "give the feature a full-width foot on the bed (a bed-"
+                    "touching wall must be at least one line width wide in "
+                    "its first layer), or reorient"
+                    if c.unreachable
+                    else "enable supports, or reshape so the span grows out "
+                    "of the layer below"
+                ),
+            )
+        )
+    if len(hits) > MAX_LISTED_ISLANDS:
+        out.append(
+            ValidationIssue(
+                rule="slicer_cantilever",
+                subject=block,
+                detail=(
+                    f"{len(hits) - MAX_LISTED_ISLANDS} further cantilever "
+                    f"region(s) not listed ({len(hits)} in total)"
+                ),
+                severity="error" if any(c.unreachable for c in hits) else "warn",
+                measured=f"{len(hits)} regions",
+            )
+        )
+    return out
+
+
+def _mesh_findings(
+    block: str, built: PrintMesh, pitch: float | None
+) -> list[ValidationIssue]:
+    """``floating_island`` (error, per island, at most
+    :data:`MAX_LISTED_ISLANDS` listed + a count line) and ``mesh_cleanup``
+    (info) for the mesh :func:`build_print_mesh` made — module docstring."""
+    out: list[ValidationIssue] = []
+    if pitch is not None:
+        layer_mm = pitch * _MM_PER_M
+        islands: list[Island] = []
+        bed = _shared_bed(built)
+        for _name, v, t in built.parts:
+            islands.extend(floating_islands(v, t, layer_mm, bed_z=bed))
+        total = len(islands)
+        for i, isl in enumerate(islands[:MAX_LISTED_ISLANDS], start=1):
+            out.append(_island_issue(block, isl, i, total, layer_mm))
+        if total > MAX_LISTED_ISLANDS:
+            out.append(
+                ValidationIssue(
+                    rule="floating_island",
+                    subject=block,
+                    detail=(
+                        f"{total - MAX_LISTED_ISLANDS} further floating "
+                        f"island(s) not listed ({total} in total)"
+                    ),
+                    severity="error",
+                    measured=f"{total} islands",
+                    expected=f"0 islands at {layer_mm:.3g} mm layers",
+                )
+            )
+        try:
+            out.extend(_cantilever_findings(block, built, layer_mm))
+        except Exception as exc:  # the island findings above stand on their own
+            out.append(
+                ValidationIssue(
+                    rule="slicer_cantilever",
+                    subject=block,
+                    detail=f"slicer-cantilever check skipped: {exc}",
+                    severity="info",
+                )
+            )
+    if built.flat_bed_skipped:
+        out.append(
+            ValidationIssue(
+                rule="mesh_cleanup",
+                subject=block,
+                detail=(
+                    "flat bed contact was not applied: "
+                    f"{built.flat_bed_skipped} — fins and walls that stand on "
+                    "the bed keep the rounded foot the voxel field gives them"
+                ),
+                severity="info",
+            )
+        )
+    if built.flat_bed:
+        out.append(
+            ValidationIssue(
+                rule="mesh_cleanup",
+                subject=block,
+                detail=f"flat bed contact applied: {built.flat_bed}",
+                severity="info",
+            )
+        )
+    for why in built.lift_abandoned:
+        out.append(
+            ValidationIssue(
+                rule="mesh_cleanup",
+                subject=block,
+                detail=(
+                    f"tail lift abandoned for {why} — the welded mesh ships "
+                    "unlifted and the floating-region check ran on it"
+                ),
+                severity="info",
+            )
+        )
+    if (
+        built.n_dropped
+        or built.n_slivers
+        or built.n_lifted
+        or built.n_kept_thin
+        or built.n_kept_flip
+    ):
+        tol = "" if built.tol_mm is None else f" (tol {built.tol_mm:.3g} mm)"
+        out.append(
+            ValidationIssue(
+                rule="mesh_cleanup",
+                subject=block,
+                detail=(
+                    f"before export: {built.n_dropped} degenerate triangle(s) "
+                    f"dropped on welding, {built.n_slivers} zero-area sliver(s) "
+                    f"remain, {built.n_lifted} sub-layer tail vertex/vertices "
+                    f"lifted{tol}; kept unlifted: {built.n_kept_thin} too thin, "
+                    f"{built.n_kept_flip} would flip a face"
+                ),
+                severity="info",
+                measured=(
+                    f"{built.n_dropped} dropped / {built.n_slivers} slivers / "
+                    f"{built.n_lifted} lifted"
+                ),
+            )
+        )
+    return out
+
+
+def mesh_for_export(
+    report: BlockPrintReport, fmt: str
+) -> tuple[PrintMesh | None, list[ValidationIssue] | None]:
+    """The mesh a ``fmt`` export of ``report`` must ship, and the findings
+    that judged THAT mesh (``None`` = ``report.findings`` already did).
+
+    The report judges one object per component (what 3MF ships). STL has no
+    objects, so a multi-component block is welded into one body — and that
+    union is what gets built here and judged again, never the per-component
+    parts shipped as a union nobody checked."""
+    built = report.print_mesh
+    if (
+        fmt == "stl"
+        and built is not None
+        and len(built.parts) > 1
+        and report.printed is not None
+        and report.chosen_down is not None
+    ):
+        welded = build_print_mesh(
+            report.printed,
+            report.chosen_down,
+            pitch=report.pitch,
+            source_pitch=report.source_pitch,
+            welded=True,
+            line_width=None
+            if built.line_width_mm is None
+            else built.line_width_mm / _MM_PER_M,
+        )
+        return welded, _mesh_findings(report.block, welded, report.pitch)
+    return built, None
 
 
 def write_mesh(
@@ -611,25 +1185,33 @@ def write_mesh(
     out_path: str | Path,
     *,
     pitch: float | None = None,
+    source_pitch: float | None = None,
+    built: PrintMesh | None = None,
+    title: str | None = None,
 ) -> Path:
     """Write ``printed``'s solid to ``out_path`` (``'stl'``/``'3mf'``) in
     the build frame — rotated so ``down`` is ``-z``, bed at ``z = 0``,
     millimetres. ``pitch`` (metres — the house ``layer_height``,
     :attr:`BlockPrintReport.pitch`) is the field-backend sample spacing
     for an ``rd``/``blend`` design; ``None`` takes cad's own default and a
-    sharp design ignores it either way.
+    sharp design ignores it either way. ``source_pitch`` (metres,
+    :attr:`BlockPrintReport.source_pitch`) is the solve pitch of a
+    field-rooted block, widening the tail-lift tolerance
+    (:func:`build_print_mesh`).
 
     Reuses the cad export seam exactly rather than re-scaling or
-    re-tessellating (module docstring): mm-scale first
-    (:func:`precis.cad.export._scaled_for_export` — never scale twice),
-    fold the already-mm design to its final triangle mesh with the same
-    private helpers ``handlers/cad.py``'s own printability probe already
-    reuses cross-module (:func:`precis.cad.export._solid_mesh`/
-    ``_component_meshes``), *then* rotate that **finished** mesh into the
-    build frame (:func:`precis.cad.printability.rotate_to_frame`) — never
-    the node tree, which would have to re-derive the pattern/intersect
-    fold semantics :func:`precis.cad.export._component_solids` already
-    owns.
+    re-tessellating (module docstring): :func:`build_print_mesh` mm-scales
+    first, folds the already-mm design to its final triangle mesh with the
+    same private helpers ``handlers/cad.py``'s own printability probe
+    already reuses cross-module, *then* rotates that **finished** mesh into
+    the build frame — never the node tree, which would have to re-derive
+    the pattern/intersect fold semantics
+    :func:`precis.cad.export._component_solids` already owns — and cleans it
+    (weld, lift sub-layer tails). ``built`` (:attr:`BlockPrintReport.
+    print_mesh`, same ``down``/``pitch``) is shipped as-is instead of
+    rebuilding, so the file is byte-for-byte the mesh the report judged;
+    STL reuses it only when it is a single part (STL has no parts).
+    ``title`` is the 3MF ``Title`` metadata.
 
     Raises :class:`PrintUnsupported` when ``manifold3d`` is missing, and
     :class:`precis.cad.export.ExportError` on a malformed/empty fold —
@@ -640,18 +1222,67 @@ def write_mesh(
             "dependency — a broken venv?)"
         )
     out = Path(out_path)
-    scaled = _scaled_for_export(printed.spec)
-    mm_pitch = None if pitch is None else pitch * _MM_PER_M
     if fmt == "stl":
-        verts, tris = _solid_mesh(scaled, pitch=mm_pitch)
-        verts = rotate_to_frame(verts, down)
+        if built is None or len(built.parts) != 1:
+            built = build_print_mesh(
+                printed, down, pitch=pitch, source_pitch=source_pitch, welded=True
+            )
+        _name, verts, tris = built.parts[0]
         _write_binary_stl(out, verts, tris)
     elif fmt == "3mf":
-        parts = [
-            (name, rotate_to_frame(v, down), t)
-            for name, v, t in _component_meshes(scaled, pitch=mm_pitch)
-        ]
-        _write_3mf(out, parts)
+        if built is None:
+            built = build_print_mesh(
+                printed, down, pitch=pitch, source_pitch=source_pitch
+            )
+        _write_3mf(out, built.parts, title=title)
     else:
         raise ExportError(f"unknown mesh format {fmt!r}; supported: stl, 3mf")
     return out
+
+
+class NothingToExport(ValueError):
+    """The block has no mesh to ship (unrealized, or a net-empty solid)."""
+
+
+@dataclass
+class MeshExport:
+    """What :func:`export_block_mesh` wrote: the file, and the findings that
+    judged the mesh in it (``report.findings``, except an STL of a
+    multi-component block, whose welded union is judged afresh)."""
+
+    path: Path
+    findings: list[ValidationIssue]
+
+
+def export_block_mesh(
+    report: BlockPrintReport, fmt: str, out_path: str | Path, *, title: str
+) -> MeshExport:
+    """The one checked-export path for a single fdm block —
+    ``view='print' fmt=`` and the web ``/se/{slug}/print/{block}.3mf``
+    download both call it, so the file a browser gets and the file an
+    agent gets cannot drift. ``report`` should come from
+    ``report_for(..., mesh_checks=True)`` so the shipped mesh is the one
+    the report judged. Raises :class:`NothingToExport`,
+    :class:`PrintUnsupported`, or :class:`precis.cad.export.ExportError`."""
+    if report.printed is None or report.chosen_down is None:
+        raise NothingToExport(
+            f"block {report.block!r} has nothing to export "
+            f"({'unrealized' if report.printed is None else 'net-empty solid'})"
+        )
+    built, judged = mesh_for_export(report, fmt)
+    path = write_mesh(
+        report.printed,
+        report.chosen_down,
+        fmt,
+        out_path,
+        pitch=report.pitch,
+        source_pitch=report.source_pitch,
+        built=built,
+        title=title,
+    )
+    shown = report.findings
+    if judged is not None:
+        # an STL of a multi-component block ships the welded union, whose
+        # own floating-region findings replace the per-component ones
+        shown = [f for f in shown if f.rule not in SHIPPED_MESH_RULES] + judged
+    return MeshExport(path=path, findings=shown)

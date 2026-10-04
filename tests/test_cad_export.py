@@ -404,3 +404,19 @@ def test_export_step_chamfer_real(tmp_path) -> None:
     assert out.exists() and out.stat().st_size > 0
     head = out.read_text(errors="replace", encoding="utf-8")[:200]
     assert "ISO-10303" in head
+
+
+@pytest.mark.skipif(not _HAS_MANIFOLD, reason="manifold3d not installed")
+def test_export_3mf_real_is_a_valid_package_with_metadata(tmp_path) -> None:
+    from precis.cad.mesh_check import package_findings
+
+    out = export_mesh(parse_source(_FLANGE), tmp_path / "flange.3mf", title="flange-1")
+    assert package_findings(out.read_bytes()) == []
+    with zipfile.ZipFile(out) as zf:
+        assert not any(n.startswith("Metadata/") for n in zf.namelist())
+        model = zf.read("3D/3dmodel.model").decode("utf-8")
+    assert '<metadata name="Title">flange-1</metadata>' in model
+    assert '<metadata name="Application">precis</metadata>' in model
+    default = export_mesh(parse_source(_FLANGE), tmp_path / "d.3mf")
+    with zipfile.ZipFile(default) as zf:
+        assert ">precis export<" in zf.read("3D/3dmodel.model").decode("utf-8")
