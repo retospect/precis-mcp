@@ -96,6 +96,19 @@ skip there would leave a KEEP-judged pinned edge withheld forever, since
 the audit's own memo is exactly what would otherwise block this re-verify
 from ever reaching it.
 
+After discovery (before the stamp) the **method-gap arm**
+(:func:`_method_gap_arm`, :mod:`precis.nanopub.method_gap`) closes the
+other half of "the claim names a method no attached passage carries": it
+searches the hub's evidence papers' chunks (not SI in v1) for the uncovered
+acronym/mode term (acronym-expanded; numbers skipped in v1), judges at most
+1 chunk per term per pass and 2 per term per claim version, 4 per hub per
+pass, with the widen verifier, and attaches the ones that verify
+(``meta.widen.via == "method-gap"``). Judged-and-rejected chunks land in the
+passage-grained ``reground_seen`` memo, so nothing is re-judged per
+``claim_sha``. It runs in a savepoint (a failure never rolls back the
+discovery above) and not under a reground plan. Adds up to 4 verifier
+calls/hub/pass to the bound above, and none when every term is covered.
+
 **Reopen gate vs. decomposition.** A composite hub never reaches step 6
 (excluded at step 1), so retitling it costs nothing here and does NOT
 re-run decomposition — atoms-vs-composite is decided once, at extraction
@@ -197,7 +210,9 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 
 from precis.handlers._link_tag_ops import validate_relation
+from precis.nanopub import method_gap
 from precis.nanopub.demote import DemotionRequest, run_demotions
+from precis.nanopub.term_coverage import paper_chunks
 from precis.store.types import Tag
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -377,6 +392,36 @@ def _attach_disputes(
                 ),
             )
         )
+
+
+def _widen_edge_meta(
+    verification: dict[str, Any],
+    *,
+    handle: str | None,
+    sha: str,
+    via: str,
+    **widen_extra: Any,
+) -> dict[str, Any]:
+    """The meta of an evidence edge born from a widen-verifier verdict
+    (:func:`is_corroborating`): the verdict and its reasoning, the grounding
+    chunk handle, the ``widen`` provenance block (mirroring the one
+    :func:`_attach_disputes` writes) and the verified stamp. Shared by the
+    discovery loop and the method-gap arm so both attach identically;
+    ``widen_extra`` rides inside the ``widen`` block (the method-gap arm's
+    ``terms``)."""
+    return {
+        "support": verification.get("supports"),
+        "support_reason": verification.get("support_reason"),
+        "caveats": list(verification.get("caveats") or []),
+        "source_handle": handle,
+        "widen": {
+            "sha": sha,
+            "via": via,
+            **widen_extra,
+            **_verify_fields(verification),
+        },
+        **_verified_stamp(sha),
+    }
 
 
 #: ``finding.meta`` keys this pass reads/writes.
@@ -3187,6 +3232,207 @@ def _reverify_pinned_edges(
     return memoed
 
 
+def _method_gap_arm(
+    conn: Connection,
+    store: Store,
+    hub_ref_id: int,
+    *,
+    claim_sentence: str,
+    scope: dict[str, Any],
+    sha: str,
+    seen: dict[str, Any],
+    claim_source_text: str | None,
+    identity_cache: dict[int, SourceIdentity],
+    pending_checks: list[int] | None,
+    pending_demotions: list[DemotionRequest] | None,
+) -> bool:
+    """The method-gap arm (claims-and-evidence thread, grounding build 2 D1).
+
+    A hub whose evidence passages never name a method/acronym its sentence
+    names (:func:`~precis.nanopub.method_gap.gap_terms`: G2's uncovered
+    terms against every ``establishes``/``corroborates`` passage, numbers
+    skipped in v1) is searched for that term — acronym-expanded from the
+    papers' own text — in the chunks of its evidence papers. SI refs
+    (``pdf_role='supplement'``, separate refs) are not searched in v1: no
+    live evidence edge comes from one yet, and parent plus SI would count as
+    two independent sources.
+    :func:`~precis.nanopub.method_gap.select_candidates` picks at most
+    :data:`~precis.nanopub.method_gap.PER_TERM` per term and
+    :data:`~precis.nanopub.method_gap.PER_HUB` per hub; each is judged by the
+    widen verifier with the full workspace (section, neighbours, source
+    identity, the claim's own source passage) and written by the widen arm's
+    own rules: corroborating → ``attach_evidence`` (via
+    :func:`_widen_edge_meta`, ``widen.via == "method-gap"`` + the term);
+    a same-setup terminal contradiction → :func:`_disputes_allowed`-gated
+    ``disputes`` filing + queued demotion, unchanged.
+
+    **Memo**: a judged chunk that did not attach is recorded in ``seen``
+    (the passage-grained ``reground_seen`` memo, key :func:`_seen_key`),
+    never in ``taproot_rejected`` — that one is source-grained, and these
+    candidates come from papers the hub is already grounded on, which a
+    ref-level rejection would evict. An attached chunk is its own record
+    (the edge). A chunk is never judged twice per ``claim_sha``.
+
+    **Attempts**: at most 1 judged candidate per term per pass and at most
+    :data:`~precis.nanopub.method_gap.ATTEMPTS_PER_TERM` (2) per term per
+    claim version, counted from the memo's ``attempts`` on ``via="method-gap"``
+    entries at this sha. A ``None`` verdict (LLM failure) or an out-of-enum
+    one writes an entry with ``verdict="unjudged"``: it spends an attempt but
+    does not exclude the chunk from a later attempt while the term is under
+    the cap, so a persistent failure stops after 2 calls.
+
+    Runs after the discovery loop, so a passage that loop just attached
+    counts as covering. A cheap pre-check
+    (:func:`~precis.nanopub.method_gap.has_gap`, passages only) returns before
+    any chunk is loaded when nothing but numbers is uncovered. Returns True
+    when ``seen`` gained an entry, so the caller persists it. The caller runs
+    this inside a savepoint on copies of ``seen`` and the pending lists."""
+    rows = conn.execute(
+        "SELECT l.src_ref_id, l.src_chunk_id, c.text FROM links l "
+        "JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL "
+        "LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id AND c.retired_at IS NULL "
+        "WHERE l.dst_ref_id = %s AND l.relation IN ('establishes', 'corroborates') "
+        "AND r.kind = 'paper'",
+        (hub_ref_id,),
+    ).fetchall()
+    passages = [str(r[2]) for r in rows if r[2] and str(r[2]).strip()]
+    evidence_refs = {int(r[0]) for r in rows}
+    if not passages or not method_gap.has_gap(claim_sentence, passages):
+        return False
+    chunks, abstracts = paper_chunks(store, sorted(evidence_refs))
+
+    # Never offered again: already linked at this passage, or judged under
+    # this sha (the memo key is ``<ref>:<chunk>``) — except an "unjudged"
+    # entry, which is retried while its term has attempts left.
+    skip_chunks = {
+        int(h.src_chunk_id)
+        for h in live_evidence_handles(conn, hub_ref_id)
+        if h.src_chunk_id is not None
+    }
+    spent: dict[str, int] = {}
+    for key, memo in seen.items():
+        if not isinstance(memo, dict) or memo.get("sha") != sha:
+            continue
+        if memo.get("verdict") != "unjudged" and key.split(":", 1)[-1].isdigit():
+            skip_chunks.add(int(key.split(":", 1)[1]))
+        if memo.get("via") == method_gap.VIA:
+            for term in memo.get("terms") or []:
+                spent[term] = spent.get(term, 0) + int(memo.get("attempts") or 1)
+    cands = method_gap.select_candidates(
+        claim_sentence,
+        passages,
+        chunks,
+        abstracts,
+        evidence_refs=evidence_refs,
+        skip_chunk_ids=skip_chunks,
+        skip_terms={t for t, n in spent.items() if n >= method_gap.ATTEMPTS_PER_TERM},
+    )
+    if not cands:
+        return False
+    refs = store.fetch_refs_by_ids(sorted({c.chunk.ref_id for c in cands}))
+    memoed = False
+
+    def _memo(chunk: Any, cand: method_gap.GapCandidate, **fields: Any) -> None:
+        key = _seen_key(chunk.ref_id, chunk.chunk_id)
+        prev = seen.get(key)
+        prior = (
+            int(prev.get("attempts") or 1)
+            if isinstance(prev, dict)
+            and prev.get("sha") == sha
+            and prev.get("via") == method_gap.VIA
+            else 0
+        )
+        seen[key] = {
+            "sha": sha,
+            "at": datetime.now(UTC).isoformat(),
+            "via": method_gap.VIA,
+            "terms": list(cand.terms),
+            "attempts": prior + 1,
+            **fields,
+        }
+
+    for cand in cands:
+        chunk = cand.chunk
+        ref = refs.get(chunk.ref_id)
+        if ref is None:
+            continue
+        verification = _verify_support_with_caveats(
+            claim=claim_sentence,
+            scope=scope,
+            target_cite_key=ref.slug or f"ref:{chunk.ref_id}",
+            target_chunk_ord=chunk.ord,
+            target_chunk_text=chunk.text,
+            source_kind=ref.kind,
+            claim_source_text=claim_source_text,
+            section_path=_chunk_section_path(conn, chunk.chunk_id),
+            neighbours=_chunk_neighbours(conn, chunk.ref_id, chunk.ord),
+            source_identity=_source_identity(conn, chunk.ref_id, identity_cache),
+            with_request_hash=True,
+        )
+        if verification is None:
+            # Transient LLM failure: spends an attempt, retried while the
+            # term is under its per-claim-version cap.
+            _memo(chunk, cand, verdict="unjudged")
+            memoed = True
+            continue
+        supports = verification.get("supports")
+        handle = handle_registry.try_format(ref.kind, chunk.chunk_id, chunk=True)
+        if is_corroborating(verification):
+            attach_evidence(
+                store,
+                hub_ref_id=hub_ref_id,
+                paper_ref_id=chunk.ref_id,
+                role=_ROLE,
+                meta=_widen_edge_meta(
+                    verification,
+                    handle=handle,
+                    sha=sha,
+                    via=method_gap.VIA,
+                    terms=list(cand.terms),
+                ),
+                set_by="system",
+                conn=conn,
+                pending_checks=pending_checks,
+            )
+            continue
+        if supports not in ("yes", "partial", "no"):
+            log.warning(
+                "hub_refine: hub #%d method-gap chunk #%d got unexpected verify "
+                "verdict %r -- unjudged (bounded retries)",
+                hub_ref_id,
+                chunk.chunk_id,
+                supports,
+            )
+            _memo(chunk, cand, verdict="unjudged")
+            memoed = True
+            continue
+        if _disputes_allowed(verification):
+            _attach_disputes(
+                store,
+                conn,
+                hub_ref_id=hub_ref_id,
+                source_ref_id=chunk.ref_id,
+                handle=handle,
+                reason=verification.get("support_reason"),
+                caveats=list(verification.get("caveats") or []),
+                sha=sha,
+                via=method_gap.VIA,
+                pending_demotions=pending_demotions,
+                judged=_verify_fields(verification),
+            )
+        _memo(
+            chunk,
+            cand,
+            verdict="NO-CORROBORATION",
+            supports=supports,
+            contradicts=bool(verification.get("contradicts")),
+            support_reason=verification.get("support_reason"),
+            **_verify_fields(verification),
+        )
+        memoed = True
+    return memoed
+
+
 def _refine_one_hub(
     conn: Connection,
     store: Store,
@@ -3627,22 +3873,14 @@ def _refine_one_hub(
                     # A verification just ran against this exact passage, so
                     # the edge is born verified: reason + fingerprint ride
                     # with the verdict (support alone is never written).
-                    meta={
-                        "support": supports,
-                        "support_reason": verification.get("support_reason"),
-                        "caveats": list(verification.get("caveats") or []),
-                        "source_handle": handle_registry.try_format(
+                    meta=_widen_edge_meta(
+                        verification,
+                        handle=handle_registry.try_format(
                             ref.kind, block.id, chunk=True
                         ),
-                        # Provenance + the verifier's reasoning, mirroring
-                        # the ``widen`` block ``_attach_disputes`` writes.
-                        "widen": {
-                            "sha": new_sha,
-                            "via": cand.via,
-                            **_verify_fields(verification),
-                        },
-                        **_verified_stamp(new_sha),
-                    },
+                        sha=new_sha,
+                        via=cand.via,
+                    ),
                     set_by="system",
                     conn=conn,
                     pending_checks=pending_checks,
@@ -3748,6 +3986,48 @@ def _refine_one_hub(
             )
             _drain_coverage(conn, hub_ref_id, stuck)
 
+    # Method-gap arm: after the discovery loop, so what it just attached
+    # counts as covering. Needs no query vector — it searches the evidence
+    # papers' own chunks for terms the sentence names.
+    #
+    # Not under a reground plan (the strict judge owns that path), and
+    # isolated: a savepoint plus working copies of the memo and the pending
+    # lists, so an arm failure rolls back only its own writes and never the
+    # discovery loop's attaches and memos above.
+    method_gap_memoed = False
+    if claim_sentence and reground is None:
+        arm_seen = dict(reground_seen)
+        arm_checks: list[int] = []
+        arm_demotions: list[DemotionRequest] = []
+        try:
+            with conn.transaction():
+                method_gap_memoed = _method_gap_arm(
+                    conn,
+                    store,
+                    hub_ref_id,
+                    claim_sentence=claim_sentence,
+                    scope=scope,
+                    sha=new_sha,
+                    seen=arm_seen,
+                    claim_source_text=claim_source_text,
+                    identity_cache=identity_cache,
+                    pending_checks=arm_checks,
+                    pending_demotions=arm_demotions,
+                )
+        except Exception:
+            log.warning(
+                "hub_refine: method-gap arm failed for hub #%d -- skipped",
+                hub_ref_id,
+                exc_info=True,
+            )
+            method_gap_memoed = False
+        else:
+            reground_seen.update(arm_seen)
+            if pending_checks is not None:
+                pending_checks.extend(arm_checks)
+            if pending_demotions is not None:
+                pending_demotions.extend(arm_demotions)
+
     meta_patch: dict[str, Any] = {
         _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),
         _META_LAST_REFINED_SHA: new_sha,
@@ -3763,11 +4043,11 @@ def _refine_one_hub(
     unresolved_deduped = _dedup_records(unresolved)
     if unresolved_deduped or reopened:
         meta_patch[_META_UNRESOLVED] = unresolved_deduped
-    if reverify_memoed and reground is None:
-        # The re-verify arm's non-corroborating memos must persist even
-        # without reground active (the memo's usual writer) — they are what
-        # stops a non-corroborating edge from re-spending the verifier
-        # every pass.
+    if (reverify_memoed or method_gap_memoed) and reground is None:
+        # The re-verify and method-gap arms' non-corroborating memos must
+        # persist even without reground active (the memo's usual writer) —
+        # they are what stops a non-corroborating edge/chunk from
+        # re-spending the verifier every pass.
         meta_patch[_META_REGROUND_SEEN] = reground_seen
     if reground is not None and plan is not None:
         meta_patch[_META_REGROUND_SEEN] = reground_seen

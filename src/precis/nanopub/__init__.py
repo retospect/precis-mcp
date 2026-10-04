@@ -46,6 +46,10 @@ Slices 1-3 — local, reversible:
   non-blocking ``term-coverage`` preflight/CLI/approve-view warning for a
   method, acronym or number the claim names that no grounding passage
   carries, with ranked chunk suggestions from the hub's papers.
+- :mod:`.method_gap` — DB-free core of ``workers.hub_refine``'s method-gap
+  arm: for a hub whose evidence passages lack an acronym/mode term its
+  sentence names, picks the few chunks of the evidence papers (and SI) that
+  carry it, ranked like the approve suggestions; capped per term and per hub.
 - :mod:`.grounding_sweep` — read-only sweep of every frozen grounding
   (``precis nanopub sweep-grounding``): shallow grounding (front matter or
   a definition sentence for a claim that needs a body passage; short
