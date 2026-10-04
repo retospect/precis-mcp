@@ -4,17 +4,33 @@ and minted as one block (docs/backlog/hexfold-ideal-surface-then-tile.md,
 S4b). Where :mod:`~precis_se.atomic.generators.hexfold_spec` takes a ``.hx``
 text and a free stick relaxation, this takes the *scene*: a sheet, and per
 feature a hole cell, an ``(n, 0)`` tube, the fillet radius the author wants
-and a top (``open``/``lid``/``ball``); the planner writes the spec, picks
+and a top (``open``/``lid``/``ball``/``sphere``); the planner writes the spec, picks
 each frustum width ``k`` by measurement and relaxes the whole scene under
 the normal tether toward the authored surfaces.
 
 ``params`` is ``{"sheet": [w, h], "features": [{"name", "at": [i, j], "n",
-"radius", "tube_len", "top"?}], "extra"?: str, "k_tether"?: float}``;
+"radius", "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
+"k_tether"?: float}``;
 ``top`` defaults to ``"open"``, ``extra`` (verbatim ``.hx`` lines, for
 buds) to ``""``, ``k_tether`` to 1.0. An unknown key at either level is
 refused by name, so a typo never silently drops a feature option. The
 planner's refusals (a seam-phase hole cell, overlapping features, a top the
 build cannot seat) arrive as :class:`GeneratorError`.
+
+**Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
+``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
+most the tube radius) hold the top to an authored surface, planned by
+:func:`~precis_se.atomic.generators.authored_foot.plan_top`: a washer
+frustum, bulge and lid for the sphere, today's flat lid rounded toward a
+hemisphere for the lid. Without ``top_fillet`` a ``lid`` is today's flat lid,
+byte for byte, and ``ball`` is unchanged. The stored ``plan["top_plans"]``
+carries, per such top, the chosen ``k``/``L``, the realised ``R`` and
+fillet, the measured deviation p95 and theta_p max, which of the five bars
+were met, the relaxed (tether-off) p95, and every candidate measured. Three
+WARNs: ``scene.top.bar`` (a bar missed on the scene), ``scene.top.R_mismatch``
+(an authored ``top_R`` more than 0.5 A from the realised R) and
+``scene.top.relaxed_shape`` (relaxed p95 over the 0.5 A band; the stored scene
+stays the tethered one).
 
 **Judgement travels with the block.** The coordinates are the tethered
 relaxation, not a free one, so the geometry findings are judged on them and
@@ -41,15 +57,19 @@ from hexfold.build import build
 from hexfold.report import Finding, HexfoldError, Report, Severity
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.authored_foot import (
+    RELAXED_P95_A,
     SceneFeature,
     ScenePlan,
+    TopPlan,
+    TopRow,
     plan_scene,
 )
 from precis_se.atomic.generators.hexfold_spec import _block_from_net, _internal_message
 
 _PARAM_KEYS = ("sheet", "features", "extra", "k_tether")
-_FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top")
+_FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
+_MAX_SPHERES = 1  # sphere tops per call: ~95 s each, see _normalize
 
 
 def _is_int(value: object) -> bool:
@@ -94,6 +114,14 @@ def _feature(raw: object, idx: int) -> SceneFeature:
     top = raw.get("top", "open")
     if not isinstance(top, str):
         raise GeneratorError(f"{where}.top must be a string; got {top!r}")
+    top_kw: dict[str, float] = {}
+    for key in ("top_R", "top_fillet"):
+        if key in raw:
+            if not _is_number(raw[key]):
+                raise GeneratorError(
+                    f"{where}.{key} must be a number; got {raw[key]!r}"
+                )
+            top_kw[key] = float(raw[key])
     return SceneFeature(
         name=name,
         at=at,
@@ -101,6 +129,7 @@ def _feature(raw: object, idx: int) -> SceneFeature:
         radius=float(raw["radius"]),
         tube_len=int(raw["tube_len"]),
         top=top,
+        **top_kw,
     )
 
 
@@ -119,6 +148,15 @@ def _normalize(
     if not isinstance(raw_features, list | tuple) or not raw_features:
         raise GeneratorError("features must be a non-empty list of objects")
     features = tuple(_feature(raw, i) for i, raw in enumerate(raw_features))
+    spheres = [f.name for f in features if f.top == "sphere"]
+    if len(spheres) > _MAX_SPHERES:
+        raise GeneratorError(
+            f"hexfold_scene plans one top: 'sphere' per call; got {len(spheres)} "
+            f"({spheres}). Each sphere top plans 9 candidates, about 95 s, and a "
+            "call is kept under about 2 minutes so a client timeout does not lose "
+            "the result; the per-n plan table (next cycle) lifts the limit. Rounded "
+            "lids (top: 'lid' with top_fillet) are not capped."
+        )
     extra = params.get("extra", "")
     if not isinstance(extra, str):
         raise GeneratorError(f"extra must be a string of .hx lines; got {extra!r}")
@@ -126,6 +164,77 @@ def _normalize(
     if not _is_number(k_tether):
         raise GeneratorError(f"k_tether must be a number; got {k_tether!r}")
     return sheet, features, extra, float(k_tether)
+
+
+_R_MISMATCH_A = 0.5  # an authored top_R this far from the realised R is flagged
+
+
+def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
+    """The WARNs of an authored top (a sphere or a rounded lid): the five
+    bars as re-measured on the scene, an authored ``top_R`` the candidates
+    could not meet, and the relaxed-shape band."""
+    out: list[Finding] = []
+    if scene_row.misses:
+        out.append(
+            Finding(
+                "scene.top.bar",
+                Severity.WARN,
+                f"{name}: the {tp.kind} top misses {', '.join(scene_row.misses)} "
+                f"(tethered deviation p95 {scene_row.dev_p95:.3f} A, theta_p max "
+                f"{scene_row.theta_p_max:.1f} deg, top bonds <= "
+                f"{scene_row.bond_max:.3f} A, {scene_row.pairs} pairs under 1.34 A)",
+            )
+        )
+    if tp.authored_R is not None and abs(tp.R - tp.authored_R) > _R_MISMATCH_A:
+        out.append(
+            Finding(
+                "scene.top.R_mismatch",
+                Severity.WARN,
+                f"{name}: top_R {tp.authored_R:g} A asked; the nearest build "
+                f"(k={tp.k}, L={tp.length}) has an area-matched R of {tp.R:.2f} A",
+            )
+        )
+    if not tp.relaxed_ok:
+        out.append(
+            Finding(
+                "scene.top.relaxed_shape",
+                Severity.WARN,
+                f"{name}: a stick-model relax with the tether off leaves the "
+                f"{tp.kind} top {tp.chosen.relaxed_p95:.2f} A (p95) from the "
+                f"authored surface, band {RELAXED_P95_A:g} A; tethered geometry "
+                f"stored; relaxes ~{tp.chosen.relaxed_dz:.1f} A flatter at the "
+                "pole in the stick model. A lower bound: the n=12 sphere probe "
+                "under MACE-MP and xTB moved about 2 A at the pole",
+            )
+        )
+    return out
+
+
+def _top_record(tp: TopPlan, scene_row: TopRow) -> dict[str, Any]:
+    """The stored plan of one authored top: the chosen build and its
+    realised numbers, the same columns re-measured on the scene, and every
+    candidate the planner measured."""
+    return {
+        "kind": tp.kind,
+        "k": tp.k,
+        "L": tp.length,
+        "dome_rows": tp.dome_rows,
+        "drop": tp.drop,
+        "R": tp.R,
+        "fillet": tp.fillet,
+        "authored_R": tp.authored_R,
+        "authored_fillet": tp.authored_fillet,
+        "dev_p95": scene_row.dev_p95,
+        "theta_p_max": scene_row.theta_p_max,
+        "bars_met": not scene_row.misses,
+        "bars_missed": list(scene_row.misses),
+        "relaxed_p95": tp.chosen.relaxed_p95,
+        "relaxed_dz": tp.chosen.relaxed_dz,
+        "relaxed_ok": tp.relaxed_ok,
+        "trial": dataclasses.asdict(tp.chosen),
+        "scene": dataclasses.asdict(scene_row),
+        "grid": [dataclasses.asdict(r) for r in tp.rows],
+    }
 
 
 def _scene_findings(
@@ -154,12 +263,17 @@ def _scene_findings(
                     "bonds to 4.6-4.9 A (gr464391)",
                 )
             )
+        if f.name in plan.top_plans:
+            out.extend(
+                _top_findings(f.name, plan.top_plans[f.name], plan.top_rows[f.name])
+            )
     return out
 
 
 def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     """``{"sheet": [w, h], "features": [{"name", "at", "n", "radius",
-    "tube_len", "top"?}], "extra"?: str, "k_tether"?: float}`` — plan the
+    "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
+    "k_tether"?: float}`` — plan the
     scene, relax it under the tether and mint it (module docstring)."""
     sheet, features, extra, k_tether = _normalize(params)
     try:
@@ -184,22 +298,27 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
                 "radius": f.radius,
                 "tube_len": f.tube_len,
                 "top": f.top,
+                # present only when authored, so a scene without them
+                # stores exactly what it stored before the keywords existed
+                **({"top_R": f.top_R} if f.top_R is not None else {}),
+                **({"top_fillet": f.top_fillet} if f.top_fillet is not None else {}),
             }
             for f in features
         ],
         "extra": extra,
         "k_tether": k_tether,
     }
-    plan_record = json.loads(
-        json.dumps(
-            {
-                "ks": plan.ks,
-                "rows": {n: dataclasses.asdict(r) for n, r in plan.rows.items()},
-                "tops": {n: list(t) for n, t in plan.tops.items()},
-                "passes": plan.passes,
-            }
-        )
-    )
+    record: dict[str, Any] = {
+        "ks": plan.ks,
+        "rows": {n: dataclasses.asdict(r) for n, r in plan.rows.items()},
+        "tops": {n: list(t) for n, t in plan.tops.items()},
+        "passes": plan.passes,
+    }
+    if plan.top_plans:  # only scenes with an authored top carry the key
+        record["top_plans"] = {
+            n: _top_record(tp, plan.top_rows[n]) for n, tp in plan.top_plans.items()
+        }
+    plan_record = json.loads(json.dumps(record))
     tail = f"; relax=tethered ks={plan.ks}" + "".join(
         f"; {f.code}: {f.message}" for f in scene
     )

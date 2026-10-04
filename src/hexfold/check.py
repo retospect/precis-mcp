@@ -455,14 +455,19 @@ def _geometry_findings(
             f"bond rms {float(np.sqrt((b_arr**2).mean())):.3f} A "
             f"max {float(np.abs(b_arr).max()):.3f} A; "
             f"angle rms {float(np.sqrt((a_arr**2).mean())):.1f} deg "
-            f"max {float(np.abs(a_arr).max()):.1f} deg",
+            f"max {float(np.abs(a_arr).max()):.1f} deg; "
+            f"{len(bond_bad)} bonds and {len(ang_bad)} angles past tolerance",
             data=(
                 ("bond_rms", round(float(np.sqrt((b_arr**2).mean())), 3)),
                 ("bond_max", round(float(np.abs(b_arr).max()), 3)),
                 ("bond_count", len(bond_dev)),
+                # every offender, not the ten the findings list: the cap
+                # hides most of a strained region (240 corners on a ball top)
+                ("bond_n_over", len(bond_bad)),
                 ("angle_rms", round(float(np.sqrt((a_arr**2).mean())), 1)),
                 ("angle_max", round(float(np.abs(a_arr).max()), 1)),
                 ("angle_count", len(ang_dev)),
+                ("angle_n_over", len(ang_bad)),
                 ("clash_count", len(clashes)),
                 ("clash_min", round(clashes[0][0], 3) if clashes else None),
                 ("seed_clash_count", len(seed_clashes)),

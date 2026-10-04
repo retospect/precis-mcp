@@ -164,6 +164,16 @@ def test_geometry_cap_and_suppressed() -> None:
     assert len(ang) <= 10
     summary = next(f for f in rep.findings if f.code == "geom.summary")
     assert "suppressed" in dict(summary.data)
+    data = dict(summary.data)
+    assert data["angle_n_over"] == len(ang)  # under the cap: the two agree
+    assert f"{data['angle_n_over']} angles past tolerance" in summary.message
+    # the per-code count is uncapped: at a 1 deg tolerance it sees every corner
+    # the ten-finding list hides, and the summary text carries it
+    tight = check(text, geometry=True, profile=Profile(angle_tol_deg=1.0))
+    listed = [f for f in tight.findings if f.code == "geom.angle.dev"]
+    tdata = dict(next(f for f in tight.findings if f.code == "geom.summary").data)
+    assert len(listed) == 10 and tdata["angle_n_over"] > 10
+    assert tdata["suppressed"] >= tdata["angle_n_over"] - 10
 
 
 def _geom_stats(text: str) -> tuple[float, float]:

@@ -94,8 +94,48 @@ waited on happened 09-29 — note at the bottom)
        - Inside the tethered scene it fails: the multi-pass tethered relax
          leaves about 6 close pairs around the bud, and four scratch fixes
          did not pass.
-       - **Next after S4b: buds on tethered tubes**, one dev cycle. Reto's
-         choice between the two is nanobuds-paper item 31.
+       - Buds on tethered tubes: root cause found 2026-10-03. The
+         `_tethered_relax` settle test judges only authored atoms, so it
+         stops at about pass 8 with the bud still pulled in; close pairs
+         reach 0 by pass 16 with the tether on. Stopping the relax only
+         once the close pairs stop falling (pass 14, 0 pairs) is not
+         enough. The bud–tube seam still opens: MACE 2.58/3.55 Å, xTB
+         1.65/2.14 Å (hexfold-corner/rc2_*, 2026-10-03). Lead: the scene
+         starts the two seam bonds lopsided (1.418/1.551 Å), while the
+         isolated pass started them at 1.427/1.428 Å. Cycle 3 stays a
+         full cycle. Reto's hero choice is nanobuds-paper item 31.
+     - **Next, spec-driven shapes** (Reto, review-queue hexfold-toolkit-3
+       and -4; design note and orchestrator verdict "Spec-driven shapes"
+       in reviews/hexfold-toolkit*.md, 2026-10-03 20:53–20:55Z). Order:
+       - cycle 1, **built**: `top: "sphere"` (`top_R`, `top_fillet`) and a
+         rounded `top: "lid"` (`top_fillet` up to r) in `hexfold_scene`, via
+         `plan_top` (reviews: "Cycle 1" 21:09Z, 21:15Z, 21:46Z):
+         - a washer route (tube → `cap(6k,0) - hex(n/6-1)` → `(6k,0)` bulge
+           → `cap(6k,0)` lid) held to the authored meridian; k in [r+3, r+5],
+           L in 1..3, five bars per candidate, the relaxed (tether-off) p95
+           measured per candidate and WARN `scene.top.relaxed_shape` over
+           0.5 Å; WARN `scene.top.R_mismatch`;
+         - `geom.summary` counts every corner past tolerance
+           (`bond_n_over`, `angle_n_over`); hexfold geometry reports from
+           before this change list at most 10 entries per code and carry
+           no `n_over` totals (no version bump: provenance is golden-pinned);
+         - one `top: "sphere"` per call (~95 s each, under ~2 min); the
+           per-n plan table in the next cycle lifts it; rounded lids are
+           not capped;
+         - not yet on prod; the n=12 washer ball relaxes ~0.9 Å flatter, so
+           the relaxed-shape WARN fires (per-annulus rows are the fix);
+       - cycle 2: θp finding plus its band and the R_min refusal on the
+         ball, MACE/xTB verdict as product evidence;
+       - cycle 3: buds on tethered tubes;
+       - cycle 4: spec v0, Reto's CAD grammar (`plane`, `hole_tube`,
+         `ball_on`/`lid_on`, `round` defaulting to min(1.5 × the θp-derived
+         R_min, the room the neighbouring pieces leave), with the chosen R
+         written into the stored spec,
+         `nest`), compiled golden-neutral from `hexfold_scene` params;
+         bounds as `add_measure` bands. This is the nanobud to spec.
+       - cycles 5–6: coaxial two-shell bearing. Its queue item carries the
+         commensurate-friction sentence. The gap is the centre-line radius
+         difference.
        - The render round trip is nanobuds-paper's build plus Reto's
          eyeball. Each change he asks for that stays inside the bars is
          one more hero build, with no new code.

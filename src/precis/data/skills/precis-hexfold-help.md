@@ -1,7 +1,7 @@
 ---
 id: precis-hexfold-help
 title: precis — the hexfold generator (curved sp² carbon from a .hx spec)
-summary: generate atomic se blocks — sheets, tubes, cones, fullerenes, holes, fused joints, nanobuds — from a topology-only .hx spec text via generator='hexfold'; coordinates are derived, the spec is the regeneration input; fidelity='check' returns the check report without minting; generator='hexfold_scene' tiles an authored smooth surface (sheet + fillet/tube/lid features) tethered to it
+summary: generate atomic se blocks — sheets, tubes, cones, fullerenes, holes, fused joints, nanobuds — from a topology-only .hx spec text via generator='hexfold'; coordinates are derived, the spec is the regeneration input; fidelity='check' returns the check report without minting; generator='hexfold_scene' tiles an authored smooth surface (sheet + fillet/tube/lid/sphere features) tethered to it
 answers:
   - how do I generate a nanotube/cone/fullerene/nanobud block from a hexfold spec?
   - what does a .hx spec look like and which nanobud menus exist?
@@ -125,7 +125,12 @@ phase residual, `data.residual` of `data.period`) · `gen.stale` WARN
 (`.hx.json` generated block behind its authored hash) · `op.dangling`
 ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 · `frag.unrealized` INFO ·
-`geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN ·
+`geom.summary`/`geom.bond.*`/`geom.angle.dev`/`geom.join.*` INFO/WARN
+(`geom.summary` also counts every bond/corner past tolerance, `bond_n_over`
+/`angle_n_over`, beside rms and max: the findings list stays capped at ten, and
+the stored report text of plain `hexfold` builds carries the count; geometry
+reports from before this change list at most 10 entries per code and carry no
+`n_over` totals) ·
 `geom.clash` ERROR under 1.0 Å (overlapping atoms), WARN from 1.0 to
 1.8 Å (two non-bonded atoms in the stick geometry, both instances named;
 a clean check without it is not a clean geometry). Nanobud menus
@@ -315,7 +320,8 @@ atoms follow it. A flat sheet carries features; each is a fillet of
 
 - `sheet` `[w, h]`; `at` `[i, j]` = the sheet cell of the feature's hole;
   `n` the tube's `(n,0)`; `top` = `open` | `lid` (flat `cap(n,0)`, `n` a
-  multiple of 6) | `ball` (C60 fused through a hexagon hole, `(6,0)` only).
+  multiple of 6) | `ball` (C60 fused through a hexagon hole, `(6,0)` only) |
+  `sphere` (an authored round top, below).
 - Instances: `name` is the tube, `<name>f` the frustum, `<name>c` the top;
   the sheet is `s`. `extra` (optional) = verbatim `.hx` lines, e.g. buds:
   `"extra": "d: fullerene(C60)\nd @ s/(32,22,A):0 [2+2]"`.
@@ -334,6 +340,64 @@ angles and pyramidalisation first** — deviation is small by construction
 missed bar mints with WARN `scene.bar` naming the feature; ERROR
 `geom.clash`/`geom.seed_overlap` stay ERROR.
 
+## Round tops — `top: "sphere"` and a rounded `top: "lid"`
+
+The tube's
+surface carries on past the tube as an authored fillet and a sphere (or a
+hemisphere) and every top atom is held to it, like the foot.
+
+```json
+{"name": "q", "at": [15, 15], "n": 12, "radius": 5.0, "tube_len": 3,
+ "top": "sphere", "top_R": 10.0, "top_fillet": 4.0}
+{"name": "q", "at": [15, 15], "n": 12, "radius": 5.0, "tube_len": 3,
+ "top": "lid", "top_fillet": 4.69}
+```
+
+- `sphere`: `n` a multiple of 6, `n >= 12`; any other `n` is refused with the
+  reason. `top_R` (Å) and `top_fillet` (Å) are optional. A washer
+  (`cap(6k,0) - hex(n/6-1)`, six heptagons), a `(6k,0)` bulge of `L`
+  periods and a `cap(6k,0)` lid sit on the tube.
+- `lid` + `top_fillet` rounds today's flat lid toward a hemisphere of the
+  tube's radius `r`; `top_fillet` is at most `r`. Without `top_fillet` the lid
+  is the flat lid, byte for byte. `top_R` belongs to `sphere` only.
+- The planner (`plan_top`) builds each candidate (`k` in `r+3..r+5` with
+  `r = n/6 - 1`, `L` in 1..3; a lid's candidates are how many tube atom rows
+  the dome takes in) and keeps one that meets **five bars**: 0 ERROR, no
+  non-bonded pair under 1.34 Å, tethered deviation p95 <= 0.3 Å, top bonds
+  < 1.7 Å, θp max <= 12° (C60 is 11.6°). Among those it prefers the smallest
+  relaxed p95 (below), then the narrowest `k`, then the shortest `L`. `L = 0`
+  is never a candidate (it tears the net).
+- `top_R` is a request: R is area-matched to the chosen build's atoms, and an
+  authored `top_R` picks the `(k, L)` whose area-matched R is nearest.
+  `top_fillet` default = `min(1.5 × R_min, R − r)` and at least 2 Å, where
+  `R_min` is the smallest fillet that keeps θp <= 12° counting both
+  curvatures at the shoulder (hoop `1/r` plus `1/R_t`). At `n = 12`:
+  `R_min` 2.70 Å, so the default is 1.5 × 2.70 = 4.05 Å, under the room cap
+  `R − r` (4.3 Å at R 9.0). An authored `top_fillet` above that room is
+  refused by name.
+- `plan["top_plans"][name]` stores `k`, `L`, the realised `R` and `fillet`,
+  the tethered deviation p95 and θp max, `bars_met`, the relaxed p95, and the
+  whole candidate grid. WARNs: `scene.top.R_mismatch` (realised R more than
+  0.5 Å from the authored `top_R`), `scene.top.bar` (a bar missed on the
+  scene), `scene.top.relaxed_shape`.
+- **The stored shape is the tethered one.** `plan_top` also relaxes each
+  candidate once with the tether off and measures its p95 distance from the
+  authored surface; over 0.5 Å (the washer sphere on `n = 12` measures ~0.9 Å
+  and drops the pole ~0.9 Å under the stick relax; MACE-MP small shows ~2 Å)
+  the block carries `scene.top.relaxed_shape`: "tethered geometry stored;
+  relaxes ~X Å flatter at the pole".
+- Cost: one sphere top is about 95 s for `n = 12` (9 candidates planned on
+  bare tubes, ~35 s, then the scene relax; `n = 24` plans in ~100 s alone); a
+  rounded lid about 20 s. A call takes **one** `top: "sphere"` feature at most
+  (refused by name otherwise; keeps a call under ~2 min so a client timeout
+  does not lose the result; the per-n plan table in the next cycle lifts it).
+  Rounded lids are not capped.
+- Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
+  top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
+  top_fillet`.
+
+## Scene refusals and limits
+
 Refused (`GeneratorError`): a hole cell whose sheet seam is not the planned
 three heptagons (hexfold fuse-phase fault, gr464341 — move the hole one
 cell, esp. away from the 9→10 index boundary); features whose discs
@@ -343,11 +407,12 @@ Limits:
 
 - `top="ball"` always carries WARN `scene.top.joint`: the fused (6,0)→C60
   neck is stick geometry only; MACE-MP small and GFN2-xTB both open 4 of
-  its 6 seam bonds (gr464391). Bonded alternative (checked under both
-  relaxers): a `(12,0)` feature with `top="lid"` and the C60 as a sidewall
-  `[2+2]` bud just under the lid, via `extra`:
-  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"`. The `(4,-7,A)` site
-  is for `tube_len=4`; it moves with the tube length.
+  its 6 seam bonds (gr464391). Bonded alternative: a `(12,0)` feature with `top="lid"` and the C60
+  as a sidewall `[2+2]` bud just under the lid, via `extra`:
+  `"b: fullerene(C60)\nb @ <name>/(4,-7,A):0 [2+2]"` (the `(4,-7,A)` site is
+  for `tube_len=4`; it moves with the tube length). It passes both
+  relaxers as an isolated pillar only; inside a tethered scene its seam
+  still opens (MACE-MP 2.6/3.6 Å), so it is not a scene recipe yet.
 - `(18,0)` feet crumple (an open row). `k=10` frustums (e.g. `(24,0)`) seed
   3 atoms onto the sheet: ERROR `geom.seed_overlap` (gr464358).
 - Fillet `radius` reaches ~3–8 Å at the narrowest frustum; beyond ~12 Å

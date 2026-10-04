@@ -633,7 +633,7 @@ no ERROR. No `__bool__`.
 | `op.dangling` `[spec 0.2]` | ERROR | an atom-addressed op names an atom that no longer exists after regeneration |
 | `gen.stale` `[spec 0.2]` | WARN | generated section's hash ≠ hash of the authored sections |
 | `frag.unrealized` | INFO | fragment referenced but not built (no rdkit) |
-| `geom.summary` | INFO | rms/max bond-length and angle deviation, `clash_count`/`clash_min` (geometry tier) |
+| `geom.summary` | INFO | rms/max bond-length and angle deviation, `bond_n_over`/`angle_n_over` (every bond/ring corner past tolerance, not just the ten listed), `clash_count`/`clash_min` (geometry tier) |
 | `geom.clash` `[impl 0.2, 2026-10-02]` | ERROR / WARN | two atoms neither bonded nor sharing a bonded neighbour sit closer than `Profile.clash_A` (1.8 Å) in the stick geometry; ERROR under `Profile.clash_error_A` (1.0 Å, overlapping atoms), WARN between (a squeezed junction); names both atoms and instances, ten worst listed (a bud sunk into its host, a crumpled lid — gr459567) |
 | `geom.seed_overlap` `[impl 0.2, 2026-10-02]` | ERROR | two non-bonded atoms (1-2 and 1-3 excluded) closer than `Profile.seed_overlap_A` (0.7 Å) in the *placed seed*, before stick runs: a placement bug, reported whatever the relaxer does afterwards. `geom.summary` carries `seed_clash_count`/`seed_clash_min` (seed pairs under `clash_A`) beside the relaxed `clash_*` |
 | `geom.seed_short_bond` `[impl 0.2, 2026-10-03]` | WARN | a *bonded* pair shorter than `Profile.seed_short_bond_A` (1.0 Å) in the placed seed: two atoms nearly stacked, which `geom.seed_overlap` skips because they are bonded. `geom.summary` carries `seed_short_bond_count` |

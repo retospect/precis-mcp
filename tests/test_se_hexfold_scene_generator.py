@@ -96,6 +96,8 @@ def test_an_unknown_feature_key_is_refused_by_name() -> None:
         ({"features": [{**_T, "n": True}]}, r"n must be an integer"),
         ({"features": [{**_T, "radius": "3"}]}, r"radius must be a number"),
         ({"features": [{**_T, "top": 3}]}, r"top must be a string"),
+        ({"features": [{**_T, "top_R": "9"}]}, r"top_R must be a number"),
+        ({"features": [{**_T, "top_fillet": True}]}, r"top_fillet must be a number"),
         ({"extra": 3}, "extra must be a string"),
         ({"k_tether": "1"}, "k_tether must be a number"),
     ],
@@ -140,6 +142,14 @@ def test_a_pillar_and_a_bump_mint_tethered_with_their_caveats() -> None:
     assert topo["scene"]["sheet"] == [30, 24]
     assert [f["name"] for f in topo["scene"]["features"]] == ["t", "q"]
     assert set(topo["plan"]["tops"]) == {"t", "q"}
+    # a ball and a flat lid are byte-identical to before the authored tops:
+    # no top_plans key in the plan, no top_R/top_fillet in the stored scene
+    assert "top_plans" not in topo["plan"]
+    assert all(
+        set(f) == {"name", "at", "n", "radius", "tube_len", "top"}
+        for f in topo["scene"]["features"]
+    )
+    assert not [f for f in findings if f["code"].startswith("scene.top.R_")]
     summary = next(f for f in findings if f["code"] == "geom.summary")
     assert summary["data"]["relax"] == "tethered"
     assert len(block.elements) == topo["n_atoms"]
