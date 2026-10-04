@@ -202,6 +202,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -530,6 +531,34 @@ def _hubs_per_pass() -> int:
         return 8
 
 
+def _pass_wall_s() -> float:
+    """``PRECIS_TAPROOT_REFINE_PASS_WALL_S`` — default **600**.
+
+    Wall-time budget for one :func:`run_hub_refine_pass`: no new hub is
+    started once this much time has elapsed since the pass began (the first
+    hub always runs, so a pass makes progress however slow the verifier is).
+    A hub already in flight is not interrupted — :func:`_verify_per_hub`
+    bounds that. Without it a ``hubs_per_pass`` batch of ~25 serial Haiku
+    calls per hub held the host's single worker for ~60 min (2026-10-04).
+    """
+    try:
+        return float(os.environ.get("PRECIS_TAPROOT_REFINE_PASS_WALL_S", "600"))
+    except ValueError:
+        return 600.0
+
+
+def _verify_per_hub() -> int:
+    """``PRECIS_TAPROOT_REFINE_VERIFY_PER_HUB`` — default **12**.
+
+    Verifier/judge calls one hub's discovery loop may dispatch in one pass
+    (see :func:`_refine_one_hub`); at least 1.
+    """
+    try:
+        return max(1, int(os.environ.get("PRECIS_TAPROOT_REFINE_VERIFY_PER_HUB", "12")))
+    except ValueError:
+        return 12
+
+
 def _topk_default() -> int:
     try:
         return int(os.environ.get("PRECIS_TAPROOT_REFINE_TOPK", "8"))
@@ -735,6 +764,25 @@ def _claim_hubs_due_for_refine(
         store.remove_tag(ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), conn=conn)
 
     return locked_ids
+
+
+def _release_unstarted_hubs(store: Store, hub_ids: list[int]) -> None:
+    """Undo :func:`_claim_hubs_due_for_refine`'s claim-time writes for hubs the
+    pass's wall budget never started: drop the :data:`_ATTEMPT_NS` lease (else
+    they sit out :data:`ATTEMPT_COOLDOWN_MIN`) and re-add the ``TAPROOT_DUE``
+    tag the claim popped, so a refined-but-reopened/re-triggered hub — which
+    :func:`_is_hub_due` sees only via that tag — is picked up next tick. A
+    never-refined hub is due regardless; the tag is harmless there (popped at
+    its next claim)."""
+    if not hub_ids:
+        return
+    with store.pool.connection() as conn:
+        for ref_id in hub_ids:
+            store.remove_tag(ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
+            store.add_tag(
+                ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), set_by="system", conn=conn
+            )
+        conn.commit()
 
 
 def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3533,6 +3581,7 @@ def _refine_one_hub(
     reground: RegroundConfig | None = None,
     plan_out: list[RegroundPlan] | None = None,
     gap_budget: _PassBudget | None = None,
+    verify_cap: int | None = None,
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
@@ -3560,6 +3609,18 @@ def _refine_one_hub(
     accumulate into a :class:`RegroundPlan` appended to ``plan_out``,
     applied by :func:`apply_reground_plan` only after this function's
     transaction commits — that ordering is the add-first contract.
+
+    **Per-hub verifier cap** (``verify_cap``; ``None`` = unlimited, as the
+    on-demand reground job runs it; the pass passes :func:`_verify_per_hub`):
+    discovery stops dispatching verifier/judge calls once that many have been
+    made. The hub is still stamped — the verdicts already reached must land in
+    the rejection/seen memos or they would be re-spent — but if the cap cut
+    off unvisited candidates AND at least one call returned a verdict, the
+    ``TAPROOT_DUE`` tag is re-added so the next pass offers the rest (judged
+    sources are excluded from discovery, so each pass strictly shrinks the
+    remainder). When every call failed (verifier down) no tag is re-added:
+    that would re-spend the same failing calls every tick. Unconsumed
+    ``chase_coverage`` rows keep the hub due independently.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
@@ -3656,6 +3717,9 @@ def _refine_one_hub(
     )
 
     query_vec = embed_query(embedder, claim_sentence) if claim_sentence else None
+    verify_calls = 0  # verifier/judge dispatches this hub this pass
+    verify_judged = 0  # ... of which returned a verdict
+    verify_capped = False  # the cap cut discovery short
     if claim_sentence and query_vec is None:
         log.warning(
             "hub_refine: embed returned no vector for hub #%d -- skipping "
@@ -3898,6 +3962,12 @@ def _refine_one_hub(
             ):
                 resolved_cov.add(cov_id)  # source cited/attached/memoed
                 continue
+            if verify_cap is not None and verify_calls >= verify_cap:
+                # Per-hub spend cap: leave this and every later candidate
+                # unvisited (their coverage rows stay unresolved too).
+                verify_capped = True
+                break
+            verify_calls += 1
             if reground is not None and plan is not None:
                 _reground_verify_candidate(
                     store,
@@ -3920,6 +3990,7 @@ def _refine_one_hub(
                 )
                 if _seen_key(source_ref_id, chunk_id) in reground_seen:
                     resolved_cov.add(cov_id)  # judge returned a verdict
+                    verify_judged += 1
                 continue
             verification = _verify_support_with_caveats(
                 claim=claim_sentence,
@@ -3944,6 +4015,7 @@ def _refine_one_hub(
             contradicts = bool(verification.get("contradicts"))
             if supports in ("yes", "partial", "no"):
                 resolved_cov.add(cov_id)
+                verify_judged += 1
             # Attach only genuine corroboration (shared gate
             # ``_chase_llm.is_corroborating``: a "yes", or a "partial" whose
             # caveats scope the support rather than negate it). A "partial"
@@ -4160,6 +4232,18 @@ def _refine_one_hub(
         if plan_out is not None:
             plan_out.append(plan)
     store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
+    if verify_capped and verify_judged:
+        # Partial work: the stamp above must not hide the unvisited rest.
+        log.info(
+            "hub_refine: hub #%d hit the per-hub verify cap (%d calls, %d judged) "
+            "-- re-marked due for the remainder",
+            hub_ref_id,
+            verify_calls,
+            verify_judged,
+        )
+        store.add_tag(
+            hub_ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), set_by="system", conn=conn
+        )
     # This point is only reached on a completed run (a raise anywhere above
     # propagates out and this line never runs) -- clear the claim-time
     # attempt lease so a genuine re-trigger is never blocked by a stale one.
@@ -4252,13 +4336,23 @@ def run_hub_refine_pass(
     (and the prune sub-stage needs its own second flag on top, behind the
     ``slice_refine_eval`` rubric gate). Tests pass it explicitly.
 
-    Returns the standard ``{claimed, ok, failed}`` shape, plus reground
+    **Wall budget** (:func:`_pass_wall_s`): no hub after the first starts once
+    the pass has run that long; unstarted hubs are released back to the
+    due-set (:func:`_release_unstarted_hubs`) and counted in ``deferred``.
+    Together with the per-hub verifier cap (:func:`_verify_per_hub`) this
+    bounds a pass at roughly the budget plus one hub's worst case.
+
+    Returns the standard ``{claimed, ok, failed}`` shape (plus ``deferred`` when the
+    wall budget cut the pass short), plus reground
     counters (``pruned``/``withheld``) when reground ran at all.
     """
     if embedder is None:
         log.warning("hub_refine: no embedder available -- pass degrades to a no-op")
         return {"claimed": 0, "ok": 0, "failed": 0}
 
+    started = time.monotonic()
+    wall_s = _pass_wall_s()
+    verify_cap = _verify_per_hub()
     resolved_limit = limit if limit is not None else _hubs_per_pass()
     resolved_topk = topk if topk is not None else _topk_default()
     resolved_backstop_h = _backstop_hours()
@@ -4281,7 +4375,23 @@ def run_hub_refine_pass(
     # an operator can lower the module constant).
     gap_budget = _PassBudget(METHOD_GAP_CALLS_PER_PASS)
 
-    for hub_ref_id in hub_ids:
+    deferred = 0
+    for idx, hub_ref_id in enumerate(hub_ids):
+        if idx > 0 and time.monotonic() - started >= wall_s:
+            # Wall budget spent (the first hub always runs): give the rest
+            # back to the due-set so the next tick takes them.
+            unstarted = hub_ids[idx:]
+            _release_unstarted_hubs(store, unstarted)
+            deferred = len(unstarted)
+            log.info(
+                "hub_refine: pass wall budget %.0fs spent after %d/%d hubs "
+                "-- deferred %d to the next pass",
+                wall_s,
+                idx,
+                claimed,
+                deferred,
+            )
+            break
         try:
             # Trigger-1 checks do Crossref HTTP and open their own
             # connections, so they are collected during the write and run
@@ -4303,6 +4413,7 @@ def run_hub_refine_pass(
                     reground=resolved_reground,
                     plan_out=plans,
                     gap_budget=gap_budget,
+                    verify_cap=verify_cap,
                 )
                 conn.commit()
             run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
@@ -4328,6 +4439,8 @@ def run_hub_refine_pass(
             failed += 1
 
     result = {"claimed": claimed, "ok": ok, "failed": failed}
+    if deferred:
+        result["deferred"] = deferred
     if demoted:
         result["demoted"] = demoted
     if resolved_reground is not None:
