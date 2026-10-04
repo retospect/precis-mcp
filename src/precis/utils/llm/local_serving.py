@@ -294,8 +294,9 @@ def _remote_served(store: object) -> dict[str, tuple[str, _Served]]:
 
 
 def served_locally(model: str) -> bool:
-    """Whether THIS host advertises ``llm:<model>`` — a read-only membership test
-    with no slot reservation.
+    """Whether THIS host can reach ``llm:<model>`` — advertised here or behind a
+    LAN-routable ``served_by`` entry on another host — a read-only membership
+    test with no slot reservation.
 
     For a caller that must decide, *before* dispatching, whether the local
     loopback wire has a live endpoint for ``model`` (a served host pins a real
@@ -312,7 +313,13 @@ def served_locally(model: str) -> bool:
     store = meter.active_store()
     if store is None:
         return False
-    return f"llm:{model}" in _served_resources(store, _local_host())
+    resource = f"llm:{model}"
+    if resource in _served_resources(store, _local_host()):
+        return True
+    # Also reachable through a LAN-routable served_by entry on another host
+    # (the cluster-scoped path acquire() takes after a local miss): the loopback
+    # wire is then repointed at that endpoint, so the rung is live here too.
+    return resource in _remote_served(store)
 
 
 def acquire(model: str) -> LocalSlot | None:

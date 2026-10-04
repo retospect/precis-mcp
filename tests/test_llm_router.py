@@ -4995,3 +4995,387 @@ def test_dispatch_async_placement_parity_with_sync_dispatch(
     assert out.paused is False
     assert out.error is not None
     assert "local" in out.error
+
+
+# ── llm.op.<source> `chain`: a per-operation chain override ──────────────
+#
+# The summariser shape: rung 0 is the real local wire (Transport.LOCAL, bare
+# served id), rung 1 the hosted cloud model. Separate fakes per transport let
+# each test say which rung ran and with what model.
+
+_OP_LOCAL_CHAIN = [
+    {"transport": "local", "model": "glm-4.7-flash", "placement": "local"},
+    {
+        "transport": "openai_compat",
+        "model": "z-ai/glm-4.7-flash",
+        "placement": "cloud",
+    },
+]
+
+
+class _Rec:
+    """Provider fake recording ``(model, local_url)`` per call."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.calls: list[tuple[str, str | None]] = []
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        self.calls.append((model, req.local_url))
+        return _ok(self.text, model=model)
+
+
+def _op_chain_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    op_rows: dict[str, dict[str, Any]],
+) -> tuple[_Rec, _Rec, _Rec]:
+    """Tier chain = one distinctive claude_p rung; ``op_rows`` seeds the
+    ``llm.op.<source>`` overrides. Returns (local, cloud, tier) fakes."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"placement": "cloud", "model": "tier-chain-model", "transport": "claude_p"}
+        ],
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.op_override",
+        lambda source: op_rows.get(source),
+    )
+    local, cloud, tier = _Rec("local"), _Rec("cloud"), _Rec("tier chain")
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, local)
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, cloud)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_P, tier)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    return local, cloud, tier
+
+
+def _serving(
+    monkeypatch: pytest.MonkeyPatch, *, served: bool, slot: Any = None
+) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(ls, "served_locally", lambda model: served)
+    monkeypatch.setattr(ls, "acquire", lambda model: slot)
+    monkeypatch.setattr(ls, "release", lambda s: None)
+
+
+def _summ(**kw: Any) -> LlmRequest:
+    return LlmRequest(tier=Tier.SMALL, prompt="x", source="llm_summarize", **kw)
+
+
+_ROW = {"llm_summarize": {"chain": _OP_LOCAL_CHAIN}}
+
+
+def test_op_chain_applies_to_its_source_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    local, cloud, tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(monkeypatch, served=True)
+
+    mine = route(_summ())
+    other = route(LlmRequest(tier=Tier.SMALL, prompt="x", source="classify"))
+
+    assert mine.text == "local"
+    assert local.calls == [("glm-4.7-flash", None)]
+    assert other.text == "tier chain"
+    assert tier.calls == [("tier-chain-model", None)]
+    assert cloud.calls == []
+
+
+def test_op_chain_absent_is_tier_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    local, cloud, tier = _op_chain_setup(monkeypatch, {})
+    _serving(monkeypatch, served=True)
+
+    out = route(_summ())
+
+    assert out.text == "tier chain"
+    assert local.calls == [] and cloud.calls == []
+
+
+@pytest.mark.parametrize(
+    "bad_chain",
+    [
+        "not-a-list",
+        [],
+        [{"transport": "local"}],
+        [{"transport": "nope", "model": "m"}],
+        [{"transport": "local", "model": "m", "bare": "yes"}],
+    ],
+)
+def test_op_chain_malformed_uses_tier_chain_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bad_chain: object,
+) -> None:
+    from precis.utils.llm import operations
+
+    operations._warned.clear()
+    local, cloud, _tier = _op_chain_setup(
+        monkeypatch, {"llm_summarize": {"chain": bad_chain}}
+    )
+    _serving(monkeypatch, served=True)
+
+    with caplog.at_level("WARNING", logger="precis.utils.llm.operations"):
+        outs = [route(_summ()), route(_summ())]
+
+    assert [o.text for o in outs] == ["tier chain", "tier chain"]
+    assert local.calls == [] and cloud.calls == []
+    warns = [r for r in caplog.records if "tier chain" in r.getMessage()]
+    assert len(warns) == 1  # once per (source, reason), not per call
+
+
+def test_op_chain_ignored_for_non_allow_listed_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local, cloud, _tier = _op_chain_setup(
+        monkeypatch, {"not_registered": {"chain": _OP_LOCAL_CHAIN}}
+    )
+    _serving(monkeypatch, served=True)
+
+    out = route(LlmRequest(tier=Tier.SMALL, prompt="x", source="not_registered"))
+
+    assert out.text == "tier chain"
+    assert local.calls == [] and cloud.calls == []
+
+
+def test_op_chain_saturated_slot_advances_to_cloud_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Saturated local slot: rung 1 runs with ITS pinned model, stamped cloud,
+    routed local; the bare served id never reaches the hosted endpoint."""
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h", resource="llm:glm-4.7-flash", reserved=False, paused=True
+        ),
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(_summ())
+
+    assert out.paused is False and out.error is None
+    assert cloud.calls == [("z-ai/glm-4.7-flash", None)]
+    assert local.calls == []
+    assert out.placement == "cloud"
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("cloud", "local")]
+    assert recorded[0].transport == "openai_compat"
+
+
+def test_op_chain_reserved_slot_dispatches_to_slot_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h",
+            resource="llm:glm-4.7-flash",
+            reserved=True,
+            paused=False,
+            endpoint="http://local-node:8080/v1",
+        ),
+    )
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(_summ())
+
+    assert out.error is None
+    assert local.calls == [("glm-4.7-flash", "http://local-node:8080/v1")]
+    assert cloud.calls == []
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("local", "local")]
+
+
+def test_op_chain_unserved_host_prunes_local_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No endpoint for the model on this host (not served, not behind a LAN
+    served_by): the LOCAL rung 0 is pruned, so the call goes straight to the
+    cloud rung — nothing is sent to the dead loopback wire."""
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(monkeypatch, served=False)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(_summ())
+
+    assert out.text == "cloud"
+    assert local.calls == []
+    assert cloud.calls == [("z-ai/glm-4.7-flash", None)]
+    assert [(r.placement, r.placement_routed) for r in recorded] == [("cloud", "local")]
+
+
+def test_op_chain_lan_served_host_keeps_local_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host that reaches the model through a LAN served_by entry (served_locally
+    True, slot carries the remote endpoint) keeps the LOCAL rung."""
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="otherhost",
+            resource="llm:glm-4.7-flash",
+            reserved=True,
+            paused=False,
+            endpoint="http://203.0.113.10:8080/v1",
+        ),
+    )
+
+    out = route(_summ())
+
+    assert out.text == "local"
+    assert local.calls == [("glm-4.7-flash", "http://203.0.113.10:8080/v1")]
+    assert cloud.calls == []
+
+
+def test_op_chain_placement_local_pins_rung_0_and_saturation_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(monkeypatch, served=True)
+    ok = route(_summ(placement="local"))
+    assert ok.text == "local" and cloud.calls == []
+
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h", resource="llm:glm-4.7-flash", reserved=False, paused=True
+        ),
+    )
+    busy = route(_summ(placement="local"))
+
+    assert busy.paused is True
+    assert busy.error is not None and "busy" in busy.error
+    assert cloud.calls == []  # no escape off the local rung
+
+
+def test_op_chain_placement_without_matching_rung_names_the_op_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _op_chain_setup(
+        monkeypatch,
+        {"llm_summarize": {"chain": [_OP_LOCAL_CHAIN[1]]}},
+    )
+    _serving(monkeypatch, served=True)
+
+    out = route(_summ(placement="local"))
+
+    assert out.error is not None
+    assert "llm.op.llm_summarize chain" in out.error
+
+
+def test_op_chain_cloud_throttle_prunes_the_cloud_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    _serving(monkeypatch, served=True)
+    assert route(_summ()).text == "local"
+
+    # Saturated + only the local rung left: paused, never a cloud call.
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h", resource="llm:glm-4.7-flash", reserved=False, paused=True
+        ),
+    )
+    busy = route(_summ())
+    assert busy.paused is True
+    assert cloud.calls == []
+
+
+@pytest.fixture(autouse=True)
+def _reset_op_chain_warned() -> Any:
+    from precis.utils.llm import operations
+
+    operations._warned.clear()
+    yield
+    operations._warned.clear()
+
+
+def _saturated(monkeypatch: pytest.MonkeyPatch) -> tuple[_Rec, _Rec]:
+    from precis.utils.llm import local_serving as ls
+
+    local, cloud, _tier = _op_chain_setup(monkeypatch, _ROW)
+    _serving(
+        monkeypatch,
+        served=True,
+        slot=ls.LocalSlot(
+            host="h", resource="llm:glm-4.7-flash", reserved=False, paused=True
+        ),
+    )
+    return local, cloud
+
+
+def test_op_chain_escape_breaker_trip_on_next_rung_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rung 0 (local) gates free; the escape re-gates rung 1's resource."""
+    local, cloud = _saturated(monkeypatch)
+    seen: list[tuple[str, bool]] = []
+
+    def gate(tier: Tier, *, transport: str, local: bool, bare: bool) -> str | None:
+        seen.append((transport, local))
+        return None if local else "dollar cap hit"
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+
+    out = route(_summ())
+
+    assert out.paused is True and out.error == "dollar cap hit"
+    assert cloud.calls == [] and local.calls == []
+    assert seen == [("local", True), ("openai_compat", False)]
+
+
+def test_op_chain_escape_admission_refusal_on_next_rung_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local, cloud = _saturated(monkeypatch)
+    models: list[str] = []
+
+    def check(req: LlmRequest, *, model: str, transport: Transport) -> str | None:
+        models.append(model)
+        return "window too small" if transport is Transport.OPENAI_COMPAT else None
+
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", check)
+
+    out = route(_summ())
+
+    assert out.error == "window too small" and out.paused is False
+    assert cloud.calls == [] and local.calls == []
+    assert models[-1] == "z-ai/glm-4.7-flash"
+
+
+def test_op_chain_escape_passes_gates_and_runs_next_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local, cloud = _saturated(monkeypatch)
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", lambda tier, **kw: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+
+    out = route(_summ())
+
+    assert out.text == "cloud" and out.placement == "cloud"
+    assert cloud.calls == [("z-ai/glm-4.7-flash", None)]
+    assert local.calls == []
+
+
+# The old hosted re-point (single-rung / unpinned rung 0) keeps its own
+# coverage: test_dispatch_paused_local_slot_falls_back_to_hosted_rung (unpinned
+# rung 0 in a 2-rung failover ladder) and
+# test_saturated_escape_on_local_labelled_rung_lands_cloud_routed_local
+# (single pinned rung).

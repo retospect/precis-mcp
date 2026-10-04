@@ -36,12 +36,18 @@ import logging
 import os
 from dataclasses import dataclass
 
-from precis.utils.llm.router import Tier
+from precis.utils.llm.router import (
+    Backend,
+    Rung,
+    Tier,
+    filter_tool_rungs,
+    parse_chain_rungs,
+)
 
 log = logging.getLogger(__name__)
 
 #: ``app_settings`` key prefix for a per-operation override (JSON
-#: ``{"tier": <str>?, "model": <str>?}``). Kept in sync with
+#: ``{"tier": <str>?, "model": <str>?, "chain": [<rung>…]?}``). Kept in sync with
 #: :data:`precis.utils.llm.live_config.OP_KEY_PREFIX` (the reader), which owns
 #: the actual read; re-exported here for the resolver's callers.
 OP_KEY_PREFIX = "llm.op."
@@ -199,6 +205,22 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "sweep."
         ),
     ),
+    "llm_summarize": OpDefault(
+        tier=Tier.SMALL,
+        model=None,
+        label="Chunk summariser",
+        description=(
+            "The per-chunk `llm_summarize` backfill (SMALL tier, lite call "
+            "log). Registered so `llm.op.llm_summarize` can carry its own "
+            "`chain` (e.g. local-first) while the rest of SMALL stays on "
+            "`llm.chain.small`."
+        ),
+        note=(
+            "model=None is today's behaviour exactly: the worker's client pins "
+            "no model, so route() resolves resolve_model(SMALL). No row ⇒ "
+            "byte-identical routing."
+        ),
+    ),
 }
 
 #: Observed operations deliberately NOT steerable, with why. The override layer
@@ -283,6 +305,68 @@ def resolve_op(source: str | None) -> tuple[Tier, str | None] | None:
     return tier, model
 
 
+#: ``(source, reason)`` pairs already warned about this process — resolution runs
+#: per call, so an unbounded warning per call would flood the log.
+_warned: set[tuple[str, str]] = set()
+
+
+def _warn_once(source: str, reason: str, msg: str, *args: object) -> None:
+    if (source, reason) in _warned:
+        return
+    _warned.add((source, reason))
+    log.warning(msg, *args)
+
+
+def resolve_op_chain(
+    source: str | None, *, tools_needed: bool, backend: Backend
+) -> list[Rung] | None:
+    """The per-operation rung list from ``llm.op.<source>``'s ``chain`` key, or
+    ``None`` (→ the caller uses the tier chain).
+
+    Only a registered source honours it. The rungs use the ``llm.chain.<tier>``
+    grammar and the same parser/validation
+    (:func:`~precis.utils.llm.router.parse_chain_rungs`); a malformed chain is
+    logged and ignored (tier chain), and a tool-using call drops tool-less
+    rungs, an emptied filter also yielding ``None``.
+    """
+    if not source or source not in LLM_OPERATIONS:
+        return None
+    from precis.utils.llm import live_config
+
+    override = live_config.op_override(source)
+    if not override or "chain" not in override:
+        return None
+    raw = override["chain"]
+    key = live_config.op_key(source)
+    if not isinstance(raw, list) or not raw:
+        _warn_once(
+            source,
+            "shape",
+            "operations: %s chain is not a non-empty list — tier chain",
+            key,
+        )
+        return None
+    rungs, bad = parse_chain_rungs(raw)
+    if bad is not None:
+        reason, i, detail = bad
+        _warn_once(
+            source,
+            f"rung {i} {reason}",
+            "operations: %s chain rung %d %s (%r) — using the tier chain",
+            key,
+            i,
+            reason,
+            detail,
+        )
+        return None
+    if tools_needed:
+        kept = filter_tool_rungs(rungs, key, warn=(source, "tools") not in _warned)
+        if len(kept) != len(rungs):
+            _warned.add((source, "tools"))
+        rungs = kept
+    return rungs or None
+
+
 __all__ = [
     "EXCLUDED_OPERATIONS",
     "LLM_OPERATIONS",
@@ -293,4 +377,5 @@ __all__ = [
     "is_steerable",
     "op_default",
     "resolve_op",
+    "resolve_op_chain",
 ]

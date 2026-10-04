@@ -471,3 +471,59 @@ def test_dispatch_unregistered_source_keeps_call_site_tier(
 
     assert breaker_tiers == [Tier.FRONTIER]
     assert out.tier is Tier.FRONTIER
+
+
+# ── llm_summarize registration + resolve_op_chain ──────────────────────
+
+
+def test_llm_summarize_default_with_no_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ships dark: SMALL, no model pin (the worker's client pins none, so
+    route() resolves resolve_model(SMALL) exactly as before), no op chain."""
+    _bind(monkeypatch, {})
+    assert operations.resolve_op("llm_summarize") == (Tier.SMALL, None)
+    assert (
+        operations.resolve_op_chain(
+            "llm_summarize", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+        )
+        is None
+    )
+
+
+def test_resolve_op_chain_parses_and_filters_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://x/v1")
+    chain = [
+        {"transport": "openai_compat", "model": "a", "placement": "local"},
+        {"transport": "openai_tools", "model": "b", "placement": "cloud"},
+    ]
+    _set_op_override(monkeypatch, "llm_summarize", {"chain": chain})
+    backend = llm_router.Backend.ANTHROPIC
+    rungs = operations.resolve_op_chain(
+        "llm_summarize", tools_needed=False, backend=backend
+    )
+    assert rungs is not None and [r.model for r in rungs] == ["a", "b"]
+    assert rungs[0].label == "local"
+    tooled = operations.resolve_op_chain(
+        "llm_summarize", tools_needed=True, backend=backend
+    )
+    assert tooled is not None and [r.model for r in tooled] == ["b"]
+
+
+def test_resolve_op_chain_non_registered_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://x/v1")
+    _set_op_override(
+        monkeypatch,
+        "classify",
+        {"chain": [{"transport": "openai_compat", "model": "a"}]},
+    )
+    assert (
+        operations.resolve_op_chain(
+            "classify", tools_needed=False, backend=llm_router.Backend.ANTHROPIC
+        )
+        is None
+    )

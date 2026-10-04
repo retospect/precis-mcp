@@ -1642,20 +1642,38 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
         )
         return _default_chain(tier, tools_needed=tools_needed, backend=backend)
 
+    rungs, bad = parse_chain_rungs(override)
+    if bad is not None:
+        return _fallback(*bad)
+
+    if tools_needed:
+        keep = filter_tool_rungs(rungs, live_config.chain_key(tier))
+        return keep or _default_chain(tier, tools_needed=True, backend=backend)
+
+    return rungs
+
+
+def parse_chain_rungs(
+    override: list,
+) -> tuple[list[Rung], tuple[str, int, object] | None]:
+    """Map a configured rung-dict list onto :class:`Rung` (the grammar shared by
+    ``llm.chain.<tier>`` and an ``llm.op.<source>`` ``chain``). Returns
+    ``(rungs, None)`` or, on the first malformed rung, ``([], (reason, index,
+    detail))`` — the caller decides whether that raises or degrades."""
     rungs: list[Rung] = []
     for i, raw in enumerate(override):
         if not isinstance(raw, dict):
-            return _fallback("is not an object", i, raw)
+            return [], ("is not an object", i, raw)
         model = raw.get("model")
         if not model or not isinstance(model, str):
-            return _fallback("is missing a model", i, raw)
+            return [], ("is missing a model", i, raw)
         transport_raw = raw.get("transport")
         if not isinstance(transport_raw, str):
-            return _fallback("has an unknown transport", i, transport_raw)
+            return [], ("has an unknown transport", i, transport_raw)
         try:
             transport = Transport(transport_raw)
         except ValueError:
-            return _fallback("has an unknown transport", i, transport_raw)
+            return [], ("has an unknown transport", i, transport_raw)
         if transport is Transport.OPENAI_COMPAT and not os.environ.get(
             "PRECIS_LLM_BASE_URL"
         ):
@@ -1666,13 +1684,15 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
             # Left unguarded, this rung would urlopen a bare
             # '/chat/completions' path on every call (gr259631) instead of
             # degrading once, here, at chain-resolution time.
-            return _fallback(
-                "pins openai_compat with PRECIS_LLM_BASE_URL unset", i, transport_raw
+            return [], (
+                "pins openai_compat with PRECIS_LLM_BASE_URL unset",
+                i,
+                transport_raw,
             )
         placement = raw.get("placement")
         bare_raw = raw.get("bare", False)
         if not isinstance(bare_raw, bool):
-            return _fallback("has a non-boolean bare", i, bare_raw)
+            return [], ("has a non-boolean bare", i, bare_raw)
         rungs.append(
             Rung(
                 transport,
@@ -1681,23 +1701,25 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
                 bare=bare_raw,
             )
         )
+    return rungs, None
 
-    if tools_needed:
-        keep = [r for r in rungs if r.transport.carries_tools]
-        if len(keep) != len(rungs):
-            log.warning(
-                "llm-chain: %s drops %d tool-less rung(s) (%s) for a tool-using "
-                "call — a completion wire returns prose, not verb calls%s",
-                live_config.chain_key(tier),
-                len(rungs) - len(keep),
-                ", ".join(
-                    r.transport.value for r in rungs if not r.transport.carries_tools
-                ),
-                "" if keep else "; falling back to the default chain",
-            )
-        return keep or _default_chain(tier, tools_needed=True, backend=backend)
 
-    return rungs
+def filter_tool_rungs(rungs: list[Rung], key: str, *, warn: bool = True) -> list[Rung]:
+    """Drop rungs whose transport can't carry tools (a tool-using call's
+    per-call filter; ``key`` names the chain in the warning)."""
+    keep = [r for r in rungs if r.transport.carries_tools]
+    if warn and len(keep) != len(rungs):
+        log.warning(
+            "llm-chain: %s drops %d tool-less rung(s) (%s) for a tool-using "
+            "call — a completion wire returns prose, not verb calls%s",
+            key,
+            len(rungs) - len(keep),
+            ", ".join(
+                r.transport.value for r in rungs if not r.transport.carries_tools
+            ),
+            "" if keep else "; falling back to the default chain",
+        )
+    return keep
 
 
 def planner_rung0_model(model_alias: str, job_type: str | None = None) -> str | None:
@@ -2008,7 +2030,21 @@ def route(req: LlmRequest) -> LlmResult:
     # quota (gated on the snapshot), everything else paid spends real dollars.
     # resolve_chain honours an operator override regardless of
     # PRECIS_LLM_FAILOVER; with no override see _default_chain.
-    ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    # An allow-listed source's `llm.op.<source>` `chain` replaces the tier chain
+    # for that source only (operations.resolve_op_chain; None ⇒ tier chain).
+    _op_chain = (
+        _operations.resolve_op_chain(
+            req.source, tools_needed=req.tools_needed, backend=backend
+        )
+        if req.source
+        else None
+    )
+    ladder = _op_chain or resolve_chain(
+        req.tier, tools_needed=req.tools_needed, backend=backend
+    )
+    _chain_name = (
+        f"llm.op.{req.source} chain" if _op_chain else f"{req.tier.value} chain"
+    )
     # Structured placement filter (strict — unlike the cloud throttle below,
     # an emptied nonempty chain here is an *error* result, not a silent
     # paused/degrade: the caller asked for a rung the chain doesn't have).
@@ -2022,8 +2058,8 @@ def route(req: LlmRequest) -> LlmResult:
             model=model,
             tier=req.tier,
             error=(
-                f"placement={req.placement!r} requested but the {req.tier.value} "
-                f"chain has no {req.placement} rung"
+                f"placement={req.placement!r} requested but the {_chain_name} "
+                f"has no {req.placement} rung"
             ),
             paused=False,
         )
@@ -2147,6 +2183,72 @@ def route(req: LlmRequest) -> LlmResult:
         # and would just re-hit the same saturated wire, so that case returns
         # the paused result immediately. A strict `placement='local'` pin
         # forbids this escape entirely (the hosted retry IS a cloud endpoint).
+        if (
+            req.placement != "local"
+            and isinstance(provider, FailoverProvider)
+            and len(ladder) > 1
+            and ladder[0].model is not None
+        ):
+            # A rung 0 that pins its own model names the *served* model: a
+            # hosted re-point would send that bare id to the hosted endpoint
+            # (FailoverProvider runs `rung.model or model`, so the hosted-small
+            # remap can't apply). Walk the remaining rungs, each with its own
+            # pinned model, instead. Stamping follows the rung that ran
+            # (FailoverProvider stamps `_placement_of(rung)` per attempt), so a
+            # cloud rung 1 lands as cloud while `routed` keeps the local intent.
+            # Intended capacity overflow: a saturated LOCAL rung 0 with a next
+            # rung spends on that rung instead of pausing (a LOCAL-first chain
+            # author should expect rung 1 to bill). Rung 0 was gated as free
+            # above, so gate the rung that will actually run — the breaker and
+            # window admission. (The hosted re-point below has this same
+            # pre-existing gap: it is gated as rung 0, not as the hosted wire.)
+            log.debug(
+                "llm-failover: local slot for %s is saturated — advancing to the "
+                "next chain rung (capacity backoff, not a transport error)",
+                ladder[0].model,
+            )
+            nxt = ladder[1]
+            esc_trip = _breaker.gate_tier(
+                req.tier,
+                transport=nxt.transport.value,
+                local=not _rung_is_cloud(nxt),
+                bare=nxt.bare,
+            )
+            if esc_trip is not None:
+                return LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=esc_trip,
+                    paused=True,
+                )
+            esc_refusal = _admit.check_dispatch(
+                req, model=nxt.model or model, transport=nxt.transport
+            )
+            if esc_refusal is not None:
+                return LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=esc_refusal,
+                )
+            started = time.monotonic()
+            result = FailoverProvider(ladder[1:]).run(req, model=model)
+            result = _replace(
+                result,
+                request_hash=_record_dispatch(
+                    req,
+                    result,
+                    transport=ladder[1].transport,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    routed=routed,
+                ),
+            )
+            return result
         if (
             req.placement != "local"
             and isinstance(provider, FailoverProvider)

@@ -58,6 +58,7 @@ id='/placement')` (the `small` tier row).
 
 ## In scope
 
+- Mechanism built: `llm.op.llm_summarize` with a `chain` (summarise-only chain, `operations.resolve_op_chain`); the prod row is not yet written.
 - A local summarise rung ahead of the cloud rung in `llm.chain.small` (or a
   summarise-only chain), cloud as overflow when the local slot is saturated.
 - Placement of the dedicated slice (a whole machine or a share of one) —

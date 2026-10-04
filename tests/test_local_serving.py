@@ -195,6 +195,24 @@ def test_served_locally_false_for_a_different_model(store) -> None:
     assert local_serving.served_locally("summarizer") is False
 
 
+def test_served_locally_true_via_routable_remote_served_by(store) -> None:
+    """A model reachable through a LAN served_by entry on another host counts:
+    the loopback wire is repointed at that endpoint, so a LOCAL rung 0 stays."""
+    meter.bind_store(store)
+    _serve_card(
+        store, "otherhost", "remote-big", 2, endpoint="http://203.0.113.10:8080/v1"
+    )
+    assert local_serving.served_locally("remote-big") is True
+
+
+def test_served_locally_false_for_host_private_remote(store) -> None:
+    meter.bind_store(store)
+    _serve_card(
+        store, "otherhost", "remote-lb", 2, endpoint="http://127.0.0.1:11445/v1"
+    )
+    assert local_serving.served_locally("remote-lb") is False
+
+
 def test_served_locally_false_without_store() -> None:
     meter.bind_store(None)
     assert local_serving.served_locally("qwen") is False

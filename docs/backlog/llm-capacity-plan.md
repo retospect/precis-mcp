@@ -77,6 +77,40 @@ item local-compute-7, which also confirmed the six-machine list.
 **No Mac or Spark serves files** (same ruling). The share moves off caspar
 to finnmaccool; see `cluster-fileserver-move.md`.
 
+### Agreed layout plan, NOT scheduled (Reto 2026-10-03, local-compute-17)
+
+Reto: "A is good but we just write it down for now, as a plan for later."
+Nothing below is built until he reopens it. The 10-02 role table above
+stands meanwhile, with castor as the exclusive big model.
+
+The measurement it rests on (read-only, 2026-10-03):
+
+**Demand.**
+- Product LLM calls cost about $259/week. The big tier is $156 of that, and `dream` alone $111. Medium is $79 (`chase:verify` is most of it), small $22.
+- No layout can save more than that, so hardware is not paid back by cloud savings. Local buys throughput (the ~586k-chunk summary backlog), independence from the provider, and privacy.
+
+**Supply.**
+
+| box | measured |
+|---|---|
+| one GB10 Spark, gpt-oss-120b on vLLM | 290 out tok/s at 32 streams, 400 at 64. About 15× the medium tier's ~1.7M out-tokens/day |
+| big Mac (M2 Ultra, 192 GB) under dev-fleet load | glm-4.7-flash: ~35 tok/s aggregate at 8 streams. 80B-A3B Q4: 24–53 tok/s single stream |
+
+- So the Mac fits the low-concurrency big tier, not the small tier.
+- On castor, two 120B-class vLLM servers do not fit: 66.0 + 69.5 GiB of weights against ~121 GiB usable. One gpt-oss-120b server for both tiers does fit.
+
+**The plan, in order. Every tier keeps its cloud model as the last chain rung, so a down box costs money and never fails.**
+1. **A as a one-tier-at-a-time pilot.**
+   - Medium on castor. This changes the 10-02 castor ruling.
+   - Big-Mac hardening: drop the idle 27B from llama-swap, cap the gate VM, alert on Docker disk.
+2. **A big-tier eval set** (dream / doctor_tick / quest_tick from `llm_call_log`), run on the ≤90 GB Mac candidates and on castor's gpt-oss-120b. The result picks the target:
+   - **D**: castor serves big and medium from one gpt-oss-120b, and the Mac carries no prod tier. Chosen if gpt-oss-120b passes.
+   - **G**: big on the Mac, medium on castor, gate containers moved to spark. Chosen if only a Mac model passes.
+   - **B**: buy a dev machine and make the Mac LLM-only. Chosen only if a ~142 GB model (DeepSeek V4-Flash) passes where every ≤90 GB one fails.
+3. **C**, a fourth Spark for medium, only if the science queue outgrows pollux plus the external HPC.
+
+Rough cost: about 5 build cycles to the big-eval result. B adds 3–4 plus hardware; G's gate move adds 2–3.
+
 ## Explicitly NOT in scope
 
 - Changing any placement, slot or chain row — the plan informs the three

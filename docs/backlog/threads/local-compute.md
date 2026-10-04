@@ -35,6 +35,70 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    placement this table is the input for: the summariser slice (3), the
    big-model slot (4), embedder load (7), and the Spark role split (4). First rows already read
    (decisions log in the item).
+   **Cluster re-layout (Reto 2026-10-03 ~21:50Z, via the orchestrator).** He asked
+   whether the big Mac should become a 192 GB LLM box, whether another Spark
+   should serve a medium model, and what a greenfield allocation of all
+   machines would look like. Deliverables:
+   - an options note in `reviews/local-compute.md`: the greenfield layout plus
+     incremental layouts A/B/C, all from measured demand and supply;
+   - a `local-compute-17` decide item.
+
+   Estimate: 1 build cycle for the note. Carrying out the chosen layout is
+   estimated per layout inside the note.
+   **Ruled 2026-10-03 22:13Z (local-compute-17).** Reto: "A is good but we just
+   write it down for now, as a plan for later."
+   - The plan is recorded in `llm-capacity-plan.md` § "Agreed layout plan, NOT
+     scheduled".
+   - Nothing in it is built until he reopens it. castor stays the big-model
+     box, so (b) below is off.
+   - (c)'s 27B drop is part of A's hardening, so it is off too.
+   - Reto 22:18Z confirmed: "continue with the work … But don't reorganize the
+     network based on the greenfield gedankenexperiment". There are no
+     node-role changes from A/B/D/G. Two pieces continue:
+     - (a) the summarise-only chain: lc-14 "promote if the compare passes",
+       and it passed;
+     - the Docker disk alert: gate hygiene after the 10-03 ENOSPC.
+
+   Superseded by that ruling: the orchestrator note of 22:02Z, which had said
+   pilot step 1 proceeds under the 10-02 rulings without waiting for the item:
+   - (a) **Summarise-only local-first chain.** `llm.op.<source>` gains a
+     `chain` key and `llm_summarize` is registered. Landed with this
+     commit.
+     - Rung 0 must be `transport: "local"`. A pinned OpenAI-style rung 0
+       would send the bare served id to the hosted endpoint.
+     - A saturated slot overflows to rung 1, after the breaker and
+       admission gates re-check rung 1.
+     - After the deploy, write `llm.op.llm_summarize` =
+       `{"chain": [{"transport":"local","model":"glm-4.7-flash","placement":"local"},
+       {"transport":"openai_compat","model":"z-ai/glm-4.7-flash","placement":"cloud"}]}`.
+       Then read `/placement` before and after.
+   - (b) **Medium on castor** once km-8 picks the model.
+   - (c) **Big-Mac hardening**, a deploy-role branch to the orchestrator:
+     - drop the idle 27B from llama-swap;
+     - add a Docker VM disk alert at >85%. ship-gate-ci owns the refusal
+       below 10 GB and the cache cap (`docker-vm-disk-fills-silently.md`);
+       the alert is ours. It is a textfile metric from inside the colima VM
+       plus a Prometheus rule, because node_exporter on the host cannot see
+       the VM's `/var/lib/docker`.
+2b. **External HPC, three uses (Reto 2026-10-03 21:50Z: "bump that up in
+   priority").** Moved up from Horizon. It is still blocked on access: the
+   tunnel key is unregistered and the overlay has no coordinates. Reto ruled
+   option 1 in local-compute-3 but has not done it yet. Re-asked in
+   `local-compute-16`. The public key is in that item, and the private key
+   stays out of the DB store. Reto plans the setup on 2026-10-04; blocked
+   until then. The uses:
+   - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
+     leg 2.
+   - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,
+     fetch), not tunnel-and-serve. It is the "second backend" trigger in
+     `backlog/precis-dispatch.md`, which is now real: extract the runner seam
+     from the pollux relax, shaped by both cases.
+     - Precondition, chemistry's: one GPAW relax must complete in prod on
+       pollux first. None has, and the MPI image is still on branch
+       `chemistry-dft-mpi-env`.
+   - (c) ML-potential relaxes (MACE-MP; GFN-xTB rides the same jobs) for
+     hexfold-toolkit's nanobud geometry vetting: many short jobs, so they
+     batch per sbatch. Same runner as (b).
 3. **backlog/local-summarizer.md** — the first workload to go local again
    (~1.8M-chunk backlog, bulk and content-light); gated on
    `backlog/model-qualification.md`, measured by 1. The gate's instrument
@@ -242,12 +306,19 @@ task set.
    choice against a measured ceiling.
 7. **backlog/torch-extras-conflict.md** — venv hygiene on the Sparks
    (spark-provisioning moved up into Do-next 4c).
-8. **backlog/slullama-hpc-placement.md** — the HPC chain rung; leg 2 is
-   blocked on external cluster access, so it stays last. Reto registers the
-   melchior tunnel key with Meluxina himself (ruled 2026-10-02, review item
-   local-compute-3) and writes the coordinates into the gitignored overlay
-   only; on his "done", verify the tunnel and the login-node daemon-reaping
-   risk. Git history keeps the host:port from 04004d7aa (no rewrite, Reto).
+8. *(moved up to Do-next 2b on 2026-10-03.)* On Reto's "done" for the tunnel
+   key, verify the tunnel and the login-node daemon-reaping risk. Git
+   history keeps the host:port from 04004d7aa (no rewrite, Reto).
+   **Tuned open-weight models for precis operations** (Reto 2026-10-03, relayed
+   by nanobuds-paper). The plan, in order:
+   1. Eval each operation from `llm_call_log` with `precis llm eval`.
+   2. Distill the extraction-type operations.
+   3. Keep the judgment operations (claim fidelity, polarity) on Claude.
+   4. Geometry and mesh operations: the model picks, a checker scores, and
+      the model learns by RL against that score.
+
+   Waiting on nanobuds-paper's Perplexity report on candidate models. It
+   feeds the cluster re-layout (Do-next 2).
 9. **backlog/curation-gate.md** — owned by serving-programme; consumed
    here (seam below).
 10. **backlog/dreaming.md**

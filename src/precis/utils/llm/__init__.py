@@ -43,8 +43,16 @@ Resolution, per dispatch (in order)
 2. **Operation** — a ``req.source`` registered in
    :mod:`~precis.utils.llm.operations`' opt-in allow-list
    (``LLM_OPERATIONS``: ``reading_brief`` / ``meditation`` / ``briefing`` /
-   ``plan_tick``) has its tier + model owned by the registry default + a
-   live ``llm.op.<source>`` override. Excluded on purpose: functional pins
+   ``plan_tick`` / …) has its tier + model owned by the registry default + a
+   live ``llm.op.<source>`` override (``llm_summarize`` is registered too).
+   The override may also carry a ``chain`` (rung dicts in the
+   ``llm.chain.<tier>`` grammar, same parser): that source then walks it
+   instead of the tier chain (step 4) while the rest of the tier keeps the
+   tier chain; malformed ⇒ warned and ignored. Op chains are not visible to
+   ``resolve_chain`` consumers (the ``/status`` models panel,
+   ``planner_rung0_model``), which still show the tier chain. A saturated
+   local rung 0 that pins its own model advances to the chain's next rung
+   (its own pinned model) rather than re-pointing at the hosted endpoint. Excluded on purpose: functional pins
    (``classify``→``summarizer``) and router-bypassers (``fix_gripe``).
 3. **Model** — :func:`resolve_model`: ``llm.model.<tier>`` DB override →
    ``PRECIS_MODEL_*`` env → compiled default. Backend-aware: under an
