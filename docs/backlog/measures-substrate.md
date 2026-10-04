@@ -492,6 +492,30 @@ findings:
   The input is the 130 anchored findings, exported to the scratch dir on
   2026-10-03. The 10 unanchored ones are reported, not extracted.
 
+**Found by the pilot write** (prod, 2026-10-04, the three-run spot check).
+Two code gaps, each worked around in the pilot data and still open:
+- **The literal parser misses a typographic minus.** "– 1.0" (en dash
+  and a space) or "−0.5" (U+2212) lands as text with no value. Chunks
+  print these routinely.
+  - The workaround was an explicit `value_num` on 23 rows.
+  - The fix: the parser reads a leading `– − ‒ —`, optionally followed
+    by spaces, as a minus.
+- **The `required_conditions` matcher ignores taxon aliases.** It reads an
+  input's measurand slug and its `condition` label. The potential taxon is
+  `applied-electrode-potential`, alias `applied-potential`, so every
+  Faradaic-efficiency run was flagged "missing applied-potential" even
+  with the potential present.
+  - The workaround was `condition: "applied-potential"` on 56 items.
+  - The fix: also match the input taxon's aliases.
+- **`best_measure` compares Faradaic efficiency across products.** Its
+  group key is `(measurand, reference, normalization)`, so the best FE in
+  the quest table (98.28 %) is ranked against FE toward any product.
+  - The fix: for a measurand whose `required_conditions` names a
+    categorical condition (`product`), add that condition's value to the
+    group key.
+  - It applies to FE, selectivity, yield rates and partial current. A
+    group then reads "FE · product=NH3".
+
 **Build D: fisheye on the quest (qland, independent).** The ladder on
 `kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
 

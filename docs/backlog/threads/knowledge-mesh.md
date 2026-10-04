@@ -20,37 +20,55 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
-**Resume (2026-10-04 04:50Z):** round 4 is live (prod 727728cc9).
-0185 and 0187 are applied, and the `measure` kind (Build B) is serving.
+**Resume (2026-10-04 05:34Z):** round 5 is live (prod e0b75bdc7):
+Build C, `note=` and the taxon `meta=` fix. The qu202467 (NO from exhaust →
+fertilizer N) measures are written to prod and are under review.
 
-**Prod, after the deploy:**
-- **`precis_reviews_backfill()` was run once and added 0 rows.** The
-  migration's own backfill had already taken every stamp: `reviews` holds
-  234 chunk and 2522 link rows.
-- **The revisions log is healthy:** 0 rows so far, `revision_trigger_state`
-  shows five covered kinds, and `last_error` is empty.
-- **Minting the pilot taxa failed, and nothing was written.** Every
-  `put(kind='taxon', meta=…)` is refused at dispatch with "does not accept
-  ['meta']": `TaxonHandler.put` reads `meta` from `**_kw`, which the
-  strictness gate drops. A fix is being built, and the taxa are minted once
-  it deploys. The commands are ready in
-  `scratch/qu202467-mint-cmds.tsv`.
-- **Quest fisheye dogfood: it works.**
-  `get(kind='quest', id=202467, view='fisheye+1hop')` lists the three
-  sub-quests first under `served-by`, then the draft, the papers and the
-  findings, each capped with `+N more`. Its one weakness is filed in
-  `fisheye-everywhere.md` §6: the body above the ring prints the quest's
-  logbook.
+**Earlier in round 4:**
+- `precis_reviews_backfill()` was run once and added 0 rows. `reviews`
+  holds 234 chunk and 2522 link rows.
+- The revisions log is healthy.
+- Quest fisheye works; one weakness is filed in `fisheye-everywhere.md`
+  §6.
 
-**Round 5:**
-- Build C (89e56b7fd) and `note=` on measure put (1c1699e1d) are marked in
-  round 5; both are on main and not live yet.
-- The extraction is checked offline and ready: 122 runs in
-  `scratch/qu202467-runs-ok.jsonl`. It goes in after round 5 carries
-  Build C and the taxon fix.
-- **A2 (0188, legacy taxa to SI and dropping `rxn_values`):** the design is
-  accepted with five conditions and the branch is being built. It lands
-  after the backfill, which has run.
+**Pilot taxa, minted 05:29Z.** 17 new nodes, tn465823–tn465839, under
+`measurand`, with SI canonical units and display units. Temperature
+reuses the legacy tn460160 (K), which taxon dedup refused to twin. The
+plan is `scratch/qu202467-taxa-plan.md`.
+
+**Pilot runs.** All 122 checked runs are written: 120 live outputs plus
+their conditions, mx86–mx370.
+- **The spot check of the first 3** caught two code gaps, now filed in
+  the measures spec §"Found by the pilot write": the literal parser
+  misses a typographic minus, and the required-conditions matcher ignores
+  aliases. Both were worked around in the data (`value_num` on 23 rows,
+  `condition` labels on 56). The 2 affected runs were superseded:
+  mx78→mx89 and mx82→mx93.
+- **5 runs were refused** for unit spellings (`mg/h cm2`, `vol%`), then
+  respelled and re-put.
+- **Anchors:** every output's anchor matches. The 41 `anchor_mismatch`
+  rows are inputs (product formulas printed as `NH<sub>3</sub>`, and
+  conditions stated only in the claim).
+- **The logs** are `scratch/qu202467-put-log.jsonl` and
+  `qu202467-put-bulk.out`.
+
+**Quest view.** `get(kind='quest', id=202467, view='measures')` shows 16
+groups. Faradaic efficiency is ranked across products, which is a
+`best_measure` group-key gap filed in the spec.
+
+**In flight:**
+- Four Opus reviewers record a model verdict per output row. The brief
+  is `scratch/qu202467-review-brief.md`, and the results go to
+  `scratch/qu202467-review-0{0..3}.jsonl`. Undecided rows go to Reto.
+  Next is a knowledge-mesh-13 item with the results and the quest table.
+- 0188 (A2) is accepted at b23403bb7, and the orchestrator is landing it
+  through the remote gate. It rebases legacy taxa only, and the pilot
+  taxa are already SI. Deploy needs a serve restart right after migrate.
+
+**Follow-ups, filed in the spec:**
+- the typographic-minus parse;
+- alias matching in the conditions matcher;
+- product in `best_measure`'s group key.
 
 ## Do next
 
