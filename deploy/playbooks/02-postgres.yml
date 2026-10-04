@@ -1,9 +1,11 @@
 ---
 # 02-postgres.yml — PostgreSQL, PgBouncer, roles, schemas on the data node
+# The two roles carry their own tags, so --tags postgres / --tags pgbouncer run them separately.
 - name: Configure PostgreSQL
   hosts: data
   become: true
   roles:
-    - postgres
-    - pgbouncer
-  tags: [postgres, pgbouncer]
+    - role: postgres
+      tags: [postgres]
+    - role: pgbouncer
+      tags: [pgbouncer]
