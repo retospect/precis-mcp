@@ -307,7 +307,7 @@ What this build decides:
 - **Migration number:** 0187, assigned by the orchestrator on
   2026-10-03.
 
-**Store SI, convert at the edges** (Reto, 2026-10-03 ~22:15Z, via
+**Store SI, convert at the edges** (Reto, 2026-10-03, relayed before 21:58Z by
 nanobuds-paper). In his words: units are SI; "Angstroms are stored as
 very small meter values, but if the user sets angstroms or requests it
 will get it … no 0.000001m ever"; and a general range-and-conditions
