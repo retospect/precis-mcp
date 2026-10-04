@@ -134,6 +134,8 @@ def exact_verdict(sha: str) -> dict[str, Any]:
     run/attempt to the attempt jobs endpoint (GitHub Actions REST API); age
     and job conclusions come from that same response. A partial failed-job
     rerun needs a full rerun, since it cannot certify the complete job set.
+    A nullable workflow file cannot identify a certificate source; skip it
+    without discarding another suite's fully identified, verified run.
     """
     facts: dict[str, Any] = {
         "candidate": "",
@@ -181,7 +183,7 @@ def exact_verdict(sha: str) -> dict[str, Any]:
         intended = [
             s["workflowRun"]
             for s in suites["nodes"]
-            if (s.get("workflowRun") or {}).get("file", {}).get("path")
+            if ((s.get("workflowRun") or {}).get("file") or {}).get("path")
             == ".github/workflows/check.yml"
         ]
         run = max(intended, key=lambda r: int(r["databaseId"]))

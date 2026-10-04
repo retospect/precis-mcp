@@ -242,6 +242,40 @@ def test_exact_certificate_requires_distinct_complete_jobs_in_one_attempt(
     assert "certificate" not in facts
 
 
+@pytest.mark.parametrize("omit_file", [False, True])
+@pytest.mark.parametrize("sole_candidate", [False, True])
+def test_exact_certificate_handles_missing_workflow_file(
+    monkeypatch: pytest.MonkeyPatch, omit_file: bool, sole_candidate: bool
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    graph = json.loads(_exact_response(GATED, runs))
+    suites = graph["data"]["repository"]["object"]["checkSuites"]["nodes"]
+    unknown = json.loads(json.dumps(suites[0]))
+    if omit_file:
+        del unknown["workflowRun"]["file"]
+    else:
+        unknown["workflowRun"]["file"] = None
+    if sole_candidate:
+        suites[:] = [unknown]
+    else:
+        unknown["workflowRun"]["databaseId"] = 99
+        unknown["checkRuns"]["nodes"] = []
+        suites.append(unknown)
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: json.dumps(graph) if a[2] == "graphql" else _exact_jobs(runs),
+    )
+    facts = mod.exact_verdict(GATED)
+    if sole_candidate:
+        assert facts["candidate"] == ""
+        assert "certificate" not in facts
+    else:
+        assert facts["candidate"] == GATED
+        assert facts["certificate"]["run_id"] == 42
+
+
 def test_exact_certificate_refuses_rerun_started_during_job_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
