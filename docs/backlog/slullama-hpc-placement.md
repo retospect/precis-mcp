@@ -10,14 +10,17 @@ or Slurm submission. User login is confirmed; automation authentication and
 project entitlement remain unverified. Canonical integration spec consolidating
 communicator's draft and the chemistry/local-compute ownership boundary.
 
-Owner: meluxina; Precis orchestrates credentials/jobs/graph outcomes; catpath
-owns SSH/Slurm lifecycle and ML task execution. Implementation worktrees:
+Owner: meluxina; Precis orchestrates credentials/jobs/graph outcomes; a generic
+SSH/Slurm layer owns remote lifecycle; catpath is its first workload adapter.
+Implementation worktrees:
 `codex-meluxina`, `codex-catpath-meluxina`, both `work/meluxina/bootstrap`.
 Exact baseline commits and evidence live in fleet `notes/meluxina.md`.
-Catpath's [DFT/Slurm proposal](../../../codex-catpath-meluxina/docs/proposals/dft-refinement-and-slurm.md)
+Catpath's [DFT/Slurm proposal](https://github.com/retospect/catpath/blob/9a4cfede3efaa4f2d8aa2afb92427db41e4a8096/docs/proposals/dft-refinement-and-slurm.md)
 owns broader task-runner exploration; link/update it when implementing this
 slice, without another competing integration spec. Its GPU-job packing and
 persistent-spool suggestions are proposals, not implemented MeluXina behavior.
+The repository reference pins reviewed documentation, not a production engine
+selection; it works independently of a sibling worktree's session layout.
 
 ## Scope / holds
 
@@ -27,9 +30,33 @@ fixture. Parallel seeds use the same lifecycle; pipeline-wide relax/NEB
 scheduling, persistent spools and DFT follow later. LLM plan is separate.
 
 No Precis `uv.lock` change or production catpath release selection; assigned
-catpath SHA is a development baseline. No qu164903 tick, held campaign rerun,
+catpath SHA is a development baseline; the 0.23.1 recommendation remains
+unanswered. Resources, budget, fixture/model and tolerances remain proposals.
+No qu164903 tick, held campaign rerun,
 legacy backfill, hydride NEB, MP-key experiment, push/merge/deploy, Docker prune
 or full suite without coordinator scheduling. Never edit either main checkout.
+
+## Reusable library boundary
+
+Reto's reusable Slurm-library direction supersedes catpath-owned transport.
+Generic contracts: `stage(bundle, hashes)`, `submit(job_spec, token)`,
+`status(handle)`, `recover(intent)`, `cancel(handle)`, `collect(handle, outputs)`.
+Bundles, resource profiles, submission intents, scheduler IDs and outcome
+envelopes contain no ML/Python-engine assumptions. Persistent handles contain
+profile IDs and hashes; no agent sockets or credential bytes.
+
+Catpath maps energy/forces and seed tasks into bundles, executes its wheel/model
+worker and validates scientific output. Precis resolves vault references,
+supplies authenticated transport, reserves shared budgets, persists handles
+and records every outcome. Generic transport/scheduler code imports neither
+Precis Store/vault nor catpath/model code. Credentials are never resolved remotely.
+
+Smallest initial location proposed: `src/precis/remote/`, with neutral `ssh.py`
+and later `slurm.py` behind this contract; `credentials.py` is the explicitly
+Precis-dependent bridge. Catpath adapter consumes an injected transport/runner,
+not a Precis dependency. Repository/package extraction, library naming/version,
+distribution/publication and dependency wiring remain proposals for separate
+review. No top-level dependency, optional extra or publication is authorized.
 
 ## Verified seams / missing consumer
 
@@ -61,7 +88,7 @@ or private material. Supplied reference stays in private assignment; do not
 ask registration/access questions again.
 
 Implement a versioned credential contract, inspecting only redacted metadata
-before choosing encoding; encrypted OpenSSH key and separate optional
+before choosing encoding; encrypted OpenSSH key and explicitly paired
 passphrase references. Never silently treat an arbitrary string as JSON,
 a key path or a shell command. Require vault origin for this pilot, rejecting
 ambient env/file override so successful SSH proves the requested web-vault path.
@@ -72,18 +99,117 @@ no existing secret in HTML. Validation returns presence/format/unlock/auth
 classifications only. Synthetic-key tests cover multiline replacement,
 encrypted unlock, missing/wrong passphrase and redaction.
 
-No secrets in argv, child env, manifest or logs. Prefer bounded local agent/FD
-handoff; if OpenSSH needs a key file, an implemented consumer owns mode-0700
-session scratch, mode-0600 encrypted key, passphrase private channel, agent
-lifetime, exception cleanup and stale-scratch recovery. No persistent unlocked
-key or shared `/tmp`. Review transport before any new dependency/extra;
-document why existing facilities are insufficient.
+Chosen facilities for the proposed credential patch: Python stdlib and system
+OpenSSH (`ssh`, `ssh-agent`, `ssh-add`); no new Python dependency, crypto
+implementation, package install or change to dependency locks. Commands are
+available on the inspected host (OpenSSH 10.2p1); deployed worker availability
+and askpass behavior must pass synthetic checks before use.
 
 Strict host verification against independently verified pins; missing/changed
 key fails before auth. Balanced endpoints need an allowed verified key set
 and explicit rotation. Keyscan discovers candidates, not trust. No forwarding,
 ambient identity or first-use acceptance; bounded timeouts, no prompts.
 Actual host pin/provenance is still missing.
+
+## Smallest reviewable credential patch — proposed, not implemented
+
+One Precis-only patch, no scheduler/job/quest wiring or catpath changes.
+No automatic live probe, quota request or SSH entry in the web's periodic
+`secret_status` probe registry. Constructing transport does not connect.
+
+| Module | Exact bounded change / contract |
+|---|---|
+| `src/precis_web/templates/secrets/index.html.j2` | Add explicit Multiline toggle on existing add/replacement forms; render one enabled `value` control (password or blank textarea). Multiline editor holds only newly entered text; no reveal/repopulation, file upload or new endpoint. Passphrase stays single-line/masked. |
+| `src/precis_web/routes/secrets.py::set_secret` | Existing POST already preserves string value and blank no-op; retain behavior, update docstring/tests only. Normalize CRLF in key consumer, not every vault value. |
+| `src/precis/secrets.py` | Add `require_vault_secret(name, *, store)` bypassing env/file/cache. Reuse audited `_reveal` with new opt-in redacted-error flag: no raw exception text or traceback; missing/error fails closed with `VaultSecretUnavailable`. Existing `get_secret` order and migration overload fallback unchanged. |
+| New `src/precis/remote/credentials.py` | `vault_ssh_session(store, credential_refs, profile, *, scratch_root)` context manager resolves explicit key/passphrase refs, unlocks dedicated agent, yields generic `SshSession`, then tears down. Secret-bearing fields excluded from repr; no serializable credential result. |
+| New `src/precis/remote/ssh.py` | Neutral immutable `SshProfile(host, port, user, verified_host_keys, pin_provenance)` plus `SshSession.run(remote_argv, *, timeout_s)`. Fixed OpenSSH options, local argv list, quoted remote argv, bounded process-group execution. Receives agent/public-identity paths; imports no vault/Store/catpath. Output is internal, repr-hidden, never logged by transport. |
+| New `src/precis/remote/_askpass.py` | Internal helper with no vault access; reads one passphrase from private Unix socket and writes only to OpenSSH's askpass pipe. No CLI registration, terminal prompting, prompt echo or logs. |
+| New `src/precis/remote/__init__.py`, existing `src/precis_web/__init__.py` | Owning contract/rationale: neutral core vs vault bridge, short-lived OpenSSH identity and write-only multiline input. |
+
+Private config v1 explicitly maps `key_ref` to encrypted OpenSSH text and
+`passphrase_ref` to passphrase; supplied ref's existing encoding remains
+unknown. Unsupported format yields `credential_format`, never reinterpretation
+or rewrite. Bounded stdlib base64/length-framing check of
+[OpenSSH key envelope](https://raw.githubusercontent.com/openssh/openssh-portable/master/PROTOCOL.key)
+rejects unencrypted `cipher=none`/`kdf=none`, NULs, oversized/multiple keys and
+non-Ed25519 public identity. OpenSSH performs decryption/validation. Missing
+passphrase fails before agent start; wrong passphrase returns `unlock_failed`.
+
+Session sequence:
+
+1. Validate explicit profile/pins and consumer-owned scratch root; no keyscan,
+   inherited SSH config, wildcard pins or guessed passphrase reference.
+2. Resolve vault-only values with explicit Store. No generic TTL cache; no
+   values in argv, child env, exception/cause, manifest or log.
+3. Create mode-0700 session directory under explicit worktree/session scratch,
+   mode-0600 encrypted-key file and pinned known-hosts file; no unlocked key
+   or passphrase file. Prevent symlink/path escape; Unix socket length checked.
+4. Start dedicated `ssh-agent -D -a <socket>` with stdlib `Popen`, sanitized
+   env and owned process group. No ambient agent, shell/eval or debug output.
+5. One-shot bounded passphrase broker on private mode-0600 Unix socket in that
+   directory; helper path/socket location in env contain no secret. Fixed helper
+   launcher references installed module/current interpreter only. Force
+   `SSH_ASKPASS_REQUIRE=force`; `ssh-add -q -t 60 <encrypted-key>` reads helper
+   output internally, never through captured user logs. Deny repeated requests;
+   synthetic TTL test uses a shorter lifetime bounded by the same 60-second cap.
+6. Obtain public identity from dedicated agent internally; use its public file
+   for `IdentityFile` + `IdentitiesOnly=yes`; delete encrypted-key file after
+   successful load. Yield session with sanitized subprocess env only.
+7. All exits close broker/FDs, terminate/reap only owned children, unlink session
+   files/socket/dir. Failure during any step runs same cleanup; do not replace
+   primary error with cleanup error. Hard controller kill is not a finally path:
+   agent identity expires within 60 seconds; encrypted-only residual scratch
+   may persist. Each session holds a non-inherited advisory lock; next startup
+   reclaims only same-owner, nonsymlink session dirs whose lock can be acquired.
+   Never kill a PID from stale metadata without identity verification.
+
+Per command use `ssh -F /dev/null`, own `IdentityAgent`/public `IdentityFile`,
+`StrictHostKeyChecking=yes`, own `UserKnownHostsFile`, global known-hosts off,
+`UpdateHostKeys=no`, `VerifyHostKeyDNS=no`, `BatchMode=yes`, public-key-only,
+`ForwardAgent=no`, `ControlMaster=no`, `ControlPersist=no`, no proxy/forwarding,
+one connection attempt and bounded connect/process/output limits. Reject
+option-like/control-character hosts/users and untrusted command interpolation;
+quote remote arguments with `shlex.join`. Expired identity requires a new
+bounded vault session, never silently a permanent agent.
+
+Allowlisted diagnostics only: credential unavailable/format/passphrase missing,
+unlock failed, pin missing/mismatch, auth failed, transport timeout/unavailable,
+cleanup failure. The Precis bridge exposes no raw OpenSSH/key/DB stderr.
+Generic result bytes stay internal until a workload-specific validator chooses
+safe outputs. Same-UID processes are already within the vault trust boundary;
+Unix sockets and finite identity lifetime do not create a per-user vault ACL.
+[ssh-add](https://man.openbsd.org/ssh-add),
+[ssh-agent](https://man.openbsd.org/ssh-agent),
+[ssh_config](https://man.openbsd.org/ssh_config) support this facility choice.
+
+Focused acceptance for this proposed patch:
+
+- Extend `tests/precis_web/test_secrets_route.py` / `test_secrets.py`: multiline
+  add/replace preserves embedded newlines, one enabled value control, blank
+  no-op, stored text absent from returned HTML. Render without vault reveal.
+- Extend `tests/test_secrets_resolver.py` / `test_secrets_access_audit.py`:
+  conflicting env/file/cache cannot win; missing/broken vault fails closed;
+  audit identity and existing overload fallback persist; sentinel exception
+  text/credentials absent from logs and raised error/cause.
+- New `tests/test_remote_ssh_credentials.py`: synthetic encrypted Ed25519 key
+  under fixture scratch; real offline `ssh-agent`/`ssh-add` unlock (no network),
+  wrong/missing passphrase, CRLF, unencrypted/malformed key, process/env/argv
+  redaction, file modes, all timeout/failure/exception cleanup branches, finite
+  agent TTL after simulated controller death. No user credential access.
+- New `tests/test_remote_ssh.py`: config isolation, pins required, argv quoting,
+  bounded output/timeouts and child reaping; transient loopback-only synthetic
+  `sshd` tests correct pin acceptance and changed/missing pin rejection. If test
+  runtime lacks required binaries, report gate unavailable, not mock success.
+
+Proposed focused command: `scripts/test -n0 tests/test_secrets_resolver.py
+tests/test_secrets_access_audit.py tests/precis_web/test_secrets_route.py
+tests/precis_web/test_secrets.py tests/test_remote_ssh_credentials.py
+tests/test_remote_ssh.py` with scratch/tmp configuration confined to worktree
+or session scratch. Ruff and targeted container typecheck follow; full suite
+requires coordinator scheduling. No tests or source patch run in this follow-up.
+Patch authorization covers synthetic verification only; live credential reveal,
+authentication and quota remain a later explicit gate.
 
 ## Artifact / task contract — catpath
 
@@ -230,8 +356,11 @@ Static card seeding replaces full `served_by`: distinct model ID if revisited.
 
 ## Coordinator review / next gate
 
-Review owner boundary, credential consumer and whole-node pilot budget; assign
-bounded implementation. Then validate pinned vault-backed auth and one quota
+First seam/spec deliverable accepted by parent; this amendment awaits review.
+Review reusable core/vault/workload boundary and proposed credential-only patch;
+authorize that bounded source patch separately. Resource/budget/tolerance and
+0.23.1 engine recommendation remain unanswered proposals. Then review live
+credential access before validating pinned vault-backed auth and one quota
 query, freeze actual account/QoS/environment/model/artifact hashes and CPU
 reference, review concrete run manifest before one submission. GPAW/DFT is
 not prerequisite; production release/held campaigns/LLM routing stay separate.
