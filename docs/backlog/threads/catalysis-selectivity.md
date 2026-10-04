@@ -50,6 +50,13 @@ been dogfooded: the only prod path through them is a live pourbaix_bulk
 job, and that waits on Reto's MP key. The first MP-key job checks them.
 The rest of round 3 here was docs: the CNT read passes and the item-17
 ruling.
+**Round 4 (deployed 727728cc, 2026-10-04):** this thread landed only a
+test fix (81dff3684, no prod surface) and docs. On prod, the SI
+auto-ingestion shipped in this round brought in the SIs of pa5303
+(pa465134) and pa166889 (pa465698). Both state V vs RHE, so item 17 is
+resolved. qu164903's operating point (−0.3 V_RHE, window −0.2 to −0.4 V,
+pH 7) is now in its logbook as decision entry 626. That changes no
+compute; the holds stay.
 
 **Worktree:** `catalysis-selectivity`
 **Active:** yes — Reto, 2026-10-02 ("high up").

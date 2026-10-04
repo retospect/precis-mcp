@@ -77,8 +77,8 @@ wrong substrate. Full plan, sources and costs:
    gate. A candidate whose ΔG_abs stays positive across the window skips
    it. No operating point → flag, never a default.
 7. **qu164903's operating point** comes from the literature: proposed
-   U = −0.3 V_RHE, window −0.2 to −0.4 V, pH 7 (item 16). It is written to
-   the quest only after the papers' reference scales are confirmed.
+   U = −0.3 V_RHE, window −0.2 to −0.4 V, pH 7 (item 16). The reference
+   scales are confirmed (item 17), and the point is in the quest's logbook.
 
 Stated in every result: there is no operando evidence of PdH under NO
 reduction itself (the nearest is CO₂RR operando TEM, β below −0.2 V_RHE).
@@ -176,16 +176,10 @@ the duration, and record the pause in the quest logbook.
   The spin check at the Ta end (design note §22i) found no moment (Ta
   < 10⁻⁸ μ_B from a 1 μ_B seed) and the spin-paired energy to 10⁻⁵ eV,
   so the spin-paired table stands.
-- **Open (`catalysis-selectivity-17`), Reto 2026-10-03:** the reference
-  scale of pa5303 and pa166889 sits in their SIs, behind publisher
-  paywalls (403). Reto will not check them by hand. SI auto-ingestion
-  (one linked ref per SI file; the organizer is assigning an owner) is
-  1–2 builds out. Once both SIs are ingested, read the scale from them
-  and resolve the item. Until then qu164903 (NO→NH₃ selectivity) has no
-  operating point, and stage 0 proceeds without one.
-  - pa5303: **RHE.** Its SI, ingested 2026-10-04 as pa465134, says "All
-    potentials were referenced to a reversible hydrogen electrode (RHE)",
-    converted from Ag/AgCl (pa465134~3), in NO-saturated 0.5 M Na₂SO₄. Its
-    93.7% at −0.4 V is V_RHE.
-  - pa166889: SI found, download re-queued; the round-4 deploy retries it.
-    The item resolves when its scale is read.
+- **Resolved (`catalysis-selectivity-17`), 2026-10-04:** both papers
+  report V vs RHE, so the operating point stands as proposed in step 7.
+  Their SIs came in through SI auto-ingestion: pa465134 for pa5303 and
+  pa465698 for pa166889. Both convert from Ag/AgCl with "+ 0.198 V +
+  0.059 × pH" (pa465134~3, pa465698~4). qu164903's logbook records the
+  point and its sources (decision entry 626). No compute changed; the
+  item 23/25 holds stay.
