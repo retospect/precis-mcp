@@ -10,20 +10,20 @@ green or the reverse), then tuning and residue.
 **Last reviewed:** 2026-10-04
 **Worktree:** `ship-gate-ci`
 **Active:** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
-**Resume:** 2026-10-04. Round 3 deployed 929107f32 with all of this
-thread's code. Round 4 so far: f0c01b03c (`fleet say` pastes long text;
-agent-tree teardown run markers), dfb65c294 (docs), 3c14054b6 (narrow
-ship lock: lint and gates unlocked, forward-merge land with a `Gate:`
-trailer after the race budget; docker-disk preflight below 10 GB; hourly
-30 GB build-cache cap; testmon guard reads xfailed as green), and release
-slice (b) `ship --release`. precis-dev image rebuilt 2026-10-03 21:36Z.
-Round 4 deployed 727728cc9 (04:40Z) with the narrow lock in it. Dogfood
-on the live tooling: my two lands since showed no "waiting for the ship
-lock"; the CI waits and gates ran unlocked, each lost race printed its
-budget, and a red fallback local gate refused to land. The disk preflight
-passes silently in `scripts/test`. The build-cache cap has not run yet
-(no stamp; cache 28.4 GB, under the cap). `ship --release` lands in round
-5. Next: slice (c), dogfooded by round 5.
+**Resume:** 2026-10-04 07:30Z. Everything this thread built is on main;
+the tree holds no unlanded work. Live in prod since round 4 (727728cc9):
+the narrow ship lock (forward-merge land with a `Gate:` trailer after the
+race budget), the docker-disk preflight and build-cache cap, `fleet say`
+bracketed paste, agent-tree teardown run markers. Round 6, marked in,
+awaiting the deploy: 13bac2b25 (release slice (b), `ship --release`),
+40bd57ff1 (remote race budget by risk: one CI run, then forward-merge;
+one retry when the tree adds a migration or touches `safe_fetch.py`),
+68e65b30a (`scripts/fleet up <slug…>` creates only the named windows).
+40bd57ff1's own ship dogfooded the budget: main moved during its one CI
+run and it landed forward-merged over 7 commits, no pin, `gated` not
+moved. Not yet seen running: the build-cache cap (cache was under 30 GB)
+and `ship --release` on a real round. Open: Do next 1 slice (c), then 2.
+Next step: slice (c), dogfooded on the first round cut after it lands.
 
 ## Do next
 
@@ -35,7 +35,8 @@ passes silently in `scripts/test`. The build-cache cap has not run yet
    (forward merge in the same command, stop on conflict; design note 5 +
    verdict) shipped 2026-10-04. Next is (c): `round gate`/`deploy` on the
    release head, the `deployed/r<N>` tag and merge-back, with the
-   prod-as-second-parent test; round 4 dogfoods it.
+   prod-as-second-parent test; the first round cut after it lands
+   dogfoods it.
 2. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
    the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
    The `scripts/test` and `scripts/ship` refusals below 10 GB and the
