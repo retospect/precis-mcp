@@ -57,6 +57,18 @@ parentheticals between them are free.
 key words in order). A long-form phrase *in the claim* found through the
 map is an acronym term too (covered by the long form or the acronym), and
 the mode words inside it are subsumed rather than reported twice.
+
+Three leniencies (2026-10-04 dr173020 triage, each a pure-noise class):
+
+* an **undefined written-out acronym** — DFT is covered by "density
+  functional theory" (or "density-functional theory") with no "(DFT)" defined
+  anywhere: :func:`_initials_pos` finds a run of consecutive words whose
+  initials spell it, stop words allowed in the middle. Acronyms of 3+ letters
+  only (two letters match running text by chance).
+* **signed numbers** — a claimed ``0.85`` is covered by ``-0.85``/``+0.85``/
+  ``±0.85`` in a passage (magnitudes compared); a claimed ``-0.85`` is a term
+  of its own and needs a negative (or ``±``) there.
+* **generic mode heads** (:data:`GENERIC_NON_TERMS`) are never mode terms.
 """
 
 from __future__ import annotations
@@ -91,6 +103,13 @@ KIND_MODE = "mode"
 #: carry: a "theorem" or "proof" claim is not a measurement, so these never
 #: become coverage terms, method-gap searches or a method-claim prefill order.
 NON_METHOD_MODES = frozenset({"proof", "proofs", "theorem"})
+
+#: Generic way-of-knowing heads too vague to demand of a passage on their own
+#: ("calculations", "measurements", "analysis" ...): never a coverage term
+#: (2026-10-04 dr173020 triage: the main mode-word noise). The technique
+#: families "spectroscopy" / "microscopy" / "imaging" stay terms — they name
+#: a method class a passage can lack.
+GENERIC_NON_TERMS = GENERIC_EPISTEMIC_HEADS - {"spectroscopy", "microscopy", "imaging"}
 KIND_NUMBER = "number"
 KINDS = (KIND_ACRONYM, KIND_MODE, KIND_NUMBER)
 
@@ -180,21 +199,32 @@ def _stem(word: str) -> str:
 class _Tok:
     stem: str
     start: int
+    caps: bool = False  # an all-caps token (an acronym, never a written-out word)
 
 
 class Prepared:
     """One passage, cleaned once: the text, its tokens (parentheticals
     blanked so they never count as a gap) and its number set."""
 
-    __slots__ = ("numbers", "text", "toks")
+    __slots__ = ("mags", "negs", "numbers", "text", "toks")
 
     def __init__(self, raw: str) -> None:
         self.text = _clean(raw)
         blanked = _BLANK_PAREN_RE.sub(lambda m: " " * len(m.group(0)), self.text)
         self.toks = [
-            _Tok(_stem(m.group(0)), m.start()) for m in _TOKEN_RE.finditer(blanked)
+            _Tok(
+                _stem(m.group(0)),
+                m.start(),
+                len(m.group(0)) > 1 and m.group(0).isupper(),
+            )
+            for m in _TOKEN_RE.finditer(blanked)
         ]
         self.numbers = _numbers(self.text)
+        signed = _signed_numbers(self.text)
+        #: every magnitude the passage states, signed or not
+        self.mags = self.numbers | {m for _, m in signed}
+        #: magnitudes stated with a minus (or ``±``) sign
+        self.negs = frozenset(m for sign, m in signed if sign in _NEG_SIGNS)
 
 
 #: Chirality / index pairs "(10,0)" are one measurement-like unit, not two
@@ -215,6 +245,36 @@ def _number_terms(text: str) -> list[str]:
 
 def _numbers(text: str) -> frozenset[str]:
     return frozenset(_number_terms(text))
+
+
+#: Sign glued to a number's first digit, not mid-word/range/exponent
+#: ("5-10", "MOF-5", "10^-6" are not signed numbers).
+_SIGNED_RE = re.compile(r"(?<![\w.^])([−–\-+±])(\d+(?:\.\d+)?)")
+_NEG_SIGNS = frozenset("−–-±")
+
+
+def _canon_magnitude(num: str) -> str:
+    return re.sub(r"^(\d+)\.0+$", r"\1", num)
+
+
+def _signed_numbers(text: str) -> list[tuple[str, str]]:
+    """``(sign, magnitude)`` for every explicitly signed number in ``text``."""
+    return [
+        (m.group(1), _canon_magnitude(m.group(2))) for m in _SIGNED_RE.finditer(text)
+    ]
+
+
+def _negative_terms(text: str) -> list[str]:
+    """``"-0.85"`` for every claimed number carrying a minus sign."""
+    return list(
+        dict.fromkeys("-" + mag for sign, mag in _signed_numbers(text) if sign in "−–-")
+    )
+
+
+def _number_covered(term: str, passage: Prepared) -> bool:
+    if term.startswith("-"):
+        return term[1:] in passage.negs
+    return term in passage.mags
 
 
 _NUMBER_CORE_RE = re.compile(r"^[~±]?(\d+(?:\.\d+)?(?:\^-?\d+)?)")
@@ -284,10 +344,13 @@ def _is_acronym(token: str) -> bool:
     return True
 
 
-def claim_terms(sentence: str) -> list[Term]:
+def claim_terms(sentence: str, *, include_generic: bool = False) -> list[Term]:
     """Every mode word, acronym and number the sentence names, each kind
     in first-occurrence order, deduped. Long-form phrases need the
-    evidence's acronym map and are added by :func:`uncovered_terms`."""
+    evidence's acronym map and are added by :func:`uncovered_terms`.
+    ``include_generic`` keeps the generic heads (:data:`GENERIC_NON_TERMS`)
+    as mode terms: for *ranking* and "names a method" (D2 prefill), never
+    for demanding coverage."""
     text = _clean(sentence)
     terms: list[Term] = [
         Term(KIND_ACRONYM, tok)
@@ -298,8 +361,10 @@ def claim_terms(sentence: str) -> list[Term]:
         Term(KIND_MODE, m)
         for m in find_epistemic_modes(text)
         if m.lower() not in NON_METHOD_MODES
+        and (include_generic or m.lower() not in GENERIC_NON_TERMS)
     ]
     terms += [Term(KIND_NUMBER, n) for n in _number_terms(text)]
+    terms += [Term(KIND_NUMBER, n) for n in _negative_terms(text)]
     return terms
 
 
@@ -439,8 +504,44 @@ def _claim_long_forms(
     return out
 
 
+def _initials_run(letters: str, toks: Sequence[_Tok], i: int) -> bool:
+    """Do ``toks[i:]`` open with consecutive words whose initials spell
+    ``letters``? A stop word may supply a letter ("time of flight" = TOF)
+    or be skipped between supplying words; the first and last may not be one."""
+    if not letters:
+        return True
+    if i >= len(toks):
+        return False
+    if toks[i].caps:
+        return False
+    stem = toks[i].stem
+    stop = stem in _STOPWORDS
+    if stem[0] == letters[0] and not (stop and (i == 0 or len(letters) == 1)):
+        if _initials_run(letters[1:], toks, i + 1):
+            return True
+    return stop and len(letters) < len(toks) - i and _initials_run(letters, toks, i + 1)
+
+
+def _initials_pos(acronym: str, toks: Sequence[_Tok]) -> int | None:
+    """Offset of the first run of words whose initials spell ``acronym``
+    (case-insensitive; hyphen parts are separate words; an all-caps token
+    such as "STM" is an acronym, not a word), or ``None``.
+    Letters only, 3+ of them: two-letter initials match running text."""
+    if len(acronym) < 3 or not acronym.isalpha():
+        return None
+    letters = acronym.lower()
+    for i, tok in enumerate(toks):
+        if tok.stem[0] == letters[0] and tok.stem not in _STOPWORDS:
+            if _initials_run(letters, toks, i):
+                return tok.start
+    return None
+
+
 def _acronym_pos_in(acronym: str, passage: Prepared, amap: AcronymMap) -> int | None:
     pos = _acronym_pos(acronym, passage.text)
+    if pos is not None:
+        return pos
+    pos = _initials_pos(acronym, passage.toks)
     if pos is not None:
         return pos
     for lf in amap.get(acronym, ()):
@@ -476,8 +577,9 @@ def find_term(term: Term, text: str | Prepared, amap: AcronymMap) -> int | None:
         return _acronym_pos_in(term.text, passage, amap)
     if term.kind == KIND_MODE:
         return _mode_pos(term.text, passage)
-    if term.text in passage.numbers:
-        m = re.search(r"(?<![\d.])" + re.escape(term.text) + r"(?![\d])", passage.text)
+    if _number_covered(term.text, passage):
+        mag = term.text.lstrip("-")
+        m = re.search(r"(?<![\d.])" + re.escape(mag) + r"(?![\d])", passage.text)
         return m.start() if m else 0
     return None
 
@@ -554,7 +656,7 @@ def uncovered_terms(
             ):
                 continue
             out.append(t)
-        elif not any(t.text in p.numbers for p in prepared):
+        elif not any(_number_covered(t.text, p) for p in prepared):
             out.append(t)
     if any(t.kind == KIND_ACRONYM for t in out):
         # A named method is missing: the generic head beside it ("simulations"

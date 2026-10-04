@@ -12,6 +12,8 @@ import pytest
 
 from precis.nanopub import evidence, mint, preflight, term_coverage
 from precis.nanopub.keys import generate_keypair
+from precis.taproot import coverage
+from precis.taproot.coverage import KIND_MODE
 from precis.taproot.hub import attach_evidence
 from tests.test_nanopub_gates_mint import _QUOTE, _payload, _seed_hub, _seed_paper
 
@@ -421,3 +423,13 @@ def test_bibliography_runs_are_never_suggestions():
         "TEM images in [9] show the bud junction at 2 nm resolution."
     )
     assert not is_bib_text("The analysis of ref. [3] is extended here.")
+
+
+def test_generic_head_names_a_method_but_is_no_coverage_term() -> None:
+    # D2 ordering / body-required gating keep counting "calculations"...
+    sentence = "Calculations show a gap."
+    assert term_coverage.names_method(sentence)
+    # ...while coverage never demands it of a passage.
+    assert not [t for t in coverage.claim_terms(sentence) if t.kind == KIND_MODE]
+    # Mathematical modes still name no method.
+    assert not term_coverage.names_method("The theorem holds.")

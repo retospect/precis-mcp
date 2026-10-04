@@ -96,8 +96,20 @@ def test_numbers_use_the_migrate_tokenizer_and_drop_units_and_dimensions() -> No
 
 
 def test_modes_come_from_the_epistemic_lint() -> None:
-    terms = claim_terms("Calculations and measurements disagree.")
-    assert _kinds(terms, KIND_MODE) == ["Calculations", "measurements"]
+    terms = claim_terms("Molecular dynamics and spectroscopy disagree.")
+    assert _kinds(terms, KIND_MODE) == ["Molecular dynamics", "spectroscopy"]
+
+
+def test_generic_heads_are_never_mode_terms_but_technique_families_are() -> None:
+    generic = "Calculations, measurements, simulations and analysis disagree."
+    assert _kinds(claim_terms(generic), KIND_MODE) == []
+    assert uncovered_terms(generic, ["The gap is large."], {}) == []
+    # "spectroscopy" names a technique family a passage can lack: still a term.
+    assert _kinds(claim_terms("Spectroscopy shows a gap."), KIND_MODE) == [
+        "Spectroscopy"
+    ]
+    out = uncovered_terms("Spectroscopy shows a gap.", ["The gap is large."], {})
+    assert [t.text for t in out] == ["Spectroscopy"]
 
 
 # ---------------------------------------------------------- acronym map
@@ -334,3 +346,114 @@ def test_mathematical_modes_are_not_coverage_terms():
         sentence, ["The tiling problem admits no decision procedure."], {}
     )
     assert all(t.text.lower() not in coverage.NON_METHOD_MODES for t in gaps)
+
+
+# ------------------------------------------- undefined written-out acronyms
+
+
+@pytest.mark.parametrize(
+    "passage",
+    [
+        "Energies from density functional theory agree.",
+        "Energies from density-functional theory agree.",
+        "Energies from Density Functional Theory agree.",
+    ],
+)
+def test_acronym_covered_by_written_out_initials_without_a_definition(
+    passage: str,
+) -> None:
+    # fi191164: the claim says DFT, the passage writes it out, no "(DFT)" anywhere.
+    assert uncovered_terms("DFT shows a gap.", [passage], {}) == []
+
+
+def test_initials_may_skip_stop_words_and_be_stop_words() -> None:
+    assert (
+        uncovered_terms("NEGF holds.", ["non-equilibrium Green's function"], {}) == []
+    )
+    assert uncovered_terms("MOF films.", ["a metal organic framework"], {}) == []
+    assert uncovered_terms("TOF is long.", ["the time of flight is long"], {}) == []
+    assert uncovered_terms("DFT shows.", ["density and functional theory"], {}) == []
+
+
+def test_two_letter_acronym_is_not_covered_by_initials() -> None:
+    # "MD" would match any "m... d..." pair of words by chance.
+    out = uncovered_terms("MD shows a gap.", ["molecular dynamics shows a gap"], {})
+    assert [t.text for t in out] == ["MD"]
+
+
+def test_initials_must_be_consecutive_and_in_order() -> None:
+    for passage in (
+        "density chemical functional theory",  # a content word between
+        "theory functional density",  # wrong order
+        "the functional theory",  # a stop word cannot open the run
+        "density functional",  # incomplete
+    ):
+        out = uncovered_terms("DFT shows a gap.", [passage], {})
+        assert [t.text for t in out] == ["DFT"], passage
+    # an all-caps token is an acronym, not a written-out word ("shows a typical STM")
+    assert [
+        t.text for t in uncovered_terms("STS shows.", ["it shows a typical STM"], {})
+    ] == ["STS"]
+    # a stop word cannot supply the first letter ("the electron microscopy")
+    assert [
+        t.text for t in uncovered_terms("TEM shows.", ["the electron microscopy"], {})
+    ] == ["TEM"]
+
+
+def test_initials_rule_is_for_all_letter_acronyms_only() -> None:
+    out = uncovered_terms("B3LYP holds.", ["becke three lee yang parr"], {})
+    assert [t.text for t in out] == ["B3LYP"]
+
+
+def test_find_term_locates_the_written_out_initials() -> None:
+    text = "We ran density functional theory."
+    assert find_term(Term(KIND_ACRONYM, "DFT"), text, {}) == text.index("density")
+
+
+# ------------------------------------------------------------ signed numbers
+
+
+@pytest.mark.parametrize("sign", ["-", "−", "–", "+", "±"])
+def test_unsigned_claim_number_is_covered_by_any_signed_form(sign: str) -> None:
+    # fi191279: the claim says 0.85, the passage says "-0.85 eV".
+    passage = f"The binding energy is {sign}0.85 eV per atom."
+    assert uncovered_terms("A binding of 0.85 eV.", [passage], {}) == []
+
+
+def test_signed_numbers_compare_magnitudes_not_substrings() -> None:
+    out = uncovered_terms("A binding of 0.85 eV.", ["It is -0.855 eV."], {})
+    assert [t.text for t in out] == ["0.85"]
+    assert uncovered_terms("A binding of 0.5 eV.", ["It is -0.50 eV."], {}) != []
+    assert uncovered_terms("A value of 6.0.", ["It is -6 eV."], {}) == []
+
+
+def test_ranges_and_exponents_are_not_signed_numbers() -> None:
+    # "5-10" is a range, "10^-6" an exponent: neither makes 10 / 6 negative.
+    assert [
+        t.text
+        for t in claim_terms("A 5-10 eV window, 10^-6 mbar.")
+        if t.text.startswith("-")
+    ] == []
+    assert coverage.Prepared("a 5-10 eV window").negs == frozenset()
+    assert coverage.Prepared("1e-6 and 10^-6").negs == frozenset()
+
+
+def test_negative_claim_number_needs_a_negative_passage() -> None:
+    claim = "A binding of -0.85 eV."
+    assert [(t.kind, t.text) for t in claim_terms(claim) if t.kind == KIND_NUMBER] == [
+        (KIND_NUMBER, "-0.85")
+    ]
+    # not covered by the opposite sign, nor by the bare magnitude
+    for passage in ("It is +0.85 eV.", "It is 0.85 eV."):
+        out = uncovered_terms(claim, [passage], {})
+        assert [t.text for t in out] == ["-0.85"], passage
+    # covered by any minus form, or by plus-minus
+    for passage in (
+        "It is -0.85 eV.",
+        "It is −0.85 eV.",
+        "It is –0.85 eV.",
+        "±0.85 eV",
+    ):
+        assert uncovered_terms(claim, [passage], {}) == [], passage
+    assert coverage.count_term(Term(KIND_NUMBER, "-0.85"), "E = −0.85 eV", {}) >= 1
+    assert find_term(Term(KIND_NUMBER, "-0.85"), "It is 0.85 eV.", {}) is None

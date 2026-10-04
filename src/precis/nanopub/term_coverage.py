@@ -670,9 +670,13 @@ def names_method(sentence: str) -> bool:
     a mode word (:func:`~precis.taproot.coverage.claim_terms`). With the
     depth policy (:func:`~precis.workers.hub_refine.claim_depth_policy`)
     this decides whether the approve prefill ranks body passages ahead of
-    the abstract."""
+    the abstract. Generic heads ("calculations") still count here though
+    they are no coverage term (:data:`~precis.taproot.coverage.
+    GENERIC_NON_TERMS`): too vague to demand of a passage, yet a claim that
+    rests on them still wants a body passage ahead of the abstract."""
     return any(
-        t.kind in (KIND_ACRONYM, KIND_MODE) for t in coverage.claim_terms(sentence)
+        t.kind in (KIND_ACRONYM, KIND_MODE)
+        for t in coverage.claim_terms(sentence, include_generic=True)
     )
 
 
@@ -692,7 +696,7 @@ def rank_for_claim(
     rest, then the incoming order. Every index appears exactly once.
     ``sizes`` (:func:`heading_sizes`) defaults to counting ``chunks``;
     pass the papers' full counts when ``chunks`` is a subset."""
-    terms = coverage.claim_terms(sentence)
+    terms = coverage.claim_terms(sentence, include_generic=True)
     amap = coverage.acronym_map(list(abstracts.values()) + [c.text for c in chunks])
     sizes = heading_sizes(chunks) if sizes is None else sizes
     grounding = grounding_refs or set()
