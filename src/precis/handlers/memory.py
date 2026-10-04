@@ -712,7 +712,12 @@ class MemoryHandler(NumericRefHandler):
             raise BadInput(
                 f"mode={mode!r} requires find= (the exact text to locate)",
                 next=(
-                    "edit(kind='memory', id=N, mode='find-replace', "
+                    (
+                        f"edit(kind='memory', id={ref_id}, mode='insert', "
+                        "find='exact text', text='text to insert', where='after')"
+                    )
+                    if mode == "insert"
+                    else "edit(kind='memory', id=N, mode='find-replace', "
                     "find='exact text', text='replacement') — or, to overwrite "
                     "the whole body, edit(kind='memory', id=N, mode='replace', "
                     "text='new body')"

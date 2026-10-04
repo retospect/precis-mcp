@@ -1161,3 +1161,106 @@ def test_mention_sql_failure_cannot_return_success(
             "SELECT count(*) FROM ref_events WHERE ref_id=%s AND event='body_replaced'",
             (mid,),
         ).fetchone() == (0,)
+
+
+def test_memory_dogfood_counts_body_across_authoring_modes(
+    handler: MemoryHandler, store: Store
+) -> None:
+    tag = "project:r6-body-count-regression"
+    body = "alpha beta gamma delta"
+    mid = id_of(handler.put(text=body, title="Brief title", tags=[tag]).body)
+
+    def assert_count(expected: str) -> None:
+        assert store.chunks.chunk_word_counts([mid], chunk_kind="memory_body") == {
+            mid: len(expected.split())
+        }
+        rows = handler.search(tags=[tag]).body.splitlines()
+        row = next(line for line in rows if f"me{mid}" in line)
+        assert row.split("\t")[3] == str(len(expected.split()))
+
+    assert_count(body)
+    body = "silver sails across quiet harbors"
+    handler.edit(id=mid, mode="replace", text=body)
+    assert_count(body)
+    handler.edit(id=mid, mode="find-replace", find="quiet", text="clear sunlit")
+    body = body.replace("quiet", "clear sunlit")
+    assert_count(body)
+    handler.edit(id=mid, mode="insert", find="harbors", where="before", text="safe ")
+    body = body.replace("harbors", "safe harbors")
+    assert_count(body)
+
+
+def test_memory_dogfood_existing_body_count_is_read_only(
+    handler: MemoryHandler, store: Store
+) -> None:
+    body = "Sails cross seas; seven vessels sail safely."
+    mid = _make(handler, body)
+    ref_before = store.get_ref(kind="memory", id=mid)
+    chunks_before = store.chunks.list_chunks_for_ref(mid)
+    with store.tx() as conn:
+        events_before = conn.execute(
+            "SELECT count(*) FROM ref_events WHERE ref_id=%s", (mid,)
+        ).fetchone()
+        # Confirm the escaping defect rather than assuming the title was read.
+        pattern = conn.execute("SELECT E'\\s+'").fetchone()
+        assert pattern == ("s+",)
+    assert store.chunks.chunk_word_counts([mid], chunk_kind="memory_body") == {mid: 7}
+    assert store.get_ref(kind="memory", id=mid) == ref_before
+    assert store.chunks.list_chunks_for_ref(mid) == chunks_before
+    with store.tx() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM ref_events WHERE ref_id=%s", (mid,)
+            ).fetchone()
+            == events_before
+        )
+
+
+def test_memory_dogfood_counts_whitespace_and_only_body_chunks(
+    handler: MemoryHandler, store: Store
+) -> None:
+    from precis.store.types import ChunkInsert
+
+    mid = _make(handler, " \tgo\tto\nshore  ")
+    store.chunks.insert_chunks(
+        mid,
+        [
+            ChunkInsert(ord=1, text=" \t\n ", meta={"chunk_kind": "memory_body"}),
+            ChunkInsert(
+                ord=2, text=" sails safely ", meta={"chunk_kind": "memory_body"}
+            ),
+            ChunkInsert(
+                ord=3,
+                text="ignore these extra words",
+                meta={"chunk_kind": "tag_overflow"},
+            ),
+        ],
+    )
+    assert store.chunks.chunk_word_counts([], chunk_kind="memory_body") == {}
+    assert store.chunks.chunk_word_counts([mid], chunk_kind="memory_body") == {mid: 5}
+
+
+def test_memory_dogfood_missing_anchor_hint_performs_insert(
+    handler: MemoryHandler, store: Store
+) -> None:
+    import ast
+
+    mid = _make(handler, "Before exact text after.")
+    with pytest.raises(BadInput, match="requires find=") as exc:
+        handler.edit(id=mid, mode="insert", meta={"hook": "must not land"})
+    assert isinstance(exc.value.next, str)
+    call = ast.parse(exc.value.next, mode="eval").body
+    assert isinstance(call, ast.Call)
+    kwargs = {}
+    for kw in call.keywords:
+        assert kw.arg is not None
+        kwargs[kw.arg] = ast.literal_eval(kw.value)
+    assert kwargs.pop("kind") == "memory"
+    assert kwargs["mode"] == "insert" and kwargs["where"] in ("before", "after")
+    assert kwargs["id"] == mid
+    handler.edit(**kwargs)
+    anchor, addition = kwargs["find"], kwargs["text"]
+    replacement = anchor + addition if kwargs["where"] == "after" else addition + anchor
+    assert _body(handler, store, mid) == "Before exact text after.".replace(
+        anchor, replacement
+    )

@@ -835,7 +835,7 @@ def render_tree(store: Store, root_id: int) -> Response:
         [
             (f"get(kind='todo', id={root_id})", "read this todo + tags + ancestry"),
             (
-                f"search(kind='todo', view='doable', args={{'under': {root_id}}})",
+                f"search(kind='todo', view='doable', under={root_id})",
                 "doable leaves in this subtree",
             ),
         ]

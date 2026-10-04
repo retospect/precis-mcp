@@ -1453,7 +1453,8 @@ class QuestHandler(NumericRefHandler):
         # ``PRIO:`` to the prio column after the base transaction commits.
         self._last_created_id = ref_id
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
-        body = f"created quest {handle} (STATUS:active)."
+        status = _status_of(self.store.tags_for(ref_id)) or "active"
+        body = f"created quest {handle} (STATUS:{status})."
         body += render_next_section(
             [
                 (

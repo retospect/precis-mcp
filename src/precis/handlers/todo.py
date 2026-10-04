@@ -127,8 +127,8 @@ def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> R
             under = int(under_raw)
         except (TypeError, ValueError) as exc:
             raise BadInput(
-                f"args.under must be an integer, got {under_raw!r}",
-                next="search(kind='todo', view='doable', args={'under': N})",
+                f"under must be an integer, got {under_raw!r}",
+                next="search(kind='todo', view='doable', under=N)",
             ) from exc
     return views.render_doable(store, under=under, limit=page_size or 20)
 
@@ -344,8 +344,19 @@ class TodoHandler(NumericRefHandler):
         page_size: int = 10,
         view: str | None = None,
         args: dict[str, Any] | None = None,
+        under: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        if under is not None:
+            if view != "doable":
+                raise BadInput("under= requires view='doable' on todo search")
+            if (
+                args is not None
+                and "under" in args
+                and str(args["under"]) != str(under)
+            ):
+                raise BadInput("under= and args.under disagree")
+            args = {**(args or {}), "under": under}
         if view is not None:
             try:
                 view_enum = TodoView(view)
@@ -1278,7 +1289,12 @@ class TodoHandler(NumericRefHandler):
         parent = self._pending_parent_id
         # surface the universal handle (``td<id>``) in the ack.
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
-        body = f"created {self.kind} {handle} (STATUS:open)"
+        tags = self.store.tags_for(ref_id)
+        status = next(
+            (t.value for t in tags if t.namespace == "closed" and t.prefix == "STATUS"),
+            "open",
+        )
+        body = f"created {self.kind} {handle} (STATUS:{status})"
         if parent is not None:
             body += f" under {handle_registry.format_handle('todo', parent)}"
         if self._pending_prio is not None:
@@ -1295,9 +1311,18 @@ class TodoHandler(NumericRefHandler):
             )
         body += render_next_section(
             [
-                (
-                    f"tag(kind={self.kind!r}, id={ref_id}, add=['STATUS:doing'])",
-                    "start work on this todo",
+                *(
+                    [
+                        (
+                            f"tag(kind={self.kind!r}, id={ref_id}, add=['STATUS:doing'])",
+                            "start work on this todo",
+                        )
+                    ]
+                    if status == "open"
+                    and not any(
+                        str(t) == "halt" or str(t).startswith("halt:") for t in tags
+                    )
+                    else []
                 ),
                 (
                     f"delete(kind={self.kind!r}, id={ref_id})",

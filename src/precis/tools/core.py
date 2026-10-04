@@ -1558,26 +1558,21 @@ def edit(
     # handler declares it. Omitted → "edit(kind='<kind>')".
     reason: str | None = None,
 ) -> str:
-    """Edit a region within an existing ref's content (anchored).
+    """Edit content within an existing ref.
 
-    `put` creates refs; `edit` changes them. Required arguments by mode:
+    File modes — **Required**: `find-replace` (default): `find=` + `text=`
+    (`text=''` deletes the matched span);
+    `insert` needs `find=`, `text=`, `where='before'|'after'`;
+    `append` / `replace` need `text=`.
+    `replace` with `id='slug~selector'` rewrites one chunk.
 
-    - `find-replace` (default): **Required** `find=` AND `text=`.
-      Pass `text=''` to delete the matched span (canonical idiom).
-    - `insert`: **Required** `find=`, `text=`, `where='before'|'after'`.
-    - `append` / `replace`: **Required** `text=`. `replace` with
-      `id='slug~selector'` rewrites one chunk.
+    todo: `replace` accepts `text=` (title) and/or `body=` (details).
+    quest: `replace` only. memory: `replace`, `find-replace`, `insert`.
+    Structural or metadata ops use their kind-specific fields.
 
-    Optional anchors: `before=` / `after=` / `match=` (`unique`
-    default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
-    previews without writing.
-
-    That vocabulary is the file-kind shape; kinds vary (`todo`/`quest`:
-    `mode='replace'` only; `memory`: `replace`, `find-replace`, `insert`).
-    A wrong mode, or `meta=`
-    on a kind whose handler lacks it (pres/draft-only meta patch),
-    raises `BadInput` naming the accepted set — never a silent drop.
-    `reason=` (any kind) records why on the revision log.
+    Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
+    / `nth=`. `dry_run=True` previews; `reason=` records why.
+    Unsupported modes/fields raise `BadInput` with accepted options.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """

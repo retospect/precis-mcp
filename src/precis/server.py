@@ -940,7 +940,7 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
 
     _TEXT_COUPLING = (
         " REQUIRED WHEN: mode='find-replace' (default), 'insert', 'append',"
-        " or 'replace' — i.e. every plain text-mutation edit. NOT required"
+        " or 'replace' on file kinds. Todo replace also accepts body= without text=. NOT required"
         " for structural/non-text ops: move=, table=, cell=, review=,"
         " authors=, sub=, scaffold=, word_target=, authoring=,"
         " voice=/lang=, origin=/permission=."
@@ -949,7 +949,8 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
     _WHERE_COUPLING = " REQUIRED WHEN: mode='insert'. Value: 'before' or 'after'."
     _MODE_NOTE = (
         " Per-mode required args: 'find-replace' (default) → find=, text=;"
-        " 'insert' → find=, text=, where=; 'append'/'replace' → text=."
+        " 'insert' → find=, text=, where=; file 'append'/'replace' → text=."
+        " Todo replace: text= and/or body=."
         " Structural ops (move=, table=, cell=, review=, authors=, sub=, …)"
         " carry their own required arg instead of text=."
     )

@@ -51,6 +51,10 @@ held corpus (DOI → arXiv → normalized title), flagging
 assumption. Bogus container entries raise ``BadInput``; bare stale slugs
 keep the historical silent-drop contract.
 
+Create receipts read committed lifecycle tags because creation may override
+open/active atomically; request defaults misreported parked todos/quests.
+Todo receipts offer start-work only for open, unhalted refs.
+
 The todo tree
 =============
 

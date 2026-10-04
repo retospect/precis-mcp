@@ -193,7 +193,7 @@ Tree icons: `○` doable · `▶` doing · `◀ claimed-by:<x>` claimed ·
 
 ```python
 search(kind="todo", view="doable")
-search(kind="todo", view="doable", args={"under": 67})  # within a subtree
+search(kind="todo", view="doable", under=67)  # within a subtree
 ```
 
 "Doable" = leaf with no live children, status open / doing, no
@@ -231,6 +231,16 @@ tag(kind="todo", id=98, add=["STATUS:open"])  # unpause
 Pause propagates at query time — every doable / strategic / picks
 query skips refs whose ancestor chain contains a `paused` branch.
 Nothing in the subtree gets touched; counts and decay continue.
+
+## Keep a synthetic todo parked
+
+```python
+put(kind="todo", text="Synthetic test question", body="Test details only.",
+    tags=["STATUS:paused", "halt", "test-fixture", "ask-user:test-question"])
+```
+
+Keep `STATUS:paused` and `halt` while testing edits or removing the ask tag;
+no executor, tier, schedule or parent is needed.
 
 ## Answer an ask-user todo
 

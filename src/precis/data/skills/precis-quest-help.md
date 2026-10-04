@@ -46,6 +46,9 @@ put(
     "Rubric: NH₃ selectivity · yield · stability",
 )
 # → created quest qu7 (STATUS:active).
+# Create dormant atomically; avoid activating a parked test even briefly.
+put(kind="quest", text="Synthetic parked striving", tags=["STATUS:dormant", "test-fixture"])
+
 ```
 
 The **first line** is the striving statement; anything after a blank line

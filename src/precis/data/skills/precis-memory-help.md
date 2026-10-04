@@ -294,9 +294,13 @@ unaddressed caveat). Full workflow: `precis-argument-help`.
 
 ## Tag axes available on memory
 
-Two closed UPPERCASE axes are accepted on memory, both **system-set**
-(the agent-facing `tag()` verb refuses to add/remove either):
+Three closed UPPERCASE axes are accepted on memory. `SPACE:` is
+**author-writable**; `DREAM:` and `STALE:` are **system-set** (the
+agent-facing `tag()` verb refuses to add/remove those two):
 
+- `SPACE:` (`research` / `repo-dev` / `personal`) — author-selected scope;
+  `research` is the default, `repo-dev` isolates development knowledge,
+  and `personal` is reserved.
 - `DREAM:` (`consolidated` / `speculative` / `acquire`) — written by
   the dreaming worker.
 - `STALE:` (`retracted-premise`) — written by the argument-graph

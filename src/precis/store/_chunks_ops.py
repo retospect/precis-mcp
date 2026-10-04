@@ -2036,16 +2036,18 @@ class ChunkStore:
         Feeds the memory list view's "how much body is hiding behind the id"
         column now that ``refs.title`` is a short title, not the prose. One
         query for the whole page (no N+1); refs with no such chunk are absent
-        from the map (caller defaults to 0).
+        from the map (caller defaults to 0). POSIX whitespace avoids SQL
+        escape strings consuming regex backslashes; discard empty tokens
+        so leading/trailing whitespace and whitespace-only chunks add zero.
         """
         if not ref_ids:
             return {}
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT ref_id, "
-                "SUM(COALESCE("
-                "  array_length(regexp_split_to_array(btrim(text), E'\\s+'), 1)"
-                ", 0))::int "
+                "SUM(cardinality(array_remove("
+                "  regexp_split_to_array(text, '[[:space:]]+'), ''"
+                ")))::int "
                 "FROM chunks "
                 "WHERE chunk_kind = %s AND ref_id = ANY(%s) AND btrim(text) <> '' "
                 "GROUP BY ref_id",
