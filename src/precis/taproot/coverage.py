@@ -85,6 +85,12 @@ __all__ = [
 #: Term kinds, in report order.
 KIND_ACRONYM = "acronym"
 KIND_MODE = "mode"
+
+#: Mode tokens that pass the claim-sentence lint (a mathematical claim's way
+#: of knowing, sentence_lint 2026-10-03) but name no method a passage must
+#: carry: a "theorem" or "proof" claim is not a measurement, so these never
+#: become coverage terms, method-gap searches or a method-claim prefill order.
+NON_METHOD_MODES = frozenset({"proof", "proofs", "theorem"})
 KIND_NUMBER = "number"
 KINDS = (KIND_ACRONYM, KIND_MODE, KIND_NUMBER)
 
@@ -288,7 +294,11 @@ def claim_terms(sentence: str) -> list[Term]:
         for tok in dict.fromkeys(m.group(1) for m in _ACRONYM_RE.finditer(text))
         if _is_acronym(tok)
     ]
-    terms += [Term(KIND_MODE, m) for m in find_epistemic_modes(text)]
+    terms += [
+        Term(KIND_MODE, m)
+        for m in find_epistemic_modes(text)
+        if m.lower() not in NON_METHOD_MODES
+    ]
     terms += [Term(KIND_NUMBER, n) for n in _number_terms(text)]
     return terms
 

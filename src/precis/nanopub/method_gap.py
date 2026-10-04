@@ -58,17 +58,23 @@ class GapCandidate:
     terms: tuple[str, ...]
 
 
-def has_gap(sentence: str, passages: list[str]) -> bool:
-    """Cheap pre-check, no chunks needed: does ``sentence`` name an acronym or
-    mode term that ``passages`` lack, under an acronym map read off the
-    passages alone? A weaker map can only report *more* uncovered terms than
-    :func:`gap_terms` with the papers' full text, never fewer, so ``False``
-    here is final."""
+def gap_term_texts(sentence: str, passages: list[str]) -> list[str]:
+    """Cheap pre-check, no chunks needed: the acronym/mode terms ``sentence``
+    names that ``passages`` lack, under an acronym map read off the passages
+    alone. A weaker map can only report *more* uncovered terms than
+    :func:`gap_terms` with the papers' full text, never fewer, so ``[]`` here
+    is final."""
     amap = coverage.acronym_map(passages)
-    return any(
-        t.kind != KIND_NUMBER
+    return [
+        t.text
         for t in coverage.uncovered_terms(sentence, passages, amap)
-    )
+        if t.kind != KIND_NUMBER
+    ]
+
+
+def has_gap(sentence: str, passages: list[str]) -> bool:
+    """:func:`gap_term_texts` is non-empty."""
+    return bool(gap_term_texts(sentence, passages))
 
 
 def gap_terms(

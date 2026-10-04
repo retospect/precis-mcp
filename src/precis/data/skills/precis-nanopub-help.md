@@ -255,7 +255,9 @@ of the hub's papers that do, figure captions and methods first. Sign
 refuses when evidence was attached after the grounding froze (gate
 `grounding-stale`); re-review with `precis nanopub reopen fi<id>` then
 approve again, or sign with the explicit confirm after checking the newer
-evidence.
+evidence. A row approved before 2026-10-04 has no recorded freeze time; its
+last state change stands in, so evidence linked before that change is not
+listed — compare the hub's evidence against the grounding by hand.
 
 ## Claim-sentence grammar — write it at authoring, verified at approve
 

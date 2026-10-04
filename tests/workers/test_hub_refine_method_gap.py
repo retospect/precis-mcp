@@ -52,7 +52,9 @@ def _add_chunks(
     return {int(o): int(c) for o, c in rows}
 
 
-def _attach_verified(store: Any, hub: int, paper: int, chunk_id: int) -> None:
+def _attach_verified(
+    store: Any, hub: int, paper: int, chunk_id: int, sentence: str = _SENTENCE
+) -> None:
     """Attach a passage already carrying a current verdict, so the
     publish-gate re-verify arm has nothing to judge and every verifier call a
     test counts belongs to the method-gap arm."""
@@ -68,21 +70,28 @@ def _attach_verified(store: Any, hub: int, paper: int, chunk_id: int) -> None:
             "caveats": [],
             "verified_by": "hub-refine",
             "verified_at": datetime.now(UTC).isoformat(),
-            "verified_claim_sha": claim_sha(_SENTENCE),
+            "verified_claim_sha": claim_sha(sentence),
         },
         check_retraction=False,
     )
 
 
-def _gap_hub(store: Any, embedder: Any, extra: list[tuple[int, str]]) -> dict[str, Any]:
+def _gap_hub(
+    store: Any,
+    embedder: Any,
+    extra: list[tuple[int, str]],
+    *,
+    sentence: str = _SENTENCE,
+    cite: str = "gap",
+) -> dict[str, Any]:
     """A hub grounded on one passage of a paper whose other chunks are
     ``extra``; returns ids."""
-    hub = _seed_hub(store, sentence=_SENTENCE)
+    hub = _seed_hub(store, sentence=sentence)
     paper, passage_chunk = _seed_paper_chunk(
-        store, embedder, cite_key="gap", text=_PASSAGE
+        store, embedder, cite_key=cite, text=_PASSAGE
     )
     chunks = _add_chunks(store, paper, extra)
-    _attach_verified(store, hub, paper, passage_chunk)
+    _attach_verified(store, hub, paper, passage_chunk, sentence)
     return {"hub": hub, "paper": paper, "passage": passage_chunk, "chunks": chunks}
 
 
@@ -90,6 +99,13 @@ def _gap_calls(mock: Any) -> list[Any]:
     """Verifier calls that targeted a chunk other than the seeded passage
     (``ord`` 0) — i.e. the method-gap arm's."""
     return [c for c in mock.call_args_list if c.kwargs["target_chunk_ord"] > 0]
+
+
+def _chunk_memos(store: Any, hub: int) -> list[dict[str, Any]]:
+    """The hub's per-chunk method-gap memo entries (not the per-term
+    ``no-candidates`` markers)."""
+    seen = _hub_meta(store, hub).get("reground_seen") or {}
+    return [m for m in seen.values() if m.get("verdict") != "no-candidates"]
 
 
 def _links(store: Any, hub: int) -> list[tuple[int, str, dict[str, Any]]]:
@@ -263,9 +279,9 @@ def test_two_attempts_per_term_per_claim_version(store: Any) -> None:
             counts.append(len(_gap_calls(mock_verify)))
             _due(store, g["hub"])
     assert counts == [1, 2, 2]  # a third pass for the same term makes no call
-    memos = _hub_meta(store, g["hub"])["reground_seen"]
+    memos = _chunk_memos(store, g["hub"])
     assert len(memos) == 2
-    assert {m["verdict"] for m in memos.values()} == {"NO-CORROBORATION"}
+    assert {m["verdict"] for m in memos} == {"NO-CORROBORATION"}
 
 
 def test_persistent_none_verdict_stops_after_two_attempts(store: Any) -> None:
@@ -279,7 +295,7 @@ def test_persistent_none_verdict_stops_after_two_attempts(store: Any) -> None:
             _due(store, g["hub"])
     # Same chunk retried once (unjudged does not exclude it), then spent.
     assert counts == [1, 2, 2, 2]
-    (memo,) = _hub_meta(store, g["hub"])["reground_seen"].values()
+    (memo,) = _chunk_memos(store, g["hub"])
     assert (memo["verdict"], memo["attempts"]) == ("unjudged", 2)
 
 
@@ -479,3 +495,70 @@ def test_has_gap_precheck() -> None:
     assert (
         method_gap.has_gap("The crystals are 400 nm wide.", ["Wide crystals."]) is False
     )
+
+
+def test_failure_after_the_llm_call_is_charged_as_unjudged(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    g = _gap_hub(store, embedder, [(1, "Figure 3 TEM image of the crystals.")])
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch(
+            "precis.workers.hub_refine.attach_evidence",
+            side_effect=RuntimeError("attach failed"),
+        ),
+    ):
+        counts = []
+        for _ in range(4):
+            run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+            counts.append(len(_gap_calls(mock_verify)))
+            _due(store, g["hub"])
+    # The rolled-back attach still cost a call; two attempts, then spent.
+    assert counts == [1, 2, 2, 2]
+    (memo,) = _chunk_memos(store, g["hub"])
+    assert (memo["verdict"], memo["attempts"], memo["via"]) == (
+        "unjudged",
+        2,
+        "method-gap",
+    )
+    assert memo["terms"] == ["TEM"]
+    assert [cid for cid, _r, _m in _links(store, g["hub"])] == [g["passage"]]
+
+
+def test_no_candidate_term_is_marked_and_skips_the_chunk_load(store: Any) -> None:
+    embedder = make_mock_bge_m3()
+    g = _gap_hub(store, embedder, [(1, "Figure 3 a micrograph of the crystals.")])
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify,
+        patch(_PAPER_CHUNKS_PATH, wraps=hub_refine.paper_chunks) as spy,
+    ):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+        assert spy.call_count == 1
+        _due(store, g["hub"])
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+        assert spy.call_count == 1  # pass 2 read the marker, not the chunks
+    assert not _gap_calls(mock_verify)
+    marker = _hub_meta(store, g["hub"])["reground_seen"]["method-gap:TEM"]
+    assert (marker["verdict"], marker["terms"]) == ("no-candidates", ["TEM"])
+    assert marker["sha"] == claim_sha(_SENTENCE)
+
+
+def test_pass_budget_caps_method_gap_calls_across_hubs(
+    store: Any, monkeypatch: Any
+) -> None:
+    embedder = make_mock_bge_m3()
+    hubs = [
+        _gap_hub(
+            store,
+            embedder,
+            [(1, f"Figure {n} TEM image of crystals.")],
+            sentence=f"TEM shows the crystals of batch {n} are anisotropic.",
+            cite=f"bud{n}",
+        )
+        for n in range(3)
+    ]
+    monkeypatch.setattr(hub_refine, "METHOD_GAP_CALLS_PER_PASS", 2)
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert len(_gap_calls(mock_verify)) == 2
+    memoed = [bool(_hub_meta(store, g["hub"]).get("reground_seen")) for g in hubs]
+    assert sorted(memoed) == [False, True, True]  # the starved hub retries next pass

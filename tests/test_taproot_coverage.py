@@ -322,3 +322,15 @@ def test_trailing_zero_and_latex_math_fences_do_not_hide_a_number() -> None:
     assert (
         uncovered_terms("A gap of 0.50 eV.", ["a gap of 0.5 eV"], {}) != []
     )  # 0.50 != 0.5
+
+
+def test_mathematical_modes_are_not_coverage_terms():
+    # "proof"/"theorem" pass the sentence lint as a way of knowing but name no
+    # method a passage must carry: no coverage term, no method-claim ordering.
+    sentence = "A computability proof shows that no algorithm decides the theorem."
+    kinds = {(t.kind, t.text.lower()) for t in coverage.claim_terms(sentence)}
+    assert not any(text in coverage.NON_METHOD_MODES for _, text in kinds)
+    gaps = coverage.uncovered_terms(
+        sentence, ["The tiling problem admits no decision procedure."], {}
+    )
+    assert all(t.text.lower() not in coverage.NON_METHOD_MODES for t in gaps)

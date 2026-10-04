@@ -3232,6 +3232,65 @@ def _reverify_pinned_edges(
     return memoed
 
 
+#: Method-gap verifier calls allowed across one whole :func:`run_hub_refine_pass`
+#: (about $3.20 on Haiku at ~$0.016/call). Once spent the arm does nothing for
+#: the rest of the pass and writes no memo, so the remaining hubs retry next
+#: pass. The per-hub cap (:data:`~precis.nanopub.method_gap.PER_HUB`) alone
+#: would let a full ``hubs_per_pass`` batch spend 4x that.
+METHOD_GAP_CALLS_PER_PASS = 200
+
+#: ``reground_seen`` verdict of a method-gap term searched with nothing to judge.
+_NO_CANDIDATES = "no-candidates"
+
+
+@dataclass
+class _PassBudget:
+    """Method-gap calls left in the current pass (see
+    :data:`METHOD_GAP_CALLS_PER_PASS`)."""
+
+    remaining: int
+
+
+def _gap_memo(
+    seen: dict[str, Any],
+    sha: str,
+    chunk: Any,
+    cand: method_gap.GapCandidate,
+    **fields: Any,
+) -> None:
+    """Record one method-gap attempt on ``chunk`` in the ``reground_seen``
+    memo; ``attempts`` accumulates across passes at one ``sha``."""
+    key = _seen_key(chunk.ref_id, chunk.chunk_id)
+    prev = seen.get(key)
+    prior = (
+        int(prev.get("attempts") or 1)
+        if isinstance(prev, dict)
+        and prev.get("sha") == sha
+        and prev.get("via") == method_gap.VIA
+        else 0
+    )
+    seen[key] = {
+        "sha": sha,
+        "at": datetime.now(UTC).isoformat(),
+        "via": method_gap.VIA,
+        "terms": list(cand.terms),
+        "attempts": prior + 1,
+        **fields,
+    }
+
+
+def _charge_failed_gap(
+    seen: dict[str, Any], sha: str, sent: list[method_gap.GapCandidate]
+) -> bool:
+    """After the arm's savepoint rolled back, charge each candidate it had
+    already sent to the verifier as an ``"unjudged"`` attempt, so a
+    deterministic failure after the LLM call (an attach that raises) cannot
+    re-spend the same calls every pass. Returns True when ``seen`` changed."""
+    for cand in sent:
+        _gap_memo(seen, sha, cand.chunk, cand, verdict="unjudged")
+    return bool(sent)
+
+
 def _method_gap_arm(
     conn: Connection,
     store: Store,
@@ -3245,6 +3304,8 @@ def _method_gap_arm(
     identity_cache: dict[int, SourceIdentity],
     pending_checks: list[int] | None,
     pending_demotions: list[DemotionRequest] | None,
+    sent: list[method_gap.GapCandidate],
+    budget: _PassBudget | None = None,
 ) -> bool:
     """The method-gap arm (claims-and-evidence thread, grounding build 2 D1).
 
@@ -3284,9 +3345,21 @@ def _method_gap_arm(
     Runs after the discovery loop, so a passage that loop just attached
     counts as covering. A cheap pre-check
     (:func:`~precis.nanopub.method_gap.has_gap`, passages only) returns before
-    any chunk is loaded when nothing but numbers is uncovered. Returns True
-    when ``seen`` gained an entry, so the caller persists it. The caller runs
-    this inside a savepoint on copies of ``seen`` and the pending lists."""
+    any chunk is loaded when nothing but numbers is uncovered. When terms are
+    uncovered but nothing is judgeable, a ``"no-candidates"`` marker per term
+    at this ``claim_sha`` makes later passes skip the chunk load (a new
+    evidence edge changes the passages but not the sha, so the marker stands
+    until the claim is edited). Returns True when ``seen`` gained an entry, so
+    the caller persists it.
+
+    The caller runs this inside a savepoint on copies of ``seen`` and the
+    pending lists. ``sent`` collects every candidate handed to the verifier,
+    so that when the savepoint rolls back after LLM calls the caller can still
+    charge them (:func:`_charge_failed_gap`); ``budget`` is the pass-wide call
+    budget (:data:`METHOD_GAP_CALLS_PER_PASS`): once spent the arm stops with
+    no memo, so those hubs retry next pass."""
+    if budget is not None and budget.remaining <= 0:
+        return False
     rows = conn.execute(
         "SELECT l.src_ref_id, l.src_chunk_id, c.text FROM links l "
         "JOIN refs r ON r.ref_id = l.src_ref_id AND r.retired_at IS NULL "
@@ -3297,7 +3370,19 @@ def _method_gap_arm(
     ).fetchall()
     passages = [str(r[2]) for r in rows if r[2] and str(r[2]).strip()]
     evidence_refs = {int(r[0]) for r in rows}
-    if not passages or not method_gap.has_gap(claim_sentence, passages):
+    weak_terms = method_gap.gap_term_texts(claim_sentence, passages) if passages else []
+    if not weak_terms:
+        return False
+    # Terms already searched with nothing to judge at this claim version.
+    marked = {
+        t
+        for memo in seen.values()
+        if isinstance(memo, dict)
+        and memo.get("sha") == sha
+        and memo.get("verdict") == _NO_CANDIDATES
+        for t in memo.get("terms") or []
+    }
+    if all(t in marked for t in weak_terms):
         return False
     chunks, abstracts = paper_chunks(store, sorted(evidence_refs))
 
@@ -3315,7 +3400,7 @@ def _method_gap_arm(
             continue
         if memo.get("verdict") != "unjudged" and key.split(":", 1)[-1].isdigit():
             skip_chunks.add(int(key.split(":", 1)[1]))
-        if memo.get("via") == method_gap.VIA:
+        if memo.get("via") == method_gap.VIA and memo.get("verdict") != _NO_CANDIDATES:
             for term in memo.get("terms") or []:
                 spent[term] = spent.get(term, 0) + int(memo.get("attempts") or 1)
     cands = method_gap.select_candidates(
@@ -3328,34 +3413,36 @@ def _method_gap_arm(
         skip_terms={t for t, n in spent.items() if n >= method_gap.ATTEMPTS_PER_TERM},
     )
     if not cands:
-        return False
+        # Nothing to judge for these terms at this claim version: mark them so
+        # later passes skip the chunk load. A new evidence edge changes the
+        # passages but not the sha, so the marker outlives it until the claim
+        # is edited (accepted: a cheap miss beats a per-pass chunk scan).
+        for term in weak_terms:
+            if term not in marked:
+                seen[f"{method_gap.VIA}:{term}"] = {
+                    "sha": sha,
+                    "at": datetime.now(UTC).isoformat(),
+                    "via": method_gap.VIA,
+                    "terms": [term],
+                    "verdict": _NO_CANDIDATES,
+                }
+        return True
     refs = store.fetch_refs_by_ids(sorted({c.chunk.ref_id for c in cands}))
     memoed = False
 
     def _memo(chunk: Any, cand: method_gap.GapCandidate, **fields: Any) -> None:
-        key = _seen_key(chunk.ref_id, chunk.chunk_id)
-        prev = seen.get(key)
-        prior = (
-            int(prev.get("attempts") or 1)
-            if isinstance(prev, dict)
-            and prev.get("sha") == sha
-            and prev.get("via") == method_gap.VIA
-            else 0
-        )
-        seen[key] = {
-            "sha": sha,
-            "at": datetime.now(UTC).isoformat(),
-            "via": method_gap.VIA,
-            "terms": list(cand.terms),
-            "attempts": prior + 1,
-            **fields,
-        }
+        _gap_memo(seen, sha, chunk, cand, **fields)
 
     for cand in cands:
         chunk = cand.chunk
         ref = refs.get(chunk.ref_id)
         if ref is None:
             continue
+        if budget is not None:
+            if budget.remaining <= 0:
+                break  # pass budget spent: no memo, retried next pass
+            budget.remaining -= 1
+        sent.append(cand)
         verification = _verify_support_with_caveats(
             claim=claim_sentence,
             scope=scope,
@@ -3445,6 +3532,7 @@ def _refine_one_hub(
     pending_demotions: list[DemotionRequest] | None = None,
     reground: RegroundConfig | None = None,
     plan_out: list[RegroundPlan] | None = None,
+    gap_budget: _PassBudget | None = None,
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
@@ -3999,6 +4087,8 @@ def _refine_one_hub(
         arm_seen = dict(reground_seen)
         arm_checks: list[int] = []
         arm_demotions: list[DemotionRequest] = []
+        # Outside the savepoint, so it survives the rollback below.
+        sent: list[method_gap.GapCandidate] = []
         try:
             with conn.transaction():
                 method_gap_memoed = _method_gap_arm(
@@ -4013,6 +4103,8 @@ def _refine_one_hub(
                     identity_cache=identity_cache,
                     pending_checks=arm_checks,
                     pending_demotions=arm_demotions,
+                    sent=sent,
+                    budget=gap_budget,
                 )
         except Exception:
             log.warning(
@@ -4020,7 +4112,10 @@ def _refine_one_hub(
                 hub_ref_id,
                 exc_info=True,
             )
-            method_gap_memoed = False
+            # The savepoint rolled back, but the verifier calls were paid:
+            # charge them as unjudged attempts so a deterministic failure
+            # cannot re-spend them every pass.
+            method_gap_memoed = _charge_failed_gap(reground_seen, new_sha, sent)
         else:
             reground_seen.update(arm_seen)
             if pending_checks is not None:
@@ -4182,6 +4277,9 @@ def run_hub_refine_pass(
     pruned = 0
     withheld = 0
     demoted = 0
+    # Pass-wide method-gap verifier budget (read at call time, so a test or
+    # an operator can lower the module constant).
+    gap_budget = _PassBudget(METHOD_GAP_CALLS_PER_PASS)
 
     for hub_ref_id in hub_ids:
         try:
@@ -4204,6 +4302,7 @@ def run_hub_refine_pass(
                     pending_demotions=pending_demotions,
                     reground=resolved_reground,
                     plan_out=plans,
+                    gap_budget=gap_budget,
                 )
                 conn.commit()
             run_retraction_checks(store, pending_checks, hub_ref_id=hub_ref_id)
