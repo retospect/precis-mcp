@@ -13,7 +13,19 @@ section now opens with the thesis and carries both analogues (2026-09-30).
 Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 10,000+ words, so the restructure reorders rather than cuts; scope is covalent
 and non-covalent buds. RSC reviews go through a proposal form first.
-**Resume (2026-10-03 20:40Z):** round 3 deployed at 929107f3. Every round-3 land from this thread is a thread-file edit, so there is no code to dogfood. The prod work was data edits (items 27–29 applied, td450082 merged), each verified when it was applied. Next: item 31 (hero pillar) is open. Reto redirected it at 20:41Z to a hexfold capability ask (spec-driven shapes: bounded curvature, inner/outer envelope shells, roundness); the review session re-asks after hexfold answers, and the hero figure stays as it is meanwhile; Reto-run commands (two placeholder deletes, enrich-rearm, pillar regen).
+**Resume (2026-10-03 22:10Z):** round 3 deployed at 929107f3. This thread's round-3 lands were thread-file edits only, so there is no code to dogfood. The prod work was data edits (items 27–29 applied, td450082 merged), each verified when it was applied.
+- **Open, waiting on others:**
+  - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at hexfold's cycle 3.
+  - claims-and-evidence-9 is with its owner.
+- **Reto-run:**
+  - `scripts/prod-precis tools delete --kind draft --id dc3015729`, and the same for dc3015722;
+  - enrich-rearm over `export-tex/cited-paper-ids.txt` (pa1181 still lacks volume and pages);
+  - pillar delete + `pillar/regen.py` + re-export;
+  - rename the stale `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/merge_1181.py` (the classifier blocked the session).
+- **Off-thread requests from this session, each with its owner:**
+  - local-compute: MeluXina bumped up, with uses widened to MLIP and DFT; a local tuned-model plan; `docs/backlog/greenfield-cluster-layout.md`;
+  - knowledge-mesh: rxn_values folded into measures; LLM specs as a consumer; range + conditions search with SI storage (in `measures-substrate.md`);
+  - orchestrator: the fleet's default model is sonnet.
 **Deployed vs landed (2026-10-02):** everything this thread shipped is on
 prod (fleet 7242d4c9 includes 974e3a20 hygiene fix and 1f2324a4); nothing
 is landed-only. **Traps:** the session classifier blocks direct prod-DB

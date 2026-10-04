@@ -189,6 +189,12 @@ queries without writing.
 - `Upstream: PERPLEXITY_API_KEY not set` — raised only on cache-miss
   `get`. Imports, `/recent`, and cache hits work without a key.
 - `Upstream: HTTP 401 / 429 / 5xx` — paid API path only.
+- **A `perplexity-research` call that times out on your side** (the
+  client gave up after about 5 min) can still complete and be cached on
+  the server. Before calling again, run
+  `get(kind='perplexity-research', id='/recent')`. If the query is listed,
+  read that row by its slug, using the no-fetch form the listing's own
+  hint shows. Calling again would pay for it twice.
 
 ## Required env
 
