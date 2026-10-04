@@ -271,6 +271,9 @@ class MeasureHandler(Handler):
         for entry in (r["meta"] or {}).get("escalation") or []:
             out.append(f"  escalation: {entry}")
 
+        if note := (r["meta"] or {}).get("note"):
+            out.append(f"note: {note}")
+
         out.append(self._anchor_line(r))
         out.append(
             f"written: {_utc(r['created_at'])} by {r['actor']}"

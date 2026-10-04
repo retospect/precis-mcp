@@ -18,7 +18,8 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   ``value_form``, ``reference``, ``normalization``, ``normalization_status``,
   ``tier``, ``source_attribution``, ``measurand_status``, ``role``,
   ``direction`` (inputs: ``input`` | ``covariate``), ``condition`` (an input's
-  label, as ``meta.condition``);
+  label, as ``meta.condition``), ``note`` (free text, <= 500 characters, as
+  ``meta.note``; written at insert only, since ``meta`` is frozen after);
 * ``anchor`` = ``{chunk, anchor_scheme, span}`` (an input inherits the
   output's), ``extra_anchors`` (a list of the same), ``supersedes`` (a measure
   id or ``mx`` handle), ``derived_from`` (a list of the same).
@@ -61,6 +62,7 @@ _ROW_FIELDS = frozenset(
         "role",
         "direction",
         "condition",
+        "note",
         "anchor",
         "extra_anchors",
         "supersedes",
@@ -85,6 +87,7 @@ _STRINGS = (
     "direction",
     "condition",
 )
+_NOTE_MAX = 500
 _PUT_NEXT = (
     "put(kind='measure', text='95', meta={'measurand': 'measurand/faradaic-efficiency', "
     "'subject': 'pa12', 'reported_unit': '%', 'tier': 'measured', 'anchor': "
@@ -278,6 +281,18 @@ class RunParser:
         meta: dict[str, Any] = {}
         if raw.get("condition"):
             meta["condition"] = raw["condition"].strip()
+        note = raw.get("note")
+        if note is not None:
+            if not isinstance(note, str):
+                raise _bad(where, "note", f"{note!r} is not a string")
+            if len(note) > _NOTE_MAX:
+                raise _bad(
+                    where,
+                    "note",
+                    f"is {len(note)} characters; the cap is {_NOTE_MAX}",
+                )
+            if note.strip():
+                meta["note"] = note.strip()
         group = raw.get("subject_group")
         if group is None and defaults is not None:
             group = defaults.subject_group

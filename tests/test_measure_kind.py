@@ -1184,6 +1184,44 @@ class TestPutRun:
         # a refusal wrote nothing
         assert store.search_measures(w["fe"], include_all=True).rows == []
 
+    def test_a_note_on_the_output_and_an_item_is_stored_and_shown(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        items = self._items()
+        items[0]["note"] = "  read off Fig 2b  "
+        body = h.put(
+            text="95", meta=self._meta(w, note="averaged over 3 cells"), items=items
+        ).body
+        ids = [int(m) for m in re.findall(r"^mx(\d+) ", body, re.M)]
+        out, pot, prod = (store.measure_detail(i) for i in ids)
+        assert out["meta"]["note"] == "averaged over 3 cells"
+        assert pot["meta"]["note"] == "read off Fig 2b"
+        assert "note" not in (prod["meta"] or {})
+        assert "note: averaged over 3 cells" in h.get(id=out["id"]).body
+        assert "note: read off Fig 2b" in h.get(id=pot["id"]).body
+        assert "note:" not in h.get(id=prod["id"]).body
+
+    def test_a_note_is_capped_at_500_characters(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        h.put(text="95", meta=self._meta(w, note="x" * 500))  # the cap itself is fine
+        with pytest.raises(BadInput, match=r"meta\.note.*501 characters.*500"):
+            h.put(text="95", meta=self._meta(w, note="x" * 501))
+        items = self._items()
+        items[1]["note"] = "y" * 501
+        with pytest.raises(BadInput, match=r"items\[1\]\.note"):
+            h.put(text="95", meta=self._meta(w), items=items)
+
+    def test_a_non_string_note_is_refused(
+        self, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        with pytest.raises(BadInput, match=r"meta\.note.*not a string"):
+            h.put(text="95", meta=self._meta(w, note=["a"]))
+        items = self._items()
+        items[0]["note"] = 3
+        with pytest.raises(BadInput, match=r"items\[0\]\.note.*not a string"):
+            h.put(text="95", meta=self._meta(w), items=items)
+
     def test_supersedes_through_put(
         self, store: Store, w: dict[str, Any], h: MeasureHandler
     ) -> None:

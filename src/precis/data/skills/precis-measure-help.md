@@ -210,15 +210,16 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   `value_err` / `value_text` / `value_bool` / `value_form`, `reference`,
   `normalization`, `normalization_status`, `tier`, `source_attribution`,
   `measurand_status`, `anchor`, `extra_anchors`, `supersedes` (a measure id or
-  `mx` handle), `derived_from` (a list of them), `run_key` (else minted) and
-  `model` (the writing model).
+  `mx` handle), `derived_from` (a list of them), `note` (free text, at most 500 characters;
+  stored in `measures.meta`, shown by `get`, fixed once written), `run_key`
+  (else minted) and `model` (the writing model).
 - **`anchor`** is `{chunk: <chunk handle or id>, anchor_scheme, span}`; the paper
   is the chunk's own. `tier='measured'` needs one.
 - **`items`**: each input row takes the same fields plus its own `literal`
   (`text` is accepted as the same word) and `condition` (the label that
   satisfies a required condition, e.g. `product`). An input inherits the
   output's `subject`, `subject_group` and `anchor` unless it gives its own;
-  `direction` is `input` (default) or `covariate`.
+  `direction` is `input` (default) or `covariate`. Items take `note` too.
 - **Errors** are `BadInput` naming the field (`items[1].measurand: ...`) with a
   `next:` example; an unknown field is refused with the accepted list.
 - **`reason=`** goes to the revision context like `edit`'s.
