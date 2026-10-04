@@ -49,8 +49,19 @@ states that count a paper as usable when it is not, then metadata.
    shared 120 s pass budget. A budget-cut parent was then never retried.
    Fixed: it is re-armed for the next pass, up to 3 times, and discovery
    requests are capped at 10 s connect / 20 s read. pa166889 was
-   re-queued by hand. Open: why the fetcher host times out on
-   api.crossref.org.
+   re-queued by hand. Its 02:37Z retry missed again on Figshare and
+   doi.org connect timeouts, so a no-PDF check that failed on a
+   transient network error now also re-arms (4ed4c40b0). Probe
+   2026-10-04 from the fetcher host:
+   - Crossref failed 5 of 10 requests, with TLS handshakes up to 20 s.
+   - Figshare took 35 ms every time.
+   - doi.org took up to 3 s.
+   - DNS, IPv6 and the route were all clean.
+   Crossref answers `x-concurrency-limit: 1`, and several worker
+   processes on that host call it (retraction gate, enrich, provenance,
+   SI discovery). Exceeding that limit is the likely cause.
+   Unconfirmed, and open: whether the polite-pool mailto is sent on
+   every Crossref call.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
