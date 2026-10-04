@@ -530,6 +530,16 @@ Two code gaps, each worked around in the pilot data and still open:
   print a lower or upper bound (mx373, mx376) without its `>` or `<`.
   The stored `value_form` is correct.
 
+**Found landing 0188** (orchestrator review, 2026-10-04):
+- **An unparseable unit with an SI form stays in its own unit silently.**
+  A legacy mint whose unit pint cannot parse as written but which plainly
+  has an SI form (`g/cm3`, `lb/in3`) gets no `measure_unit_compat` row.
+  Nothing records that it was skipped.
+  - The fix: `register_legacy_unit()` logs the skip at mint, with
+    `legacy_table`, `legacy_key` and the unit text. The later conversion
+    migration then has a list to work from.
+  - It does not refuse: the legacy verbs must keep minting (the se tests).
+
 **Pilot review result** (2026-10-04): four Opus reviewers checked each
 of the 122 outputs against its chunk.
 - **114 approved.**
