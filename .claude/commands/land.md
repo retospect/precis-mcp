@@ -66,10 +66,11 @@ Optional ship message from the user: `$ARGUMENTS`
    `main` — via the same atomic CAS squash-push. The ship lock covers only
    that push (seconds), never the CI wait or a gate. A full-gate ship lands
    an exactly-tested tree, or says it did not and pins nothing. If main
-   moves during the wait, ship re-syncs and re-runs CI
-   on the integrated tree (~12 min, up to 2×, siblings keep landing
-   meanwhile); then one hybrid local container gate (~10 min, unlocked);
-   if that loses the race too, ship lands by an in-lock forward merge of
+   moves during the wait (siblings keep landing meanwhile), the race budget
+   decides: a tree that adds a migration or touches `safe_fetch.py` re-syncs
+   and re-runs CI on the integrated tree once (~12 min), because an
+   exactly-tested land is worth a second gate there; any other tree gets one
+   CI run. When the budget is spent, ship lands by an in-lock forward merge of
    main, prints "not a deploy warrant", writes no `.ship-sha`, and trails
    the squash with `Gate: forward-merged over N commits`.
    Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the

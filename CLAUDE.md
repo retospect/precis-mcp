@@ -20,9 +20,9 @@ ship in background, output to a log) → atomic CAS squash-merge to `main` —
 a full-gate ship lands an exactly-tested tree, or says it did not and pins
 nothing. The repo-wide ship lock is narrow: held only for the seconds of
 fetch → squash → CAS push → local-main ff, never across sync, lint, a gate
-or the CI wait. If main moves meanwhile, ship re-syncs and re-runs CI
-(up to 2×), then one hybrid local gate (~10 min, also unlocked); when that
-budget is spent it lands by an in-lock forward merge of main instead,
+or the CI wait. If main moves meanwhile, a tree that adds a migration or
+touches `safe_fetch.py` re-syncs and re-runs CI once; any other tree, or
+that one after its retry, lands by an in-lock forward merge of main instead,
 prints "not a deploy warrant", writes no `.ship-sha` and moves no `gated`
 ref, and the squash carries a `Gate: forward-merged over N commits` trailer
 (`--quick` forward-merges the same way when main moved, with a

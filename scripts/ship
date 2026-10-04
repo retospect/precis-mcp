@@ -104,17 +104,18 @@
 #                                        # atomic CAS squash-push. If main moves
 #                                        # during the CI wait, the race is lost:
 #                                        # re-sync and run a FRESH CI cycle on the
-#                                        # integrated tree (~12 min), up to
-#                                        # PRECIS_REMOTE_CI_RETRIES (2) times; then
-#                                        # the HYBRID fallback (full LOCAL gate
-#                                        # ~10 min, also unlocked); then the
-#                                        # in-lock forward-merge land (no pin) so a
+#                                        # integrated tree (~12 min) once, and
+#                                        # only for a tree that adds a migration
+#                                        # or touches safe_fetch.py; otherwise,
+#                                        # or after that, the in-lock
+#                                        # forward-merge land (no pin) so a
 #                                        # burst can't loop forever. Add
 #                                        # --impacted for an opt-in local impacted
 #                                        # gate BEFORE burning a CI cycle. (also
 #                                        # via PRECIS_SHIP_REMOTE=1) Env:
 #                                        # PRECIS_REMOTE_CI_TIMEOUT_MIN (150),
-#                                        # PRECIS_REMOTE_CI_RETRIES (2).
+#                                        # PRECIS_REMOTE_CI_RETRIES (set: that
+#                                        # many retries + the hybrid local gate).
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -793,13 +794,37 @@ _race_note() {
 
 # A lost race in a full-gate mode (main moved during the gate/CI wait, or the
 # CAS lease was rejected) with budget left: the loop re-syncs and re-gates.
-# Remote mode first spends PRECIS_REMOTE_CI_RETRIES fresh CI cycles, then one
+# Remote race budget by risk (2026-10-04, orchestrator: one land had cost three
+# green CI runs at ~33 pushes/h). A tree that adds no migration and leaves
+# safe_fetch.py alone gets ONE CI run; a lost race then lands by the in-lock
+# forward merge (Gate trailer, no pin). A tree that adds a migration or touches
+# safe_fetch.py gets one CI retry, since an exactly-tested land is worth a
+# second gate for the two things prod cannot take back. No hybrid local gate
+# by default. An explicit PRECIS_REMOTE_CI_RETRIES skips this and keeps the
+# old budget.
+_set_remote_budget() {
+    [[ -n "${PRECIS_REMOTE_CI_RETRIES:-}" ]] && return 0
+    local base risky
+    base="$(git merge-base origin/main HEAD)"
+    risky="$(git diff --name-only --no-renames --diff-filter=A "$base" HEAD -- '*/migrations/*.sql')"
+    risky="${risky}$(git diff --name-only --no-renames "$base" HEAD -- src/precis/utils/safe_fetch.py)"
+    if [[ -n "$risky" ]]; then
+        REMOTE_RETRY_BUDGET=1
+        say "race budget: 2 CI runs (this tree adds a migration or touches safe_fetch.py)"
+    else
+        REMOTE_RETRY_BUDGET=0
+        say "race budget: 1 CI run; a lost race lands forward-merged (Gate trailer, no pin)"
+    fi
+    MAX_ATTEMPTS=$(( 1 + REMOTE_RETRY_BUDGET ))
+}
+
+# Remote mode first spends its CI retry budget (above) on fresh CI cycles, then one
 # hybrid local gate (policy header near REMOTE_FALLBACK= above); neither holds
 # the ship lock any more, so this only does the bookkeeping. No-op outside
 # remote mode or once in fallback.
 _remote_race_lost() {
     [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]] || return 0
-    local budget="${PRECIS_REMOTE_CI_RETRIES:-2}"
+    local budget="$REMOTE_RETRY_BUDGET"
     if (( REMOTE_CI_RETRIES < budget )); then
         REMOTE_CI_RETRIES=$(( REMOTE_CI_RETRIES + 1 ))
         say "race lost — the re-synced tree gets a FRESH CI run (CI retry ${REMOTE_CI_RETRIES}/${budget}; hybrid local gate after that)"
@@ -1288,7 +1313,11 @@ shipped=0
 # re-gate: a lost race goes straight to the forward-merge land; the test
 # suite uses it).
 MAX_ATTEMPTS="${PRECIS_SHIP_MAX_ATTEMPTS:-3}"
-[[ "$REMOTE" == 1 ]] && MAX_ATTEMPTS=$(( 2 + ${PRECIS_REMOTE_CI_RETRIES:-2} ))
+# Remote: an explicit PRECIS_REMOTE_CI_RETRIES keeps the old shape (first run
+# + that many CI retries + the hybrid local gate). Without it the budget is set
+# by risk on attempt 1, once the diff is known (_set_remote_budget).
+REMOTE_RETRY_BUDGET="${PRECIS_REMOTE_CI_RETRIES:-2}"
+[[ "$REMOTE" == 1 ]] && MAX_ATTEMPTS=$(( 2 + REMOTE_RETRY_BUDGET ))
 # Set when the landed tree is a forward merge of a full-gate ship (budget
 # spent): it was never gated, so no .ship-sha pin and no `gated` pointer.
 FWD_UNGATED=0
@@ -1318,6 +1347,9 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
 
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
+    if [[ "$attempt" == 1 && "$REMOTE" == 1 && "$RELEASE" != 1 ]]; then
+        _set_remote_budget
+    fi
 
     # Classify the change: a docs/config-only ship can't break the test
     # suite, so the local gate skips the ~3-min mypy+pytest and runs only
