@@ -263,11 +263,24 @@ class NanopubMixin:
         """Freeze the reviewed claim string + grounding and flip
         ``candidate`` → ``reviewed``. CAS on state; ``False`` = the row
         was not in ``candidate`` (re-approval goes through
-        :meth:`nanopub_reopen` first)."""
+        :meth:`nanopub_reopen` first).
+
+        The envelope is stamped ``frozen_at`` (UTC ISO-8601 'Z') from the
+        same ``now()`` as ``updated_at`` and ``links.created_at`` — the
+        freeze time :func:`precis.nanopub.freshness.stale_grounding`
+        compares newer evidence against. A caller-supplied ``frozen_at``
+        is overwritten and a ``checked_at`` (the sign-time stamp,
+        :meth:`nanopub_record_signed`) is dropped, so neither can be
+        smuggled in to hide newer evidence. Not an artifact input (``mint._mint_input`` reads
+        named keys only)."""
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET approved_title = %s, "
-                "claim_sha = %s, aida_uri = %s, grounding = %s, "
+                "claim_sha = %s, aida_uri = %s, "
+                "grounding = (%s::jsonb - 'checked_at') || "
+                "jsonb_build_object('frozen_at', "
+                "to_char(now() AT TIME ZONE 'UTC', "
+                '\'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\')), '
                 "state = 'reviewed', updated_at = now() "
                 "WHERE id = %s AND state = 'candidate'",
                 (approved_title, claim_sha, aida_uri, Jsonb(grounding), row_id),
@@ -282,11 +295,23 @@ class NanopubMixin:
         artifact_id: int,
         dependency_codes: dict[str, str],
     ) -> bool:
-        """Flip ``reviewed`` → ``signed``, binding the artifact. CAS."""
+        """Flip ``reviewed`` → ``signed``, binding the artifact. CAS.
+
+        Also stamps ``checked_at`` (UTC ISO-8601 'Z', same ``now()`` and
+        format as ``frozen_at``) into the grounding envelope in the same
+        write: at this moment every supporting edge that existed was
+        either in the grounding or confirmed by the signer, so a later
+        signed → reviewed re-mint only needs to flag edges newer than this
+        (:func:`precis.nanopub.freshness.grounded_since`). Not an artifact
+        input — the artifact is already minted from named envelope keys."""
         with self.pool.connection() as conn:
             cur = conn.execute(
                 "UPDATE nanopub_publish SET trusty_uri = %s, artifact_id = %s, "
-                "dependency_codes = %s, state = 'signed', updated_at = now() "
+                "dependency_codes = %s, state = 'signed', updated_at = now(), "
+                "grounding = COALESCE(grounding, '{}'::jsonb) || "
+                "jsonb_build_object('checked_at', "
+                "to_char(now() AT TIME ZONE 'UTC', "
+                '\'YYYY-MM-DD"T"HH24:MI:SS.US"Z"\')) '
                 "WHERE id = %s AND state = 'reviewed'",
                 (trusty_uri, artifact_id, Jsonb(dependency_codes), row_id),
             )

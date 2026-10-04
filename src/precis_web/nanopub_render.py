@@ -143,6 +143,11 @@ def hub_context(
         action, action_label = None, "Blocked — unresolved contradicts edge"
 
     withheld = withheld_edges(store, hub_id)
+    newer_evidence = (
+        _newer_evidence_rows(store, hub_id, row)
+        if row is not None and row.state == "reviewed"
+        else []
+    )
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
     suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
     open_disputes = _dispute_panel(store, hub_id)
@@ -191,6 +196,7 @@ def hub_context(
         "contradicted": _contradicted_panel(contradicted),
         "disputes": open_disputes,
         "withheld": _withheld_rows(store, withheld),
+        "newer_evidence": newer_evidence,
         "preflight": preflight,
         "action": action,
         "action_label": action_label,
@@ -436,6 +442,11 @@ _PREFLIGHT_CHECKS: list[tuple[str, str]] = [
     ("hanging", "not a hanging claim — a grounded passage exists"),
     ("contradicts", "still no live contradicts edge at publish time"),
     ("drift", "the live hub sentence still hashes to the frozen sha"),
+    (
+        "grounding-stale",
+        "no supporting evidence was linked after the grounding froze "
+        "(checked until signed)",
+    ),
     ("withheld-edge", "every evidence edge is refine-verified or human-signed-off"),
     ("dependency-drift", "dependency artifacts are unchanged since this one signed"),
     ("dependency-unpublished", "every dependency artifact is already published"),
@@ -845,6 +856,27 @@ def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:
     return [
         {"ref_id": e.ref_id, "kind": e.kind, "title": e.title, "direction": e.direction}
         for e in contradicted
+    ]
+
+
+def _newer_evidence_rows(store: Any, hub_id: int, row: Any) -> list[dict[str, Any]]:
+    """:func:`~precis.nanopub.freshness.stale_grounding`'s edges as template
+    rows — supporting evidence linked after a reviewed row's grounding froze.
+    The page lists them above the sign button and the sign goes through
+    only with the "sign anyway" checkbox."""
+    from precis.nanopub import freshness
+
+    return [
+        {
+            "link_id": e.link_id,
+            "relation": e.relation,
+            "source": e.source,
+            "source_title": e.source_title,
+            "paper_ref_id": e.paper_ref_id,
+            "chunk_handle": e.chunk_handle,
+            "created_at": abs_ts(e.created_at),
+        }
+        for e in freshness.stale_grounding(store, hub_id, row)
     ]
 
 

@@ -25,7 +25,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
-from precis.nanopub import assemble, evidence, gates
+from precis.nanopub import assemble, evidence, freshness, gates
 from precis.nanopub.aida import aida_uri, canonical_sentence
 from precis.nanopub.keys import fingerprint, load_profile
 from precis.store._nanopub_ops import PublishRow
@@ -403,6 +403,7 @@ def sign(
     llm_models: list[str] | None = None,
     signer_orcid: str | None = None,
     signer_name: str | None = None,
+    accept_newer_evidence: bool = False,
 ) -> PublishRow:
     """Mint + sign the hub's ``reviewed`` publish row into an immutable
     artifact: ``reviewed`` → ``signed``.
@@ -425,7 +426,16 @@ def sign(
     (recorded by the proposing agent, attested at approve) always fold
     into the pubinfo software node; this arg can only add ids on top —
     see :func:`_fold_llm_models`. The ``llm-attribution`` gate (re-run
-    here) refuses an agent-prepared payload that names none."""
+    here) refuses an agent-prepared payload that names none.
+
+    ``accept_newer_evidence`` answers the ``grounding-stale`` gate
+    (:mod:`precis.nanopub.freshness`): supporting evidence edges linked
+    AFTER the grounding froze (and absent from it) refuse the sign unless
+    the caller — a person who looked at them — passes this. Signing over
+    them is logged on the hub's ``reground_log`` (``"signed over newer
+    evidence"``, one entry per edge) once the artifact is recorded; the
+    alternative is a re-review (reopen → approve), which re-freezes the
+    grounding."""
     row = store.nanopub_publish_row(hub_ref_id)
     if row is None or row.state != "reviewed":
         raise BadInput(
@@ -442,6 +452,11 @@ def sign(
     drift = gates.check_drift(bundle.sentence, row.claim_sha)
     if drift:
         violations.append(drift)
+    stale_violation, newer_edges = freshness.check_grounding_fresh(
+        store, hub_ref_id, row
+    )
+    if stale_violation and not accept_newer_evidence:
+        violations.append(stale_violation)
     if violations:
         raise MintGateError(violations)
 
@@ -480,6 +495,8 @@ def sign(
             f"publish row {row.id} left 'reviewed' mid-sign — artifact "
             f"{artifact_id} stays in the append-only store unreferenced"
         )
+    if newer_edges:
+        _log_signed_over_newer(store, hub_ref_id, row, newer_edges)
     log.info(
         "nanopub: signed fi%s as %s (artifact %s, %s)",
         hub_ref_id,
@@ -490,6 +507,51 @@ def sign(
     refreshed = store.nanopub_publish_row_by_id(row.id)
     assert refreshed is not None
     return refreshed
+
+
+def _log_signed_over_newer(
+    store: Store,
+    hub_ref_id: int,
+    row: PublishRow,
+    edges: list[freshness.NewerEdge],
+) -> None:
+    """Audit trail for ``accept_newer_evidence``: one ``reground_log``
+    entry per edge signed over (the hub's existing audit log, same shape
+    ``taproot.hub.remove_disputes`` writes). Best-effort — the artifact is
+    already recorded, so a log failure is warned, never raised."""
+    from precis.taproot.hub import append_reground_log, reground_log_entry
+
+    try:
+        append_reground_log(
+            store,
+            hub_ref_id,
+            [
+                reground_log_entry(
+                    src_ref_id=e.paper_ref_id,
+                    src_chunk_id=e.chunk_id,
+                    relation=e.relation,
+                    verdict="ACCEPTED",
+                    reason=(
+                        f"link {e.link_id} created "
+                        f"{e.created_at.strftime('%Y-%m-%dT%H:%MZ')} after the "
+                        "grounding froze; signed without re-review"
+                    ),
+                    action="signed over newer evidence",
+                    sha=row.claim_sha,
+                    handle=f"link:{e.link_id}",
+                )
+                for e in edges
+            ],
+        )
+    except Exception:
+        log.warning(
+            "nanopub: fi%s signed over %d newer evidence edge(s) but the "
+            "audit-log append failed (links %s)",
+            hub_ref_id,
+            len(edges),
+            [e.link_id for e in edges],
+            exc_info=True,
+        )
 
 
 def check_dependency_drift(store: Store, row: PublishRow) -> bool:

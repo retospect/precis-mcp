@@ -44,6 +44,14 @@ Each hit is a chunk handle `pc<chunk_id>` — that's your anchor. Rare tokens
 distinctive phrase from the claim. No paper in mind yet? Drop `scope=`
 to search the whole corpus, or see [[precis-paper-help]].
 
+**Before concluding "the paper does not say X"**: one literal phrase
+missing is not absence. Search every paper behind the hub plus its SI;
+the acronym and its expansion both ways ("STS" / "scanning tunnelling
+spectroscopy"); split phrasings ("scanning tunnelling microscopy (STM)
+and spectroscopy (STS)" has no "tunnelling spectroscopy"); and
+figure/table captions, where methods often live. Record the patterns
+searched next to the conclusion.
+
 ## How do I check a chunk's surrounds / read the context around it?
 ## Read the sentences before and after a passage
 ## Get the surrounding paragraphs of a chunk

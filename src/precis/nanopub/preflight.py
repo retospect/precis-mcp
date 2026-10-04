@@ -322,6 +322,20 @@ def publish_preflight(
         if drift:
             issues.append(PreflightIssue(check=drift.gate, message=drift.message))
 
+    if row.state == "reviewed":
+        # Sign-time freshness (lazy import: freshness imports this module).
+        # Only a `reviewed` row has an unsigned grounding left to refresh;
+        # once signed, the choice (re-review or sign anyway) was made.
+        from precis.nanopub import freshness
+
+        stale, newer = freshness.check_grounding_fresh(store, hub_ref_id, row)
+        if stale is not None:
+            issues.append(
+                PreflightIssue(
+                    check=stale.gate, message=stale.message, subject_id=newer[0].link_id
+                )
+            )
+
     for edge in withheld_edges(store, hub_ref_id):
         why = (
             "stale support verdict (claim edited after verification) on"

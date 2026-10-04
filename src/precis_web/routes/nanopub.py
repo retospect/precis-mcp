@@ -303,7 +303,10 @@ async def nanopub_approve(
 
 @router.post("/nanopub/fi{hub_id}/sign", response_model=None)
 async def nanopub_sign(
-    request: Request, hub_id: int, attest: str = Form("")
+    request: Request,
+    hub_id: int,
+    attest: str = Form(""),
+    accept_newer: str = Form(""),
 ) -> Response:
     from precis.errors import BadInput
     from precis.nanopub import mint
@@ -336,6 +339,9 @@ async def nanopub_sign(
             # open the attesting-key door.
             interactive=attesting,
             llm_models=[],
+            # "Sign anyway — I checked the newer evidence" checkbox: the
+            # grounding-stale gate's confirm (freshness.py).
+            accept_newer_evidence=bool(accept_newer),
             signer_orcid=signer.orcid if attesting and signer else None,
             signer_name=(signer.full_name or signer.login)
             if attesting and signer

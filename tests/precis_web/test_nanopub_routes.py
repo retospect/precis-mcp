@@ -1176,3 +1176,88 @@ def test_merge_refuses_past_candidate_winner_writes_nothing(
     assert resp.status_code == 400
     assert "candidate" in resp.text
     assert not _is_retired(store, loser)
+
+
+def _approve_via_web(client: TestClient, hub: int, title: str, chunk: int, sha: str):
+    import json
+
+    resp = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={"title": title, "payload": json.dumps(_payload(chunk, sha))},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303, resp.text
+
+
+def _attach_later_evidence(store: Any, hub: int) -> tuple[int, int]:
+    """A second paper's passage linked as ``establishes`` AFTER approve."""
+    from precis.taproot.hub import attach_evidence
+
+    paper2, chunk2, _sha = _seed_paper(store, title="The later TEM paper")
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper2,
+        role="establishes",
+        meta={"source_handle": f"pc{chunk2}"},
+        check_retraction=False,
+    )
+    return paper2, chunk2
+
+
+def test_sign_refuses_over_newer_evidence_until_confirmed(
+    client: TestClient, runtime_with_store, monkeypatch: Any
+) -> None:
+    store = _store(runtime_with_store)
+    priv, _pub = generate_keypair(2048)
+    monkeypatch.setenv("NANOPUB_BOT_PRIVATE_KEY", priv)
+    paper, chunk, sha = _seed_paper(store)
+    title = "DFT finds the stale-grounding claim holds."
+    hub = _seed_hub(store, title, paper, chunk)
+    _approve_via_web(client, hub, title, chunk, sha)
+
+    # Nothing newer yet: no warning, no checkbox on the page.
+    page = client.get(f"/claim/fi{hub}")
+    assert 'id="np-newer-evidence"' not in page.text
+    assert "Sign anyway" not in page.text
+
+    _paper2, chunk2 = _attach_later_evidence(store, hub)
+
+    # The page lists the edge above the sign button, with the checkbox and
+    # the re-review (reopen) door.
+    page = client.get(f"/claim/fi{hub}")
+    assert page.status_code == 200
+    assert 'id="np-newer-evidence"' in page.text
+    assert f"pc{chunk2}" in page.text
+    assert 'name="accept_newer"' in page.text
+    assert "Sign anyway" in page.text
+    assert "Re-review grounding" in page.text
+    assert f"/nanopub/fi{hub}/reopen" in page.text
+
+    # Sign without the checkbox is refused, naming the gate.
+    resp = client.post(f"/nanopub/fi{hub}/sign", follow_redirects=False)
+    assert resp.status_code == 400
+    assert "grounding-stale" in resp.text
+    assert store.nanopub_publish_row(hub).state == "reviewed"
+
+    # With the checkbox the same POST signs.
+    resp = client.post(
+        f"/nanopub/fi{hub}/sign", data={"accept_newer": "1"}, follow_redirects=False
+    )
+    assert resp.status_code == 303, resp.text
+    assert store.nanopub_publish_row(hub).state == "signed"
+
+
+def test_re_review_door_reopens_a_reviewed_row(
+    client: TestClient, runtime_with_store
+) -> None:
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    title = "DFT finds the re-reviewed claim holds."
+    hub = _seed_hub(store, title, paper, chunk)
+    _approve_via_web(client, hub, title, chunk, sha)
+    _attach_later_evidence(store, hub)
+
+    resp = client.post(f"/nanopub/fi{hub}/reopen", follow_redirects=False)
+    assert resp.status_code == 303
+    assert store.nanopub_publish_row(hub).state == "candidate"

@@ -110,6 +110,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="LLM model id used in extraction/verification (repeatable; "
         "recorded as software provenance).",
     )
+    p_sign.add_argument(
+        "--accept-newer-evidence",
+        action="store_true",
+        help="Sign even though supporting evidence was linked after the "
+        "grounding froze (grounding-stale gate). Only after reading those "
+        "edges; the alternative is `reopen` + re-approve. Logged on the hub.",
+    )
 
     p_reopen = s.add_parser("reopen", help="Flip a pre-anchor row back to candidate.")
     p_reopen.add_argument("hub")
@@ -370,6 +377,14 @@ def _check(args: argparse.Namespace, store) -> None:
     violations = gates.run_mint_gates(
         store, bundle, payload, hub_meta=hub_ref.meta or {}, at_sign=True
     )
+    # Sign-time freshness: only meaningful against a frozen (reviewed) row.
+    row = store.nanopub_publish_row(hub_id)
+    if row is not None and row.state == "reviewed":
+        from precis.nanopub import freshness
+
+        stale, _newer = freshness.check_grounding_fresh(store, hub_id, row)
+        if stale is not None:
+            violations.append(stale)
     if not violations:
         print("all mint gates pass")
         return
@@ -388,6 +403,7 @@ def _sign(args: argparse.Namespace, store) -> None:
         # This CLI subcommand IS the interactive surface — a person runs it.
         interactive=args.attest,
         llm_models=args.llm_model,
+        accept_newer_evidence=args.accept_newer_evidence,
     )
     print(f"signed fi{row.claim_ref_id}: {row.trusty_uri} (artifact {row.artifact_id})")
 

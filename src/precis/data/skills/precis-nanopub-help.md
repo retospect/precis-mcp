@@ -242,6 +242,17 @@ Style: a quantitative claim corroborates in the **measured quantity**
 ("65 nm node" names no physical dimension) — a passage in the wrong
 currency imports a unit confusion into the artifact.
 
+Reviewer check at approve/sign: a measurement or mechanism claim needs at
+least one grounding passage from the body that describes the measurement
+(methods, results or a figure caption) — an abstract or a definition
+sentence alone is not enough. Every method, instrument or quantity the
+sentence names (TEM, STS, a value) must appear in some grounding passage,
+matching acronym and expansion both ways as the paper writes them. Sign
+refuses when evidence was attached after the grounding froze (gate
+`grounding-stale`); re-review with `precis nanopub reopen fi<id>` then
+approve again, or sign with the explicit confirm after checking the newer
+evidence.
+
 ## Claim-sentence grammar — write it at authoring, verified at approve
 
 Write to this grammar when a hub is minted or reworded — not just when

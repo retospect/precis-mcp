@@ -176,7 +176,34 @@
           <p class="text-[11px] text-slate-500">Every Layer-A mint gate runs now — the queue only holds strings that can mint.</p>
         </form>
         {% elif np.action == 'sign' %}
+        {% if np.newer_evidence %}
+        {# grounding-stale (precis.nanopub.freshness): supporting evidence
+           linked after approve froze the grounding — the reviewer never
+           saw it. Sign refuses without the checkbox below. #}
+        <div id="np-newer-evidence" class="rounded border border-amber-300 bg-amber-50 p-3 space-y-1.5 text-xs">
+          <p class="font-semibold text-amber-800">
+            {{ np.newer_evidence|length }} supporting edge(s) arrived after the grounding froze
+            and are not in it:
+          </p>
+          <ul class="list-disc pl-4 space-y-0.5 text-slate-700">
+            {% for e in np.newer_evidence %}
+            <li title="{{ e.source_title }}">
+              {{ e.relation }} ← <span class="font-mono">{{ e.source }}</span>
+              {% if e.chunk_handle %}<span class="font-mono text-slate-400">{{ e.chunk_handle }}</span>{% else %}<span class="text-slate-400">(paper-level)</span>{% endif %}
+              <span class="text-slate-400">· link {{ e.link_id }} · {{ e.created_at }}</span>
+            </li>
+            {% endfor %}
+          </ul>
+          <p class="text-slate-600">Re-review the grounding (below), or read them and sign anyway.</p>
+        </div>
+        {% endif %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/sign" class="space-y-2">
+          {% if np.newer_evidence %}
+          <label class="flex items-center gap-2 text-xs text-amber-800">
+            <input type="checkbox" name="accept_newer" value="1">
+            Sign anyway — I checked the newer evidence
+          </label>
+          {% endif %}
           <label class="flex items-center gap-2 text-xs text-slate-600">
             <input type="checkbox" name="attest" value="1">
             sign with the <b>attesting</b> key (your human signature — this is what makes it publishable)
@@ -185,7 +212,7 @@
           <p class="text-[11px] text-slate-500">The sign button signs for real; unchecked = bot key (machine provenance only).</p>
         </form>
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">
-          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs">Reopen (edit the string)</button>
+          <button class="px-3 py-1.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs">{% if np.newer_evidence %}Re-review grounding (reopen to candidate){% else %}Reopen (edit the string){% endif %}</button>
         </form>
         {% elif np.action == 'reopen' %}
         <form method="post" action="/nanopub/fi{{ hub_ref_id }}/reopen">

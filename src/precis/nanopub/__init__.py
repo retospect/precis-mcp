@@ -39,6 +39,9 @@ Slices 1-3 — local, reversible:
 - :mod:`.mint` — freeze-at-review + mint+sign pipeline; signs the
   artifact, not the claim (reword => new claim identity, re-sign => new
   artifact identity only).
+- :mod:`.freshness` — sign-time ``grounding-stale`` gate: supporting
+  evidence linked after approve froze the grounding (``frozen_at`` in the
+  envelope) blocks sign unless confirmed.
 - :mod:`.keys` — vault-resident key custody: bot key worker-invocable
   and non-attesting, human attesting key loads only through an
   interactive door.

@@ -76,7 +76,10 @@ not a finding. Then, for each citation handle already present:
    ("Lee et al. measured…") and the cite is not that group's paper —
    finding: wrong cite.
 7. If nothing in the paper bears on the claim — finding: unsupported
-   claim. This is the highest-severity finding type.
+   claim. This is the highest-severity finding type. "Nothing" needs a
+   real search: every paper behind the hub plus its SI, the acronym and
+   its expansion both ways, split phrasings, figure/table captions —
+   and the finding lists the patterns searched.
 8. **Polarity, as its own check, even when steps 3–5 passed:** does the
    source run against the clause's direction or strength? A passage can
    support half a sentence and contradict the other half. If it does —
