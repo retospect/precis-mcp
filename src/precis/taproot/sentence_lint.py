@@ -223,6 +223,11 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "assays",
         "modelling",
         "modeling",
+        # 2026-10-03: mathematical way-of-knowing. A signed hub claim
+        # ("... proof / theorem ...") failed approve for want of any mode.
+        "proof",
+        "proofs",
+        "theorem",
     }
 )
 
@@ -231,7 +236,9 @@ _EPISTEMIC_MODE_RE = re.compile(
     + "|".join(
         re.escape(t) for t in sorted(EPISTEMIC_MODE_TOKENS, key=len, reverse=True)
     )
-    + r")\b",
+    # `proof-of-concept` is a maturity label for a device, not a way of
+    # knowing (2026-10-03 corpus pass: 2 of 2 "proof" hits were this).
+    + r")\b(?!-of-concept)",
     re.IGNORECASE,
 )
 
@@ -311,7 +318,11 @@ _EVIDENCE_VERB_RE = re.compile(
     r"reveals?|revealed|revealing|"
     r"confirms?|confirmed|confirming|"
     r"identif(?:y|ies|ied|ying)|"
-    r"indicates?|indicated|indicating)\b",
+    r"indicates?|indicated|indicating|"
+    # 2026-10-03: `proves|proved|proven` (mathematical claims -- "Analysis
+    # proves that ..."). The copula "proves/proved/proven to be" is
+    # excluded: "X proved to be stable" reports an outcome, not a proof.
+    r"prov(?:es|ed|en)(?!\s+to\s+be\b))\b",
     re.IGNORECASE,
 )
 

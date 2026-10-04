@@ -214,6 +214,26 @@ def test_no_evidence_verb_does_not_fire_on_controlled_verb_inflections() -> None
         assert not any("no-evidence-verb" in w for w in warnings), sentence
 
 
+def test_no_evidence_verb_accepts_prove_forms() -> None:
+    for sentence in [
+        "Analysis proves that the domino problem is undecidable.",
+        "Berger proved that the domino problem is undecidable.",
+        "A reduction from the halting problem has proven that tiling is undecidable.",
+    ]:
+        warnings = lint_claim_sentence(sentence)
+        assert not any("no-evidence-verb" in w for w in warnings), sentence
+
+
+def test_no_evidence_verb_rejects_copula_prove_to_be() -> None:
+    for sentence in [
+        "The catalyst proved to be stable under cycling.",
+        "The catalyst proves to be stable under cycling.",
+        "The catalyst has proven to be stable under cycling.",
+    ]:
+        warnings = lint_claim_sentence(sentence)
+        assert any("no-evidence-verb" in w for w in warnings), sentence
+
+
 def test_no_epistemic_mode_fires_when_absent() -> None:
     warnings = lint_claim_sentence("Mobility increases with encapsulation.")
     assert any("no-epistemic-mode" in w for w in warnings)
@@ -235,6 +255,23 @@ def test_no_epistemic_mode_does_not_fire_on_method_tokens() -> None:
     ]:
         warnings = lint_claim_sentence(sentence)
         assert not any("no-epistemic-mode" in w for w in warnings), sentence
+
+
+def test_no_epistemic_mode_accepts_proof_and_theorem() -> None:
+    for sentence in [
+        "A proof by reduction shows that the tiling problem is undecidable.",
+        "Proofs in the literature show that the bound is tight.",
+        "The Euler theorem shows that a closed cage needs twelve pentagons.",
+    ]:
+        warnings = lint_claim_sentence(sentence)
+        assert not any("no-epistemic-mode" in w for w in warnings), sentence
+
+
+def test_no_epistemic_mode_ignores_proof_of_concept() -> None:
+    warnings = lint_claim_sentence(
+        "A proof-of-concept Zn-NO battery delivers 4.14 mW cm-2."
+    )
+    assert any("no-epistemic-mode" in w for w in warnings)
 
 
 def test_multi_assertion_fires_on_and_join() -> None:
