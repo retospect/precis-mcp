@@ -393,11 +393,12 @@ hemisphere) and every top atom is held to it, like the foot.
   `n` = 12/18/24/30/36, and a lid with `top_fillet` = r rounded down to
   0.01 Å (4.69 at `n = 12`, 7.04 at 18, 9.39 at 24) come from the plan table
   (`planned: "table"`). Any other top plans live: a sphere ~35 s at
-  `n = 12` (9 candidates), ~100 s at 24; a lid ~20 s (4). Refused before
-  planning: more than one live sphere; a live sphere with `n > 12`; or live
-  candidates over 16 (sphere 9, each distinct `(n, top_fillet)` lid 4).
-  The budget is per scene op: put **one scene op with a live round top per
-  put** (two such ops in one put ran 143 s on prod).
+  `n = 12` (9 candidates); a lid ~20 s (4). The scene relax is not tabled:
+  a scene with one `n = 12` sphere takes ~55 s. Refused before planning:
+  more than one `sphere` per scene op or one with `n > 12`, tabled or not
+  (spheres at 12 and 24 in one op relaxed 476 s); or live candidates over
+  16 (sphere 9, each distinct `(n, top_fillet)` lid 4). Limits are per
+  scene op: put **one round-top scene op per put** (two ran 143 s on prod).
 - Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
   top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
   top_fillet`.

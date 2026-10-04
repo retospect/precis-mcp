@@ -488,15 +488,16 @@ def test_two_sphere_tops_in_one_call_are_refused_before_any_planning(
         raise AssertionError("planning started")
 
     monkeypatch.setattr(mod, "plan_scene", boom)
-    second = {**_LIVE_SPHERE, "name": "r", "at": [5, 5]}
-    with pytest.raises(
-        GeneratorError,
-        match=r"one untabled top: 'sphere' per scene op.*95 s.*budget is per scene op"
-        r".*tabled tops",
-    ):
-        GENERATORS["hexfold_scene"](
-            {"sheet": [40, 30], "features": [_LIVE_SPHERE, second]}
-        )
+    # tabled or live, two spheres are refused: the scene relax is the cost
+    for first in (_SPHERE, _LIVE_SPHERE):
+        second = {**first, "name": "r", "at": [5, 5]}
+        with pytest.raises(
+            GeneratorError,
+            match=r"at most 1 top: 'sphere' per scene op.*Tabled or not.*476 s",
+        ):
+            GENERATORS["hexfold_scene"](
+                {"sheet": [40, 30], "features": [first, second]}
+            )
     # a rounded lid beside a sphere is not capped
     lid = {**_SPHERE, "name": "r", "at": [5, 5], "top": "lid", "top_fillet": 3.0}
     with pytest.raises(AssertionError, match="planning started"):
@@ -540,10 +541,11 @@ def test_sphere_above_n12_is_refused_before_planning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen = _calls_plan_scene(monkeypatch)
-    with pytest.raises(
-        GeneratorError, match=r"only up to n=12.*n=18.*100 s.*tabled tops"
-    ):
-        _call([{**_LIVE_SPHERE, "n": 18}])
+    for sphere in (_SPHERE, _LIVE_SPHERE):  # tabled n=18 too: the relax is slow
+        with pytest.raises(
+            GeneratorError, match=r"n <= 12; got \['q \(n=18\)'\].*476 s"
+        ):
+            _call([{**sphere, "n": 18}])
     assert not seen
 
 
@@ -626,15 +628,15 @@ def test_tabled_tops_do_not_count_toward_the_scene_ceilings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen = _calls_plan_scene(monkeypatch)
-    spheres = [
-        {**_SPHERE, "name": f"s{i}", "at": [6 + 12 * i, 8], "n": n}
-        for i, n in enumerate((12, 24, 36))
-    ]
-    hemis = [_lid(i, af.table_lid_fillet(12)) for i in range(5, 9)]
-    live = {**_LIVE_SPHERE, "name": "live", "at": [50, 20]}
+    # three distinct live lids (12) beside a tabled sphere and a tabled lid:
+    # 12 <= 16, where a live sphere would make it 21
+    live_lids = [_lid(i, 2.0 + i) for i in range(3)]
+    hemi = _lid(5, af.table_lid_fillet(12))
     with pytest.raises(AssertionError, match="planning started"):
-        _call([*spheres, *hemis, live])
+        _call([_SPHERE, hemi, *live_lids])
     assert seen
+    with pytest.raises(GeneratorError, match=r"needs 21"):
+        _call([_LIVE_SPHERE, hemi, *live_lids])
 
 
 @pytest.mark.slow

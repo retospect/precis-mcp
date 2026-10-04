@@ -45,9 +45,29 @@ waited on happened 09-29 — note at the bottom)
     4. then the buds.
   - Not on any branch: the bud-in-scene fix (lead: lopsided seam bonds,
     under Do next 1, S4).
-  - Next step: prod dogfood after the deploy. One put with spheres at
-    n=12 and 24 must report `planned: table` and plan in seconds. Then
-    the θp band and the R_min refusal.
+  - Gap found in the 2cf091466 dry run: the table makes planning free,
+    but the old sphere ceilings also bounded the scene relax. A scene op
+    with default spheres at n=12 and n=24 took 476 s locally (0 s planning);
+    one tabled n=12 sphere scene takes 54 s. Fixed in the same round: a
+    scene-relax guard in `hexfold_scene._normalize` allows one `sphere`
+    per scene op, n ≤ 12, whether tabled or not. Raising n there needs a
+    timed scene (hexfold-corner/scene_cost.py).
+  - Next step: the round-6 prod dogfood, after the guard deploys.
+    - Ops are in hexfold-corner/dogfood_r6.json; the local dry run is
+      dogfood_r6_local.py.
+    - Mint design `hexfold-dogfood-r6` with `scripts/prod-precis` and read
+      it back with `view='block'`.
+    - Pass:
+      1. `ball12` (default sphere, n=12, sheet 30×30) reports
+         `planned: table` with k=4 L=3 R 10.07 and all five bars met, in
+         about 55 s (round 4: ~95 s, which included planning).
+      2. `pill12_tabled_lid` (lid, `top_fillet` 4.69) reports
+         `planned: table`, dome_rows 3, in about 15 s.
+      3. A second put with the file's `refusal_check` params (spheres at
+         n=12 and n=24 in one scene op) is refused before planning by the
+         guard: "at most 1 top: 'sphere' per scene op".
+    - Write one Resume line, then mark the round.
+    - Then the θp band and the R_min refusal.
 - Round 4 dogfood (prod 727728cc9, 2026-10-04 04:43Z): design
   `hexfold-dogfood-r4` → **pass**, with the warnings as designed. The put
   took 143 s and holds two generates:
@@ -166,7 +186,8 @@ waited on happened 09-29 — note at the bottom)
          - all keys meeting the bars, with hexfold 0.3.1 recorded.
 
          Tabled tops build nothing and are stored as `planned: table`; the
-         ceilings count only live tops. A slow test re-plans lid12 and
+         candidate budget counts only live tops. The scene-relax guard (one
+         sphere per scene op, n ≤ 12) applies to every sphere. A slow test re-plans lid12 and
          sphere12 live. To regenerate: `uv run --with numba python -m
          precis_se.atomic.generators.authored_foot`, ~10 min.
        - cycle 2, rest:

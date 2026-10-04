@@ -38,8 +38,10 @@ with the default fillet at n = 12, 18, 24, 30 and 36, and a rounded lid with
 ``top_fillet`` equal to the tube radius rounded down to 0.01 A (4.69 at
 n = 12) at n = 12, 18 and 24. A
 tabled top builds no candidate, and ``plan["top_plans"]`` says
-``planned: table``. The cost ceilings in :func:`_normalize` count only the
-tops planned live.
+``planned: table``. The candidate budget in :func:`_normalize` counts only
+the tops planned live; the scene-relax ceiling (one ``sphere`` per scene op,
+n <= 12) holds for every sphere, because the table removes the planning
+time, not the scene's relax.
 
 **Judgement travels with the block.** The coordinates are the tethered
 relaxation, not a free one, so the geometry findings are judged on them and
@@ -82,13 +84,16 @@ from precis_se.atomic.generators.hexfold_spec import _block_from_net, _internal_
 _PARAM_KEYS = ("sheet", "features", "extra", "k_tether")
 _FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
-_MAX_SPHERES = 1  # live-planned sphere tops per call: ~95 s each
+# Scene-relax ceiling on every sphere top, tabled or not: the table makes
+# planning free, not the tethered relax of the scene around a sphere (a
+# scene op with default spheres at n=12 and n=24 relaxed for 476 s).
+_MAX_SCENE_SPHERES = 1
+_MAX_SCENE_SPHERE_N = 12
 # Cost ceilings on the tops the per-n plan table does not hold (see
 # _normalize): a live sphere plans 9 candidate builds, a live rounded lid 4
 # (identical (n, top_fillet) lids are planned once and cached), and one scene
 # op is budgeted 16 in total.  A tabled top costs nothing.  The budget is per
 # scene op: a put with several ops sums their times.
-_MAX_SPHERE_N = 12
 _SPHERE_CANDIDATES = 9
 _LID_CANDIDATES = 4
 _CANDIDATE_BUDGET = 16
@@ -187,31 +192,21 @@ def _normalize(
         f"{'/'.join(map(str, TABLE_SPHERE_N))}; a lid with top_fillet {lid_keys}) "
         "plan from the table and cost nothing"
     )
-    spheres = [f.name for f in live if f.top == "sphere"]
-    if len(spheres) > _MAX_SPHERES:
-        raise GeneratorError(
-            f"hexfold_scene plans one untabled top: 'sphere' per scene op; got "
-            f"{len(spheres)} ({spheres}). Each such top plans 9 candidates, about "
-            "95 s, and a scene op stays near 2 minutes; the budget is per scene "
-            "op, so a put with several round-top ops takes their sum. Split the "
-            f"scene; {tabled}. Rounded "
-            "lids (top: 'lid' with top_fillet) are bounded by the scene op's "
-            f"candidate budget ({_CANDIDATE_BUDGET})."
-        )
+    all_spheres = [f for f in features if f.top == "sphere"]
     # an n that is not a multiple of 6 is left to the planner's own refusal,
     # which names the real reason
-    big = sorted(
-        f"{f.name} (n={f.n})"
-        for f in live
-        if f.top == "sphere" and f.n > _MAX_SPHERE_N and f.n % 6 == 0
-    )
-    if big:
+    big_relax = [f for f in all_spheres if f.n > _MAX_SCENE_SPHERE_N and f.n % 6 == 0]
+    if len(all_spheres) > _MAX_SCENE_SPHERES or big_relax:
         raise GeneratorError(
-            f"hexfold_scene plans an untabled top: 'sphere' only up to "
-            f"n={_MAX_SPHERE_N}; got {big}. n=24 plans in about 100 s alone (9 "
-            "candidates, each a full build and relax), so a live sphere above "
-            f"n=12 would outlast a client timeout; {tabled}."
+            f"hexfold_scene relaxes at most {_MAX_SCENE_SPHERES} top: 'sphere' per "
+            f"scene op, with n <= {_MAX_SCENE_SPHERE_N}; got "
+            f"{[f'{f.name} (n={f.n})' for f in all_spheres]}. Tabled or not, the "
+            "scene's tethered relax around a sphere top is the slow part: one at "
+            "n=12 takes about a minute, and spheres at n=12 and n=24 in one scene "
+            "op took 476 s, past a client timeout. Put one sphere scene op per "
+            "put."
         )
+    spheres = [f.name for f in live if f.top == "sphere"]
     lids = {(f.n, f.top_fillet) for f in live if f.top == "lid"}
     cost = _SPHERE_CANDIDATES * len(spheres) + _LID_CANDIDATES * len(lids)
     if cost > _CANDIDATE_BUDGET:
