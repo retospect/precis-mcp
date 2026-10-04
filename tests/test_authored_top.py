@@ -485,7 +485,8 @@ def test_two_sphere_tops_in_one_call_are_refused_before_any_planning(
     monkeypatch.setattr(mod, "plan_scene", boom)
     second = {**_SPHERE, "name": "r", "at": [5, 5]}
     with pytest.raises(
-        GeneratorError, match=r"one top: 'sphere' per call.*95 s.*2 minutes"
+        GeneratorError,
+        match=r"one top: 'sphere' per scene op.*95 s.*budget is per scene op",
     ):
         GENERATORS["hexfold_scene"]({"sheet": [40, 30], "features": [_SPHERE, second]})
     # a rounded lid beside a sphere is not capped

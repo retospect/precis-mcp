@@ -394,7 +394,9 @@ hemisphere) and every top atom is held to it, like the foot.
   (`n = 24` plans in ~100 s alone); or its candidate budget exceeds 16
   (sphere 9, each distinct `(n, top_fillet)` rounded lid 4, identical lids
   counted once). So sphere + one lid is 13, four distinct lids 16; sphere +
-  two lids 17 and five lids 20 are refused, stating the count.
+  two lids 17 and five lids 20 are refused, stating the count. The budget
+  is per scene op, not per put: put **one scene op with a round top per
+  put** (two such ops in one put ran 143 s on prod, past a client timeout).
 - Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
   top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
   top_fillet`.

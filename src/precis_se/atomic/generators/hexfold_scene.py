@@ -72,7 +72,8 @@ _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
 _MAX_SPHERES = 1  # sphere tops per call: ~95 s each, see _normalize
 # Cost ceilings until the per-n plan table lands (see _normalize): a sphere
 # plans 9 candidate builds, a rounded lid 4 (identical (n, top_fillet) lids
-# are planned once and cached), and a call is budgeted 16 in total.
+# are planned once and cached), and one scene op is budgeted 16 in total.
+# The budget is per scene op: a put with several ops sums their times.
 _MAX_SPHERE_N = 12
 _SPHERE_CANDIDATES = 9
 _LID_CANDIDATES = 4
@@ -158,11 +159,11 @@ def _normalize(
     spheres = [f.name for f in features if f.top == "sphere"]
     if len(spheres) > _MAX_SPHERES:
         raise GeneratorError(
-            f"hexfold_scene plans one top: 'sphere' per call; got {len(spheres)} "
+            f"hexfold_scene plans one top: 'sphere' per scene op; got {len(spheres)} "
             f"({spheres}). Each sphere top plans 9 candidates, about 95 s, and a "
-            "call is kept under about 2 minutes so a client timeout does not lose "
-            "the result; the per-n plan table (next cycle) lifts the limit. Rounded "
-            "lids (top: 'lid' with top_fillet) are bounded by the call's candidate "
+            "scene op stays near 2 minutes; the budget is per scene op, so a put "
+            "with several round-top ops takes their sum. The per-n plan table (next cycle) lifts the limit. Rounded "
+            "lids (top: 'lid' with top_fillet) are bounded by the scene op's candidate "
             f"budget ({_CANDIDATE_BUDGET})."
         )
     # an n that is not a multiple of 6 is left to the planner's own refusal,
@@ -187,11 +188,12 @@ def _normalize(
     cost = _SPHERE_CANDIDATES * len(spheres) + _LID_CANDIDATES * len(lids)
     if cost > _CANDIDATE_BUDGET:
         raise GeneratorError(
-            f"hexfold_scene budgets {_CANDIDATE_BUDGET} candidate builds per call; "
+            f"hexfold_scene budgets {_CANDIDATE_BUDGET} candidate builds per scene op; "
             f"this scene needs {cost} ({len(spheres)} sphere top x "
             f"{_SPHERE_CANDIDATES} + {len(lids)} distinct rounded lid(s) x "
             f"{_LID_CANDIDATES}; lids with the same n and top_fillet are planned "
-            "once). Split the scene across calls; the per-n plan table (next "
+            "once). Split the scene across puts, one round-top scene op per put; "
+            "the per-n plan table (next "
             "cycle) lifts the budget."
         )
     extra = params.get("extra", "")
