@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from precis.cad import fieldops
 from precis.dispatch import Hub, _try
 from precis.errors import BadInput
 from precis.store import Store
@@ -546,6 +547,9 @@ def test_morphology_moves_the_volume_the_expected_way() -> None:
     _e, plain = simp_bridge.prepare_simp(tree, _simp_op(volfrac=0.6))
     _e, closed = simp_bridge.prepare_simp(tree, _simp_op(volfrac=0.6, close=_PITCH))
     _e, opened = simp_bridge.prepare_simp(
+        tree, _simp_op(volfrac=0.6, open=0.5 * _PITCH)
+    )
+    _e, severing = simp_bridge.prepare_simp(
         tree, _simp_op(volfrac=0.6, open=0.75 * _PITCH)
     )
     base = simp_bridge.solve_simp(tree, plain)
@@ -560,15 +564,17 @@ def test_morphology_moves_the_volume_the_expected_way() -> None:
         res_c.summary["morphology"]["volume_after_m3"]
         > (res_c.summary["morphology"]["volume_before_m3"])
     )
-    # opening erases anything thinner than 2r: never more material, and
-    # what vanished is reported, never silent
-    assert 0.0 < _volume(res_o.field) < v0
-    assert res_o.findings and "vanished under open" in res_o.findings[0]
-    assert res_o.summary["morphology_findings"] == res_o.findings
-    assert (
-        res_o.summary["morphology"]["volume_after_m3"]
-        < (res_o.summary["morphology"]["volume_before_m3"])
-    )
+    # an opening never adds material (gr464340: at half a pitch it used to
+    # be a pure dilation); at r = pitch/2 nothing on this grid is thinner
+    # than 2r, so the body comes back unchanged
+    assert _volume(res_o.field) <= v0
+    assert res_o.summary["morphology"]["open_m"] == pytest.approx(0.5 * _PITCH)
+    # gr464343: a 0.75-pitch open erases the loaded face of this coarse
+    # cantilever — refused, not bound with a warning
+    with pytest.raises(
+        simp_bridge.SimpBridgeError, match="no material is left under load_at"
+    ):
+        simp_bridge.solve_simp(tree, severing)
     # the same solve underneath (the density is deterministic)
     assert res_c.summary["compliance_last"] == pytest.approx(
         base.summary["compliance_last"]
@@ -577,6 +583,49 @@ def test_morphology_moves_the_volume_the_expected_way() -> None:
     _e, gone = simp_bridge.prepare_simp(tree, _simp_op(open=0.75 * _PITCH))
     with pytest.raises(simp_bridge.SimpBridgeError, match="erased the whole body"):
         simp_bridge.solve_simp(tree, gone)
+
+
+def test_a_morphology_that_cuts_the_load_from_the_support_is_refused() -> None:
+    """gr464343: on prod an open= erased the loaded tip and the result was
+    bound anyway. The check compares the field before and after the
+    morphology: losing the material under the load or the support, or the
+    connected piece joining them, is a refusal; what the raw solve already
+    lacked is not judged."""
+    shape = (12, 4, 4)
+    load = np.zeros(shape, dtype=bool)
+    load[-1] = True
+    fixed = np.zeros(shape, dtype=bool)
+    fixed[0] = True
+    origin = (0.5 * _PITCH,) * 3
+
+    def field(occ: np.ndarray) -> Any:
+        return fieldops.from_density(
+            occ.astype(float), 0.5, pitch=_PITCH, origin=origin
+        )
+
+    whole = field(np.ones(shape, dtype=bool))
+    simp_bridge._check_load_path(whole, whole, origin, _PITCH, load, fixed, findings=[])
+
+    occ = np.ones(shape, dtype=bool)
+    occ[8:] = False
+    tip_gone = field(occ)
+    with pytest.raises(
+        simp_bridge.SimpBridgeError, match="no material is left under load_at"
+    ):
+        simp_bridge._check_load_path(
+            whole, tip_gone, origin, _PITCH, load, fixed, findings=["a piece vanished"]
+        )
+    # a raw solve that already had no material under the load is not judged
+    simp_bridge._check_load_path(
+        tip_gone, tip_gone, origin, _PITCH, load, fixed, findings=[]
+    )
+
+    occ = np.ones(shape, dtype=bool)
+    occ[6] = False
+    with pytest.raises(simp_bridge.SimpBridgeError, match="now separate pieces"):
+        simp_bridge._check_load_path(
+            whole, field(occ), origin, _PITCH, load, fixed, findings=[]
+        )
 
 
 @pytest.mark.parametrize("build_dir", ["x+", "x-", "y+", "y-", "z-"])

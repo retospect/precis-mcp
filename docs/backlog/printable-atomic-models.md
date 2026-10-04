@@ -135,3 +135,23 @@ Two facts shape the design:
   3MF layer should be per-element or per-part-with-arbitrary-colour.
 - Does an oversize model warrant a hard refusal at some multiple of a common
   bed size, or is the reported envelope enough? (Proposed: envelope only.)
+
+### Reto, 2026-10-03T19:32Z (se-3d-viewer-7, all recommended) — supersedes the above where they differ
+
+- **Scale lives in `backlog/print-file-scale.md`.** It owns `scale=` on the
+  3MF writer, the `-x<factor>` file name, `precis:scale_factor`, the route
+  `print/{block}.3mf?scale=&model=` and the `print/{block}.json` suggestion
+  (fit to 100 mm, rounded down to 1-2-5). This item builds geometry only, and
+  supplies the floor `min_scale` that route uses. Scale spelling is settled:
+  a raw factor, with the suggestion done by the dialog (se-3d-viewer).
+- **Two models, selected by `model=`:** `vdw` (space-filling, prints from
+  1e7, a carbon is a 1.7 mm-radius sphere) and `ballstick` (needs about
+  5e7: a 1.54 Å C–C bond is 7.7 mm there, against a 2 mm PLA strut floor).
+  Space-filling moves INTO scope.
+- **Below the floor: refuse** (C1), naming the smallest factor that prints.
+  Acceptance 5's advisory finding becomes a 422 with `min_scale`.
+- **Colour later** (D1): single colour now. Acceptance 6–7 and the
+  basematerials work move to a later build; `viz3d/stickfig.py::_CPK` stays
+  the table to reuse then.
+- Ships as atom models for se blocks with atoms (the se page), not only
+  `structure` refs. Cost about 1 build after print-file-scale.

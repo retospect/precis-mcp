@@ -15,25 +15,55 @@ off that gap until it closes.
 
 ## Resume state (2026-10-03)
 
-- **Region slice A** (Do next 1): built and CI-green, and NOT in round 2
-  (prod 63301c5c has neither core 0182 nor se 0018). The orchestrator took
-  it for round 3: it squashed tip f330ca43e as f497c89f5 and is landing it
-  through the remote gate with migrations core
-  `0182_se_measurand_seed.sql` and se `0018_se_regions.sql` (verdict §13).
-  When it shows on main, mark it here; `round in` for that sha is the
-  orchestrator's. Dogfood it on prod after the round 3 deploy. Grammar and
+- **Round 3 is deployed** (929107f32, 2026-10-03T20:35Z). It was
+  dogfooded on prod data with main's code: `view='print'`, the 3MF export
+  and `view='drc'` render. The joint sweep was not exercised: no prod
+  design declares a joint `params.range` (gr464669).
+- **Region slice A** (Do next 1): on main at 7d7d9902a, with migrations
+  core `0182_se_measurand_seed.sql` and se `0018_se_regions.sql`. It is not
+  in round 3; it deploys with Reto's follow-up deploy (verdict §13).
+  Dogfood it on prod after that deploy. Grammar and
   review verdicts are in
   `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md`
   §3–§5.
-- **Organic print** (Do next 2; Reto 2026-10-03: "I'd like that to
-  progress"): the Slice 4 bridge ran on prod for the first time
-  (note §14). `realize(strategy='simp')` gives a watertight 3MF in mm,
-  but the shape is a 1 mm voxel staircase, and the smoothing ops are wrong
-  in two ways: gr464340 (open/close half-pitch bias) and gr464343
-  (`open=` erased the load point and still bound the result). The
-  throwaway design `se-simp-dogfood-1003` and its two cad designs stay on
-  prod as the gr464343 repro; retire them when it closes. The proposed
-  first test piece is review-queue item se-machine-design-3.
+- **Organic print** (Do next 2): print 1, se `organic-bracket-1` as
+  file v3, is printing in PLA (Reto, 2026-10-03T21:18Z). Bambu Studio
+  02.08.02.61 showed only "invalid config", a Studio bug for every
+  non-Bambu 3MF that 02.08.03.66 fixes. It reported no floating region and
+  no cantilever.
+  - Reto's verdict on the look (21:20Z): "cool but not quite organic.
+    Smoother would be goooder." So print 2 wants O2–O4.
+  - The load test is still owed, in item se-machine-design-6. The solver
+    predicts about 0.04 mm tip drop at 1 kg and 0.08 mm at 2 kg.
+  - O1 (gr464340, gr464343) was CI-green twice. Its ship was stopped
+    2026-10-03 ~22Z for the orchestrator's landing window: re-run it when
+    the window closes, then close both gripes with the sha and retire the
+    gr464343 repro `se-simp-dogfood-1003` and its two cad designs.
+  - **The print check and the download button are built, not landed.**
+    Branch `worktree-agent-af50546850428f7d5` (1014fa6bf) holds:
+    - `precis/cad/mesh_check.py`: floating islands and the Studio
+      02.08.02.61 cantilever rule, a guarded export-time tail lift that
+      Reto allowed at 19:32Z with nothing stored, and the 3MF core-spec
+      check;
+    - a flat bed face cut in the field (`fieldops.flat_bed`);
+    - `GET /se/{slug}/print/{block}.3mf|.stl`, with a "Print files"
+      section on the 3-D page.
+    Squash-land it after O1. Then tell se-3d-viewer the final parameter
+    names and re-dogfood the print checks on prod. gr464493: print-group
+    and manufacture 3MFs still skip the check.
+  - **Scaled downloads (se-3d-viewer-7, Reto answered A1/B1/C1/D1).**
+    Mine:
+    - the writer scale, ½ build: `scale=` on `write_mesh`/`_write_3mf`,
+      `precis:scale_factor` metadata, an `-x<factor>` filename,
+      `?scale=&model=` on the route (422 with `min_scale`), and
+      `print/{block}.json`;
+    - the print check at printed size;
+    - the atom models in `backlog/printable-atomic-models.md`.
+    The dialog is se-3d-viewer's. The writer scale is
+    `backlog/print-file-scale.md` (ready; it needs the print-check branch on
+    main).
+  - **Open question to Reto** (item -6): declared flat faces with O5 (load
+    ports with a solid contact boss), about 1 build, ahead of O2–O4?
 - **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
   (round 2): a throwaway design gave `joint_sweep_interference` at 90° as
   specified, and was then retired (note §12a). Residual gr462067: rigidly
@@ -61,22 +91,35 @@ off that gap until it closes.
 1. **backlog/se-region-property-layer.md** — blocks three of six reasoning
    axes (charge, field, optical); the peer session (unicycle) is already
    the pocket object waiting on it. Ranked 1. Sliced 2026-10-02: slice A
-   (measurands, selectors, pockets) built, landing in round 3 (Resume state); B waits on
+   (measurands, selectors, pockets) on main, prod dogfood after the
+   follow-up deploy (Resume state); B waits on
    measures-substrate, C on the class lattice (both knowledge-mesh).
 2. **Organic print: backlog/structural-solution-space.md §Slice 4
    bridge** (Reto 2026-10-03). The next build item. Note §14 lists it as
    O1–O4, none with a migration:
-   - O1: gr464340 and gr464343.
+   - O1: gr464340 and gr464343. Built and CI-green; landing (Resume
+     state).
+   - Print check and download button: built, landing after O1 (Resume
+     state).
+   - O5 + declared flat faces: about 1 build. Its rank against O2–O4
+     waits on Reto (item -6).
    - O2: `realize(min_member=)` mapped to the filter radius, a pitch guard
      at min_member/3, and a `min_member` capability field.
    - O3: default rounding at min_member/3.
    - O4: optimiser convergence.
-   Then the first test piece, once Reto answers review-queue item
-   se-machine-design-3.
-3. **backlog/flatpack-furniture-generator.md** (Reto 2026-10-03; on the
-   orchestrator's branch until its next ship). Stays `draft` until Reto
-   answers review-queue item se-machine-design-4 on machine and plywood.
-   The open questions are argued below under "Flat-pack open questions".
+   - `backlog/print-file-scale.md`: the writer scale for scaled downloads,
+     ½ build (se-3d-viewer-7).
+   Print 1 is the bracket `organic-bracket-1` (job 464356). Printer: Bambu
+   Lab X1 Carbon with tree supports; the goal is support-free.
+3. **backlog/flatpack-furniture-generator.md** — `ready`, 3 builds
+   (Reto 2026-10-03). Reto's answers:
+   - laser first, 3 mm corrugated cardboard, a 50 mm cube, with the fit
+     recorded on the first cut;
+   - finger joints by default, with a straight edge as an option;
+   - se-machine-design-7, option 1: a shared sheet job under flat-pack
+     from build 1. PCB writes into it only through ewod-pcb's adapter.
+   Builds: (1) core + laser SVG + DXF; (2) panels, joints, nesting; (3)
+   checks and the 50 mm cardboard cut, whose physical fit check is Reto's.
 4. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned by
    term-taxonomy; wait, do not duplicate rank here (seam below).
 5. **backlog/se-intent-to-realize-loop.md** — blocked-by 1 and 4.
@@ -84,6 +127,18 @@ off that gap until it closes.
    a consumer was never built. Peer session EWOD found this the same day.
    Vet round 3 folded 2026-10-02; two passes (pcb side first), both
    carry migrations. Reto accepted the five v1 calls 2026-10-02.
+   - **Rough box first** (Reto 2026-10-03T20:30Z), proposed in item
+     se-machine-design-8 and awaiting his decision. It is one build, no
+     migration:
+     - an se block bound to a board slug, resolved at read time;
+     - a box of the board outline × (tallest bottom part + 1.6 mm,
+       flagged + tallest top part);
+     - mounting holes as through-cylinders with fastener ports.
+     No part has a stored height today, so heights come from a table of
+     package-class maxima. On heater-base-test, the six largest classes
+     cover 113 of 140 parts. Every part whose height is not its own is
+     named in a finding. Stacks are v2.
+     Before building, tell ewod-pcb and pcb-easyeda-round-trip.
 7. **pcb-se-binding v2** — section "Follow-up v2" in
    `backlog/pcb-se-binding.md` (Reto 2026-10-02): per-part envelopes
    with real heights and subtracted mounting holes. Blocked-by 6.
@@ -93,6 +148,9 @@ off that gap until it closes.
 
 ## Flat-pack open questions (argued 2026-10-03, for Do next 3)
 
+- **Answered 2026-10-03** (se-machine-design-4): laser, 3 mm corrugated
+  cardboard, finger joints default plus a straight-edge option. The
+  arguments below stand as the reasoning.
 - **Joinery default:** finger joints on the carcass corners, and through-tabs
   (tab-and-slot) for the shelves, on both machines. A laser cannot cut a
   dado (a pocket), and one joinery family keeps the cut file to a single
@@ -155,7 +213,11 @@ off that gap until it closes.
     checks over swept volumes in se drc; arguably multiscale-design-core's
     (it is a constraint-catalogue piece), kept here because its only
     consumer today is se drc — seam, move it if that thread opens first.
-22. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
+22. **backlog/flatpack-living-hinges.md** — kerf-cut bend zones (Reto
+    2026-10-03); blocked-by the flat-pack generator (Do next 3). Its
+    reference is stored as web ref
+    `rs-online-com-designspark-laser-cut-living-hinges-for-neater`.
+23. **backlog/precis-se-help-exceeds-the-skill-size-cap.md** — small skill
     hygiene: the skill is over the 32 KB hard cap and allowlisted; split
     the FRET/optical and discrete-states domains out. Cheap, any time; do
     it before the next domain section is added to that skill.
