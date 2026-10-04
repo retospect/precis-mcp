@@ -723,23 +723,34 @@ def _ingest_supplement(
 
 
 def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
-    """Return ``ref_id`` iff it's a live metadata-only stub of ``kind``.
+    """Return ``ref_id`` iff it's a live, same-kind ref that still needs a body.
 
     The OA-fetch sidecar names a fold target, but by the time a watcher
-    ingests the PDF that target may have moved on — already upgraded
-    (``pdf_sha256`` now set), soft-deleted (merged away), or of a
-    different kind (a mis-pointed sidecar). Any of those disqualify the
-    direct fold; the caller falls back to a normal insert. Only a live
-    ``pdf_sha256 IS NULL`` stub of the expected kind is a safe promote-
-    in-place target.
+    ingests the file that target may have moved on — soft-deleted (merged
+    away), of a different kind (a mis-pointed sidecar), or already
+    carrying a body. Retired / wrong-kind targets disqualify the direct
+    fold; the caller falls back to a normal insert.
+
+    A valid target is either a ``pdf_sha256 IS NULL`` metadata stub, or a
+    *bodiless* ref (no ``chunks`` row with ``ord >= 0``) even when it holds
+    a stored PDF sha — the bodiless re-fetch case, where the fetched file
+    differs from the stored one. ``register_aliases_and_maybe_upgrade``
+    then writes chunks only if the ref has no body, attaches only
+    otherwise, and honours the ``markup_refetch`` pin.
     """
     row = conn.execute(
         """
-        SELECT ref_id FROM refs
-         WHERE ref_id = %s
-           AND kind = %s
-           AND pdf_sha256 IS NULL
-           AND retired_at IS NULL
+        SELECT ref_id FROM refs r
+         WHERE r.ref_id = %s
+           AND r.kind = %s
+           AND r.retired_at IS NULL
+           AND (
+                r.pdf_sha256 IS NULL
+                OR NOT EXISTS (
+                    SELECT 1 FROM chunks c
+                     WHERE c.ref_id = r.ref_id AND c.ord >= 0
+                )
+           )
         """,
         (ref_id, kind),
     ).fetchone()

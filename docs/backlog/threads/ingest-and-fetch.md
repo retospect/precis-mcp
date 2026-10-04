@@ -6,9 +6,30 @@ state where the acquisition backlog's own count is wrong. Triage td458898 ran
 2026-10-02 (counts and verdicts are comments on each gripe), so the list
 below is ranked on measured rows, not age: silent corruption first, then the
 states that count a paper as usable when it is not, then metadata.
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-04
 **Worktree:** `ingest-and-fetch`
 **Active:** yes — Reto 2026-10-01: "ingest must work".
+
+**Resume (2026-10-04, ship-all):**
+- Landed: SI builds 1 and 2 with re-arm fixes (item 1), the arXiv
+  e-print magic-byte and plain-TeX staging (gr465473 closed), and a
+  connect-failure retry on Crossref and bib_parse (c83c46973, round 6).
+- At the orchestrator's gate, not landed by this thread: the safe_fetch
+  next-address fallback, branch `worktree-agent-a3b62578f305e3772` tip
+  3e1e8cb5c (reviews §3, verdict LAND; gr465931). Two follow-ups for the
+  next safe_fetch branch: guard a finite timeout <= 0 with 2+ addresses
+  (today it raises before any dial), and a test that fails when
+  `httpcore.NetworkStream` gains a public method `_FallbackStream` lacks.
+- Fixed in this ship: gr465474. The bodiless re-fetch minted a duplicate
+  anon ref when the fetched file differed from the stored one, because
+  `add.py::_valid_fold_stub` required `pdf_sha256 IS NULL`; it now also
+  accepts a live ref with no body chunks. A ref with a sha and a body
+  still refuses a different file (unchanged). After deploy: re-ingest the 8dc037e4 PDF into ref 202942, merge anon 465241
+  into it, and triage anons 464753, 464754, 464755, 464821 and 465135.
+  As of 06:48Z, 47 queued re-fetches had not run.
+- Next: item 3 policy pass on the still-bodiless remainder, then close
+  td461154; glyph precision run (item 2) from 2026-10-04 14:00Z; delete
+  item 1 once walker and web SI triggers are seen on prod.
 
 ## Do next
 

@@ -714,6 +714,170 @@ class TestSidecarFold:
         assert doi_owner is not None and doi_owner[0] == result.ref_id  # DOI migrated
 
 
+class TestSidecarFoldBodilessWithSha:
+    """gr465474: a bodiless ref that already holds a stored PDF sha is a
+    valid fold target — a re-fetch of a *different* file must land on it,
+    not mint a new anonymous ref."""
+
+    OLD_SHA = hashlib.sha256(b"%PDF-1.4 stored-old").hexdigest()
+
+    def _seed(
+        self,
+        store,
+        slug: str,
+        *,
+        kind: str = "paper",
+        body: bool = False,
+        with_sha: bool = True,
+    ):
+        ref = store.insert_ref(kind=kind, slug=slug, title="Stored bodiless")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', '10.1000/bodiless-seed', 'manual')",
+                (ref.id,),
+            )
+            if with_sha:
+                conn.execute(
+                    "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                    "size_bytes, storage_path) "
+                    "VALUES (%s, %s, 1, 10, '/tmp/old.pdf')",
+                    (self.OLD_SHA, self.OLD_SHA),
+                )
+                conn.execute(
+                    "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s",
+                    (self.OLD_SHA, ref.id),
+                )
+                conn.execute(
+                    "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                    "VALUES (%s, 'pdf_sha256', %s, 'manual')",
+                    (ref.id, self.OLD_SHA),
+                )
+            if body:
+                conn.execute(
+                    "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                    "VALUES (%s, 0, 'paragraph', 'existing body', '{}'::jsonb)",
+                    (ref.id,),
+                )
+            conn.commit()
+        return ref
+
+    @staticmethod
+    def _counts(store, ref_id: int) -> tuple[int, int]:
+        with store.pool.connection() as conn:
+            refs = conn.execute("SELECT count(*) FROM refs").fetchone()[0]
+            body = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND ord >= 0",
+                (ref_id,),
+            ).fetchone()[0]
+        return int(refs), int(body)
+
+    def _ingest_pdf(self, store, tmp_path: Path, ref_id: int):
+        pdf = tmp_path / "new.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fetched-new")
+        sha = hashlib.sha256(b"%PDF-1.4 fetched-new").hexdigest()
+        anon = _fixture_paper(paper_id="anonbl01", doi=None, pdf_sha256=sha)
+        with patch("precis.ingest.pipeline.extract_paper", return_value=anon):
+            result = precis_add(PdfInput(pdf_path=pdf, fold_ref_id=ref_id), store=store)
+        return result, sha
+
+    def test_bodiless_sha_target_gets_body_no_new_ref(self, store, tmp_path: Path):
+        ref = self._seed(store, "bodiless1")
+        refs_before, _ = self._counts(store, ref.id)
+        result, sha = self._ingest_pdf(store, tmp_path, ref.id)
+
+        assert isinstance(result, IngestResult)
+        assert result.ref_id == ref.id
+        refs_after, body = self._counts(store, ref.id)
+        assert refs_after == refs_before
+        assert body >= 1
+        with store.pool.connection() as conn:
+            owners = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT ref_id FROM ref_identifiers "
+                    "WHERE id_kind='pdf_sha256' AND id_value = ANY(%s)",
+                    ([self.OLD_SHA, sha],),
+                ).fetchall()
+            }
+            registered = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT id_value FROM ref_identifiers WHERE ref_id=%s "
+                    "AND id_kind='pdf_sha256'",
+                    (ref.id,),
+                ).fetchall()
+            }
+        assert owners == {ref.id}
+        assert registered == {self.OLD_SHA, sha}
+
+    def test_target_with_body_is_attach_only(self, store, tmp_path: Path):
+        # A shaless ref that already has a body (markup-ingested): still a
+        # valid fold target; register_aliases_and_maybe_upgrade attaches the
+        # PDF but writes no chunks.
+        ref = self._seed(store, "bodied1", body=True, with_sha=False)
+        refs_before, body_before = self._counts(store, ref.id)
+        result, sha = self._ingest_pdf(store, tmp_path, ref.id)
+
+        assert isinstance(result, IngestResult)
+        assert result.ref_id == ref.id
+        refs_after, body_after = self._counts(store, ref.id)
+        assert refs_after == refs_before
+        assert body_after == body_before == 1
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", (ref.id,)
+            ).fetchone()
+        assert row[0] == sha
+
+    def test_sha_and_body_target_is_not_a_fold_target(self, store, tmp_path: Path):
+        ref = self._seed(store, "bodied2", body=True)
+        with store.pool.connection() as conn:
+            assert _valid_fold_stub(ref.id, kind="paper", conn=conn) is None
+        _, body_before = self._counts(store, ref.id)
+        result, _ = self._ingest_pdf(store, tmp_path, ref.id)
+        assert isinstance(result, IngestResult)
+        assert result.ref_id != ref.id
+        assert self._counts(store, ref.id)[1] == body_before == 1
+
+    def test_retired_and_wrong_kind_targets_fall_through(self, store, tmp_path: Path):
+        retired = self._seed(store, "bodiless2")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET retired_at = now() WHERE ref_id=%s", (retired.id,)
+            )
+            conn.commit()
+            assert _valid_fold_stub(retired.id, kind="paper", conn=conn) is None
+            assert _valid_fold_stub(retired.id, kind="draft", conn=conn) is None
+        result, _ = self._ingest_pdf(store, tmp_path, retired.id)
+        assert isinstance(result, IngestResult)
+        assert result.inserted is True
+        assert result.ref_id != retired.id
+
+        with store.pool.connection() as conn:
+            wrong = store.insert_ref(kind="draft", slug="wrongkind1", title="d")
+            assert _valid_fold_stub(wrong.id, kind="paper", conn=conn) is None
+
+    def test_markup_variant_folds_into_bodiless_sha_target(self, store, tmp_path: Path):
+        ref = self._seed(store, "bodiless3")
+        refs_before, _ = self._counts(store, ref.id)
+        markup = tmp_path / "bodiless3.xml"
+        markup.write_bytes(b"<xml>real enough</xml>")
+        paper = _fixture_paper(paper_id="anonbl03", doi=None)
+        with patch(
+            "precis.ingest.pipeline.extract_paper_from_markup", return_value=paper
+        ):
+            result = precis_add(
+                MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=ref.id),
+                store=store,
+            )
+        assert result is not None
+        assert result.ref_id == ref.id
+        refs_after, body = self._counts(store, ref.id)
+        assert refs_after == refs_before
+        assert body >= 1
+
+
 class TestMarkupParseFailureRecovery:
     """gr161905: on a MarkupParseError, the companion PDF (tagged
     ``printable_only`` at fetch time so it never independently races
