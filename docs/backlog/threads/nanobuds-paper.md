@@ -17,6 +17,10 @@ and non-covalent buds. RSC reviews go through a proposal form first.
 - **Open, waiting on others:**
   - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at hexfold's cycle 3.
   - claims-and-evidence-9 is with its owner.
+  - **After round 4 deploys:** export dr173020 and triage its pin-coverage warnings (G3/G4, claims-and-evidence grounding builds 1–2).
+    - Measured before deploy: 37 of 89 pins warn, none for G4. In a sample about 6 in 10 are real gaps, e.g. DFT, DFTB or HOMO/LUMO missing from the pinned chunk. Known noise: negated terms, words glued by extraction, numeric locants, range endpoints.
+    - Each warning suggests up to 3 better chunks: re-pin to one if it carries the term; if none does, file the gap.
+    - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. Its fix is still a supersede, which waits on the unbuilt supersede door. This thread owns it.
 - **Reto-run:**
   - `scripts/prod-precis tools delete --kind draft --id dc3015729`, and the same for dc3015722;
   - enrich-rearm over `export-tex/cited-paper-ids.txt` (pa1181 still lacks volume and pages);
