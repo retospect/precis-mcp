@@ -37,6 +37,18 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
+**Resume (2026-10-03, session closed to save usage).**
+- **Done:** round 3 is deployed and dogfooded (below). gr462129 /drive
+  redirect landed in 063421d9, not deployed yet.
+- **Next:**
+  - after the follow-up deploy, check `/drive?q=pa5303`, `?q=fi<id>` and
+    `?q=10.1021/acscatal.3c0196` each 302 on prod, then close gr462129;
+  - Do-next 7, the print dialog, once se-machine-design confirms their
+    writer scale has landed;
+  - otherwise Do-next 5, fastener_insertion_path.
+- **Waits on:** the follow-up deploy (gr462129) and se-machine-design's
+  writer scale (the dialog).
+
 **Prod dogfood, round 3 (deployed 929107f3, 2026-10-03) → pass.** Against
 prod data through guide-web (the viewer code is the same as the deploy;
 the /drive redirect 063421d9 is not deployed yet and goes in the follow-up
