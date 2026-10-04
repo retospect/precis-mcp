@@ -75,6 +75,7 @@ from precis.export._trust_marks import (
     record_override_event,
     unverified_claims_entries,
 )
+from precis.nanopub import pin_lint
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -792,6 +793,8 @@ class _Ctx:
     legacy_to_dc: dict[str, str] = field(default_factory=dict)  # ¶base58 → dc
     cited: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: Read cache for the pin lint (:func:`precis.nanopub.pin_lint.warn_export`).
+    pin_ctx: Any = None
     seen_acr: set[str] = field(default_factory=set)  # glossary keys already emitted
     figures: list[tuple[str, bytes]] = field(default_factory=list)  # (relpath, bytes)
     data_package: list[DataPackageFigure] = field(default_factory=list)
@@ -1791,6 +1794,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
     LaTeX-escape + markdownify the gaps between them. Single pass, mirrors
     the web linkifier so the two never diverge."""
     text = preprocess_draft_inline(text)
+    pin_lint.warn_export(ctx, text)
     out: list[str] = []
     last = 0
     for m in _COMBINED.finditer(text):

@@ -168,7 +168,11 @@ Aqueous synthesis yields higher quantum yields than hot-injection [fi41].
 Several hubs list together, no separators. Pin when you know better
 than the derivation: `[fi41>pc293]` cites exactly that passage,
 `[fi41+pa5]` adds to the derived originators ([[precis-taproot-help]]).
-Export resolves each `[fi<id>]` to its current originator paper(s) and
+A pin picks the passage that carries the sentence, so the write path warns
+(`⚠ pin:`, never a refusal) when the pinned passage lacks a term the sentence
+names (a method, an acronym, a number), and when the hub has a frozen
+grounding and the pin is a chunk outside that grounding's papers; the export
+warns on every pin. Export resolves each `[fi<id>]` to its current originator paper(s) and
 renders one bibliography entry per paper — you never write LaTeX
 citation commands or bibliography keys. The handle is a value you copy
 from search / put output, never constructed.

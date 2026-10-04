@@ -153,7 +153,7 @@ def passage_texts(store: Store, grounding: dict[str, Any]) -> list[str]:
     return out
 
 
-def _paper_chunks(
+def paper_chunks(
     store: Store, ref_ids: list[int]
 ) -> tuple[list[PaperChunk], dict[int, str]]:
     """Live body chunks of ``ref_ids`` plus each ref's stored abstract."""
@@ -232,7 +232,7 @@ def term_coverage(
     if bundle is None:
         bundle = evidence.load_bundle(store, hub_ref_id)
     other_refs = [s.ref_id for s in bundle.sources if s.ref_id not in grounding_refs]
-    chunks, abstracts = _paper_chunks(store, sorted(grounding_refs) + other_refs)
+    chunks, abstracts = paper_chunks(store, sorted(grounding_refs) + other_refs)
 
     return analyse(sentence, passages, chunks, abstracts, grounding_refs)
 
@@ -311,7 +311,7 @@ def _pick(
     return tuple(hits[i][2] for i in sorted(chosen))
 
 
-def _describe(item: UncoveredTerm) -> str:
+def describe(item: UncoveredTerm) -> str:
     t = item.term
     if t.kind == KIND_ACRONYM:
         label = t.text + (f" ({t.expansion})" if t.expansion else "")
@@ -326,7 +326,7 @@ def _describe(item: UncoveredTerm) -> str:
 
 
 def format_message(items: list[UncoveredTerm], *, cap: int = _TERM_CAP) -> str:
-    shown = "; ".join(_describe(i) for i in items[:cap])
+    shown = "; ".join(describe(i) for i in items[:cap])
     more = len(items) - cap
     return (
         f"{len(items)} term(s) the claim names appear in no grounding "

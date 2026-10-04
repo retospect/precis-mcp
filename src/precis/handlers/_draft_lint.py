@@ -400,6 +400,31 @@ def glyph_cite_hint(store: Store, text: str) -> str:
     return "".join(lines)
 
 
+def pin_hint(store: Store, new_text: str, old_text: str = "") -> str:
+    """Pin warnings for a write (G3 coverage, G4 pin rule — see
+    :mod:`precis.nanopub.pin_lint`): a ``[fi<hub>>pc<chunk>]`` /
+    ``[fi<hub>+pc<chunk>]`` whose pinned passage(s) no longer carry a term
+    the pinned sentence names, or whose pinned paper is outside the hub's
+    frozen grounding. Fires only on what this write *changed* — a new pin,
+    or a sentence edit that uncovered a term — so re-saving a chunk never
+    re-nags about pins it left alone. Advisory; a failing check degrades to
+    no hint rather than taking the write path down."""
+    if "[fi" not in new_text:
+        return ""
+    try:
+        from precis.nanopub import pin_lint
+
+        lines = [
+            line
+            for f in pin_lint.edit_findings(store, new_text, old_text)
+            for line in pin_lint.render_finding(f)
+        ]
+    except Exception:  # pragma: no cover — advisory, not correctness
+        log.warning("pin_hint failed", exc_info=True)
+        return ""
+    return "".join(f"\n\n⚠ pin: {line}" for line in lines)
+
+
 def literal_cite_hint(text: str) -> str:
     r"""Flag a literal ``\cite{...}`` / ``\citequote{...}`` typed into a
     draft body. In a draft you cite by writing the supporting paper-

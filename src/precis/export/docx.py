@@ -76,6 +76,7 @@ from precis.export.latex import (
     datasheet_pub_label,
     preprocess_draft_inline,
 )
+from precis.nanopub import pin_lint
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -168,6 +169,8 @@ class _Ctx:
     abbrevs: dict[str, str] = field(default_factory=dict)  # short → long
     cited: list[str] = field(default_factory=list)  # paper slug order = ref number
     warnings: list[str] = field(default_factory=list)
+    #: Read cache for the pin lint (:func:`precis.nanopub.pin_lint.warn_export`).
+    pin_ctx: Any = None
     seen_acr: set[str] = field(default_factory=set)  # already expanded once
     used_acr: set[str] = field(default_factory=set)  # for the acronyms list
     last_cite: str | None = None  # paper of the immediately-preceding mark
@@ -595,6 +598,7 @@ def _render_inline(text: str, ctx: _Ctx, paragraph: Any) -> None:
     through :func:`_render_reference`; the prose gaps between them get
     markdown/sub-sup/math run formatting."""
     text = preprocess_draft_inline(text)
+    pin_lint.warn_export(ctx, text)
     last = 0
     for m in _COMBINED.finditer(text):
         _render_gap(text[last : m.start()], ctx, paragraph)
