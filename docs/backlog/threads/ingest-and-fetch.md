@@ -133,10 +133,19 @@ states that count a paper as usable when it is not, then metadata.
    It is the first test of round 3's ordering: it should be claimed
    within about three 32-stub passes. Round 3 verified 22:58Z: the first
    pass after queueing worked through batch-2 refs ahead of the backlog.
-   7 tried, 6 gained a body (101–243 chunks); one `arxiv_html fetch_ok`
-   had no body yet. Next: once batch 2 drains (about three passes), count
-   its gained bodies and check that `fetch_ok` ref. Then apply the policy
-   to what is still bodiless. This
+   By 02:33Z, 58 of 83 had been tried and 39 gained a body (34–412
+   chunks, none preview-sized). Tried-but-no-body refs with a `fetch_ok`
+   re-downloaded the same bytes: the watcher logs `duplicate <x>.pdf`
+   (sha probe in `precis_add`), so Marker does not re-run. Their stored
+   PDF failed its first ingest with `PdfiumError: Failed to load
+   document`, so a re-fetch cannot heal them: they go to the policy's
+   corrupt bucket (repair or OCR), not another re-fetch. Seen on 6 of
+   batch 2's no-body refs and 5 of batch 1's. Side defects filed:
+   gr465473 (the arXiv e-print of a PDF-only submission is parsed as a
+   LaTeX tarball) and gr465474 (an arXiv fetch for ref 202942 minted
+   anon ref 465241 instead of folding into it). Next: once batch 2
+   drains, apply the policy to what is still bodiless, routing
+   Pdfium-unreadable PDFs to repair. This
    thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
