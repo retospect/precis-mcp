@@ -30,6 +30,20 @@ waited on happened 09-29 — note at the bottom)
 
 ## Resume
 
+- Round 4 dogfood (prod 727728cc9, 2026-10-04 04:43Z): design
+  `hexfold-dogfood-r4` → **pass**, with the warnings as designed. The put
+  took 143 s and holds two generates:
+  - `ball12`, a (12,0) sphere top: 2406 atoms, rings {5:12, 7:12}.
+  - `pill12r`, two rounded lids: 2652 atoms, rings {5:12, 7:12}.
+  - Both reports are ok with 0 ERROR, and both are stored as hexfold 0.3.1.
+  - `scene.top.relaxed_shape` fires on every top, with the stick-model and
+    trial-tube wording: sphere 0.92 Å p95 / ~0.9 Å at the pole; lids
+    0.59 Å / ~0.6 Å.
+  - `geom.summary` shows the new totals: ball12 589 angles past tolerance,
+    pill12r 119.
+  - Gap: the 16-candidate budget is per `generate` op. One put with two
+    scene ops ran 143 s, past the ~2 min the refusal message promises. The
+    per-n plan table (cycle 2, first) removes it.
 - Round 3 dogfood (prod 929107f32, 2026-10-03 20:38Z): design
   `hexfold-dogfood-r3`, pill12 through `hexfold_scene` via
   scripts/prod-precis → **pass**, 55 s. The `view='block'` readback shows
