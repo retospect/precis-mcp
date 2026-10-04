@@ -88,7 +88,7 @@ def hub_context(
         ARTIFACT_HYPOTHESIS,
         META_ARTIFACT_TYPE,
     )
-    from precis.nanopub import evidence
+    from precis.nanopub import evidence, term_coverage
     from precis.nanopub.preflight import publish_preflight, withheld_edges
 
     try:
@@ -149,11 +149,17 @@ def hub_context(
         else []
     )
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
+    # One scan of the evidence papers per render: the prefill ordering and the
+    # approve-view coverage check share its aggregate and its capped load (the
+    # `reviewed` sign view's check runs inside `publish_preflight`, once).
+    scan = term_coverage.CoverageScan(store, term_coverage.scan_refs(bundle))
+    suggested_payload = _suggested_payload(store, row, bundle, hub_meta, scan=scan)
     if state in (None, "candidate"):
         # Approve view: nothing is frozen yet, so check the claim against the
         # payload the form is prefilled with (what a bare "approve" would sign).
-        preflight.extend(_approve_coverage_issues(store, hub_id, bundle, row, hub_meta))
-    suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
+        preflight.extend(
+            _approve_coverage_issues(store, hub_id, bundle, suggested_payload, scan)
+        )
     open_disputes = _dispute_panel(store, hub_id)
     # Pre-approve (unminted/candidate) is also this hub's own eligibility
     # to be a merge WINNER (slice 3: a hub past 'candidate' has a frozen
@@ -746,7 +752,7 @@ def _anchor_fields(src: Any) -> dict[str, str]:
     return out
 
 
-def _prefill_chunk_order(store: Any, bundle: Any) -> list[Any]:
+def _prefill_chunk_order(store: Any, bundle: Any, scan: Any = None) -> list[Any]:
     """The hub's grounding chunks in prefill order. A claim that needs a
     body passage — the depth policy says body-required, or it names a
     method/measurement term — gets figure/table captions, then methods and
@@ -764,12 +770,14 @@ def _prefill_chunk_order(store: Any, bundle: Any) -> list[Any]:
     if claim_depth_policy(bundle.sentence) == DEPTH_BODY_REQUIRED or (
         term_coverage.names_method(bundle.sentence)
     ):
-        return term_coverage.order_for_prefill(store, chunks, bundle.sentence)
+        return term_coverage.order_for_prefill(
+            store, chunks, bundle.sentence, scan=scan
+        )
     return chunks
 
 
 def _suggested_payload(
-    store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any]
+    store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any], scan: Any = None
 ) -> str:
     """The approve form's prefill: the frozen payload when one exists;
     else the prepared payload an agent's hypothesis proposal parked on
@@ -791,7 +799,7 @@ def _suggested_payload(
         return json.dumps(proposed, indent=2)
     by_ref = {s.ref_id: s for s in bundle.sources}
     passages = []
-    for chunk in _prefill_chunk_order(store, bundle):
+    for chunk in _prefill_chunk_order(store, bundle, scan):
         src = by_ref.get(chunk.ref_id)
         if src is None:
             continue
@@ -891,18 +899,22 @@ def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:
 
 
 def _approve_coverage_issues(
-    store: Any, hub_id: int, bundle: Any, row: Any, hub_meta: dict[str, Any]
+    store: Any, hub_id: int, bundle: Any, suggested_payload: str, scan: Any = None
 ) -> list[Any]:
     """``term-coverage`` (warning) against the approve form's prefilled
-    payload — the pre-freeze counterpart of the check ``publish_preflight``
-    runs on a ``reviewed`` row's frozen grounding."""
+    payload (``suggested_payload``, already built for the render) — the
+    pre-freeze counterpart of the check ``publish_preflight`` runs on a
+    ``reviewed`` row's frozen grounding. ``scan`` is the render's shared
+    :class:`~precis.nanopub.term_coverage.CoverageScan`."""
     from precis.nanopub.preflight import coverage_issue
 
     try:
-        payload = json.loads(_suggested_payload(store, row, bundle, hub_meta))
+        payload = json.loads(suggested_payload)
     except ValueError:
         return []
-    issue = coverage_issue(store, hub_id, bundle.sentence, payload, bundle=bundle)
+    issue = coverage_issue(
+        store, hub_id, bundle.sentence, payload, bundle=bundle, scan=scan
+    )
     return [issue] if issue is not None else []
 
 

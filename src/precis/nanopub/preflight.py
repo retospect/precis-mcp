@@ -127,6 +127,7 @@ def coverage_issue(
     grounding: dict[str, Any],
     *,
     bundle: evidence.HubBundle | None = None,
+    scan: Any = None,
 ) -> PreflightIssue | None:
     """The non-blocking ``term-coverage`` issue for one claim + grounding
     envelope, or ``None`` (covered, nothing to compare, or the check
@@ -135,7 +136,7 @@ def coverage_issue(
 
     try:
         message = term_coverage.coverage_warning(
-            store, hub_ref_id, sentence, grounding, bundle=bundle
+            store, hub_ref_id, sentence, grounding, bundle=bundle, scan=scan
         )
     except Exception:
         log.warning("term-coverage check failed for fi%s", hub_ref_id, exc_info=True)
