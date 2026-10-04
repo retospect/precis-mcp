@@ -347,3 +347,79 @@ def coverage_warning(
     ``None`` when every term is covered (or there is nothing to compare)."""
     items = term_coverage(store, hub_ref_id, sentence, grounding, bundle=bundle)
     return format_message(items) if items else None
+
+
+# ------------------------------------------------------------ prefill order
+
+
+def names_method(sentence: str) -> bool:
+    """True when the claim names a method/measurement term — an acronym or
+    a mode word (:func:`~precis.taproot.coverage.claim_terms`). With the
+    depth policy (:func:`~precis.workers.hub_refine.claim_depth_policy`)
+    this decides whether the approve prefill ranks body passages ahead of
+    the abstract."""
+    return any(
+        t.kind in (KIND_ACRONYM, KIND_MODE) for t in coverage.claim_terms(sentence)
+    )
+
+
+def rank_for_claim(
+    sentence: str, chunks: list[PaperChunk], abstracts: dict[int, str]
+) -> list[int]:
+    """The DB-free core of :func:`order_for_prefill`: indices into ``chunks``
+    in prefill order — :func:`chunk_tier` first (captions, methods/results,
+    other body, abstract/front matter last), then more of the claim's
+    :func:`~precis.taproot.coverage.claim_terms` carried by the chunk, then
+    the incoming order. Every index appears exactly once."""
+    terms = coverage.claim_terms(sentence)
+    amap = coverage.acronym_map(list(abstracts.values()) + [c.text for c in chunks])
+    keyed: list[tuple[int, int, int]] = []
+    for i, c in enumerate(chunks):
+        prep = coverage.prepare(c.text)
+        carried = sum(1 for t in terms if coverage.find_term(t, prep, amap) is not None)
+        tier = chunk_tier(
+            kind=c.kind,
+            section_path=c.section_path,
+            ord_=c.ord,
+            text=c.text,
+            abstract=abstracts.get(c.ref_id),
+        )
+        keyed.append((tier, -carried, i))
+    return [i for _t, _n, i in sorted(keyed)]
+
+
+def order_for_prefill(
+    store: Store, chunks: list[evidence.ChunkInfo], sentence: str
+) -> list[evidence.ChunkInfo]:
+    """``chunks`` (a hub's grounding-candidate chunks) reordered for the
+    approve prefill by :func:`rank_for_claim`. Only reorders — nothing is
+    dropped, so the reviewer still chooses."""
+    if len(chunks) < 2:
+        return list(chunks)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.chunk_id, c.chunk_kind, r.meta->>'abstract'
+              FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
+             WHERE c.chunk_id = ANY(%s)
+            """,
+            ([c.chunk_id for c in chunks],),
+        ).fetchall()
+    kind_of = {int(r[0]): str(r[1] or "") for r in rows}
+    abstract_of = {int(r[0]): str(r[2]) for r in rows if r[2]}
+    abstracts = {
+        c.ref_id: abstract_of[c.chunk_id] for c in chunks if c.chunk_id in abstract_of
+    }
+    paper = [
+        PaperChunk(
+            chunk_id=c.chunk_id,
+            ref_id=c.ref_id,
+            handle=f"chunk:{c.chunk_id}",
+            ord=c.ord,
+            kind=kind_of.get(c.chunk_id, ""),
+            section_path=c.section_path,
+            text=c.text,
+        )
+        for c in chunks
+    ]
+    return [chunks[i] for i in rank_for_claim(sentence, paper, abstracts)]

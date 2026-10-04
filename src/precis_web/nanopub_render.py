@@ -746,6 +746,28 @@ def _anchor_fields(src: Any) -> dict[str, str]:
     return out
 
 
+def _prefill_chunk_order(store: Any, bundle: Any) -> list[Any]:
+    """The hub's grounding chunks in prefill order. A claim that needs a
+    body passage — the depth policy says body-required, or it names a
+    method/measurement term — gets figure/table captions, then methods and
+    results, then other body, with the abstract and front matter last, and
+    within a tier the chunk carrying more of the claim's terms first
+    (:func:`~precis.nanopub.term_coverage.order_for_prefill`; D2 of
+    docs/backlog/threads/claims-and-evidence.md — fi189535 prefilled an
+    abstract plus a definition sentence while its TEM caption and STS
+    passage were attached). Reorders only: no chunk is dropped. Any other
+    claim keeps the edge order."""
+    from precis.nanopub import term_coverage
+    from precis.workers.hub_refine import DEPTH_BODY_REQUIRED, claim_depth_policy
+
+    chunks = list(bundle.grounding_chunks)
+    if claim_depth_policy(bundle.sentence) == DEPTH_BODY_REQUIRED or (
+        term_coverage.names_method(bundle.sentence)
+    ):
+        return term_coverage.order_for_prefill(store, chunks, bundle.sentence)
+    return chunks
+
+
 def _suggested_payload(
     store: Any, row: Any, bundle: Any, hub_meta: dict[str, Any]
 ) -> str:
@@ -769,7 +791,7 @@ def _suggested_payload(
         return json.dumps(proposed, indent=2)
     by_ref = {s.ref_id: s for s in bundle.sources}
     passages = []
-    for chunk in bundle.grounding_chunks:
+    for chunk in _prefill_chunk_order(store, bundle):
         src = by_ref.get(chunk.ref_id)
         if src is None:
             continue

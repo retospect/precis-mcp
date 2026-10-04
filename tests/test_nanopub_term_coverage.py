@@ -5,6 +5,7 @@ hub's papers — a figure caption ranked ahead of the abstract. DB-backed."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -179,3 +180,108 @@ def test_chunk_tier(
         )
         == tier
     )
+
+
+# ── D2: the approve prefill ranks body passages ahead of the abstract ────
+
+
+def _pc(
+    chunk_id: int,
+    ord_: int,
+    text: str,
+    section: list[str],
+    kind: str = "paragraph",
+) -> term_coverage.PaperChunk:
+    return term_coverage.PaperChunk(
+        chunk_id=chunk_id,
+        ref_id=1,
+        handle=f"pc{chunk_id}",
+        ord=ord_,
+        kind=kind,
+        section_path=section,
+        text=text,
+    )
+
+
+def test_rank_for_claim_tiers_then_term_count() -> None:
+    sentence = "TEM and STS show a nanobud is a fullerene bonded to a nanotube."
+    abstract = "We study nanobuds by TEM and STS. They are fullerenes on tubes."
+    chunks = [
+        _pc(1, 0, abstract, ["Abstract"]),
+        _pc(
+            2, 4, "Nanobuds are common in samples of this kind of material.", ["Intro"]
+        ),
+        _pc(3, 7, "STS spectra of the bud region show a gap.", ["Results"]),
+        _pc(4, 8, "Figure 2 TEM image of a nanobud on a nanotube.", ["Results"]),
+        _pc(5, 9, "Figure 3 TEM and STS maps of a nanobud.", ["Results"]),
+    ]
+    order = term_coverage.rank_for_claim(sentence, chunks, {1: abstract})
+    # captions first (more terms first), then results, then body, abstract last
+    assert [chunks[i].chunk_id for i in order] == [5, 4, 3, 2, 1]
+    assert sorted(order) == list(range(len(chunks)))  # nothing dropped
+
+
+def test_names_method() -> None:
+    assert term_coverage.names_method(_SENTENCE)
+    assert not term_coverage.names_method("Nanobuds exist in some samples.")
+
+
+def _prefill_hub(store: Any, sentence: str) -> tuple[int, int, int]:
+    """An unminted hub with an abstract chunk attached first and a figure
+    caption of the same paper attached second."""
+    paper, abstract, _sha = _seed_paper(
+        store,
+        chunk_text="We image nanobuds by TEM and report their structure here.",
+        section=["Abstract"],
+    )
+    hub = _seed_hub(store, sentence, paper, abstract)
+    caption = _add_chunk(
+        store, paper, 5, "Figure 3 TEM image of a nanobud on a nanotube.", ["Results"]
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{caption}"},
+        check_retraction=False,
+    )
+    return hub, abstract, caption
+
+
+def test_prefill_puts_the_caption_before_the_abstract_for_a_method_claim(
+    store: Any,
+) -> None:
+    from precis_web.nanopub_render import _suggested_payload
+
+    hub, abstract, caption = _prefill_hub(
+        store, "TEM shows a nanobud sits on a nanotube."
+    )
+    bundle = evidence.load_bundle(store, hub)
+    # the edge order is abstract first — the reorder is what lifts the caption
+    assert [c.chunk_id for c in bundle.grounding_chunks] == [abstract, caption]
+    payload = json.loads(
+        _suggested_payload(store, store.nanopub_publish_row(hub), bundle, {})
+    )
+    assert [p["chunk_id"] for p in payload["passages"]] == [caption, abstract]
+
+
+def test_prefill_order_unchanged_without_method_terms(store: Any) -> None:
+    from precis_web.nanopub_render import _prefill_chunk_order
+
+    hub, _abstract, _caption = _prefill_hub(
+        store, "nanobuds sit on the surface of nanotubes."
+    )
+    bundle = evidence.load_bundle(store, hub)
+    assert [c.chunk_id for c in _prefill_chunk_order(store, bundle)] == [
+        c.chunk_id for c in bundle.grounding_chunks
+    ]
+
+
+def test_prefill_leaves_a_frozen_grounding_untouched(store: Any) -> None:
+    from precis_web.nanopub_render import _suggested_payload
+
+    hub, _chunks = _hub_with_method_paper(store)
+    row = store.nanopub_publish_row(hub)
+    bundle = evidence.load_bundle(store, hub)
+    assert json.loads(_suggested_payload(store, row, bundle, {})) == row.grounding
