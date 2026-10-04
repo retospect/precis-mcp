@@ -13,7 +13,7 @@ section now opens with the thesis and carries both analogues (2026-09-30).
 Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 10,000+ words, so the restructure reorders rather than cuts; scope is covalent
 and non-covalent buds. RSC reviews go through a proposal form first.
-**Resume (2026-10-03 22:10Z):** round 3 deployed at 929107f3. This thread's round-3 lands were thread-file edits only, so there is no code to dogfood. The prod work was data edits (items 27–29 applied, td450082 merged), each verified when it was applied.
+**Resume (2026-10-04 06:48Z):** everything this thread did is on main (last land 7dd7f259, marked in round 6); nothing is branch-only. Its lands are thread-file and skill-doc edits; the prod work is data edits to dr173020 (items 27–29, td450082 merge, 22 round-4 re-pins), each verified when applied. Next step: when Reto answers nanobuds-paper-32, apply the ruled edits with `scripts/prod-precis tools edit --kind draft`, re-export, land.
 - **Open, waiting on others:**
   - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at least 5 dev cycles out (Reto, hexfold-toolkit-5 (b): spread-pentagon rows first, which keep the ball round after relax); the fused-neck stick model stays as captioned.
   - claims-and-evidence-9 is with its owner.
