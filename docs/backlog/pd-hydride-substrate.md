@@ -183,3 +183,9 @@ the duration, and record the pause in the quest logbook.
   1–2 builds out. Once both SIs are ingested, read the scale from them
   and resolve the item. Until then qu164903 (NO→NH₃ selectivity) has no
   operating point, and stage 0 proceeds without one.
+  - pa5303: **RHE.** Its SI, ingested 2026-10-04 as pa465134, says "All
+    potentials were referenced to a reversible hydrogen electrode (RHE)",
+    converted from Ag/AgCl (pa465134~3), in NO-saturated 0.5 M Na₂SO₄. Its
+    93.7% at −0.4 V is V_RHE.
+  - pa166889: SI found, download re-queued; the round-4 deploy retries it.
+    The item resolves when its scale is read.
