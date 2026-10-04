@@ -35,28 +35,28 @@ spin-paired energy (§22i), so the table stands. Catpath
 0.23.0 (Part B) runs in Reto's
 `catpath` tmux window, and he sends the release sha for
 `uv lock -P autocatpath`. Pourbaix job A: rulings recorded, build next.
-**Round 2 dogfood (deployed 63301c5c, 2026-10-03):**
-- Diagram (item 22): pw455722, rendered from prod with the deployed code
-  and drawn by the test harness, has 12 angled H⁺+e⁻ arrows, each on its
-  hydrogenation product, and no ghost or dashed overlay. Reto has not yet
-  looked at it in the browser.
-- Engine-version guard (item 24): `precis quest status 164903` runs
-  clean and marks no margin older-network. That is expected: all three
-  prod network stamps are catpath 0.22.0. The guard has nothing to act on
-  until a 0.23.0 margin lands; check it then.
-**Round 3 (deployed 929107f3, 2026-10-03):** the pourbaix_bulk note
-clamp and the pymatgen#4709 citation (b41b70d03) are live. They have not
-been dogfooded: the only prod path through them is a live pourbaix_bulk
-job, and that waits on Reto's MP key. The first MP-key job checks them.
-The rest of round 3 here was docs: the CNT read passes and the item-17
-ruling.
-**Round 4 (deployed 727728cc, 2026-10-04):** this thread landed only a
-test fix (81dff3684, no prod surface) and docs. On prod, the SI
-auto-ingestion shipped in this round brought in the SIs of pa5303
-(pa465134) and pa166889 (pa465698). Both state V vs RHE, so item 17 is
-resolved. qu164903's operating point (−0.3 V_RHE, window −0.2 to −0.4 V,
-pH 7) is now in its logbook as decision entry 626. That changes no
-compute; the holds stay.
+**Resume (2026-10-04, round 6):** nothing is half-done or on the branch
+only; everything this thread built is on main and was live by round 4.
+- Live, not yet seen working:
+  - the diagram arrows (item 22): pw455722 drawn from prod shows 12 angled
+    H⁺+e⁻ arrows and no dashed overlay, but Reto has not looked at it in
+    the browser;
+  - the engine-version guard (item 24) has nothing to act on until a
+    catpath 0.23.0 margin lands;
+  - the pourbaix_bulk note clamp and the pymatgen#4709 citation
+    (b41b70d03) wait for the first MP-key job.
+- Item 17 is resolved (round 4): pa5303's and pa166889's SIs (pa465134,
+  pa465698) both state V vs RHE. qu164903's operating point (−0.3 V_RHE,
+  window −0.2 to −0.4 V, pH 7) is in its logbook (decision entry 626).
+- Waits on others:
+  - Reto: `PRECIS_MP_API_KEY` (Do-next 4);
+  - the catpath session: the 0.23.0 release sha for
+    `uv lock -P autocatpath` (Do-next 1). Then one build here: the lock,
+    the engine-guard check, and the neb-tier re-run once the holds lift;
+  - fetches: 13 of the 15 papers the CNT item waits on (Parked).
+- Next step: when the catpath sha arrives, run `uv lock -P autocatpath`.
+  The holds of items 23/25 (no re-runs, no hydride pilot) stay until
+  Reto lifts them.
 
 **Worktree:** `catalysis-selectivity`
 **Active:** yes — Reto, 2026-10-02 ("high up").
@@ -181,7 +181,8 @@ compute; the holds stay.
   cross-section with ribs; no quest until then. 18 papers listed. Two
   read passes (8 fetched papers, 2026-10-03) minted 20 hubs and stubbed 5
   primaries the reviews cite. Both are listed in the item. The next pass
-  waits on the 10 unfetched papers (KcsA, CPS) and the 5 new stubs.
+  waits on 13 unfetched papers (KcsA, CPS and 3 of the 5 stubs). Hilario
+  2016 and Anderson 1991 are held as of 2026-10-04.
 
 - **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284
   for the two NO arms; qu207188 added the same day via review session).
