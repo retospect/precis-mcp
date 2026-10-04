@@ -55,6 +55,14 @@ dependency (pyproject), not confined to the tiling pass any more.
 are closed-form, not because the package as a whole is. No GL, no
 meshing, no embedder. The handler (:mod:`precis.handlers.pcb`) renders
 results as TOON; this package owns the algorithms.
+
+Instance pinout inspection (``eyes.pinout``) reads raw stored pads and
+reuses ``padplace.place_pad_point``. IR/fab pads were refused as its input:
+synthesized bounds cannot establish numbering, and per-layer flashes
+multiply through-hole lands. Explicit pin-to-pad and footprint naming are
+reported separately rather than changing routing's mapping policy. Missing
+placement leaves board coordinates unavailable; source geometry does not
+verify a vendor pinout or connector mating orientation.
 """
 
 from __future__ import annotations

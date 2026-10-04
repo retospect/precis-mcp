@@ -3,13 +3,15 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Probe gr464537’s JLCPCB getComponentInfos first-page payload, then fix the HTTP 500; this is the first build on reopen.
-- **Blocked by:** No outside wait for gr464537. Check build-5 deployment before later dogfood; the sheet-job adapter waits on se-machine-design’s input shape.
+- **Next:** After the coordinator announces the verified feature release, run the isolated asymmetric P1 pinout checklist in fleet-state `inbox/pcb-p1-ready.md`, including top/bottom/unplaced/missing and stored-state/zero-write checks. The implemented contract lives in `precis.pcb` and `precis-pcb-help`; [connector intake extensions](../pcb-pinout-view-and-connector-intake.md) and datasheet-job addressing remain separate.
+- **Blocked by:** Native new-view acceptance awaits verified deployment. No stored board revision exists; accepted proof is unchanged persisted snapshots plus zero writes. C639448's queued acquisition remains an independent job-address boundary; missing `U_TEMP` is stale handoff only. Sheet-job adapter retains its own input-shape hold; EasyEDA remains parked.
 - **Unblocks:** A manufacturable EWOD board with trustworthy labels and routing.
-- **Acceptance:** Follow [the thread handoff](#thread-context) and [ranked work](#do-next): parts_refresh and datasheet URL lookup must stop failing with the same JLC API error.
-- **Worktree:** `ewod-pcb`
+- **Acceptance:** P1 uses actual numbered physical-pad rows, local/board mm, authoritative mirror/rotate/translate, stored mapping sources/conflicts/duplicates, unplaced/unavailable geometry and single-instance hints. Focused canonical tests include DB read-only proof and legacy selector compatibility. No live fixture created or shipped claim; prior datasheet completion/idempotence remain unverified.
+- **Worktree:** `codex-pcb`, branch `work/pcb/bootstrap`; owner `pcb`, thread `01a108d5-fdb2-7913-a2e2-ee7a08e58d40`, pane `%23` (window 6).
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+2026-10-04 bounded reconciliation: R9 is CLOSED; four-host attestation is coordinator evidence, while this owner's single native status independently verifies the served SHA/version above. R7 and all deployment/route measurements below are historical. Fixture correction authorized using existing `ARR1_SINK_0` / C639448; BOM confirms queued acquisition. Part read is NotFound, lexical job search returns no entry; request/job/link/readback cannot be completed through returned hints. The stored route summary (22 routed, 33 failed, 3 dangling) is not a fresh routing or DRC result. No board mutations, new jobs, tests, deploy or provider probe. EasyEDA stays PARKED; pcb-platform inactive. Checkpoint: shared fleet `inbox/pcb-postdeploy-reconcile.md` + `.json`; FINISH and wait.
 
 ## Thread context
 

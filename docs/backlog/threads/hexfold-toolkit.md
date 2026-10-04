@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Check deployment, then run the round-6 table and scene-guard dogfood before continuing cycle 2.
-- **Blocked by:** Round-6 guard deployment; check existing detailed handoff before running.
+- **Next:** After the coordinator announces the verified feature release, run the bounded H1 refusal/stored-diagnostic checklist in fleet-state `inbox/hexfold-h1-ready.md`; no regeneration. The implemented contract and rationale live in `precis_se.atomic.generators`, with remaining surface work in [the owning backlog](../hexfold-ideal-surface-then-tile.md).
+- **Blocked by:** Native plan-only table/lid read remains unavailable. Positive theta-p dogfood requires an actual recorded scene measurement; absent data is unknown. Live construction, relaxation and all scientific/hero holds remain. Source readiness is not deployed native acceptance.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
+- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/bootstrap`, `codex-hexfold`; earlier `hexa` work is historical.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 

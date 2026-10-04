@@ -181,7 +181,7 @@ _SESSION_VIEWS = ("congestion", "planes")
 _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
 #: catalog-part instance, the read-side counterpart to ``op='footprint'``.
-_OTHER_VIEWS = ("links", "footprints")
+_OTHER_VIEWS = ("links", "footprints", "pinout")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
@@ -465,7 +465,8 @@ class PcbHandler(Handler):
             "'trace'|'proximity'|'measures'|'feasibility'|'route-status'|"
             "'congestion'|'planes'), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
-            "instance), a vector figure (view='svg', "
+            "instance), one instance's actual physical pinout "
+            "(id='slug#J1', view='pinout', read-only), a vector figure (view='svg', "
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
             "a net-label schematic SVG off the netlist alone "
             "(view='schematic', works before any placement), "
@@ -715,6 +716,21 @@ class PcbHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if view == "pinout":
+            selector = str(id or "").strip()
+            if selector.count("#") != 1 or "@" in selector:
+                raise BadInput(
+                    "pinout requires one board#REFDES selector",
+                    next="get(kind='pcb', id='<board>#<REFDES>', view='pinout')",
+                )
+            slug, refdes = (part.strip() for part in selector.split("#", 1))
+            if not slug or not refdes:
+                raise BadInput(
+                    "pinout requires a nonempty board and REFDES",
+                    next="get(kind='pcb', id='<board>#<REFDES>', view='pinout')",
+                )
+            ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
+            return self._render_pinout(ref, refdes)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
@@ -4454,6 +4470,104 @@ class PcbHandler(Handler):
         if i["fixed"]:
             pose += f" 📌{i['fixed']}"
         return pose
+
+    def _render_pinout(self, ref: Any, refdes: str) -> Response:
+        design = self.store.pcb_load(ref.id)
+        instance = next((i for i in design["instances"] if i["refdes"] == refdes), None)
+        if instance is None:
+            raise NotFound(
+                f"pcb instance {refdes!r} not found in this design",
+                next=f"get(kind='pcb', id={ref.slug!r})",
+            )
+        lcsc = instance.get("part_lcsc")
+        key = str(lcsc or instance.get("footprint") or "")
+        if lcsc:
+            footprint = self.store.part_footprint_get(key)
+            source = (
+                f"catalog-cache; source={(footprint or {}).get('source') or 'unknown'}"
+            )
+        else:
+            footprint = self.store.pcb_local_footprints_for(ref.id).get(key)
+            source = "design-local-authored"
+        head = (
+            f"# {ref.slug}#{refdes} — pinout\n"
+            f"footprint: {key or 'unavailable'}; {source}\n"
+            f"instance: x_mm={instance.get('x')} y_mm={instance.get('y')} "
+            f"side={'bottom' if padplace.is_bottom_instance(instance) else 'top'} "
+            f"rotation_deg={instance.get('rot') or 0}\n"
+            "orientation: footprint-local +X right / +Y up; board top-view, "
+            "CW-positive rotation; bottom mirrors local X before rotate/translate.\n"
+            "Stored geometry/mapping, not vendor or mating-orientation verification.\n"
+        )
+        if not footprint or not footprint.get("pads"):
+            hint = (
+                f"put(kind='pcb', id={ref.slug!r}, "
+                f"args={{'op':'footprint', 'part':{key!r}}})"
+                if lcsc
+                else "get(kind='skill', id='precis-pcb-help') — author footprints[] "
+                f"for {key or 'this instance'}"
+            )
+            return Response(
+                body=head + f"geometry: unavailable (no stored pads)\nnext: {hint}"
+            )
+        neighbors = self.store.pcb_instance_neighbors(ref.id, refdes)
+        stackup = (design.get("board") or {}).get("stackup") or []
+        layers = [str(layer["name"]) for layer in stackup]
+        result = eyes.pinout(
+            instance, footprint, (neighbors or {}).get("pins", []), layers
+        )
+        rows = []
+        for pad in result["rows"]:
+            row = dict(pad)
+            for field in (
+                "local_x_mm",
+                "local_y_mm",
+                "board_x_mm",
+                "board_y_mm",
+                "pad_rotation_deg",
+            ):
+                value = row[field]
+                row[field] = "unavailable" if value is None else f"{value:.4f}"
+            for field in (
+                "board_layers",
+                "pin_names",
+                "net_names",
+                "mapping_sources",
+                "duplicate_indices",
+                "notes",
+            ):
+                row[field] = json.dumps(row[field], ensure_ascii=False, sort_keys=True)
+            rows.append(row)
+        body = head + f"geometry: stored; physical pads: {len(rows)}\n"
+        if not result["placed"]:
+            body += "board coordinates: unavailable (unplaced/invalid pose)\n"
+        body += render_agent_table(
+            rows,
+            schema=[
+                "pad_index",
+                "pad_number",
+                "local_x_mm",
+                "local_y_mm",
+                "board_x_mm",
+                "board_y_mm",
+                "pad_layer",
+                "board_layers",
+                "pad_rotation_deg",
+                "footprint_pin",
+                "pin_names",
+                "net_names",
+                "mapping_sources",
+                "mapping_state",
+                "duplicate_indices",
+                "geometry",
+                "notes",
+            ],
+        )
+        if result["unmatched"]:
+            body += "\nunmatched declared pins:\n" + render_agent_table(
+                result["unmatched"]
+            )
+        return Response(body=body)
 
     def _render_instance(self, ref_id: int, refdes: str) -> Response:
         nb = self.store.pcb_instance_neighbors(ref_id, refdes)

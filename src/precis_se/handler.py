@@ -2585,6 +2585,10 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
         facts.append(f"rings={{{census}}}")
     if facts:
         lines.append("  ".join(facts))
+    if rec.get("generator") == "hexfold_scene":
+        from precis_se.atomic.generators.hexfold_scene import stored_top_diagnostics
+
+        lines.extend(stored_top_diagnostics(rec))
     # ``join``'s own facts (docs/backlog/hexfold-integration.md step 5
     # slice 1): the two parts it was composed from and the seam itself —
     # a join record carries no ``spec``/``rings`` of its own (module

@@ -1,12 +1,12 @@
 ---
 status: draft
-title: view='pinout' + explicit signal↔pad capture for user-requested connectors
+title: Connector intake, signal-to-pad capture and pinout extensions
 prio: high
 model: opus
 pillar: 3d-design
 ---
 
-# `view='pinout'` and connector intake
+# Connector intake and pinout extensions
 
 > **Consider for the paper.** Several positions in this file are paper
 > material — silkscreen legibility as a *placement* input, text as an IR
@@ -17,15 +17,12 @@ pillar: 3d-design
 
 ## The gap
 
-When a user asks for a connector in prose — *"2x3 2.54 header, horizontal,
-pin signals clockwise from top left a, b, c, f, e, d"* — the LLM must turn
-that into `{refdes, pin}` netlist members. Today it does so **blind**:
-
-`pcb_graph` surfaces `instances: [{refdes, x, y, layer, roles, label,
-height_mm, n_pins}]` and `nets: members:[{refdes, pin}]`. There is a pin
-*count* and pin *identifiers*, but **no pad geometry** — nothing says where
-pad 3 physically is. The EasyEDA footprint parser already has pad
-coordinates; they are simply never surfaced to a view.
+Connector intake still needs checkable signal-to-pad assignment from prose.
+The per-instance `get(kind='pcb', id='<board>#<REFDES>', view='pinout')`
+reads stored physical pad geometry, placement and mapping evidence; see
+`src/precis/pcb/__init__.py` and `precis-pcb-help` for its current contract.
+The remaining work below concerns intake and presentation extensions, not
+rebuilding that view or changing the component model.
 
 There is also no ERC. So a mis-mapped connector routes cleanly, passes DRC,
 and is discovered with a scope.
@@ -50,10 +47,9 @@ Consequences for the design:
 
 ## Proposal
 
-1. **`view='pinout'`** on `kind='pcb'` (and ideally on `kind='part'` for a
-   footprint not yet instantiated): render each pad as number, x, y, side,
-   plus a small ASCII map laid out in true relative positions. Generated
-   from the parsed footprint — never authored, never inferred.
+1. **Pinout extensions:** consider a part-kind view for an uninstantiated
+   footprint and an optional spatial map. Keep parsed/authored provenance
+   explicit; do not infer missing pad geometry or mating orientation.
 2. **Echo-back on connector intake.** After mapping prose → pads, render
    the result spatially ("pad 1 top-left, pad 2 to its right, …") so a
    mismatch against the user's description is visible *before* routing.

@@ -5,10 +5,9 @@
   <div class="min-w-0">
     <h1 class="text-lg font-semibold">Drive</h1>
     <p class="text-sm text-slate-500">
-      Everything you've collected — papers, patents, slides, cached
-      answers — and everything you've made, in folders. One
-      best-matching passage per source, the same query the LLM runs;
-      flag what you want to read, move / tag / delete inline.
+      Discover newly created work, including findings and filed items.
+      Search across kinds or go straight to a handle or DOI;
+      refine the selection with kinds and filters.
     </p>
   </div>
   {# Batch tab-opener + its one-time-setup reminder — the whole group stays
@@ -98,335 +97,164 @@
 </div>
 {% endif %}
 
-<form method="get" action="/drive" class="mb-4 space-y-2"
-      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ work_kind_defs | tojson }}, {{ design_kind_defs | tojson }}, {{ machine_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }}, {{ scope | tojson }})'>
-  {# submitted=1 tells the server the checkboxes are authoritative (so
-     "none checked" means none, and the choice is remembered in a cookie). #}
+<div class="mb-3 flex flex-wrap items-center gap-3 text-sm">
+  <a href="/drive?task=discover" class="rounded border border-sky-300 bg-sky-50 px-3 py-1 text-sky-800">Discover</a>
+  <span class="text-slate-500">New work across kinds and folders</span>
+  {% if saved_kinds_url %}<a href="{{ saved_kinds_url }}" class="text-sky-700 hover:underline">Use saved kinds</a>{% endif %}
+</div>
+{% if using_saved_kinds %}
+<p class="mb-3 text-sm text-slate-600">Using your saved kinds. <a href="/drive?task=discover" class="text-sky-700 underline">Discover across kinds, including findings</a>.</p>
+{% endif %}
+
+<form method="get" action="/drive" class="mb-4 space-y-3"
+      x-data='itemsFilter({{ all_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ discover_kinds | tojson }}, {{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ design_kind_defs | tojson }}, {{ work_kind_defs | tojson }}, {{ machine_kind_defs | tojson }})'>
   <input type="hidden" name="submitted" value="1" />
-  {# Carry the per-draft fetch scope through a search/sort/state change so it
-     isn't silently dropped on the first form interaction (the "clear scope ×"
-     link is the only way out). #}
+  {% if task %}<input type="hidden" name="task" value="{{ task }}" />{% endif %}
   {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
-  {# Mine/Sources/Machine scope-toggle memory — reactive (:value, always
-     rendered) so a resubmit after tweaking search/sort/tags carries
-     forward whichever bucket button is lit, and a bare ``?scope=`` link
-     (no ``k=``) resolves the same kind set server-side with nothing to
-     check. #}
-  <input type="hidden" name="scope" :value="scope" />
+  <input type="hidden" name="scope" value="{{ scope }}" x-ref="scope" />
   <div class="flex flex-wrap items-end gap-2">
     <div class="flex-1 min-w-[16rem]" data-tour="drive-search">
-      <label class="block text-xs text-slate-500 mb-0.5">Search</label>
-      <input type="text" name="q" value="{{ q }}" autofocus
-             placeholder="e.g. MOF CO₂ capture"
-             @input="submitForm(1000)"
+      <label for="drive-query" class="block text-xs text-slate-500 mb-0.5">Search</label>
+      <input id="drive-query" type="search" name="q" value="{{ q }}" autofocus
+             placeholder="Search work, a handle or a DOI" @input="submitForm(1000)"
              class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
     </div>
     <div>
-      <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
-      <select name="sort" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="relevance" {% if sort not in ('recency', 'oldest', 'untried') %}selected{% endif %}>Relevance</option>
-        <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
-        <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Oldest first</option>
-        {# The downloads queue's default (state=stub) — never-manually-opened
-           first, then longest-since-last-tried. #}
-        <option value="untried" {% if sort == 'untried' %}selected{% endif %}>Untried first</option>
+      <label for="drive-sort" class="block text-xs text-slate-500 mb-0.5">Sort</label>
+      <select id="drive-sort" name="sort" @change="submitForm()" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="created" {% if sort == 'created' %}selected{% endif %}>Newly created</option>
+        <option value="modified" {% if sort == 'modified' %}selected{% endif %}>Recently modified</option>
+        <option value="relevance" {% if sort == 'relevance' %}selected{% endif %}>{{ 'Relevance' if q else 'Recently modified (legacy default)' }}</option>
+        {% if sort == 'recency' %}<option value="recency" selected>Legacy newest ({{ 'created' if q else 'modified' }})</option>{% endif %}
+        <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Oldest first ({{ 'created' if q else 'modified' }})</option>
+        <option value="untried" {% if sort == 'untried' %}selected{% endif %}>Untried downloads first</option>
       </select>
     </div>
-    <div>
-      <label class="block text-xs text-slate-500 mb-0.5">Show</label>
-      <select name="state" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="all" {% if state not in ('stub', 'deleted') %}selected{% endif %}>All</option>
-        <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
-        <option value="deleted" {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
-      </select>
-    </div>
-    <div>
-      <label class="block text-xs text-slate-500 mb-0.5">Since</label>
-      <input type="date" name="since" value="{{ since }}" @change="submitForm(150)"
-             class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
-    </div>
-    <div>
-      <label class="block text-xs text-slate-500 mb-0.5">Until</label>
-      <input type="date" name="until" value="{{ until }}" @change="submitForm(150)"
-             class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
-    </div>
-    {% if folder_options %}
-    <div>
-      <label class="block text-xs text-slate-500 mb-0.5">Folder</label>
-      <select name="folder" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm max-w-[12rem]">
-        <option value="">Top level</option>
-        {# "Anywhere" (folder=*) drops the top-level filter instead of
-           scoping to one folder — filed artifacts list beside unfiled
-           ones, so a kind's list matches its real total. #}
-        <option value="*" {% if folder == '*' %}selected{% endif %}>Anywhere</option>
-        {% for f in folder_options %}
-        <option value="{{ f.id }}" {% if folder == f.id | string %}selected{% endif %}>{{ f.label }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    {% endif %}
-    <button type="submit"
-            class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm hover:bg-slate-700">
-      Search
-    </button>
+    <button type="submit" class="rounded-md bg-slate-800 text-white px-4 py-1.5 text-sm">Search</button>
+    <a href="/drive?task=discover" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">Reset</a>
   </div>
 
-  {# Scope quick-filter — a coarse bucket over the same `k=` kind chips
-     below: "Mine" (Author + Design + Work — everything authored/placed),
-     "Sources" (the Source row — collected/ingested), "Machine" (orcid/
-     job/… bookkeeping, ~70% of live prod refs, that has no chip row of
-     its own since a human essentially never browses it row by row).
-     Clicking a bucket sets the checkboxes below to that bucket's kinds
-     (still the real ``k=`` on submit — an explicit chip tweak or a
-     deep-linked ``k=`` always wins, see routes/drive.py's `index`
-     docstring); `scope=` itself just round-trips which button is lit. #}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Scope</span>
-    <button type="button" @click="setScope('mine')"
-            class="px-2 py-0.5 rounded border cursor-pointer"
-            :class="scope === 'mine' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Mine</button>
-    <button type="button" @click="setScope('sources')"
-            class="px-2 py-0.5 rounded border cursor-pointer"
-            :class="scope === 'sources' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Sources</button>
-    <button type="button" @click="setScope('machine')"
-            class="px-2 py-0.5 rounded border cursor-pointer"
-            :class="scope === 'machine' ? 'bg-indigo-100 border-indigo-300 text-indigo-800' : 'border-slate-200 text-slate-500 hover:bg-slate-50'">Machine</button>
-  </div>
-
-  {# Kind chips — click to toggle; All / None; remembered via cookie.
-     Facets: "Source" (ingested docs + cached answers), "Author"
-     (role='artifact' — drafts, cad, structure, …) and "Design" (the
-     placement-less design kinds — pcb/component/material, see
-     items.py's _DESIGN_KINDS). #}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Source</span>
-    <button type="button" @click="allKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">All</button>
-    <button type="button" @click="noKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">None</button>
-    <template x-for="kk in sourceKinds.filter(k => !perplexityKinds.includes(k) && k !== 'paper')" :key="kk">
-      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
-             :class="kinds.includes(kk) ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
-        <span x-text="kk"></span>
-      </label>
+  <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Active filters" data-tour="drive-tags">
+    <span class="text-slate-500">Active</span>
+    <button type="button" @click="$refs.picker.open = true" class="rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sky-800"
+            x-text="isDiscoverySelection() ? 'All discovery kinds (' + kinds.length + ')' : kinds.length + ' selected kinds'">{{ selected_kinds | length }} selected kinds</button>
+    <template x-for="kk in (isDiscoverySelection() ? [] : kinds)" :key="kk">
+      <button type="button" @click="removeKind(kk)" :aria-label="'Remove kind ' + kk"
+              class="rounded bg-sky-100 px-2 py-1 text-sky-800"><span x-text="kk"></span> ×</button>
     </template>
-    {# Grouped perplexity chip — collapses perplexity-reasoning +
-       perplexity-research into one toggle, with a ▾ popover for picking
-       just one of the two. #}
-    <div class="relative inline-flex items-center" x-data="{ ppOpen: false }">
-      <button type="button" @click="togglePerplexity()"
-              class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-l border border-r-0 cursor-pointer select-none"
-              :class="ppCount() > 0 ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <span>perplexity</span>
-        <span x-show="ppCount() > 0 && ppCount() < perplexityKinds.length" class="text-[9px] opacity-70" x-text="ppCount() + '/' + perplexityKinds.length"></span>
-      </button>
-      <button type="button" @click="ppOpen = !ppOpen"
-              class="px-1 py-0.5 rounded-r border cursor-pointer text-[9px]"
-              :class="ppCount() > 0 ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">▾</button>
-      <div x-show="ppOpen" x-cloak @click.outside="ppOpen = false"
-           class="absolute left-0 top-full mt-1 z-30 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="checkbox" name="k" value="perplexity-reasoning" x-model="kinds" class="rounded border-slate-300">
-          <span>reasoning</span>
-        </label>
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="checkbox" name="k" value="perplexity-research" x-model="kinds" class="rounded border-slate-300">
-          <span>research</span>
-        </label>
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="checkbox" name="k" value="websearch" x-model="kinds" class="rounded border-slate-300">
-          <span>websearch</span>
-        </label>
-      </div>
-    </div>
-    {# Grouped paper chip — a tri-state radio popover (both/with/without
-       chunks) rather than a checkbox list, since paper_chunks is a
-       single global browse facet (Part 2 of the drive-ui-chunk-filter
-       change), not a per-kind toggle. #}
-    <div class="relative inline-flex items-center" x-data="{ paperOpen: false }">
-      <button type="button" @click="togglePaper()"
-              class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-l border border-r-0 cursor-pointer select-none"
-              :class="kinds.includes('paper') ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <span>paper</span>
-        <span x-show="paperChunks !== 'both'" class="text-[9px] opacity-70" x-text="paperChunks"></span>
-      </button>
-      {# Backing input so native form serialization emits k=paper — the main
-         button only mutates the in-memory `kinds` array (drives the highlight
-         + auto-submit); without this checkbox `paper` would never be posted
-         and would silently drop from the kind set on the first resubmit. #}
-      <input type="checkbox" name="k" value="paper" x-model="kinds" class="sr-only" />
-      <button type="button" @click="paperOpen = !paperOpen"
-              class="px-1 py-0.5 rounded-r border cursor-pointer text-[9px]"
-              :class="kinds.includes('paper') ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">▾</button>
-      <div x-show="paperOpen" x-cloak @click.outside="paperOpen = false"
-           class="absolute left-0 top-full mt-1 z-30 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="radio" name="paper_chunks" value="both" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
-          <span>both</span>
-        </label>
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="radio" name="paper_chunks" value="with" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
-          <span>with chunks</span>
-        </label>
-        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
-          <input type="radio" name="paper_chunks" value="without" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
-          <span>without chunks</span>
-        </label>
-      </div>
-    </div>
-  </div>
-  {% if artifact_kind_defs %}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Author</span>
-    <template x-for="kk in artifactKinds" :key="kk">
-      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
-             :class="kinds.includes(kk) ? 'bg-amber-100 border-amber-300 text-amber-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
-        <span x-text="kk"></span>
-      </label>
-    </template>
-  </div>
-  {% endif %}
-
-  {# Design — placement-less design kinds (pcb/component/material) that
-     don't qualify for the Author facet's placement='artifact' filter but
-     are still first-class authored designs (se/structure/figure already
-     show up under Author). Its own row, not folded into Author, so the
-     "no facet chip → Other only" gap this closes stays visible as a
-     named row rather than silently merged. #}
-  {% if design_kind_defs %}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Design</span>
-    <template x-for="kk in designKinds" :key="kk">
-      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
-             :class="kinds.includes(kk) ? 'bg-violet-100 border-violet-300 text-violet-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
-        <span x-text="kk"></span>
-      </label>
-    </template>
-  </div>
-  {% endif %}
-
-  {# ── Work: quests + todos, plus the recurring-schedule preset. A third
-     facet beside Source/Author. These kinds carry no embedded chunks, so
-     they list in the no-query browse view (a text query matches only the
-     chunked Source/Author kinds). Click a quest → its hub; a todo → its
-     own subtree on /todo. #}
-  {% if work_kind_defs %}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Work</span>
-    <template x-for="kk in workKinds" :key="kk">
-      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
-             :class="kinds.includes(kk) ? 'bg-emerald-100 border-emerald-300 text-emerald-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
-        <span x-text="kk"></span>
-      </label>
-    </template>
-    {# Schedules = recurring todos (meta.schedule set) — a preset link, not
-       a kind. The tag=level:recurring sentinel is translated server-side
-       to has_schedule=True (§M facet normalization retired the tag). #}
-    <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency"
-       class="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50">
-      🔁 Schedules
-    </a>
-  </div>
-  {% endif %}
-
-  {# ── Other: kinds the deep link named that have no facet of their own
-     (Status's "Refs by kind" chips cover every kind in `refs`). Rendered
-     server-side from the selection, not from a def list — the point is to
-     keep a scope like ?k=job visible and serializable across a submit. #}
-  {% if other_kind_defs %}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs">
-    <span class="text-slate-500 mr-1">Other</span>
-    {% for kk in other_kind_defs %}
-    <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
-           :class="kinds.includes('{{ kk }}') ? 'bg-slate-200 border-slate-400 text-slate-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
-      <input type="checkbox" name="k" value="{{ kk }}" x-model="kinds" class="sr-only" />
-      <span>{{ kk }}</span>
-    </label>
-    {% endfor %}
-  </div>
-  {% endif %}
-
-  {# Tag filter — type to autocomplete (substring), click to add a chip,
-     ✕ to remove. Selected tags submit as repeated ?tag= params. #}
-  <div class="flex flex-wrap items-center gap-1.5 text-xs" data-tour="drive-tags">
-    <span class="text-slate-500 mr-1">Tags</span>
     <template x-for="(t, i) in tags" :key="t">
-      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-800">
+      <span class="inline-flex items-center gap-1 rounded bg-violet-100 px-2 py-1 text-violet-800">
         <span x-text="t"></span>
-        <button type="button" @click="removeTag(i)" class="text-violet-500 hover:text-violet-900 leading-none">&times;</button>
+        <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
         <input type="hidden" name="tag" :value="t" />
       </span>
     </template>
-    <div class="relative">
-      <input type="text" x-model="tagQuery" @input.debounce.200ms="suggest()"
-             @keydown.escape="suggestions = []" placeholder="filter by tag…"
-             class="rounded border border-slate-300 px-2 py-0.5 text-xs w-44" />
-      <div x-show="suggestions.length" x-cloak @click.outside="suggestions = []"
-           class="absolute left-0 mt-1 z-30 w-56 max-h-56 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
-        <template x-for="s in suggestions" :key="s.tag">
-          <button type="button" @click="addTag(s.tag)" x-text="s.label"
-                  class="block w-full text-left px-3 py-1 text-xs text-slate-600 hover:bg-slate-100"></button>
-        </template>
+    {% for facet in active_facets %}
+    <a href="{{ facet.url }}" class="rounded border border-slate-200 px-2 py-1 text-slate-600" aria-label="Remove {{ facet.label }}">{{ facet.label }} ×</a>
+    {% endfor %}
+  </div>
+
+  <details x-ref="picker" class="rounded-lg border border-slate-200 bg-white p-3">
+    <summary class="cursor-pointer text-sm font-medium text-sky-800">Kinds and filters</summary>
+    <div class="mt-3 grid gap-4 md:grid-cols-2">
+      <div>
+        <label for="drive-kind-search" class="block text-xs font-medium text-slate-600">Find a kind</label>
+        <input id="drive-kind-search" type="search" x-model="kindQuery" @keydown.enter.prevent
+               placeholder="e.g. finding, structure, paper" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
+        <div class="my-2 flex flex-wrap gap-2 text-xs">
+          <button type="button" @click="allKinds()" class="rounded border px-2 py-1">All</button>
+          <button type="button" @click="noKinds()" class="rounded border px-2 py-1">None</button>
+          <button type="button" @click="setScope('mine')" class="rounded border px-2 py-1">Mine</button>
+          <button type="button" @click="setScope('sources')" class="rounded border px-2 py-1">Sources</button>
+          <button type="button" @click="setScope('machine')" class="rounded border px-2 py-1">Machine</button>
+        </div>
+        <div class="grid max-h-64 grid-cols-2 gap-1 overflow-auto" aria-label="Kinds">
+          {% for kk in all_kind_defs %}
+          <label x-show="matchesKind({{ kk | tojson | forceescape }})" class="inline-flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-slate-50">
+            <input type="checkbox" name="k" value="{{ kk }}" x-model="kinds" {% if kk in selected_kinds %}checked{% endif %}
+                   @change="$refs.scope.value = ''" class="rounded border-slate-300" />
+            <span>{{ kk }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <p x-show="!allKindDefs.some(k => matchesKind(k))" x-cloak class="mt-2 text-xs text-slate-500">No matching kinds. Your selection is unchanged.</p>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label for="drive-tag-search" class="block text-xs font-medium text-slate-600">Find a tag or filter</label>
+          <input id="drive-tag-search" type="search" x-model="tagQuery" @input.debounce.200ms="suggest()"
+                 @keydown.escape="suggestions = []" @keydown.enter.prevent="addTag(tagQuery.trim())"
+                 placeholder="e.g. DIM:2d, MATERIAL:nanobud, topic:noxrr" class="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm" />
+          <div x-show="suggestions.length" x-cloak class="rounded border border-slate-200">
+            <template x-for="s in suggestions" :key="s.tag">
+              <button type="button" @click="addTag(s.tag)" x-text="s.label" class="block w-full px-2 py-1 text-left text-xs hover:bg-slate-50"></button>
+            </template>
+          </div>
+          <p class="mt-1 text-xs text-slate-500">All selected tags must match. Paper classifications use DIM, MATERIAL and SCALE.</p>
+        </div>
+        <div class="flex flex-wrap gap-3 text-xs">
+          <label>Show
+            <select name="state" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+              <option value="all" {% if state == 'all' %}selected{% endif %}>All</option>
+              <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
+              <option value="deleted" {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
+            </select>
+          </label>
+          <label>Body availability
+            <select name="paper_chunks" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+              <option value="both" {% if paper_chunks == 'both' %}selected{% endif %}>Any</option>
+              <option value="with" {% if paper_chunks == 'with' %}selected{% endif %}>With chunks</option>
+              <option value="without" {% if paper_chunks == 'without' %}selected{% endif %}>Without chunks</option>
+            </select>
+          </label>
+        </div>
+        <label class="block text-xs">Folder
+          <select name="folder" @change="submitForm()" class="ml-1 rounded border border-slate-300 p-1">
+            <option value="" {% if not folder %}selected{% endif %}>Top level</option>
+            <option value="*" {% if folder == '*' %}selected{% endif %}>Anywhere</option>
+            {% for f in folder_options %}<option value="{{ f.id }}" {% if folder == f.id | string %}selected{% endif %}>{{ f.label }}</option>{% endfor %}
+          </select>
+        </label>
+        <div class="flex flex-wrap gap-3 text-xs">
+          <label>Created since <input type="date" name="since" value="{{ since }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
+          <label>Created until <input type="date" name="until" value="{{ until }}" @change="submitForm()" class="rounded border border-slate-300 p-1" /></label>
+        </div>
+        <p class="text-xs text-slate-500">Dates apply to search. Folder, body availability, Show and citation scope apply to browsing.</p>
+        <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency" class="text-xs text-sky-700 underline">Schedules</a>
       </div>
     </div>
-  </div>
+  </details>
 </form>
 
 <script>
   document.addEventListener('alpine:init', () => {
-    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, workKinds, designKinds, machineKinds, selectedKinds, selectedTags, paperChunks, initialScope) => ({
-      sourceKinds: sourceKinds,
-      artifactKinds: artifactKinds,
-      workKinds: workKinds,
-      designKinds: designKinds,
-      machineKinds: machineKinds,
-      kinds: selectedKinds,
-      scope: initialScope || '',
-      tags: selectedTags,
-      paperChunks: paperChunks || 'both',
-      tagQuery: '',
-      suggestions: [],
-      _t: null,
-      perplexityKinds: ['perplexity-reasoning', 'perplexity-research', 'websearch'],
-      init() {
-        this.$watch('kinds', () => this.submitForm());
-      },
+    Alpine.data('itemsFilter', (allKindDefs, selectedKinds, selectedTags, discoverKinds, sourceKinds, artifactKinds, designKinds, workKinds, machineKinds) => ({
+      allKindDefs, kinds: selectedKinds, tags: selectedTags, discoverKinds,
+      sourceKinds, artifactKinds, designKinds, workKinds, machineKinds,
+      kindQuery: '', tagQuery: '', suggestions: [], _t: null,
+      init() { this.$watch('kinds', () => this.submitForm()); },
       submitForm(delay = 150) {
+        // x-for may detach the trigger before the timer resolves Alpine's $root.
+        const form = this.$root;
         clearTimeout(this._t);
-        this._t = setTimeout(() => this.$root.requestSubmit(), delay);
+        this._t = setTimeout(() => form.requestSubmit(), delay);
       },
-      allKinds() { this.kinds = [...this.sourceKinds, ...this.artifactKinds, ...this.designKinds]; },
-      noKinds() { this.kinds = []; },
-      // Mine/Sources/Machine scope toggle — sets the checkbox-backed
-      // `kinds` array to the bucket's kind list (still the real ``k=``
-      // on submit, via the existing $watch above) and remembers which
-      // button is lit via `scope` (the hidden field it's bound to).
+      matchesKind(kk) { return kk.toLowerCase().includes(this.kindQuery.trim().toLowerCase()); },
+      isDiscoverySelection() { return this.kinds.length === this.discoverKinds.length && this.discoverKinds.every(k => this.kinds.includes(k)); },
+      removeKind(kk) { this.$refs.scope.value = ''; this.kinds = this.kinds.filter(k => k !== kk); },
+      allKinds() { this.$refs.scope.value = ''; this.kinds = [...this.allKindDefs]; },
+      noKinds() { this.$refs.scope.value = ''; this.kinds = []; },
       setScope(name) {
-        this.scope = name;
+        this.$refs.scope.value = name;
         if (name === 'sources') this.kinds = [...this.sourceKinds];
         else if (name === 'mine') this.kinds = [...this.artifactKinds, ...this.designKinds, ...this.workKinds];
         else if (name === 'machine') this.kinds = [...this.machineKinds];
       },
-      ppCount() { return this.perplexityKinds.filter(k => this.kinds.includes(k)).length; },
-      togglePerplexity() {
-        if (this.ppCount() === this.perplexityKinds.length) {
-          this.kinds = this.kinds.filter(k => !this.perplexityKinds.includes(k));
-        } else {
-          for (const k of this.perplexityKinds) if (!this.kinds.includes(k)) this.kinds.push(k);
-        }
-      },
-      togglePaper() {
-        this.kinds = this.kinds.includes('paper')
-          ? this.kinds.filter(k => k !== 'paper')
-          : [...this.kinds, 'paper'];
-      },
-      removeTag(i) { this.tags.splice(i, 1); },
+      removeTag(i) { this.tags.splice(i, 1); this.submitForm(); },
       addTag(t) {
+        if (!t) return;
         if (!this.tags.includes(t)) this.tags.push(t);
-        this.tagQuery = '';
-        this.suggestions = [];
+        this.tagQuery = ''; this.suggestions = []; this.submitForm();
       },
       async suggest() {
         const term = this.tagQuery.trim();
@@ -614,14 +442,14 @@
       </div>
       <ul class="py-1 text-sm">
         <li>
-          <a href="/drive"
+          <a href="{{ folder_url('') }}"
              class="block px-3 py-1 {% if current is none %}bg-slate-100 font-medium{% else %}hover:bg-slate-50{% endif %}">
             🗂 All
           </a>
         </li>
         {% for f in folders %}
         <li>
-          <a href="/drive?folder={{ f.ref_id }}"
+          <a href="{{ folder_url(f.ref_id | string) }}"
              style="padding-left: {{ 0.75 + f.depth * 0.9 }}rem"
              class="block py-1 pr-3 truncate {% if current and current.ref_id == f.ref_id %}bg-slate-100 font-medium{% else %}hover:bg-slate-50{% endif %}">
             📁 {{ f.title }}
@@ -672,11 +500,11 @@
     {% if current %}
     <div class="flex items-center gap-2 mb-3 text-sm">
       <nav class="text-slate-500">
-        <a href="/drive" class="hover:underline">Drive</a>
+        <a href="{{ folder_url('') }}" class="hover:underline">Drive</a>
         {% for c in crumbs %}
         <span class="text-slate-300">/</span>
         {% if loop.last %}<span class="font-medium text-slate-800">{{ c.title }}</span>
-        {% else %}<a href="/drive?folder={{ c.ref_id }}" class="hover:underline">{{ c.title }}</a>{% endif %}
+        {% else %}<a href="{{ folder_url(c.ref_id | string) }}" class="hover:underline">{{ c.title }}</a>{% endif %}
         {% endfor %}
       </nav>
       <span class="text-slate-300">·</span>

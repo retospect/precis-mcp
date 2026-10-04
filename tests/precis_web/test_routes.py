@@ -747,18 +747,18 @@ def test_drive_paper_chunks_default_is_both(runtime, client) -> None:
     assert runtime.store.recent_has_chunks is None
 
 
-def test_drive_paper_chip_and_websearch_popover_render(client) -> None:
-    """The grouped ``paper`` chip (tri-state paper_chunks radios) renders,
-    and ``websearch`` lives inside the perplexity popover (grouped), not
-    as a flat source chip."""
+def test_drive_availability_and_websearch_picker_render(client) -> None:
+    """Availability is separate from kind; grouped APIs remain selectable."""
     resp = client.get("/drive")
     assert resp.status_code == 200
-    assert "togglePaper()" in resp.text
-    assert 'name="paper_chunks" value="both"' in resp.text
-    assert 'name="paper_chunks" value="with"' in resp.text
-    assert 'name="paper_chunks" value="without"' in resp.text
+    assert "Body availability" in resp.text
+    assert 'name="paper_chunks"' in resp.text
+    assert 'value="both"' in resp.text
+    assert 'value="with"' in resp.text
+    assert 'value="without"' in resp.text
     assert 'value="websearch" x-model="kinds"' in resp.text
-    assert "'perplexity-reasoning', 'perplexity-research', 'websearch'" in resp.text
+    assert 'value="perplexity-reasoning"' in resp.text
+    assert 'value="perplexity-research"' in resp.text
 
 
 def test_drive_result_total_shown_above_results(runtime, client) -> None:
@@ -1096,7 +1096,7 @@ def test_drive_author_facet_renders_artifact_chips(client) -> None:
     resp = client.get("/drive")
     assert resp.status_code == 200
     assert "Source" in resp.text
-    assert "Author" in resp.text
+    assert "Find a kind" in resp.text
     assert '"draft"' in resp.text  # artifact chip seed
 
 
@@ -1118,11 +1118,9 @@ def test_drive_folder_filter_flows_to_recent(runtime, client) -> None:
     assert runtime.store.recent_unfiled_only is False
 
 
-def test_drive_default_landing_hides_filed(runtime, client) -> None:
-    """The default (no folder, live) landing asks recent_refs for only
-    unfiled refs — a filed artifact drops out of the main list and lives
-    inside its folder (still reachable via search, which ignores folders)."""
-    resp = client.get("/drive")
+def test_drive_explicit_top_level_hides_filed(runtime, client) -> None:
+    """An explicit legacy top-level folder scope keeps its meaning."""
+    resp = client.get("/drive?folder=")
     assert resp.status_code == 200
     assert runtime.store.recent_unfiled_only is True
 

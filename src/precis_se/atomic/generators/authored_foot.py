@@ -701,7 +701,11 @@ class TopPlan:
 
 
 def r_min_fillet(r_tube: float, theta_p_max: float = THETA_P_MAX_DEG) -> float:
-    """Smallest top-fillet radius whose shoulder stays under ``theta_p_max``.
+    """Conservative shoulder-radius estimate for the existing theta-p bar.
+
+    This approximate C60-calibrated heuristic is not a necessary physical
+    stability bound. It supplies the explicit authored-fillet input policy;
+    measured scene theta-p remains separate evidence.
 
     Derivation.  POAV1 pyramidalisation of a sp2 sheet bent to mean curvature
     ``kappa_mean = (k1 + k2) / 2`` is ``theta_p ~ c * kappa_mean``; the C60
@@ -732,6 +736,50 @@ def default_fillet(
     fillet has to make), and never below ``FILLET_FLOOR_A``."""
     room = big_r - r_tube
     return max(FILLET_FLOOR_A, min(1.5 * r_min_fillet(r_tube, theta_p_max), room))
+
+
+def check_authored_sphere_fillet(
+    n: int,
+    top_fillet: float | None,
+    top_R: float | None = None,
+    *,
+    theta_p_max: float = THETA_P_MAX_DEG,
+) -> None:
+    """Explicit sphere input policy, not a necessary physical stability bound.
+
+    Defaults can be room-capped below this conservative estimate and remain
+    unchanged. Refuse authored input before any candidate or scene construction;
+    accepting it only clears this check, not the measured bars or room checks.
+    """
+    if isinstance(n, bool) or not isinstance(n, int) or n % 6 or n < 12:
+        raise ValueError(f"a sphere top needs n a multiple of 6 and n >= 12; got n={n}")
+    for key, val in (("top_R", top_R), ("top_fillet", top_fillet)):
+        if val is None:
+            continue
+        if (
+            isinstance(val, bool)
+            or not isinstance(val, int | float)
+            or not math.isfinite(val)
+        ):
+            raise ValueError(f"{key} must be a finite positive number; got {val!r}")
+        if val <= 0:
+            raise ValueError(f"{key} must be positive; got {val}")
+    if top_fillet is None:
+        return
+    minimum = r_min_fillet(tube_radius(n, 0), theta_p_max)
+    if not math.isfinite(minimum):
+        raise ValueError(
+            f"top_fillet {top_fillet:g} A: no finite radius satisfies the conservative "
+            f"authored-fillet policy bound at theta-p limit {theta_p_max:g} deg; "
+            "revise the sphere tube n; this is not a physical stability verdict"
+        )
+    if top_fillet < minimum:
+        raise ValueError(
+            f"top_fillet {top_fillet:g} A is below the conservative authored-fillet "
+            f"policy bound R_min={minimum!r} A (theta-p limit {theta_p_max:g} deg); "
+            f"request a finite top_fillet >= {minimum!r} A; other room/geometry "
+            "checks still apply; this is not a physical stability verdict"
+        )
 
 
 def _sphere_pieces(rt: float, r_t: float, big_r: float) -> list[_Piece]:
@@ -1289,8 +1337,8 @@ def plan_top(
     """
     if kind not in ("sphere", "lid"):
         raise ValueError(f"plan_top: kind must be 'sphere' or 'lid'; got {kind!r}")
-    if kind == "sphere" and (n % 6 or n < 12):
-        raise ValueError(f"a sphere top needs n a multiple of 6 and n >= 12; got n={n}")
+    if kind == "sphere":
+        check_authored_sphere_fillet(n, top_fillet, top_R, theta_p_max=theta_p_max)
     if kind == "lid" and top_fillet is None:
         raise ValueError("a rounded lid needs top_fillet")
     for key, val in (("top_R", top_R), ("top_fillet", top_fillet)):

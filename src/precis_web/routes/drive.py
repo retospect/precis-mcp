@@ -150,6 +150,30 @@ _MACHINE_KINDS: tuple[str, ...] = (
 #: complete set or its count contradicts the chip that linked here.
 _FOLDER_ANY = "*"
 
+# Discovery is a content/work browsing scope, not an authorship classifier.
+_DISCOVER_EXCLUDED = frozenset(
+    (
+        *_MACHINE_KINDS,
+        "folder",
+        "calc",
+        "random",
+        "skill",
+        "tag",
+        "python",
+        "md",
+        "measure",
+    )
+)
+
+
+def _kind_roster(hub: Any, fallback: list[str]) -> list[str]:
+    """Loaded kinds plus compatibility/deep-linked kinds, without booting a hub."""
+    try:
+        loaded = list(hub.kinds) if hub is not None else []
+    except Exception:
+        loaded = []
+    return sorted(set(loaded).union(fallback))
+
 
 def _doctypes() -> list[dict[str, Any]]:
     """Draft genres for the "+ New" dropdown's ``doctype`` picker, from the
@@ -316,6 +340,7 @@ async def index(
     state: str = "all",
     paper_chunks: str = "both",
     scope: str = "",
+    task: str = "",
     folder: str = "",
     cited_by: str = "",
     page: int = 1,
@@ -334,7 +359,7 @@ async def index(
     shows only paper stubs (awaiting fetch), ``state=deleted`` shows
     soft-deleted refs instead of live ones (a lightweight trash view —
     no undelete surface yet, just visibility); ``paper_chunks=with``/
-    ``=without`` (the grouped "paper" chip's popover) filters on
+    ``=without`` (the body availability selector) filters on
     whether a ref has a body chunk (the ingested-vs-not split) — this
     is a **global** browse filter (it reuses ``recent_refs(has_chunks=
     …)``, not scoped to the ``paper`` kind, by design: chunk presence
@@ -360,13 +385,17 @@ async def index(
     (``POST /drive/fetch-next-batch``), which runs an actual bounded
     ``fetch_oa`` pass in-request rather than just reordering the queue.
 
+    Discover (``task=discover``, also a cookie-free bare landing) defaults
+    to created order across folders and content/work kinds including findings.
+    ``sort=created|modified`` keeps timestamp meaning consistent with and
+    without a query; legacy ``recency`` is untouched. A searchable native
+    details picker keeps every selected kind serializable while collapsed.
+
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
     explicit submit (``submitted=1``) sets it; a fresh visit with no
-    ``k=`` reads it (or defaults to the Source ∪ Author/Design kinds —
-    everything collected plus everything made, per the page's own
-    tagline — never Work or Machine, matching the pre-existing
-    exclusion of quest/todo/orcid/job from the default). An explicit
+    ``k=`` reads it, including an intentionally empty choice. Explicit
+    Discover bypasses it without writing it. An explicit
     ``k=`` in the URL is authoritative even without ``submitted`` — a
     deep link (Status's "Refs by kind" chips, a shared URL) means the
     kinds it names — but only a real form submit writes the cookie, so
@@ -434,6 +463,30 @@ async def index(
 
     url_kinds = [x.strip() for x in k if x.strip()]
     scope = (scope or "").strip().lower()
+    cookie = request.cookies.get("items_kinds")
+    saved_kinds = [x for x in (cookie or "").split(",") if x]
+    task = "discover" if task == "discover" else ""
+    # Fresh landing discovers broadly; saved preferences remain an explicit,
+    # visible alternative. Old scoped URLs retain their previous defaults.
+    if not request.query_params and cookie is None:
+        task = "discover"
+    all_kind_defs = _kind_roster(
+        hub,
+        [
+            *_DEFAULT_SOURCE_KINDS,
+            *artifact_kind_defs,
+            *design_kind_defs,
+            *work_kind_defs,
+            *_MACHINE_KINDS,
+            "finding",
+            "citation",
+            "concept",
+        ],
+    )
+    discover_kinds = [kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED]
+    # A stale/custom saved kind remains selectable without becoming part of
+    # Discover's default roster merely because one browser named it.
+    all_kind_defs = sorted(set(all_kind_defs).union(saved_kinds, url_kinds))
     _scope_kinds = {
         "sources": list(_DEFAULT_SOURCE_KINDS),
         "mine": [*artifact_kind_defs, *design_kind_defs, *work_kind_defs],
@@ -443,8 +496,9 @@ async def index(
         selected_kinds = url_kinds
     elif scope in _scope_kinds:
         selected_kinds = _scope_kinds[scope]
+    elif task == "discover":
+        selected_kinds = discover_kinds
     else:
-        cookie = request.cookies.get("items_kinds", "")
         # Decision (b): _DEFAULT_SOURCE_KINDS stays the literal "Source"
         # facet row; the fresh-session default *scope* is the union with
         # the Author + Design kinds so a brand-new session's search can
@@ -452,11 +506,18 @@ async def index(
         # drive-front-door design-kinds gap (prod: 5 se refs incl.
         # unicycle-mk2, 12 component, 2 pcb, 2 material, 1120 structure,
         # none reachable before this fix).
-        selected_kinds = [x for x in cookie.split(",") if x] or [
-            *_DEFAULT_SOURCE_KINDS,
-            *artifact_kind_defs,
-            *design_kind_defs,
-        ]
+        selected_kinds = (
+            saved_kinds
+            if cookie is not None
+            else [
+                *_DEFAULT_SOURCE_KINDS,
+                *artifact_kind_defs,
+                *design_kind_defs,
+                "finding",
+                "citation",
+                "concept",
+            ]
+        )
     tags = [t.strip() for t in tag if t.strip()]
     # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
     # drive/index.html.j2's nav chip) — kept as a familiar URL even though
@@ -468,18 +529,24 @@ async def index(
         has_schedule = True
         tags = [t for t in tags if t != "level:recurring"]
     _sort_raw = (sort or "").strip().lower()
-    sort = _sort_raw if _sort_raw in ("recency", "oldest", "untried") else "relevance"
+    sort = (
+        _sort_raw
+        if _sort_raw in ("recency", "oldest", "untried", "created", "modified")
+        else "relevance"
+    )
+    if task == "discover" and "sort" not in request.query_params:
+        sort = "created"
     state = (state or "all").strip().lower()
-    # ``paper_chunks`` (the grouped "paper" chip's ▾ popover) drives the
+    # ``paper_chunks`` (the body availability selector) drives the
     # ingested-vs-not split. It's a **global** browse chunk-filter by
     # design — it reuses ``recent_refs(has_chunks=…)`` unscoped to any
-    # one kind, not a paper-only facet, despite riding the "paper" chip.
+    # one kind, not a paper-only facet, despite riding the paper kind.
     # Computed *before* the untried-sort default below, since that default
     # also keys off ``pc``.
     pc = (paper_chunks or "both").strip().lower()
     has_chunks = True if pc == "with" else False if pc == "without" else None
     # The downloads/acquisition queue — ``state=stub`` (paper stubs with a
-    # fetch link) **or** ``paper_chunks=without`` (the "papers" chip's own
+    # fetch link) **or** ``paper_chunks=without`` (the body availability selector's
     # un-ingested popover choice — the URL the operator actually lands on
     # when browsing "papers without chunks", not a separate `state`) —
     # defaults to untried-first when no sort was explicitly chosen: never-
@@ -506,6 +573,8 @@ async def index(
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
     folder_raw = (folder or "").strip()
+    if task == "discover" and "folder" not in request.query_params:
+        folder_raw = _FOLDER_ANY
     folder_id = int(folder_raw) if folder_raw.isdigit() else None
     folder_any = folder_raw == _FOLDER_ANY
     page = max(1, page)
@@ -623,6 +692,7 @@ async def index(
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
+            created=(sort == "created"),
             untried=(sort == "untried"),
             downloadable_first=(state == "stub"),
         )
@@ -683,6 +753,8 @@ async def index(
         # pagination — ``k=`` (appended below) already carries the real
         # filter; this is memory for which preset button lit it up.
         _pager_params.append(("scope", scope))
+    if task:
+        _pager_params.append(("task", task))
     if has_schedule:
         # Re-append the "Schedules" sentinel stripped out above (post-query)
         # so paging preserves it and the active-filter chip still renders.
@@ -691,6 +763,44 @@ async def index(
         _pager_params.append(("k", kk))
     for t in tags:
         _pager_params.append(("tag", t))
+
+    def facet_url(name: str, value: str) -> str:
+        params = [
+            (key, val)
+            for key, val in _pager_params
+            if key != name and (key != "submitted" or not selected_kinds)
+        ]
+        return "/drive?" + urlencode([*params, (name, value)])
+
+    # Chips describe the effective URL, including restrictions inactive during
+    # chunk search. Removing one never drops unrelated kinds/tags/task scope.
+    active_facets = []
+    for name, value, label in (
+        (
+            "sort",
+            sort,
+            {"created": "Newly created", "modified": "Recently modified"}.get(
+                sort, sort
+            ),
+        ),
+        ("folder", folder_raw, "All folders" if folder_any else f"Folder {folder_raw}"),
+        ("state", state, f"Show: {state}"),
+        ("paper_chunks", pc, f"Body: {pc}"),
+        ("since", since, f"Created since {since}"),
+        ("until", until, f"Created until {until}"),
+        ("cited_by", cited_by, f"Cited by {cited_by}"),
+        ("scope", scope, f"Preset: {scope}"),
+    ):
+        if (
+            value
+            and not (name == "state" and value == "all")
+            and not (name == "paper_chunks" and value == "both")
+        ):
+            if (q and name in ("folder", "state", "paper_chunks", "cited_by")) or (
+                not q and name in ("since", "until")
+            ):
+                label += " (browse only)" if q else " (search only)"
+            active_facets.append({"label": label, "url": facet_url(name, "")})
 
     def _page_url(n: int) -> str:
         return "/drive?" + urlencode([*_pager_params, ("page", n)])
@@ -776,6 +886,15 @@ async def index(
             "state": state,
             "paper_chunks": pc,
             "scope": scope,
+            "task": task,
+            "all_kind_defs": all_kind_defs,
+            "discover_kinds": discover_kinds,
+            "active_facets": active_facets,
+            "using_saved_kinds": cookie is not None
+            and not task
+            and not (submitted or url_kinds or scope),
+            "saved_kinds_url": ("/drive" if cookie is not None else None),
+            "folder_url": lambda value: facet_url("folder", value),
             "folder": folder_raw,
             "cited_by": cited_by,
             "cited_by_title": cited_by_title,

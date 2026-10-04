@@ -60,6 +60,12 @@ Round 7: ``hexfold_scene`` (:mod:`precis_se.atomic.generators.hexfold_scene`)
 -- several authored fillet feet on one sheet, planned by
 :func:`precis_se.atomic.generators.authored_foot.plan_scene` and minted
 tethered, with the planner's misses and top-joint caveats as findings.
+Explicit sphere fillets now clear the existing conservative R_min estimate
+as an authored-input policy before construction. This is deliberately not a
+necessary physical bound: omitted room-capped defaults and lids stay unchanged.
+The dedicated theta-p diagnostic reads recorded tethered scene measurements
+in block views, so old provenance is inspectable without regenerating or
+confusing trial/grid placeholders with scene evidence; saved reports survive.
 """
 
 from __future__ import annotations

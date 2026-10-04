@@ -1005,6 +1005,7 @@ class FakeStore(_FakeStoreBase):
         self.search_tags = _kw.get("tags")
         self.search_kinds = list(kinds)
         self.search_offset = offset
+        self.search_sort = _kw.get("sort")
         hits = getattr(self, "cross_kind_hits", None)
         if hits is None:
             pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
@@ -1062,6 +1063,7 @@ class FakeStore(_FakeStoreBase):
         ref_ids=None,
         deleted=False,
         oldest=False,
+        created=False,
         untried=False,
         downloadable_first=False,
         limit=30,
@@ -1093,6 +1095,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
         self.recent_oldest = oldest
+        self.recent_created = created
         self.recent_untried = untried
         self.recent_downloadable_first = downloadable_first
         self.recent_offset = offset

@@ -184,6 +184,30 @@ get(kind="pcb", id="sensor-node@I2C_SCL")  # ONE net: every (refdes, pin) on it
 `#REFDES` is the **hop** — the core traversal move. `@NET` is the membership
 view. Walk the design instance-by-instance instead of ingesting it whole.
 
+### Inspect one connector's actual pads
+
+```python
+get(kind='pcb', id='sensor-node#J1', view='pinout')
+```
+
+One instance only; the selector is required. The ordinary `#J1` hop stays
+the logical pin/net/neighbour view. Pinout reads cached or design-local
+physical pads without fetching or changing the board. It shows original
+pad IDs, distinct indexed rows for duplicate IDs, local/board mm, side,
+rotation, layers and stored pin/net mapping evidence. `explicit-pin-pad`,
+`footprint-pin-map` and `pad-number-identity` identify the mapping source;
+identity fallback is not an independently known signal. `unconnected`
+means a mapped pin without a net; `unclaimed` means no declared pin;
+`ambiguous` retains conflicting pins/nets rather than choosing one.
+
+Local +X is right and +Y up; board coordinates are top-view, rotations CW.
+Bottom-side pads mirror local X before rotation and translation. Unplaced
+instances retain local geometry but have unavailable board coordinates.
+Missing cached/authored geometry gives an explicit nextcall, never guessed
+pads. Catalog cache source versus authored geometry is stated; neither
+verifies the supplier pinout or mating orientation. No provider pull, job,
+catalogue refresh, routing or placement runs from this view.
+
 Every catalog part on the board is also a graph edge: the design `contains`
 one part ref per C-number, with the refdes list and qty on the edge, kept
 current by each `put`. So `get(kind='part', id='C25804')` lists the boards

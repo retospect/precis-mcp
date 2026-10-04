@@ -370,11 +370,28 @@ hemisphere) and every top atom is held to it, like the foot.
 - `top_R` is a request: R is area-matched to the chosen build's atoms, and an
   authored `top_R` picks the `(k, L)` whose area-matched R is nearest.
   `top_fillet` default = `min(1.5 × R_min, R − r)` and at least 2 Å, where
-  `R_min` is the smallest fillet that keeps θp <= 12° counting both
-  curvatures at the shoulder (hoop `1/r` plus `1/R_t`). At `n = 12`:
+  `R_min` is an analytic conservative heuristic using the existing 12° bar
+  and both shoulder curvature magnitudes (hoop `1/r` plus `1/R_t`), not a
+  necessary physical stability bound. At `n = 12`:
   `R_min` 2.70 Å, so the default is 1.5 × 2.70 = 4.05 Å, under the room cap
   `R − r` (4.3 Å at R 9.0). An authored `top_fillet` above that room is
   refused by name.
+
+## Check sphere fillets and read stored top diagnostics
+
+- Explicit sphere `top_fillet` below finite `R_min` is newly refused before
+  planning as a **conservative authored-fillet input policy**. Equality
+  clears only this check; other room/geometry limits remain. Input must be
+  positive finite numeric (no bool/string/NaN/infinity). Omitted room-capped
+  defaults may fall below the heuristic and remain unchanged; lids keep their
+  existing behavior. No clamp or physical stability verdict.
+- `view='block'` adds stored top diagnostics: dedicated
+  `scene.top.theta_p_band`, actual/limit in degrees and pass/miss/unknown
+  from recorded tethered **scene** measurements, with analytic `R_min` in Å
+  separately labelled. This read never regenerates or relaxes; missing,
+  nonfinite or failed-build rows are unknown, never trial/grid zero passes.
+  Existing saved report/findings remain unchanged. New generated reports
+  also carry the dedicated finding (INFO pass/unknown, WARN miss).
 - `plan["top_plans"][name]` stores `k`, `L`, the realised `R` and `fillet`,
   the tethered deviation p95 and θp max, `bars_met`, the relaxed p95, and the
   whole candidate grid. WARNs: `scene.top.R_mismatch` (realised R more than

@@ -311,7 +311,7 @@ def _plan(row: af.TopRow, **kw: Any) -> af.TopPlan:
 def test_r_mismatch_and_relaxed_shape_and_bar_warns_name_their_numbers() -> None:
     row = _row(4, 3, rel=0.92, r=10.07, relaxed_dz=0.9)
     codes = {f.code for f in _top_findings("q", _plan(row), row)}
-    assert codes == {"scene.top.relaxed_shape"}
+    assert codes == {"scene.top.relaxed_shape", "scene.top.theta_p_band"}
     out = _top_findings("q", _plan(row, authored_R=9.0), row)
     mismatch = next(f for f in out if f.code == "scene.top.R_mismatch")
     assert "9" in mismatch.message and "10.07" in mismatch.message
@@ -327,9 +327,14 @@ def test_r_mismatch_and_relaxed_shape_and_bar_warns_name_their_numbers() -> None
     assert "scene.top.bar uses the scene re-measurement" in shape.message
     # within 0.5 A of the request: no mismatch; inside the band: no shape WARN
     ok = _row(4, 2, rel=0.3, r=9.04)
-    assert _top_findings("q", _plan(ok, authored_R=9.3), ok) == []
+    assert {f.code for f in _top_findings("q", _plan(ok, authored_R=9.3), ok)} == {
+        "scene.top.theta_p_band"
+    }
     bad = dataclasses.replace(ok, misses=("theta_p",), theta_p_max=13.2)
-    assert {f.code for f in _top_findings("q", _plan(bad), bad)} == {"scene.top.bar"}
+    assert {f.code for f in _top_findings("q", _plan(bad), bad)} == {
+        "scene.top.bar",
+        "scene.top.theta_p_band",
+    }
 
 
 # ── real builds (slow) ──────────────────────────────────────────────────

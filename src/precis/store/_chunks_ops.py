@@ -1405,7 +1405,8 @@ class ChunkStore:
         via :meth:`search_chunks_multi`), collapses to one hit per ref
         (best-scoring chunk), optionally bounds by ``refs.created_at``
         (``since``/``until``), orders by relevance (default),
-        ``sort='recency'`` (newest first), or ``'oldest'``. ``offset``
+        ``sort='recency'`` / ``'created'`` (newest created first),
+        ``'modified'`` (newest modified first), or ``'oldest'``. ``offset``
         pages. ``exclude_ref_ids`` drops refs from every leg uniformly —
         unlike per-handler cross-kind fan-out
         (``runtime._dispatch_cross_kind``), this runs ONE SQL query over
@@ -1415,7 +1416,7 @@ class ChunkStore:
         if not kinds:
             return []
         _sort = (sort or "relevance").strip().lower()
-        by_date = _sort in ("recency", "oldest")
+        by_date = _sort in ("recency", "oldest", "created", "modified")
         if by_date:
             newest_first = _sort != "oldest"
             # A date sort re-ranks a *relevance-qualified* pool by date, so
@@ -1441,7 +1442,11 @@ class ChunkStore:
                 per_paper=1,  # one best chunk per ref (breadth / triage)
             )
             fused.sort(
-                key=lambda t: (t[1].created_at or _EPOCH, t[1].id or 0),
+                key=lambda t: (
+                    (t[1].updated_at if _sort == "modified" else t[1].created_at)
+                    or _EPOCH,
+                    t[1].id or 0,
+                ),
                 reverse=newest_first,
             )
             return fused[offset : offset + limit]

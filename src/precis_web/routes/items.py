@@ -319,11 +319,13 @@ def _recent_rows(
     ref_ids: list[int] | None = None,
     deleted: bool = False,
     oldest: bool = False,
+    created: bool = False,
     untried: bool = False,
     downloadable_first: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
-    first (``recent_refs`` orders by ``updated_at``, so a re-worked draft
+    first (or most recently created when ``created=True``);
+    ``recent_refs`` otherwise orders by ``updated_at``, so a re-worked draft
     bubbles up; or least-recently-edited first when ``oldest`` — the
     ``sort=oldest`` facet; or untried-attempts-first when ``untried`` — the
     ``sort=untried`` facet / the downloads queue's default), optionally
@@ -357,6 +359,7 @@ def _recent_rows(
         ref_ids=ref_ids,
         deleted=deleted,
         oldest=oldest,
+        created=created,
         untried=untried,
         downloadable_first=downloadable_first,
         limit=_PAGE_SIZE + 1,

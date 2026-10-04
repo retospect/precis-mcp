@@ -2493,6 +2493,7 @@ class RefsMixin:
         ref_ids: list[int] | None = None,
         deleted: bool = False,
         oldest: bool = False,
+        created: bool = False,
         untried: bool = False,
         downloadable_first: bool = False,
         limit: int = 30,
@@ -2528,6 +2529,8 @@ class RefsMixin:
         id (DOI/arXiv) ahead of the rest under any sort, so S2-only
         stubs (fetchable but no clickable PDF) sink to the tail —
         reorders only, row set (and :meth:`count_recent_refs`) unchanged.
+        ``created=True`` orders by creation time instead of modification,
+        with the ref id as a deterministic tie-break.
         Empty ``kinds`` returns nothing; ``offset`` pages past the first
         window.
         """
@@ -2577,13 +2580,14 @@ class RefsMixin:
                 ).fetchall()
             return [_row_to_ref(r) for r in rows]
         direction = "ASC" if oldest else "DESC"
+        date_column = "created_at" if created else "updated_at"
         params.append(limit)
         params.append(offset)
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
                 f"WHERE {' AND '.join(clauses)} "
-                f"ORDER BY {dl_rank}r.updated_at {direction}, r.ref_id {direction} "
+                f"ORDER BY {dl_rank}r.{date_column} {direction}, r.ref_id {direction} "
                 "LIMIT %s OFFSET %s",
                 params,
             ).fetchall()

@@ -95,9 +95,24 @@ block per answered turn tagged applied / proposal / rejected / no-op; the
 revision's ``turn`` is ``<conv-slug>~<block ordinal>``.
 
 **Drive (`/drive`)** is the unified seek+manage surface:
+Discover (``task=discover``; also the cookie-free landing) shows newly created
+content/work across folders, including findings. ``sort=created|modified``
+names the timestamp consistently in browse/search; legacy ``recency`` retains
+its original branch-specific order. A saved kind cookie is honored on bare
+visits and labelled visibly; Discover/reset bypasses it without overwriting it.
+This keeps personal preferences while making broad discovery explicit rather
+than silently hiding findings. Search, effective filter chips and reset stay
+visible; a native details picker contains a searchable full kind roster and
+the shared filters. Hidden/closed kind options stay successful form controls.
+Deferred filter submission captures the form before scheduling: tag chips and
+suggestions destroy their own Alpine ``x-for`` trigger when selected, so its
+element-bound ``$root`` cannot be resolved later from the timer.
+Operational/stateless kinds remain reachable without treating kind as author
+provenance. Return's personal history and Showcase's curated collection are
+subsequent slices; neither has a placeholder workflow here.
 ``routes/drive.py::index`` runs cross-kind chunk search (``q=``, kind/tag
 facets, ``sort=relevance|recency|oldest|untried``, ``state=stub|deleted``)
-over the folder tree + CRUD. No-query landing lists unfiled refs by
+over the folder tree + CRUD. Legacy no-query URLs list unfiled refs by
 ``updated_at``; ``folder=*`` ("Anywhere") drops that filter for a
 whole-kind pivot (Status's "Refs by kind" chips land here). An explicit
 ``k=`` beats the ``items_kinds`` cookie, but only a form submit

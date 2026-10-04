@@ -13,7 +13,11 @@ Pure folds over the graph dict the store hands up
 is now backed by :mod:`precis.pcb.drc` (geometric DRC on realized copper,
 L5); the graph-shape half of what ``drc_lite`` checked (unconnected pins,
 dangling nets) lives in :mod:`precis.pcb.ir`'s graph-feasibility functions
-instead. This module keeps ratsnest/crossings/proximity/measures only.
+instead. This module also inspects pinout without changing the graph. It
+walks stored physical pads, not synthesized IR pins: duplicate and unclaimed
+lands are real, while inferred bounds cannot prove connector numbering.
+Positions reuse padplace's transform; pin-to-pad and footprint names remain
+distinct mapping evidence.
 """
 
 from __future__ import annotations
@@ -22,7 +26,144 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from precis.pcb import padplace
 from precis.pcb.geom import Point, dist
+
+
+def _pinout_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def pinout(
+    instance: dict[str, Any],
+    footprint: dict[str, Any],
+    pins: list[dict[str, Any]],
+    layers: list[str],
+) -> dict[str, Any]:
+    """One row per stored physical pad, with independent mapping evidence.
+
+    Missing placement never becomes an origin; duplicate IDs never become
+    one physical row. No input is changed or missing geometry inferred.
+    """
+    pads = footprint.get("pads") or []
+    pin_map = footprint.get("pin_map") or {}
+    placed = all(_pinout_number(instance.get(k)) is not None for k in ("x", "y"))
+    placed = placed and _pinout_number(instance.get("rot", 0) or 0) is not None
+    bottom = padplace.is_bottom_instance(instance)
+    duplicates: dict[str, list[int]] = {}
+    for index, raw in enumerate(pads, 1):
+        if isinstance(raw, dict) and raw.get("number") is not None:
+            duplicates.setdefault(str(raw["number"]), []).append(index)
+    rows = []
+    matched: set[str] = set()
+    for index, raw in enumerate(pads, 1):
+        pad = raw if isinstance(raw, dict) else {}
+        number = str(pad["number"]) if pad.get("number") is not None else None
+        entry = pin_map.get(number)
+        named = (
+            isinstance(entry, dict)
+            and entry.get("name") is not None
+            and str(entry["name"]) != number
+        )
+        label = padplace.pad_label(pad, pin_map) if number is not None else None
+        bindings: dict[str, dict[str, Any]] = {}
+        notes = []
+        for pin in pins:
+            name = str(pin["pin"])
+            explicit = str(pin["pad"]) if pin.get("pad") is not None else None
+            sources = []
+            if number is not None and explicit == number:
+                sources.append("explicit-pin-pad")
+                if named and name != label:
+                    notes.append(
+                        f"explicit {name} disagrees with footprint name {label}"
+                    )
+            if label is not None and name == label:
+                sources.append("footprint-pin-map" if named else "pad-number-identity")
+                if explicit is not None and explicit != number:
+                    notes.append(
+                        f"{name} explicitly binds pad {explicit}, not {number}"
+                    )
+            if not sources:
+                continue
+            matched.add(name)
+            binding = bindings.setdefault(
+                name, {"pin": name, "nets": [], "sources": []}
+            )
+            binding["sources"] = sorted(set(binding["sources"] + sources))
+            if pin.get("net") is not None:
+                binding["nets"] = sorted(set(binding["nets"] + [str(pin["net"])]))
+        candidates = [bindings[k] for k in sorted(bindings)]
+        nets = sorted({net for b in candidates for net in b["nets"]})
+        state = (
+            "ambiguous"
+            if notes or len(candidates) > 1 or len(nets) > 1
+            else "connected"
+            if nets
+            else "unconnected"
+            if candidates
+            else "unclaimed"
+        )
+        lx, ly = _pinout_number(pad.get("x")), _pinout_number(pad.get("y"))
+        valid = bool(number) and lx is not None and ly is not None
+        bx = by = None
+        if valid and placed:
+            bx, by = padplace.place_pad_point(pad, instance)
+            if not math.isfinite(bx) or not math.isfinite(by):
+                bx = by = None
+        if not valid:
+            notes.append("missing pad number or missing/nonfinite local center")
+        layer = str(pad.get("layer") or "F.Cu")
+        board_layers = (
+            list(layers)
+            if pad.get("drill")
+            else [padplace._effective_layer(layer, bottom=bottom)]
+        )
+        rows.append(
+            {
+                "pad_index": index,
+                "pad_number": number,
+                "local_x_mm": lx,
+                "local_y_mm": ly,
+                "board_x_mm": bx,
+                "board_y_mm": by,
+                "pad_layer": layer,
+                "board_layers": board_layers,
+                "pad_rotation_deg": _pinout_number(pad.get("rot", 0) or 0),
+                "footprint_pin": label,
+                "pin_names": sorted(bindings),
+                "net_names": nets,
+                "mapping_sources": candidates,
+                "mapping_state": state,
+                "duplicate_indices": duplicates.get(number or "", [])
+                if len(duplicates.get(number or "", [])) > 1
+                else [],
+                "notes": sorted(set(notes)),
+                "geometry": "available" if valid else "invalid_geometry",
+            }
+        )
+    numbers = set(duplicates)
+    unmatched = [
+        {
+            "pin": str(p["pin"]),
+            "pad": p.get("pad"),
+            "net": p.get("net"),
+            "reason": "explicit pad has no geometry"
+            if p.get("pad") is not None and str(p["pad"]) not in numbers
+            else "no physical pad mapping",
+        }
+        for p in pins
+        if str(p["pin"]) not in matched
+        or (p.get("pad") is not None and str(p["pad"]) not in numbers)
+    ]
+    return {"rows": rows, "unmatched": unmatched, "placed": placed}
+
 
 # ── measure direction ────────────────────────────────
 # pcb_measures.direction: min|max|target|keep_above|keep_below. It decides

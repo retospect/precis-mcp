@@ -12,6 +12,12 @@ role protocol from :mod:`precis.store.protocols` (import-light, no
 cycles) instead of ``Store`` or ``Any``. ``Hub.store`` is typed
 ``Store | None``; ``Hub.live_store`` narrows it for store-backed paths.
 
+Drive date ordering uses existing ref timestamps: ``recent_refs(created=True)``
+orders browse by creation; cross-kind chunk search accepts ``created`` and
+``modified`` alongside legacy ``recency``. Explicit new names avoid changing
+existing callers' modification-first browse or creation-first search order;
+both new orders use ref id ties and require no derived clock or schema.
+
 Decomposition (in progress, codereview-store-decomposition): the
 stateful pool/tx lifecycle lives in :class:`precis.store.core.StoreCore`;
 domain sub-stores hold a core and are reached as composed properties —

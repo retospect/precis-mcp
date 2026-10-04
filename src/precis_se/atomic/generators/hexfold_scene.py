@@ -31,6 +31,12 @@ WARNs: ``scene.top.bar`` (a bar missed on the scene), ``scene.top.R_mismatch``
 (an authored ``top_R`` more than 0.5 A from the realised R) and
 ``scene.top.relaxed_shape`` (relaxed p95 over the 0.5 A band; the stored scene
 stays the tethered one).
+``scene.top.theta_p_band`` separately shows the measured scene theta-p versus
+the existing bar, including unknown rather than failed-candidate zero passes.
+An explicit sphere fillet below the conservative R_min estimate is a new
+authored-input policy refusal before planning, not a physical impossibility
+claim. Defaults and lids keep their existing rules. Block reads render stored
+scene diagnostics separately without changing old reports or running geometry.
 
 **Plan table.** The default tops are measured once and checked in
 (:data:`~precis_se.atomic.generators.authored_foot.TOP_TABLE_PATH`): a sphere
@@ -62,20 +68,25 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from typing import Any
+import math
+from typing import Any, TypeGuard
 
 from hexfold.build import build
+from hexfold.lattice import tube_radius
 from hexfold.report import Finding, HexfoldError, Report, Severity
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
 from precis_se.atomic.generators.authored_foot import (
     RELAXED_P95_A,
     TABLE_LID_N,
     TABLE_SPHERE_N,
+    THETA_P_MAX_DEG,
     SceneFeature,
     ScenePlan,
     TopPlan,
     TopRow,
+    check_authored_sphere_fillet,
     plan_scene,
+    r_min_fillet,
     table_lid_fillet,
     top_tabled,
 )
@@ -99,7 +110,7 @@ _LID_CANDIDATES = 4
 _CANDIDATE_BUDGET = 16
 
 
-def _is_int(value: object) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
@@ -179,13 +190,6 @@ def _normalize(
     if not _is_number(k_tether):
         raise GeneratorError(f"k_tether must be a number; got {k_tether!r}")
     k_tether = float(k_tether)
-    live = [
-        f
-        for f in features
-        if f.top in ("sphere", "lid")
-        and (f.top == "sphere" or f.top_fillet is not None)
-        and not top_tabled(f.n, f.top, f.top_fillet, k_tether)
-    ]
     lid_keys = ", ".join(f"{table_lid_fillet(n)} at n={n}" for n in TABLE_LID_N)
     tabled = (
         "tabled tops (a sphere with the default fillet at n="
@@ -206,6 +210,18 @@ def _normalize(
             "op took 476 s, past a client timeout. Put one sphere scene op per "
             "put."
         )
+    for f in all_spheres:
+        try:
+            check_authored_sphere_fillet(f.n, f.top_fillet, f.top_R)
+        except ValueError as exc:
+            raise GeneratorError(f"{f.name}: {exc}") from exc
+    live = [
+        f
+        for f in features
+        if f.top in ("sphere", "lid")
+        and (f.top == "sphere" or f.top_fillet is not None)
+        and not top_tabled(f.n, f.top, f.top_fillet, k_tether)
+    ]
     spheres = [f.name for f in live if f.top == "sphere"]
     lids = {(f.n, f.top_fillet) for f in live if f.top == "lid"}
     cost = _SPHERE_CANDIDATES * len(spheres) + _LID_CANDIDATES * len(lids)
@@ -227,11 +243,122 @@ def _normalize(
 _R_MISMATCH_A = 0.5  # an authored top_R this far from the realised R is flagged
 
 
+def _finite_number(value: object) -> TypeGuard[int | float]:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _theta_p_band_finding(
+    name: str, value: object, error: object = "", misses: object = ()
+) -> Finding:
+    """Dedicated scene measurement; failed candidate zeros are not evidence."""
+    failed = bool(error) or (isinstance(misses, list | tuple) and "build" in misses)
+    if _finite_number(value) and value >= 0 and not failed:
+        actual = f"{value!r} deg"
+        status = "pass" if value <= THETA_P_MAX_DEG else "miss"
+    else:
+        actual, status = "unknown", "unknown"
+    return Finding(
+        "scene.top.theta_p_band",
+        Severity.WARN if status == "miss" else Severity.INFO,
+        f"{name}: measured theta-p {actual}; limit <= {THETA_P_MAX_DEG:g} deg; "
+        f"{status} (tethered scene measurement; not a stability verdict)",
+        where=name,
+    )
+
+
+def stored_top_diagnostics(record: dict[str, Any]) -> list[str]:
+    """Read stored scene rows without planning, measuring, or rewriting reports.
+
+    The table/trial/grid are deliberately not fallbacks: they concern different
+    coordinates, and failed candidates use zero placeholders. Analytic policy
+    comparisons stay separate from measured theta-p and physical stability.
+    """
+    lines = ["", "### authored top diagnostics (stored provenance)"]
+    plan = record.get("plan")
+    tops = plan.get("top_plans") if isinstance(plan, dict) else None
+    if not isinstance(tops, dict) or not tops:
+        return [
+            *lines,
+            "measured theta-p: unknown (no recorded top scene measurements)",
+        ]
+    scene = record.get("scene")
+    raw_features = scene.get("features") if isinstance(scene, dict) else None
+    features = {
+        f["name"]: f
+        for f in (raw_features if isinstance(raw_features, list) else [])
+        if isinstance(f, dict) and isinstance(f.get("name"), str)
+    }
+    for name, raw in sorted(tops.items(), key=lambda item: str(item[0])):
+        top = raw if isinstance(raw, dict) else {}
+        row = top.get("scene")
+        row = row if isinstance(row, dict) else {}
+        finding = _theta_p_band_finding(
+            str(name), row.get("theta_p_max"), row.get("error"), row.get("misses", ())
+        )
+        lines.append(
+            f"{finding.code}: {finding.message}; recorded tethered scene provenance "
+            f"plan.top_plans[{name!r}].scene.theta_p_max"
+        )
+        feature = features.get(name, {})
+        n = feature.get("n")
+        if top.get("kind") == "lid" and feature.get("top") == "lid":
+            lines.append(f"{name}: analytic sphere R_min policy not applied to lids")
+            continue
+        if (
+            top.get("kind") != "sphere"
+            or feature.get("top") != "sphere"
+            or not _is_int(n)
+            or n < 12
+            or n % 6
+        ):
+            lines.append(
+                f"{name}: analytic conservative R_min: unknown (missing/invalid sphere provenance)"
+            )
+            continue
+        rt = tube_radius(n, 0)
+        minimum = r_min_fillet(rt)
+        applied = top.get("fillet")
+        authored = top.get("authored_fillet", feature.get("top_fillet"))
+        input_note = (
+            f"authored {authored:g} A"
+            if _finite_number(authored)
+            else "omitted/default or unknown authored fillet"
+        )
+        comparison = "unknown"
+        if _finite_number(applied) and math.isfinite(minimum):
+            comparison = (
+                "below policy bound"
+                if applied < minimum
+                else "at-or-above policy bound"
+            )
+        applied_note = f"{applied:g} A" if _finite_number(applied) else "unknown"
+        bound_note = (
+            f"{minimum!r} A"
+            if math.isfinite(minimum)
+            else "nonfinite (no finite policy minimum)"
+        )
+        lines.append(
+            f"{name}: analytic conservative R_min {bound_note}; tube radius {rt:g} A; "
+            f"theta-p limit {THETA_P_MAX_DEG:g} deg; authored-input policy, not a necessary "
+            f"physical stability bound; {input_note}; stored applied fillet {applied_note}, {comparison}"
+        )
+    return lines
+
+
 def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
     """The WARNs of an authored top (a sphere or a rounded lid): the five
     bars as re-measured on the scene, an authored ``top_R`` the candidates
     could not meet, and the relaxed-shape band."""
-    out: list[Finding] = []
+    out: list[Finding] = [
+        _theta_p_band_finding(
+            name, scene_row.theta_p_max, scene_row.error, scene_row.misses
+        )
+    ]
     if scene_row.misses:
         out.append(
             Finding(
