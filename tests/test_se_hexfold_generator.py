@@ -361,7 +361,7 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "bonds": "1f4e1bd69c50d4442ee7ecb75d8db9b512080a85ab6146929642ad01b977c6f2",
         "measures": "5285d138cf0f585d6d86e922b040fd45ad9958b950d878544d43a18f30791f33",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
-        "provenance": "0ee0ed53bfd7b64b379c3e420d6db60924dfd02e1c54db3301cf9949196834a9",
+        "provenance": "375a203e3556da77b0f387b83d1c6f07a55cc873076e07ec007a956a0218b255",
     },
     "nanobud": {
         "n_atoms": 460,
@@ -370,7 +370,7 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "bonds": "cfe212fc407a8934b362a5fa64bbc027c5f73767b42249726a83dcca719389f4",
         "measures": "4cdf0586c43c1a10762d94da35c5b44e2e23ce81a69351aa3b48986473680879",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
-        "provenance": "ea04c0818b2031d9a3b2725568fa6a1d2df06b4e6a575fb7e1be7180a3c5eafb",
+        "provenance": "f5c2305a3cfcafa6422836bb0449102f285a64c9bdfb2121c2c5a6461b262481",
     },
     "sheet": {
         "n_atoms": 240,
@@ -379,7 +379,7 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "bonds": "a0ad85716b042fa848d77ffd99d507d62eee86cb28c77027fe79e596c07e972a",
         "measures": "86b0d23f4b3e9be3b6bfbe8698d430367fa965924b016ab749b06610399c5ea8",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
-        "provenance": "cbbe71cea2fca41400e01bc952ce9d67a396679ead1059f60016a4fcfc480499",
+        "provenance": "19f0f9b03c2d75407dff21a752358933c4712eac441ed9e4778d25814f72e329",
     },
     "pillar": {
         "n_atoms": 972,
@@ -388,7 +388,7 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "bonds": "d6a47a0cc4d34c5f761b724db4c0255ece9a248685fa426f3864a389ef4b5240",
         "measures": "c915f64651e03e526dc153dd76a67155f9d9807a77733f248b0f7bd4fc269265",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
-        "provenance": "5ab02a432ee45bb27273e1c9ac0162e15a773b70f4858e7770acee15aff57d10",
+        "provenance": "b9896deade5996aed763ab5b65fc1db3b60792d22f3933bcaa3a484398e29d67",
     },
     "sheet_tube_cap": {
         "n_atoms": 350,
@@ -397,7 +397,7 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "bonds": "9ca866d58dc55d22061d5e38e0c61355189e5e1a1c6f4fda4d3096d429c083ea",
         "measures": "ad0f997d7453cc1d15f375c85d154fe856c88e55d7c5dd829bcf5d0df030a590",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
-        "provenance": "4d982d52a749f42a974ea412d3f6045bb527228a640a97f5444c1d577c72b246",
+        "provenance": "beb95cc26ac5a43ef63ca2e92e4ebd76fd6baf43b2563d7d34e5169d72db6038",
     },
 }
 

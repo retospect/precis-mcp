@@ -117,11 +117,13 @@ waited on happened 09-29 — note at the bottom)
            0.5 Å; WARN `scene.top.R_mismatch`;
          - `geom.summary` counts every corner past tolerance
            (`bond_n_over`, `angle_n_over`); hexfold geometry reports from
-           before this change list at most 10 entries per code and carry
-           no `n_over` totals (no version bump: provenance is golden-pinned);
-         - one `top: "sphere"` per call (~95 s each, under ~2 min); the
-           per-n plan table in the next cycle lifts it; rounded lids are
-           not capped;
+           before hexfold 0.3.1 list at most 10 entries per code and carry
+           no `n_over` totals (0.3.1 marks it; the golden provenance pin
+           moved with the version only);
+         - cost ceilings until the per-n plan table in the next cycle
+           lifts them: one `top: "sphere"` per call (~95 s), a sphere only
+           to n=12 (n=24 plans ~100 s alone), and 16 candidate builds per
+           call (sphere 9, each distinct `(n, top_fillet)` rounded lid 4);
          - not yet on prod; the n=12 washer ball relaxes ~0.9 Å flatter, so
            the relaxed-shape WARN fires (per-annulus rows are the fix);
        - cycle 2: θp finding plus its band and the R_min refusal on the

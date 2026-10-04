@@ -129,7 +129,7 @@ ERROR (a `bond`/`terminate` names an atom or port that no longer exists)
 (`geom.summary` also counts every bond/corner past tolerance, `bond_n_over`
 /`angle_n_over`, beside rms and max: the findings list stays capped at ten, and
 the stored report text of plain `hexfold` builds carries the count; geometry
-reports from before this change list at most 10 entries per code and carry no
+reports from before hexfold 0.3.1 list at most 10 entries per code and carry no
 `n_over` totals) ·
 `geom.clash` ERROR under 1.0 Å (overlapping atoms), WARN from 1.0 to
 1.8 Å (two non-bonded atoms in the stick geometry, both instances named;
@@ -385,13 +385,16 @@ hemisphere) and every top atom is held to it, like the foot.
   authored surface; over 0.5 Å (the washer sphere on `n = 12` measures ~0.9 Å
   and drops the pole ~0.9 Å under the stick relax; MACE-MP small shows ~2 Å)
   the block carries `scene.top.relaxed_shape`: "tethered geometry stored;
-  relaxes ~X Å flatter at the pole".
+  relaxes ~X Å flatter at the pole". It is judged on the planner's bare
+  trial tube (no sheet); `scene.top.bar` uses the scene re-measurement.
 - Cost: one sphere top is about 95 s for `n = 12` (9 candidates planned on
-  bare tubes, ~35 s, then the scene relax; `n = 24` plans in ~100 s alone); a
-  rounded lid about 20 s. A call takes **one** `top: "sphere"` feature at most
-  (refused by name otherwise; keeps a call under ~2 min so a client timeout
-  does not lose the result; the per-n plan table in the next cycle lifts it).
-  Rounded lids are not capped.
+  bare tubes, ~35 s, then the scene relax); a rounded lid about 20 s (4
+  candidates). Until the per-n plan table lands a call is refused before any
+  planning if: it has more than one `top: "sphere"`; a sphere has `n > 12`
+  (`n = 24` plans in ~100 s alone); or its candidate budget exceeds 16
+  (sphere 9, each distinct `(n, top_fillet)` rounded lid 4, identical lids
+  counted once). So sphere + one lid is 13, four distinct lids 16; sphere +
+  two lids 17 and five lids 20 are refused, stating the count.
 - Grammar (the CAD-style spec layer maps 1:1): `ball_on(R)` ↔ `top: sphere,
   top_R`; `round(r)` ↔ `top_fillet`; `lid_on` + `round(r)` ↔ `top: lid,
   top_fillet`.

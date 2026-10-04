@@ -70,6 +70,13 @@ _PARAM_KEYS = ("sheet", "features", "extra", "k_tether")
 _FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
 _MAX_SPHERES = 1  # sphere tops per call: ~95 s each, see _normalize
+# Cost ceilings until the per-n plan table lands (see _normalize): a sphere
+# plans 9 candidate builds, a rounded lid 4 (identical (n, top_fillet) lids
+# are planned once and cached), and a call is budgeted 16 in total.
+_MAX_SPHERE_N = 12
+_SPHERE_CANDIDATES = 9
+_LID_CANDIDATES = 4
+_CANDIDATE_BUDGET = 16
 
 
 def _is_int(value: object) -> bool:
@@ -155,7 +162,37 @@ def _normalize(
             f"({spheres}). Each sphere top plans 9 candidates, about 95 s, and a "
             "call is kept under about 2 minutes so a client timeout does not lose "
             "the result; the per-n plan table (next cycle) lifts the limit. Rounded "
-            "lids (top: 'lid' with top_fillet) are not capped."
+            "lids (top: 'lid' with top_fillet) are bounded by the call's candidate "
+            f"budget ({_CANDIDATE_BUDGET})."
+        )
+    # an n that is not a multiple of 6 is left to the planner's own refusal,
+    # which names the real reason
+    big = sorted(
+        f"{f.name} (n={f.n})"
+        for f in features
+        if f.top == "sphere" and f.n > _MAX_SPHERE_N and f.n % 6 == 0
+    )
+    if big:
+        raise GeneratorError(
+            f"hexfold_scene plans a top: 'sphere' only up to n={_MAX_SPHERE_N} for "
+            f"now; got {big}. n=24 plans in about 100 s alone (9 candidates, each a "
+            "full build and relax), so a sphere above n=12 would outlast a client "
+            "timeout; the per-n plan table (next cycle) lifts the ceiling."
+        )
+    lids = {
+        (f.n, f.top_fillet)
+        for f in features
+        if f.top == "lid" and f.top_fillet is not None
+    }
+    cost = _SPHERE_CANDIDATES * len(spheres) + _LID_CANDIDATES * len(lids)
+    if cost > _CANDIDATE_BUDGET:
+        raise GeneratorError(
+            f"hexfold_scene budgets {_CANDIDATE_BUDGET} candidate builds per call; "
+            f"this scene needs {cost} ({len(spheres)} sphere top x "
+            f"{_SPHERE_CANDIDATES} + {len(lids)} distinct rounded lid(s) x "
+            f"{_LID_CANDIDATES}; lids with the same n and top_fillet are planned "
+            "once). Split the scene across calls; the per-n plan table (next "
+            "cycle) lifts the budget."
         )
     extra = params.get("extra", "")
     if not isinstance(extra, str):
@@ -201,7 +238,9 @@ def _top_findings(name: str, tp: TopPlan, scene_row: TopRow) -> list[Finding]:
                 Severity.WARN,
                 f"{name}: a stick-model relax with the tether off leaves the "
                 f"{tp.kind} top {tp.chosen.relaxed_p95:.2f} A (p95) from the "
-                f"authored surface, band {RELAXED_P95_A:g} A; tethered geometry "
+                f"authored surface, band {RELAXED_P95_A:g} A (judged on the "
+                "planner's bare trial tube, no sheet; scene.top.bar uses the "
+                "scene re-measurement); tethered geometry "
                 f"stored; relaxes ~{tp.chosen.relaxed_dz:.1f} A flatter at the "
                 "pole in the stick model. A lower bound: the n=12 sphere probe "
                 "under MACE-MP and xTB moved about 2 A at the pole",

@@ -317,6 +317,9 @@ def test_r_mismatch_and_relaxed_shape_and_bar_warns_name_their_numbers() -> None
     assert "A lower bound" in shape.message and "MACE-MP and xTB" in shape.message
     assert "about 2 A at the pole" in shape.message
     assert "~0.9 A flatter at the pole" in shape.message
+    # judged on the planner's bare trial tube, unlike scene.top.bar
+    assert "planner's bare trial tube, no sheet" in shape.message
+    assert "scene.top.bar uses the scene re-measurement" in shape.message
     # within 0.5 A of the request: no mismatch; inside the band: no shape WARN
     ok = _row(4, 2, rel=0.3, r=9.04)
     assert _top_findings("q", _plan(ok, authored_R=9.3), ok) == []
@@ -489,3 +492,81 @@ def test_two_sphere_tops_in_one_call_are_refused_before_any_planning(
     lid = {**_SPHERE, "name": "r", "at": [5, 5], "top": "lid", "top_fillet": 3.0}
     with pytest.raises(AssertionError, match="planning started"):
         GENERATORS["hexfold_scene"]({"sheet": [40, 30], "features": [_SPHERE, lid]})
+
+
+def _calls_plan_scene(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Replace ``plan_scene`` with a recorder that stops the call there: the
+    cost ceilings are checked in ``_normalize``, before any planning."""
+    from precis_se.atomic.generators import hexfold_scene as mod
+
+    seen: list[int] = []
+
+    def stop(*_a: object, **_k: object) -> object:
+        seen.append(1)
+        raise AssertionError("planning started")
+
+    monkeypatch.setattr(mod, "plan_scene", stop)
+    return seen
+
+
+def _lid(i: int, fillet: float, n: int = 12) -> dict[str, Any]:
+    return {
+        "name": f"l{i}",
+        "at": [5 + 4 * i, 5],
+        "n": n,
+        "radius": 5.0,
+        "tube_len": 3,
+        "top": "lid",
+        "top_fillet": fillet,
+    }
+
+
+def _call(features: list[dict[str, Any]]) -> object:
+    return GENERATORS["hexfold_scene"]({"sheet": [60, 30], "features": features})
+
+
+def test_sphere_above_n12_is_refused_before_planning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _calls_plan_scene(monkeypatch)
+    with pytest.raises(
+        GeneratorError, match=r"only up to n=12.*n=24.*100 s.*plan table"
+    ):
+        _call([{**_SPHERE, "n": 18}])
+    assert not seen
+
+
+@pytest.mark.parametrize(
+    ("features", "cost"),
+    [
+        ([_SPHERE, _lid(1, 3.0)], 13),
+        ([_SPHERE, _lid(1, 3.0), _lid(2, 4.0)], 17),
+        ([_lid(i, 2.0 + i) for i in range(4)], 16),
+        ([_lid(i, 2.0 + i) for i in range(5)], 20),
+    ],
+    ids=["sphere+1lid", "sphere+2lids", "4lids", "5lids"],
+)
+def test_candidate_budget_counts_sphere_9_and_distinct_lids_4(
+    monkeypatch: pytest.MonkeyPatch, features: list[dict[str, Any]], cost: int
+) -> None:
+    seen = _calls_plan_scene(monkeypatch)
+    if cost <= 16:  # accepted: reaches planning
+        with pytest.raises(AssertionError, match="planning started"):
+            _call(features)
+        assert seen
+    else:
+        with pytest.raises(
+            GeneratorError, match=rf"budgets 16 candidate builds.*needs {cost}"
+        ):
+            _call(features)
+        assert not seen
+
+
+def test_identical_lids_count_once_toward_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _calls_plan_scene(monkeypatch)
+    same = [_lid(i, 3.0) for i in range(6)]  # one distinct lid: 4
+    with pytest.raises(AssertionError, match="planning started"):
+        _call([_SPHERE, *same])
+    assert seen
