@@ -414,20 +414,19 @@ def _crossref_query(raw_text: str, *, mailto: str = "") -> list[dict[str, Any]] 
     touched — the caller leaves ``match_conf`` NULL instead, so a later
     attempt retries it.
     """
-    from precis.utils.http import http_client, retry_transient
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
     params: dict[str, Any] = {"query.bibliographic": raw_text, "rows": 2}
     if mailto:
         params["mailto"] = mailto
 
+    # No retry_transient here: this loop already retries a connect failure
+    # with backoff, and nesting the two doubles the worst-case hold.
     with http_client(timeout=_CROSSREF_TIMEOUT_S) as client:
         for attempt in range(_CROSSREF_RETRY_MAX_ATTEMPTS):
             try:
-                resp = retry_transient(
-                    lambda: safe_get(client, _CROSSREF_BASE, params=params),
-                    host=_CROSSREF_BASE,
-                )
+                resp = safe_get(client, _CROSSREF_BASE, params=params)
             except Exception as exc:
                 log.warning("bib_parse: crossref request failed: %r", exc)
                 if attempt + 1 < _CROSSREF_RETRY_MAX_ATTEMPTS:

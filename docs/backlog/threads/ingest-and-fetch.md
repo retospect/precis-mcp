@@ -24,7 +24,26 @@ states that count a paper as usable when it is not, then metadata.
   anon ref when the fetched file differed from the stored one, because
   `add.py::_valid_fold_stub` required `pdf_sha256 IS NULL`; it now also
   accepts a live ref with no body chunks. A ref with a sha and a body
-  still refuses a different file (unchanged). After deploy: re-ingest the 8dc037e4 PDF into ref 202942, merge anon 465241
+  still refuses a different file (unchanged). Round-6 review follow-up,
+  same round: (a) the fold is refused when the fetched file's journal
+  DOI differs from the target's (preprint-server DOIs exempt;
+  `add.py::_doi_conflicts`). With no DOI on the fetched file there is
+  still no identity check, the same trust a `pdf_sha256 IS NULL` stub
+  fold always had. A refused fold into a sha-NULL stub can still be
+  folded back by the filename reconcile (`_reconcile_orphan_stub`,
+  unchanged). (b) Two folds into one ref are serialised by a
+  `FOR NO KEY UPDATE` row lock in `register_aliases_and_maybe_upgrade`.
+  Before it, chunk inserts under `ON CONFLICT (ref_id, ord) DO NOTHING`
+  could interleave two files. Worst-case hold per item on connect
+  failures, counting 2T per connect attempt (the TCP plus TLS budget,
+  the same before and after the safe_fetch fallback):
+  - bib_parse: 123 s, 3 attempts × 40 s + 3 s backoff. It no longer
+    nests `retry_transient`, which would have made it 252 s.
+  - DOI validity: 63 s, 2 × 30 s + 3 s (not nested).
+  - SI Crossref relation leg: 43 s, 2 × 20 s + 3 s, inside the 120 s SI
+    pass budget.
+  - Habanero sites: 2 × the requests timeout + 3 s.
+  After deploy: re-ingest the 8dc037e4 PDF into ref 202942, merge anon 465241
   into it, and triage anons 464753, 464754, 464755, 464821 and 465135.
   As of 06:48Z, 47 queued re-fetches had not run.
 - Next: item 3 policy pass on the still-bodiless remainder, then close

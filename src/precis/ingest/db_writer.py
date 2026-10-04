@@ -568,6 +568,18 @@ def register_aliases_and_maybe_upgrade(
 
     Caller owns the transaction — this function does not COMMIT.
     """
+    # ── 0. Serialise upgrades of one ref. The ingest claim is per
+    # pdf_sha256, so two *different* files for the same ref (two sidecar
+    # folds, or a fold racing a re-drop) both reach here; without a row
+    # lock both see "no body" and their chunks interleave under
+    # ON CONFLICT (ref_id, ord) DO NOTHING. NO KEY UPDATE, not UPDATE: it
+    # must not conflict with the KEY SHARE locks the ref_identifiers FK
+    # inserts below take, or two concurrent ingests deadlock. The second
+    # waiter's has-body check then runs after the first commits.
+    conn.execute(
+        "SELECT 1 FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+        (existing_ref_id,),
+    )
     # ── 1. Always register the new pdf_sha256 / content_hash aliases.
     if paper.pdf_sha256:
         conn.execute(

@@ -772,11 +772,11 @@ class TestSidecarFoldBodilessWithSha:
             ).fetchone()[0]
         return int(refs), int(body)
 
-    def _ingest_pdf(self, store, tmp_path: Path, ref_id: int):
+    def _ingest_pdf(self, store, tmp_path: Path, ref_id: int, doi: str | None = None):
         pdf = tmp_path / "new.pdf"
         pdf.write_bytes(b"%PDF-1.4 fetched-new")
         sha = hashlib.sha256(b"%PDF-1.4 fetched-new").hexdigest()
-        anon = _fixture_paper(paper_id="anonbl01", doi=None, pdf_sha256=sha)
+        anon = _fixture_paper(paper_id="anonbl01", doi=doi, pdf_sha256=sha)
         with patch("precis.ingest.pipeline.extract_paper", return_value=anon):
             result = precis_add(PdfInput(pdf_path=pdf, fold_ref_id=ref_id), store=store)
         return result, sha
@@ -810,6 +810,66 @@ class TestSidecarFoldBodilessWithSha:
             }
         assert owners == {ref.id}
         assert registered == {self.OLD_SHA, sha}
+
+    def test_conflicting_journal_doi_refuses_fold(self, store, tmp_path: Path):
+        # The fetched file names a different journal DOI than the target:
+        # wrong paper, so no chunks land on the target.
+        ref = self._seed(store, "bodiless3")
+        result, _ = self._ingest_pdf(store, tmp_path, ref.id, doi="10.1000/other-paper")
+        assert isinstance(result, IngestResult)
+        assert result.ref_id != ref.id
+        assert self._counts(store, ref.id)[1] == 0
+
+    @pytest.mark.parametrize(
+        "doi", ["10.48550/arXiv.2410.14854", "10.1000/BODILESS-SEED"]
+    )
+    def test_preprint_or_same_doi_still_folds(self, store, tmp_path: Path, doi: str):
+        # A preprint DOI is a legitimate alternate copy; a case-variant of
+        # the target's own DOI is the same paper.
+        ref = self._seed(store, f"bodiless4{doi[-1].lower()}")
+        result, _ = self._ingest_pdf(store, tmp_path, ref.id, doi=doi)
+        assert isinstance(result, IngestResult)
+        assert result.ref_id == ref.id
+        assert self._counts(store, ref.id)[1] >= 1
+
+    def test_concurrent_upgrades_of_one_ref_serialise(self, store):
+        # Two different files for one bodiless ref: the second upgrade waits
+        # on the row lock until the first commits, then sees the body and
+        # writes no chunks (no interleaving under ON CONFLICT DO NOTHING).
+        import threading
+
+        from precis.ingest.db_writer import register_aliases_and_maybe_upgrade
+
+        ref = self._seed(store, "bodiless5")
+        sha_a = hashlib.sha256(b"file-a").hexdigest()
+        sha_b = hashlib.sha256(b"file-b").hexdigest()
+        paper_a = _fixture_paper(paper_id="anonlka1", doi=None, pdf_sha256=sha_a)
+        paper_b = _fixture_paper(paper_id="anonlkb1", doi=None, pdf_sha256=sha_b)
+        written_b: list[int] = []
+        b_started = threading.Event()
+
+        def second() -> None:
+            with store.pool.connection() as conn_b:
+                b_started.set()
+                written_b.append(
+                    register_aliases_and_maybe_upgrade(ref.id, paper_b, conn=conn_b)
+                )
+                conn_b.commit()
+
+        with store.pool.connection() as conn_a:
+            written_a = register_aliases_and_maybe_upgrade(ref.id, paper_a, conn=conn_a)
+            worker = threading.Thread(target=second)
+            worker.start()
+            assert b_started.wait(10)
+            worker.join(1.0)
+            assert worker.is_alive(), "second upgrade did not wait for the row lock"
+            conn_a.commit()
+        worker.join(10)
+        assert not worker.is_alive()
+        assert written_a >= 1
+        assert written_b == [0]
+        body_a = sum(1 for c in paper_a.chunks if c.ord >= 0)
+        assert self._counts(store, ref.id)[1] == body_a
 
     def test_target_with_body_is_attach_only(self, store, tmp_path: Path):
         # A shaless ref that already has a body (markup-ingested): still a

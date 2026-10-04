@@ -30,7 +30,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from precis.identity import make_pdf_sha256
+from precis.identity import make_pdf_sha256, normalize_doi
 from precis.ingest.claim import Claim
 from precis.ingest.db_writer import (
     PaperToWrite,
@@ -422,7 +422,9 @@ def _ingest_pdf(
             # multi-host inbox race. Guarded to a *live metadata-only stub*
             # of the same kind, so a stale / already-upgraded / soft-deleted
             # target falls through to a normal insert.
-            existing = _valid_fold_stub(input.fold_ref_id, kind=paper.kind, conn=conn)
+            existing = _valid_fold_stub(
+                input.fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
+            )
             if existing is not None:
                 log.info(
                     "precis_add: folding %s into sidecar stub ref_id=%s "
@@ -722,7 +724,42 @@ def _ingest_supplement(
     )
 
 
-def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
+#: DOI prefixes of preprint servers. A preprint copy fetched for a journal
+#: ref legitimately carries a different DOI, so these never count as a
+#: conflict in :func:`_valid_fold_stub`: arXiv, bioRxiv/medRxiv,
+#: ChemRxiv, Research Square, Preprints.org.
+_PREPRINT_DOI_PREFIXES = (
+    "10.48550/",
+    "10.1101/",
+    "10.26434/",
+    "10.21203/",
+    "10.20944/",
+)
+
+
+def _doi_conflicts(fetched_doi: str | None, ref_id: int, *, conn: Any) -> str | None:
+    """The target's DOI when it differs from ``fetched_doi``, else ``None``.
+
+    Only a conflict between two journal DOIs counts: no DOI on either side,
+    or a preprint-server DOI on either side, is not evidence of a wrong
+    target."""
+    fetched = normalize_doi(fetched_doi)
+    if not fetched or fetched.startswith(_PREPRINT_DOI_PREFIXES):
+        return None
+    rows = conn.execute(
+        "SELECT id_value FROM ref_identifiers WHERE ref_id = %s AND id_kind = 'doi'",
+        (ref_id,),
+    ).fetchall()
+    target_dois = [str(r[0]) for r in rows]
+    journal = [d for d in target_dois if not d.startswith(_PREPRINT_DOI_PREFIXES)]
+    if not journal or fetched in journal:
+        return None
+    return journal[0]
+
+
+def _valid_fold_stub(
+    ref_id: int, *, kind: str, conn: Any, doi: str | None = None
+) -> int | None:
     """Return ``ref_id`` iff it's a live, same-kind ref that still needs a body.
 
     The OA-fetch sidecar names a fold target, but by the time a watcher
@@ -737,6 +774,14 @@ def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
     differs from the stored one. ``register_aliases_and_maybe_upgrade``
     then writes chunks only if the ref has no body, attaches only
     otherwise, and honours the ``markup_refetch`` pin.
+
+    Identity check: when the fetched file carries a journal DOI and the
+    target holds a different journal DOI, the sidecar is pointing at the
+    wrong paper (or the source served the wrong file), so the fold is
+    refused and logged; the caller inserts a separate ref instead of
+    writing another paper's chunks onto this one. Concurrent folds into
+    one ref are serialised by the row lock in
+    ``register_aliases_and_maybe_upgrade``.
     """
     row = conn.execute(
         """
@@ -754,7 +799,19 @@ def _valid_fold_stub(ref_id: int, *, kind: str, conn: Any) -> int | None:
         """,
         (ref_id, kind),
     ).fetchone()
-    return int(row[0]) if row is not None else None
+    if row is None:
+        return None
+    conflict = _doi_conflicts(doi, ref_id, conn=conn)
+    if conflict is not None:
+        log.warning(
+            "precis_add: refusing sidecar fold into ref_id=%s: fetched DOI %s "
+            "!= target DOI %s",
+            ref_id,
+            normalize_doi(doi),
+            conflict,
+        )
+        return None
+    return int(row[0])
 
 
 def _warn_skipped_cite_key_match(conn: Any, *, stem: str, exclude_ref_id: int) -> None:
@@ -1166,7 +1223,9 @@ def _ingest_markup(
             conn=conn,
         )
         if existing is None and input.fold_ref_id is not None:
-            existing = _valid_fold_stub(input.fold_ref_id, kind=paper.kind, conn=conn)
+            existing = _valid_fold_stub(
+                input.fold_ref_id, kind=paper.kind, conn=conn, doi=paper.doi
+            )
             if existing is not None:
                 log.info(
                     "precis_add (markup): folding %s into sidecar stub ref_id=%s",

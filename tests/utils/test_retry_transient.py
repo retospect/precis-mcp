@@ -139,11 +139,20 @@ def test_fetch_oa_crossref_leg_retries(
     assert no_sleep == [3.0]
 
 
-def test_bib_parse_crossref_query_retries(
+def test_bib_parse_crossref_query_retries_in_its_own_loop_only(
     monkeypatch: pytest.MonkeyPatch, no_sleep: list[float]
 ) -> None:
+    # bib_parse's attempt loop owns the connect retry; retry_transient is
+    # not nested inside it, so no 3 s retry_transient sleep happens.
     from precis.workers import bib_parse
 
+    drains: list[float] = []
+
+    def fake_drain(seconds: float) -> bool:
+        drains.append(seconds)
+        return False
+
+    monkeypatch.setattr(bib_parse, "drain_sleep", fake_drain)
     calls = {"n": 0}
 
     def fake_safe_get(client: Any, url: str, **kw: Any) -> httpx.Response:
@@ -156,7 +165,8 @@ def test_bib_parse_crossref_query_retries(
     items = bib_parse._crossref_query("Smith 2020 Some title")
     assert items == [{"DOI": "10.1/x"}]
     assert calls["n"] == 2
-    assert no_sleep == [3.0]
+    assert no_sleep == []
+    assert drains == [1.0]
 
 
 def test_provenance_doi_validity_retries(
