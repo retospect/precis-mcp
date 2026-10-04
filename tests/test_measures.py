@@ -1607,3 +1607,59 @@ def test_measures_for_orders_outputs_before_inputs(
     rows = store.measures_for(world["paper"])
     assert [r["direction"] for r in rows] == ["output", "input", "input"]
     assert {r["role"] for r in rows if r["direction"] == "input"} == {"context"}
+
+
+# ── Build B: SI stored, display unit shown, and the reads ──────────────────
+
+
+class TestBuildBDisplayAndReads:
+    """The store-to-display round trip the Build B kinds rely on; the kind and
+    quest view themselves are in ``tests/test_measure_kind.py``."""
+
+    def test_taxon_put_validates_display_unit_against_canonical(
+        self, store: Store
+    ) -> None:
+        from precis.dispatch import Hub
+        from precis.handlers.taxon import TaxonHandler
+
+        h = TaxonHandler(hub=Hub(store=store))
+        resp = h.put(
+            text="bond length — distance between two bonded nuclei",
+            meta={"canonical_unit": "m", "display_unit": "Å"},
+        )
+        assert "tn" in resp.body
+        with pytest.raises(BadInput, match="different dimension"):
+            h.put(
+                text="oxide thickness — layer depth",
+                meta={"canonical_unit": "m", "display_unit": "eV"},
+            )
+
+    def test_stored_si_value_shows_in_the_display_unit(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        from precis.taxonomy.measure_units import format_value
+
+        bond = _taxon(store, "bond length", unit="m", parent=world["start"])
+        run = store.insert_measure(
+            MeasureSpec(bond, "1.4", world["paper"], reported_unit="Å", subject="Cu"),
+            actor="reader",
+        )
+        row = _row(store, run.output_id)
+        assert row["value_num"] == pytest.approx(1.4e-10)
+        shown = format_value(row["value_num"], canonical_unit="m", display_unit="Å")
+        assert shown == "1.4 Å"
+        assert format_value(row["value_num"], canonical_unit="m") == "140 pm"
+
+    def test_census_and_best_read_the_same_rows_measures_for_lists(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        quest = store.insert_ref(kind="quest", slug=None, title="q").id
+        store.add_link(src_ref_id=world["paper"], dst_ref_id=quest, relation="serves")
+        store.insert_measure(
+            MeasureSpec(world["energy"], "0.5", world["paper"], reported_unit="eV"),
+            actor="reader",
+        )
+        assert sum(r["n"] for r in store.measures_census(world["energy"])) == 1
+        (group,) = store.best_measure(world["energy"], serving=quest, sense="min")
+        assert group["n"] == 1
+        assert group["best"]["id"] == store.measures_for(world["paper"])[0]["id"]

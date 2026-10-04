@@ -67,6 +67,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "material",
         "rxn",
         "component",
+        "measure",
         "plan",
         "make",
         "figure",
@@ -132,6 +133,13 @@ def test_parse_rejects_file_backed_and_other_table_codes() -> None:
     assert hr.parse("sktoc") is None
     assert hr.parse("pysome.module") is None
     assert hr.parse("tg42") is None
+
+
+def test_measure_handle_is_a_decimal_handle_over_measures_id() -> None:
+    # ``measures.id``, not a ref_id: the measure handler accepts ``mx12``;
+    # resolve_handle (refs-backed) never sees one.
+    assert hr.format_handle("measure", 12) == "mx12"
+    assert hr.parse("mx12") == ("measure", False, 12)
 
 
 def test_parse_rejects_junk() -> None:

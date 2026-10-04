@@ -116,6 +116,10 @@ KIND_CODES: dict[str, str] = {
     # pathway graph, so the longer name would collide semantically.
     "rxn": "rx",
     "make": "mt",  # make-tree ref (assembly/synthesis order)
+    # One sourced number per row of ``measures`` (migration 0187) — the id is
+    # ``measures.id``, not a ref_id: addressed by ``get(kind='measure', id=)``
+    # (the handler accepts ``mx12`` too), never by resolve_handle.
+    "measure": "mx",
     # General procurable-part store (``component-kind`` (git-only)) — a
     # slug entity; per-value sourced facts live in component_spec_values,
     # not a chunk table, so no CHUNK_CODES entry, same as material.

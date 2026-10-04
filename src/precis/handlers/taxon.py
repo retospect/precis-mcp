@@ -200,6 +200,16 @@ class TaxonHandler(NumericRefHandler):
             return parsed[2]
         return self._resolve_path(s)
 
+    def resolve_node(self, spec: str | int) -> int:
+        """Public form of the node reference grammar (``42``, ``tn42``,
+        ``taxon:42``, ``measurand/temperature``) for sibling kinds, which
+        resolve a ``property=`` the same way."""
+        return self._resolve_spec(spec)
+
+    def node_path(self, ref_id: int) -> str:
+        """``top/…/node`` slug path of a node, for display."""
+        return self._path_label(ref_id)
+
     def _term_matches(self, term: str) -> list[int]:
         return self.store.taxon_find_by_term(
             slug=slugify(term), norm=normalize_name(term)

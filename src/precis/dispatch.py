@@ -239,6 +239,7 @@ class Hub:
     _SIBLING_HANDLERS: ClassVar[dict[str, tuple[str, str]]] = {
         "todo": ("precis.handlers.todo", "TodoHandler"),
         "job": ("precis.handlers.job", "JobHandler"),
+        "taxon": ("precis.handlers.taxon", "TaxonHandler"),
     }
 
     def sibling(self, kind: str) -> Any:
@@ -946,6 +947,7 @@ def boot(
         from precis.handlers.llm import LlmHandler
         from precis.handlers.make import MakeHandler
         from precis.handlers.material import MaterialHandler
+        from precis.handlers.measure import MeasureHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.mermaid import MermaidHandler
         from precis.handlers.message import MessageHandler
@@ -1011,6 +1013,12 @@ def boot(
         # transformation as the entity; many rows per (reaction, property) is the
         # point, since the spread of reported yields IS the finding.
         _gated(RxnHandler)
+        # measure — read/search surface over the `measures` table (migration
+        # 0187): one sourced number per row for any subject, range-and-
+        # conditions search in the caller's unit. Rows are not refs, so it is
+        # a handler-searched kind like tag/skill; the kinds row comes from the
+        # boot upsert, no migration.
+        _gated(MeasureHandler)
         # checklist — Checklist-Manifesto-style argued check ledgers
         # (docs/backlog/checklist-kind.md). Named, versioned items;
         # per-target verdicts accumulate in an append-only ledger instead

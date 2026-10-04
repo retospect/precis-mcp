@@ -250,6 +250,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "leaderboard",
     "results",
     "series",
+    "measures",
     "logbook",
 )
 
@@ -396,7 +397,8 @@ class QuestHandler(NumericRefHandler):
             "view='results' a lineage-ordered results table (one row per "
             "candidate across every band, dopant/site/co-adsorbate columns); "
             "view='series' the controlled series among them (one axis varied "
-            "per block). "
+            "per block); view='measures' the best live measured value per "
+            "measurand over everything serving it. "
             "See ``quest-layer`` (git-only)."
         ),
         supports_get=True,
@@ -795,6 +797,9 @@ class QuestHandler(NumericRefHandler):
         if view == "series" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_series(ref, budget=_budget_arg(args)))
+        if view == "measures" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_measures(ref))
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_logbook(ref))
@@ -827,7 +832,7 @@ class QuestHandler(NumericRefHandler):
                 options=[*_QUEST_CONCRETE_VIEWS, *_EYE_LADDER, *_BASE_VIEWS],
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
-                    "results, series, logbook (quest-specific) · "
+                    "results, series, measures, logbook (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -837,6 +842,59 @@ class QuestHandler(NumericRefHandler):
                 ],
             )
         return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_measures(self, ref: Ref) -> str:
+        """`view='measures'` — the quest's number table: the best live value of
+        every measurand over everything serving it (``Store.best_measure``,
+        ``serves`` at any depth), one line per ``(measurand, reference,
+        normalization)`` group, in the measurand's display unit, with the
+        run's conditions and the paper. Groups never mix: a per-area and a
+        per-mass yield, or RHE and SHE potentials, are separate lines."""
+        from precis.handlers import _measure_render as render
+        from precis.utils import handle_registry
+
+        head = ref.title.splitlines()[0] if ref.title else f"quest {ref.id}"
+        groups = self.store.best_measure(None, serving=ref.id)
+        if not groups:
+            return (
+                f"# measures — quest {ref.id}: {head}\n\n"
+                "no live measures from anything serving this quest yet "
+                "(rows are left out when ambiguous, escalated, anchor-lost or "
+                "distrusted; search(kind='measure', status='all', ...) shows them)"
+            )
+        lines = [
+            f"# measures — quest {ref.id}: {head}",
+            f"{len(groups)} group(s): best live value per measurand, reference "
+            "and normalization (never compared across groups)",
+            "",
+        ]
+        for g in groups:
+            label = (
+                f"{g['measurand']}"
+                + (f" vs {g['reference']}" if g["reference"] else "")
+                + (f" [{g['normalization']}]" if g["normalization"] else "")
+            )
+            best = g["best"]
+            if best is None:
+                lines.append(
+                    f"{label}: {g['n']} row(s), no best — set higher_is_better on "
+                    "the measurand taxon (or rank with best_measure(sense=))"
+                )
+                continue
+            lines.append(
+                " | ".join(
+                    [
+                        f"{label}: {render.value_text(best)}",
+                        render.subject_label(best),
+                        render.conditions_text(best["conditions"]),
+                        str(best["tier"] or "tier unknown"),
+                        render.paper_handle(best),
+                        handle_registry.format_handle("measure", int(best["id"])),
+                        f"{g['sense']} is better, n={g['n']}",
+                    ]
+                )
+            )
+        return "\n".join(lines)
 
     def _render_frontier(self, ref: Ref, *, budget: int = _DEFAULT_VIEW_BUDGET) -> str:
         """`view='frontier'` — the Pareto frontier of candidate materials.

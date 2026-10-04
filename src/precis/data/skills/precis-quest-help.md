@@ -161,6 +161,7 @@ get(kind="quest", id=7, view="frontier")  # Pareto frontier of candidate materia
 get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contributed
 get(kind="quest", id=7, view="results")  # lineage-ordered results table (all bands)
 get(kind="quest", id=7, view="series")  # controlled series: one axis varied per block
+get(kind="quest", id=7, view="measures")  # best live measured value per measurand
 get(kind="quest", id=7, view="logbook")  # the FULL lab notebook, every entry
 get(
     kind="quest", id=7, view="log"
@@ -170,13 +171,35 @@ get(kind="quest", id="/gaps")  # gaps across ALL active quests
 ```
 
 **The complete `view=` set is** `tree · gaps · dossier · frontier ·
-leaderboard · results · series · logbook` (quest-specific) plus the generic
+leaderboard · results · series · measures · logbook` (quest-specific) plus the generic
 `links · log · raw`, plus the fisheye ladder (`kwd · summary · verbatim ·
 fisheye · fisheye+1hop · fisheye+2hop`, any rung with `+recall`):
 `view='fisheye+1hop'` shows the quests this one serves and the quests
 serving it under `Roadmap:`, with papers/structures (`served-by`) and
 supporting findings (`supported-by`) capped at 8 per group, see
-`precis-fisheye-help`. `view='results'` is one row per candidate across
+`precis-fisheye-help`. The table views (`results`, `frontier`, `series`,
+`measures`) are in the next section.
+Note the trap: this doc says *deeds* constantly, but it isn't a view — a
+*deed* is just the milestone-typed slice of the log. Bare `get(id=N)` shows a
+digest with only the logbook **tail** (last 10 entries, cheap even on a quest
+with thousands); `view='logbook'` is the complete append-only notebook;
+`view='log'` is the raw ref-events ledger, a different (generic) thing.
+
+`view='tree'` is the map: it walks who serves the quest (grouped by
+kind), recurses into sub-quests, prints the deed ledger + tote, and ends
+with a **health** line and a **gaps** list at the foot. On a `"roadmap"`-
+body root it also renders the capability ledger table — see
+[[precis-roadmap-help]].
+
+All of the above is also visible on the web: `/refs/quest/<id>` is a
+dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
+frontier/gaps panels, servers-lite) rather than the generic ref-detail
+render — a human can read a quest's state without calling `get(view=…)`
+by hand.
+
+## Read a quest's numbers — results, frontier, series, measures
+
+`view='results'` is one row per candidate across
 *every* band (not just the frontier), grouped by lineage (dopant, then
 what varies) rather than by band — the same table the tick prompt itself
 embeds, so it doubles as "what would the next tick see right now".
@@ -196,23 +219,14 @@ each candidate's `meta.params`, stamped at proposal time from its structure
 ops (a co-adsorbate carries the named site it was placed on, e.g.
 `H2@hollow`); a candidate that predates the stamp falls back to counting
 its atoms, which cannot see a site.
-Note the trap: this doc says *deeds* constantly, but it isn't a view — a
-*deed* is just the milestone-typed slice of the log. Bare `get(id=N)` shows a
-digest with only the logbook **tail** (last 10 entries, cheap even on a quest
-with thousands); `view='logbook'` is the complete append-only notebook;
-`view='log'` is the raw ref-events ledger, a different (generic) thing.
-
-`view='tree'` is the map: it walks who serves the quest (grouped by
-kind), recurses into sub-quests, prints the deed ledger + tote, and ends
-with a **health** line and a **gaps** list at the foot. On a `"roadmap"`-
-body root it also renders the capability ledger table — see
-[[precis-roadmap-help]].
-
-All of the above is also visible on the web: `/refs/quest/<id>` is a
-dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
-frontier/gaps panels, servers-lite) rather than the generic ref-detail
-render — a human can read a quest's state without calling `get(view=…)`
-by hand.
+`view='measures'` is the quest's number table: from the `measures` rows of
+everything that serves the quest (at any depth), the best live value of each
+measurand, one line per `(measurand, reference, normalization)` group, shown
+in the measurand's display unit with the run's conditions, the tier and the
+paper. "Best" follows the taxon's `higher_is_better`; a group without it
+reports its row count and no best. Rows that are ambiguous, flagged
+(`meta.escalation`), anchor-lost or distrusted are left out — never compared
+across groups. See `precis-measure-help`.
 
 ## Health + gaps — the exploration queue
 

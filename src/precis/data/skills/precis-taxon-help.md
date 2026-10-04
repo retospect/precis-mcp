@@ -58,6 +58,7 @@ Only these are accepted; any other key is refused and the allowed set is listed.
 | `dimension_kind` | `si`, `currency`, `count`, `dimensionless`, `scale` or `categorical`; omit if unknown |
 | `si_vector` | seven comma-separated integers (SI base exponents), e.g. `"0,0,-1,0,0,0,0"`. Required with `dimension_kind='si'`, refused without it |
 | `canonical_unit`, `value_type`, `allowed_values`, `standard_ref`, `higher_is_better` | descriptive, stored as given |
+| `display_unit` | the unit people expect for a measurand (`Å`, `eV`, `%`, `µmol h⁻¹ cm⁻²`); measures are stored in SI (`canonical_unit`) and shown in this unit. A unit pint reads with the same dimension as `canonical_unit`; a `canonical_unit` pint cannot convert (`USD`, `pH`) allows only itself. See `precis-measure-help` |
 | `start`, `contract` | `start=true` marks a root; `contract={"required_keys": [...]}` only on a start node |
 | `legacy_source`, `applies_to_ref` | provenance and a pointer to the subject node |
 | `required_conditions` | list of condition names a measure of this term must have among its input rows (e.g. `["product", "potential"]`); allowed on any node, a descendant inherits its ancestors' names along `specialises`. A missing one flags the measure, never refuses it. Not the same as `contract.required_keys`, which binds taxon meta |

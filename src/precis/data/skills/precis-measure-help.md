@@ -9,9 +9,13 @@ answers:
   - what does tier measured require, and why is a cited number never measured?
   - how do I correct a measure that is already stored?
   - how does a measure point at the paper chunk that prints it?
-applies-to: material / component value reads; extraction passes that write measures
+  - how do I find every measure of a property in a numeric range, in the unit I think in?
+  - how do I filter measures by a run's conditions (quantisation, hardware, product, potential)?
+  - how do I read the best value per measurand for a quest?
+  - why does a value show as 140 pm or 95 % and what is stored?
+applies-to: material / component value reads; extraction passes that write measures; reading and searching measures
 tags: design, external-sources
-kinds: material, component, taxon
+kinds: material, component, taxon, measure, quest
 status: active
 ---
 
@@ -22,6 +26,76 @@ a component, a structure, a design. `material` and `component` values are
 measures; their `put` verbs are unchanged and write the same record. Measures written for a
 material or component subject appear in those value views only when the measurand
 was seeded from the legacy registry.
+
+## Find and read measures
+
+Rows are not refs, so they have their own kind, `measure`, addressed by the row
+id (`12`, or the handle `mx12` that search lines print).
+
+```python
+get(kind="measure", id=12)  # one row, with everything a review needs
+search(kind="measure", property="measurand/faradaic-efficiency", min=90, unit="%",
+       q="product=NH3 potential<-0.5 V")
+search(kind="measure", property="tn42", min=1.4, max=2.0, unit="Å")
+search(kind="measure", q="quant=Q4 decode", property="measurand/decode-speed")
+get(kind="quest", id=7, view="measures")  # best live value per measurand, one line per group
+```
+
+**`get(kind='measure', id=N)`** shows the literal (and its reported unit), the
+value in the display unit with the SI value beside it, the measurand (taxon
+handle, name and path), the subject (ref handle and title), its label and run
+key, the run's **conditions** (its input rows, each in its own display unit),
+tier / attribution / measurand status / extraction status, the **anchor** (paper
+handle, chunk handle, scheme and span), the ledger **reviews** newest first
+(each `current`, or `STALE` when a fixed field changed since the review) and
+the supersession chain. The fisheye ladder is `Unsupported`: a measure is a row,
+not a node.
+
+**`search(kind='measure', …)`** takes:
+
+| arg | meaning |
+|---|---|
+| `property=` | the measurand: a taxon handle (`tn42`, `taxon:42`) or path (`measurand/faradaic-efficiency`); covers the taxon and every `specialises` descendant |
+| `min=` / `max=` | numbers, in `unit=` (else the taxon's `display_unit`, else SI); converted to SI, then matched by **interval overlap** on low/high (a point is a one-value interval, `<x` reaches down from x, `>x` up). Need `property=` |
+| `unit=` | the unit of `min`/`max` **and of the output**; a unit of another kind than the measurand is refused, naming both |
+| `q=` | condition terms and subject words (below) |
+| `status='all'` | also superseded, ambiguous, escalated and anchor-lost rows, each marked; default is live rows only |
+
+`q=` terms are `name=value`, `name<value`, `name>value` (also `<=`, `>=`),
+matched against the run's input rows by condition name (the row's own
+condition label, or its taxon's name, slug or alias). A numeric value may carry
+a unit (`potential<-0.5V`, `temperature>300 K`); a bare number is read in that
+input's display unit, else SI. A text value compares by slug (`hardware=M2-Ultra`
+equals `M2 Ultra`); quote one with spaces: `hardware="M2 Ultra"`. Every other
+word must occur in the subject label. Results are output rows only, one line
+each: `mx12 | subject | measurand: value | conditions | tier | paper handle`.
+
+`get(kind='quest', id=Q, view='measures')` lists, for everything that serves
+the quest at any depth, the best live value per `(measurand, reference,
+normalization)` group, with its conditions, tier and paper. The direction comes
+from the taxon's `higher_is_better`; a group without it shows its row count and
+no best. Per-area and per-mass yields, or RHE and SHE potentials, are separate
+lines: groups are never compared. Left out of every ranking: ambiguous
+measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
+`trusted = false`, and anything that is not a single number (an interval, a
+bound, a category). A potential stated against SHE does not stand in for an RHE
+one: conversion between references is not built.
+
+## Display: SI stored, your unit shown
+
+Every value is stored in its measurand's canonical unit, which is the coherent
+SI unit with no prefix (eV is stored as J, % as a fraction, Å as m, °C as K,
+mA cm⁻² as A m⁻²). It is shown in, in order: the `unit=` you pass; the taxon's
+`display_unit` (`Å`, `eV`, `%`, `µmol h⁻¹ cm⁻²`); else SI with an automatic
+prefix, so 1.4e-10 m reads `140 pm`, never `0.00000000014 m`.
+
+- A fraction (canonical unit `1`) shows bare (`0.95`); `95 %` appears only when
+  the taxon's `display_unit` is `%` (or you pass `unit='%'`).
+- pH (and pOH, pKa, dB) is a scale: never prefixed, never converted.
+- Affine units convert as absolute values: 298.15 K with display `°C` is
+  `25 °C`. A temperature difference is its own measurand.
+- `display_unit` is a taxon meta key (see `precis-taxon-help`): a unit of the
+  same dimension as `canonical_unit`.
 
 ## One measure, one run
 

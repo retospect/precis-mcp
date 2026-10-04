@@ -48,8 +48,10 @@ router = APIRouter(tags=["preview"])
 # ref_id, so both ``finding:<pub_id>`` and ``finding:<ref_id>`` resolve
 # (``tests/precis_web/test_resolve_ref_id.py::test_resolves_finding_by_
 # pub_id`` pins this — ``KindSpec.is_numeric=True`` on ``finding`` describes
-# its *storage* id shape, not this resolver's routing).
-_NUMERIC_KIND_EXCEPTIONS: frozenset[str] = frozenset({"finding"})
+# its *storage* id shape, not this resolver's routing). ``measure`` is the
+# other: its numeric id is ``measures.id``, not a ref_id, so this resolver
+# (which returns a ref_id) must not treat it as one.
+_NUMERIC_KIND_EXCEPTIONS: frozenset[str] = frozenset({"finding", "measure"})
 
 _NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
     {

@@ -24,6 +24,7 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "dimension_kind",
         "si_vector",
         "canonical_unit",
+        "display_unit",
         "value_type",
         "allowed_values",
         "standard_ref",
@@ -160,6 +161,18 @@ def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
             "required_conditions must be a list of non-empty strings",
             next="required_conditions=['product', 'potential']",
         )
+
+    display = out.get("display_unit")
+    if display is not None:
+        if not isinstance(display, str):
+            raise BadInput(
+                "display_unit must be a unit string",
+                next="display_unit='Å' (the unit people expect; values stay SI)",
+            )
+        # lazy: pint + ase are heavy and only this key needs them
+        from precis.taxonomy.measure_units import validate_display_unit
+
+        validate_display_unit(display, out.get("canonical_unit"))
 
     contract = out.get("contract")
     if contract is not None:

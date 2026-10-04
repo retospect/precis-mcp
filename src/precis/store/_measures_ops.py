@@ -28,7 +28,7 @@ without an anchor.
 
 **Flags, not refusals.** A missing required condition, or a mass-rate yield
 whose product has no formula, lands in ``meta.escalation`` (a list of
-``{"rule": ..., ...}``); ``best_measure`` (Build B) excludes flagged rows. The
+``{"rule": ..., ...}``); ``best_measure`` excludes flagged rows. The
 required names come from the output measurand taxon's ``meta.required_conditions``
 and those of every ancestor along ``specialises`` (union); an input row
 satisfies a name when it has ``role='context'`` and its ``meta.condition``
@@ -44,6 +44,14 @@ number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
 (values are stored normalised to one unit per measurand). Unitless numeric rows
 (no ``reported_unit``) are accepted on a unit-less taxon.
 
+**Reads (Build B).** :meth:`best_measure` (best live value per
+``(measurand, reference, normalization)`` group over everything serving a
+quest), :meth:`measures_census`, :meth:`search_measures` (measurand incl.
+descendants, numeric interval overlap in SI, run-condition filters, subject
+words) and :meth:`measure_detail` back ``kind='measure'`` and the quest
+``view='measures'``. Values are stored in SI; the unit conversion for queries
+and output lives in :mod:`precis.taxonomy.measure_units`.
+
 Reviews of a measure go through the shared ledger
 (``record_target_review('measure', id, ...)``); the sha covers the frozen
 fields only (``precis_measure_sha``).
@@ -51,6 +59,7 @@ fields only (``precis_measure_sha``).
 
 from __future__ import annotations
 
+import math
 import re
 import uuid
 from collections.abc import Sequence
@@ -70,6 +79,7 @@ from precis.taxonomy.measure_units import (
     make_converter,
     molar_mass,
     parse_literal,
+    to_canonical,
 )
 from precis.taxonomy.nodes import slugify
 
@@ -137,6 +147,135 @@ class MeasureRun:
     input_ids: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ConditionFilter:
+    """One condition term of a search: the run must have an input row named
+    ``name`` (its own condition label, or its taxon's slug, name or alias)
+    whose value satisfies ``op`` (``=`` ``<`` ``>`` ``<=`` ``>=``) against
+    ``value`` or ``text``. A numeric ``value`` is in ``unit`` when given, else
+    in the input taxon's ``display_unit``, else SI; a ``text`` value compares
+    by slug with ``=`` only (``M2 Ultra`` equals ``M2-Ultra``)."""
+
+    name: str
+    op: str = "="
+    value: float | None = None
+    unit: str | None = None
+    text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MeasureSearch:
+    """What :meth:`MeasuresMixin.search_measures` found. ``truncated`` means
+    the candidate scan hit its cap before the end."""
+
+    rows: list[dict[str, Any]]
+    truncated: bool = False
+
+
+#: A bound matches a value that equals it to within float noise (1.4 Å stored
+#: as 1.4e-10 m by one path and 0.14 nm by another must still meet at 1.4 Å).
+_REL_TOL = 1e-9
+
+_MEASURE_COLS = (
+    "m.*, t.meta ->> 'name' AS measurand, t.meta ->> 'slug' AS measurand_slug, "
+    "t.meta -> 'aliases' AS measurand_aliases, "
+    "t.meta ->> 'canonical_unit' AS canonical_unit, "
+    "t.meta ->> 'display_unit' AS display_unit, "
+    "t.meta -> 'higher_is_better' AS higher_is_better, "
+    "s.title AS subject_title, s.kind AS subject_kind, p.kind AS paper_kind, "
+    "(coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL) AS anchor_lost"
+)
+_MEASURE_FROM = (
+    "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
+    "JOIN refs s ON s.ref_id = m.subject_ref_id "
+    "LEFT JOIN refs p ON p.ref_id = m.source_ref_id"
+)
+#: A row's numeric extent as SQL: a point is [v, v], an interval [low, high], an
+#: upper bound ``<x`` runs from -inf to x and a lower bound from x to +inf.
+_LO_SQL = (
+    "(CASE WHEN m.value_form = 'upper_bound' THEN '-Infinity'::float8 "
+    "ELSE coalesce(m.value_low, m.value_num) END)"
+)
+_HI_SQL = (
+    "(CASE WHEN m.value_form = 'lower_bound' THEN 'Infinity'::float8 "
+    "ELSE coalesce(m.value_high, m.value_num) END)"
+)
+
+
+def _sense(value: Any) -> str | None:
+    """``higher`` / ``lower`` from a caller's ``sense=`` or a taxon's
+    ``higher_is_better`` (a bool); None when unset."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "higher" if value else "lower"
+    word = str(value).strip().casefold()
+    if word in ("higher", "max", "high", "true"):
+        return "higher"
+    if word in ("lower", "min", "low", "false"):
+        return "lower"
+    raise BadInput(
+        f"sense {value!r} is not higher/max or lower/min",
+        next="sense='max' (higher is better) or sense='min'",
+    )
+
+
+def row_interval(row: dict[str, Any]) -> tuple[float, float] | None:
+    """A row's numeric extent ``(low, high)`` in canonical units, infinities
+    for a one-sided bound; None when it carries no number (a category)."""
+    form = row.get("value_form")
+    num, low, high = row.get("value_num"), row.get("value_low"), row.get("value_high")
+    if form == "upper_bound" and num is not None:
+        return (float("-inf"), num)
+    if form == "lower_bound" and num is not None:
+        return (num, float("inf"))
+    lo = low if low is not None else num
+    hi = high if high is not None else num
+    if lo is None or hi is None:
+        return None
+    return (lo, hi)
+
+
+def _condition_holds(f: ConditionFilter, conditions: Sequence[dict[str, Any]]) -> bool:
+    """Does any input row of the run satisfy the filter?"""
+    want = slugify(f.name)
+    for c in conditions:
+        if want not in c["names"]:
+            continue
+        if f.text is not None:
+            shown = c.get("value_text") or c.get("literal") or ""
+            if f.op == "=" and slugify(shown) == slugify(f.text):
+                return True
+            continue
+        if f.value is None:
+            return True
+        extent = row_interval(c)
+        if extent is None:
+            continue
+        canon, disp = c.get("canonical_unit"), c.get("display_unit")
+        try:
+            if f.unit:
+                v = to_canonical(f.value, f.unit, canon)
+            elif disp and canon:
+                v = to_canonical(f.value, disp, canon)
+            else:
+                v = f.value
+        except BadInput:
+            continue  # a unit of another kind: this input is not the one meant
+        lo, hi = extent
+        near = (
+            math.isclose(v, lo, rel_tol=_REL_TOL),
+            math.isclose(v, hi, rel_tol=_REL_TOL),
+        )
+        if f.op == "=" and (lo <= v <= hi or any(near)):
+            return True
+        if f.op in ("<", "<=") and (lo < v or (f.op == "<=" and near[0])):
+            return True
+        if f.op in (">", ">=") and (hi > v or (f.op == ">=" and near[1])):
+            return True
+    return False
+
+
 def _check_enum(name: str, value: str | None, allowed: Sequence[str]) -> None:
     if value is not None and value not in allowed:
         raise BadInput(f"{name} {value!r} is not one of {', '.join(allowed)}")
@@ -183,6 +322,9 @@ class MeasuresMixin:
     pool: Any
     tx: Any
     add_link: Any
+    ancestors: Any
+    taxon_descendants: Any
+    reviews_for: Any
 
     # -- helpers -----------------------------------------------------------
 
@@ -644,7 +786,7 @@ class MeasuresMixin:
         (``measurand``) and canonical unit, and ``anchor_lost``: a
         ``tier='measured'`` row whose anchoring link is gone (the chunk or
         paper was deleted; the foreign key set it NULL). ``best_measure``
-        (Build B) excludes those rows; re-anchoring is a follow-up. The ids
+        excludes those rows; re-anchoring is a follow-up. The ids
         in ``meta.extra_anchors`` are not foreign keys and may dangle the same
         way."""
         sql = (
@@ -660,3 +802,306 @@ class MeasuresMixin:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, (subject_ref_id,))
                 return list(cur.fetchall())
+
+    # -- ranking and search (Build B) --------------------------------------
+
+    def _serving_subjects(self, serving: int) -> set[int]:
+        """The quest and every ref that reaches it along ``serves``, at any
+        depth (papers serve a sub-quest that serves the quest)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT kind FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+                (serving,),
+            ).fetchone()
+        if row is None:
+            raise NotFound(f"quest {serving} not found")
+        if row[0] != "quest":
+            raise BadInput(
+                f"serving= names a {row[0]!r} ref, not a quest",
+                next="serving=<quest ref id>, e.g. the number in qu202467",
+            )
+        return {serving} | set(self.ancestors("serves", serving))
+
+    def _measurand_cover(self, measurand: int) -> list[int]:
+        """The taxon and its ``specialises`` descendants."""
+        found = {rid for rid, _depth, _axis in self.taxon_descendants(measurand)}
+        return [measurand, *sorted(found - {measurand})]
+
+    def _measure_rows(self, where: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        sql = (
+            f"SELECT {_MEASURE_COLS} {_MEASURE_FROM} WHERE {where} "
+            "ORDER BY t.ref_id, m.id"
+        )
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, params)
+                return list(cur.fetchall())
+
+    def _conditions_by_run(
+        self, run_keys: Sequence[str], *, live_only: bool = True
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The input rows of each run, in write order. Each carries its display
+        ``name`` (the row's own condition label, else its taxon's name) and the
+        slugs a query may match it by (``names``)."""
+        out: dict[str, list[dict[str, Any]]] = {k: [] for k in run_keys}
+        if not out:
+            return out
+        sql = (
+            f"SELECT {_MEASURE_COLS} {_MEASURE_FROM} "
+            "WHERE m.run_key = ANY(%(keys)s) AND m.direction <> 'output' "
+            + ("AND m.superseded_by IS NULL " if live_only else "")
+            + "ORDER BY m.run_key, m.id"
+        )
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, {"keys": list(out)})
+                rows = list(cur.fetchall())
+        for r in rows:
+            label = (r["meta"] or {}).get("condition")
+            r["name"] = (
+                label.strip()
+                if isinstance(label, str) and label.strip()
+                else r["measurand"]
+            )
+            names = {slugify(r["name"] or "")}
+            for val in (
+                r["measurand_slug"],
+                r["measurand"],
+                *(r["measurand_aliases"] or []),
+            ):
+                if isinstance(val, str) and val.strip():
+                    names.add(slugify(val))
+            names.discard("")
+            r["names"] = names
+            out[r["run_key"]].append(r)
+        return out
+
+    def best_measure(
+        self,
+        measurand: int | None = None,
+        *,
+        serving: int,
+        sense: str | None = None,
+        reference: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The best live value per comparable group over everything serving
+        the quest ``serving``.
+
+        Candidates are live *output* rows whose subject is the quest or reaches
+        it along ``serves`` at any depth, measuring ``measurand`` or any
+        ``specialises`` descendant of it (every measurand when ``measurand``
+        is None). Left out: ``measurand_status='ambiguous'``, a row flagged in
+        ``meta.escalation`` (a missing required condition, no molar mass), an
+        anchor-lost ``measured`` row, ``trusted = false``, and anything
+        without a single numeric reading (an interval, a bound, a category).
+        ``reference`` keeps only rows stated against that reference; a
+        conversion between references is not built, so a SHE row never stands
+        in for an RHE one.
+
+        Rows group by ``(measurand, reference, normalization)`` and are never
+        compared across groups: each group answers for itself. ``sense``
+        (``higher``/``max`` or ``lower``/``min``) overrides the taxon's
+        ``higher_is_better``; a group with neither has ``best=None`` and says
+        how many rows it holds. Each result is ``{measurand_ref_id, measurand,
+        reference, normalization, sense, n, best}``, ``best`` a row dict with
+        its run's ``conditions``; ordered by measurand name, reference,
+        normalization."""
+        override = _sense(sense)
+        subjects = self._serving_subjects(serving)
+        where = [
+            "m.direction = 'output'",
+            "m.superseded_by IS NULL",
+            "m.subject_ref_id = ANY(%(subjects)s)",
+            "m.measurand_status IS DISTINCT FROM 'ambiguous'",
+            "NOT (m.meta ? 'escalation')",
+            "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)",
+            "m.trusted IS NOT FALSE",
+            "m.value_form IN ('point', 'approximate_point')",
+            "m.value_num IS NOT NULL",
+        ]
+        params: dict[str, Any] = {"subjects": sorted(subjects)}
+        if measurand is not None:
+            where.append("m.measurand_ref_id = ANY(%(cover)s)")
+            params["cover"] = self._measurand_cover(measurand)
+        if reference is not None:
+            where.append("m.reference = %(reference)s")
+            params["reference"] = reference
+        groups: dict[tuple[int, str | None, str | None], list[dict[str, Any]]] = {}
+        for r in self._measure_rows(" AND ".join(where), params):
+            key = (r["measurand_ref_id"], r["reference"], r["normalization"])
+            groups.setdefault(key, []).append(r)
+        results: list[dict[str, Any]] = []
+        for (mid, ref, norm), members in groups.items():
+            direction = override or _sense(members[0]["higher_is_better"])
+            best: dict[str, Any] | None = None
+            if direction == "higher":
+                best = max(members, key=lambda r: (r["value_num"], -r["id"]))
+            elif direction == "lower":
+                best = min(members, key=lambda r: (r["value_num"], r["id"]))
+            results.append(
+                {
+                    "measurand_ref_id": mid,
+                    "measurand": members[0]["measurand"],
+                    "reference": ref,
+                    "normalization": norm,
+                    "sense": direction,
+                    "n": len(members),
+                    "best": best,
+                }
+            )
+        results.sort(
+            key=lambda g: (
+                g["measurand"] or "",
+                g["reference"] or "",
+                g["normalization"] or "",
+            )
+        )
+        conds = self._conditions_by_run(
+            [g["best"]["run_key"] for g in results if g["best"] is not None]
+        )
+        for g in results:
+            if g["best"] is not None:
+                g["best"]["conditions"] = conds.get(g["best"]["run_key"], [])
+        return results
+
+    def measures_census(self, measurand: int) -> list[dict[str, Any]]:
+        """Live rows of ``measurand`` and its ``specialises`` descendants,
+        counted by ``(tier, reference, normalization)`` as
+        ``{tier, reference, normalization, n}`` (a NULL stays None), largest
+        first. Every direction counts: a potential is usually written as an
+        input, and "how many state a reference" is the question."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT tier, reference, normalization, count(*) FROM measures "
+                "WHERE superseded_by IS NULL AND measurand_ref_id = ANY(%s) "
+                "GROUP BY tier, reference, normalization "
+                "ORDER BY count(*) DESC, tier NULLS LAST, reference NULLS FIRST, "
+                "         normalization NULLS FIRST",
+                (self._measurand_cover(measurand),),
+            ).fetchall()
+        return [
+            {"tier": r[0], "reference": r[1], "normalization": r[2], "n": int(r[3])}
+            for r in rows
+        ]
+
+    def search_measures(
+        self,
+        measurand: int | None = None,
+        *,
+        min_si: float | None = None,
+        max_si: float | None = None,
+        conditions: Sequence[ConditionFilter] = (),
+        text: str | None = None,
+        include_all: bool = False,
+        scan_cap: int = 5000,
+    ) -> MeasureSearch:
+        """Output rows matching all of: the measurand and its descendants; a
+        numeric range by interval overlap (``min_si``/``max_si`` are SI
+        bounds; a point is a degenerate interval, ``<x`` reaches down from x,
+        ``>x`` up); every condition filter against the run's input rows;
+        every word of ``text`` in the subject label. Without ``include_all``
+        superseded, ambiguous, flagged and anchor-lost rows are left out.
+        Scans at most ``scan_cap`` candidate rows (``truncated`` says so)."""
+        where = ["m.direction = 'output'"]
+        params: dict[str, Any] = {"cap": scan_cap + 1}
+        if not include_all:
+            where += [
+                "m.superseded_by IS NULL",
+                "m.measurand_status IS DISTINCT FROM 'ambiguous'",
+                "NOT (m.meta ? 'escalation')",
+                "NOT (coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL)",
+            ]
+        if measurand is not None:
+            where.append("m.measurand_ref_id = ANY(%(cover)s)")
+            params["cover"] = self._measurand_cover(measurand)
+        if min_si is not None:
+            where.append(f"{_HI_SQL} >= %(min)s")
+            params["min"] = min_si - abs(min_si) * _REL_TOL
+        if max_si is not None:
+            where.append(f"{_LO_SQL} <= %(max)s")
+            params["max"] = max_si + abs(max_si) * _REL_TOL
+        for i, word in enumerate((text or "").split()):
+            esc = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append(f"m.subject ILIKE %(w{i})s")
+            params[f"w{i}"] = f"%{esc}%"
+        sql = (
+            f"SELECT {_MEASURE_COLS} {_MEASURE_FROM} WHERE {' AND '.join(where)} "
+            "ORDER BY t.ref_id, m.id LIMIT %(cap)s"
+        )
+        with self.pool.connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, params)
+                rows = list(cur.fetchall())
+        truncated = len(rows) > scan_cap
+        rows = rows[:scan_cap]
+        by_run = self._conditions_by_run([r["run_key"] for r in rows])
+        out = []
+        for r in rows:
+            r["conditions"] = by_run.get(r["run_key"], [])
+            if all(_condition_holds(f, r["conditions"]) for f in conditions):
+                out.append(r)
+        return MeasureSearch(rows=out, truncated=truncated)
+
+    def measure_detail(self, measure_id: int) -> dict[str, Any]:
+        """One row, any liveness, with what a review needs: its run's
+        ``conditions``, the ``anchor`` (paper and chunk of the anchoring link),
+        the supersession ``chain`` (oldest first) and the ledger ``reviews``
+        (newest first, each ``current`` or stale)."""
+        rows = self._measure_rows("m.id = %(id)s", {"id": measure_id})
+        if not rows:
+            raise NotFound(
+                f"measure {measure_id} not found",
+                next="search(kind='measure', property='<measurand>') to find one",
+            )
+        r = rows[0]
+        r["conditions"] = self._conditions_by_run([r["run_key"]], live_only=False)[
+            r["run_key"]
+        ]
+        r["anchor"] = None
+        with self.pool.connection() as conn:
+            if r["primary_link_id"] is not None:
+                a = conn.execute(
+                    "SELECT l.src_ref_id, l.src_chunk_id, p.kind, p.title "
+                    "FROM links l JOIN refs p ON p.ref_id = l.src_ref_id "
+                    "WHERE l.link_id = %s",
+                    (r["primary_link_id"],),
+                ).fetchone()
+                if a is not None:
+                    r["anchor"] = {
+                        "paper_ref_id": int(a[0]),
+                        "chunk_id": None if a[1] is None else int(a[1]),
+                        "kind": a[2],
+                        "title": a[3],
+                    }
+            earlier: list[dict[str, Any]] = []
+            later: list[dict[str, Any]] = []
+            seen = {measure_id}
+            for start, step, bucket in (
+                (r["supersedes"], "supersedes", earlier),
+                (r["superseded_by"], "superseded_by", later),
+            ):
+                cursor = start
+                while cursor is not None and cursor not in seen and len(bucket) < 50:
+                    seen.add(cursor)
+                    row = conn.execute(
+                        "SELECT id, literal, supersedes, superseded_by FROM measures "
+                        "WHERE id = %s",
+                        (cursor,),
+                    ).fetchone()
+                    if row is None:
+                        break
+                    bucket.append(
+                        {"id": int(row[0]), "literal": row[1], "live": row[3] is None}
+                    )
+                    cursor = row[2] if step == "supersedes" else row[3]
+        r["chain"] = [
+            *reversed(earlier),
+            {
+                "id": measure_id,
+                "literal": r["literal"],
+                "live": r["superseded_by"] is None,
+            },
+            *later,
+        ]
+        r["reviews"] = self.reviews_for("measure", measure_id)
+        return r

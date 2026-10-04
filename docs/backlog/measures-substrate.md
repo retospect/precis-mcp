@@ -334,16 +334,8 @@ search. What that sets:
   views convert back on read through a per-taxon linear factor and
   offset stored in taxon meta, so legacy readers see the unit they
   always did.
-- **Build B gains the edges:**
-  - **Range search** over `measures`, for any subject kind: by
-    measurand (taxon, including its `specialises` descendants), by a
-    number range (interval overlap on low/high), and by conditions such
-    as `product=NH3`, `hardware=M2 Ultra` or `quant=Q4`.
-  - **Units in queries:** a query bound converts to SI before
-    comparing, so `min='1.4 Å'` works.
-  - **Units in output:** `unit=` converts on request. Otherwise output
-    uses the measurand's `display_unit`, with an automatic prefix, so a
-    value never reads as 0.000001 m.
+- **Build B's edges shipped** (range-and-conditions search, `unit=` in and
+  out, the `display_unit` taxon key): `precis-measure-help` is the contract.
 - **Units that are not a scale factor:**
   - **Affine** (°C, °F): pint converts absolute temperatures. A
     difference ("ΔT of 5 °C") is a different measurand with a delta
@@ -401,68 +393,20 @@ nanobuds-paper).
   NULL tier where no source is given, with `source_ref_id` set to the
   report. None of it is seed truth.
 
-**Build B (qland, after A deploys):**
-- `best_measure` and `measures_census`;
-- the range-and-conditions search, plus unit conversion for queries and
-  output (§ "Store SI, convert at the edges");
-- the `display_unit` taxon key;
-- `precis-measure-help`;
-- ACs 5–8, plus a non-chemistry round trip on an `llm` subject.
-
-**Build B: how agents reach measures** (decided 2026-10-04). Measures
-are rows, not refs, so they get a handler-searched kind, `measure`. The
-closest precedents are `skill` and `tag`. No search parameter changes
-meaning, and one is added.
-- **`get(kind='measure', id=<measures.id>)`** reads one row:
-  - the literal and the value, in its display unit, with SI beside it;
-  - the measurand path;
-  - the subject, its label and its run;
-  - the conditions, which are the run's input rows;
-  - tier, attribution and extraction status;
-  - the anchor's chunk handle and span;
-  - its reviews from the ledger, marked current or stale;
-  - its supersession chain.
-
-  A reviewer opens a measure here, so this view carries everything a
-  review needs.
-- **`search(kind='measure', property=<taxon>, min=, max=, unit=, q=)`:**
-  - **`property=`** is the measurand, given as a taxon handle or path
-    (`measurand/faradaic-efficiency`). It includes the taxon's
-    `specialises` descendants. This is the same facet material search
-    already uses for its property.
-  - **`min=` and `max=`** are numbers and match by interval overlap on
-    low/high, as material's range search does.
-  - **`unit=`** is the one new `search` parameter. It is the unit of
-    `min`/`max` and of the output, converted to SI before comparing. So
-    `min=1.4, unit='Å'` works. Without it, bounds are read in the
-    measurand's display unit, which is what a person would type.
-  - **`q=`** holds conditions as `name=value` terms, e.g.
-    `q='product=NH3 potential<-0.5'`, matched against the run's input
-    rows. `=`, `<` and `>` are allowed, and a value with a unit converts
-    like a bound. Any other word in `q` matches the subject label.
-  - **No `wants=`:** its contract is "ranked, never a filter" (`se`),
-    and conditions here are filters.
-  - **What it excludes:** superseded, ambiguous, escalated and
-    anchor-lost rows are left out unless `status='all'`.
-  - **Output:** one line per row: subject, value in the output unit,
-    the conditions, tier, and the paper handle.
-- **`get(kind='quest', id=Q, view='measures')`** is AC 8's quest table.
-  - **What it lists:** the best live value per measurand over
-    everything serving Q at any depth (`store.ancestors` over
-    `serves`).
-  - **How "best" is picked:** the direction comes from the taxon's
-    `higher_is_better`. Rows are grouped by
-    `(measurand, reference, normalization)`, and `best_measure` never
-    compares across groups.
-  - **Each line shows:** the value with its conditions and paper.
-  - **Where the table lives:** this view is the quest table itself; a
-    `precis quest table` CLI is not built.
-- **Display:** the value is shown in the taxon's `display_unit`, else
-  SI, through pint's `to_compact()`, so 1.4e-10 m never prints as
-  0.00000000014 m.
-  - pH is never prefixed.
-  - Percent is displayed only when `display_unit` says so.
-  - Affine units display as absolute.
+**Build B: shipped** (the `measure` kind, `search(kind='measure', property=,
+min=, max=, unit=, q=, status=)`, `get(kind='measure', id=)`,
+`get(kind='quest', id=Q, view='measures')`, `best_measure` /
+`measures_census` / `search_measures`, the `display_unit` taxon key; the
+contract is `precis-measure-help`). What it left open:
+- **Reference conversion.** `best_measure(reference='RHE')` keeps only rows
+  stated against RHE. AC 5's second half (a SHE row joins once pH is in the
+  condition set and a `convert` rule applies) needs the `convert` rule, which
+  nothing stores yet.
+- **Revision log.** `display_unit` is not in the covered-keys list of the 0185
+  taxon revision trigger, so a change to it is not logged.
+- **Search is output rows only.** A potential written only as an input row is
+  found through `q='potential<-0.5'` on the run's outputs, not as a result of
+  its own; a census counts every direction.
 
 **The pilot's taxa.** About ten, minted by hand in prod under
 `measurand` via `put` plus a `specialises` link. These are ordinary prod

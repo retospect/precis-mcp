@@ -599,6 +599,11 @@ def search(
     min: float | None = None,
     max: float | None = None,
     maturity: str | None = None,
+    # measure range search (see precis-measure-help): search(kind='measure',
+    # property='measurand/bond-length', min=1.4, unit='Å', q='quant=Q4') —
+    # ``unit`` is the unit of ``min``/``max`` and of the output; values are
+    # stored in SI and converted at the edge. Other kinds refuse it.
+    unit: str | None = None,
     # component range filter (see precis-component-help): search(kind='component',
     # spec='max_working_pressure', min=20, category='hose') — same range-filter
     # shape as material's property=, plus category= to narrow which component
@@ -682,6 +687,7 @@ def search(
     finding: `trust='verified'|'signed'|'disputed'|'any'`; `status=`.
     `uncited=<draft>` drops already-cited sources. se: `wants=` ranked
     library search (never a filter); `compose=` proposer over it.
+    measure: `property=`+`min=`/`max=` in `unit=` (e.g. 'Å'), `q=` conditions.
 
     Full docs: get(kind='skill', id='precis-search-help').
     """
@@ -900,6 +906,9 @@ def search(
         payload["max"] = max
     if maturity is not None:
         payload["maturity"] = maturity
+    # measure unit — forwarded only when set, same discipline.
+    if unit is not None:
+        payload["unit"] = unit
     # component range filter — forwarded only when set so a plain search
     # never trips the spec= interception path in the component handler.
     if spec is not None:

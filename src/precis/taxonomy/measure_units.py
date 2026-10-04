@@ -13,6 +13,16 @@ superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
   as ``µg h⁻¹ cm⁻²`` against a ``mol s⁻¹ m⁻²`` measurand;
 * a refusal naming both units when no dimension match exists.
 
+**Store SI, convert at the edges.** The display half (:func:`display_numbers`,
+:func:`format_value`, :func:`to_canonical`) turns a stored canonical (SI) value
+into the unit a person expects: an explicit ``unit=``, else the taxon's
+``display_unit``, else the canonical unit with a pint ``to_compact()`` prefix
+(1.4e-10 m prints ``140 pm``, never ``0.00000000014 m``). pH and dB are
+logarithmic and never convert or take a prefix (pint would read ``pH`` as a
+petahenry); a dimensionless canonical (a fraction) prints bare, and ``%``
+appears only when the display unit says so; affine units (°C) convert as
+absolute temperatures.
+
 ``pint`` does not know ``%`` as a unit symbol in every build, so the
 canonical-unit strings ``%`` / ``percent`` are mapped to ``percent`` up front.
 """
@@ -20,7 +30,7 @@ canonical-unit strings ``%`` / ``percent`` are mapped to ``percent`` up front.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -53,6 +63,10 @@ _BASIS_LABEL_RE: Final[re.Pattern[str]] = re.compile(
 _SUBSCRIPT_DIGITS: Final[dict[int, str]] = {
     ord(c): str(i) for i, c in enumerate("₀₁₂₃₄₅₆₇₈₉")
 }
+
+#: Logarithmic or scale units: never converted, never given an SI prefix. pint
+#: parses ``pH`` as petahenry, so they are recognised by name before pint.
+_LOG_UNITS: Final[frozenset[str]] = frozenset({"ph", "poh", "pka", "db"})
 
 _NUM: Final[str] = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _POINT_RE: Final[re.Pattern[str]] = re.compile(rf"^({_NUM})$")
@@ -110,6 +124,11 @@ def _registry() -> pint.UnitRegistry:
     if _UREG is None:
         _UREG = pint.UnitRegistry()
     return _UREG
+
+
+def is_log_unit(unit: str | None) -> bool:
+    """pH, pOH, pKa, dB: a scale, not a scalable unit."""
+    return unit is not None and unit.strip().casefold() in _LOG_UNITS
 
 
 def split_basis_label(raw_unit: str) -> tuple[str, str | None]:
@@ -221,6 +240,12 @@ def make_converter(
     if src_text == dst_text:
         # same unit once normalised: no pint needed (USD, count, a ``%``)
         return Conversion(value=lambda v: v, scale=1.0, label=label)
+    if is_log_unit(src_text) or is_log_unit(dst_text):
+        raise BadInput(
+            f"unit {reported_unit!r} cannot be converted to {canonical_unit!r}: "
+            "pH and dB are logarithmic scales, so only the identical unit is accepted",
+            next="state the number in the measurand's own scale",
+        )
     try:
         dst, _ = _parse_unit(canonical_unit, what="canonical")
     except BadInput as exc:
@@ -262,3 +287,181 @@ def make_converter(
         return float(q.to(dst).magnitude)
 
     return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label)
+
+
+# ── display: SI value -> the unit a person expects ────────────────────────
+
+
+def is_unit(text: str) -> bool:
+    """Does pint read ``text`` as a unit? A plain word, or a log scale such as
+    ``pH`` (which pint would misread as a petahenry), is not."""
+    if is_log_unit(text):
+        return False
+    try:
+        _parse_unit(text, what="query")
+    except BadInput:
+        return False
+    return True
+
+
+def _clean(unit: str | None) -> str | None:
+    text = (unit or "").strip()
+    return text or None
+
+
+def _same_unit(a: str, b: str) -> bool:
+    return pint_unit_text(a)[0] == pint_unit_text(b)[0]
+
+
+def format_number(x: float) -> str:
+    """Four significant figures, no trailing zeros, never ``-0``."""
+    text = f"{x:.4g}"
+    return "0" if text == "-0" else text
+
+
+def to_canonical(value: float, unit: str, canonical_unit: str | None) -> float:
+    """A number given in ``unit`` as the measurand's canonical (SI) value.
+    Refuses, naming both units, when they do not match; a canonical unit
+    that is absent accepts no unit at all."""
+    canon = _clean(canonical_unit)
+    if canon is None:
+        raise BadInput(
+            f"unit {unit!r} cannot be applied: this measurand has no canonical unit",
+            next="drop the unit, or set the taxon's canonical_unit",
+        )
+    try:
+        return make_converter(unit, canon).value(value)
+    except NeedsMolarMass as exc:
+        raise BadInput(
+            f"unit {unit!r} and the canonical unit {canon!r} differ by mass versus "
+            "amount, which needs a molar mass a query cannot supply",
+            next="state the bound in a unit of the same kind as the canonical unit",
+        ) from exc
+
+
+def validate_display_unit(display_unit: str, canonical_unit: str | None) -> None:
+    """A taxon's ``display_unit`` must be the canonical unit or a pint unit of
+    the same dimensionality. With no canonical unit yet it is only checked
+    once both are set. A canonical unit pint cannot parse (USD, a count)
+    allows only an identical display unit; pH and dB likewise."""
+    disp = _clean(display_unit)
+    if disp is None:
+        raise BadInput(
+            "display_unit must be a non-empty unit string",
+            next="display_unit='Å' (or drop the key)",
+        )
+    canon = _clean(canonical_unit)
+    if canon is None or _same_unit(disp, canon):
+        return
+    if is_log_unit(canon) or is_log_unit(disp):
+        raise BadInput(
+            f"display_unit {display_unit!r} differs from canonical_unit "
+            f"{canonical_unit!r}: pH and dB are logarithmic and only the identical "
+            "unit is allowed",
+            next=f"display_unit={canonical_unit!r}, or drop it",
+        )
+    try:
+        canon_unit, _ = _parse_unit(canon, what="canonical")
+    except BadInput as exc:
+        raise BadInput(
+            f"display_unit {display_unit!r} differs from canonical_unit "
+            f"{canonical_unit!r}, which is not a unit pint can convert: only the "
+            "identical unit is allowed",
+            next=f"display_unit={canonical_unit!r}, or drop it",
+        ) from exc
+    disp_unit, _ = _parse_unit(disp, what="display")
+    if disp_unit.dimensionality != canon_unit.dimensionality:
+        raise BadInput(
+            f"display_unit {display_unit!r} has a different dimension from "
+            f"canonical_unit {canonical_unit!r}",
+            next="pick a display unit of the same kind as the canonical unit",
+        )
+
+
+def _canon_label(canon: str) -> str:
+    return "" if pint_unit_text(canon)[0] == "1" else canon
+
+
+def _compact(values: Sequence[float], canon: str) -> tuple[list[float], str]:
+    """The canonical unit with the SI prefix pint's ``to_compact()`` picks for
+    the largest value. A scale, an unparseable or dimensionless unit, or an
+    affine canonical keeps the canonical unit as stored."""
+    plain = (list(values), _canon_label(canon))
+    if is_log_unit(canon) or not values:
+        return plain
+    try:
+        unit, _ = _parse_unit(canon, what="canonical")
+    except BadInput:
+        return plain
+    if unit.dimensionless or f"{unit:~P}".startswith("1/"):
+        # pint prefixes the FIRST term: on 1/s it would print 500 1/ks
+        return plain
+    ref = max(values, key=abs)
+    if ref == 0:
+        return plain
+    ureg = _registry()
+    try:
+        picked = ureg.Quantity(ref, unit).to_compact()
+        if picked.units == unit:
+            return plain
+        return (
+            [float(ureg.Quantity(v, unit).to(picked.units).magnitude) for v in values],
+            f"{picked.units:~P}",
+        )
+    except _PARSE_ERRORS:
+        return plain
+
+
+def display_numbers(
+    values: Sequence[float],
+    *,
+    canonical_unit: str | None,
+    display_unit: str | None = None,
+    unit: str | None = None,
+) -> tuple[list[float], str]:
+    """Stored canonical values as numbers in the output unit, with its label.
+
+    The unit is, in order: ``unit`` (an explicit request; a unit that does not
+    match raises), the taxon's ``display_unit`` (a stale one that no longer
+    matches falls back), else the canonical unit with an automatic prefix. The
+    label is ``''`` for a bare number. All values share one unit, chosen from
+    the largest, so an interval never mixes prefixes."""
+    canon = _clean(canonical_unit)
+    explicit = _clean(unit)
+    target = explicit or _clean(display_unit)
+    if canon is None:
+        return list(values), target or ""
+    if target is not None and _same_unit(target, canon):
+        return list(values), _canon_label(canon) or (target if target != "1" else "")
+    if target is not None:
+        try:
+            conv = make_converter(canon, target)
+        except BadInput:
+            if explicit is not None:
+                raise
+        except NeedsMolarMass as exc:
+            if explicit is not None:
+                raise BadInput(
+                    f"unit {explicit!r} and the stored unit {canon!r} differ by mass "
+                    "versus amount",
+                    next="pick a unit of the same kind as the stored unit",
+                ) from exc
+        else:
+            return [conv.value(v) for v in values], target
+    return _compact(values, canon)
+
+
+def format_value(
+    value: float,
+    *,
+    canonical_unit: str | None,
+    display_unit: str | None = None,
+    unit: str | None = None,
+) -> str:
+    """One stored canonical value as text: ``1.4e-10`` m with display Å is
+    ``1.4 Å``; with none, ``140 pm``; 0.95 with display % is ``95 %``;
+    298.15 K with display °C is ``25 °C``."""
+    nums, label = display_numbers(
+        [value], canonical_unit=canonical_unit, display_unit=display_unit, unit=unit
+    )
+    return f"{format_number(nums[0])} {label}".strip()

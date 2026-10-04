@@ -34,7 +34,7 @@ After the round-4 deploy, and not before (orchestrator):
 
 Builds, in the measures spec §"Pilot build on qu202467":
 - **B (measure kind, range search with `unit=`, quest `view='measures'`):**
-  with a coder.
+  qlanded 2026-10-04; rides the round-4 deploy.
 - **C (put/edit verbs for measures, then the extraction pass on the 130
   anchored findings, as an operation):** next.
 - **A2 (legacy taxa to SI, drop `rxn_values`):** a migration branch to
@@ -106,10 +106,11 @@ Builds, in the measures spec §"Pilot build on qu202467":
    consumer and stays held until the pilot lands. Plan: §"Pilot build on
    qu202467", four builds A-D:
    - **A:** the migration, a branch to the orchestrator;
-   - **B:** `best_measure`;
+   - **B:** shipped (the `measure` kind, `best_measure`, quest
+     `view='measures'`);
    - **C:** extracting the 140 findings, every row reviewed on the
      ledger;
-   - **D:** fisheye on the quest, in flight.
+   - **D:** fisheye on the quest, shipped c4ea7e1fb.
 
    The about ten domain taxa are minted by hand in prod. Fold-in ruled
    2026-09-30 (Reto: `component_spec_values` joins `measures` in the
