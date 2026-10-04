@@ -201,7 +201,9 @@ only; everything this thread built is on main and was live by round 4.
   read passes (8 fetched papers, 2026-10-03) minted 20 hubs and stubbed 5
   primaries the reviews cite. Both are listed in the item. The next pass
   waits on 13 unfetched papers (KcsA, CPS and 3 of the 5 stubs). Hilario
-  2016 and Anderson 1991 are held as of 2026-10-04.
+  2016 and Anderson 1991 are held as of 2026-10-04. Its concrete NO→NH₃
+  instance and design toolchain moved to the reaction-tunnel thread
+  (2026-10-04).
 
 - **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284
   for the two NO arms; qu207188 added the same day via review session).

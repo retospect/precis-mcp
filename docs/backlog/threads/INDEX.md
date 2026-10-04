@@ -91,7 +91,8 @@ Waits:
 Threads: `chemistry.md` (pillar 3d-design; catalysis lives here, Reto
 2026-10-01) · `catalysis-selectivity.md` (active 2026-10-02, Reto "high
 up": fork selectivity, NH₃ network completeness, U/pH window, decisive-step
-NEB, step-annotated diagram). Code: `src/precis_pathway`; `../catpath` is the reference
+NEB, step-annotated diagram) · `reaction-tunnel.md` (dormant 2026-10-04:
+the NO→NH₃ carbon tunnel toolchain). Code: `src/precis_pathway`; `../catpath` is the reference
 engine.
 
 Seams:
@@ -110,6 +111,10 @@ Seams:
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
   moved to catalysis-selectivity (Do-next 2); `neb-barriers-in-the-catpath-pipeline.md`
   stays chemistry's, catalysis-selectivity decides where NEB runs.
+- reaction-tunnel's T1 (`backlog/reaction-tunnel-station-path-finder.md`)
+  adds off-slab environments and a station-record export to the engine;
+  chemistry owns the engine contract and the wheel bump. Its T2
+  (`backlog/hexfold-instrumentable-tunnel.md`) is built by hexfold-toolkit.
 - hexfold-toolkit owns `backlog/global-structure-search-slices.md` and
   `backlog/structure-kind-demotion.md` (structure kind, se as origin of
   atoms), not chemistry.
