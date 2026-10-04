@@ -29,10 +29,19 @@ what a live consumer is already going without.
    - **Slice 2 closes them:** `meta={'hook':…}`, handle-form index,
      `import --sync`, the hook's last-good cache, memory-lint graph mode,
      and the hook wired but silent until the marker.
-   - **Resume (2026-10-03 22:00Z): CUT OVER, slice 2 PASS on prod.**
+   - **Resume (2026-10-04 04:45Z): round 4 dogfooded on prod (727728cc).**
      Harness memory is in the graph: `MEMORY.md` is the pointer, and the
-     old index is kept as `MEMORY.md.pre-cutover`. The sync guard
-     (31fc2a3c) has landed but is not deployed.
+     old index is kept as `MEMORY.md.pre-cutover`.
+     - **The hook:** printed 150 lines and exported 137 node bodies plus
+       `_sections.tsv` (41 threads, 65 gotchas, 13 runbooks, 18 workflow).
+     - **memory-lint graph mode:** clean, 19.1 KB index, preamble ≈ 7455
+       tok of 8000. No landed threads.
+     - **Currency ledger:** lists 5 suspects. They are the provenance
+       worktree names judged on 10-03, and the ledger has no way to mark
+       a suspect resolved, so they re-flag on every run.
+     - **The sync guard (31fc2a3c):** not exercised on prod. Auto mode
+       denied the live `--sync` against the pointer as a possible mass
+       delete; the unit tests cover it.
    - **memory-lint graph mode now lints node bodies.** Bodies come from the
      cache that `memory index --export-dir` writes, and a stray-write check
      is added. The first graph reconsolidation ran on 2026-10-03 and is
@@ -50,7 +59,9 @@ what a live consumer is already going without.
    - **Tier 2, the taproot half (89fff2fe):** live; the prompt A/B is
      closed (orchestrator 2026-10-03 21:39Z). The shipped prompt stays,
      and `_coerce_extraction` is the floor for a dropped composite.
-     Coerced composites carry `meta.composite_source`.
+     Coerced composites carry `meta.composite_source` (live in 727728cc).
+     No finding had been minted by 04:45Z, so check the first new
+     composite hub for the key.
    - **Tier 2, the nanopub half (0181, round 2):** live and checked on
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.
