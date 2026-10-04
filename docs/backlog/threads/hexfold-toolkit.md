@@ -34,7 +34,9 @@ waited on happened 09-29 — note at the bottom)
   - On prod: cycle 1 round tops (ebe4aedb1, 58bb0a6ee, 727728cc9).
   - On main, not yet deployed: the per-scene-op budget wording and hexfold
     0.3.1 (0adb12e7f, bbd013d99).
-  - This land: cycle 2 step 1, the per-n plan table.
+  - Landed for round 6: 2cf091466, cycle 2 step 1 (the per-n plan table),
+    and f30684f8c, the scene-relax guard. No job or agent is running, and
+    no code is unlanded.
   - Spread-pentagon rows are scoped at about 2 cycles; under MACE they
     pay. hexfold-toolkit-6 confirms Reto's (b).
   - Open, in this order:
@@ -48,7 +50,8 @@ waited on happened 09-29 — note at the bottom)
   - Gap found in the 2cf091466 dry run: the table makes planning free,
     but the old sphere ceilings also bounded the scene relax. A scene op
     with default spheres at n=12 and n=24 took 476 s locally (0 s planning);
-    one tabled n=12 sphere scene takes 54 s. Fixed in the same round: a
+    one tabled n=12 sphere scene takes 54 s and one n=24 scene takes
+    356 s, so n ≤ 12 stays. Fixed in the same round: a
     scene-relax guard in `hexfold_scene._normalize` allows one `sphere`
     per scene op, n ≤ 12, whether tabled or not. Raising n there needs a
     timed scene (hexfold-corner/scene_cost.py).
