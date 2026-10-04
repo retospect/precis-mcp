@@ -51,6 +51,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from precis.errors import BadInput
 from precis.store._mappers import (
     _REFS_COLS,
     _REFS_COLS_LEN,
@@ -336,6 +337,22 @@ class CacheMixin:
                 (kind, slug),
             ).fetchone()
             if existing is not None:
+                # Measures are append-only and their subject / measurand FKs
+                # RESTRICT: a cached ref that holds measures is not replaced
+                # (skipping the delete would leave the slug taken and the insert
+                # below would collide). The caller gets a clean BadInput.
+                (n_measures,) = conn.execute(
+                    "SELECT count(*) FROM measures WHERE subject_ref_id = %(r)s "
+                    "OR measurand_ref_id = %(r)s OR experiment_ref_id = %(r)s",
+                    {"r": existing[0]},
+                ).fetchone() or (0,)
+                if n_measures:
+                    raise BadInput(
+                        f"cached ref {existing[0]} ({kind}:{slug}) holds "
+                        f"{n_measures} measure(s) and cannot be replaced",
+                        next="measures are append-only: reuse the cached copy, "
+                        "or fetch under a different slug",
+                    )
                 conn.execute("DELETE FROM refs WHERE ref_id = %s", (existing[0],))
 
             ref = self.insert_ref(

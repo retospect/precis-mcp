@@ -60,6 +60,7 @@ Only these are accepted; any other key is refused and the allowed set is listed.
 | `canonical_unit`, `value_type`, `allowed_values`, `standard_ref`, `higher_is_better` | descriptive, stored as given |
 | `start`, `contract` | `start=true` marks a root; `contract={"required_keys": [...]}` only on a start node |
 | `legacy_source`, `applies_to_ref` | provenance and a pointer to the subject node |
+| `required_conditions` | list of condition names a measure of this term must have among its input rows (e.g. `["product", "potential"]`); allowed on any node, a descendant inherits its ancestors' names along `specialises`. A missing one flags the measure, never refuses it. Not the same as `contract.required_keys`, which binds taxon meta |
 
 ## Put a node under a parent
 

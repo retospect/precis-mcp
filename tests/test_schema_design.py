@@ -112,7 +112,6 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # open-ended per kind (a DRC finding id, a screenshot handle, free
         # text), never queried by key in slice 1.
         "checklist_verdicts.evidence",
-        "component_spec_values.conditions",
         "component_specs.allowed_values",
         # 0162 (design core). Each is genuinely open-ended at this layer:
         #   * objective_weights — the optimiser's objective vocabulary is
@@ -156,9 +155,19 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "email_scan.evidence",
         "host_heartbeat.meta",
         "links.meta",
+        # 0185: the verbatim prior row (+ replaced body chunks) of a ref or
+        # link — a snapshot of refs/links whose own jsonb columns are open,
+        # restored whole, never queried by key.
+        "revisions.prev_state",
         "llm_call_log.features",
         "material_properties.allowed_values",
-        "material_values.conditions",
+        # 0187: the legacy conditions bag survives for the compatibility
+        # views; `meta` holds the escalation flags, the unit-conversion
+        # provenance and the extraction run id of a measure (open-ended).
+        "measures.conditions",
+        "measures.meta",
+        # a string (sentence id, range, numeric atom) or [chunk, start, end] offsets
+        "measures.span",
         # rxn mirrors material's star schema (mig 0157). Both are genuinely
         # open-ended: `allowed_values` is a per-property closed set whose
         # members differ per property, and `conditions` holds whatever a

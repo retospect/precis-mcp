@@ -815,7 +815,27 @@ class LinksMixin:
 
         Returns the number of old rows deleted (the migrated count;
         deduped duplicates collapse into existing survivor edges).
+
+        Refuses, before touching anything, when ``old_ref_id`` carries
+        measures (as subject, as measurand, or through the ``quantifies``
+        edge a measure's ``primary_link_id`` points at): the link delete
+        would hit that foreign key, and a measure left on a retired subject
+        is stranded. Re-pointing measures by supersession is not built yet.
         """
+        n_live, n_all = conn.execute(
+            "SELECT count(*) FILTER (WHERE superseded_by IS NULL), count(*) "
+            "FROM measures WHERE subject_ref_id = %(r)s OR measurand_ref_id = %(r)s "
+            "   OR primary_link_id IN (SELECT link_id FROM links "
+            "        WHERE src_ref_id = %(r)s OR dst_ref_id = %(r)s)",
+            {"r": old_ref_id},
+        ).fetchone() or (0, 0)
+        if n_all:
+            raise BadInput(
+                f"ref {old_ref_id} has {n_live} live measure(s) ({n_all} counting "
+                "superseded rows) about it or anchored to it; merging would strand them",
+                next="supersede those measures onto the survivor first; re-pointing "
+                "measures on merge is not built yet",
+            )
         conn.execute(
             """
             INSERT INTO links

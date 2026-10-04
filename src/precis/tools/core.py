@@ -1543,6 +1543,10 @@ def edit(
     note_kind: str | None = None,
     re: str | None = None,
     about: Any = None,
+    # every kind (local-mesh-upkeep §2b): why this edit was made. Recorded
+    # on the ref's or link's revisions row; dispatch consumes it, so no
+    # handler declares it. Omitted → "edit(kind='<kind>')".
+    reason: str | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -1563,6 +1567,7 @@ def edit(
     `memory`/`quest`: `mode='replace'` only). A wrong mode, or `meta=`
     on a kind whose handler lacks it (pres/draft-only meta patch),
     raises `BadInput` naming the accepted set — never a silent drop.
+    `reason=` (any kind) records why on the revision log.
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """
@@ -1633,6 +1638,7 @@ def edit(
         "note_kind": note_kind,
         "re": re,
         "about": about,
+        "reason": reason,
     }
     if meta is not None:
         # Ride the ``__extras__`` channel (the same accepted-kwargs gate

@@ -385,6 +385,14 @@ def _refresh_due_watches(
 # ---------------------------------------------------------------------------
 
 
+#: Measures are append-only and their subject / measurand FKs RESTRICT, so a
+#: tombstone that still has measures about it (or measuring it) is kept.
+_NO_MEASURES = (
+    "NOT EXISTS (SELECT 1 FROM measures m WHERE m.subject_ref_id = refs.ref_id "
+    "OR m.measurand_ref_id = refs.ref_id OR m.experiment_ref_id = refs.ref_id)"
+)
+
+
 def _purge_soft_deleted(
     *,
     store: Store,
@@ -403,11 +411,13 @@ def _purge_soft_deleted(
         "SELECT count(*) FROM refs "
         "WHERE retired_at IS NOT NULL "
         "  AND retired_at < now() - (%s || ' days')::interval"
+        f"  AND {_NO_MEASURES}"
     )
     sql_delete = (
         "DELETE FROM refs "
         "WHERE retired_at IS NOT NULL "
         "  AND retired_at < now() - (%s || ' days')::interval"
+        f"  AND {_NO_MEASURES}"
     )
     with store.pool.connection() as conn:
         row = conn.execute(sql_count, (str(older_than_days),)).fetchone()

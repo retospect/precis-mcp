@@ -24,6 +24,7 @@ best-effort tool-call ledger write lives
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import inspect
 import logging
@@ -46,6 +47,8 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
+from precis.store._salience import current_background_actor
+from precis.store.revision_context import current_revision_context, revision_context
 from precis.utils import handle_registry
 
 if TYPE_CHECKING:
@@ -169,6 +172,31 @@ _RETIRED_KINDS: dict[str, str] = {
         "'literature'. get(kind='skill', id='precis-se-help')"
     ),
 }
+
+
+#: Verbs whose handler may change a ref or link, so the call runs inside a
+#: :func:`~precis.store.revision_context.revision_context`.
+_WRITE_VERBS = frozenset({"put", "edit", "delete", "tag", "link"})
+
+
+def _write_context(
+    verb: str, kind: str, reason: str | None
+) -> contextlib.AbstractContextManager[object]:
+    """The revision context a write verb runs in (local-mesh-upkeep §2b).
+
+    Reason: the caller's ``reason=``, else an enclosing context's, else
+    ``"<verb>(kind='<kind>')"``. Actor: an enclosing context's (a worker
+    calling the runtime), else the background actor, else ``agent``.
+    """
+    if verb not in _WRITE_VERBS:
+        return contextlib.nullcontext()
+    outer = current_revision_context()
+    if reason is None and (outer is None or outer.reason is None):
+        reason = f"{verb}(kind={kind!r})"
+    actor = None
+    if outer is None or outer.actor is None:
+        actor = current_background_actor() or "agent"
+    return revision_context(reason, actor=actor)
 
 
 def _explicit_param_names(func: Any) -> frozenset[str]:
@@ -1361,6 +1389,10 @@ class DispatchMixin(RuntimeShape):
         """
         method = getattr(handler, verb)
 
+        # local-mesh-upkeep §2b: edit's reason= belongs to the revision
+        # log, not the handler — consume it before the kwargs gate.
+        reason = args.pop("reason", None) if verb == "edit" else None
+
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
             accepted = self._accepted_kwargs(method)
@@ -1449,7 +1481,8 @@ class DispatchMixin(RuntimeShape):
             )
 
         try:
-            response = method(**clean)
+            with _write_context(verb, kind, reason):
+                response = method(**clean)
         except PrecisError as exc:
             if kind_was_defaulted:
                 exc.cause = f"(searched kind={kind!r}) {exc.cause}"

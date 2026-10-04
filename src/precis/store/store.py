@@ -11,6 +11,8 @@ from domain mixins, each owning one slice of the persistence surface:
 * :class:`precis.store._cache_ops.CacheMixin`             — paid-tool cache state
 * :class:`precis.store._identifiers_ops.IdentifiersMixin` — ``ref_identifiers`` alias lookup
 * :class:`precis.store._users_ops.WebUsersMixin`          — ``web_users`` (precis-web Basic auth)
+* :class:`precis.store._review_ops.ReviewsMixin`           — ``reviews`` ledger + ``revisions`` log
+* :class:`precis.store._measures_ops.MeasuresMixin`         — ``measures`` (sourced numbers, append-only runs; migration 0187)
 
 ``drafts`` (:class:`precis.store._draft_ops.DraftStore`) is the first
 domain carved *out* of the mixin stack into a composed sub-store —
@@ -81,12 +83,14 @@ from precis.store._mappers import (
     _row_to_ref,
 )
 from precis.store._material_ops import MaterialMixin
+from precis.store._measures_ops import MeasuresMixin
 from precis.store._nanopub_mirror_ops import NanopubMirrorMixin
 from precis.store._nanopub_ops import NanopubMixin
 from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
 from precis.store._refs_ops import RefsMixin
 from precis.store._resource_slots_ops import ResourceSlotsMixin
+from precis.store._review_ops import ReviewsMixin
 from precis.store._rxn_ops import RxnMixin
 from precis.store._scheduler_ops import SchedulerLeasesMixin
 from precis.store._structure_ops import StructureMixin
@@ -109,6 +113,7 @@ class Store(
     StructureMixin,
     PcbMixin,
     MaterialMixin,
+    MeasuresMixin,
     RxnMixin,
     ChecklistMixin,
     NanopubMixin,
@@ -121,6 +126,7 @@ class Store(
     IdentifiersMixin,
     IntegrationLedgerMixin,
     EventsMixin,
+    ReviewsMixin,
     HeartbeatMixin,
     ResourceSlotsMixin,
     SchedulerLeasesMixin,

@@ -12,7 +12,7 @@ from precis.store import pool as pool_mod
 def test_create_pool_registers_atexit_close(monkeypatch) -> None:
     fake = MagicMock()
     fake.closed = False
-    monkeypatch.setattr(pool_mod, "ConnectionPool", MagicMock(return_value=fake))
+    monkeypatch.setattr(pool_mod, "PrecisPool", MagicMock(return_value=fake))
     registered: list = []
     monkeypatch.setattr(atexit, "register", lambda f, *a: registered.append((f, a)))
 

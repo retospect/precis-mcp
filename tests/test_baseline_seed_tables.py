@@ -77,6 +77,11 @@ NOT_VOCAB: dict[str, str] = {
         "body — file_gripe_readonly — so it's stripped before scanning "
         "and never reaches this list at all.)"
     ),
+    "measures": (
+        "0187_measures.sql: folds the legacy component_spec_values rows "
+        "into measures (INSERT … SELECT FROM component_spec_values, empty "
+        "on a fresh DB) — data, not vocabulary."
+    ),
     "paper_authors": (
         "0168_paper_authors.sql: projects refs.authors jsonb into rows "
         "for existing papers — SELECTs FROM refs, empty on a fresh DB "

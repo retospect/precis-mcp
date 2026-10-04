@@ -42,7 +42,7 @@ def test_bad_values_fall_back_rather_than_refusing_to_boot(
 def _captured_pool_sizes(
     monkeypatch: pytest.MonkeyPatch, **kwargs: Any
 ) -> tuple[int, int]:
-    """Call ``create_pool`` with ``ConnectionPool`` stubbed; return sizes."""
+    """Call ``create_pool`` with ``PrecisPool`` stubbed; return sizes."""
     seen: dict[str, Any] = {}
 
     class _FakePool:
@@ -56,7 +56,7 @@ def _captured_pool_sizes(
         def check_connection(_conn: Any) -> None:  # pragma: no cover — unused
             return None
 
-    monkeypatch.setattr(pool_mod, "ConnectionPool", _FakePool)
+    monkeypatch.setattr(pool_mod, "PrecisPool", _FakePool)
     pool_mod.create_pool("postgresql:///nope", **kwargs)
     return seen["min_size"], seen["max_size"]
 

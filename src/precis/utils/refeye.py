@@ -119,7 +119,15 @@ CLAIM_RELATIONS: frozenset[str] = frozenset(
 #: stored, so a ``part-of`` row and a ``contains`` row are the same family.
 ROADMAP_RELATIONS: frozenset[str] = frozenset({"serves", "served-by"})
 TAXON_RELATIONS: frozenset[str] = frozenset(
-    {"specialises", "generalises", "instance-of", "has-instance"}
+    {
+        "specialises",
+        "generalises",
+        "instance-of",
+        "has-instance",
+        # a taxon's fisheye lists the papers that measure it (0187)
+        "quantifies",
+        "quantified-by",
+    }
 )
 CONCEPT_RELATIONS: frozenset[str] = frozenset(
     {"has-prerequisite", "prerequisite-of", "analogy-of", "contrasts-with"}

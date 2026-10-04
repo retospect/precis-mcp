@@ -115,7 +115,7 @@ the right shape and covers chunks only. Generalise it:
 ```
 reviews(target_kind  chunk|ref|link,
         target_id    bigint,
-        actor        text  → actors.slug   -- 'reto', 'hub-refine', 'mesh-upkeep'
+        actor        text                  -- 'reto', 'hub-refine', 'mesh-upkeep'
         model        text  NULL            -- 'openai/gpt-oss-120b' (NULL = human)
         version      text                  -- prompt/rules version, e.g. REFINE_VERSION
         content_sha  text                  -- the target's sha when reviewed
@@ -206,9 +206,9 @@ case: 153k system and 83k agent links. Too many paths write refs and
 links to trust each one to log.
 
 - An `AFTER UPDATE OR DELETE` trigger on `refs` and `links` writes the
-  row when a covered column changed. It compares columns and meta minus
-  the bookkeeping keys; one SQL list holds those keys, and a test pins it
-  to the sha registry's list.
+  row when a covered column changed. Covered meta is an allow-list per
+  kind (`kinds.covered_meta`; links: `precis_link_covered_meta()`), and
+  the sha registry reads the same lists, so the two cannot drift.
 - The trigger reads the reason, actor and model from
   `current_setting('precis.reason', true)` and its siblings. The store
   sets these with `SET LOCAL`, which is transaction-scoped and safe
@@ -233,6 +233,13 @@ add-on):
 The log keeps every property and adds no node.
 
 **Fit with what exists:**
+
+- **`ref_events` already logs some content edits, per write path.** It
+  holds 592k rows (prod, 2026-10-03), mostly fetch attempts and job
+  mints, plus 3.7k `body_replaced` rows with old and new text that
+  memory and todo edits write. It stays the activity log behind
+  `view='log'`. It cannot key a link and has no sha chain, reason or
+  model, so `revisions` does not extend it.
 
 - **`chunk_events` is this mechanism already, for draft chunks.**
   - It holds a stable handle, an in-place edit, and an `edited` row with
@@ -345,7 +352,8 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
    `llm_eval` cannot reach it. local-compute opens a serving window (a LAN
    bind plus a temporary slot row, or the harness run on castor) after its
    above-64-stream load test, and pings when it is open.
-1. **Ledger and history.** One migration for `reviews`, `revisions` and
+1. **Ledger and history** (1a in migration 0185, 1b after it deploys;
+   see the decisions log). One migration for `reviews`, `revisions` and
    its trigger, plus the sha registry, the backfill, hub_refine on the
    ledger, `edit(reason=)`, and `view='history'`/`'diff'`. A branch to
    the orchestrator.
@@ -365,6 +373,79 @@ Skills: `precis-review-help`, `precis-gardener-help` when it exists.
 - **[decided 2026-10-03, Reto knowledge-mesh-10 add-on]** Version history
   on every revision, with a reason, off a stable head (§2b). Reto left the
   mechanism open. Chosen: a `revisions` log written by a trigger, over
-  snapshot refs tagged `history`; the reasons are in §2b.
+  snapshot refs tagged `history`; the reasons are in §2b. Reto confirmed
+  the log on knowledge-mesh-11 (2026-10-03); slice 1 builds on it.
+- **[decided 2026-10-03, building slice 1]** As built in migration 0185
+  (branch to the orchestrator):
+  - **Slice 1 splits.** 1a, the branch: tables, triggers, the SQL sha
+    registry, legacy-stamp mirrors, backfill, the store API
+    (`ReviewsMixin`, `revision_context`, `PrecisPool`) and `edit(reason=)`.
+    1b, after deploy: the hub_refine due rule on the ledger, the
+    `chunk_review` readers, `view='history'`/`'diff'`, and the nightly
+    `(unrecorded)` count.
+  - **Covered meta is an allow-list, not a bookkeeping deny-list.** Prod
+    `refs.meta` is mostly machine state: 106k job refs carry lease keys,
+    papers carry enrichment stamps, alerts a `seen_count`, against 125k
+    ref updates in the table stats. Only finding, memory, concept, taxon
+    and citation keep history; other kinds are added by setting
+    `kinds.covered_meta`, with no migration.
+  - **The sha registry is SQL** (`precis_target_sha`), one definition for
+    the triggers and the readers. A finding's ledger sha covers title,
+    scope, caveats and body, so it is not `claim_sha` (blake2b, title
+    only), which keeps its own job keying claim embeddings.
+  - **`reviews.actor` is plain text**, not an FK to `actors`. That table is
+    the closed 7-slug `set_by` vocabulary; reviewers are open-ended.
+  - **The legacy stamps mirror by trigger**, with no Python dual-write:
+    `chunk_review` (a retraction becomes a `rejected` row), hub_refine's
+    `last_refined_at` stamp, and `links.meta.verified_by`. The mirrors
+    are dropped when those writers switch. `links.meta.verified = true` is
+    the ORCID authorship match, not a review.
+  - **One revision per transaction per target.** A deferred seal stamps
+    `new_sha` at commit and drops a row with no net change. A ref or link
+    created and edited in one transaction is a creation. Reviews of a
+    deleted link stay as audit; the requeue query joins live targets.
+  - **Not covered:**
+    - Retiring or restoring a single body chunk. In prod, none of the
+      15.6k body chunks of these kinds was ever retired.
+    - The body of a hard-deleted ref. Its row is kept, but the FK cascade
+      removes the chunks first.
+- **[measured 2026-10-03] Trigger cost on hot writes.** The orchestrator
+  asked for this at the 0185 gate.
+  - **Setup:** the test DB in a colima container, 2000 one-row
+    statements per case, best of 9 with the triggers enabled and
+    disabled in turn. Load average was 21–30 from sibling gates, so the
+    ratios swing by about ±0.3.
+
+    | write | before the fix | after the fix |
+    |---|---|---|
+    | job meta bump (kind keeps no history) | 1.94x | 1.09x |
+    | link `verified_at` bump | 2.40x | 1.05x |
+    | paper chunk insert, 50 per statement | 1.30x | 1.08x |
+    | memory bookkeeping meta bump (kind keeps history) | 2.19x | about 2.6–3.0x |
+    | memory title edit, one transaction each (writes a revision) | 2.78x | about 2.2–3.4x |
+
+  - **What changed:** the first cut called SQL functions that read
+    `kinds` from every trigger's WHEN. Postgres prepares a trigger's
+    WHEN on every statement, so even uncovered kinds paid for it.
+  - **What shipped:**
+    - The WHEN is a literal kind list. For links it is a literal list
+      of bookkeeping keys.
+    - `precis_revision_triggers_refresh()` rebuilds the WHEN clauses
+      from `kinds.covered_meta`. A statement trigger on `kinds` calls
+      it, so adding a kind to history stays a data change.
+    - The exact content comparison runs in the trigger body, ahead of
+      the exception block, so only a row that is actually logged opens
+      a savepoint.
+  - **What is left:** about 180 µs per update on covered kinds. That is
+    the content comparison: `precis_ref_content` built twice, plus a
+    `kinds` lookup. At a few thousand finding and memory updates a day
+    it comes to under a second, so it was not optimised further.
+  - **Behaviour change:** the comparison is now outside the exception
+    block, so an error inside it fails the write instead of being
+    downgraded to a warning. It is a pure function of the two rows, so
+    an error there would be a bug, not a data condition.
+  - **Pathological case, not fixed:** many separate one-chunk inserts
+    into a single large body re-hash the whole body each time.
+    Memories are small, and paper ingest exits before that step.
 - **[open]** Whether `reviews` should also replace `refs.human_verified_*`
   (27 rows). Leaning yes, as `target_kind='ref'`, `model` NULL.

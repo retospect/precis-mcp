@@ -30,6 +30,7 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "higher_is_better",
         "legacy_source",
         "applies_to_ref",
+        "required_conditions",
     }
 )
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
@@ -149,6 +150,16 @@ def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
 
     if "start" in out and not isinstance(out["start"], bool):
         raise BadInput("start must be a boolean", next="start=true on a root node")
+
+    conds = out.get("required_conditions")
+    if conds is not None and (
+        not isinstance(conds, list)
+        or not all(isinstance(c, str) and c.strip() for c in conds)
+    ):
+        raise BadInput(
+            "required_conditions must be a list of non-empty strings",
+            next="required_conditions=['product', 'potential']",
+        )
 
     contract = out.get("contract")
     if contract is not None:

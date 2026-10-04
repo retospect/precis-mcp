@@ -947,6 +947,9 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "summarizers",
         "artifact_kinds",
         "kind_provider",  # vocab mapping, seeded by 0022
+        # 0185: which kind list the revision triggers were last built from;
+        # truncating it would desync it from the (preserved) triggers.
+        "revision_trigger_state",
         "news_sources",  # seeded reference rows, 0033
         "material_properties",  # seeded property registry, 0092 (core + proposed)
         "component_categories",  # seeded category registry, 0093 (core + proposed)
@@ -1000,6 +1003,10 @@ def _truncate_data_tables(dsn: str) -> None:
         targets = sorted(present - _PRESERVE_TABLES)
         if not targets:
             return
+        # `measures` refuses TRUNCATE (append-only, migration 0187) unless the
+        # session says this is test cleanup; this connection is direct, not
+        # pooled, so a session SET stays on it.
+        conn.execute("SET precis.allow_measures_truncate = 'on'")
         # Single TRUNCATE so CASCADE is one round-trip; RESTART IDENTITY
         # so per-test ref_ids start from 1 (predictable across runs).
         _run_with_lock_retry(

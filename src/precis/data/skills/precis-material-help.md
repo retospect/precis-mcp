@@ -22,6 +22,10 @@ Multiple values per `(material, property)` is a feature: the handbook shows
 the spread across sources/conditions, and nobody picks a canonical number
 at write time.
 
+Each value row is a **measure** (`precis-measure-help`): the verbs below are
+unchanged, and a row written here carries its printed form as the measure's
+`literal`.
+
 **Canonical-units-only.** There is no unit conversion and no `units=` read
 param. Every property declares one canonical unit; a write in any other
 unit is rejected, naming the canonical one.

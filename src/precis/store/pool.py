@@ -34,10 +34,14 @@ import atexit
 import os
 import re
 import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from psycopg import Connection, sql
 from psycopg_pool import ConnectionPool
+
+from precis.store.revision_context import apply_revision_context
 
 #: A syntactically valid Postgres role name (lower-snake, ≤63 chars). Guards the
 #: ``SET ROLE`` below against a malformed / injected ``PRECIS_MCP_DB_ROLE`` even
@@ -201,6 +205,20 @@ def _close_at_exit(pool: ConnectionPool) -> None:
     atexit.register(_close_pool_ref, weakref.ref(pool))
 
 
+class PrecisPool(ConnectionPool):
+    """The store's pool: a :class:`ConnectionPool` that sends the active
+    :func:`~precis.store.revision_context.revision_context` to each
+    connection it hands out, so migration 0185's revisions triggers see
+    who changed a ref or link and why. Outside a context it behaves
+    exactly like the base pool."""
+
+    @contextmanager
+    def connection(self, timeout: float | None = None) -> Iterator[Connection]:
+        with super().connection(timeout=timeout) as conn:
+            apply_revision_context(conn)
+            yield conn
+
+
 def create_pool(
     dsn: str,
     *,
@@ -234,7 +252,7 @@ def create_pool(
     """
     resolved_min = resolved_pool_min_size() if min_size is None else min_size
     resolved_max = resolved_pool_max_size() if max_size is None else max_size
-    pool = ConnectionPool(
+    pool = PrecisPool(
         conninfo=dsn,
         min_size=resolved_min,
         max_size=resolved_max,

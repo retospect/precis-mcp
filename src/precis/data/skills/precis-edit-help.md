@@ -282,6 +282,15 @@ id='<slug>', authoring='on')` — that lets the `cites`/`structure` review
 personas edit the draft inline instead of only filing findings. Both are
 in `precis-draft-help` § "Edit, review & retire a chunk".
 
+## Say why you changed it
+## Give a reason for the revision log
+
+`reason='…'` works on every kind. Findings, memories, concepts, taxa,
+citations and links keep a revision log: one entry per change, holding the
+prior state and who made it. The reason goes on that entry:
+`edit(kind='finding', id=N, mode='replace', text='…', reason='Cu(111), per
+the 2024 STM data')`. Without one, the entry reads `edit(kind='<kind>')`.
+
 ## See also
 
 - [[precis-files-help]] — shared address grammar (`~L`, `~N`, qualnames).

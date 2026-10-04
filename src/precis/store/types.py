@@ -308,6 +308,13 @@ Relation = Literal[
     # is a member of) ↔ `has-instance`. Keep in sync with 0173_taxon_kind.sql.
     "instance-of",
     "has-instance",
+    # Measure evidence — migration 0187. `quantifies` (a paper chunk → the
+    # measurand taxon it states a number for; one shared edge per chunk and
+    # measurand, the span lives on the measure row) ↔ `quantified-by`.
+    # Written by `insert_measure` through `add_link`. Keep in sync with
+    # 0187_measures.sql.
+    "quantifies",
+    "quantified-by",
 ]
 # Keep in sync with the ``actors`` seed rows (0001_initial.sql, plus
 # 0004_finding_and_queue_family.sql for ``chase`` and
@@ -419,6 +426,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "realizes": "realized-by",
     "instance-of": "has-instance",
     "has-instance": "instance-of",
+    # Measure evidence (0187).
+    "quantifies": "quantified-by",
+    "quantified-by": "quantifies",
 }
 
 

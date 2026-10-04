@@ -54,9 +54,16 @@ Next: the domain taxa are minted once 0187 deploys, then Build C
    controller. Its slice 0 categorise set is 1's test, run once for both
    threads. Reto accepted the design (knowledge-mesh-10), adding version
    history. That is a `revisions` log off a stable head, written by a
-   trigger: chosen over snapshot refs (§2b). Slice 0 waits on
-   local-compute's castor serving window. Slice 1 is one migration
-   (`reviews` + `revisions`), sent to the orchestrator as a branch.
+   trigger: chosen over snapshot refs (§2b), and confirmed on
+   knowledge-mesh-11. Slice 0 waits on local-compute's castor serving
+   window. Slice 1a (migration 0185: tables, triggers, legacy-stamp
+   mirrors, store API, `edit(reason=)`) is on branch
+   `km-0185-reviews-revisions` with the orchestrator; never qland it.
+   Slice 1b follows its deploy: the hub_refine due rule on the ledger,
+   the `chunk_review` readers, `view='history'`/`'diff'` and the
+   `(unrecorded)` count. The as-built choices are in the item's
+   decisions log. After the deploy, dogfood with
+   `edit(kind='memory', ..., reason=)`, then read the `revisions` row.
 3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
