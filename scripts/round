@@ -682,9 +682,11 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     _write(state / "round.json", cur)
     print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n + 1}")
     print(
-        f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: land'
-        f" only the fixes the coordinator asks for (from your own tree, --quick onto"
-        f' the release); everything else qlands to main for round {n + 1}"'
+        f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: a release'
+        f" fix goes in only when the coordinator asks, via scripts/ship --release from"
+        f" a fresh tree cut from the release head (claude -w, or git worktree add"
+        f" <path> origin/{branch}) holding only the fix; everything else qlands to"
+        f' main for round {n + 1}"'
     )
     return 0
 

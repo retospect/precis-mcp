@@ -1143,10 +1143,14 @@ def test_ship_wires_the_lock_re_assertion_at_both_windows() -> None:
     """
     ship = (REPO_ROOT / "scripts" / "ship").read_text(encoding="utf-8")
     assert "scripts/lib/session-lock.sh" in ship, "ship must source the shared lib"
-    assert ship.count("\n_relock\n") == 2, (
-        "expected exactly two _relock call sites in scripts/ship "
-        "(pre-gate repair + post-reset window)"
+    # Call sites, at any indent (the --release path nests the post-land one).
+    calls = [ln for ln in ship.splitlines() if ln.strip() == "_relock"]
+    assert len(calls) == 3, (
+        "expected three _relock call sites in scripts/ship (pre-gate repair, "
+        "post-reset window, and the --release post-landing window)"
     )
+    release_fn = ship[ship.index("_release_after_landing() {") :]
+    assert release_fn[: release_fn.index("\n}\n")].count("_relock") == 1
 
 
 # --- gr331378: scripts/inflight's squash-absorbed content-equality fallback ---

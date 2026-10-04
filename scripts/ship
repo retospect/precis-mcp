@@ -79,6 +79,24 @@
 #                                        # PRECIS_SHIP_QUICK=1). For burst-landing
 #                                        # many worktrees; the suite is deferred to
 #                                        # the next full gate (/go or bare ship).
+#         scripts/ship --release "…"    # a ROUND FIX, on the coordinator's request, from a
+#                                        # fresh tree cut from the RELEASE head: apply the
+#                                        # tree's change (merge-base with origin/main ..
+#                                        # HEAD) onto the one open origin/release/r<N>,
+#                                        # then merge that release commit forward into
+#                                        # main as a real --no-ff merge, both pushes in
+#                                        # ONE narrow-lock section. Implies --quick (the
+#                                        # pre-qland lint on this tree; the release push's
+#                                        # own CI run is the gate), skips the qland drift
+#                                        # guard, writes no .ship-sha, never moves
+#                                        # `gated`. A conflict on either merge stops
+#                                        # before any push. Refuses a change touching
+#                                        # */migrations/*.sql or safe_fetch.py unless
+#                                        # --allow-migration (coordinator only).
+#         scripts/ship --release --allow-migration "…"   # coordinator: let a release fix
+#                                        # carry a migration or safe_fetch.py change
+#                                        # (squawk runs first; a number collision against
+#                                        # the release head or main dies in the lock)
 #         scripts/ship --remote "…"     # /land: the gate runs on GITHUB, not here —
 #                                        # push the synced branch to ci/<branch>,
 #                                        # wait for the full check.yml matrix
@@ -181,9 +199,15 @@ REMOTE_CI_RETRIES=0
 # local gate too. Default is to DESELECT it — see the SLOW_ARGS block in the
 # full-gate branch for why, and what covers it instead.
 SLOW="${PRECIS_GATE_SLOW:-0}"
+# --release: land a round fix on the open release branch and forward-merge it
+# into main (design note 5, ship-gate-ci). Implies --quick; see the usage header.
+RELEASE=0
+ALLOW_MIGRATION=0
 MSG=""
 while :; do
     case "${1:-}" in
+        --release)  RELEASE=1; QUICK=1; shift ;;
+        --allow-migration) ALLOW_MIGRATION=1; shift ;;
         --impacted) IMPACTED=1; shift ;;
         --mutate)   MUTATE=1; shift ;;
         --quick)    QUICK=1; shift ;;
@@ -195,10 +219,13 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full --slow -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --remote --full --slow --release --allow-migration -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
+
+[[ "$RELEASE" == 1 && "$REMOTE" == 1 ]] && { printf '\033[31m✖ --release and --remote are contradictory (the release push'"'"'s own CI run is the gate) — drop --remote.\033[0m\n' >&2; exit 2; }
+[[ "$ALLOW_MIGRATION" == 1 && "$RELEASE" != 1 ]] && { printf '\033[31m✖ --allow-migration only means something with --release.\033[0m\n' >&2; exit 2; }
 
 [[ "$REMOTE" == 1 && "$QUICK" == 1 ]] && { printf '\033[31m✖ --remote and --quick are contradictory (remote gate vs no gate) — pick one.\033[0m\n' >&2; exit 2; }
 if [[ "$REMOTE" == 1 ]] && ! command -v gh >/dev/null 2>&1; then
@@ -380,7 +407,11 @@ fi
 # Deliberately NOT --minify: the file is tracked, and one-line minified output
 # turns every concurrent web-touching ship into an unmergeable conflict;
 # unminified is line-per-rule and auto-merges (internal app — gzip covers size).
-if command -v npx >/dev/null 2>&1; then
+if [[ "$RELEASE" == 1 ]]; then
+    # A release fix is the fix only: a regenerated tracked stylesheet would be
+    # committed as WIP and ride onto the frozen release.
+    echo "release fix — Tailwind rebuild skipped (the tree holds only the fix)"
+elif command -v npx >/dev/null 2>&1; then
     say "rebuilding Tailwind CSS (static production build)"
     if npx --yes tailwindcss@3 -c tailwind.config.js \
          -i src/precis_web/static/tailwind.src.css \
@@ -727,6 +758,26 @@ _locked_net() {
     fi
 }
 
+# Is this `git push` output a LOST RACE (worth a retry), as opposed to a
+# refusal that would only fail again? Three tiers, in order:
+#   1. markers only a lost lease/ref race prints: a failed client-side lease
+#      ("stale info"), a stale tip ("fetch first"), and the SERVER-side form of
+#      the same race, which also reads "[remote rejected]" ("incorrect old
+#      value provided", "cannot lock ref ... is at X but expected Y" — a
+#      sibling moved the ref between our fetch and the receive);
+#   2. a server-side hook / protected-branch rejection ("[remote rejected]",
+#      "hook declined", "protected branch", GH006, pre-receive): no retry;
+#   3. a plain "[rejected]" / "non-fast-forward": a race.
+_push_is_lost_race() {
+    if grep -qiE 'stale info|fetch first|incorrect old value|cannot lock ref' <<< "$1"; then
+        return 0
+    fi
+    if grep -qiE 'remote rejected|hook declined|protected branch|GH006|pre-receive|update hook' <<< "$1"; then
+        return 1
+    fi
+    grep -qiE 'non-fast-forward|\[rejected\]' <<< "$1"
+}
+
 # Print the remaining race budget and total elapsed time (called wherever a
 # lost race sends the loop round again). $1 = attempt just spent.
 _race_note() {
@@ -879,6 +930,294 @@ _forward_merge_in_lock() {
     fi
 }
 
+# ── 3a. release fix (--release) ───────────────────────────────────────────
+# ship-gate-ci design note 5. Apply THIS tree's change onto the one open
+# origin/release/r<N> and merge that release commit forward into main, both
+# pushes in ONE narrow-lock section. Both merges run in the object store
+# (`git merge-tree --write-tree`, git >= 2.40 for --merge-base), so no
+# worktree juggling and nothing touches this checkout until after the pushes.
+# The forward merge on main is UNGATED, like a qland: the lint ran on this
+# tree, the release push's own check.yml run is the gate for the deploy, and M
+# carries `Gate: release-forward; lint on <branch> <HEAD8>` so `round gate` and
+# a reader of the log can tell it from a gated land. No .ship-sha, no `gated`.
+RELEASE_TREE_HINT="A release fix is written in a fresh tree cut from the RELEASE head (origin/release/r<N>), not from main: then the diff is exactly the fix, the release-side merge is trivial, and the lint ran on the code that will deploy. This tree's whole diff against its merge-base with origin/main is what gets applied."
+REL_BRANCH=""; REL_N=""; RELEASE_B=""; RELEASE_NEW_MIGS=""; RELEASE_DELETED_MIGS=""
+OLD_REL=""; RELEASE_LANDED=""; REL_R1=""; REL_M=""
+
+# What to tell the user about the refs when an in-lock step dies. On try 1
+# nothing has left this host ("nothing was pushed"); after R1 landed and the
+# main lease was lost it must say so instead, or a retry-time failure reads as
+# a clean abort over a half-applied fix. $1 = text for the nothing-landed case.
+_release_state_note() {
+    if [[ -n "$RELEASE_LANDED" ]]; then
+        printf 'release r%s has %s; main lacks the forward merge — a re-run of scripts/ship --release does only the forward merge (if that conflicts, ask the coordinator)' "$REL_N" "$RELEASE_LANDED"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# The risky paths and the new migrations of B..HEAD. --no-renames: a rename
+# shows as delete + add, so renaming safe_fetch.py or moving a sealed migration
+# is refused, and a renamed migration counts as NEW for squawk and the
+# collision guard. Run again after the lint (its auto-fix amend can change the
+# tree). $1 = "first" prints the --allow-migration warning.
+_release_scan_paths() {
+    local risky
+    risky="$(git diff --no-renames --name-only "$RELEASE_B" HEAD \
+        | grep -E '/migrations/[^/]*\.sql$|^src/precis/utils/safe_fetch\.py$' || true)"
+    RELEASE_NEW_MIGS=""
+    RELEASE_DELETED_MIGS=""
+    [[ -n "$risky" ]] || return 0
+    if [[ "$ALLOW_MIGRATION" != 1 ]]; then
+        die "a migration on a frozen release goes to the coordinator — this change touches: $(printf '%s' "$risky" | tr '\n' ' '). Those are the two things prod cannot take back and --release lands ungated. Nothing was pushed. The coordinator passes --allow-migration. ${RELEASE_TREE_HINT}"
+    fi
+    [[ "${1:-}" == first ]] \
+        && printf '\n\033[33m⚠ --allow-migration: this release fix touches %s — squawk runs first; a migration number collision against the release head or main dies in the lock.\033[0m\n' "$(printf '%s' "$risky" | tr '\n' ' ')"
+    RELEASE_NEW_MIGS="$(git diff --no-renames --name-only --diff-filter=A "$RELEASE_B" HEAD \
+        | grep -E '/migrations/[^/]*\.sql$' || true)"
+    # Files this fix removes (a moved migration's old name) are not collisions.
+    RELEASE_DELETED_MIGS="$(git diff --no-renames --name-only --diff-filter=D "$RELEASE_B" HEAD \
+        | grep -E '/migrations/[^/]*\.sql$' || true)"
+    return 0
+}
+
+_release_preflight() {
+    local out heads n ncommits
+    out="$(git ls-remote --heads origin 'refs/heads/release/*')" \
+        || die "could not read origin's release branches (git ls-remote failed) — check the network and re-run scripts/ship --release."
+    heads="$(printf '%s\n' "$out" | sed -n 's#^[0-9a-f]*[[:space:]]*refs/heads/\(release/.*\)$#\1#p')"
+    n="$(printf '%s' "$heads" | grep -c . || true)"
+    if [[ "$n" == 0 ]]; then
+        die "no open release branch on origin (release/r<N>) — nothing to apply a fix onto. The coordinator cuts one with 'scripts/round cut'; without a release, qland to main."
+    elif [[ "$n" != 1 ]]; then
+        die "$n release branches are open on origin ($(printf '%s' "$heads" | tr '\n' ' ')) — --release applies to exactly one. Ask the coordinator to settle or abandon the extras. Nothing was pushed."
+    fi
+    REL_BRANCH="$heads"
+    [[ "$REL_BRANCH" =~ ^release/r([0-9]+)$ ]] \
+        || die "the open release branch '${REL_BRANCH}' is not named release/r<N> — refusing. Nothing was pushed."
+    REL_N="${BASH_REMATCH[1]}"
+    RELEASE_B="$(git merge-base HEAD origin/main)" \
+        || die "no merge-base between HEAD and origin/main — refusing. Nothing was pushed."
+
+    ncommits="$(git rev-list --count "${RELEASE_B}..HEAD")"
+    if [[ "$ncommits" == 0 ]] || git diff --quiet "$RELEASE_B" HEAD; then
+        die "nothing to release — ${BRANCH} has no change against its merge-base with origin/main (${RELEASE_B:0:8}). ${RELEASE_TREE_HINT}"
+    fi
+    say "release fix → ${REL_BRANCH}; B = merge-base(HEAD, origin/main) = ${RELEASE_B}"
+    echo "commits ${RELEASE_B:0:8}..HEAD (${ncommits}):"
+    git log --oneline "${RELEASE_B}..HEAD"
+    git diff --stat "$RELEASE_B" HEAD
+    echo "(the whole ${RELEASE_B:0:8}..HEAD diff is applied; nothing can tell a fix from other unlanded work. ${RELEASE_TREE_HINT})"
+
+    _release_scan_paths first
+}
+
+# merge-tree wrapper. $1 = step label, rest = merge-tree args. Sets MT_TREE;
+# a conflict (exit 1) names the step and the paths and dies (lock released by
+# the EXIT trap, nothing pushed).
+_release_merge_tree() {
+    local label="$1" out rc=0 paths
+    shift
+    out="$(git merge-tree --write-tree --name-only "$@" 2>&1)" || rc=$?
+    MT_TREE="${out%%$'\n'*}"
+    if (( rc == 1 )); then
+        paths="$(printf '%s\n' "$out" | sed -n '2,/^$/p' | grep -v '^$' || true)"
+        printf '\n\033[31m✖ release conflict at step "%s" — conflicted paths:\033[0m\n%s\n' "$label" "$paths" >&2
+        die "release conflict — ask the coordinator (\`fleet say\`), $(_release_state_note "nothing was pushed"). Step: ${label}. $([[ -n "$RELEASE_LANDED" ]] || printf '%s and main are untouched. ' "$REL_BRANCH")${RELEASE_TREE_HINT}"
+    elif (( rc != 0 )); then
+        die "git merge-tree failed at step '${label}' (exit ${rc}; --write-tree --merge-base needs git >= 2.40): ${out} — $(_release_state_note "nothing was pushed")."
+    fi
+}
+
+# Bounded fetch of one ref inside the lock; the tip is read from this
+# worktree's own FETCH_HEAD (never the shared remote-tracking ref a sibling's
+# fetch can move). Sets FETCHED_TIP. $1 = refspec.
+_release_fetch_tip() {
+    local rc=0
+    _locked_net git fetch -q origin "$1" || rc=$?
+    if (( rc == 142 )); then
+        die "git fetch of $1 timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released; $(_release_state_note "nothing pushed"). Check the network and re-run scripts/ship --release."
+    elif (( rc != 0 )); then
+        die "git fetch of $1 failed inside the ship lock (exit ${rc}; did the release branch get deleted?) — lock released; $(_release_state_note "nothing pushed"). Re-run scripts/ship --release."
+    fi
+    FETCHED_TIP="$(git rev-parse --verify -q 'FETCH_HEAD^{commit}')" \
+        || die "internal: could not read FETCH_HEAD after fetching $1 — lock released; $(_release_state_note "nothing pushed"). Re-run scripts/ship --release."
+}
+
+# Migration NUMBER collision guard (per plugin dir, like the narrow lock's):
+# a migration this fix adds must not share a number with a different file in
+# the release head or in main. Both trees are checked.
+_release_migration_guard() {
+    local f dir num rev what other
+    [[ -n "$RELEASE_NEW_MIGS" ]] || return 0
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        dir="${f%/*}"
+        num="$(basename "$f" | grep -oE '^[0-9]+' || true)"
+        [[ -n "$num" ]] || continue
+        for rev in "$OLD_REL" "$OLD_MAIN"; do
+            other="$(git ls-tree --name-only "$rev" -- "${dir}/" \
+                | grep -E "^${dir}/${num}_" | grep -vxF "$f" || true)"
+            if [[ -n "$other" && -n "$RELEASE_DELETED_MIGS" ]]; then
+                other="$(printf '%s\n' "$other" | grep -vxF "$RELEASE_DELETED_MIGS" || true)"
+            fi
+            if [[ -n "$other" ]]; then
+                [[ "$rev" == "$OLD_REL" ]] && what="the release head ${REL_BRANCH}" || what="origin/main"
+                die "migration number collision: this fix adds $(basename "$f") but ${what} carries $(basename "$other") under the same number ${num} in ${dir}. $(_release_state_note "Nothing was pushed; both refs are unchanged"). Renumber the unshipped migration and re-run."
+            fi
+        done
+    done <<< "$RELEASE_NEW_MIGS"
+}
+
+# One leased push inside the lock: rc 0 landed, rc 1 a lost CAS (caller
+# retries), anything else dies at once with git's own words (as the narrow
+# lock). $1 = full ref, $2 = sha, $3 = expected old value (the lease).
+_release_push() {
+    local rc=0 out partial=""
+    [[ -n "$RELEASE_LANDED" ]] && partial=" $(_release_state_note "")."
+    out="$(_locked_net git push --force-with-lease="${1}:${3}" origin "${2}:${1}" 2>&1)" || rc=$?
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    (( rc == 0 )) && return 0
+    if (( rc == 142 )); then
+        die "git push of ${1} timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released. The push may or may not have landed: check 'git ls-remote origin ${1}' for ${2:0:8} before re-running.${partial}"
+    fi
+    if ! _push_is_lost_race "$out"; then
+        die "git push of ${1} failed inside the ship lock for a reason other than a lost race (exit ${rc}) — lock released. git said: ${out}${partial}"
+    fi
+    return 1
+}
+
+# The release-fix final section. Under the narrow lock: fetch both refs
+# (bounded), compute both merges, push the release then main (each leased on
+# the tip just fetched), local-main ff, release the lock. A lost CAS redoes the
+# whole section in the lock (bounded, PRECIS_SHIP_INLOCK_TRIES, default 5),
+# recomputing: after the release push landed, the recompute sees T_r equal to
+# the release head's tree and skips it, so a lost main lease never mints a
+# second release commit. The same check serves a plain re-run after a partial.
+_release_land() {
+    local max="${PRECIS_SHIP_INLOCK_TRIES:-5}" try=0 head_sha head8 subject
+    local t_r rel_tree r1 r1_new t_m m
+    head_sha="$(git rev-parse HEAD)"
+    head8="${head_sha:0:8}"
+    subject="${MSG%%$'\n'*}"
+    subject="${subject:-fix from ${BRANCH}}"
+    say "shipping release fix to ${REL_BRANCH}, forwarding into main"
+    acquire_ship_lock
+    while :; do
+        try=$(( try + 1 ))
+        _release_fetch_tip main
+        OLD_MAIN="$FETCHED_TIP"
+        _release_fetch_tip "refs/heads/${REL_BRANCH}"
+        OLD_REL="$FETCHED_TIP"
+        _release_migration_guard
+
+        # Step 1: this tree's change (B..HEAD) onto the release head.
+        _release_merge_tree "apply onto ${REL_BRANCH}" --merge-base="$RELEASE_B" "$OLD_REL" "$head_sha"
+        t_r="$MT_TREE"
+        rel_tree="$(git rev-parse "${OLD_REL}^{tree}")"
+        r1_new=1
+        if [[ "$t_r" == "$rel_tree" ]]; then
+            # "Already there": the release head already carries the change
+            # (a landed first push, or an earlier run of this very fix).
+            r1_new=0
+            r1="$OLD_REL"
+            say "${REL_BRANCH} head ${OLD_REL:0:8} already carries this change — no release push"
+            if git merge-base --is-ancestor "$OLD_REL" "$OLD_MAIN"; then
+                say "nothing to do — ${REL_BRANCH} head ${OLD_REL:0:8} is already in main (${OLD_MAIN:0:8}); no empty merge"
+                REL_R1="$OLD_REL"; REL_M=""
+                _release_ship_lock
+                return 0
+            fi
+        else
+            r1="$(git commit-tree "$t_r" -p "$OLD_REL" -F - <<EOF
+${MSG:-release(r${REL_N}): ${subject}}
+
+Release: r${REL_N}; from ${BRANCH} ${head8}
+${CO_AUTHOR}
+EOF
+)"
+        fi
+
+        # Step 2: R1 forward into main as a real merge (M, parents OLD_MAIN
+        # and R1). merge-tree finds the base itself: the cut sha for the first
+        # fix, the PREVIOUS release head (M's second parent) for later fixes.
+        _release_merge_tree "forward merge of ${REL_BRANCH} into main" "$OLD_MAIN" "$r1"
+        t_m="$MT_TREE"
+        m="$(git commit-tree "$t_m" -p "$OLD_MAIN" -p "$r1" -F - <<EOF
+Merge ${REL_BRANCH} fix forward: ${subject}
+
+Gate: release-forward; lint on ${BRANCH} ${head8}
+${CO_AUTHOR}
+EOF
+)"
+
+        # Both trees are computed; only now does anything leave this host.
+        if (( r1_new )); then
+            if _release_push "refs/heads/${REL_BRANCH}" "$r1" "$OLD_REL"; then
+                RELEASE_LANDED="$r1"
+                say "${REL_BRANCH} → ${r1:0:8}"
+            else
+                if (( try >= max )); then
+                    die "CAS push to ${REL_BRANCH} rejected ${max}× inside the ship lock — the release kept moving from another host. Lock released; $(_release_state_note "nothing landed"). Re-run scripts/ship --release."
+                fi
+                say "CAS push to ${REL_BRANCH} rejected — it moved from another host; re-fetching and recomputing in the lock (in-lock try ${try}/${max})"
+                continue
+            fi
+        fi
+        if _release_push refs/heads/main "$m" "$OLD_MAIN"; then
+            REL_R1="$r1"; REL_M="$m"
+            _sync_local_main
+            _release_ship_lock
+            return 0
+        fi
+        if (( try >= max )); then
+            if [[ -n "$RELEASE_LANDED" ]]; then
+                die "$(_release_state_note x) (CAS push to main rejected ${max}× inside the ship lock). Lock released."
+            fi
+            die "CAS push to main rejected ${max}× inside the ship lock — origin/main kept moving from another host. Lock released, nothing landed. Re-run scripts/ship --release."
+        fi
+        say "CAS push to main rejected — origin/main moved from another host; re-fetching and recomputing in the lock, no second release commit (in-lock try ${try}/${max})"
+    done
+}
+
+# After the pushes (lock long released): put the thread branch right and say
+# what happened. Merge origin/main in; when the tree then equals origin/main's
+# the branch holds nothing but what landed, so reset to it, else warn.
+_release_after_landing() {
+    local url=""
+    _relock
+    git fetch -q origin main || true
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "WARNING: worktree dirty after the release ship — skipping the branch sync."
+    elif ! git merge --no-edit origin/main >/dev/null 2>&1; then
+        git merge --abort 2>/dev/null || true
+        echo "WARNING: merging origin/main into ${BRANCH} conflicted — branch left as it was (it holds more than the fix?). The release fix itself landed."
+    elif [[ "$(git rev-parse 'HEAD^{tree}')" == "$(git rev-parse 'origin/main^{tree}')" ]]; then
+        git reset --hard origin/main >/dev/null \
+            && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (tree equals origin/main; zero divergence)"
+    else
+        echo "WARNING: ${BRANCH}'s tree differs from origin/main after the merge — it holds work beyond the release fix; branch left merged, not reset."
+    fi
+    if [[ -z "$REL_M" ]]; then
+        say "release ${REL_BRANCH}: nothing to do — already in main (release head ${REL_R1})"
+        return 0
+    fi
+    say "release fix landed:"
+    echo "R1 (release ${REL_BRANCH}): $(git log --oneline -1 "$REL_R1")"
+    echo "M  (main, forward merge):  $(git log --oneline -1 "$REL_M")"
+    if command -v gh >/dev/null 2>&1; then
+        url="$(_locked_net gh run list --branch "$REL_BRANCH" --limit 5 --json headSha,url \
+            --jq ".[] | select(.headSha==\"${REL_R1}\") | .url" 2>/dev/null | head -1 || true)"
+    fi
+    if [[ -n "$url" ]]; then
+        echo "release CI run (the gate for the deploy): ${url}"
+    else
+        echo "release CI run: not visible yet — gh run list --branch ${REL_BRANCH}"
+    fi
+    printf '\n\033[33m⚡ the forward merge on main is UNGATED like a qland (Gate: release-forward; lint only). The release run above is the gate for the deploy; no .ship-sha was written and origin/gated was not moved.\033[0m\n'
+    echo "mark the round with: scripts/round in ${REL_R1}"
+}
+
 # ── 3b. remote gate (--remote): push ci/<branch>, wait for check.yml ─────
 # The branch (already synced with origin/main by the loop below) goes to the
 # throwaway ref ci/<branch>; check.yml triggers on ci/** pushes and runs the
@@ -967,8 +1306,15 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
 
     say "syncing origin/main"
     git fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
-    git merge --no-edit origin/main \
-        || die "merge conflict integrating origin/main — resolve in ${WORKTREE}, then 'git add -A && git commit' and re-run scripts/ship."
+    if [[ "$RELEASE" == 1 ]]; then
+        # No merge of main into a release-fix tree: it stays as cut from the
+        # release head, so the lint runs on the code that will deploy and
+        # B..HEAD stays exactly the fix.
+        _release_preflight
+    else
+        git merge --no-edit origin/main \
+            || die "merge conflict integrating origin/main — resolve in ${WORKTREE}, then 'git add -A && git commit' and re-run scripts/ship."
+    fi
 
     git fetch -q origin main
     CHANGED="$(git diff --name-only "$(git merge-base origin/main HEAD)" HEAD)"
@@ -1014,6 +1360,9 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     # Squawk on this ship's NEW migration SQL — see _squawk_new_migrations.
     NEW_MIGRATIONS="$(git diff --name-only --diff-filter=A "$(git merge-base origin/main HEAD)" HEAD \
         | grep -E '^src/precis/migrations/[0-9]+_[^/]+\.sql$' || true)"
+    # --release --allow-migration: squawk every new migration the fix carries
+    # (plugin dirs too), before any lock — uvx is unbounded.
+    [[ "$RELEASE" == 1 ]] && NEW_MIGRATIONS="$RELEASE_NEW_MIGS"
     _squawk_new_migrations "$NEW_MIGRATIONS"
 
     if [[ "$QUICK" == 1 ]]; then
@@ -1033,26 +1382,33 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # sha, which IS a known age past the refuse threshold. Before that
         # split the window equalled the threshold and the refusal could never
         # fire (backlog/release-candidate-verdicts.md).
-        drift_warn="${PRECIS_QLAND_DRIFT_WARN_HOURS:-24}"
-        drift_refuse="${PRECIS_QLAND_DRIFT_REFUSE_HOURS:-48}"
-        drift_rc=0
-        drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main --hours "$drift_refuse" 2>/dev/null)" || drift_rc=$?
-        if [[ -z "$drift_age" && "$drift_rc" == 2 ]]; then
-            if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
-                say "main has no green shard verdict in the last ${drift_refuse}h — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
-            else
-                die "main has no all-green shard matrix in the last ${drift_refuse}h (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a red on main fixed or a /go over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+        if [[ "$RELEASE" == 1 ]]; then
+            # A release fix must not be refused because main's verdicts are
+            # old: the guard is about main's last green matrix, and the
+            # release push has its own full run.
+            say "release fix — qland drift guard skipped"
+        else
+            drift_warn="${PRECIS_QLAND_DRIFT_WARN_HOURS:-24}"
+            drift_refuse="${PRECIS_QLAND_DRIFT_REFUSE_HOURS:-48}"
+            drift_rc=0
+            drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main --hours "$drift_refuse" 2>/dev/null)" || drift_rc=$?
+            if [[ -z "$drift_age" && "$drift_rc" == 2 ]]; then
+                if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
+                    say "main has no green shard verdict in the last ${drift_refuse}h — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
+                else
+                    die "main has no all-green shard matrix in the last ${drift_refuse}h (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a red on main fixed or a /go over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+                fi
+            elif [[ -z "$drift_age" ]]; then
+                say "main's last shard verdict: age unknown — not gating on it (drift guard only ever refuses on a number it actually has)"
+            elif awk "BEGIN{exit !($drift_age >= $drift_refuse)}"; then
+                if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
+                    say "main's last shard verdict is ${drift_age}h old (>= ${drift_refuse}h) — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
+                else
+                    die "main's last all-green shard matrix is ${drift_age}h old (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a /go (full gate + deploy) over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+                fi
+            elif awk "BEGIN{exit !($drift_age >= $drift_warn)}"; then
+                say "⚠ main's last shard verdict is ${drift_age}h old (warn at ${drift_warn}h, refuse at ${drift_refuse}h) — a /go is due"
             fi
-        elif [[ -z "$drift_age" ]]; then
-            say "main's last shard verdict: age unknown — not gating on it (drift guard only ever refuses on a number it actually has)"
-        elif awk "BEGIN{exit !($drift_age >= $drift_refuse)}"; then
-            if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
-                say "main's last shard verdict is ${drift_age}h old (>= ${drift_refuse}h) — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
-            else
-                die "main's last all-green shard matrix is ${drift_age}h old (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a /go (full gate + deploy) over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
-            fi
-        elif awk "BEGIN{exit !($drift_age >= $drift_warn)}"; then
-            say "⚠ main's last shard verdict is ${drift_age}h old (warn at ${drift_warn}h, refuse at ${drift_refuse}h) — a /go is due"
         fi
 
         # Pre-qland lint: ruff + mypy + import contracts, NO pytest. /qland
@@ -1099,6 +1455,12 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
                 say "amended ruff auto-fixes into the branch"
             fi
             QLAND_LINT_RAN=1
+        fi
+        if [[ "$RELEASE" == 1 ]]; then
+            # The lint's auto-fix amend can change the tree the preflight scanned.
+            _prev_migs="$RELEASE_NEW_MIGS"
+            _release_scan_paths
+            [[ "$RELEASE_NEW_MIGS" == "$_prev_migs" ]] || _squawk_new_migrations "$RELEASE_NEW_MIGS"
         fi
         say "quick ship — pytest deferred to the next full gate (/go or bare scripts/ship)"
     elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 && "$REMOTE_FALLBACK" != 1 ]]; then
@@ -1263,6 +1625,11 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     # and redoes fetch → forward merge (guards included) → commit-tree (the
     # trailer's N grows) → push, at most PRECIS_SHIP_INLOCK_TRIES (5) times,
     # then a named die that releases the lock. Every in-lock try is seconds.
+    if [[ "$RELEASE" == 1 ]]; then
+        _release_land
+        shipped=1
+        break
+    fi
     say "shipping to main"
     acquire_ship_lock
     INLOCK_MAX="${PRECIS_SHIP_INLOCK_TRIES:-5}"
@@ -1348,7 +1715,7 @@ EOF
         fi
         # Only a CAS LOSS is retried. Any other failure (auth, a hook, the
         # network) would just fail again: die at once, with git's own words.
-        if ! grep -qiE 'stale info|rejected|fetch first|non-fast-forward' <<< "$push_out"; then
+        if ! _push_is_lost_race "$push_out"; then
             die "git push failed inside the ship lock for a reason other than a lost race (exit ${push_rc}) — lock released, nothing landed. git said: ${push_out}"
         fi
         # CAS rejected: main moved from elsewhere (another host, or a stolen
@@ -1403,45 +1770,52 @@ if [[ "$REMOTE" == 1 ]]; then
     git push origin --delete "ci/${BRANCH}" 2>/dev/null || true
 fi
 
-# ── 6. reset the feature branch to the freshly-shipped main ─────────────
-# The squash put this branch's tree onto main as a NEW commit that is not an
-# ancestor of the branch. Left as-is, the next `git merge origin/main` sees the
-# branch's commits AND main's squashed copy of the same lines as divergent → a
-# phantom conflict on already-shipped work (the squash-merge re-sync artifact).
-# Resetting the branch to the shipped main gives it zero divergence, so the next
-# sync is a clean fast-forward and only GENUINE conflicts (our new work vs a
-# concurrent main change) ever surface. Safe by construction: everything is
-# committed + shipped here, so the working tree already equals origin/main and
-# the reset moves pointers, not files. Guard anyway — never reset over a dirty
-# tree (it would eat uncommitted work).
-if [[ -z "$(git status --porcelain)" ]]; then
-    git reset --hard origin/main >/dev/null \
-        && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (zero divergence; next sync is a clean ff)"
+# A release fix (--release) has its own tail: the branch sync is a merge +
+# tree-equality check (not an unconditional reset), and the report names R1, M
+# and the release CI run. See _release_after_landing.
+if [[ "$RELEASE" == 1 ]]; then
+    _release_after_landing
 else
-    echo "WARNING: worktree dirty after ship — skipping branch reset (run 'git reset --hard origin/main' when clean)."
-fi
-
-# The window is now genuinely open: this tree is merged into main and (after
-# the reset above) clean. This is the call proposal 3 is actually about.
-_relock
-
-# (The local-main ff ran inside the ship lock, as the last step of the final
-# section — see _sync_local_main.)
-
-# ── 7. report ───────────────────────────────────────────────────────────
-git fetch -q origin main
-# The lock is long released: origin/main may already be a sibling's newer
-# commit, so name OUR landed sha rather than whatever main is by now.
-say "shipped — landed on main:"
-git log --oneline -1 "${LANDED_SHA:-origin/main}"
-if [[ "$QUICK" == 1 ]]; then
-    # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
-    # the pre-qland lint by one commit, and a banner that overstates the debt is
-    # read as licence to ignore it.
-    if [[ "$QLAND_LINT_RAN" != 1 ]]; then
-        printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
+    # ── 6. reset the feature branch to the freshly-shipped main ─────────────
+    # The squash put this branch's tree onto main as a NEW commit that is not an
+    # ancestor of the branch. Left as-is, the next `git merge origin/main` sees the
+    # branch's commits AND main's squashed copy of the same lines as divergent → a
+    # phantom conflict on already-shipped work (the squash-merge re-sync artifact).
+    # Resetting the branch to the shipped main gives it zero divergence, so the next
+    # sync is a clean fast-forward and only GENUINE conflicts (our new work vs a
+    # concurrent main change) ever surface. Safe by construction: everything is
+    # committed + shipped here, so the working tree already equals origin/main and
+    # the reset moves pointers, not files. Guard anyway — never reset over a dirty
+    # tree (it would eat uncommitted work).
+    if [[ -z "$(git status --porcelain)" ]]; then
+        git reset --hard origin/main >/dev/null \
+            && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (zero divergence; next sync is a clean ff)"
     else
-        printf '\n\033[33m⚡ UNTESTED ship — ruff/mypy/import contracts and the DB-free hygiene tests passed; the\n  suite did NOT run. main is untested until its CI verdict or the next full gate.\033[0m\n'
+        echo "WARNING: worktree dirty after ship — skipping branch reset (run 'git reset --hard origin/main' when clean)."
+    fi
+
+    # The window is now genuinely open: this tree is merged into main and (after
+    # the reset above) clean. This is the call proposal 3 is actually about.
+    _relock
+
+    # (The local-main ff ran inside the ship lock, as the last step of the final
+    # section — see _sync_local_main.)
+
+    # ── 7. report ───────────────────────────────────────────────────────────
+    git fetch -q origin main
+    # The lock is long released: origin/main may already be a sibling's newer
+    # commit, so name OUR landed sha rather than whatever main is by now.
+    say "shipped — landed on main:"
+    git log --oneline -1 "${LANDED_SHA:-origin/main}"
+    if [[ "$QUICK" == 1 ]]; then
+        # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
+        # the pre-qland lint by one commit, and a banner that overstates the debt is
+        # read as licence to ignore it.
+        if [[ "$QLAND_LINT_RAN" != 1 ]]; then
+            printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
+        else
+            printf '\n\033[33m⚡ UNTESTED ship — ruff/mypy/import contracts and the DB-free hygiene tests passed; the\n  suite did NOT run. main is untested until its CI verdict or the next full gate.\033[0m\n'
+        fi
     fi
 fi
 

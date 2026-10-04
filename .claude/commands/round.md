@@ -58,7 +58,7 @@ Note from the user: `$ARGUMENTS`
    while any `release/*` branch exists, off main's first-parent line, or on a
    new duplicate migration number. `scripts/round cut --abandon` deletes the
    branch once everything on it is on main. `gate`/`deploy` still read main
-   until slices (b)/(c) land.
+   until slice (c) lands. Fixes onto the release: see "Release fixes" below.
 
 4. **Red verdict → route, do not absorb.** `round gate` names the newest
    failed main sha above the candidate, its failing jobs and the
@@ -96,6 +96,38 @@ Note from the user: `$ARGUMENTS`
    round if the user asked for a loop. Persist the round's residuals first:
    a red gate you worked around, a peer still mid-land, an incident — as a
    gripe or a backlog item, and the resume pointer in `.claude/purpose`.
+
+## Release fixes (`scripts/ship --release`)
+
+Run by the owning thread, from its own tree, only when you ask for a fix on
+the open `release/r<N>` (say so with `fleet say`). The tree must be a fresh
+one cut from the RELEASE head (`origin/release/r<N>`), not from main, and hold
+only the fix: the whole diff against its merge-base with `origin/main` is what
+gets applied, nothing can tell a fix from other unlanded work, and the thread's
+tests then ran on the code that will deploy. A fix written against main can
+pass there and fail on the release.
+
+`scripts/ship --release "<subject>"` lints the tree (the `--quick` lint; no
+pytest, no drift guard), then in one lock section pushes a commit R1 onto the
+release and a real merge M of R1 into main. It prints B (the merge-base), the
+commits and the diffstat first, and ends with R1, M and the release's CI run
+URL. R1 is what the round marks: `scripts/round in <R1>`; the release run is
+the gate for the deploy. M is ungated like a qland and carries
+`Gate: release-forward`. It writes no `.ship-sha` and never moves `gated`.
+
+On a conflict (onto the release, or the forward merge into main) it stops,
+and the thread messages you with the conflicted paths and you decide. Read
+which state the message names. Normally nothing was pushed and both branches
+are untouched. If a lost main push forced a retry after the release push had
+already landed, it says "release r<N> has <R1>; main lacks the forward merge":
+the release is ahead of main, and a re-run does only the forward merge (a
+conflict there is yours to resolve). It refuses a change touching
+`*/migrations/*.sql` or `safe_fetch.py`, renames included: those come to you
+as a branch, and you apply them yourself with `scripts/ship --release
+--allow-migration` (squawk and a number-collision check against the release
+head and main run first). If all of the fix is already in main it says
+"nothing to do". A server-side hook or protected-branch rejection stops the
+ship at once with git's output; it is not retried as a race.
 
 ## Hard rules
 

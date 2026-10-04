@@ -86,6 +86,8 @@ and 8 per release fix, so 40–48 jobs. Before the stopgap it was 120.
 (a) `round cut` and the `release/**` CI trigger: shipped 2026-10-03
 (06247b684). The migration scan flags only duplicates beyond what
 `origin/prod` already carries (main has historical 0037/0039 pairs), and the
-plan-skip on an already-verdicted cut sha is deferred. (b) `ship --release` with
-the forward merge. (c) `round gate`/`deploy` on the release head, the tag,
+plan-skip on an already-verdicted cut sha is deferred. (b) `ship --release`
+with the forward merge: shipped 2026-10-03 (applies a tree's change onto the
+open release and merges it forward into main in one narrow-lock section;
+migrations and `safe_fetch.py` refused without `--allow-migration`). (c) `round gate`/`deploy` on the release head, the tag,
 the merge-back, and docs (`/round`, `/fleet`, CLAUDE.md ship section).

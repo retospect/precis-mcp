@@ -7,30 +7,40 @@ delete a live session's tree — the path every pillar's work ships through
 the order is data loss first (live-worktree deletion), then fleet-wide
 stalls (slot and lock holds, hangs), then verdict honesty (red that reads as
 green or the reverse), then tuning and residue.
-**Last reviewed:** 2026-10-03
+**Last reviewed:** 2026-10-04
 **Worktree:** `ship-gate-ci`
 **Active:** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
-**Resume:** 2026-10-03 round 3 deployed 929107f32 with all of this
-thread's code in it. The work is host tooling, and its dogfood was the
-deploy itself: `scripts/round gate|deploy` picked the newest green main.
-Round 4 so far: f0c01b03c (`fleet say` pastes long or multi-line text, so
-its head survives; the agent-tree teardown stands down while another
-`scripts/test` run of the tree is alive), dfb65c294 (docs), and the
-narrow ship lock (Reto 21:35Z; design note 4 + verdict in
-`reviews/ship-gate-ci*.md`): lint and gates run unlocked, the lock covers
-only fetch, forward merge, squash, CAS push and local-main ff; a gated ship
-that spends its race budget lands forward-merged with a `Gate:` trailer
-and no pin, so landing windows are no longer needed. precis-dev image
-rebuilt 21:36Z (numba, mp-api). Next: the docker disk item, then release
-slice (b).
+**Resume:** 2026-10-04. Round 3 deployed 929107f32 with all of this
+thread's code. Round 4 so far: f0c01b03c (`fleet say` pastes long text;
+agent-tree teardown run markers), dfb65c294 (docs), 3c14054b6 (narrow
+ship lock: lint and gates unlocked, forward-merge land with a `Gate:`
+trailer after the race budget; docker-disk preflight below 10 GB; hourly
+30 GB build-cache cap; testmon guard reads xfailed as green), and release
+slice (b) `ship --release`. precis-dev image rebuilt 2026-10-03 21:36Z.
+Round 4 deployed 727728cc9 (04:40Z) with the narrow lock in it. Dogfood
+on the live tooling: my two lands since showed no "waiting for the ship
+lock"; the CI waits and gates ran unlocked, each lost race printed its
+budget, and a red fallback local gate refused to land. The disk preflight
+passes silently in `scripts/test`. The build-cache cap has not run yet
+(no stamp; cache 28.4 GB, under the cap). `ship --release` lands in round
+5. Next: slice (c), dogfooded by round 5.
 
 ## Do next
 
-1. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
+1. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
+   Each round cuts `release/r<N>`, fixes land on it and merge forward into
+   main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
+   and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
+   (`round cut`, `release/**` CI) shipped 06247b684. Slice (b) `ship --release`
+   (forward merge in the same command, stop on conflict; design note 5 +
+   verdict) shipped 2026-10-04. Next is (c): `round gate`/`deploy` on the
+   release head, the `deployed/r<N>` tag and merge-back, with the
+   prod-as-second-parent test; round 4 dogfoods it.
+2. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
    the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
    The `scripts/test` and `scripts/ship` refusals below 10 GB and the
    reaper's cache cap shipped; left: reaping idle gate/test-db pairs.
-2. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
+3. **backlog/release-candidate-verdicts.md** — p1 (Reto 2026-10-03). Main's
    CI runs cancel each other at ~8 qlands/hour, so main has no verdicts and
    the drift guard is blind (25-commit walk); the round's local full gate
    holds the ship lock. All four slices shipped 2026-10-03 (hygiene tests
@@ -52,13 +62,6 @@ slice (b).
    12 h to 12:00Z had a green verdict. Review item organizer-release-branch-1 (v2) has the
    critique and Reto's two open decisions; design-bearing changes go to the
    orchestrator as a design note before they land.
-3. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
-   Each round cuts `release/r<N>`, fixes land on it and merge forward into
-   main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
-   and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
-   (`round cut`, `release/**` CI) shipped 06247b684. Next is (b) `ship
-   --release`: Reto 22:13Z, forward-merge in the same command, stop and
-   ask on conflict; design note 5 awaits its verdict. Then (c).
 4. **backlog/reaper-removed-live-session-worktree.md** — auto-reap deleted
    live sessions' trees; fixes 1–3 and the grace/purpose guards shipped,
    the harness kill/SessionEnd coupling (proposal 4) is open. Its sibling
