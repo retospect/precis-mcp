@@ -52,8 +52,8 @@ put(kind="quest", text="Synthetic parked striving", tags=["STATUS:dormant", "tes
 ```
 
 The **first line** is the striving statement; anything after a blank line
-is criteria / rubric. Both embed (a quest *is a vector*). A quest is born
-`STATUS:active`.
+is criteria / rubric. Both embed (a quest *is a vector*). A quest defaults
+to `STATUS:active`; an explicit `STATUS:` tag selects its initial state.
 
 A striving is never a procedure — "how to evaluate a paper" is a
 rubric/how-to and belongs in a `skill`, not a quest.
