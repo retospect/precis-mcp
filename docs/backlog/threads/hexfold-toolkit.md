@@ -30,6 +30,17 @@ waited on happened 09-29 — note at the bottom)
 
 ## Resume
 
+- State at the round-6 ship-all (2026-10-04 06:48Z):
+  - Landed and on prod: cycle 1 round tops (ebe4aedb1, 58bb0a6ee,
+    727728cc9). On main, not yet deployed: the per-scene-op budget wording
+    and hexfold 0.3.1 (0adb12e7f, bbd013d99).
+  - Open: cycle 2 (per-n plan table first), then the spread-pentagon dome
+    rows. Their scoping probe (hexfold-corner/sp_*) is running; the build
+    count goes to Reto via the review window when it reports.
+  - Not on any branch: the bud-in-scene fix (lead: lopsided seam bonds,
+    under Do next 1, S4).
+  - Next step: read the sp_* probe result, write the scope note to
+    reviews/hexfold-toolkit.md, then start cycle 2.
 - Round 4 dogfood (prod 727728cc9, 2026-10-04 04:43Z): design
   `hexfold-dogfood-r4` → **pass**, with the warnings as designed. The put
   took 143 s and holds two generates:
@@ -138,18 +149,23 @@ waited on happened 09-29 — note at the bottom)
            lifts them: one `top: "sphere"` per call (~95 s), a sphere only
            to n=12 (n=24 plans ~100 s alone), and 16 candidate builds per
            call (sphere 9, each distinct `(n, top_fillet)` rounded lid 4);
-         - not yet on prod; the n=12 washer ball relaxes ~0.9 Å flatter, so
-           the relaxed-shape WARN fires (per-annulus rows are the fix);
-       - cycle 2: θp finding plus its band and the R_min refusal on the
-         ball, MACE/xTB verdict as product evidence;
-       - cycle 3: buds on tethered tubes;
-       - cycle 4: spec v0, Reto's CAD grammar (`plane`, `hole_tube`,
+         - on prod since round 4 (`hexfold-dogfood-r4`); the n=12 washer ball
+           relaxes ~0.9 Å flatter (stick), ~2 Å (MACE/xTB), so the
+           relaxed-shape WARN fires;
+       - cycle 2: the per-n plan table first (lifts the cost ceilings), then
+         the θp finding plus its band and the R_min refusal on the ball, and
+         the MACE/xTB verdict as product evidence;
+       - next: spread-pentagon rows on the dome, so a ball stays round after
+         relax (Reto 2026-10-04, hexfold-toolkit-5 option b: ahead of the
+         buds). At least 2 cycles; scoping in progress;
+       - then buds on tethered tubes;
+       - then spec v0, Reto's CAD grammar (`plane`, `hole_tube`,
          `ball_on`/`lid_on`, `round` defaulting to min(1.5 × the θp-derived
          R_min, the room the neighbouring pieces leave), with the chosen R
          written into the stored spec,
          `nest`), compiled golden-neutral from `hexfold_scene` params;
          bounds as `add_measure` bands. This is the nanobud to spec.
-       - cycles 5–6: coaxial two-shell bearing. Its queue item carries the
+       - then (2 cycles) the coaxial two-shell bearing. Its queue item carries the
          commensurate-friction sentence. The gap is the centre-line radius
          difference.
        - The render round trip is nanobuds-paper's build plus Reto's
