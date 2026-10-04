@@ -46,16 +46,26 @@ since 23:13Z its caches live on a host mount that survives a recreate
 capacity and isolation gaps.
 **Last reviewed:** 2026-10-03 (handoff: Waiting-on block added)
 **Worktree:** `session-mcp-shared-server`
-**Resume (2026-10-03 20:40Z, round 3 deployed as 929107f32):** the gate
-log line (84540789d) and the gr463966 fix (514091d4) are live, but they
-are not yet exercised. Since the deploy there has been no gated pass
-(0 `claude gate:` lines, 0 refusals) and no chunk_keywords pass; the last
-review pass ran at 20:19Z, before the deploy. The chunk_keywords lock is
-still leaked on pooled backend 26719, born at 20:22Z under the old code.
-pgbouncer was not restarted, so it clears with Stage A's restart in the
-follow-up deploy. Next: re-read worker_logs after the first post-deploy
-review pass. After the pgbouncer restart, confirm no `_LOCK_KEY` lock is
-held outside a transaction.
+**Resume (2026-10-03 22:08Z, session closed to save usage; nothing in
+flight, nothing to build until the waits below clear):**
+- **Done:** round 3 deployed as 929107f32 with the gate log line
+  (84540789d) and the gr463966 transaction-scoped locks (514091d4). Neither
+  had been exercised by 20:40Z: no gated pass and no chunk_keywords pass
+  since the deploy.
+- **Next, all read-only checks, through cluster-ops with BEGIN READ ONLY:**
+  1. **gr463517:** after the first review pass since the deploy, look for
+     `claude gate: precis connected after` in worker_logs. Close the gripe
+     after a day of passes with no tool-starved alert. Per Reto's ruling on
+     review item 9, profile `precis serve` startup only if a pass is refused
+     or the 95th percentile of "connected after" is above 10 s.
+  2. **After the follow-up deploy restarts pgbouncer (Stage A):** confirm
+     that no `_LOCK_KEY` lock is held outside a transaction. Backend 26719
+     held a lock leaked by the old code. Also start the Stage B "before"
+     day; it needs td458386 (pgbouncer admin-console access).
+  3. **gr462133:** close after Reto's proxy cutover (organizer-mcp-2)
+     brings the backend up on a sha at or after 7f006bf09.
+- **Waits on:** the follow-up deploy (orchestrator), Reto's cutover window,
+  td458386.
 
 ## Do next
 **Waiting on the orchestrator or Reto (2026-10-03).** Do not rebuild these;
