@@ -36,7 +36,12 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from precis.nanopub.term_coverage import PaperChunk, heading_sizes, rank_for_claim
+from precis.nanopub.term_coverage import (
+    PaperChunk,
+    heading_sizes,
+    is_bib_text,
+    rank_for_claim,
+)
 from precis.taproot import coverage
 from precis.taproot.coverage import KIND_NUMBER, AcronymMap, Term
 
@@ -116,7 +121,8 @@ def select_candidates(
     if not terms:
         return []
     skip = set(skip_chunk_ids)
-    live = [c for c in chunks if c.chunk_id not in skip]
+    # A reference-list chunk names every method and is never the passage.
+    live = [c for c in chunks if c.chunk_id not in skip and not is_bib_text(c.text)]
     prepared = {c.chunk_id: coverage.prepare(c.text) for c in live}
     sizes = heading_sizes(chunks)
 

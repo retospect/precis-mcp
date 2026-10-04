@@ -114,7 +114,7 @@ from precis.taproot.canon import (
     NOT_HYPOTHESIS_PREDICATE_PARAMS,
     not_hypothesis_predicate_sql,
 )
-from precis.taproot.hub import refine_claim_sentence
+from precis.taproot.hub import human_rejected, refine_claim_sentence
 from precis.taproot.sentence_lint import (
     _OVER_LONG_CHARS,
     GENERIC_EPISTEMIC_HEADS,
@@ -324,7 +324,7 @@ def select_reword_cohort(
     out: list[RewordCandidate] = []
     for row in rows:
         meta = dict(row[2] or {})
-        if meta.get("taproot_rejected"):
+        if human_rejected(meta):
             continue
         sentence = str(row[1] or "").strip()
         codes = _blocking_codes(sentence)

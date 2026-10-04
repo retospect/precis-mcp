@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from precis.nanopub import evidence as ev
 from precis.nanopub import snip as sniplib
 from precis.nanopub.vocab import QUANTITY_BOUNDS
+from precis.taproot.hub import human_rejected
 from precis.taproot.notation import lint_notation
 from precis.taproot.sentence_lint import lint_claim_sentence
 
@@ -225,8 +226,9 @@ def run_mint_gates(
     # check_claim_sentence's docstring.
     violations += check_claim_sentence(bundle.sentence, artifact_type=artifact_type)
 
-    # 2 + 16 — eligibility / rejection memo.
-    if (hub_meta or {}).get("taproot_rejected"):
+    # 2 + 16 — eligibility / rejection memo. A person's rejection only: the
+    # judges' per-source "does not support" memo shares the key (human_rejected).
+    if human_rejected(hub_meta):
         violations.append(
             GateViolation(
                 "rejected-memo",

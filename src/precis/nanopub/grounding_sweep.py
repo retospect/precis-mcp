@@ -105,9 +105,6 @@ _LETTER_BODY_HEADING_RE = re.compile(
     r"computational|discussion)\b",
     re.IGNORECASE,
 )
-_BIB_ITEM_RE = re.compile(
-    r"^\s*(?:-\s*)?(?:<span[^>]*>\s*</span>\s*)?(?:\[\d+\]|\(\d+\))\s+[A-Z]"
-)
 _DEFINITION_CUES = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -145,8 +142,9 @@ def is_short_letter(chunks: list[PaperChunk]) -> bool:
 
 
 def is_bib_item(chunk: PaperChunk) -> bool:
-    """A bibliography list item the reader did not tag ``references``."""
-    return _BIB_ITEM_RE.match(chunk.text) is not None
+    """A bibliography list item the reader did not tag ``references``
+    (:func:`~precis.nanopub.term_coverage.is_bib_text`)."""
+    return term_coverage.is_bib_text(chunk.text)
 
 
 def passage_tier(

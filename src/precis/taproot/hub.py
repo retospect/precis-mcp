@@ -971,6 +971,29 @@ META_REGROUND_SEEN = "reground_seen"
 META_REJECTED = "taproot_rejected"
 
 
+def human_rejected(meta: dict[str, Any] | None) -> bool:
+    """True when ``meta['taproot_rejected']`` marks the CLAIM as rejected by
+    a person, not when it holds the widen/reground judges' per-source memo.
+
+    The key is shared: ``workers/hub_refine`` writes ``{source_ref_id:
+    {"at", "supports", "contradicts"[, "via"]}}`` — "this paper does not
+    support the claim", one entry per judged source — while the mint gate
+    and the reword cohort read the key as "a human rejected this claim".
+    Read naively, every refined hub looks human-rejected (prod 10-04: 1,124
+    live findings carry the memo, 119 of them candidates that approve then
+    refused). A judge memo is a dict whose every value is a dict carrying
+    ``supports``; anything else truthy (a legacy flag or note) still counts.
+    """
+    value = (meta or {}).get(META_REJECTED)
+    if not value:
+        return False
+    if isinstance(value, dict) and all(
+        isinstance(v, dict) and "supports" in v for v in value.values()
+    ):
+        return False
+    return True
+
+
 def reground_counts(meta: dict[str, Any] | None) -> tuple[int, int, int]:
     """``(judged, withheld, removed)`` for one claim hub, from its ``meta``.
 
@@ -2528,6 +2551,7 @@ __all__ = [
     "attach_evidence",
     "attach_motivation",
     "cap_removed_meta",
+    "human_rejected",
     "judgement_fields",
     "link_claims",
     "live_evidence_count",

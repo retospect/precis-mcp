@@ -403,3 +403,21 @@ def test_prefill_does_not_demote_a_paper_filed_under_abstract(store: Any) -> Non
     )
     assert [p["chunk_id"] for p in payload["passages"]] == [tem, intro]
     assert first  # the ord-0 chunk exists but is not attached
+
+
+def test_bibliography_runs_are_never_suggestions():
+    from precis.nanopub.term_coverage import is_bib_text
+
+    # prod 10-04, fi263188: a chunk cut mid reference list
+    glued = (
+        "…nal tilings in Z d . Discrete Analysis. (2021:16). 1-28. - [9] R. "
+        "Greenfeld, T. Tao, Undecidable translational tilings with only two "
+        "tiles. - [10] B. Grünbaum, G. C. Shephard, Tilings and Patterns."
+    )
+    assert is_bib_text(glued)
+    assert is_bib_text("- [6] Culik K. An aperiodic set of 13 Wang tiles.")
+    assert is_bib_text("(19) Meng, X. Graphene nanobuds.")
+    assert not is_bib_text(
+        "TEM images in [9] show the bud junction at 2 nm resolution."
+    )
+    assert not is_bib_text("The analysis of ref. [3] is extended here.")

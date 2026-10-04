@@ -505,6 +505,24 @@ def term_coverage(
     ).items
 
 
+_BIB_START_RE = re.compile(
+    r"^\s*(?:-\s*)?(?:<span[^>]*>\s*</span>\s*)?(?:\[\d+\]|\(\d+\))\s+[A-Z]"
+)
+#: An inline reference-list item: "- [9] R. Greenfeld, T. Tao, …" / "(19) Meng, …".
+_BIB_INLINE_RE = re.compile(r"(?:^|\s-\s|\s)(?:\[\d+\]|\(\d+\))\s+[A-Z][\w'-]*\.?,?\s")
+
+
+def is_bib_text(text: str) -> bool:
+    """A bibliography list item, or a run of them, that the reader did not
+    tag ``references``: starts with ``[n]``/``(n)`` + a capitalised name, or
+    carries two or more such items inline (a chunk cut mid-list — prod
+    10-04, fi263188's ``term-coverage`` suggestion was "…Discrete Analysis.
+    (2021:16). 1-28. - [9] R. Greenfeld, T. Tao, …"). Never a suggestion."""
+    if _BIB_START_RE.match(text):
+        return True
+    return len(_BIB_INLINE_RE.findall(text)) >= 2
+
+
 def analyse(
     sentence: str,
     passages: list[str],
@@ -527,7 +545,9 @@ def analyse(
     if not missing:
         return []
 
-    prepared = [(c, coverage.prepare(c.text)) for c in chunks]
+    prepared = [
+        (c, coverage.prepare(c.text)) for c in chunks if not is_bib_text(c.text)
+    ]
     sizes = heading_sizes(chunks) if sizes is None else sizes
     out: list[UncoveredTerm] = []
     for term in missing:

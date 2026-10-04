@@ -1578,3 +1578,23 @@ def test_merge_hubs_does_not_touch_the_winners_sentence_or_pub_id(store: Any) ->
 
     assert _pub_id(store, winner) == winner_pub_id_before
     assert _finding_body(store, winner) == winner_title_before
+
+
+def test_human_rejected_ignores_the_judges_per_source_memo():
+    from precis.taproot.hub import human_rejected
+
+    memo = {
+        "2882": {"at": "2026-10-01T19:55:18Z", "supports": "no", "contradicts": False},
+        "4375": {
+            "at": "2026-09-19T20:11:19Z",
+            "via": "reground-judge",
+            "supports": "no",
+        },
+    }
+    assert human_rejected({"taproot_rejected": memo}) is False
+    assert human_rejected({"taproot_rejected": {}}) is False
+    assert human_rejected({}) is False
+    assert human_rejected(None) is False
+    # Anything that is not the judges' memo still blocks.
+    assert human_rejected({"taproot_rejected": True}) is True
+    assert human_rejected({"taproot_rejected": {"r123": "not supported"}}) is True

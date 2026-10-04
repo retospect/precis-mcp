@@ -142,6 +142,19 @@ def test_cohort_excludes_rejected_memo_hubs(store: Any) -> None:
         conn.commit()
     assert [c.hub_ref_id for c in select_reword_cohort(store)] == [hub]
 
+    # The refine judges' per-source memo shares the key ("paper 2882 does not
+    # support this claim") — that is not a person rejecting the claim.
+    memo = {
+        "2882": {"at": "2026-10-01T19:55:18Z", "supports": "no", "contradicts": False}
+    }
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (json.dumps({"taproot_rejected": memo}), hub),
+        )
+        conn.commit()
+    assert [c.hub_ref_id for c in select_reword_cohort(store)] == [hub]
+
 
 def test_cohort_hub_and_limit(store: Any) -> None:
     first = _mint(store, _FAILING)
