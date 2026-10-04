@@ -1,0 +1,10 @@
+[tui]
+status_line = [
+  "project-name",
+  "current-dir",
+  "git-branch",
+  "branch-changes",
+  "context-remaining",
+  "task-progress",
+  "run-state",
+]
