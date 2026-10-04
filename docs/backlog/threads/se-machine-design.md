@@ -9,12 +9,18 @@ motor as children of one design. North-star: `backlog/se-kind.md` +
 (se-3d-viewer, se-nucleic-chain, hexfold-toolkit) consume. Today the region-property layer is
 unbuilt and blocks three of the six reasoning axes; everything below reads
 off that gap until it closes.
-**Last reviewed:** 2026-10-01 (Pillar 2 review: now the se OWNER; three unthreaded se items adopted)
+**Last reviewed:** 2026-10-04 (95% ship review: all work on main)
 **Worktree:** `se-machine-design`
 **Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
 
 ## Resume state (2026-10-04)
 
+- **Branch state at the 95% review (2026-10-04T06:48Z):** nothing is
+  only on this branch; everything is on main. Nothing is half-done.
+  Next step: print-file-scale (½ build), then O2–O4 or O5 once Reto
+  answers item -6. Reto owes: the load-test numbers (-6), the PCB
+  rough-box decision (-8), and the first "Print files" click on
+  organic-bracket-1's 3-D page.
 - **Round 3 is deployed** (929107f32, 2026-10-03T20:35Z). It was
   dogfooded on prod data with main's code: `view='print'`, the 3MF export
   and `view='drc'` render. The joint sweep was not exercised: no prod
@@ -39,7 +45,7 @@ off that gap until it closes.
     - `GET /se/{slug}/print/{block}.3mf|.stl` serves the file, with a "Print files" section on the 3-D page.
     Dogfooded on prod at 04:50Z:
     - `view='print' args={'block':'bracket'}` on `organic-bracket-1` runs on the shipped mesh: flat bed contact applied, cleanup dropped 8740 degenerate triangles, 109 slivers left, 47 vertices lifted at tol 0.5 mm, no findings. The 3MF export writes 3.3 MB.
-    - Two message gaps were fixed in 68b78e230 (round 5). The summary view said "no findings" though it skips the mesh checks, and the block view gave no count line when the counts were 0.
+    - Two message gaps were fixed in 3285cbdc4 (round 6, not yet deployed). The summary view said "no findings" though it skips the mesh checks, and the block view gave no count line when the counts were 0.
     - The web route could not be checked by an agent, because the web UI needs a login. Reto's first click on "Print files" on the bracket's 3-D page is the check.
     - The old bracket field has no `fieldops` provenance key, as expected: it was minted before the stamp.
     gr464493: print-group and manufacture 3MFs still skip the check.
