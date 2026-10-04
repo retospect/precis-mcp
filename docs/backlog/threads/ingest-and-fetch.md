@@ -29,9 +29,19 @@ states that count a paper as usable when it is not, then metadata.
    backoff. Not built: a CLI, and a bare-slug cite of an SI ref is not
    redirected to the parent (search hits and exports are). Next, after the
    round-4 deploy: run `fetch-si` on pa5303 and pa166889 and write the
-   result into catalysis-selectivity-17. Build 2: the attention trigger
-   (web open, MCP `get`, walker touch; one check per paper, a miss
-   recorded on the ref) and `fetch_oa` lane priority for those fetches.
+   result into catalysis-selectivity-17. Build 2 landed 2026-10-03: the
+   attention trigger, `queue_si_on_attention` (`store/si_links.py`). It is
+   called from the web paper page (`routes/papers.py::detail`), the MCP
+   `get` overview (`PaperHandler.get`) and the fisheye ring walk
+   (`refeye.py::collect_ring`, at most 20 papers per walk). A paper is
+   checked once by attention, ever; only `fetch-si` re-checks it.
+   Explicit `fetch-si` requests claim ahead of attention ones. The ring
+   walk also runs inside backfill and working-set renders, so a paper
+   cited by a backfilled section is queued without a human look. That is
+   accepted under the "walkers touch" ruling. Off switch:
+   `si.attention_enabled` (env `PRECIS_SI_ATTENTION`). After deploy:
+   watch the SI-pass yield and how much of each fetch pass it takes;
+   delete this item once the two quest papers are done.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
@@ -112,8 +122,12 @@ states that count a paper as usable when it is not, then metadata.
    20 did not; those 20 keep the pin and sit in normal backoff. Batch 2
    (the other 83 non-Elsevier) was queued 21:40Z at prio 1 with the pin.
    It is the first test of round 3's ordering: it should be claimed
-   within about three 32-stub passes. Next: count batch 2's gained
-   bodies, then apply the policy to what is still bodiless. This
+   within about three 32-stub passes. Round 3 verified 22:58Z: the first
+   pass after queueing worked through batch-2 refs ahead of the backlog.
+   7 tried, 6 gained a body (101–243 chunks); one `arxiv_html fetch_ok`
+   had no body yet. Next: once batch 2 drains (about three passes), count
+   its gained bodies and check that `fetch_ok` ref. Then apply the policy
+   to what is still bodiless. This
    thread owns td461154 (STATUS:doing). Close it once the policy is
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in

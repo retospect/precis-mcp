@@ -773,6 +773,9 @@ class PaperHandler(Handler):
             return self._render_chunks(ref, chunk_spec)
 
         if effective_view is None:
+            from precis.store.si_links import queue_si_on_attention
+
+            queue_si_on_attention(self.store, ref.id, "mcp_get")
             return self._render_overview(ref)
 
         return self._render_view(ref, effective_view)

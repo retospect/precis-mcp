@@ -49,6 +49,7 @@ from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
+from precis.store.si_links import queue_si_on_attention
 from precis.store.types import BibEntry
 from precis.utils.authors import (
     author_line,
@@ -800,6 +801,8 @@ async def detail(
         store.touch_viewed(ref.id)
     except Exception:
         pass
+    # One-shot SI check on first open (indexed UPDATE, never raises, no network).
+    queue_si_on_attention(store, ref.id, "web")
     # htmx-aware (the ``flags.py`` pattern) — see the twin branch in
     # ``claim.py::claim_view`` for why this keys off the header and not a
     # separate /fragment URL: /c/<handle> and /r/paper/<id> 303 into here,

@@ -777,3 +777,65 @@ def test_claim_block_lists_computed_evidence_with_stale_marker() -> None:
     assert "(no evidence derived yet)" not in block
     assert "⚙ " in block and "probe-rx-aaa111" in block
     assert "⚠ stale: superseded by pw9" in block
+
+
+def test_ring_touch_queues_cited_paper_si_once(hub: Hub, plan: PlanHandler) -> None:
+    """The fisheye+1hop ring is a walker touch: a cited DOI paper gets exactly
+    one attention SI check, however often the ring is rebuilt."""
+    sec_chunk, chunks, ids = _section_with_refs(hub, plan)
+    store = hub.live_store
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 'doi', '10.1000/walker', 'manual')",
+            (ids["paper"],),
+        )
+        conn.commit()
+
+    def si_fetch_meta() -> Any:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta->'si_fetch' FROM refs WHERE ref_id = %s", (ids["paper"],)
+            ).fetchone()
+        assert row is not None
+        return row[0]
+
+    collect_ring(store, sec_chunk, chunks)
+    first = si_fetch_meta()
+    assert first["by"] == "walker" and first["trigger"] == "attention"
+    collect_ring(store, sec_chunk, chunks)
+    assert si_fetch_meta() == first
+
+
+def test_ring_touch_caps_at_attention_walk_cap(hub: Hub, plan: PlanHandler) -> None:
+    from precis.store.si_links import ATTENTION_WALK_CAP
+
+    store = hub.live_store
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    n = ATTENTION_WALK_CAP + 5
+    paper_ids = [
+        store.insert_ref(kind="paper", slug=f"cap{i}", title=f"Paper {i}").id
+        for i in range(n)
+    ]
+    with store.pool.connection() as conn:
+        for i, pid in enumerate(paper_ids):
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'doi', %s, 'manual')",
+                (pid, f"10.1000/cap{i}"),
+            )
+        conn.commit()
+    plan.put(id="p", title="Root", project=proj)
+    cites = " ".join(f"paper:{pid}" for pid in paper_ids)
+    sec = _handles(plan.put(id="p", text=f"Cites: {cites}", at={"last": True}).body)[0]
+    sec_chunk = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert sec_chunk is not None
+    chunks = store.drafts.reading_order(sec_chunk.ref_id, kind="plan")
+    collect_ring(store, sec_chunk, chunks)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE ref_id = ANY(%s) "
+            "AND jsonb_exists(meta, 'si_fetch')",
+            (paper_ids,),
+        ).fetchone()
+    assert row is not None and row[0] == ATTENTION_WALK_CAP

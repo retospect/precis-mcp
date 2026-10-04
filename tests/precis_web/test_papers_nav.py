@@ -246,3 +246,21 @@ def test_rawchunks_endpoint_empty_for_unknown_paper(client) -> None:
     resp = client.get("/papers/999999/rawchunks")
     assert resp.status_code == 200
     assert resp.json()["chunks"] == []
+
+
+def test_detail_open_queues_si_attention(client, monkeypatch) -> None:
+    """Opening the paper page asks for one SI attention check (by='web'); the
+    id->slug redirect does not."""
+    import precis_web.routes.papers as papers_routes
+
+    calls: list[tuple[int, str]] = []
+
+    def spy(store: object, ref_id: int, by: str) -> bool:
+        calls.append((ref_id, by))
+        return True
+
+    monkeypatch.setattr(papers_routes, "queue_si_on_attention", spy)
+    client.get("/papers/10", follow_redirects=False)
+    assert calls == []
+    client.get("/papers/smith2024", follow_redirects=False)
+    assert calls == [(10, "web")]

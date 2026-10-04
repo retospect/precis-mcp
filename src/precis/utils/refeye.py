@@ -41,6 +41,7 @@ import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Protocol
 
+from precis.store.si_links import ATTENTION_WALK_CAP, queue_si_on_attention_many
 from precis.taproot.seniority import (
     ClaimLinks,
     ComputedEdge,
@@ -668,6 +669,7 @@ def collect_ring(
         "Notes": [],
         "Claims": _render_claims_group(store, claim_hub_ids, cap=cap),
     }
+    touched_papers: list[int] = []
     if all_ids:
         refs = store.fetch_refs_by_ids(list(all_ids))
         for rid in all_ids:
@@ -675,6 +677,11 @@ def collect_ring(
             if ref is None or getattr(ref, "retired_at", None) is not None:
                 continue
             groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
+            if getattr(ref, "kind", None) == "paper":
+                touched_papers.append(rid)
+    # Walker touch: the fisheye+1hop ring visiting a paper is attention; queue
+    # one SI check each (deduped in the helper), capped so a wide ring is no sweep.
+    queue_si_on_attention_many(store, touched_papers[:ATTENTION_WALK_CAP], "walker")
 
     # A hub cited via its `fi<id>` handle (unlike a bare `[pub_id]`, which
     # isn't a generic handle) is ALSO picked up by the outbound

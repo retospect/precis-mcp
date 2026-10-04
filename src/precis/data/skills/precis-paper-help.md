@@ -232,6 +232,12 @@ challenge: that is a recorded miss, never retried around), `si_skipped`
 `si_none` / `si_blocked` row in `get(id=..., view='log')`. A paper with no
 SI is checked once and not re-checked until you call it again.
 
+You rarely need to call it: opening a paper that has a DOI (web page, `get`
+overview, or a fisheye ring that cites it) queues **one** SI check
+automatically, ahead of the stub backlog. `meta.si_checked_at` / `si_found`
+record that it ran, and attention never queues the same paper twice; only an
+explicit `fetch-si` forces a re-check.
+
 Each SI PDF becomes **its own paper ref** titled `Supporting Information:
 <parent title>`, linked to the parent (edge `part-of` → parent, read as
 `contains` from the parent; the edge carries `meta.role='supplement'`), and

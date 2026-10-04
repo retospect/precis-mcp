@@ -133,6 +133,15 @@ REGISTRY: dict[str, SettingSpec] = {
             "makes sense for a one-shot manual override.",
         ),
         SettingSpec(
+            key="si.attention_enabled",
+            type="bool",
+            env_var="PRECIS_SI_ATTENTION",
+            default=True,
+            doc="Queue one supplementary-information check when a DOI paper "
+            "is opened (web / MCP get / walker touch); off = only explicit "
+            "fetch-si queues SI (precis.store.si_links).",
+        ),
+        SettingSpec(
             key="contact.crossref_mailto",
             type="str",
             env_var="PRECIS_CROSSREF_MAILTO",

@@ -72,6 +72,8 @@ def claim_si_parents(
     since that request. ``FOR UPDATE SKIP LOCKED``; the claim stamps
     ``si_checked_at`` immediately (same transaction), so a crash mid-pass or a
     second worker never re-runs the same request — a fresh request re-arms it.
+    Explicit ``fetch-si`` requests (no ``si_fetch.trigger``) go before
+    attention-queued ones, then oldest request first.
     """
     rows = conn.execute(
         """
@@ -87,7 +89,8 @@ def claim_si_parents(
            AND r.meta ? 'si_fetch'
            AND (r.meta->>'si_checked_at' IS NULL
                 OR r.meta->>'si_checked_at' < r.meta->'si_fetch'->>'requested_at')
-         ORDER BY r.meta->'si_fetch'->>'requested_at', r.ref_id
+         ORDER BY (r.meta->'si_fetch'->>'trigger' IS NOT NULL),
+                  r.meta->'si_fetch'->>'requested_at', r.ref_id
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
