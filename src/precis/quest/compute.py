@@ -2761,10 +2761,12 @@ def _stuck_seed_failure(
     ladder (qu164903: 9 candidates lost this way). This is the seed-level
     fallback that surfaces that state.
 
-    Returns ``("failed", newest_failed_seed_job_meta)`` iff, in one query:
-    **no** ``autocatpath_aggregate`` job exists yet under any ``T_agg``
-    child of ``structure_ref_id`` (any status — one existing, even failed,
-    means :func:`_latest_autocatpath_job` is the truth instead) **and** at
+    Returns ``("failed", newest_failed_seed_job_meta)`` iff, in one query,
+    looking ONLY at the candidate's newest ``T_agg`` tree (highest
+    ``ref_id`` among its non-retired ``autocatpath_aggregate`` todos):
+    **no** ``autocatpath_aggregate`` job exists yet under THAT ``T_agg``
+    (any status — one existing, even failed, means
+    :func:`_latest_autocatpath_job` is the truth for that tree) **and** at
     least one still-open seed todo has a seed job ``STATUS`` of
     ``failed``/``cancelled`` and **no** seed job with any other status —
     i.e. :func:`_seed_todo_handled` ``== False``, restricted to seeds that
@@ -2777,18 +2779,14 @@ def _stuck_seed_failure(
     never a physical verdict (same reasoning as
     :func:`_latest_autocatpath_job`).
 
-    **Known masking edge, accepted.** A candidate can carry 2+ independent
+    **The newest tree is the truth.** A candidate can carry 2+ independent
     ``T_agg`` trees (a config/tier change re-dispatches under a fresh
-    content key). If an OLDER tree has a permanently-dead seed while a
-    NEWER tree's aggregate later succeeds, ``_latest_autocatpath_job``
-    (highest ``ref_id`` across all trees) returns the newer succeeded job,
-    short-circuiting ``harvest_measures`` before this function runs (only
-    invoked when ``_latest_autocatpath_job`` is ``None``) — the old tree's
-    stuck seed is never repaired or gripe-filed, permanently invisible.
-    Not a bug: the candidate has forward-progressed, no signal is lost, and
-    the stale subtree is dormant (no live job/lease) — an orphaned subtree
-    a human prunes manually (e.g. via the nursery). This function's concern
-    is only a candidate stuck with NO surviving/successful tree at all.
+    content key). An OLDER stalled tree stays dormant (not repaired, no
+    gripe) once a newer tree exists — it is an orphaned subtree a human
+    prunes manually. A NEWER stalled tree is repaired even when an older
+    tree's aggregate succeeded (the neb->verify promotion case, qu164903
+    2026-10-04), which is why :func:`harvest_measures` consults this
+    function BEFORE :func:`_latest_autocatpath_job`.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -2823,15 +2821,17 @@ def _stuck_seed_failure(
                         AND t3.namespace = 'STATUS'
                         AND t3.value NOT IN ('failed', 'cancelled')
                    )
+               AND t_agg.ref_id = (
+                     SELECT max(ta.ref_id) FROM refs ta
+                      WHERE ta.parent_id = %(sid)s
+                        AND ta.kind = 'todo' AND ta.retired_at IS NULL
+                        AND ta.meta->>'job_type' = 'autocatpath_aggregate'
+                   )
                AND NOT EXISTS (
                      SELECT 1 FROM refs agg_job
                       WHERE agg_job.kind = 'job' AND agg_job.retired_at IS NULL
                         AND agg_job.meta->>'job_type' = 'autocatpath_aggregate'
-                        AND agg_job.parent_id IN (
-                              SELECT ref_id FROM refs
-                               WHERE parent_id = %(sid)s AND kind = 'todo'
-                                 AND retired_at IS NULL
-                            )
+                        AND agg_job.parent_id = t_agg.ref_id
                    )
              ORDER BY j.ref_id DESC LIMIT 1
             """,
@@ -3401,17 +3401,16 @@ def harvest_measures(
         # preview) or the quest has no reaction config to re-dispatch against.
         #
         # `_latest_autocatpath_job` watches two shapes (legacy explore, current
-        # aggregate); `_stuck_seed_failure` is a THIRD, seed-level fallback for a
+        # aggregate); `_stuck_seed_failure` is a THIRD, seed-level view for a
         # state neither shape can see — a dead seed with no aggregate minted yet
-        # (see its own docstring, qu164903). The `or` preserves
-        # aggregate-preferring semantics: an aggregate of ANY status existing
-        # means the seed lane has already resolved (the aggregate only mints
-        # once every seed todo under it is done), so the fallback only speaks
-        # when no aggregate lane exists at all.
+        # in the candidate's NEWEST tree (see its docstring, qu164903). It goes
+        # FIRST so a stuck newer tree (neb->verify promotion) wins over a
+        # succeeded aggregate from an older tree; when the newest tree has an
+        # aggregate job it returns None and `_latest_autocatpath_job` decides.
         cp_ruled_out = any(
             str(t).startswith("ruled-out:") for t in store.tags_for(s.id)
         )
-        autocatpath_job = _latest_autocatpath_job(store, s.id) or _stuck_seed_failure(
+        autocatpath_job = _stuck_seed_failure(store, s.id) or _latest_autocatpath_job(
             store, s.id
         )
         if (

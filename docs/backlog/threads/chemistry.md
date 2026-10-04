@@ -11,14 +11,22 @@ packages its results.
 **Last reviewed:** 2026-10-02 (every item triaged against the code and commit history)
 **Worktree:** `chemistry`
 **Active:** yes — Reto, 2026-10-01.
-**Resume (2026-10-03 20:40Z):** round 3 (929107f32) carries only the
-cpuset plumbing (044378f9), which runs only inside a seed, so its dogfood is
-the verify run. Branch `worktree-agent-a49ea425aa7c73281` (e45e31063: verify
-wall 28800, seed cpuset 0-4,10-14, runner affinity fallback) rides the
-follow-up deploy. After it: confirm new verify seeds for the 9 qu164903
-(NO→NH3 on Pd(111)) candidates carry `resources.wall_seconds=28800` +
-`cpuset`, the child runs under `taskset` on castor/pollux, and the
-pre-stamp September kills re-dispatch too (Do next 3).
+**Resume (2026-10-04 00:50Z):** dogfood of prod 4181421ce (verify wall
+28800 + seed cpuset 0-4,10-14): the worker env carries both (gateway plist
+and live process), but **nothing re-dispatched** — the 9 qu164903 (NO→NH3
+on Pd(111)) verify trees still hold only their September seeds (23 of 27
+failed at wall 5400, `failure_class` NULL). Cause: `harvest_measures` reads
+`_latest_autocatpath_job(...) or _stuck_seed_failure(...)`; each candidate's
+older neb-tier aggregate job succeeded, so the stuck-seed fallback never runs,
+and its own "no aggregate under any T_agg" guard blocks it a second time (the
+docstring's "known masking edge, accepted" — wrong when the newer tree is the
+stuck one). Fixed (this land): newest-tree-scoped `_stuck_seed_failure`, checked
+first. After its deploy, the next qu164903 tick should re-mint the 23 failed
+seeds under the same seed todos with `resources.wall_seconds=28800` +
+`cpuset`; then confirm the child runs under `taskset` on castor/pollux.
+Unchecked: whether the verify content key moved since 09-24 (uv.lock changed
+10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
+9 pathways instead of reusing them.
 
 ## Do next
 
@@ -91,11 +99,12 @@ paper needs.
    (pathway 449732 seed 0, pollux, unpinned) ran 13:57:55Z–19:03:04Z =
    **5 h 05 m**, 50 states; the child grows to ~76 GB GPU memory, so
    budget one whole GPU per seed. Wall value 28800 (2× = 36618 s, cap
-   binds; margin 1.57×) sent via `scripts/round eta`. **Waiting on Reto:**
-   review-queue `chemistry-8` — 3 seeds (~137 GPU-h) / 2 seeds (~92) /
-   best_first kept (~16) for the 9 qu164903 (NO→NH3 on Pd(111))
-   candidates. Nothing re-dispatches before the answer; the run then
-   sets `params.resources.cpuset` (shipped 2026-10-03).
+   binds; margin 1.57×). Reto ruled 2026-10-03 19:32Z (chemistry-8,
+   option 1): 3 seeds per pathway, exhaustive, 8 h wall (27 seeds,
+   ~137 GPU-h) for the 9 qu164903 (NO→NH3 on Pd(111)) candidates. The
+   wall and the seed cpuset (`0-4,10-14`, runner falls back unpinned when
+   the node lacks those CPUs) landed in 4181421ce; the dispatch follows
+   its deploy (Resume line).
 4. **backlog/pathway-step-level-retry.md** — PARTIAL (the ladder half,
    `promote_tiers` off-frontier promotion, shipped 2026-09-16). Left: the
    per-step re-queue with a fresh seed, which turns 0.95^20 attrition into

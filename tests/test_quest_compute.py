@@ -1742,6 +1742,125 @@ class TestHarvest:
         assert meta.get("quest_autocatpath_infra_retries") == 1
         assert "quest_seed_infra_retries" not in meta  # seed lane never touched
 
+    def _tree(
+        self,
+        store: Any,
+        sid: int,
+        *,
+        seed_ok: bool,
+        n_seeds: int,
+        agg_status: str | None,
+    ) -> None:
+        """One T_agg tree: ``n_seeds`` seed todos each with one seed job
+        (succeeded + todo done when ``seed_ok``, else failed on an open
+        todo with a 5400s wall), and an aggregate job iff ``agg_status``."""
+        from precis.store import Tag
+
+        agg_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath aggregate",
+            meta={"executor": "ssh_node", "job_type": "autocatpath_aggregate"},
+            parent_id=sid,
+        )
+        for _ in range(n_seeds):
+            seed_todo = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title="autocatpath seed",
+                meta={"auto_check": {"type": "child_job_succeeded"}},
+                parent_id=agg_todo.id,
+            )
+            if seed_ok:
+                store.add_tag(
+                    seed_todo.id, Tag.closed("STATUS", "done"), set_by="system"
+                )
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="autocatpath_seed",
+                meta={
+                    "job_type": "autocatpath_seed",
+                    "params": {"resources": {"wall_seconds": 5400}},
+                },
+                parent_id=seed_todo.id,
+            )
+            store.add_tag(
+                job.id,
+                Tag.closed("STATUS", "succeeded" if seed_ok else "failed"),
+                set_by="system",
+            )
+        if agg_status:
+            agg = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="autocatpath_aggregate",
+                meta={"job_type": "autocatpath_aggregate"},
+                parent_id=agg_todo.id,
+            )
+            store.add_tag(agg.id, Tag.closed("STATUS", agg_status), set_by="system")
+
+    def _capture_dispatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+
+        def _fake(_s: Any, structure_ref_id: int, _c: Any, **kw: Any) -> str:
+            calls.append({"sid": structure_ref_id, **kw})
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
+        return calls
+
+    def test_newer_stuck_verify_tree_repaired_despite_older_succeeded_neb(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """qu164903 2026-10-04: older neb tree's aggregate succeeded, newer
+        verify tree's 3 seeds all failed (no aggregate minted) — the newest
+        tree is the truth, so the stuck seeds are re-dispatched."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._tree(store, sid, seed_ok=True, n_seeds=1, agg_status="succeeded")
+        self._tree(store, sid, seed_ok=False, n_seeds=3, agg_status=None)
+        calls = self._capture_dispatch(monkeypatch)
+        monkeypatch.setattr(compute_mod, "_retry_tier", lambda *_a: "verify")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERIFY_WALL_SECONDS_ENV, "28800")
+
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+
+        assert [c["sid"] for c in calls] == [sid]
+        assert calls[0]["tier"] == "verify"
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_seed_infra_retries") == 1
+        from precis.utils import handle_registry
+
+        handle = handle_registry.try_format("structure", sid)
+        assert any(
+            f"stuck seed for [{handle}] → re-dispatched" in n for n in step.notes
+        )
+
+    def test_older_stalled_tree_stays_dormant_when_newer_aggregate_succeeded(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._tree(store, sid, seed_ok=False, n_seeds=3, agg_status=None)
+        self._tree(store, sid, seed_ok=True, n_seeds=1, agg_status="succeeded")
+        calls = self._capture_dispatch(monkeypatch)
+
+        compute_mod.harvest_measures(store, qid, hub=object())
+
+        assert calls == []
+        assert compute_mod._stuck_seed_failure(store, sid) is None
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "quest_seed_infra_retries" not in meta
+
     def test_stuck_seed_latched_child_failed_final_still_repaired(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
