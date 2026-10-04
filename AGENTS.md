@@ -266,6 +266,21 @@ genuinely needs it.
 
 ## On-demand pointers
 
+### Python source navigation first
+
+Reto's fleet rule: for Python source discovery, first try the loaded Precis
+MCP `search(kind='python', q=..., scope='precis')`, then use symbol or file
+outline `get` to inspect signatures, docstrings, callers and callees.
+Read `get(kind='skill', id='precis-python-help')` once as needed. Do not
+dump whole source files into context merely to orient.
+
+Verify the served alias/root corresponds to the task worktree before edits;
+an index of deployed code is not evidence of uncommitted local changes.
+Use local `rg` for exhaustive literal checks, unindexed/non-Python files,
+or unavailable/mismatched MCP roots. Read a bounded source region when the
+symbol view is insufficient; whole-file reads require a concrete reason.
+All edits/commits still belong to the assigned worktree.
+
 - **Orientation** (shape / lifecycle / seams): `docs/codebase.md`
   (read first; present-state per subsystem → the owning package's `__init__.py` docstring)
 - **Conventions**: `docs/conventions/`

@@ -112,6 +112,15 @@ No PermissionRequest hooks, no automatic approval/trust manipulation, no
 model changes or production deployment. Actual hook trust/loading is a
 platform activation gate, distinct from tests/config installation.
 
+Reto additionally requested using the loaded MCP's source-navigation skill.
+Native `get(skill, precis-python-help)` and `search(python, StoreCore,
+scope=precis)` verified readable symbol hits. Startup and rate-limited
+source-search reminders now point to that skill, native search and symbol
+views. Confirm the served alias/root matches the task worktree; retain raw
+rg for exhaustive checks or unindexed/mismatched sources. No MCP source
+writes or root reconfiguration; changing a file in another checkout remains
+prohibited. Existing sessions need hook reload evidence before claiming use.
+
 1. Hold further fleet expansion while converting existing ready work into
    one immutable-tree full green gate. Preserve running work and holds;
    audit does not authorize cancelling workers.

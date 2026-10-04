@@ -111,4 +111,21 @@ def test_lifecycle_context_is_short() -> None:
     cwd = str(HOOK.parents[2])
     for event in ["SessionStart", "PreCompact", "PostCompact"]:
         result = hook.respond({"cwd": cwd, "hook_event_name": event})
-        assert len(result["hookSpecificOutput"]["additionalContext"]) < 500
+        assert len(result["hookSpecificOutput"]["additionalContext"]) < 750
+
+
+def test_source_navigation_reminder_is_advisory_and_rate_limited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(hook, "scoped", lambda _: True)
+    payload = {
+        "cwd": str(tmp_path),
+        "session_id": "source-test",
+        "hook_event_name": "PreToolUse",
+        "tool_input": {"command": "rg StoreCore src/"},
+    }
+    result = hook.respond(payload)["hookSpecificOutput"]
+    assert "precis-python-help" in result["additionalContext"]
+    assert "updatedInput" not in result
+    assert "permissionDecision" not in result
+    assert hook.respond(payload) == {}

@@ -21,14 +21,26 @@ from typing import Any
 
 CONTEXT = (
     "Token-efficiency trial: use RTK for noisy summaries/logs; keep full logs "
-    "in your worktree and inspect targeted failure slices. Use raw rg for "
-    "exhaustive code searches. Read compact handoffs and owning docs once; "
+    "in your worktree and inspect targeted failure slices. For Python source "
+    "discovery, MUST first try search(kind='python', q=..., scope='precis'), "
+    "then symbol/outline get (skill precis-python-help). Do not dump whole "
+    "files to orient. Verify the MCP root matches your worktree; never edit "
+    "another checkout. Use raw rg for exhaustive searches. "
+    "Read compact handoffs and owning docs once; "
     "fetch leaf context on demand. Record accepted results, not repeated status "
     "polls. Compression is not a completeness or release check."
 )
 LOG_HINT = (
     "RTK reminder: use rtk log for saved logs or bounded failure slices; "
     "preserve the full log and command exit code. Avoid repeated whole-file reads."
+)
+SOURCE_HINT = (
+    "Fleet rule: Python source discovery MUST first try "
+    "search(kind='python', q=..., scope='precis'); then symbol/outline get. "
+    "Read precis-python-help once as needed. Do not dump entire files to "
+    "orient. Verify the served root "
+    "matches your task worktree before edits. Keep rg for exhaustive text "
+    "checks, unindexed files or unavailable/mismatched roots."
 )
 
 
@@ -130,6 +142,9 @@ def respond(payload: dict[str, Any]) -> dict[str, Any]:
             updated.pop("cmd", None)
             updated["command"] = candidate
             output.update(permissionDecision="allow", updatedInput=updated)
+        elif any(word in command for word in ("cat ", "sed -n", "rg ", "grep ")):
+            if tick(payload, "source_reminder_candidates") % 30 == 1:
+                output["additionalContext"] = SOURCE_HINT
         elif any(
             word in command for word in ("tail ", "cat ", "sed -n", "scripts/test")
         ):
