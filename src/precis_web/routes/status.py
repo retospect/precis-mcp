@@ -633,7 +633,7 @@ _LIVENESS_SIGNALS: list[tuple[str, str, int | None]] = [
     (
         "Morning briefing",
         "SELECT max(ts) FROM worker_logs WHERE pass = 'briefing'",
-        26 * 3600,  # daily 07:00 — amber after a missed day
+        26 * 3600,  # daily ~05:00 — amber after a missed day
     ),
 ]
 

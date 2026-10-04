@@ -1,0 +1,77 @@
+
+[1m▶ rebuilding Tailwind CSS (static production build)[0m
+→ src/precis_web/static/tailwind.css
+
+[1m▶ committing WIP[0m
+
+[1m▶ quick ship (--quick) — no pytest, no gate slot; ruff+mypy still run (pre-qland lint, below)[0m
+
+[1m▶ syncing origin/main[0m
+Already up to date.
+
+[1m▶ starting warm gate container (precis-gate)[0m
+gate → precis-gate (warm, native FS)
+
+[1m▶ pre-qland lint (ruff autofix · mypy · import contracts · hygiene tests: type-ignore ratchet, posix/encoding/extra-only guards, docs, secret-scan) — warm gate, no gate slot[0m
+   Building precis-mcp @ file:///app
+Downloading ruff (10.4MiB)
+Downloading mypy (13.5MiB)
+ Downloaded ruff
+      Built precis-mcp @ file:///app
+ Downloaded mypy
+Uninstalled 4 packages in 161ms
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 4 packages in 136ms
+All checks passed!
+2552 files left unchanged
+All checks passed!
+2552 files already formatted
+pyproject.toml: note: unused section(s): module = ['mendeleev.*', 'tblite']
+Success: no issues found in 2470 source files
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+---------
+Contracts
+---------
+
+Analyzed 1018 files, 4359 dependencies.
+---------------------------------------
+
+core is surface-free: precis never imports web/discord/slack daemons KEPT
+surface daemons stay independent (web vs discord bridge) KEPT
+precis_chain is a standalone numpy kernel: no precis/asa imports KEPT
+slack bridge shares asa_bot runtime but never the web app KEPT
+ingest below workers: the embedding/summary cascade is worker-owned KEPT
+store is the bottom layer of precis KEPT
+
+Contracts: 6 kept, 0 broken.
+........................................................................ [  8%]
+........................................................................ [ 17%]
+........................................................................ [ 26%]
+........................................................................ [ 35%]
+........................................................................ [ 44%]
+........................................................................ [ 53%]
+........................................................................ [ 62%]
+........................................................................ [ 71%]
+........................................................................ [ 80%]
+........................................................................ [ 89%]
+........................................................................ [ 98%]
+.........                                                                [100%]
+=============================== warnings summary ===============================
+tests/test_skill_prose.py::test_bare_noun_h2s_advisory
+  /app/tests/test_skill_prose.py:310: UserWarning: 113 bare-noun H2(s) across skills (advisory; goal-voice per docs/conventions/skill-authoring-style.md): personas/precis-claim-adversary: Report; personas/precis-review-authoring: Never; precis-agentlog-help: Shape; precis-agentlog-help: Web; precis-alert-help: Shape; precis-alert-help: Triage; precis-alert-help: Producers; precis-argument-help: Recursion; precis-audio-help: Consume; precis-author-discovery-help: The loop; precis-author-discovery-help: Frontier scoring; precis-auto-todo-help: Evaluator catalogue; …
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+801 passed, 1 warning in 44.75s

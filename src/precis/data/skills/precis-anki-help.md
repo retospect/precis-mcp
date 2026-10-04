@@ -158,7 +158,7 @@ never touched. Works on text notetypes (cloze/basic).
 
 ## The daily card forge (autonomous)
 
-Every morning at 05:30 (before the reading brief) the **`card_forge`** job runs
+Every morning at 03:30 (before the reading brief) the **`card_forge`** job runs
 the reading-prep card loop — installed by `precis cast schedule`:
 
 1. **Mastery refresh** — each `concept`'s `represents`-linked cards' `anki_stats`

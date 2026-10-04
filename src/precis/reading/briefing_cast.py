@@ -554,7 +554,7 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
     except Exception:  # pragma: no cover - anki_stats may be absent
         log.debug("reading brief: anki leech lane unavailable", exc_info=True)
 
-    # This morning's card work (the card_forge pass runs at 05:30, before us):
+    # This morning's card work (the card_forge pass runs at 03:30, before us):
     # fresh cards to expect on the phone + concepts escalated to the human.
     try:
         with store.pool.connection() as conn:

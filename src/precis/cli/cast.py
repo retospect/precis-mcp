@@ -152,14 +152,14 @@ def _cmd_run(store: Store, args: argparse.Namespace) -> None:
         _publish(store, draft_id, speed=args.speed)
 
 
-#: The morning card pass fires before the 07:00 reading brief so today's new /
+#: The morning card pass fires before the 05:00 reading brief so today's new /
 #: reworked cards exist when the brief's recall lane composes.
-_CARD_FORGE_CRON = "30 5 * * *"
+_CARD_FORGE_CRON = "30 3 * * *"
 
 
 def install_cast_watches(store: Store) -> list[int]:
     """Idempotently install the daily reading-loop watches under the Watches
-    umbrella — the two casts plus the 05:30 ``card_forge`` morning card pass.
+    umbrella — the two casts plus the 03:30 ``card_forge`` morning card pass.
     Returns the ref ids (existing or freshly created).
 
     Authors the recurring todos directly (no booted hub needed from a CLI),

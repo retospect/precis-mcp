@@ -117,10 +117,10 @@ CAST_PROFILES: dict[str, CastProfile] = {
         voice="bm_george",
         wpm=150,
         target_minutes=20,
-        # 06:30 UTC compose so the (short) render lands the episode ~07:00 — the
+        # 04:30 UTC compose so the (short) render lands the episode ~05:00 — the
         # cron is the *start*, and the schedule is UTC-anchored (no tz), so this
         # buys the compose+narrate pipeline a lead over the target land time.
-        cron="30 6 * * *",
+        cron="30 4 * * *",
         job_type="reading_brief",
         slug_prefix="cast-reading",
         title="\U0001f305 Morning brief",  # 🌅
