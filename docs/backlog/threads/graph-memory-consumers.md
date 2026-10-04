@@ -17,7 +17,7 @@ what a live consumer is already going without.
 **Worktree:** `graph-memory-consumers`
 **Active:** yes — Reto 2026-10-01: "graph memory we want soon".
 
-## Resume (2026-10-04 06:48Z)
+## Resume (2026-10-04 08:58Z)
 
 - **Landed, all live on prod 727728cc:**
   - memory slice 2, the cutover and memory-lint graph mode (31fc2a3c, fef5f1d5);
@@ -29,7 +29,16 @@ what a live consumer is already going without.
   - The `--sync` guard has not been exercised against the live pointer.
     Auto mode denies that run; unit tests cover the guard.
   - The currency ledger re-flags the same 5 provenance suspects every run.
-- **Next step:** add `find-replace` to memory `edit` (Do-next 1).
+- **In flight (08:58Z):** a coder agent is adding `find-replace` /
+  `insert` to memory `edit` (Do-next 1) on branch
+  `worktree-agent-a92adc8b6b7627afd`, worktree
+  `.claude/worktrees/agent-a92adc8b6b7627afd`. It is not landed and its
+  tests are unreviewed.
+- **Next step:** review that branch's diff. Run its memory handler test
+  file with `scripts/test`, merge it into this worktree and qland. If the
+  branch is gone or empty, redo the change from the
+  `memory-native-authoring.md` decisions-log entry dated 2026-10-03.
+- **Reconsolidation:** 2026-10-04 pass logged; no node edits.
 
 ## Do next
 
