@@ -41,8 +41,20 @@ is NOT NULL): the caller mints a ``reaction product`` taxon and labels the row
 ``tier='measured'`` with ``source_attribution='cited_work'``; a unit with no
 dimension match to the measurand's ``canonical_unit`` (naming both); a
 number with a ``reported_unit`` on a taxon that has no ``canonical_unit``
-(values are stored normalised to one unit per measurand). Unitless numeric rows
-(no ``reported_unit``) are accepted on a unit-less taxon.
+(values are stored normalised to one unit per measurand); and (migration 0188,
+Store SI) **a number with no ``reported_unit`` on a taxon that has a
+``canonical_unit``**, naming the canonical and the display unit: "95" is
+ambiguous between 95 % and 0.95, and a legacy "5" between 5 mm and 5 m, so
+neither is guessed. A caller whose number really is in the canonical unit
+(a table-recipe row) passes that unit as ``reported_unit``. Unitless numeric
+rows are accepted only on a unit-less taxon.
+
+**Legacy taxa.** A taxon seeded from a legacy registry (``meta.legacy_source``)
+has a ``measure_unit_compat`` row: the unit the registry kept (``legacy_unit``),
+its SI unit and the linear map. A ``reported_unit`` equal to the legacy unit
+converts through that row (exact, the same factor the compatibility views use);
+anything else goes through pint. ``measures_for`` and the Build B reads carry the
+taxon's ``display_unit`` and convert at the edge.
 
 **Reads (Build B).** :meth:`best_measure` (best live value per
 ``(measurand, reference, normalization)`` group over everything serving a
@@ -65,6 +77,7 @@ import uuid
 from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from psycopg import Connection
@@ -74,11 +87,13 @@ from psycopg.types.json import Jsonb
 from precis.errors import BadInput, NotFound
 from precis.store._taxon_ops import _EDGES
 from precis.taxonomy.measure_units import (
+    Conversion,
     NeedsMolarMass,
     basis_normalization,
     make_converter,
     molar_mass,
     parse_literal,
+    si_form,
     to_canonical,
 )
 from precis.taxonomy.nodes import slugify
@@ -107,8 +122,13 @@ class MeasureAnchor:
 class MeasureSpec:
     """One row of a run. ``literal`` is the exact printed string; the parsed
     ``value_*`` fields default to :func:`parse_literal` of it when none is
-    given. ``reported_unit`` None means the number is already in the
-    measurand's canonical unit (a table-recipe row)."""
+    given. A caller-supplied ``value_num`` / ``value_low`` / ``value_high`` /
+    ``value_err`` is in the REPORTED unit (the unit of ``reported_unit`` and the
+    literal), never the canonical one: it is converted on write (literal
+    ``500``, ``reported_unit='mV'``, ``value_num=500`` stores 0.5 V).
+    ``reported_unit`` is the unit the number is printed in; it is
+    required for a number on a taxon with a ``canonical_unit`` (a number
+    already in the canonical unit says so by passing it)."""
 
     measurand_ref_id: int
     literal: str
@@ -136,6 +156,16 @@ class MeasureSpec:
     derived_from: Sequence[int] | None = None
     supersedes: int | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    # the legacy fact-table columns (material / component / rxn writers); a
+    # ``source_ref_id`` wins over the anchor's paper (a source need not be one)
+    maturity: str | None = None
+    method: str | None = None
+    conditions: dict[str, Any] | None = None
+    source_ref_id: int | None = None
+    source_chunk: str | None = None
+    source_url: str | None = None
+    as_of: str | None = None
+    notes: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +202,52 @@ class MeasureSearch:
     truncated: bool = False
 
 
+#: The row that re-based this one (migration 0188 supersedes a legacy row L, whose
+#: numbers are in the taxon's old unit, by a row N in SI whose ``meta`` says
+#: ``rebased_from`` L and carries the ``conversion``). Joined from L, it lets a
+#: reader show L in SI like every other row (:func:`_si_normalise`).
+_REBASE_JOIN = (
+    "LEFT JOIN measures sx ON sx.id = m.superseded_by "
+    "AND sx.meta ->> 'rebased_from' = m.id::text"
+)
+
+_NUMERIC_COLS = ("value_num", "value_low", "value_high")
+
+
+def _si_normalise(rows: Sequence[dict[str, Any]]) -> None:
+    """Map the numbers of every row that carries a ``rebase`` (a superseded
+    legacy row: stored in the old unit) to the taxon's SI unit, in place, so a
+    superseded row reads like a live one and never off by the unit factor."""
+    for r in rows:
+        conv = r.get("rebase")
+        if not isinstance(conv, dict):
+            continue
+        factor = Decimal(str(conv["factor"]))
+        offset = Decimal(str(conv.get("offset") or 0))
+        for col in _NUMERIC_COLS:
+            if r.get(col) is not None:
+                r[col] = float(Decimal(str(r[col])) * factor + offset)
+        if r.get("value_err") is not None:
+            r["value_err"] = float(Decimal(str(r["value_err"])) * factor)
+
+
+def legacy_value(
+    value: float | None,
+    factor: float | Decimal | None,
+    offset: float | Decimal | None,
+) -> float | None:
+    """A stored SI number back in the legacy unit, the same rule as the SQL
+    ``precis_measure_legacy_value``: ``(si - offset) / factor`` in decimal,
+    rounded to 15 significant digits (7 mm stored as 0.007 m reads back as 7).
+    No factor means the taxon was never re-based."""
+    if value is None or factor is None:
+        return value
+    if math.isinf(value) or math.isnan(value):
+        return value
+    shifted = Decimal(str(value)) - Decimal(str(offset or 0))
+    return float(f"{float(shifted / Decimal(str(factor))):.15g}")
+
+
 #: A bound matches a value that equals it to within float noise (1.4 Å stored
 #: as 1.4e-10 m by one path and 0.14 nm by another must still meet at 1.4 Å).
 _REL_TOL = 1e-9
@@ -183,12 +259,14 @@ _MEASURE_COLS = (
     "t.meta ->> 'display_unit' AS display_unit, "
     "t.meta -> 'higher_is_better' AS higher_is_better, "
     "s.title AS subject_title, s.kind AS subject_kind, p.kind AS paper_kind, "
-    "(coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL) AS anchor_lost"
+    "(coalesce(m.tier = 'measured', false) AND m.primary_link_id IS NULL) AS anchor_lost, "
+    "sx.meta -> 'conversion' AS rebase"
 )
 _MEASURE_FROM = (
     "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
     "JOIN refs s ON s.ref_id = m.subject_ref_id "
-    "LEFT JOIN refs p ON p.ref_id = m.source_ref_id"
+    "LEFT JOIN refs p ON p.ref_id = m.source_ref_id "
+    f"{_REBASE_JOIN}"
 )
 #: A row's numeric extent as SQL: a point is [v, v], an interval [low, high], an
 #: upper bound ``<x`` runs from -inf to x and a lower bound from x to +inf.
@@ -200,6 +278,49 @@ _HI_SQL = (
     "(CASE WHEN m.value_form = 'lower_bound' THEN 'Infinity'::float8 "
     "ELSE coalesce(m.value_high, m.value_num) END)"
 )
+
+
+def register_legacy_unit(
+    conn: Connection, table: str, key: str, unit: str | None
+) -> None:
+    """The legacy mint verbs (``material_property_mint``, ``component_spec_mint``,
+    ``rxn_property_mint``) call this in the transaction that inserts the registry
+    row. The registry keeps the unit it was given; when that unit converts to SI
+    (``nm``, ``MPa``, ``%``, ``degC``, ...) a ``measure_unit_compat`` row is
+    inserted for ``(table, key)``, so the taxon ``precis_measure_taxon`` mints
+    later stores SI and shows this unit, and the compatibility views and their
+    insert triggers convert exactly as for the rows 0188 seeded.
+
+    The factor comes from an existing compat row with the same ``legacy_unit``
+    when there is one (the seeded rows stay the one source), else from pint
+    (:func:`~precis.taxonomy.measure_units.si_form`). A unit that is already
+    coherent SI, or has no SI form (USD, HV, pH), writes no row. Concurrent mints
+    of one key serialise on an advisory lock, like ``precis_measure_taxon``."""
+    text = (unit or "").strip()
+    if not text:
+        return
+    row = conn.execute(
+        "SELECT si_unit, factor, si_offset FROM measure_unit_compat "
+        "WHERE legacy_unit = %s ORDER BY legacy_table, legacy_key LIMIT 1",
+        (text,),
+    ).fetchone()
+    if row is not None:
+        si_unit, factor, offset = row
+    else:
+        form = si_form(text)
+        if form is None:
+            return
+        si_unit, factor, offset = form.si_unit, form.factor, form.offset
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+        (f"precis_measure_compat:{table}:{key}",),
+    )
+    conn.execute(
+        "INSERT INTO measure_unit_compat "
+        "(legacy_table, legacy_key, legacy_unit, si_unit, factor, si_offset) "
+        "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+        (table, key, text, si_unit, factor, offset),
+    )
 
 
 def _sense(value: Any) -> str | None:
@@ -446,6 +567,35 @@ class MeasuresMixin:
 
     # -- write -------------------------------------------------------------
 
+    @staticmethod
+    def _compat_conversion(
+        c: Connection, taxon: dict[str, Any], reported_unit: str, canonical: str
+    ) -> Conversion | None:
+        """The exact converter of a legacy taxon's ``measure_unit_compat`` row
+        when ``reported_unit`` is the unit the legacy registry kept and the
+        taxon stores the row's SI unit; None otherwise (pint decides). The same
+        factor the compatibility views use, so a number written through either
+        door reads back the same."""
+        src = taxon.get("legacy_source")
+        if not isinstance(src, dict):
+            return None
+        row = c.execute(
+            "SELECT legacy_unit, si_unit, factor, si_offset FROM measure_unit_compat "
+            "WHERE legacy_table = %s AND legacy_key = %s",
+            (src.get("table"), src.get("key")),
+        ).fetchone()
+        if row is None or row[1] != canonical or reported_unit.strip() != row[0]:
+            return None
+        # exact decimals, like the SQL (precis_measure_si_value): 25.4 mm is
+        # exactly 0.0254 m through the migration, the views and this path alike
+        factor, offset = Decimal(row[2]), Decimal(row[3])
+        return Conversion(
+            value=lambda v: float(Decimal(str(v)) * factor + offset),
+            scale=float(factor),
+            label=None,
+            error=lambda e: float(Decimal(str(e)) * factor),
+        )
+
     def insert_measure(
         self,
         output: MeasureSpec,
@@ -459,7 +609,8 @@ class MeasuresMixin:
     ) -> MeasureRun:
         """Write one run — an output row and its input rows — in one
         transaction. Returns the new ids. See the module docstring for the
-        refusals and the flags.
+        refusals and the flags. Caller-supplied ``value_*`` are in the REPORTED
+        unit and are converted to the measurand's canonical unit.
 
         With a caller-supplied ``conn`` the run joins the caller's
         transaction: a refusal part-way leaves the earlier rows of the run
@@ -621,9 +772,34 @@ class MeasuresMixin:
         reported_unit = spec.reported_unit
         canonical = taxon.get("canonical_unit")
         has_numbers = any(v is not None for v in (num, low, high))
+        if canonical and has_numbers and not (reported_unit and reported_unit.strip()):
+            # Store SI: the number's unit is never guessed (a silent factor of
+            # 1000, or of 100 for a fraction, is the failure this guards)
+            shown = taxon.get("display_unit")
+            name = taxon.get("name") or "this measurand"
+            if shown and shown != canonical:
+                message = (
+                    f"measure of {name!r} gives a number with no reported_unit, but "
+                    f"this measurand is stored in {canonical!r} and shown in "
+                    f"{shown!r}; {spec.literal!r} could be in either, so it is not "
+                    "guessed"
+                )
+            else:
+                message = (
+                    f"no unit given for {spec.literal!r} on {name!r} "
+                    f"(canonical {canonical!r}); state the unit"
+                )
+            raise BadInput(
+                message,
+                next=f"state the unit the number is printed in "
+                f"(reported_unit={shown or canonical!r}), or "
+                f"reported_unit={canonical!r} when it is already in the canonical unit",
+            )
         if reported_unit and canonical and has_numbers:
             try:
-                conv = make_converter(reported_unit, canonical)
+                conv = self._compat_conversion(
+                    c, taxon, reported_unit, canonical
+                ) or make_converter(reported_unit, canonical)
             except NeedsMolarMass as need:
                 mm = molar_mass(product) if product else None
                 if mm is None:
@@ -653,7 +829,11 @@ class MeasuresMixin:
                 num = None if num is None else conv.value(num)
                 low = None if low is None else conv.value(low)
                 high = None if high is None else conv.value(high)
-                err = None if err is None else abs(err * conv.scale)
+                err = (
+                    None
+                    if err is None
+                    else abs(conv.error(err) if conv.error else err * conv.scale)
+                )
                 if conv.label and normalization is None:
                     normalization = basis_normalization(conv.label)
                     normalization_status = normalization_status or "explicit"
@@ -726,9 +906,11 @@ class MeasuresMixin:
             " normalization, normalization_status, source_attribution, "
             " measurand_status, direction, role, run_key, subject, "
             " subject_group, derived_from, primary_link_id, anchor_scheme, span, "
-            " supersedes, source_ref_id, actor, model, meta) "
+            " supersedes, source_ref_id, actor, model, meta, conditions, maturity, "
+            " method, source_chunk, source_url, as_of, notes) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
-            "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,"
+            "        coalesce(%s, '{}'::jsonb), coalesce(%s, 'lab'), %s, %s, %s, %s, %s) "
             "RETURNING id",
             (
                 spec.subject_ref_id,
@@ -759,10 +941,19 @@ class MeasuresMixin:
                 anchor.scheme if anchor is not None else None,
                 Jsonb(anchor.span) if anchor is not None else None,
                 spec.supersedes,
-                anchor.paper_ref_id if anchor is not None else None,
+                spec.source_ref_id
+                if spec.source_ref_id is not None
+                else (anchor.paper_ref_id if anchor is not None else None),
                 actor,
                 model,
                 Jsonb(meta),
+                Jsonb(spec.conditions) if spec.conditions is not None else None,
+                spec.maturity,
+                spec.method,
+                spec.source_chunk,
+                spec.source_url,
+                spec.as_of,
+                spec.notes,
             ),
         ).fetchone()
         assert row is not None
@@ -785,15 +976,31 @@ class MeasuresMixin:
         oldest run first. Each row carries the measurand's name
         (``measurand``) and canonical unit, and ``anchor_lost``: a
         ``tier='measured'`` row whose anchoring link is gone (the chunk or
-        paper was deleted; the foreign key set it NULL). ``best_measure``
+        paper was deleted; the foreign key set it NULL). Numbers are stored
+        SI (the taxon's ``canonical_unit``); the row also carries the taxon's
+        ``display_unit``, its ``legacy_source`` and, for a legacy taxon, the
+        ``measure_unit_compat`` row (``legacy_unit``, ``legacy_factor``,
+        ``legacy_offset``) so a caller can convert at the edge. ``best_measure``
         excludes those rows; re-anchoring is a follow-up. The ids
         in ``meta.extra_anchors`` are not foreign keys and may dangle the same
         way."""
         sql = (
             "SELECT m.*, t.meta ->> 'name' AS measurand, "
             "       t.meta ->> 'canonical_unit' AS canonical_unit, "
+            "       t.meta ->> 'display_unit' AS display_unit, "
+            "       t.meta -> 'legacy_source' AS legacy_source, "
+            "       c.legacy_unit, c.factor AS legacy_factor, "
+            "       c.si_offset AS legacy_offset, sr.kind AS source_kind, "
+            "       s.kind AS subject_kind, sx.meta -> 'conversion' AS rebase, "
             "       (m.tier = 'measured' AND m.primary_link_id IS NULL) AS anchor_lost "
             "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
+            "LEFT JOIN measure_unit_compat c "
+            "  ON c.legacy_table = t.meta -> 'legacy_source' ->> 'table' "
+            " AND c.legacy_key = t.meta -> 'legacy_source' ->> 'key' "
+            " AND c.si_unit = t.meta ->> 'canonical_unit' "
+            "LEFT JOIN refs sr ON sr.ref_id = m.source_ref_id "
+            "LEFT JOIN refs s ON s.ref_id = m.subject_ref_id "
+            f"{_REBASE_JOIN} "
             "WHERE m.subject_ref_id = %s "
             + ("" if include_superseded else "AND m.superseded_by IS NULL ")
             + "ORDER BY m.created_at, m.run_key, (m.direction <> 'output'), m.id"
@@ -801,7 +1008,9 @@ class MeasuresMixin:
         with self.pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, (subject_ref_id,))
-                return list(cur.fetchall())
+                rows = list(cur.fetchall())
+        _si_normalise(rows)
+        return rows
 
     # -- ranking and search (Build B) --------------------------------------
 
@@ -835,7 +1044,9 @@ class MeasuresMixin:
         with self.pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, params)
-                return list(cur.fetchall())
+                rows = list(cur.fetchall())
+        _si_normalise(rows)
+        return rows
 
     def _conditions_by_run(
         self, run_keys: Sequence[str], *, live_only: bool = True
@@ -856,6 +1067,7 @@ class MeasuresMixin:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, {"keys": list(out)})
                 rows = list(cur.fetchall())
+        _si_normalise(rows)
         for r in rows:
             label = (r["meta"] or {}).get("condition")
             r["name"] = (
@@ -1014,6 +1226,11 @@ class MeasuresMixin:
         if measurand is not None:
             where.append("m.measurand_ref_id = ANY(%(cover)s)")
             params["cover"] = self._measurand_cover(measurand)
+        if include_all and (min_si is not None or max_si is not None):
+            # a re-based legacy row's stored numbers are in the old unit (see
+            # _si_normalise); the SQL range test would compare them as SI. Its
+            # live successor carries the same number in SI and is searched.
+            where.append("sx.id IS NULL")
         if min_si is not None:
             where.append(f"{_HI_SQL} >= %(min)s")
             params["min"] = min_si - abs(min_si) * _REL_TOL
@@ -1034,6 +1251,7 @@ class MeasuresMixin:
                 rows = list(cur.fetchall())
         truncated = len(rows) > scan_cap
         rows = rows[:scan_cap]
+        _si_normalise(rows)
         by_run = self._conditions_by_run([r["run_key"] for r in rows])
         out = []
         for r in rows:

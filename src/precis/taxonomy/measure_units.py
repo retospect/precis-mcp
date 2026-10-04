@@ -24,7 +24,8 @@ appears only when the display unit says so; affine units (°C) convert as
 absolute temperatures.
 
 ``pint`` does not know ``%`` as a unit symbol in every build, so the
-canonical-unit strings ``%`` / ``percent`` are mapped to ``percent`` up front.
+canonical-unit strings ``%`` / ``percent`` / ``mol%`` are mapped to ``percent``
+up front.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Final
 
 import pint
@@ -152,7 +154,9 @@ def pint_unit_text(raw_unit: str) -> tuple[str, str | None]:
     """``(text pint can parse, basis label or None)`` for a printed unit."""
     stripped, label = split_basis_label(raw_unit.strip())
     text = _normalize_unit_candidate(stripped)
-    if text in ("%", "percent"):
+    if text.replace(" ", "") in ("%", "percent", "mol%"):
+        # mol% is a percent of an amount fraction: dimensionless like %, which
+        # pint would read as mol * percent (the legacy catalyst_loading unit)
         text = "percent"
     else:
         text = text.replace("%", " percent ")
@@ -199,11 +203,14 @@ class NeedsMolarMass(Exception):
 class Conversion:
     """A reported-unit -> canonical-unit converter. ``value`` maps a number;
     ``scale`` is the slope (for an uncertainty); ``label`` is the basis label
-    stripped from the reported unit."""
+    stripped from the reported unit. ``error`` maps an uncertainty exactly when
+    the slope alone (a float product) would not (the compat-row path); None
+    means ``abs(err * scale)``."""
 
     value: Callable[[float], float]
     scale: float
     label: str | None
+    error: Callable[[float], float] | None = None
 
 
 _TOKEN_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"[\s*/]+")
@@ -287,6 +294,68 @@ def make_converter(
         return float(q.to(dst).magnitude)
 
     return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label)
+
+
+# ── legacy unit -> SI form (the legacy mint verbs' edge) ──────────────────
+
+#: Coherent SI symbols a unit's dimensionality is matched against, base units
+#: first. Anything else is spelled from pint's base units (``kg/m³``).
+_COHERENT: Final[tuple[str, ...]] = (
+    "m", "kg", "s", "K", "mol", "A", "cd", "N", "Pa", "J", "W", "C", "V", "ohm", "F",
+)  # fmt: skip
+
+#: Dimensionless in pint, but their SI form is the radian, not ``1``.
+_ANGLE_UNITS: Final[frozenset[str]] = frozenset(
+    {"deg", "degree", "degrees", "°", "rad", "radian", "arcmin", "arcsec"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SiForm:
+    """A unit's coherent SI unit and the exact linear map to it:
+    ``si = legacy * factor + offset`` (Decimals, 15 significant digits)."""
+
+    si_unit: str
+    factor: Decimal
+    offset: Decimal
+
+
+def si_form(unit: str | None) -> SiForm | None:
+    """The coherent SI form of ``unit`` (``nm`` -> ``m`` x 1e-9, ``%`` -> ``1`` x
+    0.01, ``degC`` -> ``K`` + 273.15), computed with pint; None when ``unit`` is
+    already coherent SI, is not a pint unit (USD, HV, a count), is logarithmic
+    (pH, dB) or needs a molar mass. The factor and offset are taken from the
+    converter as 15-significant-digit decimals, so a runtime row agrees with the
+    ones migration 0188 seeded by hand."""
+    text = (unit or "").strip()
+    if not text or is_log_unit(text):
+        return None
+    try:
+        parsed, _ = _parse_unit(text, what="legacy")
+    except BadInput:
+        return None
+    ureg = _registry()
+    if text.casefold() in _ANGLE_UNITS:
+        si = "rad"
+    elif parsed.dimensionless:
+        si = "1"
+    else:
+        by_dim = {ureg.Unit(sym).dimensionality: sym for sym in reversed(_COHERENT)}
+        si = by_dim.get(parsed.dimensionality) or (
+            f"{ureg.Quantity(1, parsed).to_base_units().units:~P}"
+        )
+    if _same_unit(text, si):
+        return None
+    try:
+        conv = make_converter(text, si)
+    except (BadInput, NeedsMolarMass):
+        return None
+    offset_f = conv.value(0.0)
+    factor = Decimal(f"{conv.value(1.0) - offset_f:.15g}")
+    offset = Decimal(f"{offset_f:.15g}")
+    if factor <= 0 or (factor == 1 and offset == 0):
+        return None
+    return SiForm(si_unit=si, factor=factor, offset=offset)
 
 
 # ── display: SI value -> the unit a person expects ────────────────────────

@@ -80,7 +80,9 @@ NOT_VOCAB: dict[str, str] = {
     "measures": (
         "0187_measures.sql: folds the legacy component_spec_values rows "
         "into measures (INSERT … SELECT FROM component_spec_values, empty "
-        "on a fresh DB) — data, not vocabulary."
+        "on a fresh DB); 0188_measures_si.sql: one SI row per live legacy "
+        "measures row (INSERT … SELECT FROM measures, empty on a fresh DB) "
+        "— data, not vocabulary."
     ),
     "paper_authors": (
         "0168_paper_authors.sql: projects refs.authors jsonb into rows "

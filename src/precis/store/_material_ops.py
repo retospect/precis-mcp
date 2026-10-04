@@ -23,6 +23,8 @@ from typing import Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.store._measures_ops import register_legacy_unit
+
 _PROPERTY_COLS = (
     "prop_id, name, canonical_unit, dimension, value_type, allowed_values, "
     "standard_ref, status, higher_is_better, description"
@@ -161,7 +163,12 @@ class MaterialMixin:
     ) -> dict[str, Any]:
         """Insert a new ``proposed``-tier property. Caller has already
         checked ``prop_id`` doesn't exist. Never mints ``core`` — that tier
-        is curated by migration only."""
+        is curated by migration only.
+
+        A unit that converts to SI (nm, MPa, %, degC, ...) is accepted and
+        re-based at mint: the registry keeps the unit given, and a
+        ``measure_unit_compat`` row makes the taxon store SI and show this unit
+        (:func:`~precis.store._measures_ops.register_legacy_unit`)."""
         sql = (
             "INSERT INTO material_properties "
             "(prop_id, name, canonical_unit, dimension, value_type, "
@@ -180,10 +187,14 @@ class MaterialMixin:
         )
         if conn is not None:
             row = conn.execute(sql, params).fetchone()
+            register_legacy_unit(conn, "material_properties", prop_id, canonical_unit)
         else:
             with self.pool.connection() as c:
                 with c.transaction():
                     row = c.execute(sql, params).fetchone()
+                    register_legacy_unit(
+                        c, "material_properties", prop_id, canonical_unit
+                    )
         assert row is not None
         return _row_to_property(row)
 

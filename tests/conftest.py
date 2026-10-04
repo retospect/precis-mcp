@@ -955,6 +955,10 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "component_categories",  # seeded category registry, 0093 (core + proposed)
         "component_specs",  # seeded spec registry, 0093 (core + proposed)
         "rxn_properties",  # seeded property registry, 0157 (core + proposed)
+        # 0188: legacy unit -> SI factors, keyed by the taxon's (table, key); the
+        # views, their insert trigger and precis_measure_taxon read it, and the
+        # taxa it describes are minted lazily here (refs is wiped per test)
+        "measure_unit_compat",
         # Design-core vocabulary, seeded by 0162: the scenario presets
         # (prototype / small_batch / mass_production), their service
         # environments, and the standard load-case library. Per-design rows

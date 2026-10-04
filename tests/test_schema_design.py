@@ -168,13 +168,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         "measures.meta",
         # a string (sentence id, range, numeric atom) or [chunk, start, end] offsets
         "measures.span",
-        # rxn mirrors material's star schema (mig 0157). Both are genuinely
-        # open-ended: `allowed_values` is a per-property closed set whose
-        # members differ per property, and `conditions` holds whatever a
-        # source reported (solvent, catalyst, vendor, pack size, yield_type)
-        # — the whole point is that no fixed column set covers it.
+        # rxn mirrors material's star schema (mig 0157). `allowed_values` is a
+        # per-property closed set whose members differ per property (reaction
+        # values live in measures since 0188; its `conditions` is listed above).
         "rxn_properties.allowed_values",
-        "rxn_values.conditions",
         "nanopub_artifacts.dois",
         "nanopub_mirror.assertion_predicates",
         "nanopub_mirror.dois",

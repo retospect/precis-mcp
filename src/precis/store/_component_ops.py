@@ -32,6 +32,8 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from precis.store._measures_ops import register_legacy_unit
+
 #: THE "current value" tie-break for an append-only
 #: ``component_spec_values`` history, in ONE place so the single-spec and
 #: batched readers below cannot drift apart. Unqualified on purpose —
@@ -280,7 +282,10 @@ class ComponentMixin:
         (``None`` mints a universal spec — the handler only does this for a
         component-scoped mint in practice, per the proposal's runtime-mint
         resolution, but the store op itself stays general). Caller has
-        already checked ``spec_id`` doesn't exist. Never mints ``core``."""
+        already checked ``spec_id`` doesn't exist. Never mints ``core``.
+
+        A unit that converts to SI is accepted and re-based at mint (see
+        :func:`~precis.store._measures_ops.register_legacy_unit`)."""
         sql = (
             "INSERT INTO component_specs "
             "(spec_id, name, canonical_unit, dimension, value_type, "
@@ -300,10 +305,12 @@ class ComponentMixin:
         )
         if conn is not None:
             row = _fetchone(conn, sql, params)
+            register_legacy_unit(conn, "component_specs", spec_id, canonical_unit)
         else:
             with self.pool.connection() as c:
                 with c.transaction():
                     row = _fetchone(c, sql, params)
+                    register_legacy_unit(c, "component_specs", spec_id, canonical_unit)
         assert row is not None
         return cast(ComponentSpecRow, row)
 

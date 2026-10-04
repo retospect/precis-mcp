@@ -89,6 +89,12 @@ SEED_TABLES: tuple[str, ...] = (
     # material / rxn kind registries (0092/0157): standalone, no FK.
     "material_properties",
     "rxn_properties",
+    # measures SI (0188): the per-taxon legacy-unit -> SI conversion, keyed by the
+    # taxon's stable legacy identifier (table, key) — NOT a ref_id, which differs
+    # across installs. The legacy taxa themselves are not seed rows (refs is
+    # data); the views, the insert trigger and precis_measure_taxon read this
+    # table, so a baseline-built install needs the same rows as a replayed one.
+    "measure_unit_compat",
     # design core (0162): service environments before scenarios (FK);
     # load cases are standalone.
     "design_service_environments",

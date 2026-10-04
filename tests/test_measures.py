@@ -304,7 +304,8 @@ def test_migration_backfills_legacy_rows_and_folds_component(fresh_db: str) -> N
         measures = conn.execute(
             "SELECT m.id, m.subject_ref_id, m.literal, m.value_form, m.actor, "
             "       m.run_key, t.meta -> 'legacy_source' ->> 'key' "
-            "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id ORDER BY m.id"
+            "FROM measures m JOIN refs t ON t.ref_id = m.measurand_ref_id "
+            "WHERE m.superseded_by IS NULL ORDER BY m.id"
         ).fetchall()
         view = conn.execute(
             "SELECT id, material_ref_id, property_id, value_num, value_low, "
@@ -317,7 +318,9 @@ def test_migration_backfills_legacy_rows_and_folds_component(fresh_db: str) -> N
         kind = conn.execute(
             "SELECT relkind FROM pg_class WHERE relname = 'component_spec_values'"
         ).fetchone()
-    assert len(measures) == 4  # 3 material + 1 component, nothing lost
+    # 3 material + 1 component, nothing lost (0188 re-based the % interval: its
+    # live row is the SI one, the legacy row is superseded and not counted)
+    assert len(measures) == 4
     by_key = {(m[6], m[2]): m for m in measures}
     assert by_key[("density", "2700")][3:5] == ("point", "agent")
     assert by_key[("elongation_at_break", "10–12")][3] == "interval"
@@ -326,7 +329,11 @@ def test_migration_backfills_legacy_rows_and_folds_component(fresh_db: str) -> N
     assert comp[1] == ids["comp"] and comp[5].startswith("legacy:component:")
     assert all(m[5].startswith("legacy:") for m in measures)
     # identical values through the view, as before the migration
-    assert [tuple(r) for r in view] == [tuple(r) for r in before["material"]]
+    # (the % interval is a new SI row after 0188, so ids move; every other
+    # column reads back as before)
+    assert sorted((tuple(r)[1:] for r in view), key=repr) == sorted(
+        (tuple(r)[1:] for r in before["material"]), key=repr
+    )
     assert cview == [(ids["comp"], "mass", 0.012, "agent")]
     assert kind == ("v",)
 
@@ -422,12 +429,22 @@ class TestGuards:
         with pytest.raises(BadInput, match="cited_work"):
             store.insert_measure(
                 MeasureSpec(
-                    world["energy"], "-0.4", world["paper"], tier="measured", **kw
+                    world["energy"],
+                    "-0.4",
+                    world["paper"],
+                    tier="measured",
+                    **kw,
                 ),
                 actor="reader",
             )
         run = store.insert_measure(
-            MeasureSpec(world["energy"], "-0.4", world["paper"], tier="asserted", **kw),
+            MeasureSpec(
+                world["energy"],
+                "-0.4",
+                world["paper"],
+                tier="asserted",
+                **kw,
+            ),
             actor="reader",
         )
         assert _row(store, run.output_id)["tier"] == "asserted"
@@ -452,7 +469,8 @@ class TestGuards:
     def test_a_run_needs_an_actor(self, store: Store, world: dict[str, Any]) -> None:
         with pytest.raises(BadInput, match="actor"):
             store.insert_measure(
-                MeasureSpec(world["energy"], "1", world["paper"]), actor=" "
+                MeasureSpec(world["energy"], "1", world["paper"], reported_unit="eV"),
+                actor=" ",
             )
 
     def test_measurand_must_be_a_live_taxon(
@@ -516,19 +534,23 @@ class TestRoundTrips:
 
     def test_null_tier_stays_null(self, store: Store, world: dict[str, Any]) -> None:
         run = store.insert_measure(
-            MeasureSpec(world["energy"], "1.0", world["paper"]), actor="reader"
+            MeasureSpec(world["energy"], "1.0", world["paper"], reported_unit="eV"),
+            actor="reader",
         )
         assert _row(store, run.output_id)["tier"] is None
 
-    def test_table_recipe_row_has_no_reported_unit(
+    def test_table_recipe_row_names_the_canonical_unit(
         self, store: Store, world: dict[str, Any]
     ) -> None:
+        # a number already in the canonical unit says so (Store SI, 0188: a
+        # number with no unit on a unit-bearing taxon is refused, not assumed)
         run = store.insert_measure(
-            MeasureSpec(world["energy"], "0.3", world["paper"], reported_unit=None),
+            MeasureSpec(world["energy"], "0.3", world["paper"], reported_unit="eV"),
             actor="reader",
         )
         r = _row(store, run.output_id)
-        assert r["reported_unit"] is None and r["value_num"] == 0.3
+        assert r["reported_unit"] == "eV" and r["value_num"] == 0.3
+        assert r["meta"].get("conversion") is None
 
     def test_two_results_same_measurand_different_subject_labels(
         self, store: Store, world: dict[str, Any]
@@ -553,7 +575,11 @@ class TestRoundTrips:
     ) -> None:
         run = store.insert_measure(
             MeasureSpec(
-                world["energy"], "1", world["paper"], measurand_status="ambiguous"
+                world["energy"],
+                "1",
+                world["paper"],
+                measurand_status="ambiguous",
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -578,6 +604,7 @@ class TestRoundTrips:
                 world["paper"],
                 tier="measured",
                 anchor=_anchor(world, span, scheme),
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -636,6 +663,7 @@ def test_same_chunk_different_spans_share_one_edge_and_keep_their_own_span(
                 world["paper"],
                 tier="measured",
                 anchor=_anchor(world, span),
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -660,6 +688,7 @@ def test_extra_anchors_get_their_own_edges_listed_in_meta(
             tier="measured",
             anchor=_anchor(world, "s1"),
             extra_anchors=[MeasureAnchor(world["paper"], other, "sentence", "s9")],
+            reported_unit="eV",
         ),
         actor="reader",
     )
@@ -828,6 +857,7 @@ class TestRuns:
                 world["paper"],
                 value_num=95.0,
                 anchor=_anchor(world, [0, 0, len(FE_TEXT)], "offsets"),
+                reported_unit="%",
             ),
             actor="reader",
         )
@@ -838,11 +868,13 @@ class TestRuns:
                 world["paper"],
                 value_num=88.0,
                 anchor=_anchor(world, "s2"),
+                reported_unit="%",
             ),
             actor="reader",
         )
         no_anchor = store.insert_measure(
-            MeasureSpec(world["fe"], "5", world["paper"]), actor="reader"
+            MeasureSpec(world["fe"], "5", world["paper"], reported_unit="%"),
+            actor="reader",
         )
         assert _row(store, hit.output_id)["extraction_status"] == "anchor_matched"
         assert _row(store, wrong.output_id)["extraction_status"] == "anchor_mismatch"
@@ -859,6 +891,7 @@ class TestRuns:
                 world["paper"],
                 value_num=61.0,
                 anchor=_anchor(world, [0, 0, 20], "offsets"),
+                reported_unit="%",
             ),
             actor="reader",
         )
@@ -868,11 +901,16 @@ class TestRuns:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         old = store.insert_measure(
-            MeasureSpec(world["energy"], "1.0", world["paper"]), actor="reader"
+            MeasureSpec(world["energy"], "1.0", world["paper"], reported_unit="eV"),
+            actor="reader",
         )
         new = store.insert_measure(
             MeasureSpec(
-                world["energy"], "1.1", world["paper"], supersedes=old.output_id
+                world["energy"],
+                "1.1",
+                world["paper"],
+                supersedes=old.output_id,
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -884,7 +922,11 @@ class TestRuns:
         with pytest.raises(BadInput, match="already superseded"):
             store.insert_measure(
                 MeasureSpec(
-                    world["energy"], "1.2", world["paper"], supersedes=old.output_id
+                    world["energy"],
+                    "1.2",
+                    world["paper"],
+                    supersedes=old.output_id,
+                    reported_unit="eV",
                 ),
                 actor="reader",
             )
@@ -903,6 +945,7 @@ class TestRuns:
                     world["paper"],
                     tier="measured",
                     anchor=_anchor(world),
+                    reported_unit="eV",
                 ),
                 [bad_input],
                 actor="reader",
@@ -1028,6 +1071,7 @@ class TestAnchorLossAndSupersession:
                 subject or w["paper"],
                 tier="measured",
                 anchor=_anchor(w, "s1"),
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -1163,7 +1207,10 @@ class TestAnchorLossAndSupersession:
             )
 
         ref, _ = put()
-        store.insert_measure(MeasureSpec(world["energy"], "1", ref.id), actor="reader")
+        store.insert_measure(
+            MeasureSpec(world["energy"], "1", ref.id, reported_unit="eV"),
+            actor="reader",
+        )
         with pytest.raises(BadInput, match="holds 1 measure"):
             put()
         assert store.get_ref(kind="news", id=ref.id) is not None
@@ -1276,6 +1323,7 @@ class TestAnchorLossAndSupersession:
                     "1",
                     seed_ref(store, title="other paper", kind="paper"),
                     supersedes=old,
+                    reported_unit="eV",
                 ),
                 actor="reader",
             )
@@ -1284,7 +1332,9 @@ class TestAnchorLossAndSupersession:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         old = self._measured(store, world)
-        spec = MeasureSpec(world["energy"], "2", world["paper"], supersedes=old)
+        spec = MeasureSpec(
+            world["energy"], "2", world["paper"], supersedes=old, reported_unit="eV"
+        )
         store.insert_measure(spec, actor="reader")
         with pytest.raises(BadInput, match="already superseded"):
             store.insert_measure(spec, actor="reader")
@@ -1306,7 +1356,7 @@ class TestAnchorLossAndSupersession:
     ) -> None:
         with pytest.raises(BadInput, match="direction"):
             store.insert_measure(
-                MeasureSpec(world["energy"], "1", world["paper"]),
+                MeasureSpec(world["energy"], "1", world["paper"], reported_unit="eV"),
                 [_with(_potential(world, "1"), direction="output")],
                 actor="reader",
             )
@@ -1343,6 +1393,7 @@ class TestLiteralAndUnits:
                 world["paper"],
                 value_num=1.0,
                 anchor=MeasureAnchor(world["paper"], chunk, "sentence", "s1"),
+                reported_unit="eV",
             ),
             actor="reader",
         )
@@ -1393,7 +1444,9 @@ class TestLiteralAndUnits:
         self, store: Store, world: dict[str, Any]
     ) -> None:
         run = store.insert_measure(
-            MeasureSpec(world["energy"], "<1", world["paper"], value_num=1.0),
+            MeasureSpec(
+                world["energy"], "<1", world["paper"], value_num=1.0, reported_unit="eV"
+            ),
             actor="reader",
         )
         assert _row(store, run.output_id)["value_form"] == "upper_bound"
@@ -1581,6 +1634,7 @@ def test_merging_a_paper_that_anchors_measures_is_refused_naming_the_count(
                 world["paper"],
                 tier="measured",
                 anchor=_anchor(world, f"s{lit}"),
+                reported_unit="eV",
             ),
             actor="reader",
         )

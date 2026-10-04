@@ -55,6 +55,13 @@ put(kind='rxn', id='fischer-etoac',
 The second call is the whole point: **one sourced fact, chunk-precise**. Run it
 again from another paper and *both* rows persist.
 
+Values are stated in the property's registry unit (`%` for a yield) and shown
+back in it; underneath, reaction values are stored in SI as `measures` rows
+(a yield of 83 % is stored as 0.83), and the `id=` a put returns is a
+`measures` id. A **new** property may use any convertible unit (`%`, `MPa`,
+`mm`, ...): you state and read values in the unit you gave, and they are stored
+in SI.
+
 `rxn_smiles` accepts `reactants>>products` or `reactants>agents>products`.
 Agents (catalyst, solvent) are recorded but excluded from identity — the same
 transformation with a different catalyst is the same transformation, and the

@@ -11,8 +11,19 @@ it.
   ``reaction_class``;
 - the **property registry** (``rxn_properties``) is typed and growable, seeded
   ``core`` by migration 0157 and mintable ``proposed`` at write time;
-- the **values** (``rxn_values``) are a plain fact table — no card, no
-  embedding; the reaction page is a SQL join, not a search.
+- the **values** are plain ``measures`` rows (migration 0188 dropped
+  ``rxn_values``): subject = the reaction, measurand = the ``rxn_properties``
+  taxon (``meta.legacy_source = {table: 'rxn_properties', key: prop_id}``),
+  written through :meth:`~precis.store._measures_ops.MeasuresMixin.insert_measure`
+  and read back through ``measures_for`` — no card, no embedding; the reaction
+  page is a SQL join, not a search.
+
+**Units.** ``rxn_properties.canonical_unit`` is the unit the handler's verbs
+speak (``%`` for a yield); the taxon stores SI (a fraction), with a
+``measure_unit_compat`` row between them. This module is the edge: a value goes
+in as ``reported_unit = <legacy canonical unit>`` (so the store converts it) and
+comes back out through the compat factor, so ``handlers/rxn.py`` still sees and
+prints the numbers it always did.
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx``.
 """
@@ -22,22 +33,41 @@ from __future__ import annotations
 from typing import Any
 
 from psycopg import Connection
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+
+from precis.errors import NotFound
+from precis.store._measures_ops import (
+    _REL_TOL,
+    MeasureSpec,
+    legacy_value,
+    register_legacy_unit,
+)
 
 _PROPERTY_COLS = (
     "prop_id, name, canonical_unit, dimension, value_type, allowed_values, "
     "standard_ref, status, higher_is_better, description"
 )
 
-_VALUE_COLS = (
-    "id, rxn_ref_id, property_id, value_num, value_low, value_high, "
-    "value_text, value_bool, input_unit, conditions, maturity, method, "
-    "source_licence, source_ref_id, source_chunk, source_url, as_of, set_by, "
-    "created_at, notes"
+#: The measures-side read of one reaction value: the row, its source ref's kind,
+#: its taxon's legacy key and the ``measure_unit_compat`` row (None for a taxon
+#: that was never re-based) — what :func:`_measure_to_value` needs.
+_RXN_SELECT = (
+    "SELECT m.*, t.meta -> 'legacy_source' ->> 'key' AS property_key, "
+    "c.factor AS legacy_factor, c.si_offset AS legacy_offset, "
+    "sr.kind AS source_kind, r.title AS rxn_title "
+    "FROM measures m "
+    "JOIN refs t ON t.ref_id = m.measurand_ref_id AND t.kind = 'taxon' "
+    "JOIN refs r ON r.ref_id = m.subject_ref_id "
+    "LEFT JOIN measure_unit_compat c ON c.legacy_table = 'rxn_properties' "
+    " AND c.legacy_key = t.meta -> 'legacy_source' ->> 'key' "
+    " AND c.si_unit = t.meta ->> 'canonical_unit' "
+    "LEFT JOIN refs sr ON sr.ref_id = m.source_ref_id "
+    "WHERE t.meta -> 'legacy_source' ->> 'table' = 'rxn_properties' "
+    # a pilot measure on a shared taxon (yield) with a paper subject is not a reaction
+    "AND r.kind = 'rxn' "
+    "AND m.direction = 'output' AND m.superseded_by IS NULL "
 )
-
-#: Number of columns in ``_VALUE_COLS`` — read paths append ``source_kind``.
-_N_VALUE_COLS = len(_VALUE_COLS.split(", "))
 
 
 def _row_to_property(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -55,35 +85,89 @@ def _row_to_property(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
-def _row_to_value(row: tuple[Any, ...]) -> dict[str, Any]:
-    """Map a ``_VALUE_COLS`` row to a dict. ``row`` may carry one trailing
-    ``source_kind`` column (from the ``refs`` LEFT JOIN the read paths add);
-    it lands under that key, ``None`` when the row is exactly as wide as
-    ``_VALUE_COLS``."""
-    out = {
-        "id": row[0],
-        "rxn_ref_id": row[1],
-        "property_id": row[2],
-        "value_num": row[3],
-        "value_low": row[4],
-        "value_high": row[5],
-        "value_text": row[6],
-        "value_bool": row[7],
-        "input_unit": row[8],
-        "conditions": row[9],
-        "maturity": row[10],
-        "method": row[11],
-        "source_licence": row[12],
-        "source_ref_id": row[13],
-        "source_chunk": row[14],
-        "source_url": row[15],
-        "as_of": row[16],
-        "set_by": row[17],
-        "created_at": row[18],
-        "notes": row[19],
+def _measure_to_value(row: dict[str, Any]) -> dict[str, Any]:
+    """Map a ``measures`` row (with ``property_key`` and the compat factor from
+    :data:`_RXN_SELECT`) to the dict the reaction handler has always read: the
+    numbers back in the property's legacy unit, ``source_licence`` out of
+    ``meta``, ``set_by`` None for the legacy sentinel actor."""
+    factor, offset = row.get("legacy_factor"), row.get("legacy_offset")
+    actor = row.get("actor")
+    if actor == "migration-0188":  # a re-based row: the legacy writer, as the views do
+        actor = (row.get("meta") or {}).get("legacy_actor")
+    return {
+        "id": row["id"],
+        "rxn_ref_id": row["subject_ref_id"],
+        "property_id": row["property_key"],
+        "value_num": legacy_value(row["value_num"], factor, offset),
+        "value_low": legacy_value(row["value_low"], factor, offset),
+        "value_high": legacy_value(row["value_high"], factor, offset),
+        "value_text": row["value_text"],
+        "value_bool": row["value_bool"],
+        "input_unit": row["input_unit"],
+        "conditions": row["conditions"],
+        "maturity": row["maturity"],
+        "method": row["method"],
+        "source_licence": (row.get("meta") or {}).get("source_licence"),
+        "source_ref_id": row["source_ref_id"],
+        "source_chunk": row["source_chunk"],
+        "source_url": row["source_url"],
+        "as_of": row["as_of"],
+        "set_by": None if actor == "legacy" else actor,
+        "created_at": row["created_at"],
+        "notes": row["notes"],
+        "source_kind": row.get("source_kind"),
     }
-    out["source_kind"] = row[_N_VALUE_COLS] if len(row) > _N_VALUE_COLS else None
-    return out
+
+
+def _num_text(x: float) -> str:
+    text = repr(float(x))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _literal(
+    num: float | None,
+    low: float | None,
+    high: float | None,
+    text: str | None,
+    flag: bool | None,
+) -> str:
+    """The printed form of a value (the SQL ``precis_measure_literal`` rule)."""
+    if text is not None:
+        return text
+    if num is not None:
+        return _num_text(num)
+    if low is not None and high is not None:
+        return f"{_num_text(low)}–{_num_text(high)}"
+    if low is not None:
+        return f"≥{_num_text(low)}"
+    if high is not None:
+        return f"≤{_num_text(high)}"
+    if flag is not None:
+        return str(flag).lower()
+    return "(none)"
+
+
+def _form(
+    num: float | None,
+    low: float | None,
+    high: float | None,
+    text: str | None,
+    flag: bool | None,
+) -> str:
+    """The ``measures.value_form`` of a value (SQL ``precis_measure_form``)."""
+    if text is not None:
+        return "categorical"
+    if flag is not None:
+        return "boolean"
+    if num is not None:
+        return "point"
+    if low is not None and high is not None:
+        return "interval"
+    if low is not None:
+        return "lower_bound"
+    if high is not None:
+        return "upper_bound"
+    return "not_established"
 
 
 class RxnMixin:
@@ -91,6 +175,8 @@ class RxnMixin:
     tx: Any
     insert_ref: Any
     get_ref: Any
+    insert_measure: Any
+    measures_for: Any
 
     # -- entity ----------------------------------------------------------
 
@@ -198,7 +284,10 @@ class RxnMixin:
     ) -> dict[str, Any]:
         """Insert a new ``proposed``-tier property. Caller has already checked
         ``prop_id`` does not exist. Never mints ``core`` — that tier is curated
-        by migration only."""
+        by migration only.
+
+        A unit that converts to SI is accepted and re-based at mint (see
+        :func:`~precis.store._measures_ops.register_legacy_unit`)."""
         sql = (
             "INSERT INTO rxn_properties "
             "(prop_id, name, canonical_unit, dimension, value_type, "
@@ -217,10 +306,12 @@ class RxnMixin:
         )
         if conn is not None:
             row = conn.execute(sql, params).fetchone()
+            register_legacy_unit(conn, "rxn_properties", prop_id, canonical_unit)
         else:
             with self.pool.connection() as c:
                 with c.transaction():
                     row = c.execute(sql, params).fetchone()
+                    register_legacy_unit(c, "rxn_properties", prop_id, canonical_unit)
         assert row is not None
         return _row_to_property(row)
 
@@ -250,55 +341,67 @@ class RxnMixin:
         """Insert one sourced measurement row. Returns the new ``id``.
 
         Never updates: a second report of the same property is a second row.
+        The value is in the property's registry unit (``rxn_properties.
+        canonical_unit``); the store converts it to the taxon's SI unit.
         """
         with self.tx() as conn:
-            row = conn.execute(
-                "INSERT INTO rxn_values "
-                "(rxn_ref_id, property_id, value_num, value_low, value_high, "
-                " value_text, value_bool, conditions, maturity, method, "
-                " source_licence, source_ref_id, source_chunk, source_url, "
-                " as_of, set_by, notes) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "RETURNING id",
-                (
-                    rxn_ref_id,
-                    property_id,
-                    value_num,
-                    value_low,
-                    value_high,
-                    value_text,
-                    value_bool,
-                    Jsonb(conditions or {}),
-                    maturity,
-                    method,
-                    source_licence,
-                    source_ref_id,
-                    source_chunk,
-                    source_url,
-                    as_of,
-                    set_by,
-                    notes,
-                ),
+            tax = conn.execute(
+                "SELECT precis_measure_taxon('rxn_properties', %s, TRUE)",
+                (property_id,),
             ).fetchone()
-        assert row is not None
-        return int(row[0])
+            if tax is None or tax[0] is None:
+                raise NotFound(f"rxn property {property_id!r} is not registered")
+            prop = self.rxn_property_get(property_id, conn=conn)
+            numeric = any(v is not None for v in (value_num, value_low, value_high))
+            unit = prop["canonical_unit"] if prop is not None and numeric else None
+            spec = MeasureSpec(
+                measurand_ref_id=int(tax[0]),
+                literal=_literal(
+                    value_num, value_low, value_high, value_text, value_bool
+                ),
+                subject_ref_id=rxn_ref_id,
+                reported_unit=unit,
+                value_num=value_num,
+                value_low=value_low,
+                value_high=value_high,
+                value_text=value_text,
+                value_bool=value_bool,
+                value_form=_form(
+                    value_num, value_low, value_high, value_text, value_bool
+                ),
+                maturity=maturity,
+                method=method,
+                conditions=conditions or {},
+                source_ref_id=source_ref_id,
+                source_chunk=source_chunk,
+                source_url=source_url,
+                as_of=as_of,
+                notes=notes,
+                meta={"source_licence": source_licence} if source_licence else {},
+            )
+            run = self.insert_measure(
+                spec, actor=(set_by or "").strip() or "legacy", conn=conn
+            )
+        return int(run.output_id)
 
     def rxn_values_for_ref(self, rxn_ref_id: int) -> list[dict[str, Any]]:
         """Every value row for one reaction, ordered by property then
         most-recent-first — the reaction-page read. Each row carries
         ``source_kind`` (the source ref's kind) so the renderer can format a
-        handle without a second query."""
-        cols = ", ".join("rv." + c.strip() for c in _VALUE_COLS.split(", "))
-        with self.pool.connection() as conn:
-            rows = conn.execute(
-                f"SELECT {cols}, sr.kind AS source_kind "
-                "FROM rxn_values rv "
-                "LEFT JOIN refs sr ON sr.ref_id = rv.source_ref_id "
-                "WHERE rv.rxn_ref_id = %s "
-                "ORDER BY rv.property_id, rv.created_at DESC",
-                (rxn_ref_id,),
-            ).fetchall()
-        return [_row_to_value(r) for r in rows]
+        handle without a second query. Numbers are in the property's registry
+        unit."""
+        rows = [
+            r
+            for r in self.measures_for(rxn_ref_id)
+            if r["direction"] == "output"
+            and r["subject_kind"] == "rxn"
+            and (r["legacy_source"] or {}).get("table") == "rxn_properties"
+        ]
+        for r in rows:
+            r["property_key"] = r["legacy_source"].get("key")
+        rows.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
+        rows.sort(key=lambda r: r["property_key"] or "")
+        return [_measure_to_value(r) for r in rows]
 
     # -- search ----------------------------------------------------------
 
@@ -340,10 +443,14 @@ class RxnMixin:
         page, to say "0 precedent" honestly rather than "0 shown"."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT rv.rxn_ref_id) "
-                "FROM rxn_values rv "
-                "JOIN refs r ON r.ref_id = rv.rxn_ref_id AND r.retired_at IS NULL "
-                "WHERE rv.property_id = 'yield' "
+                "SELECT COUNT(*), COUNT(DISTINCT m.subject_ref_id) "
+                "FROM measures m "
+                "JOIN refs t ON t.ref_id = m.measurand_ref_id AND t.kind = 'taxon' "
+                "JOIN refs r ON r.ref_id = m.subject_ref_id AND r.retired_at IS NULL "
+                "  AND r.kind = 'rxn' "
+                "WHERE t.meta -> 'legacy_source' ->> 'table' = 'rxn_properties' "
+                "  AND t.meta -> 'legacy_source' ->> 'key' = 'yield' "
+                "  AND m.direction = 'output' AND m.superseded_by IS NULL "
                 "  AND r.meta ->> 'reaction_class' = %s",
                 (reaction_class,),
             ).fetchone()
@@ -372,37 +479,41 @@ class RxnMixin:
         query ("what yields do amide couplings actually give"), and it is the
         reason the class axis exists.
         """
-        clauses = ["rv.property_id = %s"]
+        clauses = ["t.meta -> 'legacy_source' ->> 'key' = %s", "r.retired_at IS NULL"]
         params: list[Any] = [property_id]
+        # bounds are in the property's registry unit; the rows are SI
+        # (with the same relative tolerance as the Build B range search)
+        bound = "(%s * COALESCE(c.factor, 1) + COALESCE(c.si_offset, 0))"
         if min_val is not None:
-            clauses.append("COALESCE(rv.value_high, rv.value_num) >= %s")
-            params.append(min_val)
+            clauses.append(
+                f"COALESCE(m.value_high, m.value_num) >= {bound} - abs{bound} * %s"
+            )
+            params.extend([min_val, min_val, _REL_TOL])
         if max_val is not None:
-            clauses.append("COALESCE(rv.value_low, rv.value_num) <= %s")
-            params.append(max_val)
+            clauses.append(
+                f"COALESCE(m.value_low, m.value_num) <= {bound} + abs{bound} * %s"
+            )
+            params.extend([max_val, max_val, _REL_TOL])
         if maturity is not None:
-            clauses.append("rv.maturity = %s")
+            clauses.append("m.maturity = %s")
             params.append(maturity)
         if reaction_class is not None:
             clauses.append("r.meta ->> 'reaction_class' = %s")
             params.append(reaction_class)
         params.append(limit)
-        cols = ", ".join("rv." + c.strip() for c in _VALUE_COLS.split(", "))
         sql = (
-            f"SELECT {cols}, sr.kind AS source_kind, r.title AS rxn_title "
-            "FROM rxn_values rv "
-            "JOIN refs r ON r.ref_id = rv.rxn_ref_id AND r.retired_at IS NULL "
-            "LEFT JOIN refs sr ON sr.ref_id = rv.source_ref_id "
-            f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rv.value_num ASC NULLS LAST "
+            f"{_RXN_SELECT} AND {' AND '.join(clauses)} "
+            "ORDER BY m.value_num ASC NULLS LAST, m.id "
             "LIMIT %s"
         )
         with self.pool.connection() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(sql, params)
+                rows = list(cur.fetchall())
         out = []
         for r in rows:
-            base = _row_to_value(r[: _N_VALUE_COLS + 1])  # + source_kind
-            base["rxn_title"] = r[-1]
+            base = _measure_to_value(r)
+            base["rxn_title"] = r["rxn_title"]
             out.append(base)
         return out
 

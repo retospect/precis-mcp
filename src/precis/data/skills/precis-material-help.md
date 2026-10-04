@@ -121,6 +121,10 @@ put(kind="material", id="pfoo-1", property="glass_transition_temp", value=358, u
 # mints glass_transition_temp as a new proposed quantity property (unit=K)
 ```
 
+Any convertible unit mints fine (`MPa`, `GPa`, `nm`, `%`, `degC`, ...): you
+state and read values in the unit you gave, and underneath they are stored in
+SI (`GPa` as `Pa`, `%` as a fraction, `degC` as `K`) and shown back in it.
+
 Minting a **categorical** property (a closed `allowed_values` set, like the
 seeded `crystal_structure` FCC/BCC/HCP example) needs an explicit
 `value_type='categorical'` plus `allowed_values=` — inference alone can't

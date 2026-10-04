@@ -38,6 +38,10 @@ graph-health-metrics, five parked gripes, and the seam with
   to the orchestrator as a branch, with the broad test list, never by
   qland. Its deploy needs a serve restart right after migrate; then verify
   the converted legacy rows.
+- **0188 and ids:** `material_values.id` and `component_spec_values.id` change
+  for converted rows (0187's note said ids are kept; a converted row is a new
+  `measures` row), and a rxn put's `id=` is now a `measures.id`.
+  `price_per_gram` keeps USD/g (currency is outside SI).
 - **Next:** the six pilot gaps in the measures spec §"Found by the pilot
   write", about 2 builds. FE grouped by product and review-aware ranking
   in `best_measure` go first. Then local-mesh-upkeep slice 1b.

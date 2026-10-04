@@ -14,8 +14,9 @@ A row dict (the output's ``meta``, or one entry of ``items``) holds:
   id; an input defaults to the output's);
 * ``literal`` (inputs only; the output's literal is ``text=``), ``reported_unit``;
 * ``subject_label``, ``subject_group``, ``value_num`` / ``value_low`` /
-  ``value_high`` / ``value_err`` / ``value_text`` / ``value_bool`` /
-  ``value_form``, ``reference``, ``normalization``, ``normalization_status``,
+  ``value_high`` / ``value_err`` (in the REPORTED unit, the unit of
+  ``reported_unit`` and the literal; put converts them to the canonical unit) /
+  ``value_text`` / ``value_bool`` / ``value_form``, ``reference``, ``normalization``, ``normalization_status``,
   ``tier``, ``source_attribution``, ``measurand_status``, ``role``,
   ``direction`` (inputs: ``input`` | ``covariate``), ``condition`` (an input's
   label, as ``meta.condition``), ``note`` (free text, <= 500 characters, as

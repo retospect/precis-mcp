@@ -110,7 +110,7 @@ KIND_CODES: dict[str, str] = {
     # material_values, not a chunk table, so no CHUNK_CODES entry.
     "material": "ma",
     # Sourced reaction-fact store (docs/backlog/reaction-kind-and-synthesis-cost.md)
-    # — a slug entity; per-value sourced facts live in rxn_values, not a chunk
+    # — a slug entity; per-value sourced facts live in measures, not a chunk
     # table, so no CHUNK_CODES entry, same as material/component. The kind is
     # `rxn`, not `reaction`: "reaction" is already an edge-kind value in the
     # pathway graph, so the longer name would collide semantically.

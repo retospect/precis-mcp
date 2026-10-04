@@ -50,7 +50,7 @@ from precis.response import Response
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 
-#: ``rxn_values.method`` — HOW the value was obtained. Wider than material's
+#: ``measures.method`` of a reaction value — HOW the value was obtained. Wider than material's
 #: vocabulary because a reaction store ingests bulk-extracted data: the whole
 #: point of the axis is that a hand-curated measured yield must be
 #: distinguishable from one text-mined out of a patent or predicted by a model.
