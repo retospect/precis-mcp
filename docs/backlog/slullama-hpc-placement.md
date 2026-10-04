@@ -90,11 +90,16 @@ review. No top-level dependency, optional extra or publication is authorized.
 At accepted planning baseline, no vault-to-SSH consumer existed. The bounded
 implementation now adds the consumer below; actual credential usability remains
 unverified until source/security review passes.
-Supplied secret reference was not revealed; encoding/encryption/usability are
-unknown. No raw-key workaround, authentication or `myquota` attempted.
-Exact missing seam: audited vault-origin resolution → encrypted-key unlock →
-bounded SSH transport with independently pinned identity and deterministic
-credential teardown. Login confirmation does not prove this path.
+Initially the supplied reference was not revealed; the missing seam was audited
+vault-origin resolution → key unlock → pinned transport and teardown. Reviewed
+source now supplies that seam. Private read-only diagnosis found canonical
+OpenSSH BEGIN/END markers but no actual line breaks or literal newline escapes:
+`multiline_framing_missing`, before algorithm/encryption or agent validation.
+No private content was emitted, rewritten or converted; no SSH or `myquota`
+attempted. Reto must restore original multiline text to the same vault entry
+through a newline-preserving writer. The announced deployed46591fa40b3c still
+has single-line web inputs; local reviewed multiline controls are not deployed.
+Algorithm/encryption/usability remain unverified until corrected input validates.
 
 ## Credential / host contract — Precis
 
@@ -308,7 +313,11 @@ Pinned candidate dependency bytes2,960,292,950 plus model32,581,838 total
 2,992,874,788 before wheel/input/manifest/runtime script. Generic2GiB default
 stays unchanged. Proposed pilot profile explicitly supplies
 `Limits(max_bundle_bytes=3 * 1024**3)` (3,221,225,472 bytes), leaving228,350,684
-bytes for bounded reviewed extras; every staged byte counts. Review/freeze
+bytes for bounded reviewed extras. This is a cap on caller-supplied artifact
+payload bytes, not total remote storage: generated `ready.json`, filesystem
+metadata, extracted dependencies/environments, temporary files and outputs
+are outside that counter and require a separate explicit storage/quota budget.
+Review/freeze
 actual inventory/runtime/bootstrap hash and exact total <=profile limit; no
 expensive downloads or actual staging before supported auth/discovery. Profile
 storage budget must also fit actual allocation/quota, independent of compute cap.
