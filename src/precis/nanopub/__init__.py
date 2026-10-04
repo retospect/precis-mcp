@@ -46,6 +46,11 @@ Slices 1-3 — local, reversible:
   non-blocking ``term-coverage`` preflight/CLI/approve-view warning for a
   method, acronym or number the claim names that no grounding passage
   carries, with ranked chunk suggestions from the hub's papers.
+- :mod:`.grounding_sweep` — read-only sweep of every frozen grounding
+  (``precis nanopub sweep-grounding``): shallow grounding (front matter or
+  a definition sentence for a claim that needs a body passage; short
+  letters exempt), term-coverage gaps, better non-grounding passages, and
+  the rates per 100 hubs that decide whether the G2/G3 warnings block.
 - :mod:`.keys` — vault-resident key custody: bot key worker-invocable
   and non-attesting, human attesting key loads only through an
   interactive door.

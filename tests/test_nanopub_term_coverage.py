@@ -182,6 +182,55 @@ def test_chunk_tier(
     )
 
 
+def test_front_heading_over_a_whole_paper_is_not_front_matter() -> None:
+    """A reader that files every chunk under 'ABSTRACT' must not turn the
+    whole paper into front matter: past FRONT_SECTION_MAX_CHUNKS the
+    heading is ignored (position and abstract containment still count)."""
+    cap = term_coverage.FRONT_SECTION_MAX_CHUNKS
+    kw: dict[str, Any] = {
+        "kind": "paragraph",
+        "section_path": ["ABSTRACT"],
+        "ord_": 9,
+        "text": "We annealed the film.",
+        "abstract": None,
+    }
+    assert (
+        term_coverage.chunk_tier(**kw, heading_chunks=cap) == term_coverage.TIER_FRONT
+    )
+    assert term_coverage.chunk_tier(**kw) == term_coverage.TIER_FRONT  # unknown
+    assert (
+        term_coverage.chunk_tier(**kw, heading_chunks=cap + 1)
+        == term_coverage.TIER_BODY
+    )
+    # a long Results heading keeps its methods tier
+    kw["section_path"] = ["Results"]
+    assert (
+        term_coverage.chunk_tier(**kw, heading_chunks=cap + 20)
+        == term_coverage.TIER_METHODS
+    )
+    # position still counts under a sprawling heading
+    kw.update(section_path=["ABSTRACT"], ord_=1)
+    assert (
+        term_coverage.chunk_tier(**kw, heading_chunks=cap + 1)
+        == term_coverage.TIER_FRONT
+    )
+
+
+def test_suggestions_from_a_paper_filed_under_abstract_are_body() -> None:
+    """G2: the TEM chunk of a paper whose every chunk sits under 'ABSTRACT'
+    is suggested as body text, not front matter."""
+    chunks = [
+        _pc(i, 5 + i, f"Paragraph {i} about the film.", ["ABSTRACT"]) for i in range(8)
+    ]
+    chunks.append(_pc(20, 20, "A TEM image shows the film is flat.", ["ABSTRACT"]))
+    items = term_coverage.analyse(
+        "TEM shows the film is flat.", ["The film is flat."], chunks, {}, {1}
+    )
+    assert [i.term.text for i in items] == ["TEM"]
+    assert items[0].suggestions[0].chunk_handle == "pc20"
+    assert items[0].suggestions[0].tier == term_coverage.TIER_BODY
+
+
 # ── D2: the approve prefill ranks body passages ahead of the abstract ────
 
 
@@ -191,10 +240,11 @@ def _pc(
     text: str,
     section: list[str],
     kind: str = "paragraph",
+    ref_id: int = 1,
 ) -> term_coverage.PaperChunk:
     return term_coverage.PaperChunk(
         chunk_id=chunk_id,
-        ref_id=1,
+        ref_id=ref_id,
         handle=f"pc{chunk_id}",
         ord=ord_,
         kind=kind,
@@ -219,6 +269,40 @@ def test_rank_for_claim_tiers_then_term_count() -> None:
     # captions first (more terms first), then results, then body, abstract last
     assert [chunks[i].chunk_id for i in order] == [5, 4, 3, 2, 1]
     assert sorted(order) == list(range(len(chunks)))  # nothing dropped
+
+
+def test_rank_for_claim_sprawling_abstract_heading_is_not_demoted() -> None:
+    sentence = "STS shows a gap in the nanobud."
+    chunks = [_pc(1, 2, "Prior work on nanobuds is large.", ["Introduction"])]
+    chunks += [
+        _pc(10 + i, 10 + i, f"Paragraph {i} of the study.", ["ABSTRACT"])
+        for i in range(8)
+    ]
+    chunks[4] = _pc(14, 14, "STS spectra show a gap in the bud.", ["ABSTRACT"])
+    order = term_coverage.rank_for_claim(sentence, chunks, {})
+    assert chunks[order[0]].chunk_id == 14  # same tier as the intro, more terms
+
+
+def test_rank_for_claim_ties_prefer_the_grounding_papers() -> None:
+    sentence = "TEM shows a nanobud."
+    chunks = [
+        _pc(1, 5, "TEM of a nanobud, other paper.", ["Results"], ref_id=2),
+        _pc(2, 5, "TEM of a nanobud, grounding paper.", ["Results"], ref_id=1),
+        _pc(3, 6, "TEM of a nanobud, other paper again.", ["Results"], ref_id=2),
+    ]
+    assert term_coverage.rank_for_claim(sentence, chunks, {}) == [0, 1, 2]
+    assert term_coverage.rank_for_claim(sentence, chunks, {}, grounding_refs={1}) == [
+        1,
+        0,
+        2,
+    ]
+    # tier and term count still beat the grounding preference
+    chunks[0] = _pc(1, 5, "Figure 1 TEM of a nanobud.", ["Results"], ref_id=2)
+    assert term_coverage.rank_for_claim(sentence, chunks, {}, grounding_refs={1}) == [
+        0,
+        1,
+        2,
+    ]
 
 
 def test_names_method() -> None:
@@ -285,3 +369,37 @@ def test_prefill_leaves_a_frozen_grounding_untouched(store: Any) -> None:
     row = store.nanopub_publish_row(hub)
     bundle = evidence.load_bundle(store, hub)
     assert json.loads(_suggested_payload(store, row, bundle, {})) == row.grounding
+
+
+def test_prefill_does_not_demote_a_paper_filed_under_abstract(store: Any) -> None:
+    """DB half of the sprawl rule: the heading counts come from the whole
+    paper, not just the attached chunks."""
+    from precis_web.nanopub_render import _suggested_payload
+
+    paper, first, _sha = _seed_paper(
+        store, chunk_text="Overview.", section=["Introduction"]
+    )
+    intro = _add_chunk(
+        store, paper, 4, "Prior work on nanobuds is large.", ["Introduction"]
+    )
+    tem = 0
+    for i in range(8):
+        text = "A TEM image of a nanobud." if i == 2 else f"Paragraph {i} of the study."
+        cid = _add_chunk(store, paper, 10 + i, text, ["ABSTRACT"])
+        tem = cid if i == 2 else tem
+    hub = _seed_hub(store, "TEM shows a nanobud sits on a nanotube.", paper, intro)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{tem}"},
+        check_retraction=False,
+    )
+    bundle = evidence.load_bundle(store, hub)
+    assert [c.chunk_id for c in bundle.grounding_chunks] == [intro, tem]
+    payload = json.loads(
+        _suggested_payload(store, store.nanopub_publish_row(hub), bundle, {})
+    )
+    assert [p["chunk_id"] for p in payload["passages"]] == [tem, intro]
+    assert first  # the ord-0 chunk exists but is not attached

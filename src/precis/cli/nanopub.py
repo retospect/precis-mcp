@@ -46,6 +46,13 @@ Subcommands:
   ``--attesting`` entry is the human key.
 * ``publish FI --live`` — the registry POST, **the point of no
   return**; without ``--live`` a dry run printing what would be POSTed.
+* ``sweep-grounding``   — read-only sweep of every frozen grounding
+  (reviewed/signed/anchored/published): shallow grounding (front matter or
+  a definition sentence for a claim that needs a body passage), method
+  coverage gaps, and better non-grounding passages, plus a summary with
+  rates per 100 hubs (``--format md|json``, ``--state`` repeatable).
+  Never writes; its rates decide whether the term-coverage and pin
+  warnings become blocking.
 * ``backfill-unheld``   — one-off: move the legacy "not in corpus" prose
   marker onto ``meta.primary_source_unheld`` (dry run without
   ``--apply``). Idempotent; an empty dry run means
@@ -225,6 +232,21 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     mir_sub.add_parser("status", help="Mirror row counts + flag totals.")
 
+    p_sw = s.add_parser(
+        "sweep-grounding",
+        help="Read-only sweep of frozen groundings (shallow / uncovered).",
+    )
+    p_sw.add_argument(
+        "--format", choices=("md", "json"), default="md", help="Report format."
+    )
+    p_sw.add_argument(
+        "--state",
+        action="append",
+        choices=("reviewed", "signed", "anchored", "published"),
+        default=None,
+        help="Only this publish state (repeatable; default: all four).",
+    )
+
     p_bu = s.add_parser(
         "backfill-unheld",
         help="Stamp meta.primary_source_unheld on legacy prose-marked hubs.",
@@ -289,6 +311,8 @@ def run(args: argparse.Namespace) -> None:
             _publish(args, store)
         elif cmd == "mirror":
             _mirror(args, store)
+        elif cmd == "sweep-grounding":
+            _sweep_grounding(args, store)
         elif cmd == "backfill-unheld":
             _backfill_unheld(args, store)
     finally:
@@ -497,6 +521,18 @@ def _audit(store) -> None:
     for f in findings:
         print(f"[{f.kind}] {f.subject}: {f.message}")
     sys.exit(1)
+
+
+def _sweep_grounding(args: argparse.Namespace, store) -> None:
+    """Read-only: assess every frozen grounding and print the report."""
+    from precis.nanopub import grounding_sweep
+
+    states = tuple(args.state) if args.state else grounding_sweep.FROZEN_STATES
+    reports = grounding_sweep.sweep(store, states)
+    if args.format == "json":
+        print(json.dumps(grounding_sweep.to_dict(reports), indent=2))
+    else:
+        print(grounding_sweep.render_md(reports), end="")
 
 
 def _backfill_unheld(args: argparse.Namespace, store) -> None:

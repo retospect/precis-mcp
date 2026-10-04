@@ -31,8 +31,9 @@ sat in the same paper, one click away from being evidence.
 
 It is a *warning*: :func:`coverage_warning` returns text for a
 non-blocking preflight issue, a CLI line, and the approve-view note; no
-caller refuses on it until the build-2 sweep measures its false-alarm rate
-(claims-and-evidence thread, D3).
+caller refuses on it until the build-2 sweep
+(:mod:`precis.nanopub.grounding_sweep`, ``precis nanopub sweep-grounding``)
+measures its false-alarm rate (claims-and-evidence thread, D3).
 """
 
 from __future__ import annotations
@@ -77,6 +78,11 @@ _FRONT_RE = re.compile(
 _CAPTION_KINDS = frozenset({"figure", "caption", "table"})
 _WS_RE = re.compile(r"\s+")
 
+#: A front-matter heading ("ABSTRACT") over more chunks of one paper than
+#: this is an extraction fault (the reader filed the whole paper under it),
+#: not an abstract; it no longer makes its chunks front matter.
+FRONT_SECTION_MAX_CHUNKS = 6
+
 
 @dataclass(frozen=True, slots=True)
 class Suggestion:
@@ -107,6 +113,17 @@ class PaperChunk:
     text: str
 
 
+def heading_sizes(chunks: list[PaperChunk]) -> dict[tuple[int, tuple[str, ...]], int]:
+    """How many of ``chunks`` share each ``(ref_id, section_path)`` — the
+    ``heading_chunks`` input of :func:`chunk_tier`. Pass a paper's whole
+    chunk list; a partial one under-counts."""
+    sizes: dict[tuple[int, tuple[str, ...]], int] = {}
+    for c in chunks:
+        key = (c.ref_id, tuple(c.section_path))
+        sizes[key] = sizes.get(key, 0) + 1
+    return sizes
+
+
 def chunk_tier(
     *,
     kind: str,
@@ -114,14 +131,23 @@ def chunk_tier(
     ord_: int,
     text: str,
     abstract: str | None,
+    heading_chunks: int = 0,
 ) -> int:
-    """Where a chunk ranks as a suggestion — see the module docstring."""
+    """Where a chunk ranks as a suggestion — see the module docstring.
+    ``heading_chunks`` is how many chunks of the paper share this chunk's
+    ``section_path`` (:func:`heading_sizes`); over
+    :data:`FRONT_SECTION_MAX_CHUNKS` the heading is not read as front
+    matter (0 = unknown, the heading counts)."""
     if kind in _CAPTION_KINDS or _CAPTION_START_RE.match(text):
         return TIER_CAPTION
     path = " > ".join(section_path)
     head = _WS_RE.sub(" ", text).strip().lower()[:60]
+    front_heading = (
+        _FRONT_RE.search(path) is not None
+        and heading_chunks <= FRONT_SECTION_MAX_CHUNKS
+    )
     if (
-        _FRONT_RE.search(path)
+        front_heading
         or ord_ <= 1
         or (abstract and len(head) >= 30 and head in _WS_RE.sub(" ", abstract).lower())
     ):
@@ -256,6 +282,7 @@ def analyse(
         return []
 
     prepared = [(c, coverage.prepare(c.text)) for c in chunks]
+    sizes = heading_sizes(chunks)
     out: list[UncoveredTerm] = []
     for term in missing:
         hits: list[tuple[tuple[int, int, int, int, int], int, Suggestion]] = []
@@ -269,6 +296,7 @@ def analyse(
                 ord_=chunk.ord,
                 text=chunk.text,
                 abstract=abstracts.get(chunk.ref_id),
+                heading_chunks=sizes.get((chunk.ref_id, tuple(chunk.section_path)), 0),
             )
             in_grounding = chunk.ref_id in grounding_refs
             density = coverage.count_term(term, prep, amap)
@@ -364,16 +392,26 @@ def names_method(sentence: str) -> bool:
 
 
 def rank_for_claim(
-    sentence: str, chunks: list[PaperChunk], abstracts: dict[int, str]
+    sentence: str,
+    chunks: list[PaperChunk],
+    abstracts: dict[int, str],
+    *,
+    grounding_refs: set[int] | None = None,
+    sizes: dict[tuple[int, tuple[str, ...]], int] | None = None,
 ) -> list[int]:
     """The DB-free core of :func:`order_for_prefill`: indices into ``chunks``
     in prefill order — :func:`chunk_tier` first (captions, methods/results,
     other body, abstract/front matter last), then more of the claim's
     :func:`~precis.taproot.coverage.claim_terms` carried by the chunk, then
-    the incoming order. Every index appears exactly once."""
+    chunks of ``grounding_refs`` (the grounding's own papers) before the
+    rest, then the incoming order. Every index appears exactly once.
+    ``sizes`` (:func:`heading_sizes`) defaults to counting ``chunks``;
+    pass the papers' full counts when ``chunks`` is a subset."""
     terms = coverage.claim_terms(sentence)
     amap = coverage.acronym_map(list(abstracts.values()) + [c.text for c in chunks])
-    keyed: list[tuple[int, int, int]] = []
+    sizes = heading_sizes(chunks) if sizes is None else sizes
+    grounding = grounding_refs or set()
+    keyed: list[tuple[int, int, int, int]] = []
     for i, c in enumerate(chunks):
         prep = coverage.prepare(c.text)
         carried = sum(1 for t in terms if coverage.find_term(t, prep, amap) is not None)
@@ -383,9 +421,10 @@ def rank_for_claim(
             ord_=c.ord,
             text=c.text,
             abstract=abstracts.get(c.ref_id),
+            heading_chunks=sizes.get((c.ref_id, tuple(c.section_path)), 0),
         )
-        keyed.append((tier, -carried, i))
-    return [i for _t, _n, i in sorted(keyed)]
+        keyed.append((tier, -carried, 0 if c.ref_id in grounding else 1, i))
+    return [i for _t, _n, _g, i in sorted(keyed)]
 
 
 def order_for_prefill(
@@ -405,6 +444,16 @@ def order_for_prefill(
             """,
             ([c.chunk_id for c in chunks],),
         ).fetchall()
+        size_rows = conn.execute(
+            """
+            SELECT ref_id, section_path, count(*) FROM chunks
+             WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL
+               AND chunk_kind <> 'references'
+             GROUP BY ref_id, section_path
+            """,
+            (sorted({c.ref_id for c in chunks}),),
+        ).fetchall()
+    sizes = {(int(r[0]), tuple(r[1] or ())): int(r[2]) for r in size_rows}
     kind_of = {int(r[0]): str(r[1] or "") for r in rows}
     abstract_of = {int(r[0]): str(r[2]) for r in rows if r[2]}
     abstracts = {
@@ -422,4 +471,4 @@ def order_for_prefill(
         )
         for c in chunks
     ]
-    return [chunks[i] for i in rank_for_claim(sentence, paper, abstracts)]
+    return [chunks[i] for i in rank_for_claim(sentence, paper, abstracts, sizes=sizes)]
