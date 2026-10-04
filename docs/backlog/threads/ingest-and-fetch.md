@@ -76,10 +76,15 @@ states that count a paper as usable when it is not, then metadata.
    - The first fetch pass after the 04:40Z deploy started only at
      06:23Z: `_hub_refine_pass` held the fetcher host from 05:26Z.
    - The worker hits `ConnectTimeout` on api.figshare.com in 3 of 4
-     SI passes, while a manual curl or httpx probe from the same host
-     answers in 35 ms. So the fault is in the worker's own runtime
-     (launchd environment, proxy, client reuse), not the network;
-     still to diagnose.
+     SI passes. It is not the worker runtime (no proxy env, a fresh
+     client per request). The fetcher host has per-IP TLS-handshake
+     stalls (`_ssl.c:989: The handshake operation timed out`) to
+     Figshare, Crossref and doi.org. A failing IP stalls on every try,
+     then recovers, and the IPs swap within a minute. Crossref
+     timeouts show on a second worker host too. Egress problem, ops
+     gripe gr465931 (`safe_fetch` pins the first resolved address only,
+     so a pass keeps hitting the stalled IP). Until fixed, the SI
+     re-arm absorbs it.
    Delete this item once walker and web triggers are seen on prod.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
