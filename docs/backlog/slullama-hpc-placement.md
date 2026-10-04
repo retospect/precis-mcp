@@ -19,9 +19,10 @@ Implementation worktrees:
 `codex-meluxina`, `codex-catpath-meluxina`, both `work/meluxina/bootstrap`.
 Exact baseline commits and evidence live in fleet `notes/meluxina.md`.
 Chemistry13 exclusively owns `codex-catpath-chemistry` on
-`work/chemistry/meluxina-pilot`, approved base
-`973491d4a9b133bcb4c75cb2127a9644f38f94dd`; they supply additive worker and
-immutable fixture/artifact hashes. Original `codex-catpath-meluxina` stays
+`work/chemistry/meluxina-pilot`. Its earlier973491d4 base assignment is
+superseded: chemistry reviews reapply of additive worker/adapter patches onto
+selected local0.24.0 source9a4cfede, supplies a newly built immutable wheel and
+fixture/artifact hashes; branch/patches retained, no production pin change. Original `codex-catpath-meluxina` stays
 read-only. Meluxina owns the sole live submission; production engine/lock
 and frozen149db0357 remain unchanged.
 Catpath's [DFT/Slurm proposal](https://github.com/retospect/catpath/blob/9a4cfede3efaa4f2d8aa2afb92427db41e4a8096/docs/proposals/dft-refinement-and-slurm.md)
@@ -39,8 +40,10 @@ fixture. Parallel seeds use the same lifecycle; pipeline-wide relax/NEB
 scheduling, persistent spools and DFT follow later. LLM plan is separate.
 
 No Precis `uv.lock` change or production catpath release selection; assigned
-catpath SHA is a development baseline; the 0.23.1 recommendation remains
-unanswered. Account/resources/model artifacts must be frozen from entitlement and chemistry evidence.
+catpath SHA is a development baseline; Reto selected local catpath0.24.0 source
+`9a4cfede3efaa4f2d8aa2afb92427db41e4a8096`; chemistry must review reapply of
+its earlier973-base additive patches and build/hash a NEW wheel. Stale dist0.22
+and prior0.23.1 recommendation are superseded. Production pin remains unchanged. Account/resources/model artifacts must be frozen from entitlement and chemistry evidence.
 The authorized hard cap is one node/600 seconds/25USD; proposed scientific
 tolerances remain frozen before submission, never widened from observed results.
 No qu164903 tick, held campaign rerun,
@@ -102,7 +105,10 @@ ask registration/access questions again.
 
 Implement a versioned credential contract, inspecting only redacted metadata
 before choosing encoding; encrypted OpenSSH key and explicitly paired
-passphrase references. Never silently treat an arbitrary string as JSON,
+passphrase references when explicitly declared encrypted. Reto now declares the
+existing vault key unencrypted with no passphrase and explicit username; no
+paired-reference requirement for that case. A missing reference does not silently
+change an encrypted contract: consumer mode is explicit. Never silently treat an arbitrary string as JSON,
 a key path or a shell command. Require vault origin for this pilot, rejecting
 ambient env/file override so successful SSH proves the requested web-vault path.
 
@@ -125,7 +131,31 @@ ambient identity or first-use acceptance; bounded timeouts, no prompts.
 Provider HTTPS connecting documentation publishes an Ed25519 key and
 SHA256 fingerprint; coordinator independently verified the fingerprint. Use
 that exact public identity from the private runtime profile, fail closed on
-rotation; no keyscan trust. Passphrase reference mapping remains unverified.
+rotation; no keyscan trust. Reto explicitly declares no passphrase; any mismatch of actual key envelope
+with that declaration fails format validation, without guessing a reference.
+
+## No-passphrase correction — internal review before real values
+
+After verified Precis deployed46591fa40b3c, Reto resumed the existing bounded
+pilot. User declares the existing key multiline and unencrypted, without a
+passphrase; remembered PGP header is uncertain, not a verified key format.
+No new secret name or conversion. Validate privately through the strict
+vault-only consumer after source/synthetic internal review; unsupported PGP/
+PEM/SSH format fails with credential_format and no key content.
+
+Smallest patch: CredentialRefs gets explicit encrypted/unencrypted declaration;
+encrypted mode preserves paired ref, aes256-ctr/bcrypt Ed25519 and one-shot
+askpass. Unencrypted mode requires no passphrase ref, supports only validated
+OpenSSH Ed25519 none/none envelope, feeds key to `ssh-add -k -t60 -` over a
+bounded nonblocking stdin pipe, never a plaintext scratch file/argv/env.
+OpenSSH validates crypto and owns the dedicated finite-TTL agent. No prompts,
+no unencrypted file surviving hard kill; only public identity/pins/lease on disk.
+PGP is never converted; unsupported algorithms/envelopes remain an explicit
+format blocker, not a passphrase question. Synthetic tests prove real unencrypted
+agent load/TTL/loopback pinned auth, no plaintext file, no passphrase lookup,
+encrypted-mode mismatch rejection, output redaction and cleanup/timeouts.
+Review new source SHA before any actual vault value. Prior review never
+implicitly covers this source change. No production dependency/lock selection.
 
 ## Accepted credential patch — source/security checkpoint required
 
@@ -144,16 +174,19 @@ No automatic live probe, quota request or SSH entry in the web's periodic
 | New `src/precis/remote/_askpass.py` | Internal helper with no vault access; reads one passphrase from private Unix socket and writes only to OpenSSH's askpass pipe. No CLI registration, terminal prompting, prompt echo or logs. |
 | New `src/precis/remote/__init__.py`, existing `src/precis_web/__init__.py` | Owning contract/rationale: neutral core vs vault bridge, short-lived OpenSSH identity and write-only multiline input. |
 
-Private config v1 explicitly maps `key_ref` to encrypted OpenSSH text and
-`passphrase_ref` to passphrase; supplied ref's existing encoding remains
-unknown. Unsupported format yields `credential_format`, never reinterpretation
+Private config v1 explicitly maps `key_ref` to OpenSSH text and `encryption`
+to the caller's declared encrypted/unencrypted contract. `passphrase_ref` is
+mandatory only for encrypted mode and forbidden for unencrypted mode. Actual
+supplied key format remains unknown until privately validated after review. Unsupported format yields `credential_format`, never reinterpretation
 or rewrite. Bounded stdlib base64/length-framing check of
 [OpenSSH key envelope](https://raw.githubusercontent.com/openssh/openssh-portable/master/PROTOCOL.key)
-rejects unencrypted `cipher=none`/`kdf=none`, NULs, oversized/multiple keys and
-non-Ed25519 public identity. OpenSSH performs decryption/validation. Missing
-passphrase fails before agent start; wrong passphrase returns `unlock_failed`.
+requires aes256-ctr/bcrypt in encrypted mode or none/none with empty options in
+unencrypted mode; rejects NULs, oversized/multiple keys and non-Ed25519 identity. OpenSSH performs cryptographic validation. Missing encrypted-mode passphrase
+fails before agent start; wrong passphrase returns `unlock_failed`. Unencrypted
+mode resolves no passphrase and uses no broker/key file, only bounded stdin.
 
-Session sequence:
+Encrypted session sequence (unencrypted omits key file/askpass steps and loads
+validated key via bounded stdin with SSH_ASKPASS_REQUIRE=never):
 
 1. Validate explicit profile/pins and consumer-owned scratch root; no keyscan,
    inherited SSH config, wildcard pins or guessed passphrase reference.
@@ -416,7 +449,8 @@ actual entitlement, chemistry revision/wheel/model/dependency/input/script
 hashes and CPU reference before sole <=600s/one-node/25USD submission. Persist
 intent/IDs, disconnect/recover without duplicate allocation, collect all task
 outcomes and capture actual scientific evidence through supported Precis verbs.
-Missing supported credential pairing or immutable fixture is a concrete blocker.
+Unsupported actual key format or missing immutable fixture is a concrete blocker;
+no paired passphrase reference is needed for the declared unencrypted key.
 No additional user permission is required for already authorized steps.
-GPAW/DFT and LLM execution/serving remain separate; 0.23.1 recommendation is
-unanswered and production locks/frozen149db0357 stay unchanged.
+GPAW/DFT and LLM execution/serving remain separate; local0.24/9a4 source selection requires a NEW chemistry wheel/reapply review;
+production locks/frozen149db0357 stay unchanged.

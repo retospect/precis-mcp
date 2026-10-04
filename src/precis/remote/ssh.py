@@ -11,8 +11,10 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 
 class RemoteError(RuntimeError):
@@ -64,13 +66,20 @@ def bounded_process(
     timeout_s: float,
     input_data: bytes = b"",
     max_output: int = 16 * 1024 * 1024,
+    sensitive_input: bool = False,
 ) -> CommandResult:
     """Drain both pipes with a combined byte cap; kill and reap on all failures."""
     if timeout_s <= 0 or max_output < 1:
         raise RemoteError("limits_invalid")
-    with tempfile.TemporaryFile(dir=scratch) as incoming:
-        incoming.write(input_data)
-        incoming.seek(0)
+    with ExitStack() as stack:
+        incoming: int | BinaryIO
+        if sensitive_input:
+            incoming = subprocess.PIPE
+        else:
+            input_file = stack.enter_context(tempfile.TemporaryFile(dir=scratch))
+            input_file.write(input_data)
+            input_file.seek(0)
+            incoming = input_file
         try:
             proc = subprocess.Popen(
                 list(argv),
@@ -89,11 +98,33 @@ def bounded_process(
                 assert proc.stdout is not None and proc.stderr is not None
                 selector.register(proc.stdout, selectors.EVENT_READ, 0)
                 selector.register(proc.stderr, selectors.EVENT_READ, 1)
+                offset = 0
+                if sensitive_input:
+                    assert proc.stdin is not None
+                    os.set_blocking(proc.stdin.fileno(), False)
+                    if input_data:
+                        selector.register(proc.stdin, selectors.EVENT_WRITE, 2)
+                    else:
+                        proc.stdin.close()
                 while selector.get_map():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise RemoteError("transport_timeout")
                     for key, _ in selector.select(min(remaining, 0.1)):
+                        if key.data == 2:
+                            try:
+                                offset += os.write(
+                                    key.fd, input_data[offset : offset + 65536]
+                                )
+                            except BlockingIOError:
+                                continue
+                            except BrokenPipeError:
+                                offset = len(input_data)
+                            if offset == len(input_data):
+                                selector.unregister(key.fileobj)
+                                assert proc.stdin is not None
+                                proc.stdin.close()
+                            continue
                         data = os.read(key.fd, 65536)
                         if not data:
                             selector.unregister(key.fileobj)
@@ -113,6 +144,8 @@ def bounded_process(
             except ProcessLookupError:
                 pass
             proc.wait()
+            if proc.stdin:
+                proc.stdin.close()
             if proc.stdout:
                 proc.stdout.close()
             if proc.stderr:

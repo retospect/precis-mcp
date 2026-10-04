@@ -65,3 +65,33 @@ def test_transport_timeout_and_output_cap(tmp_path: Path) -> None:
         and b"err" in result.stderr
     )
     assert "payload" not in repr(result)
+
+
+def test_sensitive_stdin_is_bounded_without_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.remote import ssh
+
+    def no_file(*args: object, **kwargs: object) -> None:
+        pytest.fail("Sensitive payload written to file")
+
+    monkeypatch.setattr(ssh.tempfile, "TemporaryFile", no_file)
+    result = bounded_process(
+        [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"],
+        env={},
+        scratch=tmp_path,
+        timeout_s=3,
+        input_data=b"x" * 1000000,
+        sensitive_input=True,
+    )
+    assert result.stdout.strip() == b"1000000"
+    with pytest.raises(RemoteError, match="transport_timeout"):
+        bounded_process(
+            [sys.executable, "-c", "import time; time.sleep(20)"],
+            env={},
+            scratch=tmp_path,
+            timeout_s=0.05,
+            input_data=b"x" * 1000000,
+            sensitive_input=True,
+        )
+    assert not list(tmp_path.iterdir())
