@@ -8,7 +8,10 @@
 # `.claude/fleet/threads.tsv` (slug, effort, design-review flag, model), which
 # follows the active set in `docs/roadmap.md`.
 #
-#   scripts/fleet up [--stagger N]   create every missing window (idempotent)
+#   scripts/fleet up [--stagger N] [slug…]   create every missing window (idempotent)
+#       With slugs: only those threads' windows (other thread windows untouched; the
+#       review window and the MCP wait still run, both idempotent). A slug not in
+#       threads.tsv exits 2 naming it, before anything is created.
 #   scripts/fleet status             window · index · ctx% · busy/idle/dialog
 #   scripts/fleet say <file> [win…]  send one message; skips open dialogs
 #   scripts/fleet say -m "<text>" [win…]   same, inline text (no file)
@@ -143,10 +146,36 @@ wait_mcp() {
   done
 }
 
+# One thread window, as `up` makes it: boot prompt, the row's model, the
+# stagger left to the caller. Returns 1 (and prints `exists:`) when it is there.
+up_thread() { # up_thread <slug>
+  local slug=$1
+  if has_window "$slug"; then echo "exists: $slug"; return 1; fi
+  # Reto 2026-10-03: the main loop keeps design and domain judgment and
+  # hands the rest to subagents (AGENTS.md "Agent sizing"); editors run in
+  # an isolated worktree so they never collide with the thread's own tree.
+  local boot="Resume the work on $slug. Use subagents per AGENTS.md Agent sizing: you keep design and domain judgment; searches to navigator/extract/Explore, decided edits to coder/test-author/documenter, test runs to test-runner, cluster reads to cluster-ops, bug tracing to root-cause, pre-ship review to reviewer; independent pieces as parallel agents in one message; any agent that edits uses isolation worktree."
+  tmux new-window -d -n "$slug" -c "$root" \
+    "claude -w $slug --model $(thread_model "$slug") '$boot'"
+  echo "created: $slug"
+}
+
 cmd_up() {
   need_tmux
-  local stagger=10
-  [ "${1:-}" = "--stagger" ] && stagger="$2"
+  local stagger=10 slugs="" s
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stagger) [ $# -ge 2 ] || { echo "scripts/fleet up: --stagger needs a number" >&2; exit 2; }
+                 stagger="$2"; shift 2 ;;
+      -*) echo "scripts/fleet up: unknown option: $1" >&2; exit 2 ;;
+      *) slugs="$slugs $1"; shift ;;
+    esac
+  done
+  # Named slugs are checked against the table before anything is created.
+  for s in $slugs; do
+    threads | cut -f1 | grep -q -x -F -- "$s" ||
+      { echo "scripts/fleet up: no such thread in $table: $s" >&2; exit 2; }
+  done
   wait_mcp
   mkdir -p "$queue/open" "$queue/answered" "$reviews"
   if ! has_window review; then
@@ -158,17 +187,21 @@ cmd_up() {
     fi
     echo "created: review"
   fi
-  threads | while IFS=$'\t' read -r slug _effort _review _model; do
-    if has_window "$slug"; then echo "exists: $slug"; continue; fi
-    # Reto 2026-10-03: the main loop keeps design and domain judgment and
-    # hands the rest to subagents (AGENTS.md "Agent sizing"); editors run in
-    # an isolated worktree so they never collide with the thread's own tree.
-    local boot="Resume the work on $slug. Use subagents per AGENTS.md Agent sizing: you keep design and domain judgment; searches to navigator/extract/Explore, decided edits to coder/test-author/documenter, test runs to test-runner, cluster reads to cluster-ops, bug tracing to root-cause, pre-ship review to reviewer; independent pieces as parallel agents in one message; any agent that edits uses isolation worktree."
-    tmux new-window -d -n "$slug" -c "$root" \
-      "claude -w $slug --model $(thread_model "$slug") '$boot'"
-    echo "created: $slug"
-    sleep "$stagger"
-  done
+  if [ -z "$slugs" ]; then
+    threads | while IFS=$'\t' read -r slug _effort _review _model; do
+      up_thread "$slug" || continue
+      sleep "$stagger"
+    done
+  else
+    # Only the named windows; the stagger runs between created ones, not after the last.
+    local made=0
+    for s in $slugs; do
+      if has_window "$s"; then echo "exists: $s"; continue; fi
+      [ "$made" = 0 ] || sleep "$stagger"
+      up_thread "$s"
+      made=1
+    done
+  fi
 }
 
 mcp_helper_path() {

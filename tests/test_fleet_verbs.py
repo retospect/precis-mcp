@@ -763,3 +763,69 @@ def test_model_env_overrides_every_row(fleet: Fleet) -> None:
     fleet.env["PRECIS_FLEET_MODEL"] = "haiku"
     assert fleet.run("model", "alpha").stdout.strip() == "haiku"
     assert fleet.run("model", "beta").stdout.strip() == "haiku"
+
+
+# --- up --------------------------------------------------------------------
+
+
+def _up_ready(fleet: Fleet) -> None:
+    """Make `up` runnable on the private server: a `claude` that only sleeps,
+    on the server's PATH (new windows take the server's environment, not the
+    caller's), no MCP wait."""
+    shim_dir = Path(fleet.env["PATH"].split(os.pathsep)[0])
+    claude = shim_dir / "claude"
+    claude.write_text("#!/bin/sh\nexec sleep 600\n", encoding="utf-8")
+    claude.chmod(0o755)
+    cp = fleet.tmux("set-environment", "-g", "PATH", fleet.env["PATH"])
+    assert cp.returncode == 0, cp.stderr
+    fleet.env["PRECIS_FLEET_MCP_WAIT"] = "0"
+
+
+def _window_names(fleet: Fleet) -> set[str]:
+    return set(fleet.tmux("list-windows", "-F", "#{window_name}").stdout.split())
+
+
+def _thread_windows(fleet: Fleet) -> set[str]:
+    return _window_names(fleet) & {"alpha", "beta"}
+
+
+def test_up_without_slugs_creates_every_thread_window(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    cp = fleet.run("up", "--stagger", "0")
+    assert cp.returncode == 0, cp.stderr
+    assert "created: alpha" in cp.stdout and "created: beta" in cp.stdout
+    assert "created: review" in cp.stdout
+    assert {"alpha", "beta", "review"} <= _window_names(fleet)
+
+
+def test_up_with_a_slug_creates_only_that_thread_window(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    cp = fleet.run("up", "--stagger", "0", "beta")
+    assert cp.returncode == 0, cp.stderr
+    assert "created: beta" in cp.stdout
+    assert "alpha" not in cp.stdout
+    assert _thread_windows(fleet) == {"beta"}
+
+
+def test_up_with_several_slugs_creates_each(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    cp = fleet.run("up", "alpha", "beta", "--stagger", "0")
+    assert cp.returncode == 0, cp.stderr
+    assert _thread_windows(fleet) == {"alpha", "beta"}
+
+
+def test_up_with_an_unknown_slug_refuses_and_creates_nothing(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    cp = fleet.run("up", "--stagger", "0", "alpha", "nosuch")
+    assert cp.returncode == 2
+    assert "nosuch" in cp.stderr
+    assert _window_names(fleet).isdisjoint({"alpha", "nosuch", "review"})
+
+
+def test_up_leaves_an_existing_slug_window_alone(fleet: Fleet) -> None:
+    _up_ready(fleet)
+    fleet.window("alpha", IDLE)
+    cp = fleet.run("up", "--stagger", "0", "alpha", "beta")
+    assert cp.returncode == 0, cp.stderr
+    assert "exists: alpha" in cp.stdout and "created: beta" in cp.stdout
+    assert "previous output" in fleet.pane("alpha")  # not respawned

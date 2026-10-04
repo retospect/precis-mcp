@@ -32,7 +32,10 @@ Note from the user: `$ARGUMENTS`
 
 2. **Bring it up.** `scripts/fleet up`. It creates only the windows that
    are missing, so after a crash it restores the dead ones and leaves the
-   live ones alone. Each thread session starts with "Resume the work on
+   live ones alone. `scripts/fleet up <slug>…` creates only the named
+   threads' windows (a slug missing from `threads.tsv` exits 2 before
+   anything is created); the review window and MCP wait still run, both
+   idempotent. Each thread session starts with "Resume the work on
    <slug>", which makes it read its thread file and, where a tree is dirty,
    its own unlanded work (`docs/backlog/threads/README.md`). A dirty tree
    whose session died is the case to look at by hand before step 3: read
