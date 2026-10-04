@@ -18,12 +18,14 @@ landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
 Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
-## Resume (UNPARKED 2026-10-03 15:38Z — Reto: "I also want the pcb/ewod thread to continue")
+## Resume (CLOSED 2026-10-03 ~22:00Z to save usage; unparked 15:38Z — Reto: "I also want the pcb/ewod thread to continue")
 
-Plan by build sent as review item ewod-pcb-3. Everything is landed;
-round 3 carries 5d50cd44a (route restores pin swaps
-before the layer sketch, gr464237; refdes slot sets the furniture margin;
-prod-psql session-SET refusal + `--ro`; the prod-psql hook fix).
+Everything is landed. Builds 3-4 are live (prod 929107f32). Build 5
+(datasheet pull, 2b3c62811) and the docs (7f22e8128, 24872a348) are
+marked in round 4 and wait on its deploy. **Waits on:** the round-4
+deploy, for steps 2, 3 and 5 below. gr464537 (step 4) waits on nothing
+and is the first build on reopen. The sheet-job adapter waits on
+se-machine-design's input shape (Do-next).
 
 1. **gr464240, round-3 dogfood done (job 464668, prod 929107f32):**
    22 of 55 routable nets realized (round 2: 20; before gr462607: 29),
