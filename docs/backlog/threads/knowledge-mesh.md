@@ -20,60 +20,27 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
-**Resume (2026-10-04 05:34Z):** round 5 is live (prod e0b75bdc7):
-Build C, `note=` and the taxon `meta=` fix. The qu202467 (NO from exhaust →
-fertilizer N) measures are written to prod and are under review.
-
-**Earlier in round 4:**
-- `precis_reviews_backfill()` was run once and added 0 rows. `reviews`
-  holds 234 chunk and 2522 link rows.
-- The revisions log is healthy.
-- Quest fisheye works; one weakness is filed in `fisheye-everywhere.md`
-  §6.
-
-**Pilot taxa, minted 05:29Z.** 17 new nodes, tn465823–tn465839, under
-`measurand`, with SI canonical units and display units. Temperature
-reuses the legacy tn460160 (K), which taxon dedup refused to twin. The
-plan is `scratch/qu202467-taxa-plan.md`.
-
-**Pilot runs.** All 122 checked runs are written: 120 live outputs plus
-their conditions, mx86–mx370.
-- **The spot check of the first 3** caught two code gaps, now filed in
-  the measures spec §"Found by the pilot write": the literal parser
-  misses a typographic minus, and the required-conditions matcher ignores
-  aliases. Both were worked around in the data (`value_num` on 23 rows,
-  `condition` labels on 56). The 2 affected runs were superseded:
-  mx78→mx89 and mx82→mx93.
-- **5 runs were refused** for unit spellings (`mg/h cm2`, `vol%`), then
-  respelled and re-put.
-- **Anchors:** every output's anchor matches. The 41 `anchor_mismatch`
-  rows are inputs (product formulas printed as `NH<sub>3</sub>`, and
-  conditions stated only in the claim).
-- **The logs** are `scratch/qu202467-put-log.jsonl` and
-  `qu202467-put-bulk.out`.
-
-**Quest view.** `get(kind='quest', id=202467, view='measures')` shows 16
-groups. Faradaic efficiency is ranked across products, which is a
-`best_measure` group-key gap filed in the spec.
-
-**Review done** (2026-10-04 05:40Z):
-- 114 approved, 3 rejected and corrected (mx373, mx376, mx378), and 5
-  undecided.
-- **Waiting on Reto:**
-  - knowledge-mesh-13: resume qu202467? My recommendation is to resume
-    and re-run the extraction on new findings each round.
-  - knowledge-mesh-14: the 5 undecided rows.
-- The six gaps the pilot found are in the measures spec §"Found by the
-  pilot write". They are about 2 builds; do the FE-by-product grouping
-  and review-aware ranking first.
-- 0188 (A2) is accepted at b23403bb7, and the orchestrator is landing it
-  through the remote gate. It rebases legacy taxa only, and the pilot
-  taxa are already SI. Deploy needs a serve restart right after migrate.
-
-**Follow-ups, filed in the spec:**
-- the typographic-minus parse;
-- alias matching in the conditions matcher;
-- product in `best_measure`'s group key.
+**Resume (2026-10-04 06:55Z, round 6):**
+- **Live in prod:** 0185 (reviews ledger, revisions log), 0187
+  (`measures` table), builds B (the `measure` kind, `best_measure`, quest
+  `view='measures'`), C (`put`/`edit(kind='measure')`, `note=`) and D
+  (quest fisheye), plus the taxon `meta=` fix (e0b75bdc7).
+- **The qu202467 (NO from exhaust → fertilizer N) pilot is written and
+  reviewed.** 18 SI measurand taxa (tn465823–tn465839, temperature reuses
+  tn460160); 122 runs, mx86–mx378. The Opus review approved 114, rejected
+  3 (corrected as mx373, mx376, mx378) and left 5 undecided. Logs and
+  scripts are in the projects scratch dir, `qu202467-*`.
+- **In flight, not on main:** 0188 (A2: legacy units to SI, drop
+  `rxn_values`), branch `km-0188-measures-si`, being reworked after the
+  remote gate went red at b23403bb7. A legacy mint in a convertible unit
+  now succeeds and re-bases at mint (SI canonical unit, display unit as
+  given, a `measure_unit_compat` row), so se tests pass unedited. It goes
+  to the orchestrator as a branch, with the broad test list, never by
+  qland. Its deploy needs a serve restart right after migrate; then verify
+  the converted legacy rows.
+- **Next:** the six pilot gaps in the measures spec §"Found by the pilot
+  write", about 2 builds. FE grouped by product and review-aware ranking
+  in `best_measure` go first. Then local-mesh-upkeep slice 1b.
 
 ## Do next
 
@@ -95,14 +62,10 @@ groups. Faradaic efficiency is ranked across products, which is a
    history. That is a `revisions` log off a stable head, written by a
    trigger: chosen over snapshot refs (§2b), and confirmed on
    knowledge-mesh-11. Slice 0 waits on local-compute's castor serving
-   window. Slice 1a (migration 0185: tables, triggers, legacy-stamp
-   mirrors, store API, `edit(reason=)`) is on branch
-   `km-0185-reviews-revisions` with the orchestrator; never qland it.
-   Slice 1b follows its deploy: the hub_refine due rule on the ledger,
-   the `chunk_review` readers, `view='history'`/`'diff'` and the
-   `(unrecorded)` count. The as-built choices are in the item's
-   decisions log. After the deploy, dogfood with
-   `edit(kind='memory', ..., reason=)`, then read the `revisions` row.
+   window. Slice 1a (0185) is live. Slice 1b is next after the measures
+   pilot gaps: the hub_refine due rule on the ledger, the `chunk_review`
+   readers, `view='history'`/`'diff'` and the `(unrecorded)` count. The
+   as-built choices are in the item's decisions log.
 3. **backlog/hub-duplicate-reconcile.md** — Reto ruled 2026-10-02
    (td461151, gr180306): the cheap duplicate-hub reconcile, in order:
    re-check on embed, text-version watermark, a distance cutoff
@@ -135,21 +98,11 @@ groups. Faradaic efficiency is ranked across products, which is a
    quest; open is it on every other kind (in-scope 2, AC 1), the `/eye/<handle>` focus page (in-scope 4) and the
    skill's partial-rollout section. The goal's most visible surface; also
    the answer to "a viewer for the memory" once 8 lands.
-6. **backlog/measures-substrate.md: the qu202467 pilot, next after
-   local-mesh-upkeep slice 1** (Reto 2026-10-03, knowledge-mesh-12,
-   option 1). qu202467 (NO from exhaust → fertilizer N) is the first
-   consumer and stays held until the pilot lands. Plan: §"Pilot build on
-   qu202467", four builds A-D:
-   - **A:** the migration, a branch to the orchestrator;
-   - **B:** shipped (the `measure` kind, `best_measure`, quest
-     `view='measures'`);
-   - **C:** extracting the 140 findings, every row reviewed on the
-     ledger;
-   - **D:** fisheye on the quest, shipped c4ea7e1fb.
-
-   The about ten domain taxa are minted by hand in prod. Fold-in ruled
-   2026-09-30 (Reto: `component_spec_values` joins `measures` in the
-   same migration).
+6. **backlog/measures-substrate.md: the qu202467 pilot gaps** (Reto
+   2026-10-03, knowledge-mesh-12, option 1). Builds A–D are live and the
+   pilot data is written and reviewed (see Resume). Open: 0188 (A2) on its
+   branch, then the six gaps in §"Found by the pilot write". qu202467
+   stays held until Reto answers knowledge-mesh-13.
 7. **backlog/class-lattice-similarity-spaces-and-laws.md** — owned here as
    term-taxonomy's v2 (defined classes as canonical constraint sets with
    membership yes/no/unknown, per-axis similarity spaces, participant
@@ -226,6 +179,11 @@ groups. Faradaic efficiency is ranked across products, which is a
     2026-10-03, td345843), not started by any thread. Machine writers
     move first, then the exact-match folksonomy cull.
 ## Waiting on Reto
+
+- **knowledge-mesh-13:** should qu202467 resume, with extraction re-run
+  on new findings each round? Recommended: yes.
+- **knowledge-mesh-14:** the 5 undecided pilot rows (mx349, mx350: re-file
+  as step free energy; mx205, mx206, mx308: leave unreviewed).
 
 
 The six 2026-09-30 rulings (fold-in, mirror first, render-only, this
