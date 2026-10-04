@@ -30,6 +30,10 @@ clever:
   publishable; an unresolved ``contradicts`` edge blocks exactly as at
   mint.
 
+* **Term coverage** (non-blocking, ``reviewed`` rows) — a method, acronym
+  or number the claim names that no grounding passage carries, with chunks
+  from the evidence papers that do (:mod:`precis.nanopub.term_coverage`).
+
 Not mechanized: canonicalizer-settledness ("publish after the
 canonicalizer settles a hub, not during") is a quiet-window operational
 rule, not a row predicate.
@@ -114,6 +118,31 @@ def _grounding_chunk_id(src_chunk_id: int | None, meta: dict[str, Any]) -> int |
         m = _PC_HANDLE.match(str(stored))
         return int(m.group(1)) if m else None
     return src_chunk_id
+
+
+def coverage_issue(
+    store: Store,
+    hub_ref_id: int,
+    sentence: str,
+    grounding: dict[str, Any],
+    *,
+    bundle: evidence.HubBundle | None = None,
+) -> PreflightIssue | None:
+    """The non-blocking ``term-coverage`` issue for one claim + grounding
+    envelope, or ``None`` (covered, nothing to compare, or the check
+    itself failed — a warning must never take the preflight down)."""
+    from precis.nanopub import term_coverage
+
+    try:
+        message = term_coverage.coverage_warning(
+            store, hub_ref_id, sentence, grounding, bundle=bundle
+        )
+    except Exception:
+        log.warning("term-coverage check failed for fi%s", hub_ref_id, exc_info=True)
+        return None
+    if message is None:
+        return None
+    return PreflightIssue(check=term_coverage.CHECK, message=message, blocking=False)
 
 
 def withheld_edges(store: Store, hub_ref_id: int) -> list[WithheldEdge]:
@@ -335,6 +364,19 @@ def publish_preflight(
                     check=stale.gate, message=stale.message, subject_id=newer[0].link_id
                 )
             )
+
+    if row.state == "reviewed":
+        # Term coverage (G2): a warning, never a block, until the sweep
+        # measures its false-alarm rate. Same `reviewed` window as above.
+        note = coverage_issue(
+            store,
+            hub_ref_id,
+            row.approved_title or bundle.sentence,
+            row.grounding,
+            bundle=bundle,
+        )
+        if note is not None:
+            issues.append(note)
 
     for edge in withheld_edges(store, hub_ref_id):
         why = (

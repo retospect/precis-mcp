@@ -247,7 +247,11 @@ least one grounding passage from the body that describes the measurement
 (methods, results or a figure caption) — an abstract or a definition
 sentence alone is not enough. Every method, instrument or quantity the
 sentence names (TEM, STS, a value) must appear in some grounding passage,
-matching acronym and expansion both ways as the paper writes them. Sign
+matching acronym and expansion both ways as the paper writes them. The
+preflight list, `precis nanopub check` and `precis nanopub sign` warn
+(`term-coverage`, never blocking) on any method, acronym or number the
+claim names that no grounding passage carries, and name up to three chunks
+of the hub's papers that do, figure captions and methods first. Sign
 refuses when evidence was attached after the grounding froze (gate
 `grounding-stale`); re-review with `precis nanopub reopen fi<id>` then
 approve again, or sign with the explicit confirm after checking the newer

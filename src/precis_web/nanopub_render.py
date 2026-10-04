@@ -149,6 +149,10 @@ def hub_context(
         else []
     )
     preflight = publish_preflight(store, hub_id, row=row) if state is not None else []
+    if state in (None, "candidate"):
+        # Approve view: nothing is frozen yet, so check the claim against the
+        # payload the form is prefilled with (what a bare "approve" would sign).
+        preflight.extend(_approve_coverage_issues(store, hub_id, bundle, row, hub_meta))
     suggested_payload = _suggested_payload(store, row, bundle, hub_meta)
     open_disputes = _dispute_panel(store, hub_id)
     # Pre-approve (unminted/candidate) is also this hub's own eligibility
@@ -446,6 +450,11 @@ _PREFLIGHT_CHECKS: list[tuple[str, str]] = [
         "grounding-stale",
         "no supporting evidence was linked after the grounding froze "
         "(checked until signed)",
+    ),
+    (
+        "term-coverage",
+        "every method, acronym and number the claim names appears in a "
+        "grounding passage (warning only)",
     ),
     ("withheld-edge", "every evidence edge is refine-verified or human-signed-off"),
     ("dependency-drift", "dependency artifacts are unchanged since this one signed"),
@@ -857,6 +866,22 @@ def _contradicted_panel(contradicted: list[Any]) -> list[dict[str, Any]]:
         {"ref_id": e.ref_id, "kind": e.kind, "title": e.title, "direction": e.direction}
         for e in contradicted
     ]
+
+
+def _approve_coverage_issues(
+    store: Any, hub_id: int, bundle: Any, row: Any, hub_meta: dict[str, Any]
+) -> list[Any]:
+    """``term-coverage`` (warning) against the approve form's prefilled
+    payload — the pre-freeze counterpart of the check ``publish_preflight``
+    runs on a ``reviewed`` row's frozen grounding."""
+    from precis.nanopub.preflight import coverage_issue
+
+    try:
+        payload = json.loads(_suggested_payload(store, row, bundle, hub_meta))
+    except ValueError:
+        return []
+    issue = coverage_issue(store, hub_id, bundle.sentence, payload, bundle=bundle)
+    return [issue] if issue is not None else []
 
 
 def _newer_evidence_rows(store: Any, hub_id: int, row: Any) -> list[dict[str, Any]]:

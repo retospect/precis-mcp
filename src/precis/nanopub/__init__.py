@@ -42,6 +42,10 @@ Slices 1-3 — local, reversible:
 - :mod:`.freshness` — sign-time ``grounding-stale`` gate: supporting
   evidence linked after approve froze the grounding (``frozen_at`` in the
   envelope) blocks sign unless confirmed.
+- :mod:`.term_coverage` — the DB half of :mod:`precis.taproot.coverage`:
+  non-blocking ``term-coverage`` preflight/CLI/approve-view warning for a
+  method, acronym or number the claim names that no grounding passage
+  carries, with ranked chunk suggestions from the hub's papers.
 - :mod:`.keys` — vault-resident key custody: bot key worker-invocable
   and non-attesting, human attesting key loads only through an
   interactive door.

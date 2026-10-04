@@ -35,6 +35,9 @@ Subcommands:
 * ``audit``             — the proof-store recompute audit, findings to
   stdout.
 * ``preflight FI``      — every publish-time gate, advisory (no writes).
+  ``check`` and ``sign`` also print a non-blocking ``term-coverage``
+  warning (a method/acronym/number the claim names that no grounding
+  passage carries); it never changes the exit status.
 * ``signoff LINK_ID``   — human sign-off of one unverified evidence
   edge (``--note`` required; the literal attestation that makes a
   withheld edge publishable).
@@ -385,20 +388,47 @@ def _check(args: argparse.Namespace, store) -> None:
         stale, _newer = freshness.check_grounding_fresh(store, hub_id, row)
         if stale is not None:
             violations.append(stale)
+    # Term coverage is a warning: printed, never part of the exit status.
+    warning = _coverage_warning(store, hub_id, payload, bundle.sentence)
     if not violations:
         print("all mint gates pass")
+        if warning:
+            print(f"warning [term-coverage] {warning}")
         return
     for v in violations:
         print(f"[{v.gate}] {v.message}")
+    if warning:
+        print(f"warning [term-coverage] {warning}")
     sys.exit(1)
+
+
+def _coverage_warning(store, hub_id: int, grounding, sentence: str) -> str | None:
+    """The non-blocking ``term-coverage`` text for one grounding envelope,
+    or ``None`` (covered / nothing to compare / the check itself failed)."""
+    from precis.nanopub.preflight import coverage_issue
+
+    if not grounding:
+        return None
+    issue = coverage_issue(store, hub_id, sentence, grounding)
+    return issue.message if issue is not None else None
 
 
 def _sign(args: argparse.Namespace, store) -> None:
     from precis.nanopub import mint
 
+    hub_id = _hub_id(args.hub)
+    pending = store.nanopub_publish_row(hub_id)
+    if pending is not None and pending.state == "reviewed":
+        # Warning only: print before the signature so it is read first, and
+        # never alter the exit status.
+        warning = _coverage_warning(
+            store, hub_id, pending.grounding, pending.approved_title or ""
+        )
+        if warning:
+            print(f"warning [term-coverage] {warning}")
     row = mint.sign(
         store,
-        _hub_id(args.hub),
+        hub_id,
         role="attesting" if args.attest else "bot",
         # This CLI subcommand IS the interactive surface — a person runs it.
         interactive=args.attest,
