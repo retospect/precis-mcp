@@ -62,6 +62,25 @@ states that count a paper as usable when it is not, then metadata.
    SI discovery). Exceeding that limit is the likely cause.
    Unconfirmed, and open: whether the polite-pool mailto is sent on
    every Crossref call.
+   Quest result (2026-10-04): both SIs are ingested, pa465134
+   (chen23gsi) and pa465698 (chen24psi). Both state V vs RHE, so
+   catalysis-selectivity-17 is resolved and routed to the
+   catalysis-selectivity thread. Round-4 dogfood (prod 727728cc9):
+   - Attention: an MCP `get` queued ref 458964 once; a second `get`
+     left `requested_at` alone.
+   - Re-arm: its SI pass (06:24Z) missed Figshare and doi.org on
+     `ConnectTimeout` and re-armed (`rearmed: true`,
+     `deadline_retries: 1`).
+   - No SI or e-print errors in `worker_logs`.
+   Two problems remain:
+   - The first fetch pass after the 04:40Z deploy started only at
+     06:23Z: `_hub_refine_pass` held the fetcher host from 05:26Z.
+   - The worker hits `ConnectTimeout` on api.figshare.com in 3 of 4
+     SI passes, while a manual curl or httpx probe from the same host
+     answers in 35 ms. So the fault is in the worker's own runtime
+     (launchd environment, proxy, client reuse), not the network;
+     still to diagnose.
+   Delete this item once walker and web triggers are seen on prod.
 2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
    inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
