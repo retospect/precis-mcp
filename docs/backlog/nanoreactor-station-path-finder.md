@@ -7,20 +7,20 @@ model: opus
 blocked-by: reaction-energetics-ledger
 ---
 
-# Station path finder (T1 of the reaction-tunnel chain)
+# Station path finder (T1 of the nanoreactor chain)
 
-Umbrella: [no-nh3-reaction-tunnel](no-nh3-reaction-tunnel.md). Engine:
+Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md). Engine:
 autocatpath (`../catpath`, reference engine), glue in `src/precis_pathway`.
 
 ## Motivation / why
 
-The tunnel's stations are defined by their transition states, and the
+The nanoreactor's stations are defined by their transition states, and the
 pocket is shaped to each TS. The real barriers depend on the pocket, and
 the pocket depends on the TS: a loop. Enzyme design breaks it with a
 **theozyme**: compute the TS among a few idealized, unattached catalytic
 groups, then build a scaffold that holds those groups (Tantillo, Chen &
 Houk 1998; Röthlisberger 2008 Kemp eliminase; Jiang 2008 retro-aldolase;
-stub these papers before `ready`). This item does that for the tunnel. It
+stub these papers before `ready`). This item does that for the nanoreactor. It
 also adds a frame-free strain tier from mechanochemistry, which answers
 "how much pre-strain makes N–O cleavage easy?" before any frame exists.
 
@@ -66,7 +66,7 @@ through CHE at a stated U.
 
 **Station record (output contract)** per TS, stored on the pathway run:
 - geometry: reactant, TS, product and the minimum-energy-path frames
-  between them (about 30 per station), registered to the tunnel axis —
+  between them (about 30 per station), registered to the tube axis —
   origin on N, +z along the reaction coordinate;
 - energies: ΔG, Ea, rung, and model spread;
 - for each frame: charges, and cube files for the electrostatic potential
@@ -78,12 +78,12 @@ through CHE at a stated U.
   target spec.
 
 The frames and cube files are the per-frame data contract
-[reaction-tunnel-movie](reaction-tunnel-movie.md) (T6) renders.
+[nanoreactor-movie](nanoreactor-movie.md) (T6) renders.
 
 ## Explicitly NOT in scope
 
 - The real lining, carbon wall, or long-range wall polarization. That is
-  T5 (QM/MM in the assembled tunnel).
+  T5 (QM/MM in the assembled nanoreactor).
 - Fine-tuning an MLIP on the DFT points. That comes once a few hundred
   points exist.
 - Microkinetics beyond the Eyring dwell time per station.

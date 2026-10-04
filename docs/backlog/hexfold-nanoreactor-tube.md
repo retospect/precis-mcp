@@ -1,16 +1,16 @@
 ---
 status: idea
 pillar: 3d-design
-title: hexfold builds an instrumentable tunnel — a tube between two sheets with Y-junction attachment rails, H-inlet pores, and a site list
+title: hexfold builds an instrumentable nanoreactor tube — a tube between two sheets with Y-junction attachment rails, H-inlet pores, and a site list
 ---
 
-# hexfold: instrumentable tunnel (T2 of the reaction-tunnel chain)
+# hexfold: instrumentable nanoreactor tube (T2 of the nanoreactor chain)
 
-Reto, 2026-10-04. Umbrella: [no-nh3-reaction-tunnel](no-nh3-reaction-tunnel.md).
+Reto, 2026-10-04. Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 Same blocker as [cnt-channel-staged-catalysis](cnt-channel-staged-catalysis.md):
 k = 3 Y-junction seams ([hexfold-seam-type-catalogue](hexfold-seam-type-catalogue.md)).
 
-What the tunnel needs from hexfold:
+What the nanoreactor needs from hexfold:
 - A circular tube running between two graphene sheets, the gap between
   sheets left open as a reservoir.
 - Several radii along the tube (existing joins/cones), with an optional

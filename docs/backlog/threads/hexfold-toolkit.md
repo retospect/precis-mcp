@@ -628,8 +628,8 @@ waited on happened 09-29 — note at the bottom)
     direct agent access. Staged, independent of the §28 pieces; ranked
     here because hexfold builds are where the structure-kind gripes
     (Do-next 4) bite.
-15. **backlog/hexfold-instrumentable-tunnel.md** — T2 of the
-    reaction-tunnel thread (Reto 2026-10-04): tube between two sheets,
+15. **backlog/hexfold-nanoreactor-tube.md** — T2 of the
+    nanoreactor thread (Reto 2026-10-04): tube between two sheets,
     inner Y-junction attachment rails, H-inlet pores, site list. Waits on
     the k = 3 seams, the same blocker as the three-arc cross-section.
 16. **td344088** — the se + hexfold paper. The thread's end state; it

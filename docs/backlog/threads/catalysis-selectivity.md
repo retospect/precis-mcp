@@ -202,7 +202,7 @@ only; everything this thread built is on main and was live by round 4.
   primaries the reviews cite. Both are listed in the item. The next pass
   waits on 13 unfetched papers (KcsA, CPS and 3 of the 5 stubs). Hilario
   2016 and Anderson 1991 are held as of 2026-10-04. Its concrete NO→NH₃
-  instance and design toolchain moved to the reaction-tunnel thread
+  instance and design toolchain moved to the nanoreactor thread
   (2026-10-04).
 
 - **Three dormant quests owned by this thread** (Reto 2026-10-03, td460284

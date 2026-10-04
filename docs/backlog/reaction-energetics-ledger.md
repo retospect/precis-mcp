@@ -5,16 +5,16 @@ pillar: 3d-design
 prio: normal
 ---
 
-# Reaction energetics ledger (T0 of the reaction-tunnel chain)
+# Reaction energetics ledger (T0 of the nanoreactor chain)
 
 ## Motivation / why
 
 precis has no thermochemistry. Asking "how much energy does
 2 NO + 5 H2 → 2 NH3 + 2 H2O release, and how is it split across steps?"
 needs a scratch script today. That question is the first gate of
-[no-nh3-reaction-tunnel](no-nh3-reaction-tunnel.md) and of every catalysis
+[nanoreactor-no-nh3](nanoreactor-no-nh3.md) and of every catalysis
 quest: a step that is uphill at the thermodynamic level needs a drive,
-whatever its barrier. The numbers in the tunnel item came from a scratch
+whatever its barrier. The numbers in the nanoreactor item came from a scratch
 run of the `chemicals` package (CalebBell, MIT licence). It covers NO, H2,
 NH3, H2O, HNO and H, but has no S° for NH2OH and nothing for H2NO or HNOH.
 

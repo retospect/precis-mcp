@@ -1,16 +1,16 @@
 ---
 status: draft
-title: a four-pane reaction movie shows a substrate walking the tunnel — atoms, fields, frontier orbitals, strain — on one camera with an energy strip
+title: a four-pane reaction movie shows a substrate walking the nanoreactor — atoms, fields, frontier orbitals, strain — on one camera with an energy strip
 pillar: 3d-design
 prio: low
-blocked-by: reaction-tunnel-station-path-finder
+blocked-by: nanoreactor-station-path-finder
 ---
 
-# Reaction movie (T6 of the reaction-tunnel chain)
+# Reaction movie (T6 of the nanoreactor chain)
 
-Umbrella: [no-nh3-reaction-tunnel](no-nh3-reaction-tunnel.md). Reto,
+Umbrella: [nanoreactor-no-nh3](nanoreactor-no-nh3.md). Reto,
 2026-10-04: the outcome of the chain is a video of the reaction as it
-happens in the tunnel, once the fields and poses are done.
+happens in the nanoreactor, once the fields and poses are done.
 
 ## Motivation / why
 
@@ -32,7 +32,7 @@ conformers; no invented wobble.
 **Layout.** A 2×2 square plus a full-width strip under it, close to 16:9.
 - **One rule: all four panes share one camera and one z-window**, so a
   single scale bar is true everywhere and the same screen spot is the
-  same place in the tunnel.
+  same place in the tube.
 - Top-left, ball-and-stick: the substrate walking; lining pendants; carbon
   cut away (front half removed or ghosted); the inlet pore lit when it
   delivers H. Corner: station k/N, H delivered so far (0–5).
@@ -48,7 +48,7 @@ conformers; no invented wobble.
   strain is per-atom MLIP energy or bond deviation.
 - Centre badge: formula chain with the current species lit, layer/ring
   index, scale bar.
-- Strip: free-energy profile along the tunnel with a moving cursor, each
+- Strip: free-energy profile along the tube with a moving cursor, each
   Ea labelled, uphill steps marked. Below it a log-scale dwell bar
   (Eyring rate per station).
 

@@ -14,7 +14,7 @@ with inward ribs; the carbon-side asks go to hexfold-toolkit separately.
 Later it feeds the catalysis quests. Reto's full brief:
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/cnt-channel-context-2026-10-03.md`.
 Concrete instance and its design toolchain (2026-10-04):
-[no-nh3-reaction-tunnel](no-nh3-reaction-tunnel.md).
+[nanoreactor-no-nh3](nanoreactor-no-nh3.md).
 
 ## Motivation / why
 

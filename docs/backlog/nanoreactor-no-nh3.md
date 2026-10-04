@@ -1,11 +1,11 @@
 ---
 status: idea
-title: an instrumented carbon reaction tunnel walks NO to NH3 station by station, and needs a seven-tool chain (T0–T6) to design
+title: an instrumented carbon nanoreactor walks NO to NH3 station by station, and needs a seven-tool chain (T0–T6) to design
 pillar: 3d-design
 prio: low
 ---
 
-# Instrumented reaction tunnel: NO → NH3 (bluesky)
+# Instrumented nanoreactor: NO → NH3 (bluesky)
 
 Reto, 2026-10-04. This is the concrete instance of
 [cnt-channel-staged-catalysis](cnt-channel-staged-catalysis.md), whose
@@ -18,13 +18,13 @@ are self-consistent, not to build it. Most of the value is the toolchain
 
 **Structure.** Circular graphene tubes run between two graphene sheets. The
 outer carbon is a rigid, unstrained bound. The gap between the sheets is an
-H2 reservoir. H2 enters the tunnel through pores at set axial positions, so
+H2 reservoir. H2 enters the tube through pores at set axial positions, so
 pore placement meters H per station. Pores must be real openings (vacancy
 rings of 8 or more atoms); a heptagon is closed to H2. A Y-junction on the
 outside may relieve strain where the radius changes.
 
 **Lining.** At each station, pendants (sugar rings, some lipids) form a
-charge tunnel that changes down the tube and holds the substrate in pose.
+charge track that changes down the tube and holds the substrate in pose.
 Each pendant is anchored to two Y-junctions so it cannot rotate; a third or
 fourth anchor pins tilt. That turns its fields into crisp functions instead
 of ensembles. Pendants are designed to sit in their relaxed pose, with no
@@ -94,12 +94,12 @@ What this says:
 | # | tool | item | input → output |
 |---|---|---|---|
 | T0 | reaction energetics ledger | [reaction-energetics-ledger](reaction-energetics-ledger.md) (draft) | balanced equation → ΔH/ΔG/E° per step, with the source per value |
-| T1 | station path finder | [reaction-tunnel-station-path-finder](reaction-tunnel-station-path-finder.md) (draft) | intermediates → TS per step in four tiers, station records |
-| T2 | instrumentable tube generator | [hexfold-instrumentable-tunnel](hexfold-instrumentable-tunnel.md) (idea, blocked on k = 3 seams) | tube spec → carbon net, attachment sites (z, θ, normal), pores |
+| T1 | station path finder | [nanoreactor-station-path-finder](nanoreactor-station-path-finder.md) (draft) | intermediates → TS per step in four tiers, station records |
+| T2 | instrumentable tube generator | [hexfold-nanoreactor-tube](hexfold-nanoreactor-tube.md) (idea, blocked on k = 3 seams) | tube spec → carbon net, attachment sites (z, θ, normal), pores |
 | T3 | track designer | this file, below | T1 station records + T2 sites → target field stack in (z, θ), energy as one axis |
 | T4 | ring/pendant designer | this file, below | anchor pair + target fields per ring → ranked pendants |
 | T5 | assembled check | this file, below | tube + lining + substrate → T1 re-run inside the designed pocket |
-| T6 | reaction movie | [reaction-tunnel-movie](reaction-tunnel-movie.md) (draft) | station records → four-pane MP4 + web scrubber |
+| T6 | reaction movie | [nanoreactor-movie](nanoreactor-movie.md) (draft) | station records → four-pane MP4 + web scrubber |
 
 **Order.** T0 → T1 tiers 1–3 (bare, implicit solvent, theozyme) and 3b
 (imposed strain) → T3/T4 matching the theozyme → T5 → T6. T2 runs in

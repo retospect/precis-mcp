@@ -182,8 +182,8 @@ network; plus the explorer's one-step-per-change diagram) ·
 2026-10-01 — it carries the property layer and the intent loop the
 north-star spec needs) · `chemistry.md` (created and activated
 2026-10-01, catalysis first). Additional ranked threads: `multiscale-design-core.md` ·
-`pcb-platform.md` · `reaction-tunnel.md` (dormant, 2026-10-04: the
-instrumented NO→NH₃ carbon tunnel and its T0–T6 design toolchain).
+`pcb-platform.md` · `nanoreactor.md` (dormant, 2026-10-04: the
+instrumented NO→NH₃ carbon nanoreactor and its T0–T6 design toolchain).
 
 **Surfaces.** Agent: a design reads out as a replayable op list and an
 intent statement is authorable. Human: click any block and read its pose,
