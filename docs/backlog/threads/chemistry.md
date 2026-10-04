@@ -11,22 +11,19 @@ packages its results.
 **Last reviewed:** 2026-10-02 (every item triaged against the code and commit history)
 **Worktree:** `chemistry`
 **Active:** yes — Reto, 2026-10-01.
-**Resume (2026-10-04 00:50Z):** dogfood of prod 4181421ce (verify wall
-28800 + seed cpuset 0-4,10-14): the worker env carries both (gateway plist
-and live process), but **nothing re-dispatched** — the 9 qu164903 (NO→NH3
-on Pd(111)) verify trees still hold only their September seeds (23 of 27
-failed at wall 5400, `failure_class` NULL). Cause: `harvest_measures` reads
-`_latest_autocatpath_job(...) or _stuck_seed_failure(...)`; each candidate's
-older neb-tier aggregate job succeeded, so the stuck-seed fallback never runs,
-and its own "no aggregate under any T_agg" guard blocks it a second time (the
-docstring's "known masking edge, accepted" — wrong when the newer tree is the
-stuck one). Fixed (this land): newest-tree-scoped `_stuck_seed_failure`, checked
-first. After its deploy, the next qu164903 tick should re-mint the 23 failed
-seeds under the same seed todos with `resources.wall_seconds=28800` +
-`cpuset`; then confirm the child runs under `taskset` on castor/pollux.
-Unchecked: whether the verify content key moved since 09-24 (uv.lock changed
+**Resume (2026-10-04 07:10Z):** landed and live in prod 727728cc9 (round 4):
+verify wall 28800 + seed cpuset 0-4,10-14 (both confirmed in the gateway
+worker's plist and live env), and da14331f7 — the stuck-seed repair now keys
+on the candidate's newest T_agg tree ahead of the latest aggregate job (the
+older succeeded neb aggregate had masked the 9 qu164903 (NO→NH3 on Pd(111))
+verify trees, 23 of 27 seeds failed at wall 5400 in September). **Open:** not
+yet dogfooded — qu164903 has not ticked since 01:20Z (diagnosis in flight;
+the fix acts only on a tick). On the next tick: the 23 failed seeds re-mint
+under the same seed todos with `resources.wall_seconds=28800` + `cpuset`;
+then confirm the child runs under `taskset` on castor/pollux. Unchecked:
+whether the verify content key moved since 09-24 (uv.lock changed
 10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
-9 pathways instead of reusing them.
+9 pathways instead of reusing them. Nothing unlanded on the branch.
 
 ## Do next
 
@@ -71,7 +68,7 @@ paper needs.
    recommendation to re-pause is review-queue `chemistry-9`; Reto 20:05Z
    (via knowledge-mesh-12): qu202467 is the knowledge-mesh measures pilot;
    held DORMANT (set 20:06Z, no ticks) until that pilot lands (~4 builds,
-   knowledge-mesh thread). Restart is knowledge-mesh's call, not ours. tick_count
+   knowledge-mesh thread). Pilot landed 2026-10-04 (122 measure runs, 114 approved); resume is with Reto as review-queue knowledge-mesh-13. Restart is knowledge-mesh's call, not ours. tick_count
    did not advance on that tick (stuck at 314; gr464538), so count
    ticks from the quest's chunks, not meta. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
