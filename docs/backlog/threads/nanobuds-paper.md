@@ -17,7 +17,18 @@ and non-covalent buds. RSC reviews go through a proposal form first.
 - **Open, waiting on others:**
   - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at hexfold's cycle 3.
   - claims-and-evidence-9 is with its owner.
-  - **After round 4 deploys:** export dr173020 and triage its pin-coverage warnings (G3/G4, claims-and-evidence grounding builds 1–2).
+  - **Round-4 dogfood, 2026-10-04 04:45Z (prod 727728cc):** `scripts/prod-precis draft export 173020 --bib-style rsc` (the numeric id; `dr173020` gives "no draft") ran clean. It printed 37 pin warnings, as measured; 9 "pinned pa… but derived originator is …" notes; and 4 placeholder figures (dc3015722, dc3015723, dc3015729, dc3015730).
+    - Output is in `nanobud-fidelity/export-r4/`. Triage table: `printed-read/pin-triage-r4.md` (read-only agent).
+    - pa1181 exports right (Yao et al., Nature 1999, doi 10.1038/46241) under the old key `humphreys99a`. The key is invisible in RSC numeric style; cosmetic.
+  - **Pin triage done 04:50Z:** 13 noise, 22 re-pins, 2 rewords.
+    - The 22 re-pins were applied on prod; each adds the passage that names the method (`printed-read/apply_pins_r4.py`, log `apply-pins-r4.log`, pre-flight and post-check clean).
+    - Re-export: 37 → 20 warnings. The remaining ones are noise (the acronym against its spelled-out form, signed numbers, NanoBud vs CNB, generic words), sent to claims-and-evidence for their noise sweep.
+    - Open with Reto: **nanobuds-paper-32**, four sentences:
+      - A, "CVD": keep;
+      - B, Ahangari "corroborated these MD results": reword;
+      - C, the lithium clause, which no hub carries: cut;
+      - D, uncited background numbers in the Novoselov sentence: leave.
+    - Background for the queued item below.
     - Measured before deploy: 37 of 89 pins warn, none for G4. In a sample about 6 in 10 are real gaps, e.g. DFT, DFTB or HOMO/LUMO missing from the pinned chunk. Known noise: negated terms, words glued by extraction, numeric locants, range endpoints.
     - Each warning suggests up to 3 better chunks: re-pin to one if it carries the term; if none does, file the gap.
     - fi189535 (anchored) now flags TEM and STS as uncovered and suggests pc209502 and pc209508. Its fix is still a supersede, which waits on the unbuilt supersede door. This thread owns it.
