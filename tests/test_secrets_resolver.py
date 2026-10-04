@@ -7,7 +7,7 @@ reveal cache, using a fake store so the logic is exercised without Postgres.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -56,6 +56,34 @@ def test_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     store: Any = _FakeStore("from-vault")
     assert vault.get_secret("MY_KEY", store=store) == "from-env"
     assert store.calls[0] == 0  # never touched the vault
+
+
+def test_require_vault_secret_ignores_env_file_and_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setenv("STRICT_KEY", "from-env")
+    monkeypatch.setenv("PRECIS_SECRETS_FILE_DIR", str(tmp_path))
+    (tmp_path / "STRICT_KEY").write_text("from-file")
+    vault._cache["STRICT_KEY"] = (float("inf"), "from-cache")
+    store: Any = _FakeStore("from-vault")
+    assert vault.require_vault_secret("STRICT_KEY", store=store) == "from-vault"
+    assert store.calls == [1]
+    with pytest.raises(vault.VaultSecretUnavailable, match="credential_unavailable"):
+        vault.require_vault_secret("STRICT_KEY", store=cast(Any, _FakeStore(None)))
+
+
+def test_require_vault_secret_redacts_errors(caplog: Any) -> None:
+    class BrokenPool:
+        @contextmanager
+        def connection(self) -> Any:
+            raise RuntimeError("PRIVATE_SENTINEL")
+            yield
+
+    store = type("Store", (), {"pool": BrokenPool()})()
+    with pytest.raises(vault.VaultSecretUnavailable) as error:
+        vault.require_vault_secret("KEY", store=store)
+    assert "PRIVATE_SENTINEL" not in caplog.text + str(error.value)
+    assert error.value.__context__ is None
 
 
 def test_vault_reveal(monkeypatch: pytest.MonkeyPatch) -> None:

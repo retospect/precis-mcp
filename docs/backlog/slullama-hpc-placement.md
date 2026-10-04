@@ -5,8 +5,11 @@ pillar: local-compute
 
 # MeluXina — vault-backed catpath SSH/Slurm; later LLM placement
 
-Review checkpoint: spec and verified seams only. Stop before implementation
-or Slurm submission. User login is confirmed; automation authentication and
+Coordinator accepted spec and credential plan; implementation plus one bounded
+real ML pilot now authorized. Source/synthetic security review precedes actual
+secret use; afterward authentication, one quota query and one <=10-min/one-node
+fixture within allocation and <=25USD limit need no further user permission.
+User login is confirmed; automation authentication and
 project entitlement remain unverified. Canonical integration spec consolidating
 communicator's draft and the chemistry/local-compute ownership boundary.
 
@@ -15,6 +18,12 @@ SSH/Slurm layer owns remote lifecycle; catpath is its first workload adapter.
 Implementation worktrees:
 `codex-meluxina`, `codex-catpath-meluxina`, both `work/meluxina/bootstrap`.
 Exact baseline commits and evidence live in fleet `notes/meluxina.md`.
+Chemistry13 exclusively owns `codex-catpath-chemistry` on
+`work/chemistry/meluxina-pilot`, approved base
+`973491d4a9b133bcb4c75cb2127a9644f38f94dd`; they supply additive worker and
+immutable fixture/artifact hashes. Original `codex-catpath-meluxina` stays
+read-only. Meluxina owns the sole live submission; production engine/lock
+and frozen149db0357 remain unchanged.
 Catpath's [DFT/Slurm proposal](https://github.com/retospect/catpath/blob/9a4cfede3efaa4f2d8aa2afb92427db41e4a8096/docs/proposals/dft-refinement-and-slurm.md)
 owns broader task-runner exploration; link/update it when implementing this
 slice, without another competing integration spec. Its GPU-job packing and
@@ -31,7 +40,9 @@ scheduling, persistent spools and DFT follow later. LLM plan is separate.
 
 No Precis `uv.lock` change or production catpath release selection; assigned
 catpath SHA is a development baseline; the 0.23.1 recommendation remains
-unanswered. Resources, budget, fixture/model and tolerances remain proposals.
+unanswered. Account/resources/model artifacts must be frozen from entitlement and chemistry evidence.
+The authorized hard cap is one node/600 seconds/25USD; proposed scientific
+tolerances remain frozen before submission, never widened from observed results.
 No qu164903 tick, held campaign rerun,
 legacy backfill, hydride NEB, MP-key experiment, push/merge/deploy, Docker prune
 or full suite without coordinator scheduling. Never edit either main checkout.
@@ -58,7 +69,7 @@ not a Precis dependency. Repository/package extraction, library naming/version,
 distribution/publication and dependency wiring remain proposals for separate
 review. No top-level dependency, optional extra or publication is authorized.
 
-## Verified seams / missing consumer
+## Verified initial seams / implemented consumer checkpoint
 
 | Code anchor | Evidence / consequence |
 |---|---|
@@ -73,7 +84,9 @@ review. No top-level dependency, optional extra or publication is authorized.
 | `src/precis_web/secret_status.py::KNOWN_SECRETS` | No SSH/MeluXina validator or passphrase pairing. |
 | `deploy/roles/ssh_tunnels` | Key paths, not vault values; external keyscan preseed does not independently establish trust. |
 
-No supported vault-to-SSH key/passphrase consumer found in Precis or catpath.
+At accepted planning baseline, no vault-to-SSH consumer existed. The bounded
+implementation now adds the consumer below; actual credential usability remains
+unverified until source/security review passes.
 Supplied secret reference was not revealed; encoding/encryption/usability are
 unknown. No raw-key workaround, authentication or `myquota` attempted.
 Exact missing seam: audited vault-origin resolution → encrypted-key unlock →
@@ -109,11 +122,15 @@ Strict host verification against independently verified pins; missing/changed
 key fails before auth. Balanced endpoints need an allowed verified key set
 and explicit rotation. Keyscan discovers candidates, not trust. No forwarding,
 ambient identity or first-use acceptance; bounded timeouts, no prompts.
-Actual host pin/provenance is still missing.
+Provider HTTPS connecting documentation publishes an Ed25519 key and
+SHA256 fingerprint; coordinator independently verified the fingerprint. Use
+that exact public identity from the private runtime profile, fail closed on
+rotation; no keyscan trust. Passphrase reference mapping remains unverified.
 
-## Smallest reviewable credential patch — proposed, not implemented
+## Accepted credential patch — source/security checkpoint required
 
-One Precis-only patch, no scheduler/job/quest wiring or catpath changes.
+Precis owns credential/core patch; chemistry owns adapter changes separately.
+No scheduler or job hot path triggers authentication automatically.
 No automatic live probe, quota request or SSH entry in the web's periodic
 `secret_status` probe registry. Constructing transport does not connect.
 
@@ -153,7 +170,8 @@ Session sequence:
    `SSH_ASKPASS_REQUIRE=force`; `ssh-add -q -t 60 <encrypted-key>` reads helper
    output internally, never through captured user logs. Deny repeated requests;
    synthetic TTL test uses a shorter lifetime bounded by the same 60-second cap.
-6. Obtain public identity from dedicated agent internally; use its public file
+6. Extract public identity from the bounded encrypted envelope; OpenSSH verifies
+   its consistency during unlock. Use its public file
    for `IdentityFile` + `IdentitiesOnly=yes`; delete encrypted-key file after
    successful load. Yield session with sanitized subprocess env only.
 7. All exits close broker/FDs, terminate/reap only owned children, unlink session
@@ -207,9 +225,11 @@ tests/test_secrets_access_audit.py tests/precis_web/test_secrets_route.py
 tests/precis_web/test_secrets.py tests/test_remote_ssh_credentials.py
 tests/test_remote_ssh.py` with scratch/tmp configuration confined to worktree
 or session scratch. Ruff and targeted container typecheck follow; full suite
-requires coordinator scheduling. No tests or source patch run in this follow-up.
-Patch authorization covers synthetic verification only; live credential reveal,
-authentication and quota remain a later explicit gate.
+requires coordinator scheduling. Synthetic source checkpoint now exists; exact commit and retained test logs
+are reported in fleet inbox, with no live credentials or remote job used.
+Before secret use, submit source plus synthetic results for internal review.
+After review passes, the assigned vault-backed live auth/quota/pilot steps are
+authorized; missing refs/passphrase/pins or fixture must be reported, not guessed.
 
 ## Artifact / task contract — catpath
 
@@ -336,14 +356,46 @@ artifact tamper, per-task failure coverage, credential redaction and shared
 concurrency. Catpath worker/backend tests in its worktree. Ruff/types plus
 coordinator-scheduled full ship gate follow; syntax/mock success is not live gate.
 
-## Separate later LLM plan
+## Separate LLM batch placement plan — execution remains held
 
-Batch qualification after ML gate: graph-memory workload leads; paper/catalysis
-receive equal research allocation. Pin small graph eval pack, reference/scoring,
-model revision/license/weights, context/quantization/runtime and measured A100
-fit. Compare completion coverage, quality, queue/startup, throughput/node-hours;
-record every prompt outcome. Model/resource selection follows entitlement;
-model size does not establish frontier quality.
+Batch qualification follows the real ML gate; no LLM allocation or weights
+download in this assignment. Graph memory leads, with paper and catalysis
+receiving equal research allocation. Proposed first frozen pack: 48 independent
+prompts (24 graph relation/summary, 12 paper evidence extraction, 12 catalysis
+evidence reasoning). Every prompt carries input Precis handles, source-content
+hashes, expected schema/required evidence, reference answer and fixed scoring.
+Missing evidence must produce explicit abstention; no unsupported citation.
+Input handles are selected from authorized existing corpus, not invented here.
+
+Candidate for review, not selection: [Qwen3-32B official model card](https://huggingface.co/Qwen/Qwen3-32B)
+publishes Apache-2.0 licensing, 32.8B parameters, native 32,768-token context,
+and a non-thinking switch. Proposed short graph lane uses non-thinking mode,
+8,192-token input ceiling, 512-token output ceiling, deterministic documented
+sampling and a pinned quantized artifact/runtime. Four-bit parameter arithmetic
+gives roughly 16.4GB before quantization overhead, runtime and KV cache; this
+is a fit estimate, not measured A100 compatibility. Require measured peak VRAM
+within one 40GB GPU before accepting that placement. A pinned smaller candidate
+is a later fallback decision if measured fit fails, never an automatic download.
+
+Reuse neutral durable runner with one exclusive allocation at a time; one
+initial GPU worker, then proposed up-to-four independent workers within the
+same node only after quality/overlap evidence. Stage pinned tokenizer/template,
+model revision/license/weight and quantization hashes, Linux dependency wheels
+and batch input manifest offline; execute a finite batch process on compute
+nodes, with no endpoint or login daemon. Account/QoS/time/memory and monetary
+cap require separate approved run manifest; the ML pilot authorization does
+not authorize this LLM batch execution.
+
+Record every prompt outcome including invalid/truncated/timeout/missing,
+completion coverage, schema validity, required-evidence recall, unsupported
+claim/citation count, blinded quality against pinned reference, queue/startup
+seconds, input/output tokens, throughput, peak VRAM, scheduler AllocTRES/runtime
+and reserved node-hours per useful answer. Proposed qualification gate: full
+outcome coverage, no unsupported citation, at least 95% schema validity and
+no more than 5 percentage-point loss on pinned reference evidence recall.
+Thresholds and reference scoring are reviewed before execution; runtime speed
+alone cannot promote a model or route. Preserve graph lead and equal research
+shares in scheduling/reporting, including failed work.
 
 `llm_catalog.py::seed_slullama_card`, static-source prune guard and
 `local_serving.acquire` slot accounting shipped; keep dark. Earlier slullama
@@ -356,11 +408,15 @@ Static card seeding replaces full `served_by`: distinct model ID if revisited.
 
 ## Coordinator review / next gate
 
-First seam/spec deliverable accepted by parent; this amendment awaits review.
-Review reusable core/vault/workload boundary and proposed credential-only patch;
-authorize that bounded source patch separately. Resource/budget/tolerance and
-0.23.1 engine recommendation remain unanswered proposals. Then review live
-credential access before validating pinned vault-backed auth and one quota
-query, freeze actual account/QoS/environment/model/artifact hashes and CPU
-reference, review concrete run manifest before one submission. GPAW/DFT is
-not prerequisite; production release/held campaigns/LLM routing stay separate.
+Accepted fcbd9b2ef seam/spec and c3654f098 credential plan now authorize source
+implementation. Source plus synthetic security checkpoint requires internal
+coordinator/architecture review before vault values. After that passes,
+authentication, one quota read and permitted discovery are authorized. Freeze
+actual entitlement, chemistry revision/wheel/model/dependency/input/script
+hashes and CPU reference before sole <=600s/one-node/25USD submission. Persist
+intent/IDs, disconnect/recover without duplicate allocation, collect all task
+outcomes and capture actual scientific evidence through supported Precis verbs.
+Missing supported credential pairing or immutable fixture is a concrete blocker.
+No additional user permission is required for already authorized steps.
+GPAW/DFT and LLM execution/serving remain separate; 0.23.1 recommendation is
+unanswered and production locks/frozen149db0357 stay unchanged.

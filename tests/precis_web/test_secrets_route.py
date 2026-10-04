@@ -75,3 +75,24 @@ def test_secrets_set_blank_value_is_noop(
     )
     assert r.status_code == 303
     assert calls == []
+
+
+def test_secrets_multiline_is_write_only(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        vault, "set_secret", lambda name, value, *, store: calls.append((name, value))
+    )
+    value = "BEGIN\nSYNTHETIC_PRIVATE_SENTINEL\nEND\n"
+    response = client.post(
+        "/secrets/set",
+        data={"name": "TEST_SSH", "value": value},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303 and calls == [("TEST_SSH", value)]
+    monkeypatch.setattr(vault, "list_secrets", lambda *, store: [])
+    response = client.get("/secrets")
+    assert '<textarea name="value"' in response.text
+    assert 'x-bind:disabled="!multiline"' in response.text
+    assert "SYNTHETIC_PRIVATE_SENTINEL" not in response.text

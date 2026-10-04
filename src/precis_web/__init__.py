@@ -31,6 +31,10 @@ that nanopubs signed here attribute to), sign-out, podcast subscribe URL
 only other source). Sign-out = 401 with a fresh challenge (evicts cached
 Basic credential) + session-cookie delete.
 
+**Secrets.** Add/replacement controls offer a write-only multiline editor;
+existing values never populate it. SSH unlock/auth is an explicit remote
+consumer operation, never a web rendering or periodic probe side effect.
+
 Nav (template ``templates/base.html.j2``; badges ``nav.py::nav_badges``):
 Daily (Drive, Tags, ToDo, Design) always visible; Browse ▾ (Quests,
 Schedules, Clusters, Structures, CAD, Figures, Mermaid); Attention (Needs
