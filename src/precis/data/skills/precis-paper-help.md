@@ -231,8 +231,9 @@ challenge: that is a recorded miss, never retried around), `si_skipped`
 (non-PDF files: zip/xlsx/docx are not ingested), and one `si_found` /
 `si_none` / `si_blocked` row in `get(id=..., view='log')`. A paper with no
 SI is checked once and not re-checked until you call it again; a check cut
-short by the pass time budget (`deadline` miss) retries on the next pass, up
-to 3 times.
+short by the pass time budget (`deadline` miss), or one that queued nothing
+because of a transient network failure (connect/read timeout), retries on the
+next pass, up to 3 times.
 
 You rarely need to call it: opening a paper that has a DOI (web page, `get`
 overview, or a fisheye ring that cites it) queues **one** SI check

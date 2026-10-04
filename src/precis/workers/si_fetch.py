@@ -18,6 +18,11 @@ budget (any ``deadline`` miss, or a parent claimed after the deadline, which
 runs no discovery) is re-armed — ``si_fetch.requested_at`` is bumped past the
 claim stamp and ``si_fetch.deadline_retries`` incremented — so the next pass
 re-claims it; after ``MAX_DEADLINE_RETRIES`` (3) the misses stand as recorded.
+The same re-arm (same counter and cap, which therefore covers both causes)
+applies when no PDF was queued and a miss is a transient network error
+(``error:ConnectTimeout`` and kin, ``download_timeout``): a host-side blip must
+not burn the paper's one check. ``cloudflare_403``, HTTP 4xx and ``cap`` never
+re-arm.
 
 The event source is ``si_fetch``, deliberately NOT ``fetcher:*``: those
 sources arm the stub claim's retry window / backoff (``claim_stubs_to_fetch``),
@@ -59,8 +64,26 @@ MAX_SI_PDFS_PER_PARENT = 8
 #: Wall-clock budget of one ``run_si_pass``; untried candidates are recorded
 #: as ``deadline`` misses. Keeps the pass from monopolising the fetch lane.
 SI_PASS_DEADLINE_S = 120.0
-#: Budget-cut re-arms per request before the ``deadline`` misses stand.
+#: Re-arms (budget-cut or transient-network) per request before the misses stand.
 MAX_DEADLINE_RETRIES = 3
+
+#: Exception names (``error:<name>`` miss reasons) that mark a transient
+#: network failure worth re-arming an otherwise empty check for.
+_TRANSIENT_ERRORS = frozenset(
+    {
+        "ConnectTimeout",
+        "ReadTimeout",
+        "ConnectError",
+        "RemoteProtocolError",
+        "PoolTimeout",
+    }
+)
+
+
+def _is_transient(reason: str) -> bool:
+    if reason == "download_timeout":
+        return True
+    return reason.startswith("error:") and reason[len("error:") :] in _TRANSIENT_ERRORS
 
 
 @dataclass(frozen=True)
@@ -289,7 +312,9 @@ def _fetch_one_parent(
             "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
             (Jsonb(patch), parent.ref_id),
         )
-        if any(m["reason"] == "deadline" for m in misses):
+        if any(m["reason"] == "deadline" for m in misses) or (
+            not queued and any(_is_transient(m["reason"]) for m in misses)
+        ):
             retries = _rearm(conn, parent.ref_id)
         conn.commit()
     if queued:

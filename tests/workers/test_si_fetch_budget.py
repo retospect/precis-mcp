@@ -278,3 +278,87 @@ def test_late_claim_at_retry_cap_records_miss_and_event(store, tmp_path) -> None
     assert [r[0] for r in rows] == ["si_blocked"]
     assert rows[0][1]["deadline_retries"] == 3
     assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 0
+
+
+def _raising(name: str) -> Exception:
+    return type(name, (Exception,), {})("boom")
+
+
+def _flaky(exc_name: str):
+    """Every discovery leg raises ``exc_name``."""
+
+    def fetch(url: str) -> HttpResult:
+        raise _raising(exc_name)
+
+    return fetch
+
+
+def _events(store, pid: int) -> list[Any]:
+    with store.pool.connection() as conn:
+        return conn.execute(
+            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
+            (pid, si_fetch.SI_EVENT_SOURCE),
+        ).fetchall()
+
+
+def test_connect_timeout_with_nothing_queued_rearms(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=_flaky("ConnectTimeout"))
+    assert res["fetched"] == 0
+    meta = _meta(store, pid)
+    assert any(m["reason"] == "error:ConnectTimeout" for m in meta["si_misses"])
+    assert meta["si_fetch"]["deadline_retries"] == 1
+    assert meta["si_fetch"]["requested_at"] > meta["si_checked_at"]
+    assert _events(store, pid)[0][1]["rearmed"] is True
+    again = si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)
+    assert again["claimed"] == 1
+
+
+def test_cloudflare_403_does_not_rearm(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+
+    def blocked(url: str) -> HttpResult:
+        return HttpResult(403, headers={"cf-mitigated": "challenge"})
+
+    si_fetch.run_si_pass(store, tmp_path, fetch=blocked)
+    meta = _meta(store, pid)
+    assert {m["reason"] for m in meta["si_misses"]} == {"cloudflare_403"}
+    assert "deadline_retries" not in meta["si_fetch"]
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=blocked)["claimed"] == 0
+
+
+def test_queued_pdf_with_other_leg_timeout_not_rearmed(
+    store, tmp_path, monkeypatch
+) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    monkeypatch.setattr(fetch_oa, "_download_pdf", _ok_download)
+    figshare = _files(1)
+
+    def fetch(url: str) -> HttpResult:
+        if "figshare" in url:
+            return figshare(url)
+        raise _raising("ConnectTimeout")
+
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=fetch)
+    assert res["fetched"] == 1
+    meta = _meta(store, pid)
+    assert any(m["reason"] == "error:ConnectTimeout" for m in meta["si_misses"])
+    assert "deadline_retries" not in meta["si_fetch"]
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=fetch)["claimed"] == 0
+
+
+def test_retry_cap_holds_across_mixed_deadline_and_network(store, tmp_path) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    flaky = _flaky("ReadTimeout")
+    for n, deadline_s in ((1, -1.0), (2, 600.0), (3, -1.0)):
+        res = si_fetch.run_si_pass(store, tmp_path, fetch=flaky, deadline_s=deadline_s)
+        assert res["claimed"] == 1
+        assert _meta(store, pid)["si_fetch"]["deadline_retries"] == n
+    res = si_fetch.run_si_pass(store, tmp_path, fetch=flaky)
+    assert res["claimed"] == 1  # 4th claim: misses stand
+    assert _meta(store, pid)["si_fetch"]["deadline_retries"] == 3
+    assert si_fetch.run_si_pass(store, tmp_path, fetch=flaky)["claimed"] == 0
