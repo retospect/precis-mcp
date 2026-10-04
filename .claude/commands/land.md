@@ -63,13 +63,15 @@ Optional ship message from the user: `$ARGUMENTS`
    Linux+db 3.13; a docs-only diff runs the fast-set docs lane instead of
    the shards; 3.12 · macOS · Windows are nightly-only) runs there, and only
    a green run reaches
-   `main` — via the same atomic CAS squash-push, so main only ever advances
-   through a tree the gate tested against the then-current main. If main
-   moves during the wait, ship drops the lock, re-syncs, and re-runs CI
+   `main` — via the same atomic CAS squash-push. The ship lock covers only
+   that push (seconds), never the CI wait or a gate. A full-gate ship lands
+   an exactly-tested tree, or says it did not and pins nothing. If main
+   moves during the wait, ship re-syncs and re-runs CI
    on the integrated tree (~12 min, up to 2×, siblings keep landing
-   meanwhile); only after that does the hybrid race policy engage: ship
-   keeps the lock and validates the integrated tree with the full LOCAL
-   container gate (~10 min) so the retry loop terminates.
+   meanwhile); then one hybrid local container gate (~10 min, unlocked);
+   if that loses the race too, ship lands by an in-lock forward merge of
+   main, prints "not a deploy warrant", writes no `.ship-sha`, and trails
+   the squash with `Gate: forward-merged over N commits`.
    Opt-in belt for risky diffs: `scripts/ship --remote --impacted` runs the
    local impacted container gate FIRST, before spending a CI cycle.
    (`scripts/ship --impacted` without `--remote` is the legacy local-gate

@@ -25,6 +25,9 @@
 #   scripts/test --await <run-id>             # bounded wait: exits with the run's
 #                                             # code, or 124 = still running (re-run)
 #
+# Refuses with exit 3 (named message) when the docker VM disk has less than
+# PRECIS_DOCKER_MIN_FREE_GB (default 10) free; PRECIS_DOCKER_DISK_CHECK=0 skips.
+#
 # Everything after the script name is passed straight to pytest. Default
 # parallelism is -n6 (the measured sweet spot); pass your own -n0/-nN to
 # override for a single fast test.
@@ -198,6 +201,12 @@ COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
 # Docker VM ceiling with every sibling worktree's — cap concurrency so runs
 # queue briefly instead of OOM-killing each other at random (exit 137).
 source "${WORKTREE}/scripts/lib/gate-slot.sh"
+# Disk preflight: a docker VM disk near full dies later as a raw ENOSPC with no
+# test output, which reads as a red run. Refuse now (exit 3), before any compose
+# call, naming the cause. Unknown free space only warns; PRECIS_DOCKER_DISK_CHECK=0
+# skips. --typecheck is checked too (mypy writes caches).
+source "${WORKTREE}/scripts/lib/docker-disk.sh"
+docker_disk_preflight "scripts/test" || exit $?
 # TESTMON_LOG stays empty outside --impacted mode; cleanup() no-ops on it
 # then (see the testmon-exit-guard block near the bottom for why impacted
 # mode captures pytest's output to a file instead of streaming it raw).

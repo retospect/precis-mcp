@@ -75,11 +75,11 @@ and 8 per release fix, so 40–48 jobs. Before the stopgap it was 120.
   main" all behave when `prod` is a second parent on main (the release
   head).
 
-## Open (Reto)
+## Decided (Reto, ship-gate-ci-1, 2026-10-03 22:13Z)
 
-- Forward merge per fix, or only at deploy (his literal wording)? The
-  orchestrator and this thread recommend forward-at-once; slice (a) does
-  not depend on the answer.
+- Forward merge in the same command as the release fix, not at deploy. A
+  conflict stops and asks. Slice (b) design: `reviews/ship-gate-ci.md`
+  § "Design note 5".
 
 ## Slices (builds)
 

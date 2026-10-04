@@ -81,9 +81,13 @@ def decide_exit_code(log_text: str, pytest_exit_code: int) -> tuple[int, str | N
     if not testmon_signature_present(log_text):
         return pytest_exit_code, None
 
+    # Judge by category, not substring: "2 xfailed" is a green outcome, and a
+    # substring test for "failed" read it as red (2026-10-03, a 17100-passed
+    # run exited 3).
     clean_summary = None
     for body in _SUMMARY_RE.findall(log_text):
-        if "passed" in body and "failed" not in body and "error" not in body:
+        cats = {c for _, c in _SUMMARY_PART_RE.findall(body)}
+        if "passed" in cats and not cats & {"failed", "error", "errors"}:
             clean_summary = body
 
     if clean_summary is not None:

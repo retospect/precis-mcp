@@ -88,7 +88,10 @@ Optional ship message from the user: `$ARGUMENTS`
      `PRECIS_GATE_N=3`) — not churn, log-tail loops, or `PRECIS_GATE_N=0`.
      Re-touch code only once the failure names *your* changed files.
    - **Merge conflict** — resolve, `git add -A && git commit`, re-run.
-   - **CAS push rejected** — a sibling shipped first; just re-run.
+   - **CAS push rejected** — a sibling shipped first. Ship handles it: it
+     re-gates while attempts remain, then forward-merges main inside the
+     lock and retries the push there (≤5 tries, never another gate). Only
+     the named die after those tries needs a re-run.
    - A `WARNING:` about the primary main not fast-forwarding is best-effort,
      not a failure — relay it and continue to deploy.
 
@@ -103,8 +106,11 @@ Optional ship message from the user: `$ARGUMENTS`
    `scripts/deploy` resolves the *branch* `main` at deploy time, so a sibling
    `/qland` landing between your CAS push and that resolution silently sends an
    **ungated** tree to the fleet while your ship reports green — pinning is what
-   closes that window. If `.ship-sha` is missing, the gate was not a full one
-   (`--quick`/bare `--impacted`): do not deploy, re-run the gate.
+   closes that window. If `.ship-sha` is missing, do not deploy. Either the
+   gate was not a full one (`--quick`/bare `--impacted`), or ship printed
+   "not a deploy warrant" because main kept moving and the land was a
+   forward merge of a tree the gate never saw: the round deploys that, not
+   this ship. Do not re-run the gate just to get a pin.
 
    The same fact is published: a green full gate fast-forwards origin's
    `gated` ref to that sha, and a successful deploy fast-forwards `prod`

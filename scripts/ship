@@ -10,13 +10,16 @@
 # Steps, in order:
 #   1. sanity      — refuse to run on main
 #   2. commit WIP  — stage + commit any dirty tree
-#   3. lock        — mkdir-mutex on the shared .git dir: serialise ships across
-#                    sibling worktrees on this host so a second ship WAITS
-#                    instead of squashing a stale base over the first (the
-#                    shared-index clobber). Released on exit; steals the lock
+#   3. lock        — NARROW mkdir-mutex on the shared .git dir, held ONLY around
+#                    the final seconds-long section (fetch · ancestor check ·
+#                    forward merge · squash · CAS push · local-main ff), never
+#                    across sync, lint, gates or the CI wait. A second ship
+#                    WAITS for those seconds instead of squashing a stale base
+#                    over the first (the shared-index clobber). Steals the lock
 #                    immediately if the holder's pid is dead, else falls back
-#                    to a >30-min age check (holder file missing/unparseable,
-#                    or from another host where the pid can't be checked).
+#                    to a >PRECIS_SHIP_LOCK_STEAL_MIN (5) age check (holder
+#                    file missing/unparseable, or from another host where the
+#                    pid can't be checked). Released explicitly after the ff.
 #   4. loop        — sync → gate → ship, re-running if main moves under us:
 #                    · sync   plain `git fetch origin main` + `git merge
 #                             origin/main` (integrate once; the squash below
@@ -29,23 +32,35 @@
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
 #                             --quick (/qland) skips pytest (ruff+mypy still run).
-#                    · ship   squash `commit-tree` onto origin/main + a
-#                             `--force-with-lease` CAS push. If main advanced
-#                             during the gate (ancestor check) or the lease is
-#                             rejected, re-sync + re-gate + re-push (≤3×; remote
-#                             mode: two fresh CI runs, then one hybrid local
-#                             gate) — never force a stale tree over a moved main.
-#   5. reset       — reset the feature branch to the shipped main: zero
+#                    · ship   (under the lock) squash `commit-tree` onto
+#                             origin/main + a `--force-with-lease` CAS push,
+#                             then the local-main ff, then the lock is released.
+#                             If main advanced during the gate (ancestor check)
+#                             or the lease is rejected: --quick merges origin/main
+#                             forward INSIDE the lock and pushes (lint is not
+#                             re-run; the squash carries a `Gate:` trailer);
+#                             a full-gate mode drops the lock and re-syncs +
+#                             re-gates (≤3×; remote mode: two fresh CI runs, then
+#                             one hybrid local gate), and once that budget is
+#                             spent lands by the same in-lock forward merge,
+#                             saying so and writing no `.ship-sha` pin. A CAS
+#                             lost on a forward-merge path retries fetch ·
+#                             merge · push inside the lock (never a re-gate),
+#                             ≤PRECIS_SHIP_INLOCK_TRIES (5), then dies. Never
+#                             forces a stale tree over a moved main.
+#   5. local main  — (inside the lock) fast-forward the primary's main
+#   6. reset       — reset the feature branch to the shipped main: zero
 #                    divergence, so the next sync is a clean fast-forward and no
 #                    phantom squash-artifact conflict on already-shipped work.
-#   6. local main  — fast-forward the primary's main to the shipped sha
 #   7. report      — print the new main sha
 #
-# A full-gate run also writes `.ship-sha` (gitignored, per-worktree): the exact
+# A full-gate ship lands an exactly-tested tree, or says it did not and pins
+# nothing. It also writes `.ship-sha` (gitignored, per-worktree): the exact
 # sha the gate validated, for `scripts/deploy "$(cat .ship-sha)" --pinned` so a
 # sibling's --quick ship can't substitute an ungated tree between ship and
-# deploy. Not written by --quick (nothing gated), bare --impacted (subset), or
-# a docs-only diff (the light lane — no pytest — unless --full forces the suite).
+# deploy. Not written by --quick (nothing gated), bare --impacted (subset), a
+# docs-only diff (the light lane — no pytest — unless --full forces the suite),
+# or a budget-exhausted forward-merged land (the landed tree was never gated).
 #
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
 #         scripts/ship            # falls back to a generated message
@@ -70,12 +85,13 @@
 #                                        # (Linux+db, macOS, Windows), then the same
 #                                        # atomic CAS squash-push. If main moves
 #                                        # during the CI wait, the race is lost:
-#                                        # drop the ship lock, re-sync, and run a
-#                                        # FRESH CI cycle on the integrated tree
-#                                        # (~12 min), up to PRECIS_REMOTE_CI_RETRIES
-#                                        # (2) times; only then the HYBRID fallback
-#                                        # (keep the lock, full LOCAL gate ~10 min)
-#                                        # so a burst can't loop forever. Add
+#                                        # re-sync and run a FRESH CI cycle on the
+#                                        # integrated tree (~12 min), up to
+#                                        # PRECIS_REMOTE_CI_RETRIES (2) times; then
+#                                        # the HYBRID fallback (full LOCAL gate
+#                                        # ~10 min, also unlocked); then the
+#                                        # in-lock forward-merge land (no pin) so a
+#                                        # burst can't loop forever. Add
 #                                        # --impacted for an opt-in local impacted
 #                                        # gate BEFORE burning a CI cycle. (also
 #                                        # via PRECIS_SHIP_REMOTE=1) Env:
@@ -97,6 +113,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
 BRANCH="$(git branch --show-current)"
+SHIP_T0="$(date +%s)"
 
 # --impacted (or PRECIS_SHIP_IMPACTED=1): gate pytest with testmon impact
 # selection — run ONLY the tests this change affects, not the full suite. /land
@@ -118,9 +135,9 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
 # reddens every gate downstream of it, which is what actually cost hours on
 # 2026-09-25 (backlog/main-stays-gated.md). PRECIS_QLAND_LINT=0 is the
-# deliberate escape. Everything else (ship lock, sync/merge, squash CAS
-# push, branch reset, local-main ff) runs unchanged, so the merge machinery
-# stays race-safe. Use for burst-landing many in-flight worktrees, then run
+# deliberate escape. Everything else (sync/merge, the narrow ship lock around
+# the squash CAS push + local-main ff, branch reset) runs unchanged, so the
+# merge machinery stays race-safe. Use for burst-landing many in-flight worktrees, then run
 # ONE full-gate integration (/go) over the merged main.
 # Flags accepted in any order.
 MUTATE="${PRECIS_SHIP_MUTATE:-0}"
@@ -138,25 +155,26 @@ FULL="${PRECIS_SHIP_FULL:-0}"
 # full check.yml matrix instead of the local container. Push the synced branch
 # to ci/<branch>, poll the check run to conclusion, then do the ordinary CAS
 # squash-push — the --force-with-lease IS the "did anything land meanwhile"
-# check, and a rejection loops back through sync + a fresh CI run, so main
-# only ever advances through an exactly-tested tree. The ship lock is NOT
-# held across the CI wait (a queued matrix can exceed the lock's 30-min
-# staleness steal and starve sibling ships) — it's taken only around the
-# final CAS section.
+# check, and a rejection loops back through sync + a fresh CI run, so a
+# full-gate ship lands an exactly-tested tree — or, once the race budget is
+# spent, says it did not and pins nothing (forward-merge land, below). The
+# ship lock is never held across the CI wait (nor any gate, in any mode) —
+# it is taken only around the final seconds-long section.
 REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 # Remote race policy (user-decided 2026-09-17, gr343941 option 1): when a
 # GREEN remote gate loses the CAS race (main moved during the CI wait),
-# RELEASE the ship lock, re-sync, and run a fresh CI cycle on the
-# integrated tree — up to PRECIS_REMOTE_CI_RETRIES (default 2) times. A CI
-# retry costs ~12 min of free public-repo minutes and touches no local
+# re-sync (the ship lock is not held at that point) and run a fresh CI cycle
+# on the integrated tree — up to PRECIS_REMOTE_CI_RETRIES (default 2) times.
+# A CI retry costs ~12 min of free public-repo minutes and touches no local
 # Docker, so siblings are never starved behind it. Only when the retries
 # are exhausted (a burst where main moves every few minutes) does the
-# 2026-09-13 HYBRID fallback engage as the terminating step: keep the ship
-# lock, re-sync, and validate the integrated tree with the FULL LOCAL
-# container gate (~10 min) instead, then push. That fallback was the
-# default while a CI run took ~1h; it needs one of the two fleet-wide gate
-# slots, whose first-come admission starved a lock-holding ship for hours
-# (gr343941 — the FIFO slot ticket is that gripe's remaining scope).
+# 2026-09-13 HYBRID fallback engage: re-sync and validate the integrated tree
+# with the FULL LOCAL container gate (~10 min) instead, then push. The
+# fallback no longer holds the ship lock (it did until 2026-10-03, when a
+# hybrid gate held it to the 2 h cap); it needs one of the two fleet-wide
+# gate slots (gr343941 — the FIFO slot ticket is that gripe's remaining
+# scope). If even that gate loses the race, the ship lands by the in-lock
+# forward merge instead of looping.
 REMOTE_FALLBACK=0
 REMOTE_CI_RETRIES=0
 # --slow (or PRECIS_GATE_SLOW=1): run the `slow`-marked cluster in the full
@@ -320,8 +338,8 @@ _relock() {
 # above it is the side-effect-free prelude that tests/test_deploy_lag_honesty
 # slices out and runs standalone. See scripts/lib/ship-lock.sh for the
 # incident and why this REFUSES rather than waits, unlike the repo-wide
-# squash lock acquired later in §3. Armed immediately on success; the
-# repo-wide lock's own trap (§3) is widened to release this one too, since a
+# squash lock taken around the final section only (§3). Armed immediately on success; the
+# EXIT cleanup trap (§3, _ship_exit_cleanup) replaces this one and releases it, since a
 # script can only hold one EXIT trap at a time.
 # shellcheck source=scripts/lib/lock-holder.sh
 source "${WORKTREE}/scripts/lib/lock-holder.sh"
@@ -402,6 +420,12 @@ GATE_INFRA_READY=0
 setup_gate_infra() {
     [[ "$GATE_INFRA_READY" == 1 ]] && return 0
     GATE_INFRA_READY=1
+    # TEST-ONLY seam (tests/test_ship_narrow_lock.py): no container when the host gate command is set.
+    [[ -n "${PRECIS_SHIP_TEST_GATE_CMD:-}" ]] && return 0
+# A full docker VM disk fails the lint/gate on a raw ENOSPC with no test output
+# (2026-10-03, 98%): refuse up front with a named message instead.
+source "${WORKTREE}/scripts/lib/docker-disk.sh"
+docker_disk_preflight "scripts/ship" || exit $?
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
 
@@ -563,7 +587,10 @@ run_gate() {
     # exists to avoid. gate_slot_release is a no-op when no slot is held.
     [[ "$QUICK" == 1 ]] || gate_slot_acquire
     local rc=0
-    if [[ "$GATE_MODE" == warm ]]; then
+    if [[ -n "${PRECIS_SHIP_TEST_GATE_CMD:-}" ]]; then
+        # TEST-ONLY seam (tests/test_ship_narrow_lock.py): run this host command instead of the container gate.
+        bash -c "$PRECIS_SHIP_TEST_GATE_CMD" || rc=$?
+    elif [[ "$GATE_MODE" == warm ]]; then
         if ! sync_to_container; then
             gate_slot_release
             echo "✖ could not sync source into precis-gate" >&2
@@ -591,59 +618,79 @@ run_gate() {
     return "$rc"
 }
 
-# ── 3. acquire the ship lock (serialise ships across sibling worktrees) ──
+# ── 3. the ship lock (serialise the FINAL section across sibling worktrees) ─
 # All worktrees on this host share one .git, so a mkdir-mutex on the common
-# git dir serialises ships: a second ship WAITS instead of squashing a stale
-# base straight over the first (the [[shared-index-ship-race]] clobber that
-# silently reverted shipped work). macOS has no flock(1), so use an atomic
-# mkdir. Reclaim of an abandoned lock is the shared rule in lock-holder.sh
-# (same rule drives the gate-slot semaphore):
+# git dir serialises the landing: a second ship WAITS instead of squashing a
+# stale base straight over the first (the [[shared-index-ship-race]] clobber
+# that silently reverted shipped work). macOS has no flock(1), so use an
+# atomic mkdir.
+#
+# NARROW (2026-10-03, ship-gate-ci design note 4): the lock is taken ONLY for
+# the final section — fetch · ancestor check · forward merge (when main moved)
+# · nothing-new guard · commit-tree · CAS push · local-main ff — which is
+# seconds, and released explicitly right after the ff. Sync, the pre-qland
+# lint, every gate (the hybrid one too), diff-coverage and the CI wait all run
+# UNLOCKED. Holding it across those used to queue a qland for its whole 30-min
+# limit behind seven trees, and a hybrid fallback held it through a local gate
+# until the 2 h cap killed it. Correctness never rested on the lock: the
+# ancestor check and the `--force-with-lease` CAS refuse a stale tree either
+# way; the lock only spares siblings wasted retries.
+#
+# Reclaim of an abandoned lock is the shared rule in lock-holder.sh (same rule
+# drives the gate-slot semaphore):
 #   1. pid-dead   — the holder file records worktree + pid + host. For a
 #                   holder on THIS host the pid is authoritative: gone
 #                   (crashed, killed, woke from sleep mid-ship) → steal at
 #                   once; alive → wait, however long the hold lasts.
-#   2. >30-min age — only where the pid cannot decide: a holder from another
+#   2. age        — >PRECIS_SHIP_LOCK_STEAL_MIN (default 5; a correct hold is
+#                   seconds now, it was 30 when the lock spanned the gate) —
+#                   only where the pid cannot decide: a holder from another
 #                   host (their pids mean nothing in our namespace), or a
 #                   holder file that was never written. It used to apply to
 #                   live local holders as well, which stole the lock out from
 #                   under any ship past 30 minutes — routine for --mutate
 #                   plus a full gate — re-opening the clobber race below.
-# Released on exit via the trap below — armed only AFTER we hold the lock
-# (gr202363): arming it across the wait loop meant a SIGTERM while still
-# WAITING ran the trap and rm -rf'd a lock we never acquired, out from under
-# whichever sibling legitimately held it. The release itself is also
-# ownership-checked (holder pid == $$) so a sibling that steals our lock
-# after a >30-min hold doesn't get its own fresh lock rm'd by our late exit.
+# The release is ownership-checked (holder pid == $$), so a sibling that
+# steals our lock after a long hold doesn't get its own fresh lock rm'd by our
+# late exit; for the same reason the EXIT trap below may be armed BEFORE we
+# hold the lock (gr202363's hazard — a SIGTERM while WAITING rm -rf'ing a lock
+# we never acquired — cannot recur: a non-owner release is a no-op).
 LOCKDIR="$(git rev-parse --git-common-dir)/precis-ship.lock.d"
-# Safety net: also drop any gate slot still held (gr202193) — run_gate
-# releases on its own paths, but an unexpected exit mid-gate must not
-# leave the slot to age out on siblings.
 _release_ship_lock() {
-    gate_slot_release
     local holder_pid
     holder_pid="$(lock_holder_pid "$LOCKDIR")"
     # Remove ONLY on a positive ownership match (holder pid == $$). A
     # missing/unparseable holder is ambiguous — it could be ours (best-effort
     # write failed) or a sibling mid-steal that hasn't written its holder yet
     # — and deleting a sibling's live lock has no recovery, while leaking
-    # ours self-heals via the pid-dead/30-min steals above.
+    # ours self-heals via the pid-dead/age steals above.
     if [[ "$holder_pid" == "$$" ]]; then
         rm -rf "$LOCKDIR" 2>/dev/null || true
     fi
 }
+# EXIT safety net, armed for the whole run (the lock is no longer held during
+# gates, so this is no longer "the lock's own trap"): drop any gate slot still
+# held (gr202193 — run_gate releases on its own paths, but an unexpected exit
+# mid-gate must not leave the slot to age out on siblings), the repo-wide lock
+# if an in-section die/kill left it held, and the per-worktree lock (gr335894 —
+# a script has only one EXIT trap slot). Each release is idempotent.
+_ship_exit_cleanup() {
+    gate_slot_release
+    _release_ship_lock
+    _release_worktree_ship_lock
+}
+trap _ship_exit_cleanup EXIT
 acquire_ship_lock() {
     local _waited=0 _last_holder="" holder holder_desc holder_pid _reason
-    # Re-entrant: the hybrid race fallback keeps the lock across its retry
-    # iteration — a second acquire from the same pid is a no-op, not a
-    # self-deadlock. (A CI-retry iteration released it first, so its
-    # re-acquire below is a real, contended acquire.)
+    # Re-entrant: a second acquire from the same pid is a no-op, not a
+    # self-deadlock.
     holder_pid="$(lock_holder_pid "$LOCKDIR")"
     [[ "$holder_pid" == "$$" ]] && return 0
     while ! mkdir "$LOCKDIR" 2>/dev/null; do
         holder="$(cat "$LOCKDIR/holder" 2>/dev/null || true)"
         holder_desc="${holder:-<lock present, no holder file — crashed before it could write one>}"
 
-        if _reason="$(lock_holder_reclaim_reason "$LOCKDIR" 30)"; then
+        if _reason="$(lock_holder_reclaim_reason "$LOCKDIR" "${PRECIS_SHIP_LOCK_STEAL_MIN:-5}")"; then
             say "stealing the ship lock — ${_reason}: ${holder_desc}"
             rm -rf "$LOCKDIR"
             continue
@@ -665,40 +712,170 @@ acquire_ship_lock() {
         sleep 3
     done
     lock_holder_write "$LOCKDIR"
-    # Arm the release trap only now that we actually hold the lock (gr202363) —
-    # arming it earlier meant a kill mid-wait fired the trap against a lock we
-    # never acquired. (Re-arming on a remote-mode re-acquire is idempotent.)
-    # Widened to also release the per-worktree lock (gr335894): a script has
-    # only one EXIT trap slot, and that lock's own trap (armed right after it
-    # was acquired, near the top of the script) would otherwise be clobbered
-    # by this one. _release_worktree_ship_lock is itself ownership-checked and
-    # a no-op once already released, so folding it in here is safe.
-    trap '_release_ship_lock; _release_worktree_ship_lock' EXIT
 }
 
-# Classic modes hold the lock across the whole sync→gate→push section (the
-# gate is minutes). Remote mode takes it ONLY around the final CAS push —
-# holding it across a GitHub matrix (12 min green, unbounded when queued)
-# would starve every sibling ship and trip the 30-min staleness steal above.
-if [[ "$REMOTE" != 1 ]]; then
-    acquire_ship_lock
-fi
+# The network calls INSIDE the lock (fetch, push) are bounded: a hung one
+# would hold every sibling's landing for the full steal window. macOS ships
+# no `timeout`; perl's alarm is on both platforms (same pattern as
+# scripts/fleet's gh calls). rc 142 = SIGALRM. Without perl: unbounded.
+LOCKED_NET_TIMEOUT="${PRECIS_SHIP_LOCKED_NET_TIMEOUT:-60}"
+_locked_net() {
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' "$LOCKED_NET_TIMEOUT" "$@"
+    else
+        "$@"
+    fi
+}
 
-# Remote mode lost the race (main moved during the CI wait, or the CAS lease
-# was rejected). Policy header near REMOTE_FALLBACK= above: first
-# PRECIS_REMOTE_CI_RETRIES fresh CI cycles with the lock RELEASED (siblings
-# keep landing meanwhile), then one hybrid local gate with the lock held so
-# the retry loop terminates. No-op outside remote mode or once in fallback.
+# Print the remaining race budget and total elapsed time (called wherever a
+# lost race sends the loop round again). $1 = attempt just spent.
+_race_note() {
+    local spent="$1" left el
+    left=$(( MAX_ATTEMPTS - spent ))
+    el=$(( $(date +%s) - SHIP_T0 ))
+    if (( left > 0 )); then
+        printf '   race budget: %s of %s attempts left; elapsed %sm%02ss\n' "$left" "$MAX_ATTEMPTS" $(( el / 60 )) $(( el % 60 ))
+    else
+        printf '   race budget: exhausted (%s of %s attempts spent); elapsed %sm%02ss\n' "$spent" "$MAX_ATTEMPTS" $(( el / 60 )) $(( el % 60 ))
+    fi
+}
+
+# A lost race in a full-gate mode (main moved during the gate/CI wait, or the
+# CAS lease was rejected) with budget left: the loop re-syncs and re-gates.
+# Remote mode first spends PRECIS_REMOTE_CI_RETRIES fresh CI cycles, then one
+# hybrid local gate (policy header near REMOTE_FALLBACK= above); neither holds
+# the ship lock any more, so this only does the bookkeeping. No-op outside
+# remote mode or once in fallback.
 _remote_race_lost() {
     [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]] || return 0
     local budget="${PRECIS_REMOTE_CI_RETRIES:-2}"
     if (( REMOTE_CI_RETRIES < budget )); then
         REMOTE_CI_RETRIES=$(( REMOTE_CI_RETRIES + 1 ))
-        say "race lost — releasing the ship lock; the re-synced tree gets a FRESH CI run (CI retry ${REMOTE_CI_RETRIES}/${budget}; hybrid local gate after that)"
-        _release_ship_lock
+        say "race lost — the re-synced tree gets a FRESH CI run (CI retry ${REMOTE_CI_RETRIES}/${budget}; hybrid local gate after that)"
     else
         REMOTE_FALLBACK=1; IMPACTED=0
-        say "race lost ${budget}× — hybrid fallback: lock stays held; the integrated tree gets the FULL LOCAL gate (~10 min) instead of another CI run"
+        say "race lost ${budget}× — hybrid fallback: the integrated tree gets the FULL LOCAL gate (~10 min, unlocked) instead of another CI run"
+    fi
+}
+
+# Fast-forward the local main (checked out in the primary worktree) to the
+# just-shipped origin/main. Runs INSIDE the lock, as the last step of the
+# final section. The CAS push moved refs/heads/main on the REMOTE only; the
+# local main pointer is now behind — the "GitHub is ahead of local main"
+# drift after every session. refs/remotes/origin/main is shared across
+# worktrees (one common dir) and was just updated by our own fetch/push, so
+# no further network call is needed under the lock. `merge --ff-only` IN the
+# primary moves the ref + that working tree together and safely refuses if
+# the primary is dirty/diverged. Best-effort: a failure here does NOT unship
+# anything (the remote is already updated).
+_sync_local_main() {
+    local primary
+    say "syncing local main"
+    primary="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+    if [[ "$(git -C "$primary" symbolic-ref --quiet --short HEAD || true)" == "main" ]]; then
+        git -C "$primary" merge --ff-only origin/main \
+            && echo "local main → $(git -C "$primary" rev-parse --short main)" \
+            || echo "WARNING: primary main not fast-forwarded (dirty or diverged) — run 'git merge --ff-only origin/main' there by hand."
+    else
+        git update-ref refs/heads/main origin/main \
+            && echo "local main ref → $(git rev-parse --short main)"
+    fi
+}
+
+# Squawk on this ship's NEW migration SQL (sealed files are frozen and never
+# re-linted). Blocking, unlike the advisories in the loop: it catches the
+# operational hazards the schema-design tests can't (NOT NULL without default,
+# table-rewriting type changes). Rules mooted by the single-writer migration
+# window are excluded in .squawk.toml. Runs even in --quick mode: it's
+# host-side and ~1s, and a migration that qlands unchecked is sealed before
+# the settle-up /go could lint it. PRECIS_SQUAWK=0 is the deliberate escape
+# hatch; a missing uvx WARNs rather than blocks (same posture as the
+# diff-coverage gate). $1 = newline-separated file list; empty = no-op.
+_squawk_new_migrations() {
+    local files="$1"
+    [[ -n "$files" && "${PRECIS_SQUAWK:-1}" != 0 ]] || return 0
+    if command -v uvx >/dev/null 2>&1; then
+        say "squawk — migration SQL lint (new files only)"
+        # shellcheck disable=SC2086
+        uvx -q --from 'squawk-cli>=2' squawk $files \
+            || die "squawk found migration hazards — fix them (or, deliberately, PRECIS_SQUAWK=0) and re-run scripts/ship."
+    else
+        echo "WARNING: uvx missing — skipping the squawk migration lint"
+    fi
+}
+
+# Forward merge of a moved origin/main INTO the shipping branch, INSIDE the
+# lock (--quick; and a full-gate mode whose race budget is spent). The tree
+# that lands is then NOT the tree that was linted/gated; the commits merged in
+# passed their own checks, and a cross-commit interaction is what main's CI
+# verdict and the drift guard catch. Two things that cannot be taken back or
+# silently collide are refused first, and the lock is released by the EXIT
+# trap on every die:
+#   · safe_fetch.py touched on BOTH sides (our diff vs the tested base, and
+#     the range being merged in) — the SSRF guard never merges unreviewed;
+#   · a migration NUMBER we add that the merged-in range also added under a
+#     different name (a duplicate would seal a ledger fork). Same rule as
+#     scripts/migration-check (one number, two slugs); its fleet-wide scan is
+#     not used here because an unrelated sibling worktree's collision must not
+#     refuse THIS landing.
+# Squawk is NOT re-run here: the files were squawked at sync, and an unbounded
+# `uvx` inside the lock could wedge the fleet.
+# Everything is keyed to $OLD_MAIN (captured once, right after the in-lock
+# fetch), never to origin/main: refs/remotes/origin/main is shared by every
+# worktree and a sibling's unlocked fetch can move it under us.
+# Sets FWD_N, FWD_BASE and GATE_TRAILER (squash-message trailer: git log tells
+# an exact-tested land from a forward-merged one). $1 = "quick" | "full".
+# Re-entrant across in-lock retries (a lost CAS): FWD_BASE keeps the ORIGINAL
+# tested base and FWD_N accumulates the commits merged over, while the two
+# guards judge each merge against that round's own base (cur_base: after a
+# first merge, cur_base..HEAD is only our own work, not what we merged in).
+_forward_merge_in_lock() {
+    local kind="$1" ours theirs n mig_ours num f cur_base round_n
+    cur_base="$(git merge-base "$OLD_MAIN" HEAD)"
+    round_n="$(git rev-list --count "HEAD..$OLD_MAIN")"
+    [[ -n "$FWD_BASE" ]] || FWD_BASE="$cur_base"
+    FWD_N=$(( FWD_N + round_n ))
+    if [[ -n "$(git diff --name-only "$cur_base" HEAD -- src/precis/utils/safe_fetch.py)" \
+       && -n "$(git diff --name-only "$cur_base" "$OLD_MAIN" -- src/precis/utils/safe_fetch.py)" ]]; then
+        die "safe_fetch.py changed on both sides (this branch vs ${cur_base:0:8}, and the ${round_n} commit(s) on main) — refusing to forward-merge the SSRF guard unreviewed. Nothing was pushed. Re-run scripts/ship so the integrated tree is re-synced and re-gated (or merge by hand)."
+    fi
+    ours="$(git diff --name-only --diff-filter=A "$cur_base" HEAD | grep -E '/migrations/[^/]*\.sql$' || true)"
+    if [[ -n "$ours" ]]; then
+        theirs="$(git diff --name-only --diff-filter=A "$cur_base" "$OLD_MAIN" | grep -E '/migrations/[^/]*\.sql$' || true)"
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            num="$(basename "$f" | grep -oE '^[0-9]+' || true)"
+            [[ -n "$num" ]] || continue
+            while IFS= read -r n; do
+                [[ -z "$n" || "$n" == "$f" ]] && continue
+                # Migrations are numbered PER plugin dir: 0016 in precis_se and
+                # 0016 in precis_chem are different ledgers, not a collision.
+                if [[ "$(dirname "$n")" == "$(dirname "$f")" \
+                   && "$(basename "$n" | grep -oE '^[0-9]+' || true)" == "$num" ]]; then
+                    die "migration number collision: this branch adds $(basename "$f") but origin/main (merged in since ${cur_base:0:8}) added $(basename "$n") under the same number ${num} in $(dirname "$f"). Nothing was pushed; main is unchanged. Renumber the unshipped migration to the next free number and re-run scripts/ship."
+                fi
+            done <<< "$theirs"
+        done <<< "$ours"
+        mig_ours="$ours"
+    else
+        mig_ours=""
+    fi
+    git merge --no-edit "$OLD_MAIN" \
+        || die "merge conflict integrating origin/main — resolve in ${WORKTREE}, then 'git add -A && git commit' and re-run scripts/ship."
+    # Advisory fleet scan (purely local: worktree dirs + ls-tree), same as the
+    # sync step's. Never blocks.
+    [[ -n "$mig_ours" ]] && { scripts/migration-check --quiet || true; }
+    if [[ "$kind" == quick ]]; then
+        if [[ "$QLAND_LINT_RAN" == 1 ]]; then
+            GATE_TRAILER="Gate: lint only; forward-merged over ${FWD_N} commits; linted base ${FWD_BASE}"
+        else
+            GATE_TRAILER="Gate: none; forward-merged over ${FWD_N} commits; base ${FWD_BASE}"
+        fi
+        say "forward-merged over ${FWD_N} commits (lint not re-run) — landing the merged tree; linted base ${FWD_BASE:0:8}"
+    else
+        GATE_TRAILER="Gate: forward-merged over ${FWD_N} commits; tested base ${FWD_BASE}"
+        FWD_UNGATED=1
+        say "gated against ${FWD_BASE:0:8}, merged forward over ${FWD_N} commits — not a deploy warrant; no .ship-sha pin"
     fi
 }
 
@@ -757,24 +934,36 @@ remote_gate_wait() {
 }
 
 # ── 4. sync → gate → ship, re-running if main moves under us ────────────
-# Hold the lock across the whole critical section so no sibling worktree can
-# move main between our sync and our push. The retry loop additionally
-# self-heals against a main that moved from ELSEWHERE (another host, or a
-# stolen stale lock): re-sync (merge the new main) → re-gate → re-push, up to
-# a few times, so we never squash a stale base. Merge conflicts and red gates
-# are NOT retryable — they abort immediately for a human to resolve.
+# Sync, lint, every gate and the CI wait run UNLOCKED; only the final
+# section at the bottom of the loop body takes the ship lock (§3), so a
+# sibling's gate never queues anyone. If main moved while we were gating, the
+# loop re-syncs (merge the new main) → re-gates → re-pushes, up to a few
+# times, so we never squash a stale base; once that budget is spent (or at
+# once, for --quick) the final section lands by an in-lock forward merge
+# instead. Merge conflicts and red gates are NOT retryable — they abort
+# immediately for a human to resolve.
 shipped=0
 # Remote mode budgets one first CI run + PRECIS_REMOTE_CI_RETRIES fresh CI
 # runs + one terminating hybrid local gate; classic modes keep the 3 local
-# re-gates.
-MAX_ATTEMPTS=3
+# re-gates. PRECIS_SHIP_MAX_ATTEMPTS overrides the classic budget (1 = no
+# re-gate: a lost race goes straight to the forward-merge land; the test
+# suite uses it).
+MAX_ATTEMPTS="${PRECIS_SHIP_MAX_ATTEMPTS:-3}"
 [[ "$REMOTE" == 1 ]] && MAX_ATTEMPTS=$(( 2 + ${PRECIS_REMOTE_CI_RETRIES:-2} ))
+# Set when the landed tree is a forward merge of a full-gate ship (budget
+# spent): it was never gated, so no .ship-sha pin and no `gated` pointer.
+FWD_UNGATED=0
+FWD_BASE=""
+FWD_N=0
+GATE_TRAILER=""
+LANDED_SHA=""
 # The sha this run actually gated — $NEW on a real squash, $OLD_MAIN when the
 # tree was already landed (see the nothing-new guard below). Written to
 # $SHIP_SHA_FILE after the loop, full gate only.
 GATED_SHA=""
 for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     [[ "$attempt" -gt 1 ]] && say "main moved under us — re-syncing + re-gating (attempt ${attempt}/${MAX_ATTEMPTS})"
+    GATE_TRAILER=""; FWD_UNGATED=0; FWD_BASE=""; FWD_N=0
 
     say "syncing origin/main"
     git fetch -q origin main || die "git fetch failed — check the network/remote and re-run scripts/ship."
@@ -822,27 +1011,10 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         *docs/backlog/*) scripts/backlog-lint || true ;;
     esac
 
-    # Squawk on this ship's NEW migration SQL (sealed files are frozen and
-    # never re-linted). Blocking, unlike the advisories above: it catches
-    # the operational hazards the schema-design tests can't (NOT NULL
-    # without default, table-rewriting type changes). Rules mooted by the
-    # single-writer migration window are excluded in .squawk.toml. Runs
-    # even in --quick mode: it's host-side and ~1s, and a migration that
-    # qlands unchecked is sealed before the settle-up /go could lint it.
-    # PRECIS_SQUAWK=0 is the deliberate escape hatch; a missing uvx WARNs
-    # rather than blocks (same posture as the diff-coverage gate).
+    # Squawk on this ship's NEW migration SQL — see _squawk_new_migrations.
     NEW_MIGRATIONS="$(git diff --name-only --diff-filter=A "$(git merge-base origin/main HEAD)" HEAD \
         | grep -E '^src/precis/migrations/[0-9]+_[^/]+\.sql$' || true)"
-    if [[ -n "$NEW_MIGRATIONS" && "${PRECIS_SQUAWK:-1}" != 0 ]]; then
-        if command -v uvx >/dev/null 2>&1; then
-            say "squawk — migration SQL lint (new files only)"
-            # shellcheck disable=SC2086
-            uvx -q --from 'squawk-cli>=2' squawk $NEW_MIGRATIONS \
-                || die "squawk found migration hazards — fix them (or, deliberately, PRECIS_SQUAWK=0) and re-run scripts/ship."
-        else
-            echo "WARNING: uvx missing — skipping the squawk migration lint"
-        fi
-    fi
+    _squawk_new_migrations "$NEW_MIGRATIONS"
 
     if [[ "$QUICK" == 1 ]]; then
         # Drift guard: the pre-qland lint below blocks on YOUR change, but it
@@ -1057,64 +1229,144 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
     fi  # end of non-quick gate section (quick mode skips gate + diff-coverage)
 
     # Remote gate (--remote): CI on GitHub over exactly this tree. Runs
-    # UNLOCKED (see acquire_ship_lock); red/timeout aborts, never retries.
-    # Skipped entirely on a hybrid-fallback iteration — the full LOCAL gate
-    # above already validated the integrated tree, under the held lock.
+    # UNLOCKED; red/timeout aborts, never retries. Skipped entirely on a
+    # hybrid-fallback iteration — the full LOCAL gate above already validated
+    # the integrated tree.
     if [[ "$REMOTE" == 1 && "$REMOTE_FALLBACK" != 1 ]]; then
         remote_gate_wait \
             || die "remote gate failed — fix the failure above and re-run scripts/ship --remote."
-        # Only now serialise against sibling ships, for the short CAS section.
-        acquire_ship_lock
     fi
 
-    # Squash-merge to main via plumbing. If main moved during the gate (the
-    # ancestor check fails) or the CAS lease is rejected, loop: re-sync picks
-    # up the new main, re-gate, re-push — never force a stale tree over it.
-    # In remote mode a retry means a FRESH CI cycle on the re-synced tree
-    # (that's the contract: main only advances through an exactly-tested
-    # tree), and the lock is dropped first so siblings aren't starved
-    # through the CI wait (~12 min green, unbounded when queued). After
-    # PRECIS_REMOTE_CI_RETRIES lost races the hybrid local gate takes over
-    # (lock held) so the loop terminates — see _remote_race_lost.
+    # ── FINAL SECTION — the only place the repo-wide ship lock is held ───
+    # (§3) Seconds, not minutes: fetch · ancestor check · [forward merge] ·
+    # nothing-new guard · commit-tree · CAS push · local-main ff, then the
+    # lock is released explicitly (the EXIT trap is only the safety net for a
+    # die/kill in between). Branch reset, the pin and the report follow it.
+    #
+    # If main moved during the gate (the ancestor check fails) the ship loses
+    # the race:
+    #   · --quick: merge origin/main into the branch HERE, under the lock, and
+    #     push. Lint does not re-run — the commits merged in passed their own,
+    #     and a cross-commit interaction is what main's CI verdict and the
+    #     drift guard catch; qland promises nothing more.
+    #   · full-gate modes: drop the lock and re-sync → re-gate (local), or
+    #     re-sync → fresh CI cycle (--remote: PRECIS_REMOTE_CI_RETRIES of them,
+    #     then one hybrid local gate — see _remote_race_lost), so the tree that
+    #     lands is the tree that was tested. When that budget is spent, land by
+    #     the same in-lock forward merge instead — never block, never loop —
+    #     but pin nothing and say so (FWD_UNGATED).
+    # A CAS rejection (main moved from another host, or a stolen lock) takes
+    # the same exits. Never force a stale tree over a moved main.
+    # A forward-merge path (--quick, or the budget spent) that loses the CAS
+    # to a push from ANOTHER host (outside this lock) must not re-gate and
+    # must not give up while a merge is still possible: it stays in the lock
+    # and redoes fetch → forward merge (guards included) → commit-tree (the
+    # trailer's N grows) → push, at most PRECIS_SHIP_INLOCK_TRIES (5) times,
+    # then a named die that releases the lock. Every in-lock try is seconds.
     say "shipping to main"
-    git fetch -q origin main
-    if ! git merge-base --is-ancestor origin/main HEAD; then
-        say "origin/main advanced during the gate — re-syncing"
-        _remote_race_lost
-        continue
-    fi
-    OLD_MAIN="$(git rev-parse origin/main)"
-    TREE="$(git rev-parse 'HEAD^{tree}')"
-    # Nothing-new guard: when the branch's tree already equals origin/main's
-    # (everything here was already landed — e.g. a /go run purely to gate +
-    # deploy after a /qland burst), don't manufacture an empty squash commit;
-    # in full mode the gate above still validated the integrated main.
-    if [[ "$TREE" == "$(git rev-parse "${OLD_MAIN}^{tree}")" ]]; then
-        say "nothing new to ship — tree identical to origin/main (already landed); skipping the push"
-        # No new commit, but the gate above DID validate this tree — and it is
-        # byte-identical to origin/main's. That makes OLD_MAIN the gated sha,
-        # which is exactly the /go-after-a-qland-burst case: the whole point of
-        # the run is to certify the trunk for deploy.
-        GATED_SHA="$OLD_MAIN"
-        shipped=1
-        break
-    fi
-    NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
+    acquire_ship_lock
+    INLOCK_MAX="${PRECIS_SHIP_INLOCK_TRIES:-5}"
+    inlock_try=0
+    while :; do
+        inlock_try=$(( inlock_try + 1 ))
+        _locked_net git fetch -q origin main || {
+            rc=$?
+            [[ "$rc" == 142 ]] && die "git fetch timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released, nothing pushed. Check the network and re-run scripts/ship."
+            die "git fetch failed inside the ship lock — lock released, nothing pushed. Check the network/remote and re-run scripts/ship."
+        }
+        # Capture the tip ONCE, from this worktree's own FETCH_HEAD (per-worktree,
+        # unlike the shared refs/remotes/origin/main that every sibling's unlocked
+        # sync/report fetch rewrites). All of the section keys off $OLD_MAIN; a
+        # read of origin/main later could return a sibling-fetched M2 that HEAD
+        # lacks, and `commit-tree -p M2` + a lease on M2 would then revert M2.
+        OLD_MAIN="$(git rev-parse --verify -q 'FETCH_HEAD^{commit}')" \
+            || die "internal: could not read FETCH_HEAD after the in-lock fetch — lock released, nothing pushed. Re-run scripts/ship."
+        if ! git merge-base --is-ancestor "$OLD_MAIN" HEAD; then
+            if [[ "$QUICK" == 1 ]]; then
+                _forward_merge_in_lock quick
+            elif (( attempt >= MAX_ATTEMPTS )); then
+                say "origin/main advanced during the gate and the race budget is spent (${attempt}/${MAX_ATTEMPTS})"
+                _forward_merge_in_lock full
+            else
+                say "origin/main advanced during the gate — releasing the ship lock, re-syncing"
+                _release_ship_lock
+                _race_note "$attempt"
+                _remote_race_lost
+                continue 2
+            fi
+        fi
+        TREE="$(git rev-parse 'HEAD^{tree}')"
+        # Nothing-new guard: when the branch's tree already equals main's
+        # (everything here was already landed — e.g. a /go run purely to gate +
+        # deploy after a /qland burst), don't manufacture an empty squash commit;
+        # in full mode the gate above still validated the integrated main.
+        if [[ "$TREE" == "$(git rev-parse "${OLD_MAIN}^{tree}")" ]]; then
+            say "nothing new to ship — tree identical to origin/main (already landed); skipping the push"
+            # No new commit, but the gate above DID validate this tree — and it is
+            # byte-identical to origin/main's. That makes OLD_MAIN the gated sha,
+            # which is exactly the /go-after-a-qland-burst case: the whole point of
+            # the run is to certify the trunk for deploy. (Not after a forward
+            # merge: then the gate saw an older main, and FWD_UNGATED withholds
+            # the pin.)
+            GATED_SHA="$OLD_MAIN"
+            LANDED_SHA="$OLD_MAIN"
+            _sync_local_main
+            _release_ship_lock
+            shipped=1
+            break 2
+        fi
+        # The `Gate:` trailer (forward-merged lands only) rides above the
+        # Co-Authored-By line so `git log` tells an exact-tested land from a
+        # forward-merged one.
+        TRAILERS="$CO_AUTHOR"
+        [[ -n "$GATE_TRAILER" ]] && TRAILERS="${GATE_TRAILER}"$'\n'"${CO_AUTHOR}"
+        git merge-base --is-ancestor "$OLD_MAIN" HEAD \
+            || die "internal: HEAD lacks OLD_MAIN (${OLD_MAIN:0:8}) — refusing to squash a tree that would revert main. Lock released, nothing pushed. Re-run scripts/ship and report this."
+        NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
 ${MSG:-ship(${BRANCH}): squash-merge to main}
 
-${CO_AUTHOR}
+${TRAILERS}
 EOF
 )"
-    if git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main"; then
-        # Capture the pin HERE, not from origin/main at report time: steps 6-7
-        # re-fetch, so by then origin/main may already be a sibling's newer,
-        # ungated commit — the very substitution this pin exists to prevent.
-        GATED_SHA="$NEW"
-        shipped=1
-        break
-    fi
-    say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
-    _remote_race_lost
+        push_rc=0
+        push_out="$(_locked_net git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main" 2>&1)" || push_rc=$?
+        [[ -n "$push_out" ]] && printf '%s\n' "$push_out"
+        if [[ "$push_rc" == 142 ]]; then
+            die "git push timed out after ${LOCKED_NET_TIMEOUT}s inside the ship lock (PRECIS_SHIP_LOCKED_NET_TIMEOUT) — lock released. The push may or may not have landed: check 'git ls-remote origin main' for ${NEW:0:8} before re-running scripts/ship."
+        fi
+        if [[ "$push_rc" == 0 ]]; then
+            # Capture the pin HERE, not from origin/main at report time: the
+            # report re-fetches, so by then origin/main may already be a
+            # sibling's newer, ungated commit — the very substitution this pin
+            # exists to prevent.
+            GATED_SHA="$NEW"
+            LANDED_SHA="$NEW"
+            _sync_local_main
+            _release_ship_lock
+            shipped=1
+            break 2
+        fi
+        # Only a CAS LOSS is retried. Any other failure (auth, a hook, the
+        # network) would just fail again: die at once, with git's own words.
+        if ! grep -qiE 'stale info|rejected|fetch first|non-fast-forward' <<< "$push_out"; then
+            die "git push failed inside the ship lock for a reason other than a lost race (exit ${push_rc}) — lock released, nothing landed. git said: ${push_out}"
+        fi
+        # CAS rejected: main moved from elsewhere (another host, or a stolen
+        # lock). A forward-merge path retries in the lock, bounded; anything
+        # else is a full-gate ship with budget left → drop the lock, re-gate.
+        if [[ "$QUICK" == 1 ]] || (( attempt >= MAX_ATTEMPTS )); then
+            if (( inlock_try >= INLOCK_MAX )); then
+                die "CAS push rejected ${INLOCK_MAX}× inside the ship lock — origin/main kept moving from another host (a push every few seconds). Lock released, nothing landed. Re-run scripts/ship; the gate is not re-run for a forward-merge land."
+            fi
+            say "CAS push rejected inside the lock — origin/main moved from another host; re-fetching and re-merging in the lock, no re-gate (in-lock try ${inlock_try}/${INLOCK_MAX})"
+            continue
+        fi
+        _release_ship_lock
+        say "CAS push rejected — origin/main moved from elsewhere; re-syncing and retrying"
+        _race_note "$attempt"
+        _remote_race_lost
+        continue 2
+    done
 done
 [[ "$shipped" == 1 ]] || die "could not ship after ${MAX_ATTEMPTS} attempts — main kept moving under us. Re-run scripts/ship."
 
@@ -1126,7 +1378,12 @@ done
 # run there is only a pre-gate ahead of GitHub's complete matrix. A
 # hybrid-race fallback has already forced IMPACTED=0 by this point (the
 # integrated tree took the full local suite), so it lands here as full too.
-if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" ]]; then
+# A budget-exhausted forward-merged land (FWD_UNGATED) skips both branches:
+# the landed tree was never gated, so no pin and no `gated` pointer move.
+if [[ "$FWD_UNGATED" == 1 ]]; then
+    say "gated against ${FWD_BASE:0:8}, merged forward over ${FWD_N} commits — not a deploy warrant; no .ship-sha pin (origin/gated not moved)"
+fi
+if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1 ) && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 ]]; then
     printf '%s\n' "$GATED_SHA" > "$SHIP_SHA_FILE"
     say "gated sha pinned → ${SHIP_SHA_FILE##*/} (${GATED_SHA:0:8}); deploy it with: scripts/deploy \"\$(cat .ship-sha)\" --pinned"
     # Publish the same fact as origin's `gated` ref, so the gated sha is not
@@ -1138,7 +1395,7 @@ if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1
             say "origin/gated → ${GATED_SHA:0:8}"
         fi
     fi
-elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" ]]; then
+elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 ]]; then
     say "docs-only lane — no deploy pin written (the suite did not run on ${GATED_SHA:0:8}); to certify it for deploy run scripts/ship --full (/go) on the landed tree"
 fi
 git push origin --delete "$BRANCH" 2>/dev/null || true
@@ -1146,7 +1403,7 @@ if [[ "$REMOTE" == 1 ]]; then
     git push origin --delete "ci/${BRANCH}" 2>/dev/null || true
 fi
 
-# ── 5. reset the feature branch to the freshly-shipped main ─────────────
+# ── 6. reset the feature branch to the freshly-shipped main ─────────────
 # The squash put this branch's tree onto main as a NEW commit that is not an
 # ancestor of the branch. Left as-is, the next `git merge origin/main` sees the
 # branch's commits AND main's squashed copy of the same lines as divergent → a
@@ -1168,30 +1425,15 @@ fi
 # the reset above) clean. This is the call proposal 3 is actually about.
 _relock
 
-# ── 6. fast-forward the local main ──────────────────────────────────────
-# The CAS push moved refs/heads/main on the REMOTE only; the local main
-# pointer (checked out in the primary worktree) is now behind — the
-# "GitHub is ahead of local main" drift after every session. Fast-forward
-# it. refs/heads/main is shared across worktrees but checked out in the
-# primary, so a `merge --ff-only` THERE moves the ref + that working tree
-# together and safely refuses if the primary is dirty/diverged. Best-effort:
-# a failure here does NOT unship anything (the remote is already updated).
-say "syncing local main"
-PRIMARY="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
-git -C "$PRIMARY" fetch -q origin main
-if [[ "$(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD || true)" == "main" ]]; then
-    git -C "$PRIMARY" merge --ff-only origin/main \
-        && echo "local main → $(git -C "$PRIMARY" rev-parse --short main)" \
-        || echo "WARNING: primary main not fast-forwarded (dirty or diverged) — run 'git merge --ff-only origin/main' there by hand."
-else
-    git update-ref refs/heads/main origin/main \
-        && echo "local main ref → $(git rev-parse --short main)"
-fi
+# (The local-main ff ran inside the ship lock, as the last step of the final
+# section — see _sync_local_main.)
 
 # ── 7. report ───────────────────────────────────────────────────────────
 git fetch -q origin main
-say "shipped — main is now:"
-git log --oneline -1 origin/main
+# The lock is long released: origin/main may already be a sibling's newer
+# commit, so name OUR landed sha rather than whatever main is by now.
+say "shipped — landed on main:"
+git log --oneline -1 "${LANDED_SHA:-origin/main}"
 if [[ "$QUICK" == 1 ]]; then
     # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
     # the pre-qland lint by one commit, and a banner that overstates the debt is

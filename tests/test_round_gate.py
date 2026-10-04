@@ -208,8 +208,12 @@ def _fresh(rig: Rig, key: str = "c2", age: str = "1.5") -> dict[str, str]:
 # ── gate ────────────────────────────────────────────────────────────────
 
 
-def test_docs_only_regex_is_the_one_check_yml_uses() -> None:
-    loader = SourceFileLoader("round_script", str(SCRIPT))
+def test_docs_only_regex_is_the_one_check_yml_uses(tmp_path: Path) -> None:
+    # Load a .py copy: testmon fingerprints every module it sees, and a dotless
+    # path crashes its get_file (gr450298).
+    copy = tmp_path / "round_script.py"
+    copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    loader = SourceFileLoader("round_script", str(copy))
     spec = importlib.util.spec_from_loader("round_script", loader)
     assert spec is not None
     mod = importlib.util.module_from_spec(spec)

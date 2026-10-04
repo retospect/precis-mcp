@@ -55,11 +55,13 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --quick "<message>"
    ```
-   Commit WIP → ship-lock → sync → pre-qland lint (ruff autofix · mypy ·
-   import contracts · DB-free hygiene tests; no test DB, no gate slot) → squash-merge → CAS push. No
+   Commit WIP → sync → pre-qland lint (ruff autofix · mypy ·
+   import contracts · DB-free hygiene tests; no test DB, no gate slot) → ship-lock (seconds) → squash-merge → CAS push. No
    pytest. Failures: the pre-qland lint is blocking — fix what it prints and
    re-run. The rest is merge machinery only: conflict → resolve, add + commit,
-   re-run; CAS rejected → a sibling shipped first, just re-run.
+   re-run; a lost CAS is retried by ship itself, inside the lock
+   (fetch · forward merge · push, ≤5 tries, no re-lint), so only the named
+   die after those tries needs a re-run.
 
 4. **Deploy that exact sha.** Read it back rather than assuming:
    ```

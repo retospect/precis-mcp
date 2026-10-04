@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 REPO = Path(__file__).resolve().parent.parent
-_LIBS = ("compose-project.sh", "gate-slot.sh", "lock-holder.sh")
+_LIBS = ("compose-project.sh", "docker-disk.sh", "gate-slot.sh", "lock-holder.sh")
 
 _FAKE_DOCKER = r"""#!/usr/bin/env bash
 # Synthetic docker -- logs compose verbs; never touches a daemon.
@@ -36,9 +36,16 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #   FAKE_PS_SERVICES      newline-separated service names `docker ps` reports
 #   FAKE_RUN_RC           exit status of `compose run` (default 0)
 #   FAKE_DOWN_RC          exit status of `compose down` (default 0)
+# A plain `docker run ... df` is the free-disk preflight probe: it answers with
+# 100 GB free so the preflight passes and never reaches the compose log.
 set -u
 args=("$@")
 case "${args[0]:-}" in
+  run)
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'overlay 209715200 1048576 104857600 1%% /\n'
+    exit 0
+    ;;
   ps)
     printf '%s\n' "${FAKE_PS_SERVICES:-}"
     exit 0

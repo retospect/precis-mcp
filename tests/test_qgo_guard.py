@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
@@ -24,9 +26,13 @@ _SCRIPT = Path(__file__).parent.parent / "scripts" / "qgo-guard"
 
 
 def _load() -> ModuleType:
+    # Load a .py copy: testmon fingerprints every module it sees, and a dotless
+    # path crashes its get_file (gr450298).
+    copy = Path(tempfile.mkdtemp(prefix="qgo_guard_")) / "qgo_guard.py"
+    shutil.copyfile(_SCRIPT, copy)
     spec = importlib.util.spec_from_loader(
         "qgo_guard",
-        importlib.machinery.SourceFileLoader("qgo_guard", str(_SCRIPT)),
+        importlib.machinery.SourceFileLoader("qgo_guard", str(copy)),
     )
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

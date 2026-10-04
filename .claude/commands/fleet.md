@@ -84,8 +84,7 @@ Note from the user: `$ARGUMENTS`
 
    Three things `/round` does not say, all yours:
    - **Migrations and `safe_fetch.py` come to you.** A peer does not run
-     `/go` on them: its local full gate holds the ship lock and blocks
-     every qland. The peer commits, marks `scripts/round eta`, names the
+     `/go` on them: `/go` deploys, and deploys are yours. The peer commits, marks `scripts/round eta`, names the
      branch; you squash-land those branches early enough that their CI
      verdict is in before `round gate`.
    - **You hand out migration numbers.** Keep the round's claimed numbers

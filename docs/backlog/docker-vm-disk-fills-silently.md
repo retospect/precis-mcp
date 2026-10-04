@@ -1,47 +1,33 @@
 ---
 status: ready
 pillar: platform
-title: the docker VM disk fills (90 GB build cache, ~40 idle test/gate containers) and every lint, gate and scripts/test dies on a raw ENOSPC with no test output
+title: idle precis-gate and precis-test-db containers of sessionless trees stay up for days and pin old images on the docker VM disk
 ---
 
-# Docker VM disk fills silently
+# Docker VM disk: what is left
 
-## What
+On 2026-10-03 the colima VM disk reached 98% (90 GB build cache, ~40 idle test
+and gate containers), and every lint, gate and `scripts/test` died on a raw
+ENOSPC. Shipped: `scripts/lib/docker-disk.sh` (`docker_free_gb`,
+`docker_disk_preflight <who>`; refuses with exit 3 below
+`PRECIS_DOCKER_MIN_FREE_GB`, default 10; `PRECIS_DOCKER_DISK_CHECK=0` skips),
+called from `scripts/test` and `scripts/ship`; and the hourly build-cache prune to
+`PRECIS_BUILD_CACHE_KEEP_GB` (default 30) in `scripts/reap-test-dbs`.
+Tests: `tests/test_docker_disk_guard.py`.
 
-On 2026-10-03 the colima VM disk reached 98%. The build cache had grown to
-90 GB, 40 GB of it unused, and about 40 test and gate containers had been up
-for 1–3 h. The uv cache then hit ENOSPC, so the pre-qland lint, gates and
-`scripts/test` failed with no test output, which reads as a red gate. The
-orchestrator pruned the build cache by hand (79%, 41 GB free).
-
-Nothing caps the build cache, and nothing checks free space before a run
-starts.
+Not in scope: a monitoring alert at >85% disk use on the colima VM. That
+belongs to local-compute's cluster layout pilot (review item
+local-compute-17).
 
 ## Fix
 
-1. **Preflight disk check.** `scripts/test` and `scripts/ship` (gate and
-   pre-qland lint) read the VM's free space before they start, e.g.
-   `docker system df` or `df` inside a throwaway container on the docker
-   root. Below ~10 GB (`PRECIS_DOCKER_MIN_FREE_GB`) they refuse with a named
-   message: "docker VM disk has N GB free; run scripts/reap-test-dbs, or ask
-   the orchestrator to prune; do not re-run". A check that cannot read the
-   number warns and proceeds; it never refuses on an unknown.
-2. **Build-cache cap in the reaper.** `scripts/reap-test-dbs` (or the
-   SessionStart reaper that calls it) runs
-   `docker builder prune -f --keep-storage <cap>` with the cap at ~30 GB
-   (`PRECIS_BUILD_CACHE_KEEP_GB`), at most once an hour, guarded by a stamp
-   file.
-3. **Idle containers.** The ~40 containers up 1–3 h: identify which kind
-   they are (gate warm containers, `compose run --rm` leftovers, agent-tree
-   dbs that predate the teardown in ae5084ae3). Extend the reaper only for a
-   kind that is provably idle.
-
-## Acceptance criteria
-
-- With free space under the threshold, `scripts/test` and the pre-qland
-  lint exit non-zero within seconds and print the named message, not
-  ENOSPC.
-- The reaper keeps the build cache at or under the cap. One run on a host
-  over the cap brings it under; the stamp limits it to once an hour.
-- Tests drive both with a fake `docker` on PATH, as
-  `tests/test_scripts_test_agent_teardown.py` does.
+1. **Idle containers.** Measured 2026-10-03 22:21Z, 53 running: 21
+   `precis-gate` warm containers (11 up 26-35 h, 8 up under 40 min, 2 up
+   ~40 min), 26 `precis-test-db` (5 are `agent-*` trees under 30 min old; 16 up
+   26-36 h, 1 up 10 h, 4 under 45 min), 2 `compose run` containers, `precis-mcp-http`, and the 3
+   `precis-code-search` containers (8 weeks, deliberate). 13 of the gates run
+   image id `b4771dda6938`, which is no longer a tagged image (a previous
+   `precis-dev` build, ~32 GB, kept alive by those containers). Extend the
+   reaper only for a kind that is provably idle: the 26-36 h gate/db pairs of
+   trees whose session is gone are the candidates, judged by the same
+   inflight session/purpose guard the abandoned-worktree sweep uses.

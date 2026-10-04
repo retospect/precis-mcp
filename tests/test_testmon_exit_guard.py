@@ -265,3 +265,23 @@ def test_main_leaves_the_map_alone_when_signature_absent(tmp_path: Path) -> None
 
     assert rc == 0
     assert (tmp_path / ".testmondata").exists()
+
+
+def test_xfailed_and_deselected_still_count_as_a_green_run() -> None:
+    """2026-10-03 (hexfold-toolkit): '17100 passed, 148 skipped, 315
+    deselected, 2 xfailed' plus the testmon crash exited 3, because a
+    substring test for "failed" matched "xfailed"."""
+    summary = "===== 17100 passed, 148 skipped, 315 deselected, 2 xfailed in 2399.61s (0:39:59) ====="
+    code, msg = guard.decide_exit_code(
+        summary + "\n" + _INTERNALERROR_TAIL, pytest_exit_code=3
+    )
+    assert code == 0
+    assert msg is not None and "17100 passed" in msg
+
+
+def test_a_real_error_category_is_still_red() -> None:
+    summary = "===== 1 error, 100 passed in 9.00s ====="
+    code, _ = guard.decide_exit_code(
+        summary + "\n" + _INTERNALERROR_TAIL, pytest_exit_code=3
+    )
+    assert code == 3

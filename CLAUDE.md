@@ -17,10 +17,16 @@ gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
 `ci/<branch>` → wait for the check.yml gate (lint + 6 Linux shards, ~12 min;
 docs-only diffs get a ~5 min docs lane; 3.12/macOS/Windows run nightly — run
 ship in background, output to a log) → atomic CAS squash-merge to `main` —
-main only advances through a tree the gate tested against the then-current
-main; if main moves meanwhile, ship drops the lock, re-syncs and re-runs CI
-(up to 2×), then falls back to the hybrid policy (lock held, full LOCAL
-gate ~10 min) so a burst can't loop forever. Squawk on new
+a full-gate ship lands an exactly-tested tree, or says it did not and pins
+nothing. The repo-wide ship lock is narrow: held only for the seconds of
+fetch → squash → CAS push → local-main ff, never across sync, lint, a gate
+or the CI wait. If main moves meanwhile, ship re-syncs and re-runs CI
+(up to 2×), then one hybrid local gate (~10 min, also unlocked); when that
+budget is spent it lands by an in-lock forward merge of main instead,
+prints "not a deploy warrant", writes no `.ship-sha` and moves no `gated`
+ref, and the squash carries a `Gate: forward-merged over N commits` trailer
+(`--quick` forward-merges the same way when main moved, with a
+`Gate: lint only` trailer, or `Gate: none` under `PRECIS_QLAND_LINT=0`). Squawk on new
 migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
 pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
 with the LOCAL suite + diff-coverage gate (changed src lines need

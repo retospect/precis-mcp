@@ -50,10 +50,12 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --quick "<message>"
    ```
-   It does: refuse-if-on-main → commit WIP → ship-lock → sync (`git fetch` +
-   `git merge` origin/main) → **pre-qland lint** → squash-merge to `main` via
-   `commit-tree` + CAS push → reset the branch to the shipped `main` →
-   fast-forward the local `main`. The migration-number and backlog advisories
+   It does: refuse-if-on-main → commit WIP → sync (`git fetch` +
+   `git merge` origin/main) → **pre-qland lint** (unlocked) → ship-lock (seconds;
+   if main moved, `git merge` it forward inside the lock, lint not re-run, a
+   `Gate: lint only` trailer on the squash) → squash-merge to `main` via
+   `commit-tree` + CAS push → fast-forward the local `main` → release the lock →
+   reset the branch to the shipped `main`. The migration-number and backlog advisories
    still print, and the pre-qland lint (ruff autofix · mypy · import
    contracts · DB-free hygiene tests) runs and is blocking; pytest and the diff-coverage gate do not.
 
@@ -73,7 +75,9 @@ Optional ship message from the user: `$ARGUMENTS`
      main got 20-odd ungated commits in the first place.
    - **Merge conflict during sync** — resolve, `git add -A && git commit`,
      re-run `scripts/ship --quick`.
-   - **CAS push rejected** — a sibling shipped first; just re-run.
+   - **CAS push rejected** — ship retries inside the lock itself (fetch ·
+     forward merge · push, ≤5 tries, no re-lint); only the named die after
+     those tries needs a re-run.
    - A `WARNING:` about the primary `main` not fast-forwarding is
      best-effort, not a failure — relay it.
 

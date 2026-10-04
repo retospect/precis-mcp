@@ -91,6 +91,9 @@
 # in-progress session's db) is not. Skips outright if `scripts/inflight` is
 # missing/non-executable: no session-liveness signal, no reap.
 #
+# Build cache: also prunes BuildKit's cache to PRECIS_BUILD_CACHE_KEEP_GB (30)
+# at most hourly — see prune_build_cache below.
+#
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op (shared with reap-worktrees).
 # Usage: scripts/reap-test-dbs [--dry-run]
 #
@@ -328,6 +331,49 @@ PY
         done < <(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}')
     fi
 fi
+
+# Build-cache cap. Nothing else bounds BuildKit's cache: on 2026-10-03 it had
+# grown to 90 GB (40 GB unused) and filled the VM disk, so every lint, gate and
+# scripts/test died on ENOSPC. Prune down to PRECIS_BUILD_CACHE_KEEP_GB (default
+# 30) at most once an hour, guarded by a stamp in the git common dir (shared by
+# every worktree, so sibling sessions' SessionStart hooks don't each prune).
+# The stamp is claimed BEFORE pruning so two concurrent hooks run it once. The
+# cap flag is probed. --max-used-space (newer buildx) names the cap itself:
+# prune until the cache is at most N. Older docker only has --keep-storage, the
+# same cap under its old name. --reserved-space (a floor the cache may always
+# keep) is the last resort. --dry-run never prunes.
+prune_build_cache() {
+    [ "$DRY_RUN" = 1 ] && return 0
+    local keep="${PRECIS_BUILD_CACHE_KEEP_GB:-30}" gitdir stamp help flag f out reclaimed
+    case "$keep" in '' | *[!0-9]*) keep=30 ;; esac
+    gitdir="$(git -C "$(dirname "$0")/.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+    [ -n "$gitdir" ] && [ -d "$gitdir" ] || return 0
+    stamp="$gitdir/precis-build-cache-prune.stamp"
+    if [ -f "$stamp" ] && [ -n "$(find "$stamp" -mmin -60 2>/dev/null)" ]; then
+        return 0
+    fi
+    : >"$stamp" 2>/dev/null || return 0
+    help="$(docker builder prune --help 2>&1)" || true
+    flag=""
+    for f in --max-used-space --keep-storage --reserved-space; do
+        case "$help" in *"$f"*) flag="$f"; break ;; esac
+    done
+    if [ -z "$flag" ]; then
+        echo "reap-test-dbs: build-cache prune skipped: this docker has no --max-used-space, --keep-storage or --reserved-space"
+        return 0
+    fi
+    # Bounded: a prune of tens of GB takes a while, a wedged daemon must not
+    # hold the SessionStart hook forever. macOS ships no `timeout`; perl does.
+    local bound=()
+    command -v perl >/dev/null 2>&1 && bound=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_BUILD_CACHE_PRUNE_TIMEOUT:-300}")
+    if out="$(${bound[@]+"${bound[@]}"} docker builder prune -f "$flag" "${keep}GB" 2>&1)"; then
+        reclaimed="$(printf '%s\n' "$out" | awk '/^Total:/ { print $2 }' | tail -n 1)"
+        echo "reap-test-dbs: build cache pruned to a ${keep}GB cap, reclaimed ${reclaimed:-0B}"
+    else
+        echo "reap-test-dbs: build-cache prune failed (docker builder prune -f ${flag} ${keep}GB)"
+    fi
+}
+prune_build_cache
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
     echo "reap-test-dbs: nothing to reap"
