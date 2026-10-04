@@ -138,3 +138,10 @@ pillar 1, so it carries three more requirements:
    `Roadmap` ring by source kind, or rank sub-quests first. This is a
    `RING_GROUPS` decision, made when the measures pilot gives the quest
    ring a "best numbers" group.
+6. **The quest ladder's fisheye body is the logbook** (dogfood,
+   2026-10-04). `get(kind='quest', id=202467, view='fisheye+1hop')` puts
+   about 30 lines above the ring: the quest statement, then the logbook
+   entries. A fisheye should open with the node's gist (statement and
+   rubric) and leave the logbook to `view='logbook'`. The renderer takes
+   the body from the quest's chunks. A quest needs a one-chunk gist for
+   the eye, the same way a finding has its claim.

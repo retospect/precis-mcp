@@ -310,16 +310,21 @@ class TaxonHandler(NumericRefHandler):
         text: str | None = None,
         dedup: bool | None = None,
         auto_refresh_days: int | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        """Create a node. Unless ``dedup=False``, a likely duplicate (same
+        """Create a node. ``meta=`` is declared explicitly (not read from
+        ``**_kw``) so the dispatch strictness gate, which only inspects
+        explicit parameters, lets it through. Unless ``dedup=False``, a likely duplicate (same
         name/alias/slug, or an embedding neighbour within
         ``DEDUP_MAX_DISTANCE`` when an embedder answers) is refused naming the
         existing node; candidates whose dimension explicitly differs are never
         offered (see :func:`_dimension_clash`)."""
         if dedup is not False and _kw.get("id") is None and text and text.strip():
-            self._dedup_check(text, _kw.get("meta"))
-        return super().put(text=text, auto_refresh_days=auto_refresh_days, **_kw)
+            self._dedup_check(text, meta)
+        return super().put(
+            text=text, auto_refresh_days=auto_refresh_days, meta=meta, **_kw
+        )
 
     def _dedup_check(self, text: str, put_meta: dict[str, Any] | None) -> None:
         meta = self._initial_meta(text, [])

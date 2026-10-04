@@ -689,6 +689,38 @@ class TestLinkMeta:
         assert "error" not in out.lower(), out
         assert store.taxon_parents(c) == [(p, "regime")]
 
+    def test_put_meta_flows_through_the_verb_dispatch(
+        self, store: Any, mounted_runtime: Any
+    ) -> None:
+        """``put(kind='taxon', meta={...}, link=, rel=)`` through the MCP verb
+        layer: ``meta=`` must pass the dispatch strictness gate (it was
+        refused as an unaccepted kwarg while read only from ``**_kw``)."""
+        from precis.tools import core
+
+        root = _start(store, "put-meta measurand", ["dimension_kind"])
+        meta = {
+            "dimension_kind": "si",
+            "si_vector": "0,0,-1,0,0,0,0",
+            "canonical_unit": "1/s",
+        }
+        out = _verb_text(
+            core.put(
+                kind="taxon",
+                text="turnover frequency — catalytic cycles per unit time",
+                meta=meta,
+                link=f"taxon:{root}",
+                rel="specialises",
+            )
+        )
+        assert "error" not in out.lower(), out
+        m = re.search(r"\btn(\d+)\b", out)
+        assert m is not None, out
+        ref = store.get_ref(kind="taxon", id=int(m.group(1)))
+        assert ref is not None
+        for k, v in meta.items():
+            assert ref.meta[k] == v
+        assert store.taxon_parents(ref.id) == [(root, None)]
+
 
 # ── stage C: search facets, lexical name+definition, dedup, path ids ────
 

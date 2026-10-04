@@ -20,28 +20,37 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
-**Resume (2026-10-04 03:29Z):** migrations 0185 (reviews ledger and
-revisions log) and 0187 (measures) landed on main as one squash at
-45b82de33. They are not deployed yet; they ship with round 4.
+**Resume (2026-10-04 04:50Z):** round 4 is live (prod 727728cc9).
+0185 and 0187 are applied, and the `measure` kind (Build B) is serving.
 
-After the round-4 deploy, and not before (orchestrator):
-1. `SELECT precis_reviews_backfill();` once via `scripts/prod-psql`, to
-   pick up stamps written during the migrate window.
-2. Mint the pilot taxa with SI canonical units (measures-substrate
-   §"The pilot's taxa").
-3. Dogfood `get(kind='quest', id=202467, view='fisheye+1hop')` via
-   `scripts/prod-precis`.
+**Prod, after the deploy:**
+- **`precis_reviews_backfill()` was run once and added 0 rows.** The
+  migration's own backfill had already taken every stamp: `reviews` holds
+  234 chunk and 2522 link rows.
+- **The revisions log is healthy:** 0 rows so far, `revision_trigger_state`
+  shows five covered kinds, and `last_error` is empty.
+- **Minting the pilot taxa failed, and nothing was written.** Every
+  `put(kind='taxon', meta=…)` is refused at dispatch with "does not accept
+  ['meta']": `TaxonHandler.put` reads `meta` from `**_kw`, which the
+  strictness gate drops. A fix is being built, and the taxa are minted once
+  it deploys. The commands are ready in
+  `scratch/qu202467-mint-cmds.tsv`.
+- **Quest fisheye dogfood: it works.**
+  `get(kind='quest', id=202467, view='fisheye+1hop')` lists the three
+  sub-quests first under `served-by`, then the draft, the papers and the
+  findings, each capped with `+N more`. Its one weakness is filed in
+  `fisheye-everywhere.md` §6: the body above the ring prints the quest's
+  logbook.
 
-Builds, in the measures spec §"Pilot build on qu202467":
-- **B (measure kind, range search with `unit=`, quest `view='measures'`):**
-  qlanded 2026-10-04; rides the round-4 deploy.
-- **C:** the put/edit verbs for measures were qlanded on 2026-10-04 and
-  ride the round-4 deploy. Next is the extraction pass on the 130
-  anchored findings, an operation after deploy that follows
-  `precis-measure-help` "Extraction pass". The input is
-  `scratch/qu202467-findings.jsonl`.
-- **A2 (legacy taxa to SI, drop `rxn_values`):** a migration branch to
-  the orchestrator.
+**Round 5:**
+- Build C (89e56b7fd) and `note=` on measure put (1c1699e1d) are marked in
+  round 5; both are on main and not live yet.
+- The extraction is checked offline and ready: 122 runs in
+  `scratch/qu202467-runs-ok.jsonl`. It goes in after round 5 carries
+  Build C and the taxon fix.
+- **A2 (0188, legacy taxa to SI and dropping `rxn_values`):** the design is
+  accepted with five conditions and the branch is being built. It lands
+  after the backfill, which has run.
 
 ## Do next
 
