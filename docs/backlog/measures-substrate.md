@@ -409,6 +409,61 @@ nanobuds-paper).
 - `precis-measure-help`;
 - ACs 5–8, plus a non-chemistry round trip on an `llm` subject.
 
+**Build B: how agents reach measures** (decided 2026-10-04). Measures
+are rows, not refs, so they get a handler-searched kind, `measure`. The
+closest precedents are `skill` and `tag`. No search parameter changes
+meaning, and one is added.
+- **`get(kind='measure', id=<measures.id>)`** reads one row:
+  - the literal and the value, in its display unit, with SI beside it;
+  - the measurand path;
+  - the subject, its label and its run;
+  - the conditions, which are the run's input rows;
+  - tier, attribution and extraction status;
+  - the anchor's chunk handle and span;
+  - its reviews from the ledger, marked current or stale;
+  - its supersession chain.
+
+  A reviewer opens a measure here, so this view carries everything a
+  review needs.
+- **`search(kind='measure', property=<taxon>, min=, max=, unit=, q=)`:**
+  - **`property=`** is the measurand, given as a taxon handle or path
+    (`measurand/faradaic-efficiency`). It includes the taxon's
+    `specialises` descendants. This is the same facet material search
+    already uses for its property.
+  - **`min=` and `max=`** are numbers and match by interval overlap on
+    low/high, as material's range search does.
+  - **`unit=`** is the one new `search` parameter. It is the unit of
+    `min`/`max` and of the output, converted to SI before comparing. So
+    `min=1.4, unit='Å'` works. Without it, bounds are read in the
+    measurand's display unit, which is what a person would type.
+  - **`q=`** holds conditions as `name=value` terms, e.g.
+    `q='product=NH3 potential<-0.5'`, matched against the run's input
+    rows. `=`, `<` and `>` are allowed, and a value with a unit converts
+    like a bound. Any other word in `q` matches the subject label.
+  - **No `wants=`:** its contract is "ranked, never a filter" (`se`),
+    and conditions here are filters.
+  - **What it excludes:** superseded, ambiguous, escalated and
+    anchor-lost rows are left out unless `status='all'`.
+  - **Output:** one line per row: subject, value in the output unit,
+    the conditions, tier, and the paper handle.
+- **`get(kind='quest', id=Q, view='measures')`** is AC 8's quest table.
+  - **What it lists:** the best live value per measurand over
+    everything serving Q at any depth (`store.ancestors` over
+    `serves`).
+  - **How "best" is picked:** the direction comes from the taxon's
+    `higher_is_better`. Rows are grouped by
+    `(measurand, reference, normalization)`, and `best_measure` never
+    compares across groups.
+  - **Each line shows:** the value with its conditions and paper.
+  - **Where the table lives:** this view is the quest table itself; a
+    `precis quest table` CLI is not built.
+- **Display:** the value is shown in the taxon's `display_unit`, else
+  SI, through pint's `to_compact()`, so 1.4e-10 m never prints as
+  0.00000000014 m.
+  - pH is never prefixed.
+  - Percent is displayed only when `display_unit` says so.
+  - Affine units display as absolute.
+
 **The pilot's taxa.** About ten, minted by hand in prod under
 `measurand` via `put` plus a `specialises` link. These are ordinary prod
 writes.
