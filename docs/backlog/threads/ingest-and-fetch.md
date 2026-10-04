@@ -10,7 +10,10 @@ states that count a paper as usable when it is not, then metadata.
 **Worktree:** `ingest-and-fetch`
 **Active:** yes — Reto 2026-10-01: "ingest must work".
 
-**Resume (2026-10-04, ship-all):**
+**Resume (2026-10-04, ship-all; refreshed at persist-now):** all work is
+on main (round 6: c83c46973, 5d95cb2fc, 714ef6049, a20d35169), nothing
+unshipped on any branch, no agent or job running. Waiting on the round-6
+deploy, then the after-deploy steps below.
 - Landed: SI builds 1 and 2 with re-arm fixes (item 1), the arXiv
   e-print magic-byte and plain-TeX staging (gr465473 closed), and a
   connect-failure retry on Crossref and bib_parse (c83c46973, round 6).
