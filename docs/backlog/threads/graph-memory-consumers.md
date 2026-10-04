@@ -13,9 +13,23 @@ half (file-mirror, context hierarchy, session history) and the surfaces
 (fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-04
 **Worktree:** `graph-memory-consumers`
 **Active:** yes — Reto 2026-10-01: "graph memory we want soon".
+
+## Resume (2026-10-04 06:48Z)
+
+- **Landed, all live on prod 727728cc:**
+  - memory slice 2, the cutover and memory-lint graph mode (31fc2a3c, fef5f1d5);
+  - the coerced-composite marker (a8c706b6).
+  - The branch holds nothing unshipped.
+- **Open:**
+  - The marker is unverified. No finding has been minted on prod since
+    2026-10-03 16:59Z, so no composite hub carries the key yet.
+  - The `--sync` guard has not been exercised against the live pointer.
+    Auto mode denies that run; unit tests cover the guard.
+  - The currency ledger re-flags the same 5 provenance suspects every run.
+- **Next step:** add `find-replace` to memory `edit` (Do-next 1).
 
 ## Do next
 
@@ -29,7 +43,7 @@ what a live consumer is already going without.
    - **Slice 2 closes them:** `meta={'hook':…}`, handle-form index,
      `import --sync`, the hook's last-good cache, memory-lint graph mode,
      and the hook wired but silent until the marker.
-   - **Resume (2026-10-04 04:45Z): round 4 dogfooded on prod (727728cc).**
+   - **Round 4 dogfooded on prod (727728cc), 2026-10-04 04:45Z.**
      Harness memory is in the graph: `MEMORY.md` is the pointer, and the
      old index is kept as `MEMORY.md.pre-cutover`.
      - **The hook:** printed 150 lines and exported 137 node bodies plus
