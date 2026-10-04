@@ -11,16 +11,18 @@ packages its results.
 **Last reviewed:** 2026-10-02 (every item triaged against the code and commit history)
 **Worktree:** `chemistry`
 **Active:** yes — Reto, 2026-10-01.
-**Resume (2026-10-04 07:10Z):** landed and live in prod 727728cc9 (round 4):
+**Resume (2026-10-04 07:30Z):** landed and live in prod 727728cc9 (round 4):
 verify wall 28800 + seed cpuset 0-4,10-14 (both confirmed in the gateway
 worker's plist and live env), and da14331f7 — the stuck-seed repair now keys
 on the candidate's newest T_agg tree ahead of the latest aggregate job (the
 older succeeded neb aggregate had masked the 9 qu164903 (NO→NH3 on Pd(111))
-verify trees, 23 of 27 seeds failed at wall 5400 in September). **Open:** not
-yet dogfooded — qu164903 has not ticked since 01:20Z (diagnosis in flight;
-the fix acts only on a tick). On the next tick: the 23 failed seeds re-mint
-under the same seed todos with `resources.wall_seconds=28800` + `cpuset`;
-then confirm the child runs under `taskset` on castor/pollux. Unchecked:
+verify trees, 23 of 27 seeds failed at wall 5400 in September). **Dogfood
+FAILED:** the first post-deploy qu164903 tick (06:46:30Z; ticks had stopped
+fleet-wide 00:12Z–06:46Z on `quest_loop_reconcile ok=0`) re-dispatched
+nothing and touched none of the 9 candidates' retry meta — gr465963. Next:
+root-cause whether `harvest_measures` reaches these candidates on a tick;
+once seeds re-mint with `resources.wall_seconds=28800` + `cpuset`, confirm
+the child runs under `taskset` on castor/pollux. Unchecked:
 whether the verify content key moved since 09-24 (uv.lock changed
 10-01/10-02); if it did, the re-dispatch mints fresh trees and supersedes the
 9 pathways instead of reusing them. Nothing unlanded on the branch.
