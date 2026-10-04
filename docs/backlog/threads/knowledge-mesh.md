@@ -20,21 +20,25 @@ class-lattice-similarity-spaces-and-laws, first-party-experiment-records,
 graph-health-metrics, five parked gripes, and the seam with
 `graph-memory-consumers.md`)
 **Worktree:** `knowledge-mesh`
-**Resume (2026-10-03 20:40Z):** none of the round-3 lands are in the
-929107f32 deploy (quest fisheye c4ea7e1fb and the measures pilot docs);
-they ride the follow-up deploy. Dogfood then:
-`get(kind='quest', id=202467, view='fisheye+1hop')` via
-`scripts/prod-precis`.
+**Resume (2026-10-04 03:29Z):** migrations 0185 (reviews ledger and
+revisions log) and 0187 (measures) landed on main as one squash at
+45b82de33. They are not deployed yet; they ship with round 4.
 
-Two migration branches are held for the orchestrator, in this order:
-- **0185 (reviews ledger and revisions log):** it is being re-tipped
-  with literal WHEN lists, because its triggers cost about 2x on hot
-  meta updates.
-- **0187 (measures, pilot Build A):** being built, and rebases onto the
-  new 0185 tip.
+After the round-4 deploy, and not before (orchestrator):
+1. `SELECT precis_reviews_backfill();` once via `scripts/prod-psql`, to
+   pick up stamps written during the migrate window.
+2. Mint the pilot taxa with SI canonical units (measures-substrate
+   §"The pilot's taxa").
+3. Dogfood `get(kind='quest', id=202467, view='fisheye+1hop')` via
+   `scripts/prod-precis`.
 
-Next: the domain taxa are minted once 0187 deploys, then Build C
-(extraction).
+Builds, in the measures spec §"Pilot build on qu202467":
+- **B (measure kind, range search with `unit=`, quest `view='measures'`):**
+  with a coder.
+- **C (put/edit verbs for measures, then the extraction pass on the 130
+  anchored findings, as an operation):** next.
+- **A2 (legacy taxa to SI, drop `rxn_values`):** a migration branch to
+  the orchestrator.
 
 ## Do next
 

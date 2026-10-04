@@ -517,6 +517,37 @@ findings:
   - the rejections;
   - the rows the two models disagree on;
   - a `best_measure` table per route family.
+- **The write verbs ship first, as code** (decided 2026-10-04). The
+  extraction writes prod rows, and a prod write outside the verbs would
+  have to go to Reto as a command. So Build C ships the verbs, and the
+  pass then runs through them like any agent write.
+  - **`put(kind='measure', text=<literal>, meta={...}, items=[...])`**
+    writes one run: the output in `text` and `meta`, the input rows in
+    `items`. It is a thin door over `insert_measure` that returns the
+    run's measure ids and anything flagged, each with a one-line reason.
+    `reason=` reaches the revision log through the existing dispatch
+    context.
+  - **`edit(kind='measure', id=N, review='approved'|'rejected', note=)`**
+    records a review on the ledger:
+    - The actor comes from the revision context.
+    - `model` comes from `meta={'model': …}` or is NULL for a human. A
+      model review must name its model.
+    - The sha is taken now, so a later change to the row stales the
+      review.
+  - **No other edit exists.** Rows are append-only, so a correction is
+    a new `put` with `meta.supersedes`.
+- **The pass itself is an operation, not code.** It runs after deploy,
+  and the recipe goes in `precis-measure-help`:
+  1. Subagents at the mid tier read each finding with its anchored
+     chunk and propose runs as JSON.
+  2. A script checks each proposal against the chunk text and the taxon
+     list.
+  3. The proposals are `put` through `scripts/prod-precis`, with
+     `reason='qu202467 pilot extraction'`.
+  4. A bigger-model reviewer subagent `edit`s each row with a verdict.
+
+  The input is the 130 anchored findings, exported to the scratch dir on
+  2026-10-03. The 10 unanchored ones are reported, not extracted.
 
 **Build D: fisheye on the quest (qland, independent).** The ladder on
 `kind='quest'` (fisheye-everywhere AC 2). In flight 2026-10-03.
