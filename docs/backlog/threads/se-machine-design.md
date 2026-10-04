@@ -1,5 +1,20 @@
 # se machine design
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** Build [print-file-scale](../print-file-scale.md) (½ build), then O2–O4 or O5 once Reto answers item -6.
+- **Blocked by:** Print-file-scale is ready; subsequent organic work waits on item -6. Load-test numbers, PCB rough-box decision and first Print files click remain owed by Reto.
+- **Unblocks:** Intent-based machine design with charge, field and optical properties.
+- **Acceptance:** Use [print-file-scale](../print-file-scale.md): writer scale, scale metadata/filename, route bounds and printed-size checks; preserve the already dogfooded region slice A.
+- **Worktree:** `se-machine-design`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when an se design carries the non-geometric layer
 (per-region properties: hydrophobic, charge, field, optical) and a
 declarative intent can be realized by pick-and-join, so an LLM reasons over
@@ -11,9 +26,9 @@ unbuilt and blocks three of the six reasoning axes; everything below reads
 off that gap until it closes.
 **Last reviewed:** 2026-10-04 (95% ship review: all work on main)
 **Worktree:** `se-machine-design`
-**Active:** yes — Reto, 2026-10-01 (Pillar 2 review).
+**Allocation decision (historical):** yes — Reto, 2026-10-01 (Pillar 2 review).
 
-## Resume state (2026-10-04)
+## Detailed handoff state (2026-10-04)
 
 - **Branch state at the 95% review (2026-10-04T06:48Z):** nothing is
   only on this branch; everything is on main. Nothing is half-done.

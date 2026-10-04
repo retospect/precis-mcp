@@ -8,7 +8,7 @@ answers:
   - how do I mark a todo as done?
   - how do I set the priority on a task?
   - how do I tag a todo with a project or topic?
-applies-to: get/search/put/delete/tag/link (kind='todo')
+applies-to: get/search/put/edit/delete/tag/link (kind='todo')
 status: active
 tags: verbs, workflow
 kinds: todo
@@ -128,20 +128,22 @@ on `put` instead. The current parent shows under `## parent` in
 ## How do I change what a todo says without losing its place?
 
 ```python
+# text= changes the title.
 edit(
     kind="todo",
     id=122,
     mode="replace",
     text="Review section 3 of abazari2024design (focus on the kinetics).",
 )
+# body= replaces the complete details; the title stays attached.
+edit(kind="todo", id=122, mode="replace", body="Compare the rate constants in Table 2.")
+get(kind="todo", id=122, view="log")  # previous title/details
 ```
 
-In-place rewrite: the id, parent, links, and tags all stay attached —
-the old body is preserved in `ref_events` (read it back via
-`get(kind='todo', id=122, view='log')`). Only `mode='replace'` is
-supported. Prefer this over delete + re-`put`, which would break every
-inbound edge and the tree position. Owner-only on strategic / tactical
-nodes (same authority as delete / reparent).
+Pass either or both fields. The id, parent, links, and tags stay attached;
+the previous title/details remain in the log. Only `mode='replace'` is
+supported. Owner-only on strategic / tactical nodes (same authority as
+delete / reparent).
 
 ## Schedule a todo for a date
 ## Add a due date to a todo

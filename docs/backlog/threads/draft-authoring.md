@@ -1,12 +1,27 @@
 # draft authoring — drafts, export and the tex layer
 
+## Resume
+
+- **Pillar:** memory-graph
+- **Next:** Re-triage Horizon against the October paper after figure clearance; Do next has no open local item.
+- **Blocked by:** Figure gate owned by [nanobuds-paper](nanobuds-paper.md#resume).
+- **Unblocks:** Reliable authoring and export for the monthly paper.
+- **Acceptance:** Follow the linked specs and verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `draft-authoring`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when a draft can be written, linted and exported to every
 format without a human working around the tool. Do-next is ordered by what
 the month's preprint hits (quest qu459585; October = td459586, the nanobud
 paper dr173020); triaged against it 2026-10-02.
 **Last reviewed:** 2026-10-02
 **Worktree:** `draft-authoring`
-**Active:** yes — Reto 2026-10-01: "draft authoring must work".
+**Allocation decision (historical):** yes — Reto 2026-10-01: "draft authoring must work".
 
 Created 2026-10-01 from the memory-graph pillar review.
 

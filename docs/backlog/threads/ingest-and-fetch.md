@@ -1,5 +1,20 @@
 # ingest and fetch — acquisition and extraction fidelity
 
+## Resume
+
+- **Pillar:** memory-graph
+- **Next:** After round-6 deploy, perform the recorded ref-202942/anon cleanup; then item 3’s still-bodiless policy pass and close td461154. Glyph precision run starts no earlier than 2026-10-04 14:00Z.
+- **Blocked by:** Round-6 deployment; safe_fetch fallback remains at the orchestrator’s gate. Item 1 retires only after walker and web SI triggers are seen on prod.
+- **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
+- **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): read back the cleanup, account for the bodiless remainder, and observe both SI trigger paths before retiring the item.
+- **Worktree:** `ingest-and-fetch`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when a paper that precis holds is either faithfully
 extracted or visibly counted as not extracted — no silent character loss, no
 state where the acquisition backlog's own count is wrong. Triage td458898 ran
@@ -8,7 +23,7 @@ below is ranked on measured rows, not age: silent corruption first, then the
 states that count a paper as usable when it is not, then metadata.
 **Last reviewed:** 2026-10-04
 **Worktree:** `ingest-and-fetch`
-**Active:** yes — Reto 2026-10-01: "ingest must work".
+**Allocation decision (historical):** yes — Reto 2026-10-01: "ingest must work".
 
 **Resume (2026-10-04, ship-all; refreshed at persist-now):** all work is
 on main (round 6: c83c46973, 5d95cb2fc, 714ef6049, a20d35169), nothing

@@ -74,6 +74,19 @@ Rewrite a memory in place with `edit(kind='memory', id=42, mode='replace',
 text='new body'[, title='new header'])` — same id, links stay attached,
 old body kept in `view='log'`.
 
+Fix one span of a long body without re-sending it: `edit(kind='memory',
+id=42, mode='find-replace', find='/old/path', text='/new/path')`, or
+`mode='insert'` with `where='before'|'after'`. Same grammar as the file
+kinds: `before=`/`after=` anchors, `match='unique'` (default; an ambiguous
+`find=` is refused with the candidate lines) `|'first'|'all'|'nth'` + `nth=`,
+`text=''` deletes the span, `dry_run=True` returns the diff and writes
+nothing. `meta=` rides along; `title=`/`rule=`/`warrant=` are
+`mode='replace'` only. An edit that would empty the body is refused. Always
+name `mode=`: `text=` with the default `find-replace` and no `find=` is
+refused, never taken as a whole-body overwrite.
+If another edit changes the body before the write, the edit is refused
+without changes; get the current memory and retry with fresh anchors.
+
 ## Record a decision I just made
 ## Log a design choice with rationale
 ## Pin a decision so I can find it later

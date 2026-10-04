@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""Isolated Codex tmux workers; native queue delivery never types into a terminal.
+
+The roster owns names/indices; persisted pane IDs establish ownership, so a
+same-named unrelated window cannot be adopted. Worktree reuse preserves dirty
+changes and requires the expected branch. File locking serializes launcher and
+registration writes; atomic replacement leaves readers complete JSON records.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import fcntl
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import uuid
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+class Refusal(Exception):
+    """An identity or prerequisite could not be established safely."""
+
+
+def run(*args: str, cwd: Path | None = None) -> str:
+    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise Refusal(f"{shlex.join(args[:3])}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise Refusal(f"expected an object: {path}")
+    return value
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as stream:
+        scratch = Path(stream.name)
+        json.dump(value, stream, indent=2)
+        stream.write("\n")
+    try:
+        scratch.replace(path)
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
+@contextmanager
+def lock(state: Path):
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / ".launcher.lock").open("a", encoding="utf-8") as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def roster(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        required = {"index", "name", "model", "effort", "threads", "summary"}
+        if set(reader.fieldnames or []) != required:
+            raise Refusal(f"roster header must contain {', '.join(sorted(required))}")
+        rows = list(reader)
+    indices: set[int] = set()
+    names: set[str] = set()
+    for row in rows:
+        if None in row or any(value is None for value in row.values()):
+            raise Refusal("each roster row must have exactly six columns")
+        row["index"] = int(row["index"])
+        name = row["name"]
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+            raise Refusal(f"invalid worker name: {name!r}")
+        if row["index"] < 0 or row["index"] in indices or name in names:
+            raise Refusal(f"duplicate or invalid roster identity: {name}")
+        if not row["model"] or row["effort"] not in {
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra",
+        }:
+            raise Refusal(f"missing model or invalid effort: {name}")
+        indices.add(row["index"])
+        names.add(name)
+    return sorted(rows, key=lambda row: row["index"])
+
+
+def select(rows: list[dict], names: list[str]) -> list[dict]:
+    missing = set(names) - {row["name"] for row in rows}
+    if missing:
+        raise Refusal(f"unknown workers: {', '.join(sorted(missing))}")
+    return [row for row in rows if not names or row["name"] in names]
+
+
+class Fleet:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.state = Path(args.state)
+        if not self.state.is_absolute():
+            raise Refusal("--state must be absolute")
+        self.state = self.state.resolve()
+        self.token_file = (
+            Path(args.token_file).expanduser().resolve() if args.token_file else None
+        )
+        self.rows = roster(Path(args.roster))
+        self.root = (
+            Path(args.root).resolve()
+            if args.root
+            else Path(
+                run("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
+            ).parent
+        )
+        self.session = args.session
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", self.session):
+            raise Refusal("session must be a simple exact tmux session name")
+
+    def worker(self, row: dict) -> dict:
+        name = row["name"]
+        return {
+            **row,
+            "schema_version": 1,
+            "role": name,
+            "session": self.session,
+            "branch": f"work/{name}/bootstrap",
+            "worktree": str(self.root / ".claude" / "worktrees" / f"codex-{name}"),
+        }
+
+    def windows(self) -> dict[int, dict]:
+        lines = run(
+            "tmux",
+            "list-windows",
+            "-t",
+            f"={self.session}",
+            "-F",
+            "#{window_index}\t#{window_name}\t#{window_id}\t#{pane_id}\t#{pane_dead}",
+        )
+        result = {}
+        for line in lines.splitlines():
+            index, name, window_id, pane_id, dead = line.split("\t")
+            result[int(index)] = {
+                "name": name,
+                "window_id": window_id,
+                "pane_id": pane_id,
+                "dead": dead == "1",
+            }
+        return result
+
+    def identity(self, row: dict, windows: dict[int, dict]) -> tuple[dict, dict]:
+        record = read_json(self.state / "workers" / f"{row['name']}.json")
+        window = windows.get(row["index"], {})
+        if window:
+            if window["name"] != row["name"] or not record:
+                raise Refusal(
+                    f"occupied window {self.session}:{row['index']}; preserving it"
+                )
+            for key in ("window_id", "pane_id"):
+                if record.get(key) != window[key]:
+                    raise Refusal(
+                        f"{row['name']}: {key} changed; preserving occupied window"
+                    )
+            if (
+                record.get("session") != self.session
+                or record.get("index") != row["index"]
+            ):
+                raise Refusal(f"{row['name']}: recorded tmux identity differs")
+        elif any(window["name"] == row["name"] for window in windows.values()):
+            raise Refusal(f"{row['name']}: name already occupies a different window")
+        return record, window
+
+    def check_worktree(self, worker: dict) -> bool:
+        path = Path(worker["worktree"])
+        if not path.exists():
+            return False
+        if path.is_symlink() or not path.is_dir():
+            raise Refusal(f"unsafe worktree path: {path}")
+        actual = run("git", "rev-parse", "--show-toplevel", cwd=path)
+        common = run(
+            "git", "rev-parse", "--path-format=absolute", "--git-common-dir", cwd=path
+        )
+        expected = run(
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            cwd=self.root,
+        )
+        branch = run("git", "branch", "--show-current", cwd=path)
+        if (
+            Path(actual).resolve() != path.resolve()
+            or common != expected
+            or branch != worker["branch"]
+        ):
+            raise Refusal(f"worktree identity differs: {path} ({branch})")
+        return True
+
+    def up(self, names: list[str]) -> None:
+        windows = self.windows()
+        plans = []
+        for row in select(self.rows, names):
+            if row["index"] == 0:
+                print(
+                    json.dumps({"name": row["name"], "status": "coordinator-preserved"})
+                )
+                continue
+            worker = self.worker(row)
+            record, window = self.identity(row, windows)
+            if record and any(
+                record.get(key) != worker[key] for key in ("worktree", "branch")
+            ):
+                raise Refusal(f"{row['name']}: recorded worktree identity differs")
+            worker = {**record, **worker}
+            exists = self.check_worktree(worker)
+            if window:
+                if not exists or window["dead"]:
+                    raise Refusal(
+                        f"{row['name']}: existing window needs operator recovery"
+                    )
+                plans.append((worker, True, True, "", None))
+                continue
+            prompt = (self.state / "prompts" / f"{row['name']}.txt").read_text(
+                encoding="utf-8"
+            )
+            if not prompt.strip():
+                raise Refusal(f"{row['name']}: empty prompt")
+            saved = read_json(self.state / "registrations" / f"{row['name']}.json")
+            resume = self.saved_thread(row, worker, saved) if saved else None
+            if resume and not exists:
+                raise Refusal(
+                    f"{row['name']}: saved thread worktree is missing; recover it explicitly"
+                )
+            plans.append((worker, exists, False, prompt, resume))
+        if self.token_file and any(not running for _, _, running, _, _ in plans):
+            try:
+                token = self.token_file.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeError):
+                raise Refusal("cannot read configured token file") from None
+            if not token or any(
+                character.isspace() or character == "\0" for character in token
+            ):
+                raise Refusal("invalid configured token file")
+            del token
+        # Validate the whole batch before any worktree or window is created.
+        for worker, exists, running, prompt, resume in plans:
+            if running:
+                print(json.dumps({"name": worker["name"], "status": "already-running"}))
+                continue
+            command = [
+                "codex",
+                "--no-daemon",
+                *(["resume", resume] if resume else []),
+                "-C",
+                worker["worktree"],
+                "-m",
+                worker["model"],
+                "-c",
+                f"model_reasoning_effort={worker['effort']}",
+                "--approve-for-me",
+                "--add-dir",
+                str(self.state),
+                "--",
+                prompt,
+            ]
+            if self.args.dry_run:
+                print(json.dumps({**worker, "status": "would-start", "argv": command}))
+                continue
+            bootstrap = [
+                sys.executable,
+                str(Path(__file__).resolve().with_name("codex-fleet-session")),
+            ]
+            if self.token_file:
+                bootstrap.extend(["--token-file", str(self.token_file)])
+            bootstrap.extend(["--", *command[1:]])
+            if not exists:
+                path = Path(worker["worktree"])
+                path.parent.mkdir(parents=True, exist_ok=True)
+                branches = run(
+                    "git", "branch", "--list", worker["branch"], cwd=self.root
+                )
+                args = ["git", "worktree", "add"]
+                if branches:
+                    args.extend([str(path), worker["branch"]])
+                else:
+                    args.extend(["-b", worker["branch"], str(path), "main"])
+                run(*args, cwd=self.root)
+            pane = run(
+                "tmux",
+                "new-window",
+                "-d",
+                "-t",
+                f"={self.session}:{worker['index']}",
+                "-n",
+                worker["name"],
+                "-c",
+                worker["worktree"],
+                "-P",
+                "-F",
+                "#{window_id}\t#{pane_id}",
+                "exec " + shlex.join(bootstrap),
+            )
+            worker["window_id"], worker["pane_id"] = pane.split("\t")
+            if resume:
+                worker["resumed_thread_id"] = resume
+            write_json(self.state / "workers" / f"{worker['name']}.json", worker)
+            print(json.dumps({**worker, "status": "started"}))
+
+    def register(self, name: str, thread: str | None) -> None:
+        row = select(self.rows, [name])[0]
+        if not thread:
+            raise Refusal("CODEX_THREAD_ID is absent; pass --thread UUID")
+        thread = str(uuid.UUID(thread))
+        pane_id = os.environ.get("TMUX_PANE", "")
+        windows = self.windows()
+        if row["index"] == 0:
+            window = windows.get(0, {})
+            worker = {"worktree": str(Path.cwd().resolve()), **row}
+        else:
+            worker, window = self.identity(row, windows)
+        if not pane_id or window.get("pane_id") != pane_id or window.get("dead"):
+            raise Refusal(f"{name}: registration must come from its live pane")
+        if not worker or Path(worker["worktree"]).resolve() != Path.cwd().resolve():
+            raise Refusal(f"{name}: registration must come from its worktree")
+        for path in (self.state / "registrations").glob("*.json"):
+            other = read_json(path)
+            if other.get("thread_id") == thread and path.stem != name:
+                raise Refusal(f"thread already registered to {path.stem}")
+        previous = read_json(self.state / "registrations" / f"{name}.json")
+        registration = {
+            **previous,
+            "schema_version": 1,
+            "name": name,
+            "thread_id": thread,
+            "pane_id": pane_id,
+            "worktree": worker["worktree"],
+            "registered_at": datetime.now(UTC).isoformat(),
+        }
+        if not self.args.dry_run:
+            write_json(self.state / "registrations" / f"{name}.json", registration)
+        print(json.dumps(registration))
+
+    def saved_thread(self, row: dict, worker: dict, record: dict) -> str:
+        thread = record.get("thread_id")
+        if not isinstance(thread, str) or not thread:
+            raise Refusal(f"{row['name']}: missing registered thread")
+        uuid.UUID(thread)
+        matches = [
+            path
+            for path in (self.state / "registrations").glob("*.json")
+            if read_json(path).get("thread_id") == thread
+        ]
+        if len(matches) != 1 or record.get("name") != row["name"]:
+            raise Refusal(f"{row['name']}: ambiguous registered thread")
+        if record.get("worktree") != worker.get("worktree"):
+            raise Refusal(f"{row['name']}: stale registration worktree")
+        return thread
+
+    def registration(self, row: dict, windows: dict[int, dict]) -> dict:
+        record = read_json(self.state / "registrations" / f"{row['name']}.json")
+        if row["index"]:
+            worker, window = self.identity(row, windows)
+        else:
+            window = windows.get(0, {})
+            worker = record
+        self.saved_thread(row, worker, record)
+        if (
+            not window
+            or window.get("dead")
+            or window.get("pane_id") != record.get("pane_id")
+        ):
+            raise Refusal(f"{row['name']}: stale registration pane")
+        return record
+
+    def status(self, names: list[str]) -> None:
+        windows = self.windows()
+        for row in select(self.rows, names):
+            result = {
+                "name": row["name"],
+                "index": row["index"],
+                "session": self.session,
+                "window": windows.get(row["index"]),
+            }
+            try:
+                result.update(self.registration(row, windows))
+                result["status"] = "registered"
+            except (Refusal, ValueError) as exc:
+                result.update(status="unavailable", reason=str(exc))
+            print(json.dumps(result))
+
+    def send(self, name: str, message: str) -> None:
+        row = select(self.rows, [name])[0]
+        registration = self.registration(row, self.windows())
+        command = [
+            "codex",
+            "queue",
+            "--thread",
+            registration["thread_id"],
+            "--message",
+            message,
+        ]
+        if self.args.dry_run:
+            print(json.dumps({"name": name, "status": "would-queue", "argv": command}))
+        else:
+            output = run(*command)
+            print(json.dumps({"name": name, "status": "queued", "output": output}))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--roster", required=True, help="TSV: index,name,model,effort,threads,summary"
+    )
+    parser.add_argument(
+        "--state", required=True, help="absolute shared state directory"
+    )
+    parser.add_argument(
+        "--session", required=True, help="exact existing tmux session name"
+    )
+    parser.add_argument(
+        "--root", help="primary repository root (default: Git common directory parent)"
+    )
+    parser.add_argument(
+        "--token-file",
+        help="optional credential file for child PRECIS_MCP_TOKEN; never stored",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="validate and print, without mutations"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("up", "status"):
+        commands.add_parser(name).add_argument("names", nargs="*")
+    send = commands.add_parser("send")
+    send.add_argument("name")
+    send.add_argument("--message", required=True)
+    register = commands.add_parser("register")
+    register.add_argument("name")
+    register.add_argument("--thread", default=os.environ.get("CODEX_THREAD_ID"))
+    args = parser.parse_args()
+    try:
+        fleet = Fleet(args)
+
+        def invoke():
+            if args.command in {"up", "status"}:
+                getattr(fleet, args.command)(args.names)
+            elif args.command == "register":
+                fleet.register(args.name, args.thread)
+            else:
+                fleet.send(args.name, args.message)
+
+        if args.dry_run or args.command == "status":
+            invoke()
+        else:
+            with lock(fleet.state):
+                invoke()
+        return 0
+    except (Refusal, OSError, ValueError) as exc:
+        print(f"fleet-codex: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

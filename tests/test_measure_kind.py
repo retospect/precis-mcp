@@ -324,6 +324,112 @@ def _by_id(rows: list[dict[str, Any]], mid: int) -> dict[str, Any]:
 
 
 class TestBestMeasure:
+    def test_rejected_winner_is_excluded_until_a_later_current_approval(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        fallback = _fe_run(store, w, "80", "-0.5")
+        winner = _fe_run(store, w, "95", "-0.5")
+        store.record_target_review(
+            "measure", winner.output_id, actor="checker", verdict="rejected"
+        )
+        (group,) = store.best_measure(w["fe"], serving=w["quest"])
+        assert group["n"] == 1
+        assert group["best"]["id"] == fallback.output_id
+        assert group["best"]["review_state"] == "unreviewed"
+
+        store.record_target_review(
+            "measure", winner.output_id, actor="checker", verdict="approved"
+        )
+        (group,) = store.best_measure(w["fe"], serving=w["quest"])
+        assert group["n"] == 2
+        assert group["best"]["id"] == winner.output_id
+        assert group["best"]["review_state"] == "approved"
+
+    @pytest.mark.parametrize("verdict", [None, "proposed"])
+    def test_approval_does_not_outrank_a_better_eligible_value(
+        self, store: Store, w: dict[str, Any], verdict: str | None
+    ) -> None:
+        approved = _fe_run(store, w, "80", "-0.5")
+        winner = _fe_run(store, w, "95", "-0.5")
+        store.record_target_review(
+            "measure", approved.output_id, actor="checker", verdict="approved"
+        )
+        if verdict is not None:
+            store.record_target_review(
+                "measure", winner.output_id, actor="writer", verdict=verdict
+            )
+        (group,) = store.best_measure(w["fe"], serving=w["quest"])
+        assert group["n"] == 2
+        assert group["best"]["id"] == winner.output_id
+        assert group["best"]["review_state"] == (verdict or "unreviewed")
+
+    def test_a_stale_rejection_does_not_hide_the_value(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        # An asserted row remains eligible after losing its optional anchor;
+        # its review becomes stale because the anchor is a covered field.
+        run = _put(
+            store,
+            w,
+            "u_l",
+            "-0.5",
+            unit="V",
+            tier="asserted",
+            anchor=MeasureAnchor(w["paper"], w["chunk"], "sentence", "s1"),
+        )
+        store.record_target_review(
+            "measure", run.output_id, actor="checker", verdict="rejected"
+        )
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (w["chunk"],))
+        assert not store.reviews_for("measure", run.output_id)[0].current
+        (group,) = store.best_measure(w["u_l"], serving=w["quest"])
+        assert group["best"]["id"] == run.output_id
+        assert group["best"]["review_state"] == "unreviewed"
+
+    def test_newer_stale_approval_cannot_override_current_rejection(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        run = _fe_run(store, w, "95", "-0.5")
+        store.record_target_review(
+            "measure", run.output_id, actor="checker", verdict="rejected"
+        )
+        # Represent a later-arriving review of different content, as can
+        # happen when a reviewer holds an older snapshot.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO reviews (target_kind, target_id, actor, content_sha, verdict) "
+                "VALUES ('measure', %s, 'late-checker', 'different-content', 'approved')",
+                (run.output_id,),
+            )
+        reviews = store.reviews_for("measure", run.output_id)
+        assert not reviews[0].current and reviews[1].current
+        assert store.best_measure(w["fe"], serving=w["quest"]) == []
+
+    @pytest.mark.parametrize("later_rejection", [False, True])
+    def test_review_order_is_timestamp_then_id(
+        self, store: Store, w: dict[str, Any], later_rejection: bool
+    ) -> None:
+        run = _fe_run(store, w, "95", "-0.5")
+        with store.pool.connection() as conn:
+            rejected = store.record_target_review(
+                "measure", run.output_id, actor="checker", verdict="rejected", conn=conn
+            )
+            approved = store.record_target_review(
+                "measure", run.output_id, actor="checker", verdict="approved", conn=conn
+            )
+            assert rejected.at == approved.at  # now() is transaction-stable
+            if later_rejection:
+                conn.execute(
+                    "UPDATE reviews SET at = at + interval '1 second' WHERE review_id = %s",
+                    (rejected.review_id,),
+                )
+        groups = store.best_measure(w["fe"], serving=w["quest"])
+        if later_rejection:
+            assert groups == []
+        else:
+            assert groups[0]["best"]["review_state"] == "approved"
+
     def test_picks_the_best_over_everything_serving_at_any_depth(
         self, store: Store, w: dict[str, Any]
     ) -> None:
@@ -1000,6 +1106,36 @@ class TestGetRow:
 class TestQuestMeasuresView:
     def _view(self, store: Store, quest: int) -> str:
         return QuestHandler(hub=Hub(store=store)).get(id=quest, view="measures").body
+
+    @pytest.mark.parametrize("verdict", [None, "proposed", "approved"])
+    def test_view_reports_current_review_state_and_excludes_rejected_winner(
+        self, store: Store, w: dict[str, Any], verdict: str | None
+    ) -> None:
+        fallback = _fe_run(store, w, "80", "-0.5")
+        rejected = _fe_run(store, w, "95", "-0.5")
+        store.record_target_review(
+            "measure", rejected.output_id, actor="checker", verdict="rejected"
+        )
+        if verdict is not None:
+            store.record_target_review(
+                "measure", fallback.output_id, actor="checker", verdict=verdict
+            )
+        out = self._view(store, w["quest"])
+        assert f"mx{fallback.output_id}" in out and "80 %" in out
+        assert f"mx{rejected.output_id}" not in out and "95 %" not in out
+        assert f"review={verdict or 'unreviewed'}" in out
+        assert "higher is better, n=1" in out
+
+    def test_all_rejected_rows_leave_no_group(
+        self, store: Store, w: dict[str, Any]
+    ) -> None:
+        run = _fe_run(store, w, "95", "-0.5")
+        store.record_target_review(
+            "measure", run.output_id, actor="checker", verdict="rejected"
+        )
+        out = self._view(store, w["quest"])
+        assert "no live measures" in out
+        assert "rejected by their newest current review" in out
 
     def test_best_per_group_over_everything_serving(
         self, store: Store, w: dict[str, Any]

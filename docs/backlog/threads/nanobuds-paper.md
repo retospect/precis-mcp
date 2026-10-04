@@ -1,5 +1,18 @@
 # nanobuds paper
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** When Reto answers nanobuds-paper-32, apply the ruled draft edits through `scripts/prod-precis tools edit --kind draft`, re-export and land.
+- **Blocked by:** Reto’s nanobuds-paper-32 answer; hero figure remains unchanged while hexfold’s spec-driven shapes are pending; anchored-hub edits wait on the supersede door.
+- **Unblocks:** A submission-ready October preprint.
+- **Acceptance:** Use [the latest handoff](#thread-context): read back the ruled edits, re-export dr173020, compile and visually read the PDF; saved-export checks alone do not establish readiness. Preserve signed-grounding pins and frozen-hub constraints.
+- **Worktree:** `nanobuds-paper`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when dr173020 is submitted to a venue with every claim a
 signed finding hub and its thesis (geometry, not composition, sets the
 electronic structure, and almost none of it has been measured) leading the
@@ -14,6 +27,38 @@ Venue decided 2026-10-01 (Reto, td450081): *Nanoscale* (RSC) Review article,
 10,000+ words, so the restructure reorders rather than cuts; scope is covalent
 and non-covalent buds. RSC reviews go through a proposal form first.
 **Resume (2026-10-04 06:48Z):** everything this thread did is on main (last land 7dd7f259, marked in round 6); nothing is branch-only. Its lands are thread-file and skill-doc edits; the prod work is data edits to dr173020 (items 27–29, td450082 merge, 22 round-4 re-pins), each verified when applied. Next step: when Reto answers nanobuds-paper-32, apply the ruled edits with `scripts/prod-precis tools edit --kind draft`, re-export, land.
+**Readiness readback (2026-10-04, Codex paper):** item 32 is still in
+`review-queue/open/nanobuds-paper-32.md`; its A/B/C/D recommendations are
+not answers. All four clauses remain in the live draft. Item 31 remains
+held for hexfold; leave the hero and its unrelaxed-junction caption intact.
+
+- Native MCP readback on `e0b75bdc7c4b` (matching the coordinator's runtime
+  note): all **22/22** replacement pins from `printed-read/pin-triage-r4.md`
+  occur exactly once across 13 draft chunks; every old token is absent.
+  This checks persistence, not fresh scientific verification of the passages.
+- Saved `export-r4b` has **20 pin-warning lines, nine originator notes,
+  four placeholders**, 117 distinct cited bibliography keys with no missing
+  or duplicate entries, and nine image references with every file present.
+  These are saved-export counts, not a fresh production export. Placeholder
+  handles: dc3015722, dc3015723, dc3015729, dc3015730.
+- PDF is **not verified**. The export's printed `latexmk -pdf` command fails
+  because `fontspec` requires LuaLaTeX/XeLaTeX. The existing
+  `precis.export.compile::compile_pdf` selects LuaLaTeX correctly, but this
+  host check stopped at luaotfload's "no writeable cache path", even with
+  task-local cache directories. Both findings were queued to coordinator;
+  no product code or production data changed.
+- Reproducible local packet: `.cache/paper-readiness/` in `codex-paper`
+  (pin tokens and chunk hashes, export manifest, static checks, compile log).
+  The copied `main.tex` SHA-256 is
+  `257a3e216b4c8d88674ebef2692fe38e75dc387ba433b0cac865c6273b909dd3`;
+  all 13 copied source files stayed byte-identical.
+- **Smallest next deliverable:** once item 32 is answered, apply only its
+  ruled edits, read back the four chunk hashes, and export numeric draft
+  `173020` with RSC bibliography style. Compare the warning classes above;
+  require a successful PDF compile and visual read before calling it ready.
+  Hero replacement, frozen-hub supersession, and placeholder retirement
+  retain their existing holds/owners. No posting or submission.
+
 - **Open, waiting on others:**
   - item 31, the hero pillar: Reto redirected it to hexfold's spec-driven shapes capability. The review session re-asks after hexfold answers. The hero figure stays as it is. The bonded (12,0) pillar is at least 5 dev cycles out (Reto, hexfold-toolkit-5 (b): spread-pentagon rows first, which keep the ball round after relax); the fused-neck stick model stays as captioned. 2026-10-04: a MACE check confirmed that the spread-pentagon ball stays rounder, so that order holds.
   - claims-and-evidence-9 is with its owner.
@@ -22,7 +67,7 @@ and non-covalent buds. RSC reviews go through a proposal form first.
     - pa1181 exports right (Yao et al., Nature 1999, doi 10.1038/46241) under the old key `humphreys99a`. The key is invisible in RSC numeric style; cosmetic.
   - **Pin triage done 04:50Z:** 13 noise, 22 re-pins, 2 rewords.
     - The 22 re-pins were applied on prod; each adds the passage that names the method (`printed-read/apply_pins_r4.py`, log `apply-pins-r4.log`, pre-flight and post-check clean).
-    - Re-export: 37 → 20 warnings. The remaining ones are noise (the acronym against its spelled-out form, signed numbers, NanoBud vs CNB, generic words), sent to claims-and-evidence for their noise sweep.
+    - Re-export: 37 → 20 warnings. Most remaining warnings are noise (acronyms against spelled-out forms, signed numbers, NanoBud vs CNB, generic words), sent to claims-and-evidence for their noise sweep. Item 32 still holds the prose decisions; its lithium clause was found by reading, not by this checker.
     - Open with Reto: **nanobuds-paper-32**, four sentences:
       - A, "CVD": keep;
       - B, Ahangari "corroborated these MD results": reword;

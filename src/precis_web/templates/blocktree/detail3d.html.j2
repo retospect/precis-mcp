@@ -20,7 +20,7 @@
     <a class="underline" href="/{{ kind }}/{{ slug | urlencode }}">current</a>
   </span>
   {% endif %}
-  <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">2D view →</a>
+  <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">Envelope projections →</a>
 </div>
 
 {# The three scene-shaping controls are NOT a form any more: changing one
@@ -64,7 +64,7 @@
         title="the view as on screen, scale bar included — the SVG holds the scene as an image and the scale bar as vector">
     export
     <button type="button" id="bt3d-export-png" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">PNG</button>
-    <button type="button" id="bt3d-export-svg" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">SVG</button>
+    <button type="button" id="bt3d-export-svg" class="px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-100">SVG snapshot</button>
     {# Atom files (the current design; not offered on a past revision): every
        structure-bound block's atoms in Å in the design's world frame. #}
     {% if has_atomic and not read_only %}

@@ -43,6 +43,230 @@ DOCS = "cccc333300000000000000000000000000000000"
 OLDER = "dddd444400000000000000000000000000000000"
 
 
+def _exact_response(
+    sha: str,
+    runs: list[dict[str, Any]],
+    *,
+    more_suites: bool = False,
+    more_runs: bool = False,
+) -> str:
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "object": {
+                        "oid": sha,
+                        "checkSuites": {
+                            "pageInfo": {"hasNextPage": more_suites},
+                            "nodes": [
+                                {
+                                    "workflowRun": {
+                                        "databaseId": 42,
+                                        "runAttempt": 1,
+                                        "file": {"path": ".github/workflows/check.yml"},
+                                    },
+                                    "checkRuns": {
+                                        "pageInfo": {"hasNextPage": more_runs},
+                                        "nodes": runs,
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+    )
+
+
+def _exact_jobs(runs: list[dict[str, Any]]) -> str:
+    jobs = [
+        {
+            "name": r["name"],
+            "status": str(r["status"]).lower(),
+            "conclusion": str(r["conclusion"]).lower(),
+            "completed_at": r["completedAt"],
+            "head_sha": GATED,
+            "run_id": 42,
+        }
+        for r in runs
+    ]
+    return json.dumps({"total_count": len(jobs), "jobs": jobs})
+
+
+def test_exact_verdict_reads_second_parent_object_and_age_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    calls = []
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+
+    def run(*args: str) -> str:
+        calls.append(args)
+        return (
+            _exact_response(GATED, runs) if args[2] == "graphql" else _exact_jobs(runs)
+        )
+
+    monkeypatch.setattr(mod, "_run", run)
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == GATED
+    assert facts["candidate_state"] == "found"
+    assert 0.99 < facts["age_hours"] < 1.02
+    assert len(calls) == 3
+    assert f"sha={GATED}" in calls[0]
+    assert "object(expression:$sha)" in calls[0][-1]
+    assert "history(" not in calls[0][-1]
+    assert "runs/42/attempts/1/jobs" in calls[1][-1]
+    assert facts["certificate"]["run_id"] == 42
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["lint-red", "shard-red", "incomplete", "cancelled", "docs-only", "five-shards"],
+)
+def test_exact_verdict_refuses_non_green_shape(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    if change == "lint-red":
+        runs[-1]["conclusion"] = "FAILURE"
+    elif change == "shard-red":
+        runs[0]["conclusion"] = "FAILURE"
+    elif change == "incomplete":
+        runs[0]["status"] = "IN_PROGRESS"
+    elif change == "cancelled":
+        runs[0]["conclusion"] = "CANCELLED"
+    elif change == "docs-only":
+        runs = runs[-1:]
+    else:
+        runs.pop(0)
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: (
+            _exact_response(GATED, runs) if a[2] == "graphql" else _exact_jobs(runs)
+        ),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "release_not_green"
+
+
+@pytest.mark.parametrize(
+    "change", ["api", "json", "errors", "wrong-sha", "more-suites", "more-runs"]
+)
+def test_exact_verdict_refuses_unknown_or_truncated_response(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    response: str | None = _exact_response(
+        OLDER if change == "wrong-sha" else GATED,
+        runs,
+        more_suites=change == "more-suites",
+        more_runs=change == "more-runs",
+    )
+    if change == "api":
+        response = None
+    elif change == "json":
+        response = "oops"
+    elif change == "errors":
+        response = '{"errors": [{"message": "unknown"}]}'
+    monkeypatch.setattr(mod, "_run", lambda *a: response)
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "unreadable"
+
+
+def test_exact_verdict_unknown_completion_means_unknown_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    runs[0]["completedAt"] = None
+    monkeypatch.setattr(
+        mod,
+        "_run",
+        lambda *a: (
+            _exact_response(GATED, runs) if a[2] == "graphql" else _exact_jobs(runs)
+        ),
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == GATED
+    assert facts["age_hours"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "duplicate",
+        "missing",
+        "wrong-sha",
+        "wrong-run",
+        "truncated",
+        "rerun-in-progress",
+        "mixed-attempt",
+        "wrong-workflow",
+    ],
+)
+def test_exact_certificate_requires_distinct_complete_jobs_in_one_attempt(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    graph = json.loads(_exact_response(GATED, runs))
+    jobs = json.loads(_exact_jobs(runs))
+    if change == "duplicate":
+        jobs["jobs"][0]["name"] = jobs["jobs"][1]["name"]
+    elif change in ("missing", "mixed-attempt"):
+        jobs["jobs"].pop(0)
+        jobs["total_count"] -= 1
+    elif change == "wrong-sha":
+        jobs["jobs"][0]["head_sha"] = OLDER
+    elif change == "wrong-run":
+        jobs["jobs"][0]["run_id"] = 7
+    elif change == "truncated":
+        jobs["total_count"] += 1
+    elif change == "rerun-in-progress":
+        jobs["jobs"][0]["status"] = "in_progress"
+    else:
+        graph["data"]["repository"]["object"]["checkSuites"]["nodes"][0]["workflowRun"][
+            "file"
+        ]["path"] = ".github/workflows/other.yml"
+    monkeypatch.setattr(
+        mod, "_run", lambda *a: json.dumps(graph if a[2] == "graphql" else jobs)
+    )
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert "certificate" not in facts
+
+
+def test_exact_certificate_refuses_rerun_started_during_job_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mod = _load()
+    runs = [{**r, "status": "COMPLETED"} for r in _shards()]
+    calls = 0
+
+    def read(*args: str) -> str:
+        nonlocal calls
+        if args[2] != "graphql":
+            return _exact_jobs(runs)
+        calls += 1
+        node = json.loads(_exact_response(GATED, runs))
+        if calls > 1:
+            suite = node["data"]["repository"]["object"]["checkSuites"]["nodes"][0]
+            suite["workflowRun"]["runAttempt"] = 2
+            suite["checkRuns"]["nodes"][0]["status"] = "IN_PROGRESS"
+        return json.dumps(node)
+
+    monkeypatch.setattr(mod, "_run", read)
+    facts = mod.exact_verdict(GATED)
+    assert facts["candidate"] == ""
+    assert facts["candidate_state"] == "unreadable"
+
+
 def _load() -> ModuleType:
     # Loaded from a `.py`-suffixed copy, not the dotless executable: testmon
     # fingerprints by extension and IndexErrors on a dotless file, which

@@ -2016,6 +2016,114 @@ def test_pathway_graph_payload_passes_link_added_removed_through() -> None:
     assert second["removed"] == {"NH3": 1} and second["added"] is None
 
 
+def _typed_link(
+    source: str, target: str, link_type: str, **fields: Any
+) -> dict[str, Any]:
+    """Engine wire format: typed reservoir links retain kind=supply."""
+    return {
+        "source": source,
+        "target": target,
+        "kind": "supply",
+        "link_type": link_type,
+        **fields,
+    }
+
+
+@_needs_node
+@pytest.mark.parametrize(
+    ("links", "expected"),
+    [
+        (
+            [
+                _typed_link("NH3+O", "O", "desorption", removed={"NH3": 1}),
+                {"source": "O", "target": "O@top", "kind": "reaction"},
+            ],
+            [["NH3+O", "O", None, "−NH₃ ↑"], ["O", "O@top", None, ""]],
+        ),
+        (
+            [
+                _typed_link("*", "NH3", "adsorption", added={"N": 1, "H": 3}),
+                {"source": "NH3", "target": "NH2+H", "kind": "reaction"},
+            ],
+            [["*", "NH3", None, "+NH₃ ↓"], ["NH3", "NH2+H", None, ""]],
+        ),
+        (
+            [
+                _typed_link("NH3", "NH3+H", "supply", added={"H": 1}),
+                _typed_link("NH3+H", "H", "desorption", removed={"NH3": 1}),
+            ],
+            [["NH3", "NH3+H", None, _PROTON_DOWN], ["NH3+H", "H", None, "−NH₃ ↑"]],
+        ),
+        (
+            [
+                _typed_link("NH", "NH+H", "supply", added={"H": 1}),
+                {"source": "NH+H", "target": "NH2", "kind": "reaction"},
+            ],
+            [["NH", "NH2", "NH+H", _PROTON_DOWN]],
+        ),
+    ],
+    ids=[
+        "desorption-reaction",
+        "adsorption-reaction",
+        "supply-desorption",
+        "supply-reaction",
+    ],
+)
+def test_pathway_typed_links_keep_chemical_steps(
+    tmp_path: Path, links: list[dict[str, Any]], expected: list[list[Any]]
+) -> None:
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    path = [links[0]["source"], *(e["target"] for e in links)]
+    graph = _pathway_graph_payload({"nodes": [{"id": n} for n in path], "links": links})
+    assert graph is not None
+    assert graph["links"][0]["kind"] == "supply"  # kinetic semantics unchanged
+    assert graph["links"][0]["link_type"] == links[0]["link_type"]
+    got = _node_json(
+        tmp_path,
+        _NODE_STEPS_JS
+        % {
+            "block": json.dumps(_annot_block()),
+            "graph": json.dumps(graph),
+            "paths": json.dumps([path]),
+        },
+    )
+    assert got == [expected]
+
+
+@_needs_node
+def test_pathway_typed_desorption_renders_its_own_level(
+    client, runtime, tmp_path: Path
+) -> None:
+    """Stored engine-format links survive the route and rendered SVG."""
+    ids = ["NH3+O", "O", "O@top", "O@top+H", "OH"]
+    graph = {
+        "nodes": [
+            {"id": n, "rel_energy": i * 0.1, "n_H": 0} for i, n in enumerate(ids)
+        ],
+        "links": [
+            _typed_link(ids[0], ids[1], "desorption", removed={"NH3": 1}),
+            {"source": ids[1], "target": ids[2], "kind": "reaction", "barrier": 0.2},
+            _typed_link(ids[2], ids[3], "supply", added={"H": 1}),
+            {"source": ids[3], "target": ids[4], "kind": "reaction", "barrier": 0.3},
+        ],
+    }
+    _seed_parked(runtime, graph)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    svg = _render_diagram_svg(tmp_path, resp.text)
+    segs = re.findall(
+        r'<polyline class="pw-seg"[^>]*data-from="([^"]*)" data-to="([^"]*)"', svg
+    )
+    assert segs == [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[4])]
+    assert re.findall(r'<line class="pw-shoulder"[^>]*data-state="([^"]*)"', svg) == [
+        ids[3]
+    ]
+    assert set(_level_bars(svg)) == {ids[0], ids[1], ids[2], ids[4]}
+    assert "−NH₃ ↑" in svg
+    assert len(re.findall(r'class="pw-hydro-arrow"', svg)) == 1
+
+
 def test_pathway_diagram_template_has_no_dashed_supply_branch() -> None:
     """Static guard (runs without node): the dashed supply segment is gone,
     the fold + inference block markers are present, and the fork-probability

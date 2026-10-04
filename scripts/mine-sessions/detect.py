@@ -243,7 +243,7 @@ def _is_zero(ev: Event) -> bool:
 #: would be classified ``zero`` — an artifact that swamped the real mix
 #: 34382:3052 on the first real pass. Anything reading a payload must gate on
 #: this set, not on the event alone.
-PAYLOAD_CORPORA = frozenset({"local", "jobs"})
+PAYLOAD_CORPORA = frozenset({"local", "codex", "jobs"})
 
 
 def has_payload(ev: Event) -> bool:

@@ -160,7 +160,12 @@ def _tokens(events: Sequence[Event]) -> dict[str, Any]:
     cache_creation_total = sum(
         _usage_num(e.usage, "cache_creation_input_tokens") for e in assistant_turns
     )
-    denom = input_total + cache_read_total
+    # Codex input_tokens already includes cached input; Claude's does not.
+    denom = input_total + sum(
+        _usage_num(e.usage, "cache_read_input_tokens")
+        for e in assistant_turns
+        if e.corpus != "codex"
+    )
     cache_read_ratio = cache_read_total / denom if denom else 0.0
 
     per_session: dict[str, int] = defaultdict(int)

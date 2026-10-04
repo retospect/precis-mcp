@@ -1,5 +1,18 @@
 # session MCP shared server
 
+## Resume
+
+- **Pillar:** local-compute
+- **Next:** Run the latest handoff’s read-only checks: first review-pass gate timing, transaction-scoped locks after Stage A, then the Stage B before-day and proxy cutover check.
+- **Blocked by:** Follow-up deployment, Reto’s proxy cutover window and td458386 admin-console access; nothing to build until these waits clear.
+- **Unblocks:** Continuous MCP access for both research tracks.
+- **Acceptance:** Follow [the latest handoff](#thread-context) through BEGIN READ ONLY: gate connection line, a day without starvation, no out-of-transaction _LOCK_KEY, and backend SHA at or after 7f006bf09.
+- **Worktree:** `session-mcp-shared-server`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when every Claude Code session on this machine talks to one
 supervised shared MCP server that never kills an in-flight call, reports
 truthfully what it runs, and gives each session its own DB role and a fair

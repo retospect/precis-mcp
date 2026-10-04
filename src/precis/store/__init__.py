@@ -20,6 +20,12 @@ first, fully carved: draft ops exist only on the sub-store (no flat
 delegations remain on ``Store``).
 
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
+
+Measure ranking reads the newest content-current ledger verdict in its
+candidate query and excludes rejected rows. Historical or stale rejection
+cannot veto a current approval; proposed and unreviewed values retain the
+numeric ordering. The winning row exposes ``review_state`` so consumers can
+distinguish eligible values from approved ones without another ledger read.
 """
 
 from __future__ import annotations

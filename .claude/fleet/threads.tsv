@@ -1,5 +1,6 @@
-# The fleet: one row per active thread in docs/roadmap.md, tab-separated.
-# Change this file in the same commit as the roadmap's active set.
+# The fleet: authoritative declared active-thread roster, tab-separated.
+# docs/roadmap.md and the programme map link to its generated view.
+# After changing this roster, run python3 scripts/docs-index.
 #   slug	effort	design-review	model
 # effort: the /effort level the session runs at.
 # design-review: yes = design-bearing changes get the orchestrator's review

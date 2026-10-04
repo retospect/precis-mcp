@@ -1,5 +1,18 @@
 # se 3D viewer
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** After follow-up deployment, verify the three recorded /drive redirects; build the print dialog when writer scale lands, otherwise take fastener_insertion_path.
+- **Blocked by:** Follow-up deploy for gr462129; [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
+- **Unblocks:** A human inspection surface for machine designs.
+- **Acceptance:** Use [the latest handoff](#thread-context): all three /drive queries return 302 on prod; preserve the standing viewer rulings and use [ranked work](#do-next) for the next build.
+- **Worktree:** `se-3d-viewer`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when a reader can click any block of an se design and
 read its pose, envelope, ports, findings and load path in one panel, and
 the same scene yields publishable figures. It FEEDS

@@ -1,5 +1,20 @@
 # deploy-fleet-ops
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** When activated, audit the vault-truncation blast radius before lower-ranked deploy work.
+- **Blocked by:** No declared active owner; verify the incident premise against deployed state.
+- **Unblocks:** Deployments without silent partial configuration.
+- **Acceptance:** Use [melchior-vault-truncation-blast-radius](../melchior-vault-truncation-blast-radius.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `unified-yawning-rossum` (the deploy session)
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when a deploy is verifiable, concurrent-safe and leaves no
 stale daemon, secret hole or untracked cluster residue behind — the path that
 puts every pillar's code on the fleet (`docs/roadmap.md` platform bucket).
@@ -8,7 +23,7 @@ silently get wrong (secrets, lock, assertions) first, then build and node
 residue, then batched ops and flip steps.
 **Last reviewed:** 2026-10-02
 **Worktree:** `unified-yawning-rossum` (the deploy session)
-**Active:** no — opens at the next session restart if Reto names it.
+**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 

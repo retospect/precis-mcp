@@ -1127,6 +1127,9 @@ _release_land() {
     subject="${MSG%%$'\n'*}"
     subject="${subject:-fix from ${BRANCH}}"
     say "shipping release fix to ${REL_BRANCH}, forwarding into main"
+    . "${WORKTREE}/scripts/lib/round-lock.sh"
+    acquire_round_lock || die "release lifecycle busy — nothing pushed."
+    release_journal_clear || die "release deployment journal owns the head — resume round deploy before any release fix. Nothing pushed."
     acquire_ship_lock
     while :; do
         try=$(( try + 1 ))
@@ -1151,6 +1154,7 @@ _release_land() {
                 say "nothing to do — ${REL_BRANCH} head ${OLD_REL:0:8} is already in main (${OLD_MAIN:0:8}); no empty merge"
                 REL_R1="$OLD_REL"; REL_M=""
                 _release_ship_lock
+                release_round_lock
                 return 0
             fi
         else
@@ -1193,6 +1197,7 @@ EOF
             REL_R1="$r1"; REL_M="$m"
             _sync_local_main
             _release_ship_lock
+            release_round_lock
             return 0
         fi
         if (( try >= max )); then
@@ -1790,8 +1795,12 @@ if [[ "$QUICK" != 1 && "$DOCS_ONLY" != 1 && ( "$IMPACTED" != 1 || "$REMOTE" == 1
     # scripts/lib/env-pointers.sh.
     if [[ -f "${WORKTREE}/scripts/lib/env-pointers.sh" ]]; then
         . "${WORKTREE}/scripts/lib/env-pointers.sh"
-        if env_pointer_move "$WORKTREE" gated "$GATED_SHA"; then
-            say "origin/gated → ${GATED_SHA:0:8}"
+        . "${WORKTREE}/scripts/lib/round-lock.sh"
+        if acquire_main_gated_publication; then
+            if env_pointer_move "$WORKTREE" gated "$GATED_SHA"; then
+                say "origin/gated → ${GATED_SHA:0:8}"
+            fi
+            release_round_lock
         fi
     fi
 elif [[ "$QUICK" != 1 && "$DOCS_ONLY" == 1 && -n "$GATED_SHA" && "$FWD_UNGATED" != 1 ]]; then

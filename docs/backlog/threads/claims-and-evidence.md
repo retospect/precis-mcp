@@ -1,5 +1,20 @@
 # claims and evidence — one identity per claim, every edge checked
 
+## Resume
+
+- **Pillar:** memory-graph
+- **Next:** Check the D1 watch, then dogfood the reword sweep after the round-6 deploy.
+- **Blocked by:** Deployment for the sweep; remaining human decisions are listed under Do next.
+- **Unblocks:** Grounded claims and evidence for both research tracks.
+- **Acceptance:** Follow the linked specs and verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `claims-and-evidence`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when every claim has one identity, every evidence edge is
 checked against its source, contradictions are ruled on, and the hub corpus is
 publishable (`backlog/claim-publication-nanopub-ots.md`). Triaged 2026-10-02
@@ -8,7 +23,7 @@ is fully shipped, six carry a confirmed bug, and the rest order along four
 dependency chains.
 **Last reviewed:** 2026-10-04
 **Worktree:** `claims-and-evidence`
-**Active:** yes — Reto 2026-10-01.
+**Allocation decision (historical):** yes — Reto 2026-10-01.
 
 Created 2026-10-01 from the memory-graph pillar review. The taproot umbrella
 (hub model, seniority, hub-refine) stays referenced by `knowledge-mesh.md`; the

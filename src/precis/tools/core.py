@@ -1382,6 +1382,7 @@ def edit(
     text: str | dict[str, Any] | list[Any] | None = None,
     # memory (see precis-memory-help): edit(mode='replace') rewrites the body
     # prose; pass title= to also update the short header (omit to keep it).
+    # mode='find-replace' / 'insert' (find=, text=, ...) patch a span of it.
     title: str | None = None,
     # todo (see precis-todo-tree-help): edit(mode='replace', body='…') sets/rewrites
     # the optional details body; combine with text= to rewrite the title too.
@@ -1572,8 +1573,9 @@ def edit(
     default | `first` | `all` | `nth`) / `nth=`. `dry_run=True`
     previews without writing.
 
-    That vocabulary is the file-kind shape; kinds vary (`todo`/
-    `memory`/`quest`: `mode='replace'` only). A wrong mode, or `meta=`
+    That vocabulary is the file-kind shape; kinds vary (`todo`/`quest`:
+    `mode='replace'` only; `memory`: `replace`, `find-replace`, `insert`).
+    A wrong mode, or `meta=`
     on a kind whose handler lacks it (pres/draft-only meta patch),
     raises `BadInput` naming the accepted set — never a silent drop.
     `reason=` (any kind) records why on the revision log.
@@ -1890,8 +1892,9 @@ _EDIT_HELP: dict[str, str] = {
     "kind": "Which kind to edit.",
     "id": "Existing ref id, optionally with selector for region edits.",
     "mode": "File kinds (markdown/plaintext/tex/python): 'find-replace' "
-    "(default) | 'append' | 'insert' | 'replace'. todo/memory/quest: "
-    "'replace' only — the default 'find-replace' is rejected there. "
+    "(default) | 'append' | 'insert' | 'replace'. todo/quest: "
+    "'replace' only — the default 'find-replace' is rejected there; "
+    "memory: 'replace' | 'find-replace' | 'insert'. "
     "Most other kinds don't branch on mode= (silently ignored) or don't "
     "support edit at all.",
     "text": "Replacement / inserted content. Required for every mode "

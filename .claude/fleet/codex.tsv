@@ -1,0 +1,28 @@
+index	name	model	effort	threads	summary
+0	coordinator	gpt-6-astra	high		Own priorities, dependencies, integration decisions and the single release sequence.
+1	communicator	gpt-6.1-sol	medium		Discuss ideas with Reto, explain progress and route his decisions to the coordinator.
+2	graph-memory	gpt-6-astra	high	graph-memory-consumers	Replace file memory with graph-native authoring, retrieval and reconstruction.
+3	knowledge-mesh	gpt-6-astra	high	knowledge-mesh	Build graph substrate, measures, evidence connections and upkeep.
+4	local-compute	gpt-6.1-sol	high	local-compute	Bring local serving online and qualify against graph workloads.
+5	meluxina	gpt-6.1-sol	high	local-compute,chemistry	Integrate Slurm submission, recovery and collection for ML-potential and DFT.
+6	pcb	gpt-6.1-sol	high	ewod-pcb,pcb-easyeda-round-trip	Coordinate PCB placement, routing, EWOD and EasyEDA round-trip.
+7	printed-materials	gpt-6-astra	high	se-machine-design	Develop printable structural parts and compare physical tests with predictions.
+8	se-print	gpt-6.1-sol	medium	se-machine-design	Normalize SE print scale, units, metadata and printability checks.
+9	hexfold	gpt-6-astra	high	hexfold-toolkit	Tile smooth surfaces with hex carbon and develop Y instrumentation.
+10	drive-ux	gpt-6.1-sol	high		Hierarchicalize Drive filters using Reto's concepts.
+11	paper	gpt-6-astra	high	nanobuds-paper	Advance nanobuds evidence, manuscript and export under existing holds.
+12	catalysis	gpt-6-astra	high	catalysis-selectivity	Advance complete-network selectivity research with existing experiment holds.
+13	chemistry	gpt-6.1-sol	high	chemistry	Maintain chemistry and DFT execution shared by research programmes.
+14	claims-evidence	gpt-6-astra	high	claims-and-evidence	Keep claims, citations, provenance and publication evidence coherent.
+15	draft-authoring	gpt-6.1-sol	medium	draft-authoring	Improve graph-backed drafting, revision, proposals and export.
+16	ingest-fetch	gpt-6.1-sol	medium	ingest-and-fetch	Make acquisition, extraction, identifiers and ingest reliable.
+17	se-viewer	gpt-6.1-sol	medium	se-3d-viewer	Improve 3D inspection and print dialogs against SE capabilities.
+18	nucleic-chain	gpt-6.1-sol	high	se-nucleic-chain	Develop DNA/RNA construction and wrapping in multiscale designs.
+19	mcp-platform	gpt-6.1-sol	high	session-mcp-shared-server	Keep MCP serving, restarts and session connectivity reliable.
+20	release	gpt-6.1-sol	high	ship-gate-ci	Complete frozen-release gating and prepare pinned deployments for coordinator.
+21	monitoring	gpt-6.1-sol	medium	monitors-that-go-quiet	Detect silent service, worker and compute failures.
+22	roadmap-quest	gpt-6.1-sol	medium	roadmap-quest	Align quests, dependencies and research deliverables with priorities.
+23	plugin-split	gpt-6.1-sol	medium	plugin-split	Finish permitted slice and preserve October16 hold on further moves.
+24	housekeeping	gpt-6-luna	medium		Maintain bounded repo hygiene and extract six-hour review evidence.
+25	gripe-fixer	gpt-6.1-sol	medium		Reproduce, fix and verify bounded unowned gripes one at a time.
+26	architecture-review	gpt-6-astra	xhigh		Review architecture and release process thoroughly with evidence and ranked improvements.

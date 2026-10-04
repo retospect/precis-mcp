@@ -635,14 +635,22 @@
     return [...ks].every((k) => (a[k] || 0) === (b[k] || 0));
   }
 
-  // Fold a raw root->leaf node path into chemical steps. Link ``kind`` is
-  // 'supply' | 'reaction' | 'desorption' (anything not 'supply' is chemical).
+  // Catpath keeps kind='supply' on all reservoir links for kinetic readers;
+  // link_type distinguishes the chemical change for presentation.
+  function pwLinkKind(link) {
+    const kind = (link && link.kind) || 'reaction';
+    return kind === 'supply' && ['adsorption', 'supply', 'desorption'].includes(link.link_type)
+      ? link.link_type : kind;
+  }
+
+  // Fold only supply -> reaction. Adsorption and desorption keep their own
+  // columns; old graphs without link_type retain the kind-based fallback.
   // ``after`` lists the raw edges beyond the step — the spectator inference
   // looks ahead along them.
   function pwFoldPath(path, linkByPair) {
     const kindOf = (a, b) => {
       const l = linkByPair[a + '\u0001' + b];
-      return (l && l.kind) || 'reaction';
+      return pwLinkKind(l);
     };
     const out = [];
     let i = 0;
@@ -650,10 +658,10 @@
       const e = linkByPair[path[i] + '\u0001' + path[i + 1]];
       if (!e) { i += 1; continue; }
       let supply = null, react = null, shoulder = null, end = i + 1;
-      if (e.kind === 'supply') {
+      if (pwLinkKind(e) === 'supply') {
         supply = e;
         const e2 = i + 2 < path.length ? linkByPair[path[i + 1] + '\u0001' + path[i + 2]] : null;
-        if (e2 && e2.kind !== 'supply') { react = e2; shoulder = path[i + 1]; end = i + 2; }
+        if (e2 && pwLinkKind(e2) === 'reaction') { react = e2; shoulder = path[i + 1]; end = i + 2; }
       } else {
         react = e;
       }
@@ -674,7 +682,7 @@
   // 'down' (enters), 'up' (leaves), '' (stays: spectator).
   function pwLinkAnnotations(srcId, tgtId, link, ctx) {
     ctx = ctx || {};
-    const kind = (link && link.kind) || 'reaction';
+    const kind = pwLinkKind(link);
     const s = pwParseState(srcId), t = pwParseState(tgtId);
     const added = pwMinus(t.surf, s.surf), removed = pwMinus(s.surf, t.surf);
     let nProt = 0;
@@ -727,7 +735,10 @@
     }
     const counts = {};
     // explicit link fields (catpath contract) win over inference
-    if (link && link.added && typeof link.added === 'object') { nProt = +(link.added.H || 0); }
+    if (link && link.added && typeof link.added === 'object') {
+      // H in an adsorbing molecule is not a proton/electron reservoir feed.
+      nProt = kind === 'adsorption' ? 0 : +(link.added.H || 0);
+    }
     if (link && link.removed && typeof link.removed === 'object') {
       leaving = Object.keys(link.removed).filter((k) => PW_MOLECULES.includes(k)
         || (t.gas != null && k.toUpperCase() === t.gas));

@@ -1,5 +1,18 @@
 # monitors that go quiet
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** When released from the usage-limit hold, write the alert-delivery design note; A can start without its verdict, B waits for the orchestrator’s review.
+- **Blocked by:** Start no design, build or investigation until the orchestrator or review window says the usage limit has room; other waits are in [the latest handoff](#thread-context).
+- **Unblocks:** Alerts that reach the user when shared infrastructure fails.
+- **Acceptance:** Use [ranked work](#do-next): receiver auth/address, grouping, node placement and an end-to-end rule test without paging Reto are reviewed before B.
+- **Worktree:** `monitors-that-go-quiet`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when main always has a verdict and every fleet alert is
 addressable by failure id and host identity, so silence means healthy. Four
 things landed 2026-09-30: main-ci-status no longer announces either conclusion

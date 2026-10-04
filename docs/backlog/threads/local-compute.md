@@ -1,5 +1,20 @@
 # local compute
 
+## Resume
+
+- **Pillar:** local-compute
+- **Next:** Build the summarise-only local chain described in [ranked work](#do-next).
+- **Blocked by:** NAS role shares await Reto’s local-compute-12 answer; model pick/vLLM slice 1 await knowledge-mesh’s km-8 task set. Check whether either blocks this slice.
+- **Unblocks:** Local serving for [knowledge-mesh](knowledge-mesh.md#resume) and graph maintenance.
+- **Acceptance:** Use [the latest handoff](#thread-context) and [llm-capacity-plan](../llm-capacity-plan.md); verify the summarise-only chain’s placement and local-vs-cloud measurements.
+- **Worktree:** `local-compute`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when the local box continuously improves the graph
 (summarise, insert, mesh, link, categorise) on local rungs, with frontier
 review as the gate, and the local-vs-cloud share is a number. Today 0% of
@@ -10,7 +25,7 @@ idle, DeepSeek-V4-Flash and Qwen3 weights staged on castor, last local call
 then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2026-10-02), then the rungs that consume them.
 **Last reviewed:** 2026-10-02
 **Worktree:** `local-compute`
-**Active:** yes (2026-10-01, Reto: "Bring it back we will").
+**Allocation decision (historical):** yes (2026-10-01, Reto: "Bring it back we will").
 **Resume (2026-10-03, after round 3 deployed 929107f3):**
 - The gr464223 eval fix is verified in prod: a CLI local-vs-cloud compare scored both arms. Gripe closed.
 - `scripts/prod-precis` lacks the LLM base url (gr464670).

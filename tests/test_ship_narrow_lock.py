@@ -139,7 +139,7 @@ class Rig:
         (scripts / "lib").mkdir(parents=True)
         shutil.copy2(_SHIP_SRC, scripts / "ship")
         for lib in (REPO / "scripts" / "lib").iterdir():
-            if lib.is_file() and lib.suffix == ".sh":
+            if lib.is_file() and lib.suffix in (".sh", ".py"):
                 shutil.copy2(lib, scripts / "lib" / lib.name)
         shutil.copy2(REPO / "scripts" / "migration-check", scripts / "migration-check")
         # Drift guard: "age unknown" never refuses (no gh in the rig).

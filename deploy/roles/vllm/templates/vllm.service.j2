@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+[Unit]
+Description=vLLM OpenAI-compatible server ({{ vllm_served_model_name }})
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Clear any stale container from a crash; "-" ignores "no such container".
+ExecStartPre=-/usr/bin/{{ vllm_container_cmd }} rm -f {{ vllm_service_name }}
+ExecStart=/usr/bin/{{ vllm_container_cmd }} run --rm --name {{ vllm_service_name }} \
+    --gpus all --ipc=host \
+    -p {{ '[' ~ vllm_bind_addr ~ ']' if ':' in vllm_bind_addr else vllm_bind_addr }}:{{ vllm_port }}:8000 \
+    -v {{ vllm_model_dir }}:/model:ro \
+{% if vllm_tiktoken_dir | length > 0 %}
+    -v {{ vllm_tiktoken_dir }}:/tiktoken:ro \
+    -e TIKTOKEN_ENCODINGS_BASE=/tiktoken \
+{% endif %}
+    {{ vllm_image }} \
+    --model /model \
+    --served-model-name {{ vllm_served_model_name }} \
+    --gpu-memory-utilization {{ vllm_gpu_memory_utilization }} \
+    --max-model-len {{ vllm_max_model_len }} \
+    --max-num-seqs {{ vllm_max_num_seqs }} \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser {{ vllm_tool_call_parser }}{% for a in vllm_extra_args %} \
+    {{ a }}{% endfor %}
+
+ExecStop=/usr/bin/{{ vllm_container_cmd }} stop {{ vllm_service_name }}
+Restart=on-failure
+RestartSec=15
+# Model load can take ~10 min before the container is useful; do not let
+# systemd's start timeout kill it.
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""Persist and queue six-hour Codex fleet reviews; explicit reports close windows.
+
+State contains only scheduling metadata and can share the gitignored fleet
+control directory; evidence reports stay outside the checkout. A file lock
+serializes ticks. A crash during queue delivery
+leaves an uncertain pending review for explicit retry rather than silently
+duplicating work or advancing the high-water mark.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import signal
+import subprocess
+import sys
+import threading
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+INTERVAL = 6 * 60 * 60
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def outside_tree(path: Path) -> Path:
+    path = path.expanduser().resolve()
+    # Worktrees live inside the primary checkout; .git points back to it.
+    roots = [ROOT]
+    dotgit = ROOT / ".git"
+    if dotgit.is_file():
+        gitdir = Path(
+            dotgit.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
+        )
+        if ".git" in gitdir.parts:
+            roots.append(Path(*gitdir.parts[: gitdir.parts.index(".git")]))
+    if any(path.is_relative_to(root) for root in roots):
+        raise ValueError("review state and reports must be outside the repository")
+    return path
+
+
+def save(path: Path, state: dict) -> None:
+    temporary = path.with_suffix(".new")
+    temporary.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def initialize(path: Path, now: datetime, worker: str) -> dict:
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    state = {
+        "version": 1,
+        "interval_seconds": INTERVAL,
+        "worker": worker,
+        "high_water": timestamp(now),
+        "pending": None,
+        "history": [],
+    }
+    save(path, state)
+    return state
+
+
+def tick(state_root: Path, path: Path, state: dict, now: datetime, retry=False) -> dict:
+    pending = state["pending"]
+    if pending is None:
+        start = datetime.fromisoformat(state["high_water"])
+        end = start + timedelta(seconds=state["interval_seconds"])
+        if now < end:
+            return state
+        pending = state["pending"] = {
+            "id": end.strftime("review-%Y%m%dT%H%M%SZ"),
+            "since": timestamp(start),
+            "until": timestamp(end),
+            "status": "pending",
+            "attempts": 0,
+        }
+        save(path, state)
+    if pending["status"] in {"queued", "dispatching", "uncertain"} and not retry:
+        return state
+    if pending.get("retry_after") and not retry:
+        if now < datetime.fromisoformat(pending["retry_after"]):
+            return state
+    try:
+        registration = json.loads(
+            (state_root / "registrations" / f"{state['worker']}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        thread = registration["thread_id"]
+        if not isinstance(thread, str) or not thread:
+            raise ValueError("registration requires a nonempty thread_id")
+        uuid.UUID(thread)
+    except (OSError, ValueError, KeyError) as exc:
+        pending.update(status="failed", error=f"worker registration unavailable: {exc}")
+        pending["retry_after"] = timestamp(now + timedelta(minutes=5))
+        save(path, state)
+        return state
+    message = (
+        f"Six-hour fleet process review {pending['id']}. "
+        f"Audit only unseen interval [{pending['since']}, {pending['until']}). "
+        f"Fleet state: {state_root}. Mine only registered fleet threads and their "
+        f"children; use {ROOT / 'scripts/mine-sessions/run.sh'} --codex --since START "
+        "--until END --thread-id ID (repeat for registrations). Keep artifacts "
+        "outside the repository with MINE_OUT. Send coordinator the scoreboard, "
+        "coverage/missing data and bounded evidence cards for MCP/instruction "
+        "confusion, performance and token use. Coordinator judges, records fixes "
+        "or owned followups, and explicitly completes this review with a JSON "
+        "report containing review_id, since, until, coverage, findings, actions. "
+        f"Complete with {ROOT / 'scripts/fleet-review'} --state {state_root} complete "
+        f"--review {pending['id']} --report /external/report.json. "
+        "Do not mark extraction alone complete. Do not run Docker prune or "
+        "write/run scripts in shared /tmp."
+    )
+    pending.update(status="dispatching", attempts=pending["attempts"] + 1)
+    pending.pop("error", None)
+    save(path, state)
+    try:
+        result = subprocess.run(
+            ["codex", "queue", "--thread", thread, "--message", message],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pending.update(
+            status="uncertain", error="queue timed out; inspect before --retry"
+        )
+    except OSError as exc:
+        pending.update(status="failed", error=f"queue unavailable: {exc}")
+    else:
+        if result.returncode:
+            # Avoid persisting raw CLI stderr, which may contain private context.
+            pending.update(status="failed", error=f"queue exit {result.returncode}")
+        else:
+            pending.update(status="queued", queued_at=timestamp(now))
+    pending["retry_after"] = timestamp(now + timedelta(minutes=5))
+    save(path, state)
+    return state
+
+
+def complete(
+    path: Path, state: dict, review_id: str, report: Path, now: datetime
+) -> dict:
+    pending = state["pending"]
+    if pending is None or pending["id"] != review_id:
+        raise ValueError("review ID does not match the pending interval")
+    report = outside_tree(report)
+    evidence = json.loads(report.read_text(encoding="utf-8"))
+    if not isinstance(evidence, dict):
+        raise ValueError("report must be a JSON object")
+    for key in ("since", "until"):
+        if evidence.get(key) != pending[key]:
+            raise ValueError(f"report {key} does not match the pending interval")
+    if evidence.get("review_id") != review_id:
+        raise ValueError("report review_id does not match")
+    if not isinstance(evidence.get("coverage"), dict) or not evidence["coverage"]:
+        raise ValueError("report needs explicit corpus coverage and missing data")
+    for key in ("findings", "actions"):
+        if not isinstance(evidence.get(key), list):
+            raise ValueError(f"report needs a {key} list")
+    if evidence["findings"] and not evidence["actions"]:
+        raise ValueError("findings require recorded fixes or owned followups")
+    state["history"].append(
+        {**pending, "report": str(report), "completed_at": timestamp(now)}
+    )
+    state["high_water"] = pending["until"]
+    state["pending"] = None
+    save(path, state)
+    return state
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--state",
+        required=True,
+        type=Path,
+        help="fleet control state directory (no transcript payload)",
+    )
+    subs = parser.add_subparsers(dest="command", required=True)
+    init = subs.add_parser("init", help="start clock; preserve existing state")
+    init.add_argument("--worker", default="housekeeping")
+    init.add_argument(
+        "--started-at", help="fleet launch ISO timestamp; default now UTC"
+    )
+    subs.add_parser("status", help="show high-water mark, next due and pending review")
+    run = subs.add_parser("tick", help="queue one due interval")
+    run.add_argument(
+        "--retry", action="store_true", help="explicitly retry uncertain delivery"
+    )
+    done = subs.add_parser("complete", help="acknowledge coordinator-reviewed report")
+    done.add_argument("--review", required=True)
+    done.add_argument("--report", required=True, type=Path)
+    subs.add_parser(
+        "watch", help="tick every minute until SIGINT/SIGTERM; no global install"
+    )
+    args = parser.parse_args(argv)
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.set())
+    try:
+        root = args.state.expanduser().resolve()
+        directory = root / "reviews"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = directory / "state.json"
+        last_summary = None
+        while True:
+            with (directory / "lock").open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                now = datetime.now(UTC)
+                if args.command == "init":
+                    started = (
+                        datetime.fromisoformat(args.started_at)
+                        if args.started_at
+                        else now
+                    )
+                    if started.tzinfo is None:
+                        raise ValueError("--started-at must include a UTC offset")
+                    state = initialize(path, started, args.worker)
+                else:
+                    if not path.exists():
+                        raise ValueError(
+                            "run init before status, tick, watch or complete"
+                        )
+                    state = json.loads(path.read_text(encoding="utf-8"))
+                    if args.command in {"tick", "watch"}:
+                        state = tick(
+                            root, path, state, now, getattr(args, "retry", False)
+                        )
+                    elif args.command == "complete":
+                        state = complete(path, state, args.review, args.report, now)
+                due = datetime.fromisoformat(state["high_water"]) + timedelta(
+                    seconds=state["interval_seconds"]
+                )
+                summary = json.dumps(
+                    {**state, "next_due": timestamp(due)}, sort_keys=True
+                )
+                if summary != last_summary:
+                    print(summary, flush=True)
+                    last_summary = summary
+            if args.command != "watch" or stop.wait(60):
+                return 0
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"fleet-review: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

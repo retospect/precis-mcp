@@ -55,7 +55,7 @@ anything else. Serve the candidate and the control, ramp concurrency, find
 where aggregate tok/s stops climbing. Host prep and order relative to the
 GIL profile: `serving-programme-followups.md`.
 
-**Slice 1 — serving.** A vLLM deploy role alongside `deploy/roles/llamacpp/`,
+**Slice 1 — serving** (role `deploy/roles/vllm/`, playbook `49-vllm.yml`). A vLLM deploy role alongside `deploy/roles/llamacpp/`,
 single-node, `--enable-prefix-caching`, `--enable-auto-tool-choice` with the
 model's matching `--tool-call-parser`. Prefix caching is not only a latency
 win: with the shared system+tools+skills prefix stored once rather than

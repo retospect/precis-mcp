@@ -484,7 +484,13 @@ high-traffic ones:
 
 The repo lives at
 [`retospect/precis-mcp`](https://github.com/retospect/precis-mcp).
+Coordinated releases use `scripts/round gate` / `deploy`: exact release SHA,
+fresh CI, then coordinator runtime evidence before immutable tagging and retirement.
+
 Issues and PRs welcome. Development workflow:
+
+For isolated Codex sessions in tmux, see [`scripts/fleet-codex`](scripts/fleet-codex)
+and the [Codex fleet runbook](docs/runbooks/codex-fleet.md).
 
 ```bash
 uv sync --all-extras --group dev

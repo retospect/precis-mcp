@@ -1,5 +1,20 @@
 # pcb platform
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** When activated, start the lazy-netlist and single-check-surface item.
+- **Blocked by:** Sequence shared generator and DRC work behind the active PCB threads.
+- **Unblocks:** A coherent component model and agent PCB interface.
+- **Acceptance:** Use [pcb-lazy-netlist-and-checks](../pcb-lazy-netlist-and-checks.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `pcb-platform`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when the pcb kind's component model, agent interface and
 reuse layer are as solid as its routing engine — the platform half of
 `backlog/pcb-global-codesign-north-star.md`, pillar 3d-design. Today
@@ -9,7 +24,7 @@ not merge). Peer session EWOD reported 17 open pcb items with no thread
 owner on 2026-09-30, 10 prio high; this file gives them one.
 **Last reviewed:** 2026-09-30
 **Worktree:** `pcb-platform`
-**Active:** no — opens at the next session restart if Reto names it.
+**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 

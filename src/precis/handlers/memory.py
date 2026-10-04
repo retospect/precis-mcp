@@ -15,6 +15,10 @@ Semantics (`precis-memory-help`):
                                      (title derived from the first line when
                                      omitted). Emit the body, then the title.
     - edit(id=N, text=..., title=) — in-place body rewrite (+ optional title)
+    - edit(id=N, mode='find-replace'|'insert', find=..., text=...)
+                                   — anchored edit of the body, same grammar
+                                     as the file kinds (before/after/match/
+                                     nth/where/dry_run)
     - tag(id=N, add=[...])         — add/replace tags on memory N
     - link(id=N, target='kind:id') — cross-link memory N to another ref
     - delete(id=N)                 — soft-delete memory N
@@ -25,17 +29,29 @@ Semantics (`precis-memory-help`):
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
-from precis.errors import BadInput, Unsupported
+from psycopg import Connection
+from psycopg.pq import TransactionStatus
+
+from precis.errors import BadInput, Gone, Internal, NotFound, Unsupported
 from precis.handlers._argument_view import render_argument_view
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._tag_redirect import redirect_long_tag_values
+from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ChunkInsert, Ref
+from precis.utils.edit_resolve import (
+    EditOp,
+    apply_edit,
+    format_unified_diff,
+    normalize_dry_run,
+    render_dry_run_full,
+    render_dry_run_header,
+)
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -111,7 +127,7 @@ class MemoryHandler(NumericRefHandler):
         supports_search_hits=True,
         supports_put=True,
         # In-place rewrite via edit(mode='replace', text='...') (broad-pass
-        # finding #5). Same id, links stay attached, audit trail lands
+        # finding #5), or an anchored find-replace / insert. Same id, links stay attached, audit trail lands
         # in ref_events as a ``body_replaced`` row (view='log').
         supports_edit=True,
         supports_delete=True,
@@ -120,10 +136,10 @@ class MemoryHandler(NumericRefHandler):
         is_numeric=True,
         id_required=False,
         note_like=True,
-        # edit()'s only accepted mode — see todo.py's identical
-        # annotation (gr292913) for why an omitted mode= still needs
-        # this declaration.
-        edit_modes=("replace",),
+        # edit()'s accepted modes: 'replace' (whole body) plus the file-kind
+        # anchored pair. See todo.py's annotation (gr292913) for why an
+        # omitted mode= still needs this declaration.
+        edit_modes=("replace", "find-replace", "insert"),
     )
 
     kind: ClassVar[str] = "memory"
@@ -156,20 +172,9 @@ class MemoryHandler(NumericRefHandler):
     search_body_chunks: ClassVar[bool] = True
     heat_salience_on_body_search: ClassVar[bool] = True
 
-    #: Set by :meth:`put` for the duration of one create so :meth:`_create`
-    #: can pick up an explicit ``title=`` the base ``put`` signature drops.
-    _pending_title: str | None = None
-
-    #: Same trick as ``_pending_title`` for the argument-graph fields —
-    #: ``meta.rule`` (the operator label,
-    #: e.g. ``'and-intro'``) and ``meta.warrant`` (free-text "why this step
-    #: holds") on a ``kind:inference`` memory. Author assertions, never
-    #: validated by precis.
-    _pending_rule: str | None = None
-    _pending_warrant: str | None = None
-
-    #: Validated ``put(meta=)`` patch (``hook``) for the duration of one create.
-    _pending_meta: dict[str, Any] | None = None
+    # Carry call-local title/argument/index fields through the base's create
+    # plumbing; shared handler instances must never stage request state.
+    accepts_put_meta: ClassVar[bool] = True
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -283,34 +288,24 @@ class MemoryHandler(NumericRefHandler):
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``hook`` is the only writable key.
         """
-        # Validate before any state is set or any row is written.
-        self._pending_meta = _validate_meta(meta) if meta is not None else None
-        self._pending_title = (
-            title.strip() if isinstance(title, str) and title.strip() else None
+        # This fresh payload is passed down the stack, never staged on self.
+        # Validate the public meta allowlist before adding internal fields.
+        create_meta = _validate_meta(meta) if meta is not None else {}
+        for key, value in (("title", title), ("rule", rule), ("warrant", warrant)):
+            if isinstance(value, str) and value.strip():
+                create_meta[key] = value.strip()
+        return super().put(
+            id=id,
+            text=text,
+            mode=mode,
+            tags=tags,
+            untags=untags,
+            link=link,
+            unlink=unlink,
+            rel=rel,
+            auto_refresh_days=auto_refresh_days,
+            meta=create_meta,
         )
-        self._pending_rule = (
-            rule.strip() if isinstance(rule, str) and rule.strip() else None
-        )
-        self._pending_warrant = (
-            warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
-        )
-        try:
-            return super().put(
-                id=id,
-                text=text,
-                mode=mode,
-                tags=tags,
-                untags=untags,
-                link=link,
-                unlink=unlink,
-                rel=rel,
-                auto_refresh_days=auto_refresh_days,
-            )
-        finally:
-            self._pending_title = None
-            self._pending_rule = None
-            self._pending_warrant = None
-            self._pending_meta = None
 
     def _create(
         self,
@@ -340,7 +335,8 @@ class MemoryHandler(NumericRefHandler):
                 ),
             )
         body = text
-        title = self._pending_title or _derive_title(body)
+        create_meta = put_meta or {}
+        title = create_meta.get("title") or _derive_title(body)
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
         if target is not None:
@@ -354,13 +350,9 @@ class MemoryHandler(NumericRefHandler):
         # when the D3-shortcut kwargs were passed; omitted keys entirely
         # when absent (an inference gains them incrementally via edit()
         # too, so a rule-first / warrant-later authoring order works).
-        meta: dict[str, Any] = {}
-        if self._pending_rule is not None:
-            meta["rule"] = self._pending_rule
-        if self._pending_warrant is not None:
-            meta["warrant"] = self._pending_warrant
-        if self._pending_meta:
-            meta.update(self._pending_meta)
+        meta: dict[str, Any] = {
+            k: create_meta[k] for k in ("rule", "warrant", "hook") if k in create_meta
+        }
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
         if tags:
@@ -441,16 +433,38 @@ class MemoryHandler(NumericRefHandler):
         rule: str | None = None,
         warrant: str | None = None,
         meta: dict[str, Any] | None = None,
+        find: str | None = None,
+        before: str = "",
+        after: str = "",
+        where: str | None = None,
+        match: str = "unique",
+        nth: int | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
-        """In-place rewrite of a memory's body prose, and/or its argument-graph
+        """In-place edit of a memory's body prose, and/or its argument-graph
         ``meta.rule`` / ``meta.warrant``.
 
-        Only ``mode='replace'`` is supported. ``text=`` carries the new body;
-        ``title=`` optionally updates the header (omit to keep the existing
-        title). The old body is preserved in ``ref_events`` so the rewrite is
-        recoverable / auditable via ``get(kind='memory', id=N, view='log')``.
-        The ``memory_body`` chunk is delete+reinserted so semantic search +
+        Three body modes:
+
+        - ``mode='replace'`` (the default for a direct handler call):
+          ``text=`` is the whole new body; ``title=`` optionally updates the
+          header (omit to keep it).
+        - ``mode='find-replace'``: ``find=`` locates literal text in the body
+          and ``text=`` replaces it (``text=''`` deletes the span).
+        - ``mode='insert'``: ``text=`` goes ``where='before'|'after'`` the
+          ``find=`` match.
+
+        The anchored pair takes the file kinds' vocabulary — ``before=`` /
+        ``after=`` anchors, ``match='unique'|'first'|'all'|'nth'`` + ``nth=``,
+        ``dry_run=True`` (unified diff, nothing written) — resolved by the
+        shared :mod:`precis.utils.edit_resolve`, so a one-word fix in a large
+        body needs no re-send. ``title=`` / ``rule=`` / ``warrant=`` are
+        ``replace``-only; ``meta=`` works with any mode.
+
+        Every body write keeps the old body in ``ref_events`` (recoverable /
+        auditable via ``get(kind='memory', id=N, view='log')``) and
+        delete+reinserts the ``memory_body`` chunk so semantic search +
         keywords re-derive from the new prose (an in-place UPDATE would leave
         a stale embedding).
 
@@ -459,10 +473,16 @@ class MemoryHandler(NumericRefHandler):
         body rewrite — pass either (or both) alone to refine the warrant as
         understanding sharpens, no ``text=`` required. ``meta={'hook': '...'}``
         sets the one-line index text (``refs.meta.hook``), likewise alone or
-        with ``text=``. At least one of ``text=``, ``rule=``, ``warrant=``,
+        with a body edit. At least one of ``text=``, ``rule=``, ``warrant=``,
         ``meta=`` must be given.
 
-        Distinct from ``supersede`` (the consolidate-into-new verb): replace
+        The MCP ``edit`` verb defaults ``mode`` to ``'find-replace'``, so an
+        omitted ``mode=`` arrives as that. With ``find=`` it is an anchored
+        edit; with neither ``find=`` nor ``text=`` it is the meta / rule /
+        warrant patch; ``text=`` alone is refused — it would otherwise
+        silently overwrite the whole body — and points at ``mode='replace'``.
+
+        Distinct from ``supersede`` (the consolidate-into-new verb): edit
         keeps the same id and every inbound link — the "polish the wording"
         affordance.
         """
@@ -478,6 +498,53 @@ class MemoryHandler(NumericRefHandler):
             warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
         )
         meta_clean = _validate_meta(meta) if meta is not None else {}
+        new_title = title.strip() if isinstance(title, str) and title.strip() else None
+        dry_mode = normalize_dry_run(dry_run)
+        # Only the MCP default with neither body argument is a metadata
+        # patch. Explicit insert and even empty text must validate anchors.
+        if mode == "insert" or (
+            mode == "find-replace" and (find is not None or text is not None)
+        ):
+            replace_only = [
+                name
+                for name, val in (
+                    ("title", new_title),
+                    ("rule", rule_clean),
+                    ("warrant", warrant_clean),
+                )
+                if val is not None
+            ]
+            if replace_only:
+                raise BadInput(
+                    f"{'/'.join(replace_only)}= is replace-only; "
+                    f"mode={mode!r} edits the body in place",
+                    next=(
+                        "do the anchored edit alone (meta= may ride along), then "
+                        "edit(kind='memory', id=N, mode='replace', "
+                        "warrant='...') for the label"
+                    ),
+                )
+            return self._edit_anchored(
+                ref_id=self._coerce_id(id),
+                mode=mode,
+                find=find,
+                text=text,
+                before=before,
+                after=after,
+                where=where,
+                match=match,
+                nth=nth,
+                dry_mode=dry_mode,
+                meta_patch=meta_clean,
+            )
+        if dry_mode is not None:
+            raise BadInput(
+                "dry_run= previews mode='find-replace' / 'insert' edits only",
+                next=(
+                    "edit(kind='memory', id=N, mode='find-replace', "
+                    "find='old', text='new', dry_run=True)"
+                ),
+            )
         if (
             not has_text
             and rule_clean is None
@@ -485,10 +552,11 @@ class MemoryHandler(NumericRefHandler):
             and not meta_clean
         ):
             raise BadInput(
-                "edit(kind='memory', mode='replace') requires text=, rule=, "
-                "warrant=, or meta=",
+                "edit(kind='memory') requires text=, rule=, warrant=, or meta=",
                 next=(
                     "edit(kind='memory', id=N, mode='replace', text='new body') "
+                    "or edit(kind='memory', id=N, mode='find-replace', "
+                    "find='old', text='new') "
                     "or edit(kind='memory', id=N, mode='replace', "
                     "warrant='updated justification') "
                     "or edit(kind='memory', id=N, mode='replace', "
@@ -499,7 +567,6 @@ class MemoryHandler(NumericRefHandler):
         # _resolve_live_ref raises NotFound/Gone with the right taxonomy if
         # the memory doesn't exist or was soft-deleted.
         ref = self._resolve_live_ref(ref_id)
-        new_title = title.strip() if isinstance(title, str) and title.strip() else None
         meta_patch: dict[str, Any] = {}
         if rule_clean is not None:
             meta_patch["rule"] = rule_clean
@@ -524,20 +591,10 @@ class MemoryHandler(NumericRefHandler):
                 out += f". title now: {new_title!r}"
             return Response(body=out)
 
-        with self.store.tx() as conn:
-            assert text is not None
-            old_body = self.store.chunks.replace_body_chunk(
-                ref.id, text, chunk_kind=_BODY_KIND, source="agent", conn=conn
-            )
-            if meta_patch:
-                self.store.update_ref(ref.id, meta_patch=meta_patch, conn=conn)
-            if new_title is not None:
-                self.store.chunks.set_ref_title(
-                    ref.id, new_title, source="agent", conn=conn
-                )
-            # Re-sync auto-mention links to the rewritten body: drop the old
-            # auto links, add the current ones. Hand-added links survive.
-            self._sync_mention_links(ref.id, text, conn=conn, replace=True)
+        assert text is not None
+        old_body = self._write_body(
+            ref.id, text, new_title=new_title, meta_patch=meta_patch
+        )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
         new_words = len(text.split())
@@ -551,6 +608,188 @@ class MemoryHandler(NumericRefHandler):
         if nudge:
             body += f"\n\nhint: {nudge}"
         return Response(body=body)
+
+    def _write_body(
+        self,
+        ref_id: int,
+        new_text: str,
+        *,
+        new_title: str | None,
+        meta_patch: dict[str, Any],
+        expected_body: str | None = None,
+    ) -> str | None:
+        """The one body-write path shared by every edit mode.
+
+        One transaction: delete+reinsert the ``memory_body`` chunk (old body
+        to ``ref_events``; never an in-place UPDATE, so embeddings
+        re-derive), patch meta, optionally retitle, and re-sync the
+        auto-mention links to the new prose. Lock the ref before reading
+        the previous body so simultaneous handler writes serialize. An
+        anchored edit must still match its snapshot; a conflict rolls back
+        the replacement and its derived-row cascade. Returns the old body.
+        """
+        with self.store.tx() as conn:
+            row = conn.execute(
+                "SELECT title, retired_at FROM refs "
+                "WHERE ref_id = %s AND kind = 'memory' FOR NO KEY UPDATE",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"memory {ref_id} not found")
+            if row[1] is not None:
+                raise Gone(f"memory {ref_id} has been deleted")
+            old_body = self.store.chunks.replace_body_chunk(
+                ref_id, new_text, chunk_kind=_BODY_KIND, source="agent", conn=conn
+            )
+            previous = old_body if old_body is not None else (row[0] or "")
+            if expected_body is not None and previous != expected_body:
+                raise BadInput(
+                    f"memory {ref_id} changed during the edit; nothing written",
+                    next=(
+                        f"get(kind='memory', id={ref_id}), then retry the "
+                        "anchored edit against the current body"
+                    ),
+                )
+            if meta_patch:
+                self.store.update_ref(ref_id, meta_patch=meta_patch, conn=conn)
+            if new_title is not None:
+                self.store.chunks.set_ref_title(
+                    ref_id, new_title, source="agent", conn=conn
+                )
+            # Re-sync auto-mention links to the rewritten body: drop the old
+            # auto links, add the current ones. Hand-added links survive.
+            self._sync_mention_links(ref_id, new_text, conn=conn, replace=True)
+        return old_body
+
+    def _sync_mention_links(
+        self,
+        ref_id: int,
+        text: str,
+        *,
+        conn: Connection,
+        replace: bool = False,
+    ) -> int:
+        """Keep best-effort resolution, but never acknowledge an aborted write.
+
+        The shared helper catches SQL errors as well as resolution failures.
+        PostgreSQL turns COMMIT of an aborted transaction into ROLLBACK;
+        raise before leaving the caller's transaction so put/edit cannot
+        claim success after losing the body and its audit event.
+        """
+        added = super()._sync_mention_links(ref_id, text, conn=conn, replace=replace)
+        if conn.info.transaction_status == TransactionStatus.INERROR:
+            raise Internal(
+                "memory mention synchronization aborted the write transaction; "
+                "nothing written",
+                next="get the current memory, then retry the write",
+            )
+        return added
+
+    def _edit_anchored(
+        self,
+        *,
+        ref_id: int,
+        mode: str,
+        find: str | None,
+        text: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        dry_mode: str | None,
+        meta_patch: dict[str, Any],
+    ) -> Response:
+        """``mode='find-replace'`` / ``'insert'`` on the body prose.
+
+        Resolves the edit over the current body with the shared pure
+        resolver (same vocabulary and error shapes as the file kinds), then
+        writes the result through :meth:`_write_body`.
+        """
+        if not find:
+            # text= alone on the MCP-default mode: refuse rather than guess
+            # a whole-body overwrite.
+            raise BadInput(
+                f"mode={mode!r} requires find= (the exact text to locate)",
+                next=(
+                    "edit(kind='memory', id=N, mode='find-replace', "
+                    "find='exact text', text='replacement') — or, to overwrite "
+                    "the whole body, edit(kind='memory', id=N, mode='replace', "
+                    "text='new body')"
+                ),
+            )
+        op_kind = "edit" if mode == "find-replace" else "insert"
+        _require_find_and_text(
+            op_kind=op_kind,
+            kind=self.kind,
+            slug=str(ref_id),
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+        )
+        assert text is not None
+        ref = self._resolve_live_ref(ref_id)
+        label = f"{self.kind} {ref.id}"
+        # where/match arrive as plain str from the wire; EditOp's
+        # __post_init__ validates both against the exact Literal sets and
+        # raises BadInput on a bad value, so the casts are sound at runtime.
+        op = EditOp(
+            op="edit" if op_kind == "edit" else "insert",
+            find=find,
+            text=text,
+            before=before,
+            after=after,
+            where=cast("Any", where),
+            match=cast("Any", match),
+            nth=nth,
+            region_label=label,
+        )
+        old_body = self._body_text(ref)
+        result = apply_edit(old_body, op)
+        new_body = result.new_buffer
+        if not new_body.strip():
+            raise BadInput(
+                f"edit would leave {label} with an empty body",
+                next=(
+                    f"delete(kind='memory', id={ref.id}) to remove the memory, "
+                    "or edit with replacement text"
+                ),
+            )
+        if dry_mode is not None:
+            header = render_dry_run_header(
+                region_label=label,
+                edited_spans=result.edited_spans,
+                match_policy=op.match,
+            )
+            if dry_mode == "full":
+                body = render_dry_run_full(
+                    new_body, edited_spans=result.edited_spans, region_label=label
+                )
+            else:
+                diff = format_unified_diff(old_body, new_body, file_label=label)
+                body = diff.rstrip("\n") or "(no diff - pre and post are identical)"
+            return Response(body="\n".join([*header, "", body]))
+        self._write_body(
+            ref.id,
+            new_body,
+            new_title=None,
+            meta_patch=meta_patch,
+            expected_body=old_body,
+        )
+        verb = "edited" if op_kind == "edit" else "inserted into"
+        n_spans = len(result.edited_spans)
+        return Response(
+            body=(
+                f"{verb} body of {self._sense()} id={ref.id} "
+                f"({len(old_body.split())} → {len(new_body.split())} words, "
+                f"{n_spans} span{'s' if n_spans != 1 else ''}). "
+                "view='log' for the full diff."
+            )
+        )
 
     # ── tag: refuse author add/remove of the system-set STALE: axis ──
 

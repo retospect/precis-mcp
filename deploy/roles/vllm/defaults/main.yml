@@ -1,0 +1,50 @@
+---
+# Defaults for the vllm role: one vLLM container, one model, one GB10 host,
+# run as a permanent systemd service (docs/backlog/vllm-per-node-serving.md
+# Slice 1). Targets the inventory group `vllm_serving` (see
+# playbooks/49-vllm.yml). Defaults are the Slice 0 measured gpt-oss 120B
+# MXFP4 setup. The model is not final: switching is the one variable block
+# shown under "Models" in README.md.
+
+# ── Container ──
+vllm_container_cmd: docker
+vllm_image: "vllm/vllm-openai:v0.20.1"
+# Container + systemd unit name (unit is <vllm_service_name>.service).
+vllm_service_name: vllm
+# Docker Hub is flaky from the LAN (TLS timeouts). A pre-pulled / docker-load'ed
+# image satisfies the role with no registry call; otherwise the pull is bounded.
+vllm_pull_retries: 6
+vllm_pull_delay: 20
+vllm_pull_timeout: 900          # seconds per pull attempt (hard cap)
+
+# ── Endpoint ──
+# Matches llamacpp (llama-swap binds 0.0.0.0): LAN-reachable. Set to the
+# host's LAN address in group_vars to narrow it.
+vllm_bind_addr: "0.0.0.0"
+vllm_port: 8000
+
+# ── Model (gpt-oss 120B MXFP4 defaults) ──
+# Host directory holding the weights (HF format); mounted read-only at /model.
+vllm_model_dir: /srv/models/gpt-oss-120b
+# Name clients send as `model`.
+vllm_served_model_name: gpt-oss-120b
+# --tool-call-parser value. gpt-oss: openai. Nemotron 3 Super: qwen3_xml.
+vllm_tool_call_parser: openai
+# gpt-oss loads the harmony tokenizer vocab from the internet at startup and
+# the container cannot reach it: stage o200k_base.tiktoken and
+# cl100k_base.tiktoken in this host dir; it is mounted at /tiktoken with
+# TIKTOKEN_ENCODINGS_BASE set. Empty string = no mount (non-gpt-oss models).
+vllm_tiktoken_dir: /srv/models/tiktoken
+# Extra flags appended verbatim (list), e.g. ["--trust-remote-code"].
+vllm_extra_args: []
+
+# ── Sizing (Slice 0 measured; local-compute-15 ruling) ──
+vllm_gpu_memory_utilization: 0.80
+vllm_max_model_len: 16384
+# Server sized for 64 streams; a separate feedback controller holds ~32.
+vllm_max_num_seqs: 64
+
+# ── Health wait ──
+# Model load takes up to ~10 min (measured 505-641 s). Bounded: retries*delay.
+vllm_health_retries: 90
+vllm_health_delay: 10

@@ -75,14 +75,19 @@ each: `mx12 | subject | measurand: value | conditions | tier | paper handle`.
 
 `get(kind='quest', id=Q, view='measures')` lists, for everything that serves
 the quest at any depth, the best live value per `(measurand, reference,
-normalization)` group, with its conditions, tier and paper. The direction comes
+normalization)` group, with its conditions, tier, paper and current review state
+(`approved`, `proposed` or `unreviewed`). The direction comes
 from the taxon's `higher_is_better`; a group without it shows its row count and
 no best. Per-area and per-mass yields, or RHE and SHE potentials, are separate
 lines: groups are never compared. Left out of every ranking: ambiguous
 measurands, flagged rows (`meta.escalation`), anchor-lost `measured` rows,
-`trusted = false`, and anything that is not a single number (an interval, a
-bound, a category). A potential stated against SHE does not stand in for an RHE
+`trusted = false`, rows whose newest current review is `rejected`, and anything
+that is not a single number (an interval, a bound, a category).
+A potential stated against SHE does not stand in for an RHE
 one: conversion between references is not built.
+Only reviews matching the row's current content hash count, newest first
+(review id breaks timestamp ties). A later current approval restores
+eligibility; approval does not outrank a better proposed or unreviewed value.
 
 ## Display: SI stored, your unit shown
 

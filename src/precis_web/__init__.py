@@ -7,6 +7,12 @@ error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
 
+**Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
+``link_type`` for folding/annotations: adsorption and desorption keep their
+columns; only supply→reaction folds. Raw ``kind=supply`` still excludes
+reservoir links from kinetic fork probabilities; changing it would imply
+a measured barrier. Legacy graphs fall back to ``kind``.
+
 **Auth.** ``auth.py::BasicAuthMiddleware`` gates every route/mount against
 ``web_users`` (migration 0131, roster via ``precis users``); every account
 is fully authorized — no roles, no per-route ACLs. Exemptions:
@@ -54,6 +60,13 @@ binds. Pure read, ≤ 3 SELECTs per render regardless of design count; a
 node click lands on the existing ``/se/{slug}``/``/structure/{slug}``
 page. Later slices (revision scrubber, chat, realize-in-the-loop) build
 on this same tree.
+
+SE inspection keeps 3D primary, with ``/se/{slug}/2d`` labeled Envelope
+projections because its outlines are envelope convex hulls, not realized
+solid sections. The 3D SVG export is labeled SVG snapshot: it embeds the
+canvas bitmap with vector annotations. Purposeful technical drawings need
+their own geometry contract; retiring projections would discard useful
+axis views before that contract exists.
 
 **Workbench turn** (``design_turn.py``, slice 3's engine; the routes are
 ``POST /se/{slug}/chat`` + ``/chat/apply`` in ``routes/blocktree_view.py``

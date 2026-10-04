@@ -1029,6 +1029,7 @@ def _pathway_graph_payload(
             "source": str(e["source"]),
             "target": str(e["target"]),
             "kind": e.get("kind") or "reaction",
+            "link_type": e.get("link_type"),
             "barrier": e.get("barrier"),
             "barrier_std": e.get("barrier_std"),
             "delta_e": e.get("delta_e"),

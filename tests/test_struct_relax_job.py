@@ -1045,6 +1045,40 @@ def test_omp_threads_env_reaches_the_container_argv(
     assert not any(a.startswith("OMP_NUM_THREADS") for a in argv)
 
 
+def test_dft_cpuset_replaces_the_fleet_job_cpuset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRECIS_DFT_CPUSET pins the DFT container (the GB10's fast cores) and
+    replaces, not duplicates, the fleet-wide PRECIS_JOB_CPUSET."""
+    monkeypatch.delenv("PRECIS_DFT_CPUSET", raising=False)
+    monkeypatch.setenv("PRECIS_JOB_CPUSET", "0-19")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert argv[argv.index("--cpuset-cpus") + 1] == "0-19"
+
+    monkeypatch.setenv("PRECIS_DFT_CPUSET", "10-17")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert argv.count("--cpuset-cpus") == 1
+    assert argv[argv.index("--cpuset-cpus") + 1] == "10-17"
+
+    monkeypatch.delenv("PRECIS_JOB_CPUSET")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert argv[argv.index("--cpuset-cpus") + 1] == "10-17"
+
+
+def test_paw_dir_mounts_read_only_at_the_image_setup_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PRECIS_DFT_PAW_DIR", raising=False)
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    assert not any("/opt/gpaw-setups" in a for a in argv)
+
+    monkeypatch.setenv("PRECIS_DFT_PAW_DIR", "/var/lib/precis/gpaw-setups")
+    argv = struct_relax.build_run_argv(ref_id=7, in_dir="/i", out_dir="/o")
+    mount = "/var/lib/precis/gpaw-setups:/opt/gpaw-setups:ro"
+    assert argv[argv.index(mount) - 1] == "-v"
+    assert argv.index(mount) < argv.index(struct_relax._IMAGE)
+
+
 def test_mpi_ranks_wrap_the_container_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,5 +1,20 @@
 # factory
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** When activated, address worker rotation starving rescue passes.
+- **Blocked by:** No declared active owner; reproduce starvation before fixing.
+- **Unblocks:** Reliable autonomous execution lanes.
+- **Acceptance:** Use [worker-rotation-starves-rescue-passes](../worker-rotation-starves-rescue-passes.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `factory`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when the agent execution lanes never silently starve or
 halt, spend is bounded, and a crashed run is recoverable — the platform
 under every pillar's agent work (`docs/roadmap.md` platform bucket). Today
@@ -9,7 +24,7 @@ terminal-silent halts), then bounded spend, then the quality-of-life and
 container items.
 **Last reviewed:** 2026-10-02 (fix lane dropped)
 **Worktree:** `factory`
-**Active:** no — opens at the next session restart if Reto names it.
+**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 

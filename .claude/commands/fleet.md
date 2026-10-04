@@ -81,7 +81,7 @@ Note from the user: `$ARGUMENTS`
    prod shas with ages, and the newest green main). No round open → open one and send
    `.claude/fleet/msg-round-open.txt`; one already open → resend only to
    windows `up` created. Then follow `/round` for collect → `round gate`
-   (newest green-CI main sha) → `round deploy` → verify → restart notice. After the deploy, also file
+   (exact open release head; newest green main without a release) → `round deploy` → verify → restart notice. After the deploy, also file
    `release-<round>-<n>.md` look-at items in the review queue: what is
    newly live and what Reto should look at, with the URL or command.
 
@@ -94,7 +94,7 @@ Note from the user: `$ARGUMENTS`
      in `.claude/purpose`; before the gate, check the range for two files
      with one number (`/whatneedsdoing`'s collision scan).
    - **Review the round's diff before the gate.** `git diff <base>
-     origin/main`, one `reviewer` agent per work area on its paths, asked
+     origin/<release/rN>` (or `origin/main` before a cut), one `reviewer` agent per work area on its paths, asked
      for what lint and tests cannot see: a stored design or measure whose
      meaning changes without a marker, an output change on regeneration
      with no version bump, a default that got more expensive. Findings go

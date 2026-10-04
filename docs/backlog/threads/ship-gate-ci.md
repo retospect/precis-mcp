@@ -1,5 +1,20 @@
 # ship-gate-ci
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** Implement release-round slice (c): gate/deploy release head, deployed tag and merge-back.
+- **Blocked by:** Check slices (a) and (b) are landed before building on them.
+- **Unblocks:** Verified release deployments for every thread.
+- **Acceptance:** Use [release-branch-rounds](../release-branch-rounds.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `ship-gate-ci`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when the ship gate, CI lanes and worktree reaper never
 hold the fleet hostage, never read a policy crash as a violation, and never
 delete a live session's tree — the path every pillar's work ships through
@@ -9,7 +24,7 @@ stalls (slot and lock holds, hangs), then verdict honesty (red that reads as
 green or the reverse), then tuning and residue.
 **Last reviewed:** 2026-10-04
 **Worktree:** `ship-gate-ci`
-**Active:** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
+**Allocation decision (historical):** yes — Reto 2026-10-03 ("push should not break build"; set off as p1).
 **Resume:** 2026-10-04 07:30Z. Everything this thread built is on main;
 the tree holds no unlanded work. Live in prod since round 4 (727728cc9):
 the narrow ship lock (forward-merge land with a `Gate:` trailer after the

@@ -1,0 +1,13 @@
+---
+# 49-vllm.yml — vLLM as a permanent managed service on the vllm_serving host(s).
+# See roles/vllm/README.md and docs/backlog/vllm-per-node-serving.md. The group
+# normally holds ONE GB10 host, exclusive to this service. Not part of site.yml.
+#
+#   ansible-playbook playbooks/49-vllm.yml
+
+- name: Run vLLM on the dedicated serving host
+  hosts: vllm_serving
+  become: false
+  roles:
+    - vllm
+  tags: [vllm]

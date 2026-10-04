@@ -33,6 +33,12 @@ corrections and no caller) is gone. ``handlers/`` and ``_test_store.py`` are
 inert: registered nowhere, kept because they type-check clean and keep the
 volcano-plot tests alive.
 
+**Run controls.** Deploy exposes MPI ranks and BLAS threads per host, with
+MPI off until the rebuilt image is available. An optional DFT cpuset replaces
+the fleet pin so heterogeneous cores do not slow every rank; the result file
+records the effective binding. PAW datasets stay in a read-only host mount
+rather than the image, allowing dataset changes without rebuilding it.
+
 **Licensing.** This subtree is MIT (``LICENSE-MIT`` alongside this file);
 precis-mcp is GPL-3.0-or-later. MIT into GPL is compatible — the combined work
 is GPL — and the MIT notice must travel with these files.

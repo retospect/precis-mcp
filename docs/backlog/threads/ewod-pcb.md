@@ -1,5 +1,18 @@
 # ewod pcb
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** Probe gr464537’s JLCPCB getComponentInfos first-page payload, then fix the HTTP 500; this is the first build on reopen.
+- **Blocked by:** No outside wait for gr464537. Check build-5 deployment before later dogfood; the sheet-job adapter waits on se-machine-design’s input shape.
+- **Unblocks:** A manufacturable EWOD board with trustworthy labels and routing.
+- **Acceptance:** Follow [the thread handoff](#thread-context) and [ranked work](#do-next): parts_refresh and datasheet URL lookup must stop failing with the same JLC API error.
+- **Worktree:** `ewod-pcb`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when an EWOD board can be designed, placed, routed, DRC'd,
 fabricated and driven as a testable system without a human pinning
 geometry, on the way to backlog/pcb-global-codesign-north-star.md. Today
@@ -18,7 +31,7 @@ landed; the sink pin-name item landed (U_TEMP is the TMP112, C28927);
 Do-next renumbered)
 **Worktree:** `ewod-pcb`
 
-## Resume (CLOSED 2026-10-03 ~22:00Z to save usage; unparked 15:38Z — Reto: "I also want the pcb/ewod thread to continue")
+## Detailed handoff (CLOSED 2026-10-03 ~22:00Z to save usage; unparked 15:38Z — Reto: "I also want the pcb/ewod thread to continue")
 
 Everything is landed. Builds 3-4 are live (prod 929107f32). Build 5
 (datasheet pull, 2b3c62811) and the docs (7f22e8128, 24872a348) are

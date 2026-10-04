@@ -1,0 +1,81 @@
+---
+# vllm — run vLLM as a permanent systemd-managed container on one GB10 host.
+# See README.md. Linux only; requires docker + the nvidia container runtime
+# (no ansible role establishes the runtime; the check below catches its absence).
+
+- name: vllm targets Linux GPU hosts only
+  ansible.builtin.assert:
+    that: os_family == "linux"
+    fail_msg: "The vllm role runs a CUDA container; Linux GPU host only."
+
+- name: Ensure the container runtime is present
+  ansible.builtin.command: "{{ vllm_container_cmd }} --version"
+  changed_when: false
+
+- name: Ensure the nvidia container runtime is configured in docker
+  # Fix by hand: nvidia-ctk runtime configure --runtime=docker && systemctl restart docker
+  ansible.builtin.command: "{{ vllm_container_cmd }} info --format '{% raw %}{{json .Runtimes}}{% endraw %}'"
+  become: true
+  register: vllm_runtimes
+  changed_when: false
+  failed_when: "'nvidia' not in vllm_runtimes.stdout"
+
+- name: Check the model dir exists on the host
+  ansible.builtin.stat:
+    path: "{{ vllm_model_dir }}"
+  register: vllm_model_stat
+  failed_when: not vllm_model_stat.stat.exists
+
+- name: Check the tiktoken dir exists on the host (gpt-oss harmony vocab)
+  when: vllm_tiktoken_dir | length > 0
+  ansible.builtin.stat:
+    path: "{{ vllm_tiktoken_dir }}"
+  register: vllm_tiktoken_stat
+  failed_when: not vllm_tiktoken_stat.stat.exists
+
+- name: Ensure the vLLM image is present (pull only if missing; bounded)
+  # A pre-pulled / docker-load'ed image satisfies this with no registry call.
+  # `timeout` bounds each attempt so a stalled TLS handshake cannot hang the run.
+  ansible.builtin.shell: >-
+    {{ vllm_container_cmd }} image inspect {{ vllm_image }} >/dev/null 2>&1
+    || timeout {{ vllm_pull_timeout }} {{ vllm_container_cmd }} pull {{ vllm_image }}
+  become: true
+  register: vllm_pull
+  retries: "{{ vllm_pull_retries }}"
+  delay: "{{ vllm_pull_delay }}"
+  until: vllm_pull.rc == 0
+  changed_when: "'Pull complete' in vllm_pull.stdout"
+
+- name: Deploy vllm systemd unit
+  ansible.builtin.template:
+    src: vllm.service.j2
+    dest: "/etc/systemd/system/{{ vllm_service_name }}.service"
+    mode: "0644"
+  become: true
+  notify:
+    - reload systemd (vllm)
+    - restart vllm
+
+- name: Apply unit changes before starting
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable + start vllm
+  ansible.builtin.systemd:
+    name: "{{ vllm_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Wait for vLLM /health (model load takes up to ~10 min)
+  # A specific bind address does not publish the port on loopback.
+  vars:
+    _vllm_health_addr: "{{ '127.0.0.1' if vllm_bind_addr == '0.0.0.0' else ('::1' if vllm_bind_addr == '::' else vllm_bind_addr) }}"
+  ansible.builtin.uri:
+    url: "http://{{ '[' ~ _vllm_health_addr ~ ']' if ':' in _vllm_health_addr else _vllm_health_addr }}:{{ vllm_port }}/health"
+    method: GET
+    status_code: 200
+  register: vllm_health
+  until: vllm_health.status == 200
+  retries: "{{ vllm_health_retries }}"
+  delay: "{{ vllm_health_delay }}"

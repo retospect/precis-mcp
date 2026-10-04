@@ -18,6 +18,7 @@ docs one. The range can only ever widen, so the only failure direction is
 over-gating.
 
   scripts/last-gated-main-sha [--start <ref>] [--limit N] [--hours H] [--age-hours]
+  scripts/last-gated-main-sha --exact <sha>  # one JSON verdict + age, no history walk
 
 Verdict rule for a sha: at least one check-run named exactly `lint`, every
 `lint` run SUCCESS; AND at least GATE_SHARDS (6) check-runs whose name starts
@@ -113,6 +114,134 @@ query($owner:String!,$name:String!,$since:GitTimestamp!,$after:String){
 """
 
 Run = dict[str, Any]
+
+# A release head can be main's second parent or not forwarded yet. Query its
+# object directly, never main history. Fail closed on truncated connections.
+EXACT_QUERY = """
+query($owner:String!,$name:String!,$sha:String!){
+ repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{
+  oid checkSuites(first:100){pageInfo{hasNextPage} nodes{
+   workflowRun{databaseId runAttempt file{path}}
+   checkRuns(first:100,filterBy:{checkType:LATEST}){pageInfo{hasNextPage}
+    nodes{name status conclusion completedAt}}}}}}}}
+"""
+
+
+def exact_verdict(sha: str) -> dict[str, Any]:
+    """Exact SHA certificate: distinct required jobs in one workflow attempt.
+
+    GraphQL is the fresh SHA-keyed check view. Bind its intended check.yml
+    run/attempt to the attempt jobs endpoint (GitHub Actions REST API); age
+    and job conclusions come from that same response. A partial failed-job
+    rerun needs a full rerun, since it cannot certify the complete job set.
+    """
+    facts: dict[str, Any] = {
+        "candidate": "",
+        "candidate_state": "unreadable",
+        "age_hours": None,
+    }
+    query_args = (
+        "gh",
+        "api",
+        "graphql",
+        "-F",
+        "owner={owner}",
+        "-F",
+        "name={repo}",
+        "-f",
+        f"sha={sha}",
+        "-f",
+        f"query={EXACT_QUERY}",
+    )
+    out = _run(*query_args)
+    try:
+        parsed = json.loads(out or "")
+        node = parsed["data"]["repository"]["object"]
+        suites = node["checkSuites"]
+        if (
+            parsed.get("errors")
+            or node["oid"] != sha
+            or suites["pageInfo"]["hasNextPage"]
+        ):
+            return facts
+        if any(s["checkRuns"]["pageInfo"]["hasNextPage"] for s in suites["nodes"]):
+            return facts
+        runs = _runs_of(node)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return facts
+    facts["candidate_state"] = "release_not_green"
+    relevant = [
+        r
+        for r in runs
+        if r.get("name") == "lint" or str(r.get("name", "")).startswith("test-linux")
+    ]
+    if not is_green(runs) or any(r.get("status") != "COMPLETED" for r in relevant):
+        return facts
+    try:
+        intended = [
+            s["workflowRun"]
+            for s in suites["nodes"]
+            if (s.get("workflowRun") or {}).get("file", {}).get("path")
+            == ".github/workflows/check.yml"
+        ]
+        run = max(intended, key=lambda r: int(r["databaseId"]))
+        run_id, attempt = int(run["databaseId"]), int(run["runAttempt"])
+        if run_id <= 0 or attempt <= 0:
+            return facts
+        result = _run(
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100",
+        )
+        parsed_jobs = json.loads(result or "")
+        jobs = parsed_jobs["jobs"]
+        if parsed_jobs["total_count"] != len(jobs) or any(
+            j.get("head_sha") != sha or j.get("run_id") != run_id for j in jobs
+        ):
+            return facts
+        required = [
+            j
+            for j in jobs
+            if j.get("name") == "lint"
+            or str(j.get("name", "")).startswith("test-linux")
+        ]
+        names = [j["name"] for j in required]
+        gate = {"lint", *(f"test-linux (3.13, {i})" for i in range(1, GATE_SHARDS + 1))}
+        full = gate | {f"test-linux (3.12, {i})" for i in range(1, GATE_SHARDS + 1)}
+        if len(names) != len(set(names)) or set(names) not in (gate, full):
+            return facts
+        if any(
+            j.get("status") != "completed" or j.get("conclusion") != "success"
+            for j in required
+        ):
+            return facts
+        facts.update(candidate=sha, candidate_state="found")
+        stamps = [datetime.fromisoformat(str(j.get("completed_at"))) for j in required]
+        newest = max(stamps)
+        if any(s.tzinfo is None for s in stamps) or newest > datetime.now(UTC):
+            return facts
+        # A rerun can start while attempt jobs are read. Do not certify the
+        # earlier attempt when its fresh SHA-keyed view changed underneath us.
+        latest = json.loads(_run(*query_args) or "")
+        if latest != parsed:
+            return {"candidate": "", "candidate_state": "unreadable", "age_hours": None}
+        facts.update(
+            age_hours=(datetime.now(UTC) - newest).total_seconds() / 3600,
+            certificate={
+                "sha": sha,
+                "workflow": ".github/workflows/check.yml",
+                "run_id": run_id,
+                "attempt": attempt,
+                "completed_at": newest.isoformat(),
+                "jobs": [
+                    {k: j[k] for k in ("name", "conclusion", "completed_at")}
+                    for j in required
+                ],
+            },
+        )
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return facts
+    return facts
 
 
 def _run(*args: str) -> str | None:
@@ -282,6 +411,9 @@ def _flag(argv: list[str], name: str, default: Any, cast: Any) -> Any:
 def main(argv: list[str]) -> int:
     if "--help" in argv or "-h" in argv:
         print(__doc__)
+        return 0
+    if "--exact" in argv:
+        print(json.dumps(exact_verdict(_flag(argv, "--exact", "", str))))
         return 0
     start = _flag(argv, "--start", "HEAD", str)
     limit = _flag(argv, "--limit", MAX_COMMITS, int)

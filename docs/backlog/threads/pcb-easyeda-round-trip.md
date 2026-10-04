@@ -1,5 +1,18 @@
 # pcb EasyEDA round trip
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** When the organizer reopens the parked thread, resume Do next 1 using the current real-board measurements.
+- **Blocked by:** Parked at tier 3: start no new slice until organizer reopen. Reto’s Pro look remains pending; coordinate shared files with [ewod-pcb](ewod-pcb.md#resume).
+- **Unblocks:** A corrected board that routes and round-trips.
+- **Acceptance:** Use [pcb-router-fails-at-real-board-size](../pcb-router-fails-at-real-board-size.md) and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
+- **Worktree:** `pcb-easyeda-round-trip`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when a colleague's EasyEDA Pro board round-trips through
 precis (import, re-route to a correct spec, export Pro opens and edits,
 order) with every loss warned rather than silent. **Reto's real

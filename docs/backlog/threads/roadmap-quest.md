@@ -1,5 +1,18 @@
 # bootstrap roadmap quest
 
+## Resume
+
+- **Pillar:** quests
+- **Next:** While parked, verify the recorded post-deploy cap and tick-remint waits; build role-choice skip only after organizer reopen.
+- **Blocked by:** Tier-3 park forbids new slices until reopen; cap verification waits on deployment, and successful S2 escalation needs a worker tick.
+- **Unblocks:** Bounded research spend and an unattended quest loop.
+- **Acceptance:** Follow [the latest handoff](#thread-context): observe supply_outside_failed and ledger_ops applied before closing their items; act before reopen only on the recorded fail signals.
+- **Worktree:** `roadmap-quest`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when the root roadmap quest ticks unattended, writes rungs
 that carry numbers, and drives priority down to the pathway quests with a
 reviewed ledger behind every tick. Today stages 1-4 are built, gated and

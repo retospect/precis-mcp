@@ -19,9 +19,11 @@ Peers are down in the weeds — one short question each, never a task.
 
 - `docs/roadmap.md` — each pillar's end state, north-star items, threads,
   the active set, the retirement rules, the review log at the bottom.
-- `docs/backlog/threads/INDEX.md` §Pillars and §Active / dormant.
+- `docs/backlog/threads/INDEX.md` §Pillars and generated `PRIORITIES.md`
+  (run `python3 scripts/docs-index` if missing or stale); activity comes
+  only from `.claude/fleet/threads.tsv`.
 - `scripts/inflight` — which threads actually have a session today; a
-  mismatch with the roadmap's active list is a finding, not a fix.
+  mismatch with the fleet roster’s declared active set is a finding, not a fix.
 - `get(kind='quest', id=459585, view='tree')` — the paper cadence: is this
   month's todo on track, and which decision blocks it.
 - `search(kind='gripe', status='open', page_size=100)` paged to the end —
@@ -61,7 +63,7 @@ readings lead to materially different work. Log every ruling as
 
 Three commits, disjoint file ownership, agents in parallel:
 
-- **You:** `docs/roadmap.md` (end states, "Where it stands", active set,
+- **You:** `docs/roadmap.md` (end states, "Where it stands", allocation priorities,
   the review-log line), `docs/mission.md` if a doctrine changed, and the
   items that carry the rulings.
 - **A `documenter` agent:** the gap items, from one-paragraph briefs with

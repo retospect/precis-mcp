@@ -5,13 +5,13 @@
 > polled). This page sits **above** `docs/backlog/threads/INDEX.md` (the
 > programme map) and `docs/backlog/threads/*.md` (the ordering layer). It
 > holds four things and nothing else: what each pillar is for, which thread
-> files carry it, which threads are active, and the retirement rules.
+> files carry it, where declared activity is listed, and the retirement rules.
 > **Pointers and intent only** — the same rule as a thread file. An item's
 > content lives in `docs/backlog/<slug>.md`; a thread's order lives in its
 > thread file; the mission prose lives in `docs/mission.md`.
 >
 > Update at the same four moments as a thread file, plus one: when the
-> active set changes (a session opens or closes on a thread).
+> fleet roster changes.
 
 ## The two halves
 
@@ -44,6 +44,36 @@ boundary by dependency direction, not by A/B, and the two mostly coincide:
 the util package is B, the geometry package and the models are A. Two known
 mismatches, both recorded there: the quest kind is A but lands in the
 default kit; `se` sits inside geometry rather than as a peer plugin.
+
+## Allocation priorities
+
+Graph memory is the leading objective (Reto, 2026-10-04). Local compute,
+Meluxina, design and research progress alongside it. Paper and catalysis
+receive equal research allocation. Dependencies and live regressions rank
+the next build within each programme; explicit holds still apply. Personal
+integration remains held; plugin-split keeps its agreed dated sequence.
+
+Pillars describe enduring outcomes; programmes coordinate related threads;
+threads own the next build and its acceptance. Read only the owning thread
+and linked spec for a task. The [programme review](backlog/parallel-programme-cycle.md)
+maps current next steps and blockers; these are the durable ownership seams:
+
+| Programme | Owning threads | Build → dogfood outcome |
+|---|---|---|
+| Graph memory | [Consumers](backlog/threads/graph-memory-consumers.md), [substrate](backlog/threads/knowledge-mesh.md) | Author, retrieve and reconstruct real memory through the graph; retire the corresponding file workflow. |
+| Local compute | [Local compute](backlog/threads/local-compute.md) | Qualify local models on actual graph workloads; measure quality, throughput and placement. |
+| Meluxina ML-potential/DFT | [Local compute](backlog/threads/local-compute.md), [chemistry](backlog/threads/chemistry.md), [hexfold](backlog/threads/hexfold-toolkit.md) | Submit, recover and collect a real batch with provenance. |
+| PCB place/route/EWOD | [EWOD](backlog/threads/ewod-pcb.md), [EasyEDA round-trip](backlog/threads/pcb-easyeda-round-trip.md) | One coordinated programme, distinct boards; valid placement, routed nets and geometric DRC. Sequence changes to shared generator/DRC code. |
+| Printed structural parts | [Machine design](backlog/threads/se-machine-design.md) | Manufacture a part and compare measured load response with prediction. Separate materials development remains a scope question. |
+| SE print normalization | [Machine design](backlog/threads/se-machine-design.md), [viewer](backlog/threads/se-3d-viewer.md) | Correct printed scale and metadata, with checks at the size actually printed. |
+| Smooth carbon surfaces + Y instrumentation | [Hexfold](backlog/threads/hexfold-toolkit.md) | Tile an authored surface, verify relaxed geometry, then integrate a typed instrumentation leg. |
+| Paper + catalysis | [Nanobuds paper](backlog/threads/nanobuds-paper.md), [catalysis](backlog/threads/catalysis-selectivity.md) | Export with evidence pins; compare complete reaction networks under the existing research holds. |
+| Drive hierarchy | Coordinator with the web owner; [spec](backlog/drive-filter-hierarchy.md) | A new user finds a known object through a bounded set of visible choices. |
+
+Every programme uses the [build/release/dogfood cycle](runbooks/release-cycle.md).
+Each task has its own branch and worktree; integration and release work also
+use separate worktrees. Release cutoffs follow completed deployments and
+useful ready work, with asynchronous dogfood tied to the deployed SHA.
 
 ## Pillar 1 — memory is the graph (B)
 
@@ -78,14 +108,14 @@ given the same goal filed `backlog/experiment-loop.md` (hypothesis → test
 2026-10-02 as columns on `relations`); the open two are ranked in
 `knowledge-mesh.md`.
 
-**Threads.** `knowledge-mesh.md` (active — substrate, the memory half and
-the surfaces) · `graph-memory-consumers.md` (active — agent-side
-affordances) · `ingest-and-fetch.md` (active, created 2026-10-01 on Reto's
+**Threads.** `knowledge-mesh.md` (owns substrate, the memory half and
+the surfaces) · `graph-memory-consumers.md` (owns agent-side
+affordances) · `ingest-and-fetch.md` (created 2026-10-01 on Reto's
 ruling — acquisition and extraction fidelity, what the graph is fed; triage
-before rank) · `claims-and-evidence.md` (active, created 2026-10-01 —
+before rank) · `claims-and-evidence.md` (created 2026-10-01 —
 the taproot/nanopub defect and follow-on cluster; Do-next 1 is the
 computed-pathway evidence edge the claim page drops) · `draft-authoring.md`
-(active, created 2026-10-01 — ranked by what the month's preprint hits).
+(created 2026-10-01 — ranked by what the month's preprint hits).
 Seams: substrate vs consumers, pipeline vs the layer that consumes it, and
 the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
 Top priority (Reto, 2026-10-01): `backlog/memory-native-authoring.md`, the
@@ -119,8 +149,10 @@ ratchet valve** (`hexfold` spec §28); the **T-handle bearing**
 part** (`backlog/se-chain-wrap-around-part.md`); the cross-scale flagship,
 a bistable azobenzene driving a folding-chair tensegrity switched by two
 wavelengths (spec Addendum A1); the running mechanical example, the
-unicycle. A "smooth" transition today is a stepped collar; continuous
-curvature is on hexfold's far horizon (§28.5–28.6) and is not promised.
+unicycle. Authored smooth surfaces and their carbon tiling are tracked by
+`backlog/hexfold-ideal-surface-then-tile.md`; instrumentation integration
+remains `backlog/hexfold-instrumentation-leg.md`. A generated surface alone
+does not establish relaxed carbon stability.
 
 **Where it stands.** The geometry and assembly half is real (hierarchy
 addressing, ports, the level ladder, validate findings, replayable op
@@ -139,7 +171,7 @@ chemistry's main line today — the catpath engine (`src/precis_pathway`,
 reference engine in the catpath repo) and the pathway explorer — consumed
 by the catalysis quests.
 
-**Threads.** Active: `catalysis-selectivity.md` (created and activated
+**Threads.** `catalysis-selectivity.md` (created and activated
 2026-10-02, ranked high by Reto: NO→NH₃ must win every fork,
 thermodynamically and kinetically, over a U/pH window, on a complete
 network; plus the explorer's one-step-per-change diagram) ·
@@ -149,7 +181,7 @@ network; plus the explorer's one-step-per-change diagram) ·
 `nanobuds-paper.md` · `se-machine-design.md` (the se owner, activated
 2026-10-01 — it carries the property layer and the intent loop the
 north-star spec needs) · `chemistry.md` (created and activated
-2026-10-01, catalysis first). Dormant: `multiscale-design-core.md` ·
+2026-10-01, catalysis first). Additional ranked threads: `multiscale-design-core.md` ·
 `pcb-platform.md`.
 
 **Surfaces.** Agent: a design reads out as a replayable op list and an
@@ -181,21 +213,25 @@ current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
 (`backlog/vllm-per-node-serving.md` Slice 0).
 
 **Compute reserve: Meluxina** (Reto, 2026-10-02: "we should use compute
-there"). An external Slurm HPC allocation, reached as a client through
-`slullama`. Two uses, both owned by `local-compute.md`: LLM operations, as
+there"). An external Slurm HPC allocation. Two uses, coordinated by
+`local-compute.md`: LLM operations through `slullama`, as
 a placement-chain rung (`backlog/slullama-hpc-placement.md`: the card is
 shipped dark, the rung waits on cluster access, td345845); and catpath
-runs, which have no item yet. How it shows in the local-versus-cloud share
+runs and ML-potential/DFT batches, with chemistry and hexfold as consumers.
+Batch stage/submit/poll/fetch is a separate runner from LLM tunnel serving;
+the next integration slice needs its own spec once access and a local GPAW
+relax are verified (see the [programme review](backlog/parallel-programme-cycle.md)).
+How it shows in the local-versus-cloud share
 (its own row, or folded into local) is undecided. No hostname, address or
 account id for it goes in this repo; coordinates live in the gitignored
 overlay.
 
-**Threads.** Active: `local-compute.md` (owns local serving: the summariser
+**Threads.** `local-compute.md` (owns local serving: the summariser
 and the single-spark model, and what they do) · `session-mcp-shared-server.md`
 (the platform blocker every thread owner named; since 2026-10-01 the shared
 server is supervised, serves the deployed sha and reads secrets from files —
 open: a container recreate strands interactive sessions, embedder capacity,
-per-session DB roles). Dormant:
+per-session DB roles). Additional ranked threads:
 `serving-programme.md` (the MCP ceiling and the eval spine; Reto 2026-10-01 —
 nothing hits the ~28 calls/s ceiling at ~15 sessions).
 
@@ -248,7 +284,9 @@ measured surface error rate in `backlog/mcp-surface-economy.md`, plus the
 14-day `surface-review` pass. Human surface = Reto's own friction filed as
 gripes; `precis_web` has no usage instrumentation and none is planned for
 one user. Surface work is ranked inside the pillar thread that owns the
-object; there is no UX thread.
+object. Cross-kind Drive is a coordinated web task in
+`backlog/drive-filter-hierarchy.md`; Reto approved task entry points and a
+shared searchable picker. Storage/API details remain in owning-spec review.
 
 ## Where an item says which pillar it serves
 
@@ -262,38 +300,15 @@ infrastructure, monitors, refactor debt: what every pillar stands on).
 ## Active and dormant threads
 
 A thread file exists for any thread with three or more live items
-(`threads/README.md`). **Active** means a session and a worktree exist
-and the owner is expected to move it. **Dormant** means ranked and filed
-against, nobody works it. Opening a session on a dormant thread names
+(`threads/README.md`). **Active** means the roster allocates an owner expected to move it.
+**Dormant** means ranked and filed against without that allocation.
+The roster declares intent; `scripts/inflight` checks live sessions and trees. Opening a session on a dormant thread names
 which active one it replaces, or Reto widens the set.
 
-Active (20; the 12 Reto kept 2026-09-30 — "the ones we have are good" —
-plus seven on 2026-10-01, minus serving-programme, plus
-`catalysis-selectivity` on 2026-10-02, plus `ship-gate-ci` on 2026-10-03;
-`.claude/fleet/threads.tsv` is the same set as the sessions `/fleet` opens,
-changed in the same commit):
-`catalysis-selectivity` ·
-`ewod-pcb` · `hexfold-toolkit` · `monitors-that-go-quiet` ·
-`nanobuds-paper` · `pcb-easyeda-round-trip` · `plugin-split` (lands its
-current slice, idles until the 2026-10-16 hold expires, then resumes the
-module moves, which feed the catpath paper due in November — Reto
-2026-10-03: a dated sequence, not open-ended lowest-priority work) ·
-`roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain`
-· `session-mcp-shared-server` · `knowledge-mesh` ·
-`claims-and-evidence` · `se-machine-design` · `chemistry` (added
-2026-10-01, Reto's rulings) · `local-compute` (added 2026-10-01) ·
-`ingest-and-fetch` · `draft-authoring` · `graph-memory-consumers` (all
-three 2026-10-01: "ingest must work. draft authoring must work. graph
-memory we want soon") · `ship-gate-ci` (2026-10-03, Reto: "push should not
-break build" — `backlog/release-candidate-verdicts.md` as p1).
-
-Dormant (6, open at the next restart if named): `multiscale-design-core`
-· `factory` (2026-10-01, the agent-lane items moved from pillar 3) ·
-`pcb-platform` (created at the 09-30 review) · `serving-programme`
-(2026-10-01, Reto: until the session count nears the serve ceiling) ·
-`deploy-fleet-ops` · `security-hardening` (platform bucket,
-2026-10-02, from the unowned platform items). Code-debt, db-schema and
-docs-audit items stay unthreaded.
+Declared activity and next actions are in the [generated priority table](backlog/threads/PRIORITIES.md).
+The sole roster is `.claude/fleet/threads.tsv`; change it when the declared
+active set changes. Run `python3 scripts/docs-index` if the table is missing
+or stale. Live session/worktree state is checked separately with `scripts/inflight`.
 
 ## Retirement
 

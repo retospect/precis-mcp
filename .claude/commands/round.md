@@ -1,5 +1,5 @@
 ---
-description: Coordinate one peer round — peers dogfood on prod, fix, qland; you deploy the newest main sha with a green CI verdict (scripts/round gate|deploy), verify, and open the next round. Run from the coordinating (deploy) session's worktree.
+description: Coordinate one peer round — peers dogfood on prod, fix, qland; you deploy the exact open release head with a fresh green CI verdict (newest green main when no release) (scripts/round gate|deploy), verify, and open the next round. Run from the coordinating (deploy) session's worktree.
 argument-hint: "[optional note for the round ping]"
 allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/inflight:*), Bash(scripts/qgo-guard:*), Bash(git:*), Bash(cat:*), Agent, SendMessage, ListAgents
 ---
@@ -7,7 +7,7 @@ allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:
 You are the coordinator of a peer round. Many sessions land onto `main` with
 `/qland` (no pytest); main's GitHub CI samples the newest sha about once
 per run (~45 min, a running run is never cancelled), and one
-session — you — puts the newest green main sha on the cluster. A round is one pass of that.
+session — you — freezes a green main SHA as a release and puts that release head on the cluster. A round is one pass of that.
 
 The tally is a file, not a conversation: `scripts/round` keeps who has landed
 under the common git dir, and peers mark themselves from their own trees. A
@@ -49,7 +49,7 @@ Note from the user: `$ARGUMENTS`
    peers' qlands never queue behind the round. A peer's sha that is not yet
    under the candidate rides the next round, or wait for its CI run (~12 min).
 
-   **Release branch (slice a).** To freeze what the round ships, run
+   **Release branch.** To freeze what the round ships, run
    `scripts/round cut` once the marks are in (`--dry-run` first; `--sha S`
    overrides the candidate). It pushes `release/r<N>` at the candidate, records
    it in `round.json` (`round status` shows it) and prints the `fleet say`
@@ -57,8 +57,11 @@ Note from the user: `$ARGUMENTS`
    cut does not contain: they land on main for the next round. It refuses
    while any `release/*` branch exists, off main's first-parent line, or on a
    new duplicate migration number. `scripts/round cut --abandon` deletes the
-   branch once everything on it is on main. `gate`/`deploy` still read main
-   until slice (c) lands. Fixes onto the release: see "Release fixes" below.
+   branch with a head lease once everything on it is on main. After the cut,
+   `gate`/`deploy` read only the exact remote release head: lint and all six
+   shards must be green, with a known fresh verdict age. A red/incomplete or
+   missing release never falls back to main or an earlier green SHA. Fixes
+   onto the release: see "Release fixes" below.
 
 4. **Red verdict → route, do not absorb.** `round gate` names the newest
    failed main sha above the candidate, its failing jobs and the
@@ -71,20 +74,42 @@ Note from the user: `$ARGUMENTS`
 
 5. **Deploy the candidate.**
    ```
-   scripts/round deploy > /tmp/round-deployN.log 2>&1; echo "DEPLOY_EXIT=$?" >> /tmp/round-deployN.log
+   scripts/round deploy > .claude/round-deployN.log 2>&1; echo "DEPLOY_EXIT=$?" >> .claude/round-deployN.log
    ```
    Background, waiter on `^DEPLOY_EXIT=`; `--dry-run` first if in doubt. It
-   refuses a candidate that is not an ancestor of main, older than
-   `PRECIS_ROUND_MAX_CANDIDATE_HOURS` (default 6), or that `gated` cannot
+   refuses a main candidate that is not an ancestor of main, any verdict older than
+   `PRECIS_ROUND_MAX_CANDIDATE_HOURS` (default 6), or that `gated`/`prod` cannot
    fast-forward to; otherwise it moves `gated` and runs
-   `scripts/deploy <40-char sha> --pinned`. Not between 03:00 and 04:20 UTC.
+   `scripts/deploy <40-char sha> --pinned`. Release mode requires a fresh
+   success marker and matching remote prod after zero exit, then stops with
+   exit 3 for actual runtime verification. Only the coordinator confirmation
+   in step 6 publishes immutable `deployed/r<N>`, forwards to main if needed,
+   lease-deletes the release and clears its record. The separate lifecycle lock blocks release fixes and
+   round mutations during rollout; main lands keep moving. A partial failure
+   retains the pin: rerun the same command after resolving it, never abandon a
+   deployment journal or substitute newer main. A changed release head or
+   conflicting deployed tag needs coordinator investigation. Not between
+   03:00 and 04:20 UTC.
    If the preflight reports a host unreachable, probe it once and retry
    once; a second failure is a report, not a loop.
 
-6. **Verify, in this order.** `DEPLOY_EXIT=0`; the `origin/prod →` and
+6. **Verify, in this order.** With a release, `DEPLOY_EXIT=3` means rollout
+   returned success and runtime proof is pending; without one, require exit 0.
+   The `origin/prod →` and
    `prod clone →` lines name the sha; `get(kind='skill', id='precis-status')`
    reports that `git_sha`, the expected migration, and the registered kinds
-   you had before. A restart that does not come back within a minute: read
+   you had before. Verify every required daemon boot SHA and readiness too,
+   including the serving worker. Once observed on the pinned SHA, record compact
+   current evidence (no credentials/raw logs):
+   ```
+   scripts/round deploy --confirm-runtime <SHA> --runtime-evidence "<services, boot SHAs, readiness and session MCP observations>"
+   ```
+   Require exit 0 for tag/merge/retirement. If closeout fails, rerun `round deploy`: it
+   resumes the confirmed SHA without reinstalling or applying the CI-age limit.
+   A changed install receipt requires a fresh runtime observation, even for the
+   same SHA. Completed retries perform no new deploy; immutable per-round CI
+   and runtime receipts remain in the common-dir `precis-round/receipts/`.
+   A restart that does not come back within a minute: read
    the shared server's supervisor log before anything else.
 
 7. **Tell everyone the server restarted.** Every deploy restarts the shared

@@ -25,6 +25,7 @@ numbers rather than by writing a parser.
 | Flag | Source | What it uniquely gives |
 |---|---|---|
 | `--local` | `~/.claude/projects/*/*.jsonl` **and** `*/subagents/agent-*.jsonl` | The richest corpus: full tool stream, exact per-turn tokens from `message.usage`, non-precis detours, and user corrections. 91% of files are sidechains — an earlier audit's glob missed them entirely, so the sidechain shape is pinned by a test. |
+| `--codex` | `~/.codex/sessions/**/*.jsonl`, scoped by `--cwd-root` or repeatable `--thread-id` | Main/child tool streams, user turns and per-response usage; `coverage.json` names missing data and opaque nested tools. |
 | `--ledger` | `tool_calls` (migration 0133) | Fleet-wide verb/kind/outcome/latency rates. **No payload, ever** — `input_keys` is argument *names* only. Targeting, not causes. |
 | `--llmlog` | `llm_call_log` | Model/tier/cost/latency per LLM call, and `data_parsed` as a prompt-quality signal. |
 | `--jobs` | `refs.meta->>'transcript'` on `kind='job'` | Server-side tool streams. Nearly empty now (`plan_tick` is down to a couple of runs a week) — kept because the window predates that, and because `doctor_tick` still writes here. |
@@ -82,12 +83,37 @@ run.sh       the stages in order, for one window
 scripts/mine-sessions/run.sh --since 7d             # local corpus
 scripts/mine-sessions/run.sh --since 14d --prod     # + ledger/llmlog/jobs
 scripts/mine-sessions/run.sh --since 2d --limit 20  # smoke run
+MINE_OUT="$HOME/.cache/precis-mine-sessions/review-example" scripts/mine-sessions/run.sh \
+  --codex --thread-id SESSION_UUID --since 2026-10-04T12:00:00Z --until 2026-10-04T18:00:00Z
 ```
 
 `run.sh` prints the artefact paths when it finishes. Read `scoreboard.md`
 (one screen), then hand `cards/<detector>/` to a `forensics` agent, one
 directory per agent. Raw transcripts should never reach a main loop — that is
 what the cards are for.
+
+Codex requires explicit project or thread scope. `--thread-id` includes child
+threads recursively; `--cwd-root` includes descendants by path components.
+Both flags repeat. `--codex` alone selects Codex; add `--local` to include
+Claude as well. Fleet reviews should use registered thread IDs, avoiding other
+projects and unrelated sessions. Intervals are UTC `[since, until)`.
+
+The adapter skips inherited child history at the recorded ordinal, joins tool
+results by call ID and prefers deduplicated per-response usage records over
+cumulative telemetry. Older token counters use deltas, never repeated
+`last_token_usage`. Codex cached tokens are already part of input tokens.
+`coverage.json` reports absent threads, malformed rows, unmatched results,
+missing usage and omitted forks with no safe history boundary. Counters refer
+to scoped files; `events_in_window` is the filtered interval count.
+
+Nested tool calls inside `functions.exec` JavaScript remain opaque calls: do
+not claim complete MCP rates from those rollouts. Error classification requires
+structured outcome flags; prose mentioning an error is evidence for a reviewer,
+not a confirmed tool failure. Read coverage alongside the scoreboard. Codex
+artifacts are refused inside either the worktree or its primary checkout.
+
+Six-hour fleet scheduling and the completion report contract are in
+`docs/runbooks/codex-fleet-review.md`.
 
 ## Detectors
 

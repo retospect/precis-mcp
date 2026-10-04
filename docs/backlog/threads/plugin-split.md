@@ -1,5 +1,18 @@
 # plugin split
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** Check pending publishers; resume module moves when the agreed hold lifts.
+- **Blocked by:** Module moves held until 2026-10-16; publisher correction belongs to Reto.
+- **Unblocks:** Packaging for the November catpath paper.
+- **Acceptance:** Use [plugin-split-runtime-shell](../plugin-split-runtime-shell.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when `pip install precis-util <one-model>` boots a serve
 exposing that model's kinds and skills with no precis-mcp installed, and
 catpath is the reference model in its own repo — specced in
@@ -17,7 +30,7 @@ presentation work is the same thread by dependency.
 gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
 **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 
-## Resume here (2026-10-03)
+## Detailed handoff here (2026-10-03)
 
 - **Idle until 2026-10-16, then resume without waiting for a reopen**
   (Reto, 2026-10-03). The thread is tier 3 but not open-ended parked,

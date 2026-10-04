@@ -16,8 +16,24 @@ dft_image: "precis-dft:cpu"
 dft_container_cmd: docker
 
 # the data node's NFS export, as mounted on this node (the GPU node = /shared; macOS = /opt/shared).
+# A node-local path (e.g. /var/lib/precis) also works for struct_relax: the
+# node gate makes the DFT node both stage and run its own jobs, and the only
+# reader of the scratch output is that same worker. It also moves
+# struct_search's scratch (same variable) — whose recorded database_path
+# would then be node-local.
 dft_nfs_root: /shared
 dft_scratch_dir: "{{ dft_nfs_root }}/scratch"
+
+# GPAW parallelism — defaults keep today's behaviour (serial GPAW, BLAS on 4
+# threads). Set per host once the MPI-built image is on the node, e.g.
+# dft_mpi_ranks: 8, dft_omp_threads: 1, dft_cpuset: "<fast-core list>".
+dft_mpi_ranks: 0
+dft_omp_threads: 4
+# Empty = no DFT-specific pin (the fleet-wide PRECIS_JOB_CPUSET, if any, applies).
+dft_cpuset: ""
+# Host directory of GPAW PAW datasets, mounted at /opt/gpaw-setups. The
+# Dockerfile bakes none; empty = no mount (an image with them baked in).
+dft_paw_dir: ""
 
 # The worker runs as this user; it must be able to run `docker` (no sudo).
 dft_worker_user: deploy

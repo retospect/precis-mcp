@@ -33,11 +33,14 @@ outside the repo). Summary:
    release head, pushes it with a CAS, and **merges the release forward into
    main at once** as a real `--no-ff` merge, so other sessions stop hitting
    the bug during the release window. A conflict stops and reports.
-4. `round gate` reads the release head's verdict, under the same rule as
-   main: lint + ≥ 6 `test-linux` all SUCCESS.
+4. `round gate` reads only the exact release head's check.yml run/attempt:
+   lint + six distinct 3.13 shards all successful (optional complete 3.12
+   matrix), with completion age bound to that same certificate.
 5. `round deploy` deploys the head pinned, moves `gated`/`prod`
-   fast-forward, tags `deployed/r<N>`, merges the branch back into main as a
-   real merge (a no-op once every fix was forwarded) and deletes the branch.
+   fast-forward, awaits coordinator runtime evidence, then tags `deployed/r<N>`,
+   merges the branch back into main as a real merge (a no-op once every fix was
+   forwarded) and deletes the branch. Main full gates defer global gated
+   publication while the release owns it; local pins and main lands remain.
 
 Main's CI stays the shared never-cancel-running group (d2c469007), so the
 qland drift guard keeps reading main.
@@ -91,3 +94,80 @@ with the forward merge: shipped 2026-10-03 (applies a tree's change onto the
 open release and merges it forward into main in one narrow-lock section;
 migrations and `safe_fetch.py` refused without `--allow-migration`). (c) `round gate`/`deploy` on the release head, the tag,
 the merge-back, and docs (`/round`, `/fleet`, CLAUDE.md ship section).
+
+## Slice (c) focused design (release worker, 2026-10-04)
+
+Architecture-review D1–D6 revisions:
+
+- Exact remote release head only; no main/parent fallback. CI helper binds a
+  fresh SHA-keyed check view to check.yml's run/attempt and its distinct
+  required jobs (lint + 3.13 shards 1–6; optional complete 3.12 set). Job
+  conclusions and verdict age come from one attempt-jobs response. Unknown,
+  duplicate, missing, mixed-head, partial, paginated or future-clock facts
+  refuse. Main fallback retains its existing selection when no release exists.
+- Separate common-dir advisory lifecycle lock: open/close/cut/abandon/deploy
+  and release-fix final section; lifecycle before narrow ship when both apply.
+  Stable inode, no unlink/age-steal; deployment child inherits descriptor
+  ownership if wrapper dies. Scope is one checkout, not distributed locking;
+  external controllers still require CAS/rechecks. Main lands do not acquire
+  this lock. Main full gates nonblockingly defer global gated publication while
+  lifecycle is busy or release recorded, retaining their local pins. Cut checks
+  gated/prod ancestry, so a main publication that won before cut cannot open
+  an undeployable release. No force rewind.
+- Phase journal owns the release head beyond lock lifetime. Release ships,
+  abandon/close refuse unresolved attempts. Retargeting is an explicit future
+  coordinator reconciliation; never automatic. A cut intent is persisted
+  before expected-absent creation and reconciled after uncertain acknowledgement.
+- Deploy preflight: exact fresh CI certificate, descendant of cut, FF gated
+  AND prod, unchanged release head, compatible local pin and immutable tag.
+  Persist pin/certificate before effects; existing deploy SHA --pinned path
+  retains its health/convergence checks. Recheck head before/after rollout.
+- rc0 + fresh success marker + exact remote prod means **rollout returned
+  success**, not runtime health. Exit 3 leaves the release open for actual
+  coordinator observation of every required daemon's boot SHA/readiness and
+  session MCP. `round deploy --confirm-runtime SHA --runtime-evidence TEXT`
+  records that current live observation only after successful rollout. It is
+  an operator attestation, not an automated installed-metadata health proof.
+  Wrong/missing target/evidence or changed prod/head cannot retire the branch.
+- Runtime-confirmed closeout publishes/reuses the immutable LIGHTWEIGHT
+  deployed/r<N> tag; an annotated or conflicting tag is refused. Merge the
+  pinned SHA forward with merge-tree/commit-tree and bounded FF CAS unless
+  already contained. Recheck main/prod/tag/head, lease-delete only inspected
+  release head, clear record last. Retain CI/runtime evidence in deployed state.
+  Archive an immutable common-dir receipts/r<N>.json before final state clear
+  and round replacement. Successful exact archive publication is the terminal
+  completion commit point: if final round.json persistence is interrupted,
+  reconcile the matching original journal from that archive before evaluating
+  receipt refresh. Preserve archive bytes/evidence; conflicts still refuse.
+  Subsequent install repairs are outside this completed round and do not produce
+  a new health claim or reinstall. Completed deploy retries are terminal/idempotent and
+  never re-enter main fallback. Present malformed/unreadable lifecycle state
+  refuses all round operations without overwriting evidence. Round and shell
+  publication/journal readers share the same identity/phase validator; empty
+  release/deployed/deployment records are invalid, never absence. Runtime observation
+  stores the exact success-marker content/mtime/inode; a changed generation,
+  including the same SHA, supersedes the observation and requires fresh runtime
+  evidence without another install. Recheck that generation before closeout.
+  After acknowledged or uncertain remote deletion, fresh confirmation requires
+  retained prior runtime proof, the matching immutable tag, exact current
+  receipt/prod and main containment; unexplained missing branches still refuse.
+  Failed tag/merge/delete resumes closeout without reinstall or CI age policy;
+  newer/conflicting prod stops recovery. Missing branch resumes only from
+  retained verified journal, matching tag/prod and main containment.
+
+| Journal phase | Next operation | CI freshness | Release mutation |
+|---|---|---|---|
+| cut intent | reconcile expected SHA/create | selection already recorded | blocked |
+| selected / rollout uncertain | same-SHA rollout retry | required before hosts | blocked |
+| rollout returned success | current coordinator runtime observation | no reinstall | blocked |
+| runtime confirmed | tag / final merge / leased retirement | closeout ignores age | blocked |
+| remote deleted, state remains | validate evidence, clear record | no reinstall | blocked |
+| retired | close/open next round | next round's policy | available |
+
+Verification: bare origins and fake deploys cover exact certificate, main
+publication ownership, second-parent prod/status/fleet refs/diff, release/main
+races, killed wrapper/live child, stale runtime evidence, immutable tags,
+conflicts, leased retirement and every partial retry. Full suite/live round
+remains coordinator-scheduled. Existing raw scripts/deploy's installed-versus-
+running gap remains health-hardening work; slice (c) requires coordinator
+runtime proof before certifying/retiring a release.

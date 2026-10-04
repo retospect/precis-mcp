@@ -12,40 +12,28 @@ Four pillars sit above the programme layer, text in `docs/roadmap.md`.
 Each programme below serves one or more:
 
 - **memory-graph** — `knowledge` (knowledge-mesh owns the substrate) +
-  `graph-memory-consumers` (dormant; owns consumers of that substrate) +
+  `graph-memory-consumers` (owns consumers of that substrate) +
   `claims-and-evidence` (identity and evidence checks of claims) +
-  `draft-authoring` (dormant; drafts, export, tex layer).
-- **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core`
-  (dormant) + `se-machine-design` + `pcb-platform` (dormant).
-- **local-compute** — `local-compute` (active 2026-10-01; owns local model
+  `draft-authoring` (drafts, export, tex layer).
+- **3d-design** — `pcb` + `se` + `chemistry` (incl. `catalysis-selectivity`) + `multiscale-design-core` + `se-machine-design` + `pcb-platform`.
+- **local-compute** — `local-compute` (owns local model
   serving: the summariser and the single-spark model, and what they do) +
   `serving` (owns the MCP ceiling and the eval spine).
 - **personal-integration** — HELD; no programme yet.
-- **platform** — `plugin-split` + `monitors-that-go-quiet` + `factory`
-  (dormant; agent execution lanes, budget, crash recovery) +
-  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (all dormant,
-  created 2026-10-02); serves all four indirectly (nothing ships without it).
+- **platform** — `plugin-split` + `monitors-that-go-quiet` + `factory` +
+  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (created 2026-10-02); serves all four indirectly (nothing ships without it).
 
-## Active / dormant
+## Activity and next actions
 
-**Active** (has a session): `ewod-pcb` · `hexfold-toolkit` ·
-`monitors-that-go-quiet` · `nanobuds-paper` · `pcb-easyeda-round-trip` ·
-`plugin-split` · `roadmap-quest` · `se-3d-viewer` · `se-nucleic-chain` ·
-`serving-programme` · `session-mcp-shared-server` · `knowledge-mesh` ·
-`claims-and-evidence` · `chemistry` · `catalysis-selectivity` ·
-`se-machine-design` ·
-`local-compute`.
-
-**Dormant** (file exists, ranked, no session — opens at the next session
-restart if Reto names it): `graph-memory-consumers` · `draft-authoring` ·
-`multiscale-design-core` · `factory` ·
-`pcb-platform` · `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening`.
+[Generated priority table](PRIORITIES.md) — declared activity comes only from
+`.claude/fleet/threads.tsv`; it is not a live-session check. Run
+`python3 scripts/docs-index` if missing or stale. Read a thread's Resume
+first, then its current item; load other threads only for dependencies.
 
 ## pcb — design, route, fabricate, order
 
 Threads: `ewod-pcb.md` · `pcb-easyeda-round-trip.md` · `pcb-platform.md`
-(dormant, sequenced behind the other two on the generator/DRC files — see
-seam below)
+(sequenced behind the other two on generator/DRC files; see seam below).
 
 Seams (same files, different work — sequence, never merge):
 - `src/precis/pcb/generators.py`, `drc.py`, `realize.py`/`maze.py` —
@@ -61,14 +49,14 @@ Waits:
 - ewod Horizon 10 (`backlog/ewod-synthesis-protocol.md`) consumes
   se-nucleic-chain's make_steps (shipped 2026-09-30; the chain thread's
   Horizon 2 points back at it).
-- pcb-platform (dormant) is behind both active pcb threads on the shared
+- pcb-platform is behind both active pcb threads on the shared
   generator/DRC/realizer files by the same seam rule above; it does not
   reorder either.
 
 ## se — 3D modelling, chains, hexfold, machine design
 
 Threads: `se-3d-viewer.md` · `se-nucleic-chain.md` · `hexfold-toolkit.md` ·
-`se-machine-design.md` · `multiscale-design-core.md` (dormant)
+`se-machine-design.md` · `multiscale-design-core.md`
 
 Seams:
 - `backlog/se-pick-hierarchy.md` — viewer Horizon 1 (the keystone) and
@@ -86,7 +74,7 @@ Seams:
 - se-machine-design also owns `backlog/pcb-se-binding.md` and
   `backlog/pcb-argue-with-design.md` — the mm→m crossing between se and
   pcb — not ewod-pcb or pcb-platform.
-- multiscale-design-core (dormant) is the substrate se-machine-design's
+- multiscale-design-core is the substrate se-machine-design's
   model stands on (design-state-core, pattern groups, complementarity);
   se-machine-design consumes it rather than re-deriving it.
 
@@ -155,8 +143,8 @@ Waits:
 ## knowledge — taxonomy, quests, papers
 
 Threads: `knowledge-mesh.md` · `roadmap-quest.md` · `nanobuds-paper.md` ·
-`claims-and-evidence.md` · `graph-memory-consumers.md` (dormant) ·
-`draft-authoring.md` (dormant)
+`claims-and-evidence.md` · `graph-memory-consumers.md` ·
+`draft-authoring.md`
 
 Seams:
 - `backlog/measures-substrate.md` — knowledge-mesh Do-next 5; roadmap Horizon 4
@@ -178,7 +166,7 @@ Seams:
   ranked in `knowledge-mesh.md` from 2026-09-30.
 - substrate + memory half vs agent affordances — knowledge-mesh ranks the
   substrate (knowledge-mesh, measures-substrate, graph-gardener), the
-  memory half and the surfaces; `graph-memory-consumers.md` (dormant)
+  memory half and the surfaces; `graph-memory-consumers.md`
   ranks draft-authoring affordances, the focus verb, capability discovery,
   skill quality and source-code ingest. Do not duplicate ranking across
   the two files.
@@ -207,12 +195,10 @@ Waits:
 
 Threads: `plugin-split.md` · `monitors-that-go-quiet.md` · `factory.md`
 (also ranks plan_tick health, the todo planner: plan-tick-health,
-plan-tick-context-cut)
-(dormant; agent execution lanes, budget, crash recovery — pillar platform,
-created 2026-10-01) · `ship-gate-ci.md` (dormant; gate, CI lanes, worktree
-reaper) · `deploy-fleet-ops.md` (dormant; deploy script and fleet residue) ·
-`security-hardening.md` (dormant; leaked credentials, role and sandbox
-boundaries). The last three were created 2026-10-02 from the unowned
+plan-tick-context-cut; agent execution lanes, budget and crash recovery) ·
+`ship-gate-ci.md` (gate, CI lanes and worktree reaper) ·
+`deploy-fleet-ops.md` (deploy script and fleet residue) ·
+`security-hardening.md` (credentials, role and sandbox boundaries). The last three were created 2026-10-02 from the unowned
 platform items; code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:

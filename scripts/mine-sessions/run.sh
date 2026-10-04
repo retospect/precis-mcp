@@ -43,6 +43,7 @@ PROD=0
 EXTRACT_ARGS=()
 DETECT_ARGS=()
 CARDS_ARGS=()
+SOURCES=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,7 +51,8 @@ while [[ $# -gt 0 ]]; do
         --since=*) SINCE="${1#*=}"; shift ;;
         --prod) PROD=1; shift ;;
         --out) OUT="$2"; shift 2 ;;
-        --limit|--projects-glob) EXTRACT_ARGS+=("$1" "$2"); shift 2 ;;
+        --local|--codex) SOURCES+=("$1"); shift ;;
+        --limit|--projects-glob|--until|--codex-root|--cwd-root|--thread-id) EXTRACT_ARGS+=("$1" "$2"); shift 2 ;;
         --min-n|--only) DETECT_ARGS+=("$1" "$2"); shift 2 ;;
         --top|--random|--seed) CARDS_ARGS+=("$1" "$2"); shift 2 ;;
         *) echo "mine-sessions: unknown option '$1'" >&2; exit 2 ;;
@@ -59,7 +61,7 @@ done
 
 mkdir -p "$OUT"
 
-SOURCES=(--local)
+if [[ ${#SOURCES[@]} -eq 0 ]]; then SOURCES=(--local); fi
 if [[ $PROD -eq 1 ]]; then
     SOURCES+=(--ledger --llmlog --jobs)
 fi
@@ -84,3 +86,4 @@ echo "mine-sessions: done." >&2
 echo "  scoreboard  $OUT/scoreboard.md" >&2
 echo "  candidates  $OUT/candidates.json" >&2
 echo "  cards       $OUT/cards/INDEX.md" >&2
+if [[ -f "$OUT/coverage.json" ]]; then echo "  coverage    $OUT/coverage.json" >&2; fi

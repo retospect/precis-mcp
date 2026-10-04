@@ -80,7 +80,7 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     ("python", "edit"): ("find-replace", "append", "insert", "replace"),
     # -- edit: numeric-ref kinds that only accept a full-body rewrite ---
     ("todo", "edit"): ("replace",),
-    ("memory", "edit"): ("replace",),
+    ("memory", "edit"): ("replace", "find-replace", "insert"),
     ("quest", "edit"): ("replace",),
     # checklist's edit() selector is op=, a distinct kwarg from mode=
     # (edit() has no mode= parameter at all) — no entry here, expect
@@ -147,7 +147,7 @@ def test_todo_memory_edit_replace_only_and_gripe_put_create_comment(
     memory = full_hub.handlers["memory"].spec
     gripe = full_hub.handlers["gripe"].spec
     assert todo.edit_modes == ("replace",)
-    assert memory.edit_modes == ("replace",)
+    assert memory.edit_modes == ("replace", "find-replace", "insert")
     assert gripe.modes == ("create", "comment")
     # gripe doesn't support edit at all — edit_modes stays the None
     # ("no concept") default, not the reject-all `()` (gr343755).

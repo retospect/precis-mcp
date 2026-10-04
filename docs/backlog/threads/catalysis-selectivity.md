@@ -1,5 +1,20 @@
 # catalysis-selectivity
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** When the catpath 0.23.0 release SHA arrives, run `uv lock -P autocatpath`, then check the engine-version guard.
+- **Blocked by:** Catpath release SHA; items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Resolve chemistry’s seed-remint hold question before a tick.
+- **Unblocks:** A ranking against a complete competing network.
+- **Acceptance:** Use [the latest handoff and item holds](#thread-context); engine-version checks must match the released engine. No re-run is authorized by this entry point.
+- **Worktree:** `catalysis-selectivity`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when a pathway answers "does the move toward the target
 win at every fork, thermodynamically and kinetically, and over which
 potential and pH window" for NO→NH₃, on a network that contains every
@@ -63,7 +78,7 @@ only; everything this thread built is on main and was live by round 4.
   Reto lifts them.
 
 **Worktree:** `catalysis-selectivity`
-**Active:** yes — Reto, 2026-10-02 ("high up").
+**Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").
 
 ## Do next
 

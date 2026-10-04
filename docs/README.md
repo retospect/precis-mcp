@@ -59,7 +59,7 @@ package docstrings (present truth + rationale), or git history (past).
 
 ## Generated indexes
 
-`scripts/docs-index` (stdlib-only, bare `python3`) writes three standalone
+`scripts/docs-index` (stdlib-only, bare `python3`) writes four standalone
 **gitignored** files; a SessionStart hook regenerates them per-worktree, so
 they are never committed, never churn, never conflict. Never hand-edit them —
 each tracked doc that links to one carries a "run `python3 scripts/docs-index`
@@ -70,3 +70,8 @@ if missing/stale" note for readers outside a hooked session.
 - `docs/codebase-map.md` — import path + docstring first line
   (PEP 257). A package listed as *(no package docstring yet)* is the nudge
   to write one.
+
+- `docs/backlog/threads/PRIORITIES.md` — declared activity from the fleet
+  roster, next actions and dependencies from bounded thread Resume fields.
+  Generation rejects missing fleet targets, malformed fields and broken
+  local Resume links. This is an entry point, not a live-session monitor.

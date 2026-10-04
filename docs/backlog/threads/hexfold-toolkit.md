@@ -1,5 +1,18 @@
 # hexfold toolkit
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** Check deployment, then run the round-6 table and scene-guard dogfood before continuing cycle 2.
+- **Blocked by:** Round-6 guard deployment; check existing detailed handoff before running.
+- **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
+- **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when hexfold composites join, catalogue and validate
 themselves end to end with trusted measured rows, the `spec.md` §28 roadmap
 reaches its three named test pieces (the box, the rotary ratchet valve and
@@ -28,7 +41,7 @@ written); gr458061 removed as a met precondition — the transport move it
 waited on happened 09-29 — note at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
-## Resume
+## Detailed handoff
 
 - State at 2026-10-04 07:21Z (round 6):
   - On prod: cycle 1 round tops (ebe4aedb1, 58bb0a6ee, 727728cc9).

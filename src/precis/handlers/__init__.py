@@ -8,6 +8,21 @@ sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
 
+Memory authoring reuses ``utils.edit_resolve`` for anchored body edits.
+All handler body writes lock the owning ref; anchored writes also compare
+the previous body with the resolver's snapshot inside the transaction.
+The comparison alone would race between the store's read and delete;
+``FOR NO KEY UPDATE`` serializes competing edits while allowing mention
+links' FK key-share locks (``FOR UPDATE`` deadlocked reciprocal mentions).
+Memory's mention wrapper raises if the shared best-effort helper leaves
+the transaction aborted: COMMIT can otherwise silently roll it back and
+produce a false success. Conflicts roll back the chunk
+replacement, derived-row cascade and audit event rather than losing a
+concurrent writer's prose. Whole-body replacement remains explicit.
+Creation fields (title, rule, warrant and hook) travel in a call-local
+``put_meta`` payload; staging them on the shared handler let concurrent
+puts overwrite or clear each other's metadata, even on failed requests.
+
 **Bare ``**_kw`` catch-alls are strict by default (gr334695).** A verb
 method's own ``**kwargs`` is the cooperative-inheritance idiom this
 package leans on heavily — a subclass declares its kind-specific params

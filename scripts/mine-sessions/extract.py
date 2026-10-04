@@ -45,6 +45,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import codex_source
 import outdir
 import redact
 import schema
@@ -764,6 +765,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="'<N>d' / '<N>h' / an ISO date (default: no cutoff)",
     )
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="output JSONL path")
+    parser.add_argument("--until", help="exclusive ISO end of the Codex interval")
+    parser.add_argument(
+        "--codex", action="store_true", help="scoped local Codex rollouts"
+    )
+    parser.add_argument(
+        "--codex-root", type=Path, default=Path.home() / ".codex/sessions"
+    )
+    parser.add_argument(
+        "--cwd-root", action="append", default=[], help="Codex project root; repeatable"
+    )
+    parser.add_argument(
+        "--thread-id",
+        action="append",
+        default=[],
+        help="Codex thread and children; repeatable",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -796,20 +813,59 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
 
     since = parse_since(args.since) if args.since else None
+    until = parse_since(args.until) if args.until else None
+    if args.codex and not (args.cwd_root or args.thread_id):
+        raise SystemExit("--codex requires --cwd-root or --thread-id")
+    if until is not None and since is not None and until <= since:
+        raise SystemExit("--until must be later than --since")
 
     use_local = bool(args.local or args.local_only)
     use_ledger = bool(args.ledger)
     use_llmlog = bool(args.llmlog)
     use_jobs = bool(args.jobs)
-    if not (use_local or use_ledger or use_llmlog or use_jobs):
+    if not (use_local or use_ledger or use_llmlog or use_jobs or args.codex):
         use_local = True
 
     out_path = Path(args.out)
+    if args.codex:
+        outdir.require_external(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     stats = Stats()
 
     with out_path.open("w", encoding="utf-8") as out_fh:
+        if args.codex:
+            events, coverage = codex_source.extract(
+                args.codex_root,
+                since=since,
+                until=until,
+                cwds=args.cwd_root,
+                threads=args.thread_id,
+                limit=args.limit,
+            )
+            for ev in events:
+                out_fh.write(ev.to_json() + "\n")
+            stats.bump("codex", len(events))
+            coverage_path = out_path.with_name("coverage.json")
+            coverage_path.write_text(
+                json.dumps(
+                    {
+                        "corpus": "codex",
+                        "since": args.since,
+                        "until": args.until,
+                        "coverage": coverage,
+                        "limitations": [
+                            "Nested JavaScript tool calls are opaque orchestration; MCP rates are incomplete.",
+                            "Tool error flags require structured outcomes; unstructured errors are not classified.",
+                            "Coverage counters describe scoped files; events_in_window describes the interval.",
+                            "Missing/reset counters and forks without history boundaries are undercounts, not zero work.",
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         if use_local:
             files = iter_local_files(args.projects_glob, since)
             if args.limit is not None:

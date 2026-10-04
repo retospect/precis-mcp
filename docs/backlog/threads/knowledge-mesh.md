@@ -1,5 +1,18 @@
 # knowledge mesh — taxonomy, measures, memory and the fisheye
 
+## Resume
+
+- **Pillar:** memory-graph
+- **Next:** Once 0188 is live, verify converted legacy rows; then address the six measures-pilot gaps (FE grouped by product and review-aware best_measure first), then upkeep slice 1b.
+- **Blocked by:** 0188 deployment for conversion dogfood. Taxonomy and upkeep slice 0 separately wait on [local-compute](local-compute.md#resume)’s Castor serving.
+- **Unblocks:** A qualified taxonomy substrate for graph memory.
+- **Acceptance:** Use [the latest handoff](#thread-context): legacy views return legacy numbers, measures stores SI and measure_unit_compat contains its seed rows; follow [ranked work](#do-next) for pilot gaps.
+- **Worktree:** `knowledge-mesh`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when the graph is the memory: a richly linked mesh of
 small typed nodes (findings, measures, taxa, skills, memories, plans,
 arguments, logbook entries) that an LLM navigates by walk and fisheye,

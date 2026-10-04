@@ -66,7 +66,10 @@ and output lives in :mod:`precis.taxonomy.measure_units`.
 
 Reviews of a measure go through the shared ledger
 (``record_target_review('measure', id, ...)``); the sha covers the frozen
-fields only (``precis_measure_sha``).
+fields only (``precis_measure_sha``). Ranking excludes the newest current
+review's rejection, not every historical rejection: a later approval can
+restore eligibility, while a stale verdict says nothing about this version.
+Unreviewed and proposed rows remain eligible under the same numeric ranking.
 """
 
 from __future__ import annotations
@@ -1036,11 +1039,19 @@ class MeasuresMixin:
         found = {rid for rid, _depth, _axis in self.taxon_descendants(measurand)}
         return [measurand, *sorted(found - {measurand})]
 
-    def _measure_rows(self, where: str, params: dict[str, Any]) -> list[dict[str, Any]]:
-        sql = (
-            f"SELECT {_MEASURE_COLS} {_MEASURE_FROM} WHERE {where} "
-            "ORDER BY t.ref_id, m.id"
-        )
+    def _measure_rows(
+        self, where: str, params: dict[str, Any], *, with_review: bool = False
+    ) -> list[dict[str, Any]]:
+        cols = _MEASURE_COLS
+        if with_review:
+            cols += (
+                ", coalesce((SELECT r.verdict FROM reviews r "
+                "WHERE r.target_kind = 'measure' AND r.target_id = m.id "
+                "AND r.content_sha = precis_target_sha('measure', m.id) "
+                "ORDER BY r.at DESC, r.review_id DESC LIMIT 1), "
+                "'unreviewed') AS review_state"
+            )
+        sql = f"SELECT {cols} {_MEASURE_FROM} WHERE {where} ORDER BY t.ref_id, m.id"
         with self.pool.connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(sql, params)
@@ -1104,8 +1115,9 @@ class MeasuresMixin:
         ``specialises`` descendant of it (every measurand when ``measurand``
         is None). Left out: ``measurand_status='ambiguous'``, a row flagged in
         ``meta.escalation`` (a missing required condition, no molar mass), an
-        anchor-lost ``measured`` row, ``trusted = false``, and anything
-        without a single numeric reading (an interval, a bound, a category).
+        anchor-lost ``measured`` row, ``trusted = false``, a newest current
+        review of ``rejected``, and anything without a single numeric reading
+        (an interval, a bound, a category).
         ``reference`` keeps only rows stated against that reference; a
         conversion between references is not built, so a SHE row never stands
         in for an RHE one.
@@ -1116,7 +1128,8 @@ class MeasuresMixin:
         ``higher_is_better``; a group with neither has ``best=None`` and says
         how many rows it holds. Each result is ``{measurand_ref_id, measurand,
         reference, normalization, sense, n, best}``, ``best`` a row dict with
-        its run's ``conditions``; ordered by measurand name, reference,
+        its run's ``conditions`` and ``review_state`` (newest current verdict,
+        else ``unreviewed``); ordered by measurand name, reference,
         normalization."""
         override = _sense(sense)
         subjects = self._serving_subjects(serving)
@@ -1139,7 +1152,9 @@ class MeasuresMixin:
             where.append("m.reference = %(reference)s")
             params["reference"] = reference
         groups: dict[tuple[int, str | None, str | None], list[dict[str, Any]]] = {}
-        for r in self._measure_rows(" AND ".join(where), params):
+        for r in self._measure_rows(" AND ".join(where), params, with_review=True):
+            if r["review_state"] == "rejected":
+                continue
             key = (r["measurand_ref_id"], r["reference"], r["normalization"])
             groups.setdefault(key, []).append(r)
         results: list[dict[str, Any]] = []

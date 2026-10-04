@@ -174,3 +174,6 @@ scripts/llm_eval/gold_set/local/
 
 # Root-level run logs (ship/test output redirected into a worktree) — never tracked.
 /*.log
+
+# Generated thread navigation; roster and Resume fields are the sources.
+docs/backlog/threads/PRIORITIES.md

@@ -1,5 +1,20 @@
 # chemistry
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** Resolve whether qu164903’s 23-seed remint violates catalysis item 25 before triggering or continuing the compute dogfood.
+- **Blocked by:** The explicit re-run hold in [catalysis-selectivity](catalysis-selectivity.md#thread-context); an orchestrator ruling is required before the tick.
+- **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
+- **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on castor/pollux; inspect the content-key change first.
+- **Worktree:** `chemistry`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when precis can propose, compute and cite a reaction
 pathway and its conditions for a quest, with catalysis (autocatpath, the
 catpath engine) as the main line. Catalysis lives under chemistry (Reto,
@@ -10,7 +25,7 @@ entry below); engine reliability ranks above everything that presents or
 packages its results.
 **Last reviewed:** 2026-10-02 (every item triaged against the code and commit history)
 **Worktree:** `chemistry`
-**Active:** yes — Reto, 2026-10-01.
+**Allocation decision (historical):** yes — Reto, 2026-10-01.
 **Resume (2026-10-04 07:30Z):** landed and live in prod 727728cc9 (round 4):
 verify wall 28800 + seed cpuset 0-4,10-14 (both confirmed in the gateway
 worker's plist and live env), and da14331f7 — the stuck-seed repair now keys

@@ -154,6 +154,36 @@ scripts only — nothing reads the graph at that moment.
 
 ## Open questions / decisions log
 
+- **[G1 integration hold, architecture review 2026-10-04]** The owning-ref
+  `FOR UPDATE` lock conflicts with mention-link FK key-share locks during
+  reciprocal edits. Use `FOR NO KEY UPDATE` to retain same-ref serialization
+  without blocking FK references. Memory's mention wrapper must reject an
+  aborted transaction after the shared best-effort helper catches a SQL
+  failure; otherwise COMMIT can roll back while the handler reports success.
+  Regressions: barrier two reciprocal edits before mention sync, verify
+  persisted bodies/events/links; inject a real SQL error in mention writes
+  and require rollback/error on both put and edit. Keep the shared helper
+  unchanged; no schema/store changes. Coordinator owns release verification.
+- **[authoring integration approved 2026-10-04, Reto]** Adopt the existing
+  `agent-a92adc8b6b7627afd` anchored-edit WIP into the graph-memory worker;
+  leave its dirty tree untouched. Scope: memory handler, edit help and
+  regression tests; no schema or substrate changes. Before integration,
+  serialize handler body writes on the owning ref and reject a stale
+  anchored body inside the write transaction (rollback includes chunks,
+  derived rows and events). A returned-old-body comparison alone is
+  insufficient: two writers can both read before either deletes. Require
+  anchors for explicit `insert`; retain metadata-only default
+  `find-replace` compatibility only when both `find` and `text` are absent.
+  Validate competing edits, rollback, links, dry-run metadata and the real
+  tool default through focused `scripts/test` runs. Coordinator owns the
+  full release gate and deployment; this entry does not claim shipment.
+- **[R02 extension approved by coordinator 2026-10-04]** Memory handlers
+  are shared across requests, but `put` stages title/rule/warrant/hook on
+  instance fields. Pass call-local creation data through the existing
+  `put_meta` seam instead. Test two puts through one runtime with A paused
+  at link resolution while B succeeds or fails. For body edits, prove a
+  competing connection cannot lock the ref at entry to the store rewrite,
+  in addition to the simultaneous snapshot and stale-write rollback tests.
 - **[decided 2026-10-01, Reto]** Build now, ahead of td458720's "after the
   recall AC" sequencing. The recall number (AC 5) becomes a comparison
   native-vs-mirror rather than a go/no-go for filing this item.

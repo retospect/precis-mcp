@@ -132,6 +132,26 @@ class TestRankGating:
             == 4
         )
 
+    def test_rank_zero_records_the_cpu_binding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ranks spread over fast and slow cores run at the slow core's pace;
+        the binding the run got goes in the record beside the rank count."""
+        in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+        self._stage(in_dir)
+        monkeypatch.setattr(
+            gpaw_relax,
+            "cpu_binding",
+            lambda: {"cgroup_cpuset": "10-17", "rank0_affinity": [10]},
+        )
+        run_cli(str(in_dir), str(out_dir))
+        got = json.loads((out_dir / "result.json").read_text(encoding="utf-8"))
+        assert got["cpu_binding"] == {"cgroup_cpuset": "10-17", "rank0_affinity": [10]}
+
+    def test_cpu_binding_never_raises(self) -> None:
+        got = gpaw_relax.cpu_binding()
+        assert set(got) == {"cgroup_cpuset", "rank0_affinity"}
+
     def test_defaults_to_serial_without_gpaw(self) -> None:
         world = gpaw_relax._world()
         assert world.rank == 0 and world.size >= 1

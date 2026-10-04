@@ -21,6 +21,24 @@ A thread entry says where the thing is and why it sits at that rank, in
 one line. This is the rule that keeps the ordering layer from becoming a
 second backlog, which is the failure mode it exists to prevent.
 
+## Resume entry point
+
+Start with [PRIORITIES.md](PRIORITIES.md); run `python3 scripts/docs-index`
+if missing or stale. Declared activity lives only in
+`.claude/fleet/threads.tsv`; verify live work with `scripts/inflight`.
+
+Each thread starts with one `## Resume` section, at most 350 words, with
+one bullet for each field: `Pillar`, `Next`, `Blocked by`, `Unblocks`,
+`Acceptance`, `Worktree`, `Builds`, `Detail`. Use a closed pillar value
+from the backlog contract. Use clickable relative links with stable item
+names for dependencies. Keep estimates in builds; explicitly say when
+unknown. Check current deployment before repeating a handoff's operation.
+Update Resume at the four thread moments below, then regenerate the table.
+Read the current item and immediate dependencies next; detailed handoffs
+are loaded only when needed. Existing detailed records remain during this
+migration; move durable instructions to runbooks and preserve decisions
+in their owning items/docstrings before removing shipped history.
+
 ## Shape
 
 One file per thread: `docs/backlog/threads/<slug>.md`.

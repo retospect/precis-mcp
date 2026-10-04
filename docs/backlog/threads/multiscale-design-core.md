@@ -1,5 +1,20 @@
 # multiscale design core
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** When activated, start design-state-core before pattern groups.
+- **Blocked by:** No declared active owner.
+- **Unblocks:** A shared substrate for se, hexfold, PCB and CAD.
+- **Acceptance:** Use [design-state-core](../design-state-core.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `multiscale-design-core`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when the shared design substrate the se/hexfold/pcb/cad
 kinds stand on exists — design-state-core, pattern groups, complementarity,
 make tree, attached models — per `backlog/multiscale-design-system-spec.md`,
@@ -9,7 +24,7 @@ enough to start in any order except where noted, and are the ones every
 consumer kind (se-machine-design, pcb-platform) is implicitly waiting on.
 **Last reviewed:** 2026-09-30
 **Worktree:** `multiscale-design-core`
-**Active:** no — opens at the next session restart if Reto names it.
+**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 

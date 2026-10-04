@@ -1,5 +1,20 @@
 # security-hardening
 
+## Resume
+
+- **Pillar:** platform
+- **Next:** When activated, verify credential-rotation scope and coordinate the required cluster pause.
+- **Blocked by:** No declared active owner; confirm current credential state without exposing secrets.
+- **Unblocks:** Enforced credential, role and sandbox boundaries.
+- **Acceptance:** Use [rotate-credentials](../rotate-credentials.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `security-hardening`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when no credential that has leaked is still live, no
 untrusted input reaches a privileged agent unscanned, and the role and
 sandbox boundaries hold under the real pool and profiles — what lets agents
@@ -9,7 +24,7 @@ leak first, then boundaries that are inert today, then dependency and
 residual items.
 **Last reviewed:** 2026-10-02
 **Worktree:** `security-hardening`
-**Active:** no — opens at the next session restart if Reto names it.
+**Allocation decision (historical):** no — opens at the next session restart if Reto names it.
 
 ## Do next
 

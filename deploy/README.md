@@ -295,3 +295,19 @@ Overlay variables the portable roles expect (define these in your local
 every one.
 
 Never bulk-copy from the private checkout: move one file, run the gate, commit.
+
+## Mount absence alert membership
+
+Hung and full mount alerts inspect filesystem metrics wherever they appear.
+Absence alerts require explicit inventory groups: `nfs_mount_hosts` for
+`/mnt/cluster`, and `nas_mount_hosts` for `/mnt/archive/botshome`. Leave these
+groups absent or empty unless the listed hosts keep the corresponding mount
+continuously active; idle autofs clients legitimately have no filesystem series.
+`nfs_mount_hosts` must be a subset of `nfs_clients`; server and non-client entries
+are excluded when rendering. macOS NFS servers expose `/mnt/cluster` as a symlink
+to their export, so a healthy server has no filesystem metric for that path.
+
+No explicit membership means no absence rule, rather than paging on healthy
+lazy mounts. This deliberately leaves missing mounts on unlisted hosts to their
+canary checks. Membership does not provision mounts or enable rule evaluation;
+the running Prometheus must load the rendered rules and have alert delivery wired.

@@ -71,18 +71,70 @@ groups:
         annotations:
           summary: "PostgreSQL is down on the data node"
 
-      - alert: NFSMountMissing
+      # Mount health, two failure shapes per mount (2026-09-30: /mnt/cluster hung
+      # on every client for days, nothing alerted):
+      #  - full/empty: avail == 0 (the *FullOrEmpty rules; statfs still answers).
+      #  - hung/erroring: node_exporter's statfs times out on a stuck NFS mount,
+      #    flags it node_filesystem_device_error == 1 and drops the avail series
+      #    -- so a `== 0` rule is blind to it. The *Hung rules read device_error;
+      #    the *Absent rules catch the avail series vanishing outright (an
+      #    `absent()` would drop the instance label, hence the per-instance join).
+      # Absence is restricted to the instances that should have the mount:
+      # /mnt/cluster = explicit nfs_mount_hosts, restricted to non-server clients;
+      # macOS servers expose this path as a symlink, not a filesystem. Both
+      # shares mount lazily, so absent series on idle clients are normal.
+      # Only opt in hosts that keep a mount busy (NAS: nas_mount_hosts);
+      # no explicit group means no absence rule. Hung/full rules remain active.
+      - alert: NFSMountFullOrEmpty
         expr: node_filesystem_avail_bytes{mountpoint="/mnt/cluster"} == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "{% raw %}NFS mount /mnt/cluster missing on {{ $labels.instance }}{% endraw %}"
+          summary: "{% raw %}NFS mount /mnt/cluster has 0 bytes available (full, or unmounted and empty) on {{ $labels.instance }}{% endraw %}"
 
-      - alert: NASMountMissing
+      - alert: NFSMountHung
+        expr: node_filesystem_device_error{mountpoint="/mnt/cluster"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}NFS mount /mnt/cluster is hung or erroring (statfs fails, not missing) on {{ $labels.instance }}{% endraw %}"
+{% set cluster_hosts = groups['nfs_mount_hosts'] | default([]) | select('in', groups['nfs_clients'] | default([])) | reject('in', groups['nfs_servers'] | default([])) | unique | list %}
+{% if cluster_hosts %}
+
+      - alert: NFSMountAbsent
+        expr: up{job="node", instance=~"{% for h in cluster_hosts %}{{ hostvars[h]['ansible_host'] | replace('.', '[.]') }}:9100{{ '|' if not loop.last }}{% endfor %}"} == 1 unless on(instance) node_filesystem_avail_bytes{mountpoint="/mnt/cluster"}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}Node {{ $labels.instance }} is up but reports no /mnt/cluster filesystem (hung mount or never mounted){% endraw %}"
+{% endif %}
+
+      - alert: NASMountFullOrEmpty
         expr: node_filesystem_avail_bytes{mountpoint="/mnt/archive/botshome"} == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "{% raw %}NAS mount /mnt/archive/botshome missing on {{ $labels.instance }}{% endraw %}"
+          summary: "{% raw %}NAS mount /mnt/archive/botshome has 0 bytes available (full, or unmounted and empty) on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NASMountHung
+        expr: node_filesystem_device_error{mountpoint="/mnt/archive/botshome"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}NAS mount /mnt/archive/botshome is hung or erroring (statfs fails, not missing) on {{ $labels.instance }}{% endraw %}"
+{% set nas_hosts = groups['nas_mount_hosts'] | default([]) %}
+{% if nas_hosts %}
+
+      - alert: NASMountAbsent
+        expr: up{job="node", instance=~"{% for h in nas_hosts %}{{ hostvars[h]['ansible_host'] | replace('.', '[.]') }}:9100{{ '|' if not loop.last }}{% endfor %}"} == 1 unless on(instance) node_filesystem_avail_bytes{mountpoint="/mnt/archive/botshome"}
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}Node {{ $labels.instance }} is up but reports no /mnt/archive/botshome filesystem (hung mount or never mounted){% endraw %}"
+{% endif %}

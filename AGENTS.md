@@ -78,6 +78,12 @@ precis-mcp/
 
 ## Workflow — plan first, always
 
+**Always work in a task branch in a separate worktree.** Keep the primary
+`main` checkout for orientation; never edit, test-write, commit or integrate
+there. Create or reuse a task worktree before substantive work. Parallel
+tasks use separate branches and worktrees; integration has its own worktree.
+User-owned changes in the primary checkout stay untouched.
+
 1. Read this file and the owning package's `__init__.py` docstring for the
    area you are touching.
 2. For any non-trivial change (schema change, new CLI subcommand, new

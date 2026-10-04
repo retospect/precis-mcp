@@ -50,6 +50,11 @@ SCRIPT = REPO_ROOT / "scripts" / "round"
 
 _LGM_STUB = """#!/usr/bin/env bash
 case " $* " in
+  *" --exact "*)
+    [ -n "${LGM_EXACT_HOOK:-}" ] && bash -c "$LGM_EXACT_HOOK"
+    printf '%s\\n' "${LGM_EXACT:-}"; exit 0 ;;
+esac
+case " $* " in
   *" --age-hours "*) printf '%s\\n' "${LGM_AGE:-}" ;;
   *) printf '%s\\n' "${LGM_SHA:-}" ;;
 esac
@@ -59,6 +64,13 @@ exit "${LGM_RC:-0}"
 
 _DEPLOY_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$(dirname "$0")/../deploy.log"
+[ -n "${DEPLOY_STUB_HOOK:-}" ] && bash -c "$DEPLOY_STUB_HOOK"
+if [ "${DEPLOY_STUB_VERIFY:-}" = 1 ]; then
+  common=$(git rev-parse --path-format=absolute --git-common-dir)
+  printf '%s %s success\\n' "$1" "$(date +%s)" > "$common/precis-deploy-state"
+  rm -f "$common/precis-deploy-attempt"
+  git push -q origin "$1:refs/heads/prod" || exit 1
+fi
 exit "${DEPLOY_STUB_RC:-0}"
 """
 

@@ -1,5 +1,18 @@
 # se nucleic chain
 
+## Resume
+
+- **Pillar:** 3d-design
+- **Next:** Continue DNA wrap-around-part once hexfold integration is available.
+- **Blocked by:** [Hexfold integration](hexfold-toolkit.md#resume).
+- **Unblocks:** DNA scaffolds around designed carbon parts.
+- **Acceptance:** Use [se-chain-wrap-around-part](../se-chain-wrap-around-part.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `se-nucleic-chain`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
 **Status:** ends when a nucleic-acid design goes from sequence to
 orderable strands with an honest atom model (physics-checked, findings that
 name design objects) and round-trips caDNAno, reported in the se + hexfold

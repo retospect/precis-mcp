@@ -1,5 +1,20 @@
 # graph memory consumers
 
+## Resume
+
+- **Pillar:** memory-graph
+- **Next:** After the paired authoring/G1 correction passes the combined gate and its SHA is verified deployed, dogfood anchored memory edits, rollback and reciprocal mentions.
+- **Blocked by:** Coordinator combined gate and verified deployed SHA; source integration does not establish live behavior.
+- **Unblocks:** Graph-native authoring that replaces file-memory workarounds.
+- **Acceptance:** Use [memory-native-authoring](../memory-native-authoring.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Worktree:** `graph-memory-consumers`
+- **Builds:** Not estimated here; use the owning item's current slice estimate.
+- **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Thread context
+
+Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); dated allocation decisions below are historical.
+
 **Status:** ends when an agent never leaves the graph to do its work — no
 temp file for a proposal, no SQL for a write check, no guessing which
 capability exists — and text-file memory it replaces is retired per
@@ -15,9 +30,13 @@ since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
 **Last reviewed:** 2026-10-04
 **Worktree:** `graph-memory-consumers`
-**Active:** yes — Reto 2026-10-01: "graph memory we want soon".
+**Allocation decision (historical):** yes — Reto 2026-10-01: "graph memory we want soon".
 
-## Resume (2026-10-04 08:58Z)
+## Detailed handoff (2026-10-04 08:58Z)
+
+Historical handoff: the authoring WIP and G1 correction are now together in
+the reviewed ready integration candidate. Do not redo or adopt that old branch;
+check the combined gate and deployed SHA before live verification.
 
 - **Landed, all live on prod 727728cc:**
   - memory slice 2, the cutover and memory-lint graph mode (31fc2a3c, fef5f1d5);

@@ -515,12 +515,6 @@ Two code gaps, each worked around in the pilot data and still open:
     group key.
   - It applies to FE, selectivity, yield rates and partial current. A
     group then reads "FE · product=NH3".
-- **`best_measure` ignores review verdicts.** A row whose current review
-  is `rejected` still ranks. One example is mx278: a measurand error
-  that supersession cannot replace, because supersession keeps the
-  measurand.
-  - The fix: exclude rows whose newest current review is rejected, and
-    show the review state beside each best.
 - **No measure dedup across findings.** One chunk value extracted under
   two findings becomes two rows: mx212/mx218 and mx215/mx221. The values
   are right, but the census and the row counts double them.

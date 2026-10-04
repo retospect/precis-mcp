@@ -232,6 +232,21 @@ Pause propagates at query time — every doable / strategic / picks
 query skips refs whose ancestor chain contains a `paused` branch.
 Nothing in the subtree gets touched; counts and decay continue.
 
+## Answer an ask-user todo
+
+```python
+get(kind="todo", id=42)  # read the current details and exact ask-user tag
+edit(
+    kind="todo", id=42, mode="replace",
+    body="Existing details retained here.\n\nAnswer: use CSV for the export.",
+)
+tag(kind="todo", id=42, remove=["ask-user:which-format"])  # copy the exact tag; bare may be "ask-user"
+```
+
+Replace the complete `body=` with the existing details plus the answer;
+only `mode='replace'` is supported. Record the answer before removing the
+ask-user tag, which releases the human-reply wait.
+
 ## Waiting, blocked, and asks
 
 ```python

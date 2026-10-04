@@ -36,6 +36,7 @@ _GENERATED = (
     "docs/backlog/INDEX.md",
     "docs/runbooks/INDEX.md",
     "docs/codebase-map.md",
+    "docs/backlog/threads/PRIORITIES.md",
 )
 
 

@@ -38,8 +38,9 @@ from the desorption side; this item subsumes it.
    every other element.
 3. **Engine contract (catpath).** Each graph link carries
    `added: {element: count}` and `removed: {species: count}` (catpath
-   already infers this internally, `network.py::_added_elements`), and a
-   typed `kind` ∈ `reaction | supply | desorption`. This absorbs
+   infers this in `ledger.py::link_fields`). Catpath retains `kind=supply`
+   on links and emits `link_type` ∈ `adsorption | supply | desorption`;
+   reaction edges retain `kind=reaction`. This absorbs
    `catpath-desorption-link-kind.md` (desorption is a real cost, not a
    ΔE = 0 supply convention) as its first slice.
 4. **Fallback for old graphs.** Pathways without `added`/`removed`
@@ -82,6 +83,18 @@ wheel redeploy (`catpath-wheel-version-reuse.md`).
 
 ## Open questions / decisions log
 
+- **Bounded adapter prerequisite (coordinator, 2026-10-04):** pass
+  `link_type` through `_pathway_graph_payload`; use it for explorer folding
+  and annotations, falling back to `kind` on legacy graphs. Only a supply
+  followed by a reaction folds; adsorption/desorption retain their columns.
+  Molecular adsorption's `added.H` counts molecular hydrogen atoms, not
+  protons from the reservoir. Preserve the kinetic fork guard's raw `kind`
+  check: a typed link does not acquire a measured activation barrier.
+  Synthetic tests must cover desorption→reaction, supply→desorption,
+  adsorption→reaction, supply→reaction and legacy fallback, including the
+  actual route payload and rendered SVG. No engine/pin update or experiment;
+  release SHA selection and items 23/25 remain held. Version/lock integration
+  stays with the coordinator's release change.
 - Shoulder vs. no shoulder for the parked template, where X+H is
   bookkeeping only: default shows it (the energy is a real number either
   way); decide on Reto's look.

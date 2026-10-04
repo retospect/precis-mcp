@@ -48,3 +48,18 @@ def default_out_dir() -> Path:
 
 def out_path(*parts: str) -> Path:
     return default_out_dir().joinpath(*parts)
+
+
+def require_external(path: Path) -> None:
+    """Codex fleet evidence must stay outside both worktree and primary tree."""
+    root = Path(__file__).resolve().parents[2]
+    roots = [root]
+    git = root / ".git"
+    if git.is_file():
+        gitdir = Path(git.read_text(encoding="utf-8").strip().removeprefix("gitdir: "))
+        if ".git" in gitdir.parts:
+            roots.append(Path(*gitdir.parts[: gitdir.parts.index(".git")]))
+    if any(path.expanduser().resolve().is_relative_to(item) for item in roots):
+        raise ValueError(
+            "Codex transcript artifacts must be outside the repository (MINE_OUT)"
+        )

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """scripts/docs-index — regenerate the gitignored doc indexes.
 
-Three standalone generated files, one script, run by the SessionStart
+Four standalone generated files, one script, run by the SessionStart
 hook (each worktree regenerates its own copies; nothing is committed —
 the files are gitignored, so they never churn or conflict):
 
   docs/backlog/INDEX.md    one line per work item: slug — status — summary
   docs/runbooks/INDEX.md   one line per runbook: slug — summary
   docs/codebase-map.md     package map: import path — docstring first line
+  docs/backlog/threads/PRIORITIES.md  activity + bounded Resume fields
 
 The summary for a markdown file is its first non-heading, non-front-matter
 prose line; `status:` is read from front-matter (backlog only, defaults to
@@ -19,7 +20,7 @@ as such, which is the nudge to write one.
 
 Stdlib-only on purpose: hooks and inline commands run it with a bare
 `python3`, no uv/container. Idempotent; exits non-zero only on I/O
-errors, never on content.
+errors or invalid thread navigation.
 """
 
 from __future__ import annotations
@@ -100,8 +101,10 @@ def md_index(directory: Path, with_status: bool) -> list[str]:
         entries.sort(key=lambda e: (e[1], e[2]))
         return [row for _, _, _, row in entries]
     known = {p: i for i, p in enumerate(_PILLAR_ORDER)}
+
     def pillar_rank(p: str) -> tuple[int, str]:
         return (known.get(p, len(known) + (1 if p == _NO_PILLAR else 0)), p)
+
     entries.sort(key=lambda e: (pillar_rank(e[0]), e[1], e[2]))
     rows: list[str] = []
     current = None
@@ -146,8 +149,110 @@ def write_generated(target: Path, title: str, rows: list[str]) -> bool:
     return True
 
 
+RESUME_FIELDS = (
+    "Pillar",
+    "Next",
+    "Blocked by",
+    "Unblocks",
+    "Acceptance",
+    "Worktree",
+    "Builds",
+    "Detail",
+)
+
+
+def thread_priorities(root: Path) -> list[str]:
+    """Render declared activity; reject ambiguous or unreachable entry points.
+
+    Resume fields stay with ranked work so owners update one handoff. The
+    fleet roster owns activity; generated views never infer live processes.
+    """
+    directory = root / "docs/backlog/threads"
+    active: set[str] = set()
+    for line in (
+        (root / ".claude/fleet/threads.tsv").read_text(encoding="utf-8").splitlines()
+    ):
+        if not line.strip() or line.startswith("#"):
+            continue
+        slug = line.split("\t")[0]
+        if slug in active or not (directory / f"{slug}.md").is_file():
+            raise ValueError(f"fleet target missing or duplicated: {slug}")
+        active.add(slug)
+    entries = []
+    for path in sorted(directory.glob("*.md")):
+        if path.name in ("README.md", "INDEX.md", "PRIORITIES.md"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        blocks = re.findall(r"^## Resume\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+        if len(blocks) != 1:
+            raise ValueError(f"{path.name}: expected one Resume section")
+        block = blocks[0]
+        fields = re.findall(r"^- \*\*([^:]+):\*\* (.+)$", block, re.M)
+        values = dict(fields)
+        if len(fields) != len(RESUME_FIELDS) or set(values) != set(RESUME_FIELDS):
+            raise ValueError(f"{path.name}: expected Resume fields {RESUME_FIELDS}")
+        if len(block.split()) > 350:
+            raise ValueError(f"{path.name}: Resume exceeds 350 words")
+        if values["Pillar"] not in _PILLAR_ORDER:
+            raise ValueError(f"{path.name}: unknown pillar")
+        for target in re.findall(r"\]\(([^)]+)\)", block):
+            if "://" in target:
+                continue
+            filename, _, anchor = target.partition("#")
+            linked = path.parent / filename if filename else path
+            if not linked.is_file():
+                raise ValueError(f"{path.name}: missing Resume link {target}")
+            if anchor:
+                headings = re.findall(
+                    r"^#+ (.+)$", linked.read_text(encoding="utf-8"), re.M
+                )
+                anchors = {
+                    re.sub(r"[^\w -]", "", h.lower()).replace(" ", "-")
+                    for h in headings
+                }
+                if anchor not in anchors:
+                    raise ValueError(f"{path.name}: missing Resume anchor {target}")
+        state = "active" if path.stem in active else "dormant"
+        cells = [f"[{path.stem}]({path.name}#resume)", values["Pillar"], state]
+        # The table lives beside the thread, so relative file links keep
+        # their base but fragment-only links must name the source thread.
+        cells.extend(
+            re.sub(r"\]\((#[^)]+)\)", rf"]({path.name}\1)", values[key])
+            for key in ("Next", "Blocked by", "Unblocks", "Builds")
+        )
+        entries.append(
+            (
+                state != "active",
+                _PILLAR_ORDER.index(values["Pillar"]),
+                path.stem,
+                "| " + " | ".join(c.replace("|", "\\|") for c in cells) + " |",
+            )
+        )
+    return [
+        "Activity is declared by `.claude/fleet/threads.tsv`, not observed live. "
+        "Check `scripts/inflight` before resuming. Owners maintain Resume fields; "
+        "this table does not re-rank threads.",
+        "",
+        "[Allocation priorities](../../roadmap.md#allocation-priorities) · "
+        "[Programme seams](INDEX.md) · [Thread contract](README.md)",
+        "",
+        "| Thread | Pillar | Activity | Next action | Blocked by | Unblocks | Builds |",
+        "|---|---|---|---|---|---|---|",
+        *(entry[3] for entry in sorted(entries)),
+    ]
+
+
 def main() -> int:
     changed = []
+    try:
+        priorities = thread_priorities(ROOT)
+    except ValueError as error:
+        print(f"docs-index: {error}", file=sys.stderr)
+        return 1
+    if write_generated(
+        ROOT / "docs/backlog/threads/PRIORITIES.md", "Thread priorities", priorities
+    ):
+        changed.append("docs/backlog/threads/PRIORITIES.md")
     backlog = ROOT / "docs" / "backlog"
     if backlog.is_dir() and write_generated(
         backlog / "INDEX.md", "Backlog index", md_index(backlog, with_status=True)
@@ -158,9 +263,7 @@ def main() -> int:
         runbooks / "INDEX.md", "Runbook index", md_index(runbooks, with_status=False)
     ):
         changed.append("docs/runbooks/INDEX.md")
-    if write_generated(
-        ROOT / "docs" / "codebase-map.md", "Package map", package_map()
-    ):
+    if write_generated(ROOT / "docs" / "codebase-map.md", "Package map", package_map()):
         changed.append("docs/codebase-map.md")
     for c in changed:
         print(f"→ {c}")

@@ -848,8 +848,9 @@ class QuestHandler(NumericRefHandler):
         every measurand over everything serving it (``Store.best_measure``,
         ``serves`` at any depth), one line per ``(measurand, reference,
         normalization)`` group, in the measurand's display unit, with the
-        run's conditions and the paper. Groups never mix: a per-area and a
-        per-mass yield, or RHE and SHE potentials, are separate lines."""
+        run's conditions, current review state and the paper. Groups never mix:
+        a per-area and a per-mass yield, or RHE and SHE potentials, are separate
+        lines."""
         from precis.handlers import _measure_render as render
         from precis.utils import handle_registry
 
@@ -859,8 +860,9 @@ class QuestHandler(NumericRefHandler):
             return (
                 f"# measures — quest {ref.id}: {head}\n\n"
                 "no live measures from anything serving this quest yet "
-                "(rows are left out when ambiguous, escalated, anchor-lost or "
-                "distrusted; search(kind='measure', status='all', ...) shows them)"
+                "(rows are left out when ambiguous, escalated, anchor-lost, "
+                "distrusted or rejected by their newest current review; "
+                "search(kind='measure', status='all', ...) shows them)"
             )
         lines = [
             f"# measures — quest {ref.id}: {head}",
@@ -891,6 +893,7 @@ class QuestHandler(NumericRefHandler):
                         render.paper_handle(best),
                         handle_registry.format_handle("measure", int(best["id"])),
                         f"{g['sense']} is better, n={g['n']}",
+                        f"review={best['review_state']}",
                     ]
                 )
             )
