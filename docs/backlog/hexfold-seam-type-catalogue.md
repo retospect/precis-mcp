@@ -8,6 +8,142 @@ model: opus
 
 # hexfold: seam-type catalogue
 
+## R13 selected contract — Horizon 7, spec review before implementation
+
+Only the entry **(3, (120°,120°,120°), zigzag SD rim pattern,
+sp²)** is selected now. The catalogue's multiplicity `k` means
+`len(seam.rims)`; the existing authored `k=<phase>` and `Seam.k` mean
+registration phase and MUST retain that meaning. No unequal-dihedral
+solver, k=4 motif, census research or scientific stability claim is
+authorized. This is a deterministic geometric construction contract.
+
+### Verified premise and owning seam
+
+Current source at `0655b224f7de53249870fcb516b8458e353efa2e`:
+
+- The implementation owner is the **tracked vendored `src/hexfold` package
+  in precis**, not `precis_se.atomic.generators`. Its package docstring
+  names root `hexfold/` as an export seed; `/Users/reto/hexfold` is absent.
+- `precis_se.atomic.join.JOINERS` (`join.py:944`) is a sorted lattice-pair
+  dispatcher, currently only `("sp2-hex","sp2-hex")`. Its operation takes
+  two endpoints. This does NOT mean all hexfold seams are k=2-only.
+- Pure `hexfold.join.compose` (`join.py:499`) accepts two `Block`s and
+  performs seam-local relaxation. Do not call it to manufacture this
+  no-relax positive case. `Block` (`join.py:149`) already carries local Å
+  coordinates, topology and ports and is the natural input seam to reuse.
+- `text.Seam` (`text.py:79`) and `build.py:4443` already implement multi-rim
+  graph identification, equal dangling-count checks and edge-word skeleton
+  checks. They do not expose `seam.type` or equal-dihedral typed placement.
+  `build.py:4569` feeds consecutive pairs into ordinary placement;
+  `build.py:4646` seeds new seam atoms at the neighbours' mean. Neither
+  proves a metric three-sheet Y junction.
+- `build.Port.rim_type` (`build.py:88`) reads alternating SD zigzag versus
+  SSDD armchair. Both can have word `z^n`; equal edge-word alone is
+  insufficient. The key therefore retains the authored/canonical edge-word
+  AND the resolved pure zigzag rim type, not a string-based guess.
+
+Python discovery used native search/outline/symbol first. Index root `/app`
+differs from this task tree; the local anchors above were checked locally.
+No Y build/relaxation was executed for this premise check.
+
+### Selector and refusal API to review
+
+Proposed authored syntax (and matching canonical JSON fields):
+
+```text
+seam y: a.edge == b.edge == c.edge type=k3-sp2-120-z dihedrals=[120,120,120] k=0 atoms=sp2
+```
+
+`Seam.type` / JSON `type` selects exactly this catalogue entry;
+`dihedrals` declares the three cyclic sheet-sector angles in degrees.
+The spelling `a.edge` is a fixture requirement, NOT a presently supported
+sheet port (see the fixture hold below). Omitted dihedrals on this explicit
+type mean its declared equal-120 entry. Explicit unequal/nonfinite angles,
+wrong multiplicity or incompatible hybridisation are `fit.unsolvable`
+ERROR with requested type/count/angles and supported correction. Unequal
+input is refused before placement, seam atom/bond minting or any relaxer.
+No averaging, clamping, symmetric guess or fallback to the pair joiner.
+At least five rims are `fit.unsolvable` even without a type; k=4 remains
+outside this selected implementation, with no new supported claim.
+An armchair/mixed rim, unequal dangling counts or incompatible registered
+edge-words is `port.mismatch` ERROR naming the offending rim and resolved
+pattern/count. Unknown selector is `fit.unsolvable`, never ignored.
+
+For existing untyped three-rim authored files, preserve the historical
+topological interpretation and hashes; do not retroactively claim typed
+120° geometry. Canonical serialization must omit absent new fields and
+round-trip explicit fields. Typed input cannot silently downgrade to this
+legacy path. Existing k=2 fuse/pair composition remains its own operation.
+
+The bounded pure join entry proposed for review is
+`hexfold.join.compose_k3(blocks, rims, *, seam_type='k3-sp2-120-z',
+dihedrals_deg=(120,120,120), phase=0)`: exactly three existing resolved
+`Block`s/ports, Å coordinates and existing sigma. It returns combined
+coordinates/topology and named findings without IO/relax/model/catalogue
+fetch. This is a separate cardinality-safe entry rather than changing the
+meaning of `compose(a,pa,b,pb,k)`. Public SE multi-block mutation is NOT
+added in this slice. Compiler typed placement should reuse the same pure
+placement helper rather than duplicating the geometry.
+
+### Positive fixture and concrete representation hold
+
+The positive acceptance is **three finite graphene ribbons meeting on a
+straight zigzag segment**, an analytic Y cross-section with sheet sectors
+0°,120°,240° around the seam tangent. Use existing sigma=1.42 Å and
+honeycomb spacing, at least six seam periods, identical registered SD
+patterns; no catalogue-generated evidence or relaxed coordinates. New seam
+atoms have exactly three rim neighbours, bond vectors in the plane normal
+to the seam tangent and separated by 120°. Preserve each sheet's internal
+coordinates under rigid placement. Report actual topology/census, without
+assuming the backlog's derived octagon count.
+
+**Current blocker to review before code:** built sheet ports represent
+whole cyclic boundary walks (`build.py:1280`, `:1296`); a finite sheet's
+outer rim has corners/mixed pattern. The parser/spec permits an open seam
+in prose, but there is no verified named straight `sheet.edge` port with
+open-end semantics. `Port` and `_seam_faces_k` currently assume cyclic
+walks. A tube's pure zigzag end is closed and curved; three tubes or the
+old sheet-pill fixture cannot be substituted as proof of a straight
+equal120 three-sheet Y. Decide the smallest deterministic segment fixture
+and endpoint representation during contract review. If a narrow local
+fixture/helper suffices, pin its exact endpoints and graph in the fixture;
+if public open-rim grammar/topology is required, that prerequisite must be
+explicitly adopted before implementation. Do not claim this hold solved
+by this spec or add an unrelated general solver.
+
+### Acceptance/replay for the reviewed build
+
+- New focused `tests/hexfold/test_seam_k3.py`: selector parse/JSON/text
+  round-trip (legacy phase unchanged), positive Y fixture, deterministic
+  repeated outputs, unequal k=3 and k>=5 `fit.unsolvable`, rim mismatch.
+  Refusal tests trap seam minting/placement/relaxer calls.
+- Verify every seam atom is carbon sp², degree three; vectors have
+  normalized scalar triple product zero and pairwise dot products -1/2
+  within ordinary numerical equality tolerances, not a new scientific
+  threshold. Bond lengths use existing `Profile.DEFAULT.bond_tol_A`;
+  coplanarity is geometric, not a stability assertion.
+- Topological `check(spec)` runs without geometry relaxation.
+  `geometry_findings(net, relaxed=Relaxed(coords, 0,
+  'deterministic-unrelaxed'))` reuses existing geometric checks: max_force=0
+  is an unused API carrier, NOT a measured convergence claim. Assert no
+  `geom.clash` at either severity and no bad bond lengths. Never use
+  `check(geometry=True)`, which calls `stick_info` when coordinates are
+  absent. Any open-segment census/Euler limitation must be resolved or
+  explicitly reported, never hidden to obtain a green fixture.
+- Planned canonical replay after contract verdict:
+  `scripts/test -n0 tests/hexfold/test_seam_k3.py tests/hexfold/test_seam.py
+  tests/hexfold/test_rim_type.py`, scoped container types and Ruff.
+  Nothing in this spec is an executed positive result.
+- Codex code review precedes root merge. Exact deployment/same-owner native
+  exposure is a later gate; a pure fixture does not claim native SE join
+  support or nanoreactor T2 readiness. No relax campaign/hero regeneration,
+  MACE/xTB/DFT/provider jobs, threshold change or new dependency/schema.
+
+The selected entry supersedes the broad acceptance wording below only for
+this bounded slice: no relaxer's tolerance, measured extent campaign or
+carbon-census research gates this geometric fixture. Other catalogue rows
+and their open questions remain parked.
+
 Reto, 2026-09-26: "I just feel there are certain seam types we can
 support, so we should have a ... class of those (120-120 vs 4x'90', vs
 120)". And the scope ruling in the same exchange: **"joining 3 sheets

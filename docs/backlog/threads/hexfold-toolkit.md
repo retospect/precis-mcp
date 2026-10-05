@@ -583,8 +583,10 @@ waited on happened 09-29 — note at the bottom)
 6. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 7. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. Waits on Do-next 8, since a
-   motif measured at one extent has the same defect the radius had.
+   catalogue's third row type exists for. R13 selects ONLY equal120 k=3
+   zigzag sp² geometry, spec-first, without a measured-extent campaign;
+   the current straight/open-rim fixture hold is in its selected contract.
+   Other rows retain their earlier Do-next 8 measurement prerequisite.
 8. **`spec.md` §28.8 valve tool set** (checklist in
    backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy
