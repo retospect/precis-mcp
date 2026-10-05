@@ -13,7 +13,8 @@ Surface (see ``precis-gripe-help``):
   chunk to the existing gripe (id-present routes to append; same
   verb, no separate ``comment=`` field).
 - ``get(kind='gripe', id=N)`` composes the body + ordered comment
-  timeline alongside the standard ref header / tags / links view.
+  timeline (newest 20, chronologically) alongside header / tags / links.
+  ``view='comments'`` returns the full timeline; ``log`` stays audit events.
 - ``search`` queries chunks (body + comments) and groups hits by
   gripe, so a search term that only appears in a comment surfaces
   the parent gripe — overriding ``NumericRefHandler.search`` which
@@ -32,13 +33,14 @@ from typing import Any, ClassVar
 from psycopg.errors import ForeignKeyViolation
 
 from precis.errors import BadInput, Upstream
+from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
-from precis.store.types import ChunkInsert, Ref
+from precis.store.types import ChunkInsert, ChunkRow, Ref
 
 # Chunk-kind slugs we own. Match the seed in 0005.
 _BODY_KIND = "gripe_body"
@@ -421,31 +423,50 @@ class GripeHandler(NumericRefHandler):
 
     # ── rendering: body + comment timeline ──────────────────────────
 
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        q: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        if view == "comments":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(
+                body=self._render_timeline(ref, self.store.tags_for(ref.id), limit=None)
+            )
+        return super().get(id=id, view=view, q=q, **_kw)
+
     def _render_one(self, ref: Ref, tags: list[Tag]) -> str:
+        return self._render_timeline(ref, tags, limit=DEFAULT_CHILD_ROW_CAP)
+
+    def _render_timeline(self, ref: Ref, tags: list[Tag], *, limit: int | None) -> str:
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         lines = [f"# {self._sense()} {ref.id}"]
         if ref.set_by:
             lines.append(f"filed by: {ref.set_by}")
         if tags:
             lines.append("tags: " + " ".join(str(t) for t in tags))
-        lines.append("")
-        # Walk chunks in pos order. Body is pos=0, comments follow.
-        body_rendered = False
-        for block in blocks:
-            kind = block.chunk_kind
-            if kind == _BODY_KIND and not body_rendered:
-                lines.append(block.text)
-                body_rendered = True
-                continue
-            if kind == _COMMENT_KIND:
-                lines.append("")
-                lines.append(f"## comment {block.ord}")
-                lines.append(block.text)
-        if not body_rendered:
-            # Pre-migration gripes had no body chunk; fall back to
-            # the ref title so old rows still render coherently.
-            lines.insert(-1 if lines[-1] == "" else len(lines), ref.title)
-        return "\n".join(lines)
+        body = next((b.text for b in blocks if b.chunk_kind == _BODY_KIND), ref.title)
+        lines.extend(["", body])
+        comments = [b for b in blocks if b.chunk_kind == _COMMENT_KIND]
+
+        def render(selected: list[ChunkRow], _total: int) -> str:
+            return "".join(
+                f"\n\n## comment {b.ord}\n{b.text}"
+                for b in sorted(selected, key=lambda b: b.ord)
+            )
+
+        return "\n".join(lines) + render_capped_section(
+            comments,
+            limit=limit,
+            key=lambda b: -b.ord,
+            render=render,
+            overflow=lambda n: (
+                f"\n\n+{n} more comments · get(kind='gripe', id='gr{ref.id}', view='comments')"
+            ),
+        )
 
     def _render_create_ack(self, ref_id: int) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +

@@ -105,8 +105,9 @@ get(kind="gripe", id=42)
 #   tags + linked jobs
 ```
 
-`get` composes the body chunk and every `gripe_comment` chunk in
-creation order, so the whole conversation is one read.
+`get` composes the body and newest 20 comments in creation order, with a
+withheld count when older comments exist. Read the complete conversation with
+`get(kind='gripe', id=42, view='comments')`. `view='log'` remains the audit log.
 
 ## Add context to an existing gripe
 ## Comment on a gripe

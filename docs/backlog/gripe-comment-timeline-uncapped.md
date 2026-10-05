@@ -95,3 +95,17 @@ replaces. Cap first, batch second.
 - Newest-N or oldest-N? A doctor tick re-reading a chronic tracker probably
   wants the newest; the body plus first comment is usually the original
   diagnosis. Worth checking one real doctor-tick transcript before choosing.
+
+## R14 checked implementation contract
+
+Confirmed open/ready at origin/main ab90f225a. Current `view='log'` is the
+audit event log, not comment chunks: preserve it and add `view='comments'`
+for complete chronological body/comment history. Bare get retains the body
+and newest 20 comments in chronological order. Twenty is the current links
+precedent; newest comments retain current diagnosis on chronic trackers.
+One shared capped-section renderer owns selection and overflow for links and
+comments; links retain byte-identical formatting/order/cap. This bounds rendered
+comment count, not individual body/comment length or DB chunk retrieval.
+Regression: synthetic 55-comment ref, exact boundary/no overflow, full comments
+read, legacy title fallback, existing links suite and unchanged audit log.
+No schema/write-path/version changes; coordinator owns release/version gate.

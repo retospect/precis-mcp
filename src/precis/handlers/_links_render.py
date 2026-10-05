@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
 
@@ -86,7 +87,7 @@ _REL_PRIORITY_INDEX: dict[str, int] = {rel: i for i, rel in enumerate(_REL_PRIOR
 #: bounded regardless of how many thousands of links a hot quest/gripe
 #: accumulates. The full graph stays reachable via the overflow line's
 #: ``view='links'`` pointer.
-DEFAULT_LINK_ROW_CAP = 20
+DEFAULT_LINK_ROW_CAP = DEFAULT_CHILD_ROW_CAP
 
 
 def _priority_sort_key(pair: tuple[Link, str]) -> tuple[int, int]:
@@ -155,55 +156,58 @@ def render_links_section(
         endpoint_ids.add(link.src_ref_id)
     endpoints = store.fetch_refs_by_ids(endpoint_ids)
 
-    rows: list[dict[str, str]] = []
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
-    if priority:
-        combined.sort(key=_priority_sort_key)
-    else:
-        combined.sort(key=lambda pair: pair[0].id)
 
-    total = len(combined)
-    truncated = limit is not None and total > limit
-    if truncated:
-        assert limit is not None  # narrows for mypy; guarded by ``truncated``
-        combined = combined[:limit]
+    def render(selected: list[tuple[Link, str]], total: int) -> str:
+        rows: list[dict[str, str]] = []
+        truncated = len(selected) < total
+        for link, direction in selected:
+            if direction == "out":
+                other_id, other_pos = link.dst_ref_id, link.dst_ord
+                other_chunk_id = link.dst_chunk_id
+                rel_marker = _format_outbound_rel(link.relation)
+            else:
+                other_id, other_pos = link.src_ref_id, link.src_ord
+                other_chunk_id = link.src_chunk_id
+                rel_marker = _format_inbound_rel(link.relation)
+            target = _format_target_handle(
+                other_id, other_pos, other_chunk_id, endpoints
+            )
+            teaser = _teaser_for(endpoints.get(other_id))
+            get_call = _get_call_for(
+                endpoints.get(other_id),
+                other_id,
+                pos=other_pos,
+                chunk_id=other_chunk_id,
+            )
+            rows.append(
+                {
+                    "related to": f"{rel_marker} {target}".strip(),
+                    "keywords": teaser,
+                    "how to get": get_call,
+                }
+            )
 
-    for link, direction in combined:
-        if direction == "out":
-            other_id, other_pos = link.dst_ref_id, link.dst_ord
-            other_chunk_id = link.dst_chunk_id
-            rel_marker = _format_outbound_rel(link.relation)
-        else:
-            other_id, other_pos = link.src_ref_id, link.src_ord
-            other_chunk_id = link.src_chunk_id
-            rel_marker = _format_inbound_rel(link.relation)
-        target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)
-        teaser = _teaser_for(endpoints.get(other_id))
-        get_call = _get_call_for(
-            endpoints.get(other_id), other_id, pos=other_pos, chunk_id=other_chunk_id
+        from precis.format import render_agent_table
+
+        header = f"Links ({limit} of {total}):" if truncated else "Links:"
+        out = f"\n\n{header}\n" + render_agent_table(
+            rows, schema=["related to", "keywords", "how to get"]
         )
-        rows.append(
-            {
-                "related to": f"{rel_marker} {target}".strip(),
-                "keywords": teaser,
-                "how to get": get_call,
-            }
-        )
+        return out
 
-    from precis.format import render_agent_table
-
-    header = f"Links ({limit} of {total}):" if truncated else "Links:"
-    out = f"\n\n{header}\n" + render_agent_table(
-        rows, schema=["related to", "keywords", "how to get"]
+    handle = handle_registry.try_format(ref.kind, ref.id) or (
+        ref.slug if ref.slug is not None else ref.id
     )
-    if truncated:
-        assert limit is not None  # narrows for mypy; guarded by ``truncated``
-        n_more = total - limit
-        handle = handle_registry.try_format(ref.kind, ref.id) or (
-            ref.slug if ref.slug is not None else ref.id
-        )
-        out += f"\n+{n_more} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
-    return out
+    return render_capped_section(
+        combined,
+        limit=limit,
+        key=_priority_sort_key if priority else lambda pair: pair[0].id,
+        render=render,
+        overflow=lambda n: (
+            f"\n+{n} more · get(kind={ref.kind!r}, id={handle!r}, view='links')"
+        ),
+    )
 
 
 def render_links_view(store: Store, ref: Ref, *, sense: str | None = None) -> Response:

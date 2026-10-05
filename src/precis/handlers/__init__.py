@@ -14,6 +14,11 @@ body preference and diversity caps; inserting a representative card after
 that slice could hide a ranked paper and repeat the title match on later
 pages. Uncapped title promotion retains its existing behavior.
 
+Inline links and gripe comments use one capped-section renderer: selection
+and an explicit full-view pointer bound child counts on routine reads. Gripe
+keeps newest comments chronologically; log remains the audit trail, while
+comments is the opt-in complete conversation. Individual text is not clipped.
+
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits.
 All handler body writes lock the owning ref; anchored writes also compare
 the previous body with the resolver's snapshot inside the transaction.
