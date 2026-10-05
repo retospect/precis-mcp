@@ -12,6 +12,7 @@ lexical legs instead of escaping as a 500.
 
 from __future__ import annotations
 
+import ast
 from typing import Any
 
 import pytest
@@ -121,6 +122,100 @@ def test_plain_search_trailer_has_no_broad_echo(store: Store) -> None:
     assert "page=2" in resp.body
     assert "queries=[" not in resp.body
     assert "per_paper=2" not in resp.body
+
+
+def _follow_args(body: str, *, restart: bool) -> dict[str, Any]:
+    """Consume the advertised call, not a separately reconstructed recipe."""
+    for line in body.splitlines():
+        if "\tsearch(" not in line:
+            continue
+        description, call = line.split("\t", 1)
+        if (restart and "restart at page 1" in description) or (
+            not restart and "see the next" in description
+        ):
+            node = ast.parse(call, mode="eval").body
+            assert isinstance(node, ast.Call)
+            kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords}
+            assert kwargs.pop("kind") == "paper"
+            assert None not in kwargs
+            return {str(key): value for key, value in kwargs.items()}
+    raise AssertionError(f"No expected same-search hint in {body}")
+
+
+def _row_handles(body: str) -> set[str]:
+    return {
+        line.split("\t", 1)[0] for line in body.splitlines() if line.startswith("pc")
+    }
+
+
+@pytest.mark.parametrize("page_size", [1, 2])
+@pytest.mark.parametrize("cap", [None, 3])
+def test_scoped_lexical_hint_replay_stays_scoped(
+    store: Store, page_size: int, cap: int | None
+) -> None:
+    ref = store.insert_ref(kind="paper", slug="hint-source", title="Hint source")
+    blocks = store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=i, text=t) for i, t in enumerate(_BLOCKS_A)]
+    )
+    allowed = {f"pc{block.id}" for block in blocks}
+    _seed(store, slug="hint-global", blocks=_BLOCKS_B, embed=False)
+    emb = CountingEmbedder()
+    handler = _handler(store, emb)
+    first = handler.search(
+        q="nitrate ammonia",
+        scope=f"pa{ref.id}",
+        mode="lexical",
+        per_paper=cap,
+        page_size=page_size,
+    )
+    args = _follow_args(first.body, restart=page_size == 1)
+    assert args["scope"] == f"pa{ref.id}"
+    assert args["mode"] == "lexical"
+    assert args["q"] == "nitrate ammonia"
+    assert args.get("per_paper") == cap
+    assert args["page_size"] == (10 if page_size == 1 else page_size)
+    assert args["page"] == (1 if page_size == 1 else 2)
+    second = handler.search(**args)
+    rows = _row_handles(second.body)
+    assert rows and rows <= allowed
+    if page_size == 1:
+        assert rows == allowed  # advertised restart, not page 2 with a new size
+    else:
+        assert rows.isdisjoint(_row_handles(first.body))
+        assert rows | _row_handles(first.body) == allowed
+    assert emb.batch_calls == [] and emb.one_calls == []
+
+
+@pytest.mark.parametrize("page_size", [1, 2])
+def test_default_broad_hint_replay_preserves_arguments(
+    store: Store, page_size: int
+) -> None:
+    _seed(store, slug="hint-default-a", blocks=_BLOCKS_A, embed=False)
+    _seed(store, slug="hint-default-b", blocks=_BLOCKS_B, embed=False)
+    emb = CountingEmbedder()
+    handler = _handler(store, emb)
+    queries = ["copper selectivity"]
+    answers = ["Isolated Cu sites raise ammonia faradaic efficiency."]
+    first = handler.search(
+        q="nitrate ammonia",
+        queries=queries,
+        answers=answers,
+        per_paper=2,
+        page_size=page_size,
+    )
+    args = _follow_args(first.body, restart=page_size == 1)
+    assert args["q"] == "nitrate ammonia"
+    assert args["queries"] == queries and args["answers"] == answers
+    assert args["per_paper"] == 2
+    assert "scope" not in args and "mode" not in args  # preserve implicit defaults
+    assert args["page_size"] == (10 if page_size == 1 else page_size)
+    assert args["page"] == (1 if page_size == 1 else 2)
+    second = handler.search(**args)
+    assert _row_handles(second.body)
+    if page_size == 2:
+        assert _row_handles(first.body).isdisjoint(_row_handles(second.body))
+    assert emb.batch_calls == [["nitrate ammonia", *queries, *answers]] * 2
+    assert emb.one_calls == []
 
 
 # ── (b) handler-level caps (agentic tier bypasses the MCP checks) ──

@@ -512,6 +512,9 @@ class BlockSearchResult:
     year_notice: str
     broad: bool
     broad_has_more: bool
+    #: Preserve an explicit retrieval mode in same-search hints. None
+    #: retains the caller's implicit hybrid default, not a new mode choice.
+    mode: str | None = None
     #: Non-broad-only pagination fallback (gr311338): ``True`` when a
     #: single-leg search over-fetched one row past ``page_size`` — the
     #: honest "more beyond this page" signal for a mode (``semantic``)
@@ -752,6 +755,7 @@ class FusedBlockSearch:
                 return BlockSearchResult(
                     kind=kind,
                     q=q,
+                    mode=mode,
                     page=page,
                     page_size=page_size,
                     scope=scope,
@@ -1194,6 +1198,7 @@ class FusedBlockSearch:
         return BlockSearchResult(
             kind=kind,
             q=q,
+            mode=mode,
             page=page,
             page_size=page_size,
             scope=scope,
@@ -1565,6 +1570,13 @@ class PaperSearchResultRenderer:
             if broad
             else ""
         )
+        # A larger page or next page is still the same search (gr469183).
+        # Dropping scope/mode silently substitutes global hybrid retrieval.
+        context_suffix = broad_suffix
+        if result.scope is not None:
+            context_suffix += f", scope={result.scope!r}"
+        if result.mode is not None:
+            context_suffix += f", mode={result.mode!r}"
         # Pagination gate (gr311338): prefer the exact ``total`` when the
         # mode produced one; fall back to the probe-based ``*_has_more``
         # signal when it didn't (broad fusion, or mode='semantic' single-
@@ -1579,14 +1591,15 @@ class PaperSearchResultRenderer:
         if more_available:
             if len(hits) == 1:
                 if broad:
-                    more_desc = "see more of the fused matches"
+                    more_desc = "restart at page 1 with up to 10 fused matches"
                 elif total is not None:
-                    more_desc = f"see more of the {total} matches"
+                    more_desc = f"restart at page 1 with up to 10 of {total} matches"
                 else:
-                    more_desc = "see more matches"
+                    more_desc = "restart at page 1 with up to 10 matches"
                 nav.append(
                     (
-                        f"search(kind='{kind}', q={q!r}{broad_suffix}, page_size=10)",
+                        f"search(kind='{kind}', q={q!r}{context_suffix}, "
+                        "page_size=10, page=1)",
                         more_desc,
                     )
                 )
@@ -1621,8 +1634,8 @@ class PaperSearchResultRenderer:
                         next_desc = f"see the next {result.page_size} hits"
                     nav.append(
                         (
-                            f"search(kind='{kind}', q={q!r}{broad_suffix}, "
-                            f"page={result.page + 1})",
+                            f"search(kind='{kind}', q={q!r}{context_suffix}, "
+                            f"page_size={result.page_size}, page={result.page + 1})",
                             next_desc,
                         )
                     )

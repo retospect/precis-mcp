@@ -180,7 +180,7 @@ def test_handler_dedup_total_matches_rows_shown(store: Store) -> None:
     )
     out = _handler(store).search(q="attention mechanism", page_size=3)
     assert "1 of 2" not in out.body
-    assert "see more of the" not in out.body
+    assert "restart at page 1" not in out.body
 
 
 @pytest.mark.parametrize("cap", [1, 2])
@@ -242,6 +242,6 @@ def test_capped_search_prefers_body_before_paging(
         ]
         assert rows == [handle]
         assert card_handle not in out.body
-        assert ("see more of the fused matches" in out.body) == (page < len(expected))
+        assert ("restart at page 1" in out.body) == (page < len(expected))
         if exact_title and page == 1:
             assert handle_registry.format_handle("paper", _rid) in out.body

@@ -14,6 +14,11 @@ body preference and diversity caps; inserting a representative card after
 that slice could hide a ranked paper and repeat the title match on later
 pages. Uncapped title promotion retains its existing behavior.
 
+Paper same-search hints retain scope, requested mode and broad arguments:
+dropping those selects a different corpus or ranking. Next-page hints keep
+page size; the single-hit larger-page action explicitly restarts at page 1.
+Omitted mode stays omitted so the default retrieval contract is unchanged.
+
 Inline links and gripe comments use one capped-section renderer: selection
 and an explicit full-view pointer bound child counts on routine reads. Gripe
 keeps newest comments chronologically; log remains the audit trail, while
