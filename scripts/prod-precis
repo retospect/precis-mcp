@@ -20,7 +20,7 @@ export PRECIS_DATABASE_URL="$(sed 's#@host.docker.internal:#@127.0.0.1:#' "$HOME
 # Cloud calls need the same configured gateway as services. Honour an explicit
 # environment override; an absent optional file must not break non-cloud CLI.
 # Read into the child environment only, never argv or diagnostic output.
-if [[ -z "${PRECIS_LLM_BASE_URL:-}" && -r "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL" ]]; then
+if [[ -z "${PRECIS_LLM_BASE_URL+x}" && -r "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL" ]]; then
     export PRECIS_LLM_BASE_URL="$(cat "$HOME/.secrets/pw/PRECIS_LLM_BASE_URL")"
 fi
 export PRECIS_EMBEDDER=remote PRECIS_EMBEDDER_URL=http://127.0.0.1:8181

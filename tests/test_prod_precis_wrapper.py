@@ -11,6 +11,7 @@ import pytest
     "provided,file_url,expected",
     [
         (None, "https://fixture.invalid/v1", "https://fixture.invalid/v1"),
+        ("", "https://fixture.invalid/v1", ""),
         (
             "https://override.invalid/v1",
             "https://fixture.invalid/v1",
