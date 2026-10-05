@@ -304,8 +304,28 @@ def _drain_one_job(store: Store, parent_id: int) -> None:
         with store.pool.connection() as conn:
             status = current_status(conn, job_ref_id)
         if status in TERMINAL:
+            with store.pool.connection() as conn:
+                meta_row = conn.execute(
+                    "SELECT meta FROM refs WHERE ref_id=%s", (job_ref_id,)
+                ).fetchone()
+            assert meta_row is not None, f"job {job_ref_id} disappeared"
+            job_meta = meta_row[0]
+            evidence = {
+                "job_id": job_ref_id,
+                "status": status,
+                "meta": job_meta,
+                "routes": store.pcb_routes_get(parent_id),
+            }
+            path = Path(".scratch/r14-route-gate")
+            path.mkdir(parents=True, exist_ok=True)
+            seed = job_meta["params"].get("seed", 0)
+            job_type = job_meta["job_type"]
+            (path / f"fab-{job_type}-seed{seed}.json").write_text(
+                json.dumps(evidence, indent=2, default=str), encoding="utf-8"
+            )
             assert status == "succeeded", (
-                f"job {job_ref_id} failed to drain cleanly: status={status!r}"
+                f"job {job_ref_id} failed to drain cleanly: status={status!r}; "
+                f"error={job_meta.get('error')}"
             )
             return
         result = run_job_inproc_pass(store, limit=1)

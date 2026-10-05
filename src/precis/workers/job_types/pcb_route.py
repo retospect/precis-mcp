@@ -64,7 +64,8 @@ log = logging.getLogger(__name__)
 # board, or a pending/complete job keeps serving the old result.
 # 2 = pin swaps restored before the layer sketch (5d50cd44a).
 # 3 = finer clearance-derived occupancy grid cap (faithful replay net+1).
-CODE_VERSION = 3
+# 4 = restore global grid baseline after reference/fab seed regressions.
+CODE_VERSION = 4
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",

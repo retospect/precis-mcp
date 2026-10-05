@@ -65,11 +65,14 @@ are closed-form, not because the package as a whole is. No GL, no
 meshing, no embedder. The handler (:mod:`precis.handlers.pcb`) renders
 results as TOON; this package owns the algorithms.
 
-The maze-grid pitch cap uses one-third of clearance, bounded by grid_for's existing
-pitch floor. The faithful dogfood replay gained one routed net with zero geometric
-DRC errors; it also traded which nets failed. Clearance, layer locks and fixed
-copper remain constraints, and this measurement establishes a numerical gain
-rather than a topology repair or a global routing optimum.
+The maze-grid pitch cap retains two-thirds of clearance, bounded by grid_for's
+existing pitch floor. A one-third experiment gained one net on the faithful
+dogfood replay (12 gains/11 losses, zero geometric DRC errors), but regressed
+ESP32 reference seed5 and fab-film seeds2/3/4. The global refinement was withdrawn:
+deterministic routing competition changes with the grid, so finer is not a
+monotonic yield improvement. The measured fine-grid fixture remains an explicit
+experiment, not a default or new API. Clearance/layers/fixed copper, all route/DRC
+ratchets and search budgets stay authoritative; diagnostic parity is separate.
 
 Instance pinout inspection (``eyes.pinout``) reads raw stored pads and
 reuses ``padplace.place_pad_point``. IR/fab pads were refused as its input:

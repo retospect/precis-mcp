@@ -72,7 +72,7 @@ def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
 ):
     ir, graph, features, footprints, fixed, config = _hydrate(store)
     assert ir.n_segments == 55 and ir.n_nets == 58
-    assert realize._PITCH_PER_CLEARANCE == 1.0 / 3.0
+    assert realize._PITCH_PER_CLEARANCE == 2.0 / 3.0
     with monkeypatch.context() as old:
         old.setattr(realize, "_PITCH_PER_CLEARANCE", 2.0 / 3.0)
         before = realize.realize(
@@ -80,12 +80,16 @@ def test_exact_dogfood_grid_refinement_improves_count_and_is_deterministic(
         )
     assert len(_failed(ir, before)) == 33
     _assert_legal(ir, graph, features, footprints, fixed, config, before)
-    after = realize.realize(
-        ir, config=config, footprints=footprints, fixed_copper=fixed
-    )
-    repeated = realize.realize(
-        ir, config=config, footprints=footprints, fixed_copper=fixed
-    )
+    # Fine pitch remains an explicit experiment: its net+1 on this fixture
+    # regresses reference/fab seeds and must not silently become the default.
+    with monkeypatch.context() as fine:
+        fine.setattr(realize, "_PITCH_PER_CLEARANCE", 1.0 / 3.0)
+        after = realize.realize(
+            ir, config=config, footprints=footprints, fixed_copper=fixed
+        )
+        repeated = realize.realize(
+            ir, config=config, footprints=footprints, fixed_copper=fixed
+        )
     assert len(_failed(ir, after)) == 32
     assert _failed(ir, repeated) == _failed(ir, after)
     assert asdict(repeated) == asdict(after)
@@ -118,8 +122,12 @@ def test_exact_dogfood_grid_cap_changes_the_actual_pitch(store, monkeypatch):
             realize.realize(
                 ir, config=config, footprints=footprints, fixed_copper=fixed
             )
-    with pytest.raises(Captured):
-        realize.realize(ir, config=config, footprints=footprints, fixed_copper=fixed)
+    with monkeypatch.context() as fine:
+        fine.setattr(realize, "_PITCH_PER_CLEARANCE", 1.0 / 3.0)
+        with pytest.raises(Captured):
+            realize.realize(
+                ir, config=config, footprints=footprints, fixed_copper=fixed
+            )
     assert pitches[0] > pitches[1]
     assert pitches[1] == pytest.approx(0.05)
     assert pitches[0] < 0.1  # extent already refines the old cap on this board

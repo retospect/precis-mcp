@@ -909,3 +909,32 @@ unchanged and target cache data identical; transaction remains usable.
 Unrelated target cache keys and NULL/unbound components still replay exactly.
 Focused canonical snapshot tests, scoped container types and Ruff/diff checks;
 publish exact R14 candidate for review, root owns integration/release.
+
+
+### R14 route-gate repair checkpoint — frozen 53e6cb255
+
+Local/main CI/release CI all fail the ESP32 reference seed5 and fab-film
+seeds2/3/4 at route-job drain after successful placement. Old job errors were
+not retained. Global pitch2/3→1/3 plus route CODE_VERSION3 is a hypothesis,
+not an established cause. First run ONE affected canonical case with test-local
+job meta.error and persisted route-summary evidence captured before DB cleanup.
+Then fix only the demonstrated cause; preserve every routing/DRC/render ratchet,
+budgets, success semantics and seed set. No threshold lowering or broad skips.
+
+Acceptance: affected reference5 and fab2/3/4 pass with retained exact failure/
+after evidence; demonstrate ewod fixed-pose22→23 tradeoff under the repair.
+Run focused adjacent tests/types/Ruff only. Root owns source review and renewed
+full gate. New isolated work/pcb/r14-route-gate-repair at frozen53e6cb255;
+preserve prior owner trees/fixtures. Snapshot dead-export correction is separate.
+No production/native writes, provider/service/image/CI/release operations.
+
+
+R14 controlled diagnosis: frozen fine-cap reference5 fails recorded
+non-convergence, EN congestion, partial copper persisted. With ONLY cap restored
+to2/3, same canonical reference5 passes (11/11 multi-pin nets plus all unchanged
+DRC ratchets). Proposed minimal correction withdraws the global1/3 refinement,
+retains explicit fine-cap EWOD experiment and its22→23/determinism/DRC assertions,
+and advances route epoch3→4 so old fine-grid jobs cannot be reused. No new opt-in
+API, fixture-specific selection, best-of retry or extra search budget is proposed.
+Default EWOD count returns22: the unshipped global gain is honestly withdrawn,
+not repaired through a special case. Root review must assess this tradeoff.
