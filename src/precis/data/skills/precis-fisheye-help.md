@@ -22,6 +22,9 @@ bare chunk floating with no context, and not the whole document either.
 It is pure assembly of data that already exists (reading order, chunk
 summaries/keywords, link edges) — no new storage, no background job.
 
+Classifying refs into taxon nodes and walking their concept hierarchy:
+`precis-classify-help`.
+
 **Partial rollout.** `view='fisheye'`/`'fisheye+1hop'` is live on
 `get(kind='draft', …)`, `get(kind='finding', …)` and
 `get(kind='quest', …)` today. On a quest, `fisheye+1hop` lists the quests

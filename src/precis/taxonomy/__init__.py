@@ -52,7 +52,9 @@ and loads the campaign's definitions onto that.
 for the `taxon` ref kind (`handlers/taxon.py`): the fixed node meta key set
 and its validation, the card text, the resolution slug. The handler uses it,
 and the 0174 seed is tested byte-identical against it, so every node is
-built the same way.
+built the same way. Boundary examples (``includes`` / ``excludes``) render
+on get but stay out of the searchable card: near-miss names must not
+attract sibling queries.
 
 **No writes.** Stages emit files under the campaign scratch directory. The
 `taxon` node and `measures` row writers arrive as a thin adapter once

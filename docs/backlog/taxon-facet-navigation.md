@@ -25,8 +25,8 @@ gaps:
 
 - `under=` is refused on every kind except taxon (`precis-taxon-help`
   §Search), so "every finding under AFM about xyz" cannot be asked.
-- There is no rule for how writers classify, so the first thousand
-  `instance-of` links will set the shape by accident.
+- The classification guide and boundary-example fields are in source;
+  served-skill readback and the cold-agent classification trial remain pending.
 - Nothing stops two siblings meaning nearly the same thing.
 
 ### The design, as argued in-session
@@ -80,23 +80,25 @@ browsing", CHI '03, 401–408, doi:10.1145/642611.642681, precis paper
 
 Slices ship independently, in this order.
 
-**Slice 0 — the authoring guide.** Landed 2026-10-05 except AC 0's
-cold-agent check, which runs after deploy; the skill is the truth for its
-rules now, and the list below is the original brief. New skill
-`precis-classify-help`, the writer's and reader's rules, usable with
-today's fields (definition text, aliases, `meta.axis`):
+**Slice 0 — authoring guide and boundary examples (source implemented;
+acceptance pending).** `precis-classify-help` gives writer and reader rules
+for definitions, aliases, `meta.axis` and `includes` / `excludes`:
 
 - *Writer:* attach one `instance-of` per relevant axis at the most
   specific node, never also to its ancestor; answer the axis question;
   read the siblings' excludes before choosing; use `other` instead of
   guessing; search aliases before minting; never mint a taxon to hold one
   item; never mint a combined (pre-coordinated) node.
+- *Axes:* the guide's six questions are recommendations for a general
+  classification workflow. Reuse the parent/campaign's existing labels;
+  composition, periodic, termination and material-class remain valid.
+  No closed whitelist or legacy re-axis operation is introduced.
 - *Definition shape:* genus + differentia naming the excluded sibling;
   boundary examples in two new taxon meta keys `includes` / `excludes`
   (lists of strings, rendered on `get`, kept out of the embedded card so
   a near-miss naming a sibling does not pull that sibling's queries).
-  Built with slice 0 (2026-10-05) instead of parsing definition text in
-  slice 4.
+  Validated by `taxonomy/nodes.py`, rendered by `handlers/taxon.py`;
+  no definition parsing is needed.
 - *Reader (browse protocol):* start at the node, read `view='facets'`
   (slice 3; until then `search(kind='taxon', under=, depth=1)` per
   axis), cut on the axis that splits the set most evenly, add `q=` only
@@ -132,9 +134,9 @@ instances under the node, counts per value on every other axis.
   count.
 
 **Slice 4 — axis contract fields.** On the v1.5 axis taxon nodes:
-`exclusive` flag, question text, the `other` child; `Includes:` /
-`Excludes:` parsed from definitions into structured fields. Blocked by
-`term-taxonomy.md` v1.5 (axis as taxon).
+`exclusive` flag, question text, the `other` child; reuse slice 0's
+structured `includes` / `excludes`. Blocked by `term-taxonomy.md` v1.5
+(axis as taxon).
 
 ## Explicitly NOT in scope
 
@@ -149,6 +151,10 @@ instances under the node, counts per value on every other axis.
 - Fisheye ring changes beyond pointing at the skill.
 
 ## Acceptance criteria
+
+Slice 0's exact-deploy skill readback and ten-item cold-agent trial below
+are pending; local validation/rendering tests do not establish live acceptance.
+Slices 1–4 remain planned.
 
 0. `get(kind='skill', id='precis-classify-help')` serves; a cold agent
    given only the skill classifies 10 seeded AFM items into axis nodes
@@ -169,7 +175,8 @@ instances under the node, counts per value on every other axis.
 ## Target + blast radius
 
 Slice 0: `src/precis/data/skills/precis-classify-help.md`, pointers in
-`precis-taxon-help.md` and `precis-fisheye-help.md`. Slices 1–4:
+`precis-taxon-help.md` and `precis-fisheye-help.md`, boundary-key validation
+in `taxonomy/nodes.py` and rendering in `handlers/taxon.py`. Slices 1–4:
 `handlers/taxon.py`, `store/_taxon_ops.py`, the search verb's `under=`
 gate, `_link_tag_ops.py::check_relation_constraints` (slice 4's
 exclusive check). Read-mostly; the only new refusals are at taxon mint

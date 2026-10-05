@@ -84,6 +84,11 @@ string); a node may have parents on different axes. Re-linking the same pair
 with a new axis replaces it. `meta=` on `link` is accepted for taxon only;
 other kinds refuse it.
 
+Reuse the parent's or campaign's existing axis labels. `composition`,
+`periodic`, `termination` and `material-class` remain valid; the six
+questions in `precis-classify-help` guide general classification without
+requiring existing axes to be renamed.
+
 A link is refused, writing nothing, when:
 
 - either end is not a taxon (the refusal names the handle and kind; to attach

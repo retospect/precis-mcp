@@ -28,7 +28,9 @@ unbounded. Node mechanics (put, meta keys, paths, `under=`):
 ## Axes
 
 Each `specialises` edge names an axis (`meta={"axis": ...}`), and each axis
-answers one question. Any string is accepted today; use exactly these:
+answers one question. Reuse the labels already used by the parent or
+campaign. For a new general classification branch, these six questions
+and labels are recommended:
 
 | axis | question it answers |
 |---|---|
@@ -38,6 +40,10 @@ answers one question. Any string is accepted today; use exactly these:
 | `regime` | under which conditions? |
 | `quantity` | what is measured or computed? (resonance frequency) |
 | `scale` | at what size or time scale? |
+
+The vocabulary is open: existing `composition`, `periodic`, `termination`
+and `material-class` axes remain valid. Do not rename them to fit this
+table; re-linking the same pair with a different axis replaces that axis.
 
 Every child on one axis answers that axis's question. A child that answers
 a different question goes on that other axis.
@@ -93,7 +99,7 @@ put(kind="taxon",
                        "resonance of the sample itself → tn<sample resonance id>"]},
     link="taxon:812", rel="specialises")   # put(link=) takes the id, not a path
 link(kind="taxon", id=<new tn>, target="taxon:812", rel="specialises",
-     meta={"axis": "method"})              # name the axis on the edge
+     meta={"axis": "method"})              # reuse this parent's method axis
 ```
 
 A parent with a start node above it may require keys: under `measurand`,
