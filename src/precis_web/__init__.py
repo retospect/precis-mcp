@@ -43,8 +43,9 @@ so multiline values use a textarea and cannot switch to a password input while
 line breaks remain. Blank replacement leaves the stored value unchanged; the
 editor reads only masked inventory. Live character/line counts describe only
 current input (Unicode code points and newline-delimited segments), not stored
-lengths or validity: retaining write-only inventory avoids decrypting secrets
-just to offer entry feedback.
+lengths or validity. Saved counts are stamped in the existing masked hint by
+``vault._hint`` at write time; legacy hints stay uncounted until replacement.
+This keeps the render path free of decryption, backfill or stored-value forms.
 
 Nav (template ``templates/base.html.j2``; badges ``nav.py::nav_badges``):
 Daily (Drive, Tags, ToDo, Design) always visible; Browse ▾ (Quests,

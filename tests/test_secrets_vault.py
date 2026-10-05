@@ -1,4 +1,4 @@
-"""DB round-trip tests for the secrets vault (migration 0059).
+"""DB round-trip tests for the secrets vault (0059) and saved hint counts (0189).
 
 Self-provisions ``pgcrypto`` + a session ``app.secret_key`` at the database
 level; skips cleanly where pgcrypto can't be created (non-superuser test DB
@@ -7,6 +7,7 @@ without it pre-installed).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 import psycopg
@@ -70,7 +71,7 @@ def test_set_get_roundtrip(vault_store: Store) -> None:
     )
 
 
-@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
 def test_web_multiline_create_replace_roundtrip(
     vault_store: Store, monkeypatch: pytest.MonkeyPatch, newline: str
 ) -> None:
@@ -88,7 +89,7 @@ def test_web_multiline_create_replace_roundtrip(
     app.include_router(route.router)
     with TestClient(app) as client:
         for body in ("FIRST_SYNTHETIC_VALUE", "REPLACEMENT_SYNTHETIC_VALUE"):
-            value = newline.join(["BEGIN", body, "", "END", ""])
+            value = newline.join(["BEGIN", body + "😀e\u0301", "", "END", ""])
             response = client.post(
                 "/secrets/set",
                 data={"name": name, "value": value},
@@ -99,6 +100,14 @@ def test_web_multiline_create_replace_roundtrip(
             assert body not in response.text
             vault.invalidate(name)
             assert vault.get_secret(name, store=vault_store) == value
+            saved = next(
+                r for r in vault.list_secrets(store=vault_store) if r["name"] == name
+            )
+            assert str(saved["hint"]).endswith(f" · {len(value)} chars · 5 lines")
+            assert body not in str(saved["hint"])
+        before_blank = next(
+            r for r in vault.list_secrets(store=vault_store) if r["name"] == name
+        )
         response = client.post(
             "/secrets/set",
             data={"name": name, "value": ""},
@@ -107,6 +116,10 @@ def test_web_multiline_create_replace_roundtrip(
         assert response.status_code == 303
         vault.invalidate(name)
         assert vault.get_secret(name, store=vault_store) == value
+        assert (
+            next(r for r in vault.list_secrets(store=vault_store) if r["name"] == name)
+            == before_blank
+        )
 
 
 def test_stored_value_is_encrypted(vault_store: Store) -> None:
@@ -157,3 +170,69 @@ def test_reveal_writes_audit(vault_store: Store) -> None:
             ("AUDIT_ME",),
         ).fetchone()
     assert n is not None and n[0] >= 1
+
+
+@pytest.mark.parametrize(
+    "value", ["abc", "😀e\u0301", "\n", "A\rB\r", "A\r\n\r\n", "synthetic\n\nend\n"]
+)
+def test_saved_hint_counts_and_roundtrip(vault_store: Store, value: str) -> None:
+    name = "TEST_COUNTS"
+    vault.set_secret(name, value, store=vault_store)
+    row = next(r for r in vault.list_secrets(store=vault_store) if r["name"] == name)
+    lines = len(re.split(r"\r\n|\r|\n", value))
+    assert str(row["hint"]).endswith(f" · {len(value)} chars · {lines} lines")
+    assert value not in str(row["hint"])
+    assert vault.get_secret(name, store=vault_store) == value
+
+
+def test_hint_empty_helper_counts(vault_store: Store) -> None:
+    with vault_store.pool.connection() as conn:
+        assert conn.execute("SELECT vault._hint(''), vault._hint(NULL)").fetchone() == (
+            "(empty) · 0 chars · 0 lines",
+            "(empty) · 0 chars · 0 lines",
+        )
+
+
+def test_saved_hint_html_is_write_only(
+    vault_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    from pathlib import Path
+
+    from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+
+    from precis_web.routes import secrets as route
+
+    name = "TEST_COUNTS_HTML"
+    value = "BEGIN_SYNTHETIC\nSECRET_SENTINEL😀\n\nEND\n"
+    vault.set_secret(name, value, store=vault_store)
+    inventory = [r for r in vault.list_secrets(store=vault_store) if r["name"] == name]
+    monkeypatch.setattr(route.secret_status, "KNOWN_SECRETS", ())
+    rows, _ = route._build_rows(inventory, {}, store=vault_store)
+    scratch = Path(__file__).parents[1] / ".scratch"
+    scratch.mkdir(exist_ok=True)
+    (scratch / "browser-saved-inventory.json").write_text(
+        json.dumps(inventory, default=str)
+    )
+    rows = [r for r in rows if r["name"] == name]
+    env = Environment(
+        loader=ChoiceLoader(
+            [
+                DictLoader({"base.html.j2": "{% block content %}{% endblock %}"}),
+                FileSystemLoader(
+                    Path(__file__).parents[1] / "src/precis_web/templates"
+                ),
+            ]
+        ),
+        autoescape=True,
+    )
+    env.filters["ago"] = lambda value: "synthetic time"
+    html = env.get_template("secrets/index.html.j2").render(
+        rows=rows, per_user_count=0, checked_at=None
+    )
+    assert f" · {len(value)} chars · 5 lines" in html
+    assert "Entered: 0 chars · 0 lines" in html
+    assert "SECRET_SENTINEL" not in html
+    assert '<textarea name="value"' in html
+    assert "</textarea>" in html
+    assert value not in html
