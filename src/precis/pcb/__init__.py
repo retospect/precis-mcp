@@ -63,6 +63,12 @@ multiply through-hole lands. Explicit pin-to-pad and footprint naming are
 reported separately rather than changing routing's mapping policy. Missing
 placement leaves board coordinates unavailable; source geometry does not
 verify a vendor pinout or connector mating orientation.
+
+Unsaved intake preview overlays explicit proposed labels on those same stored
+rows, separately from persisted pin/net evidence. It never authors the draft:
+canonical ownership conflicts remain inspectable proposals, while authoring
+still refuses them. Prose/numbering/mating/net inference and provider fetches
+were refused; a read-only echo is not a routing or alias-storage policy.
 """
 
 from __future__ import annotations

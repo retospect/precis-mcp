@@ -165,6 +165,90 @@ def pinout(
     return {"rows": rows, "unmatched": unmatched, "placed": placed}
 
 
+def pinout_preview(
+    instance: dict[str, Any],
+    footprint: dict[str, Any],
+    pins: list[dict[str, Any]],
+    layers: list[str],
+    proposals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Overlay unsaved explicit labels without replacing stored evidence.
+
+    Conflicting drafts are inspectable, not canonical electrical identities.
+    Stored pads/placement and mapping still use the ordinary pinout fold.
+    """
+    result = pinout(instance, footprint, pins, layers)
+    by_name: dict[str, set[str | None]] = {}
+    by_pad: dict[str, set[str]] = {}
+    for proposal in proposals:
+        name, pad = proposal["name"], proposal["pad"]
+        by_name.setdefault(name, set()).add(pad)
+        if pad is not None:
+            by_pad.setdefault(pad, set()).add(name)
+    entries = []
+    numbers = {row["pad_number"] for row in result["rows"]}
+    for index, proposal in enumerate(proposals, 1):
+        name, pad = proposal["name"], proposal["pad"]
+        conflicting = len(by_name[name]) > 1 or len(by_pad.get(pad, set())) > 1
+        state = (
+            "conflicting"
+            if conflicting
+            else "unknown"
+            if pad is None
+            else "unmatched"
+            if pad not in numbers
+            else "proposed"
+        )
+        notes = []
+        if conflicting:
+            notes.append(
+                "canonical authoring would refuse; use one canonical name/pad "
+                "in pins and connections or correct the pad number"
+            )
+        if pad is None:
+            notes.append("pad binding unknown; supply an explicit pad ID")
+        elif pad not in numbers:
+            notes.append("no stored physical pad with this ID; correct the pad number")
+        entries.append(
+            {
+                "entry_index": index,
+                "name": name,
+                "pad": pad,
+                "provenance": "proposed-explicit",
+                "state": state,
+                "notes": notes,
+            }
+        )
+    for row in result["rows"]:
+        matches = [
+            e for e in entries if e["pad"] is not None and e["pad"] == row["pad_number"]
+        ]
+        row["proposed_names"] = sorted({e["name"] for e in matches})
+        row["proposal_indices"] = [e["entry_index"] for e in matches]
+        row["proposal_provenance"] = "proposed-explicit" if matches else "none"
+        row["proposal_state"] = (
+            "conflicting"
+            if any(e["state"] == "conflicting" for e in matches)
+            else "repeated"
+            if len(matches) > 1
+            else "proposed"
+            if matches
+            else "not-proposed"
+        )
+        row_notes = {note for e in matches for note in e["notes"]}
+        if matches and any(e["name"] != row["footprint_pin"] for e in matches):
+            row_notes.add(
+                "proposed label differs from stored footprint naming; no rebinding"
+            )
+        if matches and set(row["proposed_names"]) != set(row["pin_names"]):
+            row_notes.add(
+                "proposed labels differ from stored pin evidence; no rebinding"
+            )
+        row["proposal_notes"] = sorted(row_notes)
+    result["proposals"] = entries
+    return result
+
+
 # ── measure direction ────────────────────────────────
 # pcb_measures.direction: min|max|target|keep_above|keep_below. It decides
 # which side of `goal` is "ok" — the evaluator AND the placer's penalty must

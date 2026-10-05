@@ -181,7 +181,7 @@ _SESSION_VIEWS = ("congestion", "planes")
 _RENDER_VIEWS = ("svg", "schematic", "capability")
 #: gr341532 fix 3 — the ``part_footprints`` cache gap made visible per
 #: catalog-part instance, the read-side counterpart to ``op='footprint'``.
-_OTHER_VIEWS = ("links", "footprints", "pinout")
+_OTHER_VIEWS = ("links", "footprints", "pinout", "pinout-preview")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_EXPORT_VIEWS,
@@ -466,7 +466,9 @@ class PcbHandler(Handler):
             "'congestion'|'planes'), which catalog parts have a cached "
             "footprint (view='footprints', one row per catalog-part "
             "instance), one instance's actual physical pinout "
-            "(id='slug#J1', view='pinout', read-only), a vector figure (view='svg', "
+            "(id='slug#J1', view='pinout', read-only), an unsaved explicit mapping "
+            "preview (same selector, view='pinout-preview', "
+            "args={'pins':[{name,pad}]}), a vector figure (view='svg', "
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
             "a net-label schematic SVG off the netlist alone "
             "(view='schematic', works before any placement), "
@@ -716,21 +718,22 @@ class PcbHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        if view == "pinout":
+        if view in ("pinout", "pinout-preview"):
             selector = str(id or "").strip()
             if selector.count("#") != 1 or "@" in selector:
                 raise BadInput(
-                    "pinout requires one board#REFDES selector",
-                    next="get(kind='pcb', id='<board>#<REFDES>', view='pinout')",
+                    f"{view} requires one board#REFDES selector",
+                    next=f"get(kind='pcb', id='<board>#<REFDES>', view={view!r})",
                 )
             slug, refdes = (part.strip() for part in selector.split("#", 1))
             if not slug or not refdes:
                 raise BadInput(
-                    "pinout requires a nonempty board and REFDES",
-                    next="get(kind='pcb', id='<board>#<REFDES>', view='pinout')",
+                    f"{view} requires a nonempty board and REFDES",
+                    next=f"get(kind='pcb', id='<board>#<REFDES>', view={view!r})",
                 )
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
-            return self._render_pinout(ref, refdes)
+            proposals = self._preview_pins(args) if view == "pinout-preview" else None
+            return self._render_pinout(ref, refdes, proposals=proposals)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
@@ -4471,7 +4474,46 @@ class PcbHandler(Handler):
             pose += f" 📌{i['fixed']}"
         return pose
 
-    def _render_pinout(self, ref: Any, refdes: str) -> Response:
+    @staticmethod
+    def _preview_pins(args: dict[str, Any] | None) -> list[dict[str, Any]]:
+        hint = (
+            "get(kind='pcb', id='<board>#<REFDES>', view='pinout-preview', "
+            "args={'pins':[{'name':'CLK','pad':'2'}]})"
+        )
+        if not isinstance(args, dict) or set(args) != {"pins"}:
+            raise BadInput("preview args accepts only required pins", next=hint)
+        pins = args["pins"]
+        if not isinstance(pins, list) or len(pins) > 32:
+            raise BadInput(
+                "preview pins must be a list of at most 32 entries", next=hint
+            )
+        result = []
+        for index, pin in enumerate(pins, 1):
+            if not isinstance(pin, dict) or set(pin) != {"name", "pad"}:
+                raise BadInput(
+                    f"preview entry {index} requires only name and pad; "
+                    "use explicit null for unknown pad",
+                    next=hint,
+                )
+            name, pad = pin["name"], pin["pad"]
+            if not isinstance(name, str) or not name.strip() or len(name.strip()) > 64:
+                raise BadInput(
+                    f"preview entry {index}: name must be 1–64 characters", next=hint
+                )
+            if pad is not None and (
+                not isinstance(pad, str) or not pad.strip() or len(pad) > 32
+            ):
+                raise BadInput(
+                    f"preview entry {index}: pad must be an exact 1–32 character "
+                    "string or null; no numbering inference",
+                    next=hint,
+                )
+            result.append({"name": name.strip(), "pad": pad})
+        return result
+
+    def _render_pinout(
+        self, ref: Any, refdes: str, *, proposals: list[dict[str, Any]] | None = None
+    ) -> Response:
         design = self.store.pcb_load(ref.id)
         instance = next((i for i in design["instances"] if i["refdes"] == refdes), None)
         if instance is None:
@@ -4489,8 +4531,10 @@ class PcbHandler(Handler):
         else:
             footprint = self.store.pcb_local_footprints_for(ref.id).get(key)
             source = "design-local-authored"
+        preview = proposals is not None
+        view = "pinout-preview" if preview else "pinout"
         head = (
-            f"# {ref.slug}#{refdes} — pinout\n"
+            f"# {ref.slug}#{refdes} — {view}\n"
             f"footprint: {key or 'unavailable'}; {source}\n"
             f"instance: x_mm={instance.get('x')} y_mm={instance.get('y')} "
             f"side={'bottom' if padplace.is_bottom_instance(instance) else 'top'} "
@@ -4499,6 +4543,13 @@ class PcbHandler(Handler):
             "CW-positive rotation; bottom mirrors local X before rotate/translate.\n"
             "Stored geometry/mapping, not vendor or mating-orientation verification.\n"
         )
+        if preview:
+            head += (
+                "Unsaved read-only proposal; proposed labels are not canonical pins "
+                "or net assignments. Mating orientation, vendor numbering and "
+                "proposed nets/NC semantics: unknown.\n"
+            )
+        missing_hint = None
         if not footprint or not footprint.get("pads"):
             hint = (
                 f"put(kind='pcb', id={ref.slug!r}, "
@@ -4507,14 +4558,30 @@ class PcbHandler(Handler):
                 else "get(kind='skill', id='precis-pcb-help') — author footprints[] "
                 f"for {key or 'this instance'}"
             )
-            return Response(
-                body=head + f"geometry: unavailable (no stored pads)\nnext: {hint}"
+            if not preview:
+                return Response(
+                    body=head + f"geometry: unavailable (no stored pads)\nnext: {hint}"
+                )
+            missing_hint = (
+                f"get(kind='pcb', id={ref.slug!r}, view='footprints') — inspect "
+                "stored cache; no automatic fetch"
+                if lcsc
+                else hint
+            )
+        footprint = footprint or {}
+        if preview and len(footprint.get("pads") or []) > 64:
+            raise BadInput(
+                "preview exceeds 64 physical pad rows; no rows truncated",
+                next=f"get(kind='pcb', id='{ref.slug}#{refdes}', view='pinout')",
             )
         neighbors = self.store.pcb_instance_neighbors(ref.id, refdes)
         stackup = (design.get("board") or {}).get("stackup") or []
         layers = [str(layer["name"]) for layer in stackup]
-        result = eyes.pinout(
-            instance, footprint, (neighbors or {}).get("pins", []), layers
+        stored_pins = (neighbors or {}).get("pins", [])
+        result = (
+            eyes.pinout_preview(instance, footprint, stored_pins, layers, proposals)
+            if proposals is not None
+            else eyes.pinout(instance, footprint, stored_pins, layers)
         )
         rows = []
         for pad in result["rows"]:
@@ -4537,8 +4604,17 @@ class PcbHandler(Handler):
                 "notes",
             ):
                 row[field] = json.dumps(row[field], ensure_ascii=False, sort_keys=True)
+            if preview:
+                for field in ("proposed_names", "proposal_indices", "proposal_notes"):
+                    row[field] = json.dumps(
+                        row[field], ensure_ascii=False, sort_keys=True
+                    )
             rows.append(row)
         body = head + f"geometry: stored; physical pads: {len(rows)}\n"
+        if missing_hint:
+            body = (
+                head + f"geometry: unavailable (no stored pads)\nnext: {missing_hint}\n"
+            )
         if not result["placed"]:
             body += "board coordinates: unavailable (unplaced/invalid pose)\n"
         body += render_agent_table(
@@ -4561,12 +4637,36 @@ class PcbHandler(Handler):
                 "duplicate_indices",
                 "geometry",
                 "notes",
-            ],
+            ]
+            + (
+                [
+                    "proposed_names",
+                    "proposal_indices",
+                    "proposal_provenance",
+                    "proposal_state",
+                    "proposal_notes",
+                ]
+                if preview
+                else []
+            ),
         )
         if result["unmatched"]:
             body += "\nunmatched declared pins:\n" + render_agent_table(
                 result["unmatched"]
             )
+        if preview:
+            body += "\nunsaved proposed entries:\n" + render_agent_table(
+                [
+                    {**entry, "notes": json.dumps(entry["notes"], ensure_ascii=False)}
+                    for entry in result["proposals"]
+                ],
+                schema=["entry_index", "name", "pad", "provenance", "state", "notes"],
+            )
+            if len(body) > 16_384:
+                raise BadInput(
+                    "preview exceeds 16384 text characters; no output truncated",
+                    next="reduce proposals or use view='pinout' for stored evidence",
+                )
         return Response(body=body)
 
     def _render_instance(self, ref_id: int, refdes: str) -> Response:

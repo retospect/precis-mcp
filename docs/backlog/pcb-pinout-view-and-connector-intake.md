@@ -58,7 +58,7 @@ Consequences for the design:
 3. **Store signal↔pad explicitly**, so the mapping is reviewable later and
    a future reader is not re-deriving it from remembered prose.
 
-### Proposal 2 selected slice — unsaved explicit pinout preview (review pending)
+### Proposal 2 selected slice — unsaved explicit pinout preview (R13 authorized)
 
 Premise checked at integrated main `04c13fd28998b9e2e10891a536da100a4890bfa3`;
 deployed R12 `cdd1980c0731a2874bc824b64aecd765c9061045` is a separate anchor.
@@ -69,7 +69,12 @@ Thus `put(...components[].pins...)` then `get(...#J1, view='pinout')` already
 checks **authored** input. That put changes state and can queue catalog-part
 datasheets; it cannot supply a zero-authoring preview. Only the latter is new.
 
-**Proposed API, not shipped:**
+Reto via Claude R13 execution brief authorizes this bounded implementation,
+superseding the earlier withdrawal/spec-only hold. Codex source review remains
+required before merge; root owns version/full gate/exact deploy and subsequent
+same-owner native/browser dogfood. No live authoring in this implementation turn.
+
+**Selected API, not deployed:**
 
 ```python
 get(kind='pcb', id='<existing-board>#<existing-REFDES>',
@@ -175,8 +180,8 @@ mating/net semantics. No SVG/browser renderer, font engine or new schema.
 All values describe supplied synthetic stored geometry, not a vendor connector.
 Scope excludes prose-to-pad inference, uninstantiated part intake, schema/alias
 model, ERC, optimizer, provider/import, silk/font, placement/routing/manufacture
-and gr467885 metadata-observability closure. Root contract review is required
-before implementation. No future view is ready merely because this spec exists.
+and gr467885 metadata-observability closure. Codex source review is required
+before merge. No future view is ready merely because this spec exists.
 
 ## Silkscreen labelling — mostly code, but one piece is missing
 
