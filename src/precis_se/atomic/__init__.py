@@ -1,5 +1,11 @@
 """``se`` **atomic mode** — the molecular-machine domain layer.
 
+Read-only S1 surface deviation exposes the existing precis_surface judge over
+stored structure-local Å atoms and an explicit caller-authored meridian. The
+target is never inferred from a planner/derived mesh; absent target data is
+unknown. Only the supplied rigid z offset is subtracted, so SE poses and fitted
+rotation/scale cannot hide deviation or rewrite generation provenance.
+
 The landing zone for the ``nm`` kind's domain code as it folds into ``se``
 (docs/backlog/nm-se-merge.md). se and nm were built as siblings on the
 symmetry ``se : cad :: nm : structure``; the units-policy cutover removed

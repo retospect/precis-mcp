@@ -227,12 +227,14 @@ class SeHandler(Handler):
             "reaction|redox|ph|thermal|mechanical); set_current_state "
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
-            "get lists designs or renders one (view='tree'|'block'|"
+            "get lists designs or renders one (view='tree'|'block'|'surface_deviation'|"
             "'ports'|'topology'|'chain'|'measures'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
-            "args={'name':...}, clearance takes args={'a':...,'b':...} "
+            "args={'name':...}; surface_deviation takes name, explicit target.features "
+            "and optional z_offset_A, comparing stored local Å atoms to a caller-authored "
+            "surface without fitting/generation; clearance takes args={'a':...,'b':...} "
             "and runs the cad kernel's signed-distance gap between two "
             "blocks' posed envelopes, or omit args for an all-pairs "
             "clearance digest over the design's CONNECTS, worst gap "
@@ -791,11 +793,11 @@ class SeHandler(Handler):
             return Response(
                 body=_render_tree(tree, ref.title or str(ref.slug), description)
             )
-        if v == "block":
+        if v in ("block", "surface_deviation"):
             name = (args or {}).get("name")
             if not name or not str(name).strip():
                 raise BadInput(
-                    "get(kind='se', view='block') requires args={'name': ...}"
+                    f"get(kind='se', view={v!r}) requires args={{'name': ...}}"
                 )
             block_name = str(name).strip()
             # A label OR a uid ('#41') — :mod:`precis_se.identity`, the
@@ -806,6 +808,12 @@ class SeHandler(Handler):
                 raise BadInput(str(exc)) from exc
             if node is None:
                 raise NotFound(_block_not_found(tree, block_name))
+            if v == "surface_deviation":
+                from precis_se.atomic.surface_deviation import render_surface_deviation
+
+                return Response(
+                    body=render_surface_deviation(self.store, node, args or {})
+                )
             return Response(body=_render_block(tree, node, self.store, ref.id))
         if v == "ports":
             return Response(body=_render_ports(tree))
@@ -899,8 +907,9 @@ class SeHandler(Handler):
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'name':...}) | view='ports' | view='topology' "
-            "(L2: threading, declared dof, strand domains) | "
+            "(args={'name':...}) | view='ports' "
+            "| view='surface_deviation' (args={'name':..., 'target':{'features':[...]}, 'z_offset_A':0}; stored local Å atoms, authored target, rigid z only) "
+            "| view='topology' (L2: threading, declared dof, strand domains) | "
             "view='chain' (nucleic acids: helices with motif/turns/segments/"
             "occupancy, strands with their routes, derived pairing) | "
             "view='measures' "
@@ -4992,6 +5001,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "": frozenset({"state"}),
     "tree": frozenset({"state"}),
     "block": frozenset({"name", "state"}),
+    "surface_deviation": frozenset({"name", "target", "z_offset_A"}),
     "ports": frozenset(),
     "topology": frozenset(),
     "chain": frozenset({"state"}),

@@ -23,6 +23,16 @@ kinds: se
 
 # precis-se-help — the call surface
 
+S1 authored-surface read: `get(kind='se', id=..., view='surface_deviation',
+args={'name':<bound block>, 'target':{'features':[{'name':'tube',
+'centre_A':[0,0], 'r0_A':5, 'pieces':[['arc',1,-90],['line',3]]}]},
+'z_offset_A':0})`. Reports region atom count/mean/p95/max in Å over stored
+structure-local atoms using the existing S1 judge. The target is caller-authored,
+not proof of the original generation target; no inference from geometry/plans.
+Only the supplied rigid z shift is removed, no fitted rotation/scale or SE pose.
+Missing target/binding/coordinates reports unknown. Explicit `features:[]` means
+a sheet-only target; feature discs must be disjoint. No build/relax/write/job.
+
 An `se` design is a **block tree** (blocks with poses + cad-DSL envelopes)
 plus **connects** (port↔port edges carrying a joint class, objectives,
 and optional preload). You author with typed ops, then read views that
@@ -618,4 +628,3 @@ scadnano/caDNAno/oxDNA/PDB.
 
 - [[precis-se-atomic-help]] — atomic-mode block trees over real chemistry
 - [[precis-se-chain-help]] — nucleic-acid helices, strands, domains, pairing
-

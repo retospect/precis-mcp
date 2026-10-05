@@ -185,6 +185,55 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
 
 ## Target + blast radius
 
+### R13 — S1 read-only exposure (bounded implementation)
+
+S1's judge is built: `precis_surface.deviation.surface_distance` + `summary`
+already produce mean/p95/max and ownership per region. Current source
+`c731e2fa4033193c0c78a849ac544ca62dfd9500` has no SE surface-deviation view;
+stored block reads show S3/top planner records, not an S1 measurement of current
+bound atoms against an explicitly authored target. This is the user-visible
+gap; do not rebuild the judge or turn planner numbers into new measurements.
+
+API: `get(kind='se', id=<design>, view='surface_deviation',
+args={'name':<ordinary bound block>, 'target':{'features':[...]},
+'z_offset_A':0})`. `name` uses existing block/uid addressing. Read stored
+bound structure atoms in their structure-local Å frame; do not apply SE pose,
+rotation, scale or world-frame transforms. Each target feature has unique
+`name` (not `sheet`), `centre_A:[x,y]`, `r0_A`, and `pieces` of
+`['line',length_A]` or `['arc',radius_A,turn_deg]`, passed to the existing
+`authored_meridian`. A feature owns its disc; outside is the plane z=0.
+An explicit `features:[]` is a sheet-only authored request, not an inferred
+target. This request supplies the authoring definition, **not proof of the
+original generation target**; report that provenance explicitly. Do not infer
+from generated scene parameters, smooth-drum's derived meridian, atoms or a
+best-fit surface. No target replacement/snapping, no fitted rotation/scale.
+
+The finite `z_offset_A` is the only allowed alignment, subtracted by the judge
+(default zero; no fit). Report exact supplied offset, units Å, region atom
+count/mean/p95/max, source design/block/bound structure version and target
+origin `caller-authored request; original target provenance unverified`.
+Lines/arcs use the existing analytic distance path; no curvature, bar or
+stability threshold is introduced. No synthesis/report persistence or jobs.
+
+Omitted target, missing/dangling binding or empty/nonfinite stored coordinates
+returns an honest unknown result, never zeros/PASS. Invalid authored target,
+duplicate names, unknown keys, nonfinite inputs or overlapping feature discs
+returns actionable BadInput using existing judge validation. Template/array
+instances are unknown: this slice does not guess placement/target frames.
+Missing/blank selector cannot list all boards/designs as a substitute.
+
+Fixtures: local deterministic atoms on a vertical authored cylinder plus
+sheet atoms with known normal offsets. Assert nonzero mean/p95/max, exact
+rigid-z removal and absence of rotation/scale fitting; use existing analytic
+S1 tests as kernel regression. Instrument build/relax/persistence/job boundaries
+and preserve input target/coordinates. Unknown/malformed/empty cases and SE
+get dispatch/args rejection require focused canonical tests/types/Ruff.
+No hero/r4 regeneration, live relax, k3 solver, science, provider or threshold
+change. Native exact-deploy/same-owner read dogfood follows root's reviewed
+integration/deployment; local fixtures are not generated scientific evidence.
+Code review must precede merge. Preserve H1 branch/scratch; R13 branch is
+`work/hexfold/r13-authored-deviation` in the existing isolated task worktree.
+
 - New: a surface-spec module, which may live in `precis_surface` beside
   `revolution`.
 - New: the curvature→defect-row placer, which emits hexfold authored
