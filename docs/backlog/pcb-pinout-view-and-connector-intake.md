@@ -17,6 +17,34 @@ pillar: 3d-design
 
 ## The gap
 
+### gr467885 — explicit duplicate pad retention: schema boundary
+
+At R11 `1b4d8b5c7d12b82cb476400bfe1f7d54df89226e`, an existing
+`put(kind='pcb', id='<isolated-board>', args=...)` with one partless instance,
+footprint pad 2 mapped to CLK, and declared CLK.pad='2'/OTHER.pad='2' accepts
+both connections but persists OTHER.pad=NULL. A focused canonical regression
+reproduces the native `dogfood-p1-pinout-v1#J_UNPLACED` loss at authoring,
+database readback, legacy instance read and `view='pinout'`.
+
+Cause: `_pcb_insert_pins` passes explicit pads unchanged to INSERT, but its
+unqualified `ON CONFLICT DO NOTHING` silently skips OTHER against the active
+unique `(component_id, pad)` index `pcb_pins_comp_pad_key` (migration 0047;
+current baseline retains it). `_pcb_pin_id` then creates OTHER with NULL pad
+when its connection is added. This is not failed footprint inference.
+
+Approved acceptance requires BOTH persisted pad-2 bindings, independent CLK
+and OTHER nets, and existing pinout ambiguous/conflicting evidence without
+choosing a winner; omitted pads retain existing inference and legacy selector
+behavior. The current schema forbids that stored state. No handler/parser-only
+fix can satisfy it. Dropping/replacing the index requires a forward migration;
+alternate metadata storage would change mapping semantics. Both exceed the
+bounded no-schema repair authorization. Stop for coordinator scope decision;
+do not alter sealed migration 0047, silently replace CLK, or claim fixed.
+
+Reproducer/checkpoint: task `.scratch/pcb-pad-retention/` holds the focused
+regression and failing canonical log; `inbox/pcb-pad-retention-ready.md`
+records exact commands and the deferred deployed replay. gr467885 remains OPEN.
+
 Connector intake still needs checkable signal-to-pad assignment from prose.
 The per-instance `get(kind='pcb', id='<board>#<REFDES>', view='pinout')`
 reads stored physical pad geometry, placement and mapping evidence; see
