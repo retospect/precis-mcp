@@ -3,7 +3,7 @@
 -- DO NOT EDIT BY HAND. Regenerate with `precis db dump-schema`
 -- (or `scripts/bump`, which does it at every version bump).
 --
--- Baked-in migration head: 0170_chunk_kind_field
+-- Baked-in migration head: 0189_secret_hint_counts
 --
 -- This is the migration chain compiled to one file: a fresh
 -- `precis migrate` loads this instead of replaying every numbered
@@ -16,6 +16,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE SCHEMA IF NOT EXISTS public;
 
 --
@@ -150,6 +151,52 @@ COMMENT ON FUNCTION public.file_gripe_readonly(p_text text) IS 'Insert exactly o
 
 
 --
+-- Name: gripe_status_check(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.gripe_status_check() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_ref_id bigint;
+    v_n      integer;
+    v_bad    integer;
+BEGIN
+    IF TG_TABLE_NAME = 'refs' THEN
+        v_ref_id := NEW.ref_id;
+    ELSIF TG_OP = 'DELETE' THEN
+        v_ref_id := OLD.ref_id;
+    ELSE
+        v_ref_id := NEW.ref_id;
+    END IF;
+
+    -- Only gripes that still exist (a cascade delete removes the ref
+    -- before this deferred trigger runs).
+    IF NOT EXISTS (SELECT 1 FROM refs WHERE ref_id = v_ref_id AND kind = 'gripe') THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT count(*),
+           count(*) FILTER (WHERE t.value NOT IN
+               ('open', 'triaged', 'ready_for_fix', 'in_review', 'done', 'wontfix'))
+      INTO v_n, v_bad
+      FROM ref_tags rt
+      JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+     WHERE rt.ref_id = v_ref_id;
+
+    IF v_n <> 1 OR v_bad > 0 THEN
+        RAISE EXCEPTION
+            'gripe % must have exactly one STATUS tag from '
+            '(open, triaged, ready_for_fix, in_review, done, wontfix); '
+            'found % STATUS tag(s), % off-vocabulary', v_ref_id, v_n, v_bad
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+
+--
 -- Name: nanopub_append_only(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -160,6 +207,1273 @@ BEGIN
     RAISE EXCEPTION 'nanopub table % is append-only (spec: proof store must '
         'be immutable and complete); corrections are new rows', TG_TABLE_NAME;
 END $$;
+
+
+--
+-- Name: precis_body_sha(bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_body_sha(p_ref_id bigint) RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT md5(coalesce(string_agg(md5(c.text), ',' ORDER BY c.ord, c.chunk_id), ''))
+      FROM chunks c
+     WHERE c.ref_id = p_ref_id AND c.ord >= 0 AND c.retired_at IS NULL
+$$;
+
+
+--
+-- Name: precis_chunk_review_mirror(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_chunk_review_mirror() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    BEGIN
+        IF TG_OP = 'DELETE' THEN
+            INSERT INTO reviews (target_kind, target_id, actor, content_sha, verdict, note)
+            VALUES ('chunk', OLD.chunk_id, OLD.checker,
+                    coalesce(OLD.approved_sha, '(none)'), 'rejected', '(retracted)');
+        ELSE
+            INSERT INTO reviews (target_kind, target_id, actor, content_sha, verdict, note, at)
+            VALUES ('chunk', NEW.chunk_id, NEW.checker,
+                    coalesce(NEW.approved_sha, '(none)'),
+                    CASE WHEN NEW.verdict ILIKE 'approved%' THEN 'approved' ELSE 'rejected' END,
+                    NEW.verdict, NEW.at);
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'reviews: chunk_review mirror not written: %', SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_chunks_body_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_chunks_body_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_ids bigint[];
+    v_kinds text[];
+    v_id bigint;
+    v_ref refs;
+    v_gone jsonb;
+    v_prev_body text;
+BEGIN
+    SELECT array_agg(slug) INTO v_kinds FROM kinds WHERE covered_meta IS NOT NULL;
+    IF v_kinds IS NULL THEN
+        RETURN NULL;
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        SELECT array_agg(DISTINCT r.ref_id) INTO v_ids
+          FROM old_rows o JOIN refs r ON r.ref_id = o.ref_id
+         WHERE o.ord >= 0 AND o.retired_at IS NULL AND r.created_at < now()
+           AND r.kind = ANY (v_kinds);
+    ELSE
+        SELECT array_agg(DISTINCT r.ref_id) INTO v_ids
+          FROM new_rows n JOIN refs r ON r.ref_id = n.ref_id
+         WHERE n.ord >= 0 AND r.created_at < now()
+           AND r.kind = ANY (v_kinds);
+    END IF;
+    IF v_ids IS NULL THEN
+        RETURN NULL;
+    END IF;
+    BEGIN
+        FOREACH v_id IN ARRAY v_ids LOOP
+            SELECT * INTO v_ref FROM refs WHERE ref_id = v_id;
+            IF TG_OP = 'DELETE' THEN
+                SELECT jsonb_agg(jsonb_build_object(
+                           'chunk_id', o.chunk_id, 'ord', o.ord,
+                           'chunk_kind', o.chunk_kind, 'text', o.text)
+                           ORDER BY o.ord, o.chunk_id)
+                  INTO v_gone
+                  FROM old_rows o
+                 WHERE o.ref_id = v_id AND o.ord >= 0 AND o.retired_at IS NULL;
+                SELECT md5(coalesce(string_agg(md5(t.text), ',' ORDER BY t.ord, t.chunk_id), ''))
+                  INTO v_prev_body
+                  FROM (SELECT c.chunk_id, c.ord, c.text FROM chunks c
+                         WHERE c.ref_id = v_id AND c.ord >= 0 AND c.retired_at IS NULL
+                        UNION ALL
+                        SELECT o.chunk_id, o.ord, o.text FROM old_rows o
+                         WHERE o.ref_id = v_id AND o.ord >= 0 AND o.retired_at IS NULL) t;
+                PERFORM precis_log_revision(
+                    'ref', v_id, 'edited', precis_ref_sha_of(v_ref, v_prev_body),
+                    to_jsonb(v_ref) || jsonb_build_object('chunks', v_gone));
+            ELSE
+                SELECT md5(coalesce(string_agg(md5(c.text), ',' ORDER BY c.ord, c.chunk_id), ''))
+                  INTO v_prev_body
+                  FROM chunks c
+                 WHERE c.ref_id = v_id AND c.ord >= 0 AND c.retired_at IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM new_rows n WHERE n.chunk_id = c.chunk_id);
+                PERFORM precis_log_revision(
+                    'ref', v_id, 'edited', precis_ref_sha_of(v_ref, v_prev_body),
+                    to_jsonb(v_ref));
+            END IF;
+        END LOOP;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'revisions: chunk % not logged: %', TG_OP, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_hub_refine_mirror(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_hub_refine_mirror() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    BEGIN
+        INSERT INTO reviews (target_kind, target_id, actor, version, content_sha, verdict, at)
+        VALUES ('ref', NEW.ref_id, 'hub-refine',
+                coalesce(NEW.meta ->> 'last_refined_version', '0'),
+                precis_ref_sha_of(NEW, precis_body_sha(NEW.ref_id)), 'approved',
+                coalesce(precis_try_timestamptz(NEW.meta ->> 'last_refined_at'), now()));
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'reviews: hub_refine mirror for ref % not written: %',
+            NEW.ref_id, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_kind_covered_meta(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_kind_covered_meta(p_kind text) RETURNS text[]
+    LANGUAGE plpgsql STABLE
+    AS $$
+BEGIN
+    RETURN (SELECT covered_meta FROM kinds WHERE slug = p_kind);
+END
+$$;
+
+
+--
+-- Name: precis_kinds_covered_del(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_kinds_covered_del() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM old_rows WHERE covered_meta IS NOT NULL) THEN
+        PERFORM precis_kinds_refresh_guarded();
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_kinds_covered_ins(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_kinds_covered_ins() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM new_rows WHERE covered_meta IS NOT NULL) THEN
+        PERFORM precis_kinds_refresh_guarded();
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_kinds_covered_upd(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_kinds_covered_upd() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    PERFORM precis_kinds_refresh_guarded();
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_kinds_refresh_guarded(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_kinds_refresh_guarded() RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public', 'pg_temp'
+    AS $$
+BEGIN
+    BEGIN
+        PERFORM precis_revision_triggers_refresh();
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'revisions: trigger refresh after kinds change failed: %', SQLERRM;
+        INSERT INTO revision_trigger_state (singleton, last_error, last_error_at)
+        VALUES (true, SQLERRM, now())
+        ON CONFLICT (singleton) DO UPDATE SET
+            last_error = EXCLUDED.last_error, last_error_at = EXCLUDED.last_error_at;
+    END;
+END
+$$;
+
+
+--
+-- Name: precis_legacy_value_insert(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_legacy_value_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_table  text := TG_ARGV[0];
+    v_key    text;
+    v_tax    bigint;
+    v_id     bigint;
+    v_subj   bigint;
+    c        measure_unit_compat;
+    v_canon  text;
+    v_meta   jsonb := '{}'::jsonb;
+    v_runit  text;
+    f        numeric;
+    o        numeric;
+BEGIN
+    IF v_table = 'material_properties' THEN
+        v_key := to_jsonb(NEW) ->> 'property_id';
+        v_subj := (to_jsonb(NEW) ->> 'material_ref_id')::bigint;
+    ELSE
+        v_key := to_jsonb(NEW) ->> 'spec_id';
+        v_subj := (to_jsonb(NEW) ->> 'component_ref_id')::bigint;
+    END IF;
+    v_tax := precis_measure_taxon(v_table, v_key, TRUE);
+    IF v_tax IS NULL THEN
+        RAISE EXCEPTION '% % is not registered', v_table, v_key
+            USING ERRCODE = 'foreign_key_violation';
+    END IF;
+    SELECT * INTO c FROM measure_unit_compat
+     WHERE legacy_table = v_table AND legacy_key = v_key;
+    IF FOUND THEN
+        SELECT meta ->> 'canonical_unit' INTO v_canon FROM refs WHERE ref_id = v_tax;
+        IF v_canon IS DISTINCT FROM c.si_unit THEN
+            RAISE EXCEPTION
+                '% % is stored in % but its compat row converts to %: refusing to '
+                'write a legacy number that could be off by %',
+                v_table, v_key, v_canon, c.si_unit, c.factor
+                USING ERRCODE = 'check_violation';
+        END IF;
+        f := c.factor;
+        o := c.si_offset;
+        v_runit := c.legacy_unit;
+        v_meta := jsonb_build_object('conversion', jsonb_build_object(
+                      'from', c.legacy_unit, 'to', c.si_unit));
+    END IF;
+    v_id := nextval(pg_get_serial_sequence('measures', 'id'));
+    INSERT INTO measures
+        (id, subject_ref_id, measurand_ref_id, value_num, value_low, value_high,
+         value_text, value_bool, input_unit, conditions, maturity, method,
+         source_ref_id, source_chunk, source_url, as_of, actor, notes,
+         literal, value_form, run_key, reported_unit, meta)
+    OVERRIDING SYSTEM VALUE
+    VALUES
+        (v_id, v_subj, v_tax, precis_measure_si_value(NEW.value_num, f, o),
+         precis_measure_si_value(NEW.value_low, f, o),
+         precis_measure_si_value(NEW.value_high, f, o),
+         NEW.value_text, NEW.value_bool, NEW.input_unit,
+         coalesce(NEW.conditions, '{}'::jsonb), coalesce(NEW.maturity, 'lab'),
+         NEW.method, NEW.source_ref_id, NEW.source_chunk, NEW.source_url,
+         NEW.as_of, coalesce(nullif(btrim(NEW.set_by), ''), 'legacy'), NEW.notes,
+         precis_measure_literal(NEW.value_num, NEW.value_low, NEW.value_high,
+                                NEW.value_text, NEW.value_bool),
+         precis_measure_form(NEW.value_num, NEW.value_low, NEW.value_high,
+                             NEW.value_text, NEW.value_bool),
+         'legacy:' || v_id, v_runit, v_meta);
+    NEW.id := v_id;
+    NEW.created_at := now();
+    RETURN NEW;
+END
+$$;
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: links; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.links (
+    link_id bigint NOT NULL,
+    src_ref_id bigint NOT NULL,
+    src_chunk_id bigint,
+    dst_ref_id bigint NOT NULL,
+    dst_chunk_id bigint,
+    relation text NOT NULL,
+    set_by text NOT NULL,
+    meta jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT links_check CHECK ((NOT ((src_ref_id = dst_ref_id) AND (NOT (src_chunk_id IS DISTINCT FROM dst_chunk_id)))))
+);
+
+
+--
+-- Name: precis_link_content(public.links); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_link_content(l public.links) RETURNS jsonb
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT jsonb_build_object(
+        'src_ref_id', l.src_ref_id, 'src_chunk_id', l.src_chunk_id,
+        'dst_ref_id', l.dst_ref_id, 'dst_chunk_id', l.dst_chunk_id,
+        'relation', l.relation,
+        'meta', precis_pick_keys(coalesce(l.meta, '{}'::jsonb),
+                                 precis_link_covered_meta()))
+$$;
+
+
+--
+-- Name: precis_link_covered_meta(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_link_covered_meta() RETURNS text[]
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT ARRAY['support', 'support_reason', 'caveats', 'source_handle',
+                 'quote', 'note', 'ruling']
+$$;
+
+
+--
+-- Name: precis_link_sha_of(public.links); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_link_sha_of(l public.links) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT left(md5(precis_link_content(l)::text), 16)
+$$;
+
+
+--
+-- Name: precis_link_verified_mirror(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_link_verified_mirror() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_stamp text := btrim(NEW.meta ->> 'verified_by');
+BEGIN
+    IF coalesce(v_stamp, '') = '' THEN
+        RETURN NULL;
+    END IF;
+    BEGIN
+        INSERT INTO reviews
+            (target_kind, target_id, actor, model, content_sha, verdict, note, at)
+        VALUES ('link', NEW.link_id, precis_reviewer_actor(v_stamp),
+                precis_reviewer_model(v_stamp), precis_link_sha_of(NEW), 'approved',
+                'links.meta.verified_by=' || v_stamp
+                    || coalesce(', verified_claim_sha=' || (NEW.meta ->> 'verified_claim_sha'), ''),
+                coalesce(precis_try_timestamptz(NEW.meta ->> 'verified_at'), now()));
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'reviews: verified_by mirror for link % not written: %',
+            NEW.link_id, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_links_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_links_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND NOT (
+           OLD.created_at < now()
+           AND precis_link_content(OLD) IS DISTINCT FROM precis_link_content(NEW)) THEN
+        RETURN NULL;
+    END IF;
+    BEGIN
+        PERFORM precis_log_revision(
+            'link', OLD.link_id,
+            CASE WHEN TG_OP = 'DELETE' THEN 'deleted' ELSE 'edited' END,
+            precis_link_sha_of(OLD), to_jsonb(OLD));
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'revisions: % of link % not logged: %',
+            TG_OP, OLD.link_id, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_log_revision(text, bigint, text, text, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_log_revision(p_kind text, p_id bigint, p_event text, p_prev_sha text, p_prev_state jsonb) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_event text := p_event;
+BEGIN
+    IF p_event IN ('edited', 'retired')
+       AND precis_revision_setting('event') = 'merged-into' THEN
+        v_event := 'merged-into';
+    END IF;
+    INSERT INTO revisions AS r
+        (target_kind, target_id, event, actor, model, reason,
+         prev_sha, prev_state)
+    VALUES (p_kind, p_id, v_event,
+            coalesce(precis_revision_setting('actor'), session_user::text),
+            precis_revision_setting('model'),
+            coalesce(precis_revision_setting('reason'), '(unrecorded)'),
+            p_prev_sha, p_prev_state)
+    ON CONFLICT (target_kind, target_id, xact) DO UPDATE SET
+        event = CASE WHEN r.event = 'edited' THEN EXCLUDED.event ELSE r.event END,
+        prev_state = CASE
+            WHEN EXCLUDED.prev_state ? 'chunks' AND NOT r.prev_state ? 'chunks'
+            THEN r.prev_state || jsonb_build_object('chunks', EXCLUDED.prev_state -> 'chunks')
+            ELSE r.prev_state END;
+END
+$$;
+
+
+--
+-- Name: precis_measure_form(double precision, double precision, double precision, text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_form(p_num double precision, p_low double precision, p_high double precision, p_text text, p_bool boolean) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE
+        WHEN p_text IS NOT NULL THEN 'categorical'
+        WHEN p_bool IS NOT NULL THEN 'boolean'
+        WHEN p_num IS NOT NULL THEN 'point'
+        WHEN p_low IS NOT NULL AND p_high IS NOT NULL THEN 'interval'
+        WHEN p_low IS NOT NULL THEN 'lower_bound'
+        WHEN p_high IS NOT NULL THEN 'upper_bound'
+        ELSE 'not_established' END
+$$;
+
+
+--
+-- Name: precis_measure_legacy_value(double precision, numeric, numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_legacy_value(p_si double precision, p_factor numeric, p_offset numeric) RETURNS double precision
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE
+        WHEN p_si IS NULL OR p_factor IS NULL THEN p_si
+        WHEN p_si IN ('Infinity'::float8, '-Infinity'::float8) THEN p_si
+        ELSE ((((p_si::text::numeric - coalesce(p_offset, 0)) / p_factor)::double precision)
+              ::numeric)::double precision
+    END
+$$;
+
+
+--
+-- Name: precis_measure_literal(double precision, double precision, double precision, text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_literal(p_num double precision, p_low double precision, p_high double precision, p_text text, p_bool boolean) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE
+        WHEN p_text IS NOT NULL THEN p_text
+        WHEN p_num IS NOT NULL THEN p_num::text
+        WHEN p_low IS NOT NULL AND p_high IS NOT NULL THEN p_low::text || '–' || p_high::text
+        WHEN p_low IS NOT NULL THEN '≥' || p_low::text
+        WHEN p_high IS NOT NULL THEN '≤' || p_high::text
+        WHEN p_bool IS NOT NULL THEN p_bool::text
+        ELSE '(none)' END
+$$;
+
+
+--
+-- Name: precis_measure_sha(bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_sha(p_id bigint) RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT left(md5(concat_ws('|',
+        precis_sha_part(m.subject_ref_id::text),
+        precis_sha_part(m.measurand_ref_id::text),
+        precis_sha_part(m.literal),
+        precis_sha_part(m.reported_unit),
+        precis_sha_float(m.value_num),
+        precis_sha_float(m.value_low),
+        precis_sha_float(m.value_high),
+        precis_sha_part(m.value_text),
+        precis_sha_part((CASE m.value_bool WHEN true THEN 't' WHEN false THEN 'f' END)::text),
+        precis_sha_float(m.value_err),
+        precis_sha_part(m.value_form),
+        precis_sha_part(m.reference),
+        precis_sha_part(m.tier),
+        precis_sha_part(m.normalization),
+        precis_sha_part(m.normalization_status),
+        precis_sha_part(m.source_attribution),
+        precis_sha_part(m.measurand_status),
+        precis_sha_part(m.direction),
+        precis_sha_part(m.role),
+        precis_sha_part(m.run_key),
+        precis_sha_part(m.subject),
+        precis_sha_part(m.subject_group),
+        precis_sha_part(m.experiment_ref_id::text),
+        precis_sha_part(m.derived_from::text),
+        precis_sha_part(m.primary_link_id::text),
+        precis_sha_part(m.anchor_scheme),
+        precis_sha_part(m.span::text),
+        precis_sha_part(m.supersedes::text),
+        precis_sha_part(m.source_ref_id::text),
+        precis_sha_part(m.actor),
+        precis_sha_part(m.model),
+        precis_sha_part(m.input_unit),
+        precis_sha_part(m.conditions::text),
+        precis_sha_part(m.maturity),
+        precis_sha_part(m.method),
+        precis_sha_part(m.source_chunk),
+        precis_sha_part(m.source_url),
+        precis_sha_part(to_char(m.as_of, 'YYYY-MM-DD')),
+        precis_sha_part(m.notes))), 16)
+      FROM measures m WHERE m.id = p_id
+$$;
+
+
+--
+-- Name: precis_measure_si_value(double precision, numeric, numeric); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_si_value(p_legacy double precision, p_factor numeric, p_offset numeric) RETURNS double precision
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE
+        WHEN p_legacy IS NULL OR p_factor IS NULL THEN p_legacy
+        WHEN p_legacy IN ('Infinity'::float8, '-Infinity'::float8) THEN p_legacy
+        ELSE ((p_legacy::numeric * p_factor + coalesce(p_offset, 0))::double precision)
+    END
+$$;
+
+
+--
+-- Name: precis_measure_taxon(text, text, boolean); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measure_taxon(p_table text, p_key text, p_create boolean DEFAULT false) RETURNS bigint
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_src   jsonb := jsonb_build_object('table', p_table, 'key', p_key);
+    v_id    bigint;
+    v_name  text;
+    v_unit  text;
+    v_disp  text;
+    v_vtype text;
+    v_allow jsonb;
+    v_std   text;
+    v_hib   boolean;
+    v_desc  text;
+    v_def   text;
+    v_dkind text;
+    v_alias jsonb;
+    v_meta  jsonb;
+    v_start bigint;
+    v_si    text;
+BEGIN
+    SELECT r.ref_id INTO v_id
+      FROM refs r
+     WHERE r.kind = 'taxon'
+       AND r.meta -> 'legacy_source' ->> 'table' = p_table
+       AND r.meta -> 'legacy_source' ->> 'key' = p_key
+     ORDER BY (r.retired_at IS NOT NULL), r.ref_id
+     LIMIT 1;
+    IF v_id IS NOT NULL OR NOT p_create THEN
+        RETURN v_id;
+    END IF;
+
+    -- one minter per (table, key); the loser of a race waits here, then
+    -- re-checks and finds the winner's taxon
+    PERFORM pg_advisory_xact_lock(
+        hashtext('precis_measure_taxon:' || p_table || ':' || p_key));
+    SELECT r.ref_id INTO v_id
+      FROM refs r
+     WHERE r.kind = 'taxon'
+       AND r.meta -> 'legacy_source' ->> 'table' = p_table
+       AND r.meta -> 'legacy_source' ->> 'key' = p_key
+     ORDER BY (r.retired_at IS NOT NULL), r.ref_id
+     LIMIT 1;
+    IF v_id IS NOT NULL THEN
+        RETURN v_id;
+    END IF;
+
+    IF p_table = 'material_properties' THEN
+        SELECT name, canonical_unit, value_type, allowed_values, standard_ref,
+               higher_is_better, description
+          INTO v_name, v_unit, v_vtype, v_allow, v_std, v_hib, v_desc
+          FROM material_properties WHERE prop_id = p_key;
+    ELSIF p_table = 'component_specs' THEN
+        SELECT name, canonical_unit, value_type, allowed_values, standard_ref,
+               higher_is_better, description
+          INTO v_name, v_unit, v_vtype, v_allow, v_std, v_hib, v_desc
+          FROM component_specs WHERE spec_id = p_key;
+    ELSIF p_table = 'rxn_properties' THEN
+        SELECT name, canonical_unit, value_type, allowed_values, standard_ref,
+               higher_is_better, description
+          INTO v_name, v_unit, v_vtype, v_allow, v_std, v_hib, v_desc
+          FROM rxn_properties WHERE prop_id = p_key;
+    ELSE
+        RETURN NULL;
+    END IF;
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
+    v_name := regexp_replace(btrim(v_name), '\s+', ' ', 'g');
+    v_def := btrim(coalesce(v_desc, ''));
+    IF v_def = '' THEN
+        v_def := format(
+            '%s: a %s term%s, carried over from the legacy %s registry, which recorded no fuller definition.',
+            v_name, v_vtype,
+            CASE WHEN v_unit IS NOT NULL THEN ' measured in ' || v_unit ELSE '' END,
+            p_table);
+    END IF;
+    -- the legacy registry keeps its own unit; the taxon stores SI
+    SELECT c.si_unit INTO v_si FROM measure_unit_compat c
+     WHERE c.legacy_table = p_table AND c.legacy_key = p_key
+       AND c.legacy_unit = v_unit;
+    IF v_si IS NOT NULL THEN
+        v_disp := v_unit;
+        v_unit := v_si;
+    END IF;
+    v_dkind := CASE
+        WHEN v_unit IS NOT NULL THEN NULL      -- unmapped; see taxon /unmapped
+        WHEN v_vtype IN ('categorical', 'boolean', 'text') THEN 'categorical'
+        ELSE 'dimensionless' END;
+    v_alias := CASE WHEN lower(v_name) <> lower(p_key)
+                    THEN jsonb_build_array(p_key) ELSE '[]'::jsonb END;
+    v_meta := jsonb_strip_nulls(jsonb_build_object(
+        'name', v_name,
+        'norm_name', lower(v_name),
+        'slug', trim(both '-' from regexp_replace(lower(v_name), '[^a-z0-9]+', '-', 'g')),
+        'definition', v_def,
+        'aliases', v_alias,
+        'status', 'proposed',
+        'dimension_kind', v_dkind,
+        'canonical_unit', v_unit,
+        'display_unit', v_disp,
+        'value_type', v_vtype,
+        'allowed_values', v_allow,
+        'standard_ref', v_std,
+        'higher_is_better', v_hib,
+        'legacy_source', v_src));
+
+    INSERT INTO refs (kind, title, meta) VALUES ('taxon', v_name, v_meta)
+    RETURNING ref_id INTO v_id;
+    RAISE NOTICE 'precis_measure_taxon: minted taxon % for %.%', v_id, p_table, p_key;
+
+    INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta)
+    VALUES (v_id, -1, 'card_combined',
+            v_name || ' — ' || v_def
+                || CASE WHEN jsonb_array_length(v_alias) > 0
+                        THEN ' (aka ' || p_key || ')' ELSE '' END,
+            '{}'::jsonb);
+
+    SELECT r.ref_id INTO v_start
+      FROM refs r
+     WHERE r.kind = 'taxon' AND r.meta ->> 'start' = 'true'
+       AND r.meta ->> 'slug' = 'measurand'
+     ORDER BY r.ref_id LIMIT 1;
+    IF v_start IS NOT NULL THEN
+        INSERT INTO links (src_ref_id, dst_ref_id, relation, set_by)
+        VALUES (v_id, v_start, 'specialises', 'system')
+        ON CONFLICT DO NOTHING;
+    END IF;
+    RETURN v_id;
+END
+$$;
+
+
+--
+-- Name: precis_measures_frozen(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measures_frozen() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    k text;
+    -- a first supersession: both columns set together, onto another row that
+    -- states the same number (same subject, measurand and direction)
+    v_sup_ok boolean :=
+        OLD.superseded_by IS NULL AND OLD.superseded_at IS NULL
+        AND NEW.superseded_by IS NOT NULL AND NEW.superseded_at IS NOT NULL
+        AND NEW.superseded_by <> OLD.id
+        AND EXISTS (SELECT 1 FROM measures t
+                     WHERE t.id = NEW.superseded_by
+                       AND t.subject_ref_id = OLD.subject_ref_id
+                       AND t.subject IS NOT DISTINCT FROM OLD.subject
+                       AND t.measurand_ref_id = OLD.measurand_ref_id
+                       AND t.direction = OLD.direction
+                       AND t.superseded_by IS NULL);
+    -- the foreign keys' own ON DELETE SET NULL: only once the target is gone
+    v_link_ok boolean :=
+        OLD.primary_link_id IS NOT NULL AND NEW.primary_link_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM links WHERE link_id = OLD.primary_link_id);
+    v_src_ok boolean :=
+        OLD.source_ref_id IS NOT NULL AND NEW.source_ref_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM refs WHERE ref_id = OLD.source_ref_id);
+BEGIN
+    FOR k IN
+        SELECT coalesce(n.key, o.key)
+          FROM jsonb_each(to_jsonb(NEW)) n
+          FULL JOIN jsonb_each(to_jsonb(OLD)) o ON o.key = n.key
+         WHERE n.value IS DISTINCT FROM o.value
+           AND coalesce(n.key, o.key) NOT IN ('trusted', 'extraction_status')
+           AND NOT (coalesce(n.key, o.key) IN ('superseded_by', 'superseded_at')
+                    AND v_sup_ok)
+           AND NOT (coalesce(n.key, o.key) = 'primary_link_id' AND v_link_ok)
+           AND NOT (coalesce(n.key, o.key) = 'source_ref_id' AND v_src_ok)
+    LOOP
+        RAISE EXCEPTION
+            'measures are append-only: column % of measure % is frozen '
+            '(only trusted, extraction_status -> human_checked, a first '
+            'superseded_by + superseded_at onto a row with the same subject, '
+            'measurand and direction, and a primary_link_id / source_ref_id '
+            'whose target is gone may change; supersede with a new row)',
+            k, OLD.id USING ERRCODE = 'check_violation';
+    END LOOP;
+    IF NEW.extraction_status IS DISTINCT FROM OLD.extraction_status
+       AND NEW.extraction_status <> 'human_checked' THEN
+        RAISE EXCEPTION
+            'measures are append-only: extraction_status of measure % may only '
+            'be set to human_checked (computed on write, never asserted)', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: precis_measures_no_delete(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measures_no_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'TRUNCATE' THEN
+        IF coalesce(current_setting('precis.allow_measures_truncate', true), '') = 'on' THEN
+            RETURN NULL;
+        END IF;
+        RAISE EXCEPTION 'measures are append-only: TRUNCATE is refused'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RAISE EXCEPTION 'measures are append-only: measure % cannot be deleted '
+        '(supersede it with a new row)', OLD.id
+        USING ERRCODE = 'check_violation';
+END
+$$;
+
+
+--
+-- Name: precis_measures_unitless_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_measures_unitless_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_canon text;
+    v_name  text;
+BEGIN
+    SELECT t.meta ->> 'canonical_unit', t.meta ->> 'name' INTO v_canon, v_name
+      FROM refs t
+      JOIN measure_unit_compat c
+        ON c.legacy_table = t.meta -> 'legacy_source' ->> 'table'
+       AND c.legacy_key = t.meta -> 'legacy_source' ->> 'key'
+       AND c.si_unit = t.meta ->> 'canonical_unit'
+     WHERE t.ref_id = NEW.measurand_ref_id;
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'no unit given for % on % (canonical %); state the unit',
+            quote_literal(NEW.literal),
+            quote_literal(coalesce(v_name, 'this measurand')),
+            quote_literal(v_canon)
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: precis_pick_keys(jsonb, text[]); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_pick_keys(m jsonb, keys text[]) RETURNS jsonb
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT coalesce(jsonb_object_agg(k, m -> k), '{}'::jsonb)
+      FROM unnest(keys) AS k
+     WHERE m ? k
+$$;
+
+
+--
+-- Name: refs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.refs (
+    ref_id bigint NOT NULL,
+    kind text NOT NULL,
+    set_by text,
+    title text NOT NULL,
+    authors jsonb,
+    year integer,
+    provider text,
+    human_verified_at timestamp with time zone,
+    human_verified_by text,
+    human_verified_note text,
+    retraction_status text,
+    retracted_at timestamp with time zone,
+    retraction_reason text,
+    retraction_url text,
+    retraction_checked_at timestamp with time zone,
+    pdf_sha256 character(64),
+    pdf_pages int4range,
+    pdf_role text,
+    meta jsonb DEFAULT '{}'::jsonb NOT NULL,
+    retired_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    auto_refresh_days integer,
+    refreshed_at timestamp with time zone,
+    parent_id bigint,
+    prio smallint,
+    handle text,
+    last_viewed_at timestamp with time zone,
+    alert_source text,
+    fingerprint text,
+    resolved_at timestamp with time zone,
+    doi_status text,
+    doi_validated_at timestamp with time zone,
+    owner_login text,
+    CONSTRAINT refs_doi_status_check CHECK (((doi_status IS NULL) OR (doi_status = ANY (ARRAY['valid'::text, 'not_found'::text])))),
+    CONSTRAINT refs_pdf_role_check CHECK (((pdf_role IS NULL) OR (pdf_role = ANY (ARRAY['main'::text, 'supplement'::text, 'appendix'::text, 'front_matter'::text, 'back_matter'::text])))),
+    CONSTRAINT refs_prio_check CHECK (((prio IS NULL) OR ((prio >= 1) AND (prio <= 10)))),
+    CONSTRAINT refs_retraction_status_check CHECK (((retraction_status IS NULL) OR (retraction_status = ANY (ARRAY['retracted'::text, 'corrected'::text, 'expression_of_concern'::text]))))
+)
+WITH (fillfactor='85');
+
+
+--
+-- Name: COLUMN refs.owner_login; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.refs.owner_login IS 'FK to web_users.login — the human this ref belongs to. NULL means unowned (every kind but the per-user ones, e.g. anki, default to this). ON DELETE SET NULL: removing the web user orphans the row rather than deleting it.';
+
+
+--
+-- Name: precis_ref_content(public.refs); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_ref_content(r public.refs) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT jsonb_build_object(
+        'kind', r.kind, 'title', r.title, 'authors', r.authors,
+        'year', r.year, 'parent_id', r.parent_id,
+        'meta', precis_pick_keys(coalesce(r.meta, '{}'::jsonb),
+                                 coalesce(precis_kind_covered_meta(r.kind),
+                                          '{}'::text[])))
+$$;
+
+
+--
+-- Name: precis_ref_revision_due(public.refs, public.refs); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_ref_revision_due(o public.refs, n public.refs) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT o.created_at < now()
+       AND (precis_kind_covered_meta(o.kind) IS NOT NULL
+            OR precis_kind_covered_meta(n.kind) IS NOT NULL)
+       AND (precis_ref_content(o) IS DISTINCT FROM precis_ref_content(n)
+            OR (o.retired_at IS NULL) <> (n.retired_at IS NULL))
+$$;
+
+
+--
+-- Name: precis_ref_sha_of(public.refs, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_ref_sha_of(r public.refs, p_body_sha text) RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT left(md5(precis_ref_content(r)::text || '|' || coalesce(p_body_sha, '')), 16)
+$$;
+
+
+--
+-- Name: precis_refs_revision(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_refs_revision() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_event text;
+BEGIN
+    -- The cheap due-test runs outside the exception block: plpgsql opens a
+    -- savepoint on entry to a block with an EXCEPTION clause, and most
+    -- covered-kind updates (bookkeeping meta) log nothing.
+    IF TG_OP = 'UPDATE' AND NOT precis_ref_revision_due(OLD, NEW) THEN
+        RETURN NULL;
+    END IF;
+    BEGIN
+        IF TG_OP = 'DELETE' THEN
+            PERFORM precis_log_revision(
+                'ref', OLD.ref_id, 'deleted',
+                precis_ref_sha_of(OLD, precis_body_sha(OLD.ref_id)), to_jsonb(OLD));
+        ELSE
+            v_event := CASE
+                WHEN OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL THEN 'retired'
+                WHEN OLD.retired_at IS NOT NULL AND NEW.retired_at IS NULL THEN 'restored'
+                ELSE 'edited' END;
+            PERFORM precis_log_revision(
+                'ref', NEW.ref_id, v_event,
+                precis_ref_sha_of(OLD, precis_body_sha(NEW.ref_id)), to_jsonb(OLD));
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'revisions: % of ref % not logged: %',
+            TG_OP, OLD.ref_id, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_reviewer_actor(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_reviewer_actor(p_stamp text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $_$
+    SELECT CASE
+        WHEN p_stamp ILIKE '%reto ruling%' THEN 'reto'
+        WHEN p_stamp ~ '^[^/ ]+/[^/ ]+$' THEN split_part(p_stamp, '/', 2)
+        WHEN p_stamp LIKE 'agent:%' THEN substr(p_stamp, 7)
+        ELSE p_stamp END
+$_$;
+
+
+--
+-- Name: precis_reviewer_model(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_reviewer_model(p_stamp text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $_$
+    SELECT CASE WHEN p_stamp ~ '^[^/ ]+/[^/ ]+$' THEN split_part(p_stamp, '/', 1) END
+$_$;
+
+
+--
+-- Name: precis_reviews_backfill(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_reviews_backfill() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_chunks integer;
+    v_links integer;
+BEGIN
+    -- chunk_review rows (see precis_chunk_review_mirror for the verdict map).
+    INSERT INTO reviews
+        (target_kind, target_id, actor, model, version, content_sha, verdict, note, at)
+    SELECT 'chunk', cr.chunk_id, cr.checker, NULL, '0',
+           coalesce(cr.approved_sha, '(none)'),
+           CASE WHEN cr.verdict ILIKE 'approved%' THEN 'approved' ELSE 'rejected' END,
+           cr.verdict, cr.at
+      FROM chunk_review cr
+     WHERE NOT EXISTS (
+            SELECT 1 FROM reviews v
+             WHERE v.target_kind = 'chunk' AND v.target_id = cr.chunk_id
+               AND v.actor = cr.checker AND v.at = cr.at);
+    GET DIAGNOSTICS v_chunks = ROW_COUNT;
+
+    -- links.meta.verified_by, at the link's sha now.
+    INSERT INTO reviews
+        (target_kind, target_id, actor, model, version, content_sha, verdict, note, at)
+    SELECT 'link', l.link_id,
+           precis_reviewer_actor(vb), precis_reviewer_model(vb),
+           '0', precis_link_sha_of(l), 'approved',
+           'backfill 0185 from links.meta.verified_by=' || vb
+               || coalesce(', verified_claim_sha=' || (l.meta ->> 'verified_claim_sha'), ''),
+           coalesce(precis_try_timestamptz(l.meta ->> 'verified_at'), l.created_at)
+      FROM links l, LATERAL (SELECT btrim(l.meta ->> 'verified_by') AS vb) s
+     WHERE coalesce(vb, '') <> ''
+       AND NOT EXISTS (
+            SELECT 1 FROM reviews v
+             WHERE v.target_kind = 'link' AND v.target_id = l.link_id
+               AND v.note LIKE 'backfill 0185 %');
+    GET DIAGNOSTICS v_links = ROW_COUNT;
+    RETURN v_chunks + v_links;
+END
+$$;
+
+
+--
+-- Name: precis_revision_setting(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_revision_setting(p_name text) RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT nullif(current_setting('precis.' || p_name, true), '')
+$$;
+
+
+--
+-- Name: precis_revision_triggers_refresh(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_revision_triggers_refresh() RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET lock_timeout TO '3s'
+    SET search_path TO 'public', 'pg_temp'
+    AS $_$
+DECLARE
+    v_kinds text[];
+    v_list text;
+    -- Keys a worker stamps on links without changing their meaning. Only a
+    -- prefilter: a key missing here costs one function call, never a wrong row.
+    v_bookkeeping text[] := ARRAY['verified', 'verified_at', 'verified_by',
+                                  'verified_claim_sha', 'candidate', 'elements'];
+    v_state revision_trigger_state;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('precis_revision_triggers_refresh'));
+    SELECT coalesce(array_agg(slug ORDER BY slug), '{}'::text[]) INTO v_kinds
+      FROM kinds WHERE covered_meta IS NOT NULL;
+    SELECT * INTO v_state FROM revision_trigger_state;
+    IF FOUND
+       AND v_state.covered_kinds IS NOT DISTINCT FROM v_kinds
+       AND v_state.link_bookkeeping IS NOT DISTINCT FROM v_bookkeeping
+       AND EXISTS (SELECT 1 FROM pg_trigger
+                    WHERE tgname = 'links_revision_update'
+                      AND tgrelid = 'public.links'::regclass)
+       AND (cardinality(v_kinds) = 0
+            OR EXISTS (SELECT 1 FROM pg_trigger
+                        WHERE tgname = 'refs_revision_update'
+                          AND tgrelid = 'public.refs'::regclass)) THEN
+        -- triggers match the kinds: a stale last_error no longer applies
+        IF v_state.last_error IS NOT NULL THEN
+            UPDATE revision_trigger_state SET last_error = NULL, last_error_at = NULL;
+        END IF;
+        RETURN false;
+    END IF;
+
+    SELECT string_agg(format('%L', k), ', ' ORDER BY k) INTO v_list
+      FROM unnest(v_kinds) AS k;
+
+    DROP TRIGGER IF EXISTS refs_revision_update ON refs;
+    DROP TRIGGER IF EXISTS refs_revision_kind ON refs;
+    DROP TRIGGER IF EXISTS refs_revision_delete ON refs;
+    IF v_list IS NOT NULL THEN
+        EXECUTE format($t$
+            CREATE TRIGGER refs_revision_update
+                AFTER UPDATE ON refs FOR EACH ROW
+                WHEN (OLD.kind IN (%s))
+                EXECUTE FUNCTION precis_refs_revision()$t$, v_list);
+        EXECUTE format($t$
+            CREATE TRIGGER refs_revision_kind
+                AFTER UPDATE OF kind ON refs FOR EACH ROW
+                WHEN (NEW.kind IN (%s))
+                EXECUTE FUNCTION precis_refs_revision()$t$, v_list);
+        EXECUTE format($t$
+            CREATE TRIGGER refs_revision_delete
+                AFTER DELETE ON refs FOR EACH ROW
+                WHEN (OLD.kind IN (%s) AND OLD.created_at < now())
+                EXECUTE FUNCTION precis_refs_revision()$t$, v_list);
+    END IF;
+
+    DROP TRIGGER IF EXISTS links_revision_update ON links;
+    DROP TRIGGER IF EXISTS links_revision_ends ON links;
+    EXECUTE format($t$
+        CREATE TRIGGER links_revision_update
+            AFTER UPDATE ON links FOR EACH ROW
+            WHEN ((OLD.meta - %1$L::text[]) IS DISTINCT FROM (NEW.meta - %1$L::text[]))
+            EXECUTE FUNCTION precis_links_revision()$t$, v_bookkeeping);
+    CREATE TRIGGER links_revision_ends
+        AFTER UPDATE OF src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation
+        ON links FOR EACH ROW
+        EXECUTE FUNCTION precis_links_revision();
+
+    INSERT INTO revision_trigger_state
+        (singleton, covered_kinds, link_bookkeeping, refreshed_at, last_error, last_error_at)
+    VALUES (true, v_kinds, v_bookkeeping, now(), NULL, NULL)
+    ON CONFLICT (singleton) DO UPDATE SET
+        covered_kinds = EXCLUDED.covered_kinds,
+        link_bookkeeping = EXCLUDED.link_bookkeeping,
+        refreshed_at = EXCLUDED.refreshed_at,
+        last_error = NULL, last_error_at = NULL;
+    RETURN true;
+END
+$_$;
+
+
+--
+-- Name: precis_revisions_seal(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_revisions_seal() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_event text;
+    v_prev text;
+    v_now text;
+BEGIN
+    BEGIN
+        SELECT event, prev_sha INTO v_event, v_prev
+          FROM revisions WHERE revision_id = NEW.revision_id;
+        IF NOT FOUND THEN
+            RETURN NULL;
+        END IF;
+        v_now := precis_target_sha(NEW.target_kind, NEW.target_id);
+        IF v_event = 'edited' AND v_now IS NOT DISTINCT FROM v_prev THEN
+            DELETE FROM revisions WHERE revision_id = NEW.revision_id;
+        ELSE
+            UPDATE revisions SET new_sha = v_now WHERE revision_id = NEW.revision_id;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING 'revisions: seal of % not done: %', NEW.revision_id, SQLERRM;
+    END;
+    RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: precis_sha_float(double precision); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_sha_float(p double precision) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT quote_nullable(encode(float8send(p), 'hex')) $$;
+
+
+--
+-- Name: precis_sha_part(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_sha_part(p text) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$ SELECT quote_nullable(p) $$;
+
+
+--
+-- Name: precis_target_sha(text, bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_target_sha(p_kind text, p_id bigint) RETURNS text
+    LANGUAGE plpgsql STABLE
+    AS $$
+DECLARE
+    s text;
+BEGIN
+    IF p_kind = 'chunk' THEN
+        SELECT coalesce(c.content_sha, 'chunk:' || c.chunk_id) INTO s
+          FROM chunks c WHERE c.chunk_id = p_id;
+    ELSIF p_kind = 'ref' THEN
+        SELECT precis_ref_sha_of(r, precis_body_sha(r.ref_id)) INTO s
+          FROM refs r WHERE r.ref_id = p_id;
+    ELSIF p_kind = 'link' THEN
+        SELECT precis_link_sha_of(l) INTO s FROM links l WHERE l.link_id = p_id;
+    ELSIF p_kind = 'measure' THEN
+        s := precis_measure_sha(p_id);
+    END IF;
+    RETURN s;
+END
+$$;
+
+
+--
+-- Name: precis_taxon_unit_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_taxon_unit_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_canon boolean :=
+        OLD.meta -> 'canonical_unit' IS DISTINCT FROM NEW.meta -> 'canonical_unit';
+    v_dim boolean :=
+        (OLD.meta -> 'dimension_kind' IS DISTINCT FROM NEW.meta -> 'dimension_kind'
+         AND coalesce(OLD.meta -> 'dimension_kind', 'null'::jsonb) <> 'null'::jsonb)
+        OR (OLD.meta -> 'si_vector' IS DISTINCT FROM NEW.meta -> 'si_vector'
+            AND coalesce(OLD.meta -> 'si_vector', 'null'::jsonb) <> 'null'::jsonb);
+BEGIN
+    IF (v_canon OR v_dim) AND EXISTS (SELECT 1 FROM measures
+                WHERE measurand_ref_id = OLD.ref_id AND superseded_by IS NULL) THEN
+        IF v_canon AND NOT v_dim
+           AND coalesce(current_setting('precis.allow_unit_rebase', true), '') = 'on'
+           AND OLD.meta -> 'legacy_source' IS NOT DISTINCT FROM NEW.meta -> 'legacy_source'
+           AND EXISTS (SELECT 1 FROM measure_unit_compat c
+                        WHERE c.legacy_table = OLD.meta -> 'legacy_source' ->> 'table'
+                          AND c.legacy_key = OLD.meta -> 'legacy_source' ->> 'key'
+                          AND c.legacy_unit = OLD.meta ->> 'canonical_unit'
+                          AND c.si_unit = NEW.meta ->> 'canonical_unit') THEN
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION
+            'taxon % has live measures stored in canonical_unit % (dimension_kind %, '
+            'si_vector %); changing canonical_unit, or changing dimension_kind / '
+            'si_vector from a value, would silently re-base them (supersede the '
+            'measures first)',
+            OLD.ref_id, OLD.meta ->> 'canonical_unit', OLD.meta ->> 'dimension_kind',
+            OLD.meta ->> 'si_vector'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: precis_try_timestamptz(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.precis_try_timestamptz(p text) RETURNS timestamp with time zone
+    LANGUAGE plpgsql IMMUTABLE
+    AS $$
+BEGIN
+    RETURN p::timestamptz;
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END
+$$;
 
 
 --
@@ -185,12 +1499,15 @@ $$;
 CREATE FUNCTION vault._hint(v text) RETURNS text
     LANGUAGE sql IMMUTABLE
     AS $$
-    SELECT CASE
+    SELECT (CASE
         WHEN v IS NULL OR length(v) = 0 THEN '(empty)'
         WHEN length(v) < 12 THEN repeat(chr(8226), 6) || ' (' || length(v) || ')'
         ELSE left(v, least(3, length(v) / 5)) || chr(8230)
              || right(v, least(2, length(v) / 5))
-    END;
+    END) || ' · ' || coalesce(length(v), 0) || ' chars · '
+         || CASE WHEN v IS NULL OR v = '' THEN 0
+                 ELSE cardinality(regexp_split_to_array(v, E'\\r\\n|\\r|\\n'))
+            END || ' lines';
 $$;
 
 
@@ -331,10 +1648,6 @@ END
 $$;
 
 
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
 --
 -- Name: _migrations; Type: TABLE; Schema: public; Owner: -
 --
@@ -454,6 +1767,25 @@ ALTER TABLE public.cad_nodes ALTER COLUMN node_id ADD GENERATED ALWAYS AS IDENTI
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: chase_coverage; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.chase_coverage (
+    hub_ref_id bigint NOT NULL,
+    chunk_id bigint NOT NULL,
+    embedder text NOT NULL,
+    triggered_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE chase_coverage; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.chase_coverage IS 'Coverage ledger for the taproot chase trigger (plan transient-napping-parrot, Phase 1b). One row per (claim hub, triggering chunk) recorded by chase_trigger at due-mark time; hub_refine verifies exactly these chunks then deletes the row. A hub with any live row is due. See migration 0175 / workers/chase_trigger.py / workers/hub_refine.py.';
 
 
 --
@@ -990,13 +2322,43 @@ COMMENT ON TABLE public.component_categories IS 'Growable, flat (no taxonomy tre
 
 
 --
--- Name: component_spec_values; Type: TABLE; Schema: public; Owner: -
+-- Name: measure_unit_compat; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public.component_spec_values (
+CREATE TABLE public.measure_unit_compat (
+    legacy_table text NOT NULL,
+    legacy_key text NOT NULL,
+    legacy_unit text NOT NULL,
+    si_unit text NOT NULL,
+    factor numeric NOT NULL,
+    si_offset numeric DEFAULT 0 NOT NULL,
+    CONSTRAINT measure_unit_compat_check CHECK ((legacy_unit <> si_unit)),
+    CONSTRAINT measure_unit_compat_factor_check CHECK ((factor > (0)::numeric)),
+    CONSTRAINT measure_unit_compat_legacy_table_check CHECK ((legacy_table = ANY (ARRAY['material_properties'::text, 'component_specs'::text, 'rxn_properties'::text])))
+);
+
+
+--
+-- Name: TABLE measure_unit_compat; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.measure_unit_compat IS 'Units the legacy taxa (meta.legacy_source = {table, key}, seeded by 0174) were kept in, and the SI unit they store now: si = legacy * factor + si_offset, computed in numeric (factor and offset are exact decimals) and cast to float8, so 25.4 mm is exactly 0.0254 m. Keyed by the taxon''s stable identifier, not its ref_id. Read by the material_values / component_spec_values views and their insert triggers, by precis_measure_taxon (a minted legacy taxon starts in SI) and by the store''s legacy-unit writers. Seed vocabulary: it rides in the baseline.';
+
+
+--
+-- Name: COLUMN measure_unit_compat.si_offset; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measure_unit_compat.si_offset IS 'Additive part of the map (0 for every unit today; reserved for the first affine legacy unit). An uncertainty scales by factor only.';
+
+
+--
+-- Name: measures; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.measures (
     id bigint NOT NULL,
-    component_ref_id bigint NOT NULL,
-    spec_id text NOT NULL,
+    subject_ref_id bigint NOT NULL,
     value_num double precision,
     value_low double precision,
     value_high double precision,
@@ -1010,32 +2372,173 @@ CREATE TABLE public.component_spec_values (
     source_chunk text,
     source_url text,
     as_of date,
-    set_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     notes text,
-    CONSTRAINT component_spec_values_maturity_check CHECK ((maturity = ANY (ARRAY['commercial'::text, 'lab'::text, 'speculative'::text])))
+    literal text NOT NULL,
+    reported_unit text,
+    value_form text,
+    value_err double precision,
+    reference text,
+    tier text,
+    trusted boolean,
+    extraction_status text DEFAULT 'unverified'::text NOT NULL,
+    normalization text,
+    normalization_status text,
+    source_attribution text,
+    measurand_status text,
+    measurand_ref_id bigint NOT NULL,
+    direction text DEFAULT 'output'::text NOT NULL,
+    role text,
+    run_key text NOT NULL,
+    subject text,
+    subject_group text,
+    experiment_ref_id bigint,
+    derived_from bigint[],
+    primary_link_id bigint,
+    anchor_scheme text,
+    span jsonb,
+    supersedes bigint,
+    superseded_by bigint,
+    superseded_at timestamp with time zone,
+    actor text NOT NULL,
+    model text,
+    meta jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT material_values_maturity_check CHECK ((maturity = ANY (ARRAY['commercial'::text, 'lab'::text, 'speculative'::text]))),
+    CONSTRAINT measures_actor_check CHECK ((btrim(actor) <> ''::text)),
+    CONSTRAINT measures_direction_check CHECK ((direction = ANY (ARRAY['input'::text, 'output'::text, 'covariate'::text]))),
+    CONSTRAINT measures_extraction_status_check CHECK ((extraction_status = ANY (ARRAY['unverified'::text, 'anchor_matched'::text, 'anchor_mismatch'::text, 'human_checked'::text]))),
+    CONSTRAINT measures_measurand_status_check CHECK ((measurand_status = ANY (ARRAY['explicit'::text, 'interpreted'::text, 'ambiguous'::text]))),
+    CONSTRAINT measures_normalization_status_check CHECK ((normalization_status = ANY (ARRAY['explicit'::text, 'inferred'::text, 'unresolved'::text]))),
+    CONSTRAINT measures_role_check CHECK ((role = ANY (ARRAY['context'::text, 'preparation'::text, 'model'::text]))),
+    CONSTRAINT measures_source_attribution_check CHECK ((source_attribution = ANY (ARRAY['own_work'::text, 'cited_work'::text, 'not_established'::text]))),
+    CONSTRAINT measures_tier_check CHECK ((tier = ANY (ARRAY['measured'::text, 'computed'::text, 'derived'::text, 'asserted'::text]))),
+    CONSTRAINT measures_value_form_check CHECK ((value_form = ANY (ARRAY['point'::text, 'approximate_point'::text, 'upper_bound'::text, 'lower_bound'::text, 'interval'::text, 'categorical'::text, 'boolean'::text, 'not_established'::text])))
 );
 
 
 --
--- Name: TABLE component_spec_values; Type: COMMENT; Schema: public; Owner: -
+-- Name: TABLE measures; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.component_spec_values IS 'component-kind proposal: one sourced measurement per row. component_ref_id is handler-enforced to kind=component (refs has no per-kind FK). value_num is stored in the spec''s canonical unit (v1 does no conversion). Per-unit cost is just the universal unit_cost spec, paired with as_of + conditions={qty_break}.';
+COMMENT ON TABLE public.measures IS 'One sourced number per row (measures-substrate.md). Append-only: no DELETE or TRUNCATE, and a trigger refuses every UPDATE but the annotations; a change is a new row + supersedes. measurand_ref_id is a taxon ref and subject_ref_id any ref (handler-enforced; refs has no per-kind FK). Values are stored in the measurand taxon''s canonical_unit; literal + reported_unit keep what was printed. A run = one output row + its direction=input rows, tied by run_key. Reads of "current" numbers filter superseded_by IS NULL.';
 
 
 --
--- Name: component_spec_values_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: COLUMN measures.literal; Type: COMMENT; Schema: public; Owner: -
 --
 
-ALTER TABLE public.component_spec_values ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.component_spec_values_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
+COMMENT ON COLUMN public.measures.literal IS 'The exact reported string; the parsed value_* columns are the derived reading.';
+
+
+--
+-- Name: COLUMN measures.reference; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.reference IS 'Reference state / convention (RHE, SHE, Ag/AgCl, ...): an input to the number, never folded into the unit.';
+
+
+--
+-- Name: COLUMN measures.tier; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.tier IS 'measured | computed | derived | asserted; NULL = could not establish (never defaulted to asserted).';
+
+
+--
+-- Name: COLUMN measures.trusted; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.trusted IS 'Denormalised read of findings-derived trust; NULL = unassessed. Annotation, not content.';
+
+
+--
+-- Name: COLUMN measures.extraction_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.extraction_status IS 'Computed on write: does the literal occur in the anchored span? human_checked is the one value an UPDATE may set.';
+
+
+--
+-- Name: COLUMN measures.normalization; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.normalization IS 'Normalisation basis (per catalyst mass, per geometric area, per ECSA ...); not the same axis as reference.';
+
+
+--
+-- Name: COLUMN measures.run_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.run_key IS 'Joins an output to exactly its own input rows. One key per claim x condition set; the compatibility views use legacy:<id>.';
+
+
+--
+-- Name: COLUMN measures.experiment_ref_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.experiment_ref_id IS 'Reserved: the experiment kind fills it from run_key one to one when it ships.';
+
+
+--
+-- Name: COLUMN measures.primary_link_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.primary_link_id IS 'The quantifies edge (paper chunk -> measurand taxon) that anchors this row; shared by every measure on that chunk and measurand. NULL on a measured row = anchor lost (the chunk or paper was deleted).';
+
+
+--
+-- Name: COLUMN measures.span; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.span IS 'Where in the anchored chunk the number is printed (a string, or [chunk, start, end] raw offsets); anchor_scheme names the form. Further anchors: meta.extra_anchors, written at insert only.';
+
+
+--
+-- Name: COLUMN measures.actor; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.measures.actor IS 'Who wrote the row (same pair as reviews: actor + model); a legacy NULL set_by became ''legacy''.';
+
+
+--
+-- Name: component_spec_values; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.component_spec_values AS
+ SELECT m.id,
+    m.subject_ref_id AS component_ref_id,
+    ((t.meta -> 'legacy_source'::text) ->> 'key'::text) AS spec_id,
+    public.precis_measure_legacy_value(m.value_num, c.factor, c.si_offset) AS value_num,
+    public.precis_measure_legacy_value(m.value_low, c.factor, c.si_offset) AS value_low,
+    public.precis_measure_legacy_value(m.value_high, c.factor, c.si_offset) AS value_high,
+    m.value_text,
+    m.value_bool,
+    m.input_unit,
+    m.conditions,
+    m.maturity,
+    m.method,
+    m.source_ref_id,
+    m.source_chunk,
+    m.source_url,
+    m.as_of,
+        CASE
+            WHEN (m.actor = 'migration-0188'::text) THEN NULLIF((m.meta ->> 'legacy_actor'::text), 'legacy'::text)
+            WHEN (m.actor = 'legacy'::text) THEN NULL::text
+            ELSE m.actor
+        END AS set_by,
+    m.created_at,
+    m.notes
+   FROM ((public.measures m
+     JOIN public.refs t ON ((t.ref_id = m.measurand_ref_id)))
+     LEFT JOIN public.measure_unit_compat c ON (((c.legacy_table = 'component_specs'::text) AND (c.legacy_key = ((t.meta -> 'legacy_source'::text) ->> 'key'::text)) AND (c.si_unit = (t.meta ->> 'canonical_unit'::text)))))
+  WHERE ((m.superseded_by IS NULL) AND (((t.meta -> 'legacy_source'::text) ->> 'table'::text) = 'component_specs'::text));
+
+
+--
+-- Name: VIEW component_spec_values; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.component_spec_values IS 'Compatibility view over measures (live rows whose measurand came from component_specs), in the spec''s LEGACY unit: values read back through measure_unit_compat. INSERT only, through an INSTEAD OF trigger that converts to SI and synthesises literal and run_key; there is no UPDATE or DELETE door.';
 
 
 --
@@ -1426,7 +2929,9 @@ CREATE TABLE public.design_states (
     envelope text,
     port_pose_overrides jsonb,
     descr text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    occupancy jsonb,
+    pose jsonb
 );
 
 
@@ -1700,26 +3205,16 @@ CREATE TABLE public.kinds (
     title text NOT NULL,
     description text,
     deprecated_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: links; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.links (
-    link_id bigint NOT NULL,
-    src_ref_id bigint NOT NULL,
-    src_chunk_id bigint,
-    dst_ref_id bigint NOT NULL,
-    dst_chunk_id bigint,
-    relation text NOT NULL,
-    set_by text NOT NULL,
-    meta jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT links_check CHECK ((NOT ((src_ref_id = dst_ref_id) AND (NOT (src_chunk_id IS DISTINCT FROM dst_chunk_id)))))
+    covered_meta text[]
 );
+
+
+--
+-- Name: COLUMN kinds.covered_meta; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.kinds.covered_meta IS 'Meta keys that are content for this kind (local-mesh-upkeep §2b). NULL = the kind keeps no revision history; ''{}'' = columns and body only. Read by precis_ref_content / the revisions triggers.';
 
 
 --
@@ -1781,7 +3276,8 @@ CREATE TABLE public.llm_call_log (
     input_tokens integer,
     output_tokens integer,
     cache_read_tokens integer,
-    cache_creation_tokens integer
+    cache_creation_tokens integer,
+    placement_routed text
 );
 
 
@@ -1818,6 +3314,13 @@ COMMENT ON COLUMN public.llm_call_log.cache_read_tokens IS 'Prompt-cache-read to
 --
 
 COMMENT ON COLUMN public.llm_call_log.cache_creation_tokens IS 'Prompt-cache-write tokens (LlmResult.cache_creation_tokens).';
+
+
+--
+-- Name: COLUMN llm_call_log.placement_routed; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.llm_call_log.placement_routed IS 'local | cloud for the rung the router chose before any fallback (router._routed_placement). Compare with placement (the rung that ran) for the routed-vs-landed split. NULL = pre-0179 or a non-router writer.';
 
 
 --
@@ -1868,46 +3371,52 @@ COMMENT ON TABLE public.material_properties IS 'Typed, growable material-propert
 
 
 --
--- Name: material_values; Type: TABLE; Schema: public; Owner: -
+-- Name: material_values; Type: VIEW; Schema: public; Owner: -
 --
 
-CREATE TABLE public.material_values (
-    id bigint NOT NULL,
-    material_ref_id bigint NOT NULL,
-    property_id text NOT NULL,
-    value_num double precision,
-    value_low double precision,
-    value_high double precision,
-    value_text text,
-    value_bool boolean,
-    input_unit text,
-    conditions jsonb DEFAULT '{}'::jsonb NOT NULL,
-    maturity text DEFAULT 'lab'::text NOT NULL,
-    method text,
-    source_ref_id bigint,
-    source_chunk text,
-    source_url text,
-    as_of date,
-    set_by text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    notes text,
-    CONSTRAINT material_values_maturity_check CHECK ((maturity = ANY (ARRAY['commercial'::text, 'lab'::text, 'speculative'::text])))
-);
+CREATE VIEW public.material_values AS
+ SELECT m.id,
+    m.subject_ref_id AS material_ref_id,
+    ((t.meta -> 'legacy_source'::text) ->> 'key'::text) AS property_id,
+    public.precis_measure_legacy_value(m.value_num, c.factor, c.si_offset) AS value_num,
+    public.precis_measure_legacy_value(m.value_low, c.factor, c.si_offset) AS value_low,
+    public.precis_measure_legacy_value(m.value_high, c.factor, c.si_offset) AS value_high,
+    m.value_text,
+    m.value_bool,
+    m.input_unit,
+    m.conditions,
+    m.maturity,
+    m.method,
+    m.source_ref_id,
+    m.source_chunk,
+    m.source_url,
+    m.as_of,
+        CASE
+            WHEN (m.actor = 'migration-0188'::text) THEN NULLIF((m.meta ->> 'legacy_actor'::text), 'legacy'::text)
+            WHEN (m.actor = 'legacy'::text) THEN NULL::text
+            ELSE m.actor
+        END AS set_by,
+    m.created_at,
+    m.notes
+   FROM ((public.measures m
+     JOIN public.refs t ON ((t.ref_id = m.measurand_ref_id)))
+     LEFT JOIN public.measure_unit_compat c ON (((c.legacy_table = 'material_properties'::text) AND (c.legacy_key = ((t.meta -> 'legacy_source'::text) ->> 'key'::text)) AND (c.si_unit = (t.meta ->> 'canonical_unit'::text)))))
+  WHERE ((m.superseded_by IS NULL) AND (((t.meta -> 'legacy_source'::text) ->> 'table'::text) = 'material_properties'::text));
 
 
 --
--- Name: TABLE material_values; Type: COMMENT; Schema: public; Owner: -
+-- Name: VIEW material_values; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.material_values IS 'materials-handbook-kind proposal: one sourced measurement per row. material_ref_id is handler-enforced to kind=material (refs has no per-kind FK). value_num is stored in the property''s canonical unit (v1 does no conversion).';
+COMMENT ON VIEW public.material_values IS 'Compatibility view over measures (live rows whose measurand came from material_properties), in the property''s LEGACY unit: values read back through measure_unit_compat. INSERT only, through an INSTEAD OF trigger that converts to SI and synthesises literal and run_key; there is no UPDATE or DELETE door.';
 
 
 --
--- Name: material_values_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: measures_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
-ALTER TABLE public.material_values ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.material_values_id_seq
+ALTER TABLE public.measures ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.measures_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -2151,7 +3660,7 @@ CREATE TABLE public.nanopub_publish (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     published_at timestamp with time zone,
     registry_url text,
-    CONSTRAINT nanopub_publish_artifact_type_check CHECK ((artifact_type = ANY (ARRAY['claim'::text, 'compound'::text, 'hypothesis'::text]))),
+    CONSTRAINT nanopub_publish_artifact_type_check CHECK ((artifact_type = ANY (ARRAY['claim'::text, 'composite'::text, 'hypothesis'::text]))),
     CONSTRAINT nanopub_publish_state_check CHECK ((state = ANY (ARRAY['candidate'::text, 'reviewed'::text, 'signed'::text, 'anchored'::text, 'published'::text, 'superseded'::text, 'retracted'::text, 'rejected'::text])))
 );
 
@@ -2937,6 +4446,10 @@ CREATE TABLE public.pcb_nets (
     retired_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     domain text DEFAULT 'electrical'::text NOT NULL,
+    working_voltage_v double precision,
+    edge_rate_v_per_ns double precision,
+    impedance_ohm double precision,
+    function_hint text,
     CONSTRAINT pcb_nets_domain_chk CHECK ((domain = ANY (ARRAY['electrical'::text, 'fluidic'::text, 'thermal'::text])))
 );
 
@@ -2953,6 +4466,34 @@ COMMENT ON TABLE public.pcb_nets IS 'PCB nets (ADR 0042 §4) — REQUIRED meanin
 --
 
 COMMENT ON COLUMN public.pcb_nets.domain IS 'electrical|fluidic|thermal (pcb-guided-place-route hedge). v1 routes electrical only; the handler rejects fluidic/thermal at put with a clear message — the column is schema-reserved for later co-design.';
+
+
+--
+-- Name: COLUMN pcb_nets.working_voltage_v; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.pcb_nets.working_voltage_v IS 'Peak working voltage of this net, volts (§E-1). NULL = not annotated. Consumed PAIRWISE: required clearance between two nets includes capabilities.conductor_spacing_mm(|V_a - V_b|, ...) — a scalar per-net attribute cannot express the constraint, so this column is an input to a pair computation, never a per-net clearance.';
+
+
+--
+-- Name: COLUMN pcb_nets.edge_rate_v_per_ns; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.pcb_nets.edge_rate_v_per_ns IS 'Datasheet-derived switching edge rate, V/ns — the aggressor half of objectives.NetAnnotation. NULL = quiescent/DC, not asserted an aggressor without evidence.';
+
+
+--
+-- Name: COLUMN pcb_nets.impedance_ohm; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.pcb_nets.impedance_ohm IS 'Datasheet-derived driving-point impedance, ohms — the victim half of objectives.NetAnnotation. NULL = unknown, treated as high-Z (worst-case victim), never as zero.';
+
+
+--
+-- Name: COLUMN pcb_nets.function_hint; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.pcb_nets.function_hint IS 'A precis.pcb.objectives._FUNCTION_DEFAULTS key (crystal, switcher_sw, adc_input, digital_logic, power_rail) naming what this net DOES, used to pick a fallback NetAnnotation when the explicit columns above are NULL. Unvalidated on purpose: an unknown hint degrades to the conservative unknown default rather than failing the write.';
 
 
 --
@@ -3284,60 +4825,6 @@ CREATE TABLE public.ref_tags (
 
 
 --
--- Name: refs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.refs (
-    ref_id bigint NOT NULL,
-    kind text NOT NULL,
-    set_by text,
-    title text NOT NULL,
-    authors jsonb,
-    year integer,
-    provider text,
-    human_verified_at timestamp with time zone,
-    human_verified_by text,
-    human_verified_note text,
-    retraction_status text,
-    retracted_at timestamp with time zone,
-    retraction_reason text,
-    retraction_url text,
-    retraction_checked_at timestamp with time zone,
-    pdf_sha256 character(64),
-    pdf_pages int4range,
-    pdf_role text,
-    meta jsonb DEFAULT '{}'::jsonb NOT NULL,
-    retired_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    auto_refresh_days integer,
-    refreshed_at timestamp with time zone,
-    parent_id bigint,
-    prio smallint,
-    handle text,
-    last_viewed_at timestamp with time zone,
-    alert_source text,
-    fingerprint text,
-    resolved_at timestamp with time zone,
-    doi_status text,
-    doi_validated_at timestamp with time zone,
-    owner_login text,
-    CONSTRAINT refs_doi_status_check CHECK (((doi_status IS NULL) OR (doi_status = ANY (ARRAY['valid'::text, 'not_found'::text])))),
-    CONSTRAINT refs_pdf_role_check CHECK (((pdf_role IS NULL) OR (pdf_role = ANY (ARRAY['main'::text, 'supplement'::text, 'appendix'::text, 'front_matter'::text, 'back_matter'::text])))),
-    CONSTRAINT refs_prio_check CHECK (((prio IS NULL) OR ((prio >= 1) AND (prio <= 10)))),
-    CONSTRAINT refs_retraction_status_check CHECK (((retraction_status IS NULL) OR (retraction_status = ANY (ARRAY['retracted'::text, 'corrected'::text, 'expression_of_concern'::text]))))
-)
-WITH (fillfactor='85');
-
-
---
--- Name: COLUMN refs.owner_login; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.refs.owner_login IS 'FK to web_users.login — the human this ref belongs to. NULL means unowned (every kind but the per-user ones, e.g. anki, default to this). ON DELETE SET NULL: removing the web user orphans the row rather than deleting it.';
-
-
---
 -- Name: refs_ref_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -3366,8 +4853,48 @@ CREATE TABLE public.relations (
     inverse_slug text,
     description text,
     deprecated_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    domain_kinds text[],
+    range_kinds text[],
+    functional boolean DEFAULT false NOT NULL,
+    transitive boolean DEFAULT false NOT NULL,
+    acyclic boolean DEFAULT false NOT NULL
 );
+
+
+--
+-- Name: COLUMN relations.domain_kinds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.relations.domain_kinds IS 'Allowed refs.kind of the link source; NULL = unconstrained.';
+
+
+--
+-- Name: COLUMN relations.range_kinds; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.relations.range_kinds IS 'Allowed refs.kind of the link target; NULL = unconstrained.';
+
+
+--
+-- Name: COLUMN relations.functional; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.relations.functional IS 'At most one live source ref per target for this relation (read through the inverse slug too).';
+
+
+--
+-- Name: COLUMN relations.transitive; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.relations.transitive IS 'Declaration only: A->B and B->C imply A->C. Drives no inference in v1.';
+
+
+--
+-- Name: COLUMN relations.acyclic; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.relations.acyclic IS 'The relation (in either stored direction) may not close a cycle.';
 
 
 --
@@ -3448,6 +4975,123 @@ COMMENT ON TABLE public.resource_slots IS 'Per-host resource offering + material
 
 
 --
+-- Name: reviews; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.reviews (
+    review_id bigint NOT NULL,
+    target_kind text NOT NULL,
+    target_id bigint NOT NULL,
+    actor text NOT NULL,
+    model text,
+    version text DEFAULT '0'::text NOT NULL,
+    content_sha text NOT NULL,
+    verdict text NOT NULL,
+    note text,
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT reviews_actor_check CHECK ((btrim(actor) <> ''::text)),
+    CONSTRAINT reviews_target_kind_check CHECK ((target_kind = ANY (ARRAY['chunk'::text, 'ref'::text, 'link'::text, 'measure'::text]))),
+    CONSTRAINT reviews_verdict_check CHECK ((verdict = ANY (ARRAY['proposed'::text, 'approved'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: TABLE reviews; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.reviews IS 'Review ledger (local-mesh-upkeep §2): one row per review of a chunk, ref or link. Current while content_sha = precis_target_sha(kind, id). model NULL = a human. No FK on target: reviews of a deleted link stay as audit.';
+
+
+--
+-- Name: reviews_review_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.reviews_review_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: reviews_review_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.reviews_review_id_seq OWNED BY public.reviews.review_id;
+
+
+--
+-- Name: revision_trigger_state; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.revision_trigger_state (
+    singleton boolean DEFAULT true NOT NULL,
+    covered_kinds text[],
+    link_bookkeeping text[],
+    refreshed_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_error text,
+    last_error_at timestamp with time zone,
+    CONSTRAINT revision_trigger_state_singleton_check CHECK (singleton)
+);
+
+
+--
+-- Name: TABLE revision_trigger_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.revision_trigger_state IS 'One row: the kinds.covered_meta kind list and the link bookkeeping-key list the revision triggers were last built from. last_error/last_error_at are set when a refresh after a kinds change failed (stale WHEN lists); cleared by the next successful refresh. Migration-managed, not data.';
+
+
+--
+-- Name: revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.revisions (
+    revision_id bigint NOT NULL,
+    target_kind text NOT NULL,
+    target_id bigint NOT NULL,
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    xact bigint DEFAULT txid_current() NOT NULL,
+    event text NOT NULL,
+    actor text NOT NULL,
+    model text,
+    reason text NOT NULL,
+    prev_sha text,
+    new_sha text,
+    prev_state jsonb NOT NULL,
+    CONSTRAINT revisions_event_check CHECK ((event = ANY (ARRAY['edited'::text, 'retired'::text, 'restored'::text, 'deleted'::text, 'merged-into'::text]))),
+    CONSTRAINT revisions_target_kind_check CHECK ((target_kind = ANY (ARRAY['ref'::text, 'link'::text])))
+);
+
+
+--
+-- Name: TABLE revisions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.revisions IS 'Revision log (local-mesh-upkeep §2b): one row per transaction that changed a covered part of a ref or link. prev_state = the full prior row (+ replaced body chunks under "chunks"). Written by triggers; reason from SET LOCAL precis.reason, else (unrecorded).';
+
+
+--
+-- Name: revisions_revision_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.revisions_revision_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: revisions_revision_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.revisions_revision_id_seq OWNED BY public.revisions.revision_id;
+
+
+--
 -- Name: rxn_properties; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3473,56 +5117,6 @@ CREATE TABLE public.rxn_properties (
 --
 
 COMMENT ON TABLE public.rxn_properties IS 'Typed, growable reaction-property registry (mirrors material_properties). core = curated starter set; proposed = minted at write time (must declare a canonical unit + dimension), never silently promoted.';
-
-
---
--- Name: rxn_values; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.rxn_values (
-    id bigint NOT NULL,
-    rxn_ref_id bigint NOT NULL,
-    property_id text NOT NULL,
-    value_num double precision,
-    value_low double precision,
-    value_high double precision,
-    value_text text,
-    value_bool boolean,
-    input_unit text,
-    conditions jsonb DEFAULT '{}'::jsonb NOT NULL,
-    maturity text DEFAULT 'lab'::text NOT NULL,
-    method text,
-    source_licence text,
-    source_ref_id bigint,
-    source_chunk text,
-    source_url text,
-    as_of date,
-    set_by text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    notes text,
-    CONSTRAINT rxn_values_maturity_check CHECK ((maturity = ANY (ARRAY['commercial'::text, 'lab'::text, 'speculative'::text])))
-);
-
-
---
--- Name: TABLE rxn_values; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.rxn_values IS 'One sourced reaction measurement per row. rxn_ref_id is handler-enforced to kind=rxn (refs has no per-kind check). value_num is stored in the property''s canonical unit (v1 does no conversion). Multiple rows per (rxn, property) is intended — the spread is the finding.';
-
-
---
--- Name: rxn_values_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.rxn_values ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.rxn_values_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
 
 
 --
@@ -4314,6 +5908,20 @@ ALTER TABLE ONLY public.resource_slot_holds ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
+-- Name: reviews review_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reviews ALTER COLUMN review_id SET DEFAULT nextval('public.reviews_review_id_seq'::regclass);
+
+
+--
+-- Name: revisions revision_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.revisions ALTER COLUMN revision_id SET DEFAULT nextval('public.revisions_revision_id_seq'::regclass);
+
+
+--
 -- Name: tags tag_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4396,6 +6004,14 @@ ALTER TABLE ONLY public.cache_state
 
 ALTER TABLE ONLY public.cad_nodes
     ADD CONSTRAINT cad_nodes_pkey PRIMARY KEY (node_id);
+
+
+--
+-- Name: chase_coverage chase_coverage_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chase_coverage
+    ADD CONSTRAINT chase_coverage_pkey PRIMARY KEY (hub_ref_id, chunk_id);
 
 
 --
@@ -4596,14 +6212,6 @@ ALTER TABLE ONLY public.cluster_runs
 
 ALTER TABLE ONLY public.component_categories
     ADD CONSTRAINT component_categories_pkey PRIMARY KEY (category_id);
-
-
---
--- Name: component_spec_values component_spec_values_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.component_spec_values
-    ADD CONSTRAINT component_spec_values_pkey PRIMARY KEY (id);
 
 
 --
@@ -4895,11 +6503,19 @@ ALTER TABLE ONLY public.material_properties
 
 
 --
--- Name: material_values material_values_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: measure_unit_compat measure_unit_compat_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.material_values
-    ADD CONSTRAINT material_values_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.measure_unit_compat
+    ADD CONSTRAINT measure_unit_compat_pkey PRIMARY KEY (legacy_table, legacy_key);
+
+
+--
+-- Name: measures measures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_pkey PRIMARY KEY (id);
 
 
 --
@@ -5359,19 +6975,35 @@ ALTER TABLE ONLY public.resource_slots
 
 
 --
+-- Name: reviews reviews_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.reviews
+    ADD CONSTRAINT reviews_pkey PRIMARY KEY (review_id);
+
+
+--
+-- Name: revision_trigger_state revision_trigger_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.revision_trigger_state
+    ADD CONSTRAINT revision_trigger_state_pkey PRIMARY KEY (singleton);
+
+
+--
+-- Name: revisions revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.revisions
+    ADD CONSTRAINT revisions_pkey PRIMARY KEY (revision_id);
+
+
+--
 -- Name: rxn_properties rxn_properties_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.rxn_properties
     ADD CONSTRAINT rxn_properties_pkey PRIMARY KEY (prop_id);
-
-
---
--- Name: rxn_values rxn_values_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.rxn_values
-    ADD CONSTRAINT rxn_values_pkey PRIMARY KEY (id);
 
 
 --
@@ -5567,6 +7199,13 @@ CREATE UNIQUE INDEX cad_nodes_ref_name_key ON public.cad_nodes USING btree (ref_
 --
 
 CREATE INDEX cad_nodes_ref_ord_idx ON public.cad_nodes USING btree (ref_id, ord) WHERE (retired_at IS NULL);
+
+
+--
+-- Name: chase_coverage_chunk_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX chase_coverage_chunk_id_idx ON public.chase_coverage USING btree (chunk_id);
 
 
 --
@@ -5794,27 +7433,6 @@ CREATE INDEX cluster_runs_current_idx ON public.cluster_runs USING btree (scope,
 
 
 --
--- Name: component_spec_values_component_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX component_spec_values_component_idx ON public.component_spec_values USING btree (component_ref_id);
-
-
---
--- Name: component_spec_values_source_ref_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX component_spec_values_source_ref_idx ON public.component_spec_values USING btree (source_ref_id);
-
-
---
--- Name: component_spec_values_spec_value_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX component_spec_values_spec_value_idx ON public.component_spec_values USING btree (spec_id, value_num);
-
-
---
 -- Name: component_specs_category_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -6011,24 +7629,73 @@ CREATE INDEX llm_call_log_ts_idx ON public.llm_call_log USING btree (ts DESC);
 
 
 --
--- Name: material_values_material_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX material_values_material_idx ON public.material_values USING btree (material_ref_id);
-
-
---
--- Name: material_values_prop_value_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX material_values_prop_value_idx ON public.material_values USING btree (property_id, value_num);
-
-
---
 -- Name: material_values_source_ref_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX material_values_source_ref_idx ON public.material_values USING btree (source_ref_id);
+CREATE INDEX material_values_source_ref_idx ON public.measures USING btree (source_ref_id);
+
+
+--
+-- Name: measures_experiment_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_experiment_idx ON public.measures USING btree (experiment_ref_id) WHERE (experiment_ref_id IS NOT NULL);
+
+
+--
+-- Name: measures_live_measurand_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_live_measurand_idx ON public.measures USING btree (measurand_ref_id, value_num) WHERE (superseded_by IS NULL);
+
+
+--
+-- Name: measures_live_subject_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_live_subject_idx ON public.measures USING btree (subject_ref_id, measurand_ref_id) WHERE (superseded_by IS NULL);
+
+
+--
+-- Name: measures_measurand_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_measurand_idx ON public.measures USING btree (measurand_ref_id);
+
+
+--
+-- Name: measures_primary_link_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_primary_link_idx ON public.measures USING btree (primary_link_id) WHERE (primary_link_id IS NOT NULL);
+
+
+--
+-- Name: measures_run_key_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_run_key_idx ON public.measures USING btree (run_key);
+
+
+--
+-- Name: measures_subject_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_subject_idx ON public.measures USING btree (subject_ref_id);
+
+
+--
+-- Name: measures_superseded_by_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_superseded_by_idx ON public.measures USING btree (superseded_by) WHERE (superseded_by IS NOT NULL);
+
+
+--
+-- Name: measures_supersedes_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX measures_supersedes_idx ON public.measures USING btree (supersedes) WHERE (supersedes IS NOT NULL);
 
 
 --
@@ -6795,24 +8462,38 @@ CREATE INDEX resource_slot_holds_host_resource_idx ON public.resource_slot_holds
 
 
 --
--- Name: rxn_values_prop_value_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: reviews_actor_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX rxn_values_prop_value_idx ON public.rxn_values USING btree (property_id, value_num);
-
-
---
--- Name: rxn_values_rxn_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX rxn_values_rxn_idx ON public.rxn_values USING btree (rxn_ref_id);
+CREATE INDEX reviews_actor_idx ON public.reviews USING btree (actor, verdict, at DESC);
 
 
 --
--- Name: rxn_values_source_ref_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: reviews_target_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX rxn_values_source_ref_idx ON public.rxn_values USING btree (source_ref_id);
+CREATE INDEX reviews_target_idx ON public.reviews USING btree (target_kind, target_id, at DESC);
+
+
+--
+-- Name: revisions_target_at_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX revisions_target_at_idx ON public.revisions USING btree (target_kind, target_id, at);
+
+
+--
+-- Name: revisions_target_xact_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX revisions_target_xact_uq ON public.revisions USING btree (target_kind, target_id, xact);
+
+
+--
+-- Name: revisions_unrecorded_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX revisions_unrecorded_idx ON public.revisions USING btree (at) WHERE (reason = '(unrecorded)'::text);
 
 
 --
@@ -7026,10 +8707,150 @@ CREATE INDEX vault_events_name_host_at_idx ON vault.events USING btree (name, ho
 
 
 --
+-- Name: chunk_review chunk_review_mirror; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER chunk_review_mirror AFTER INSERT OR DELETE OR UPDATE ON public.chunk_review FOR EACH ROW EXECUTE FUNCTION public.precis_chunk_review_mirror();
+
+
+--
+-- Name: chunks chunks_body_revision_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER chunks_body_revision_delete AFTER DELETE ON public.chunks REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION public.precis_chunks_body_revision();
+
+
+--
+-- Name: chunks chunks_body_revision_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER chunks_body_revision_insert AFTER INSERT ON public.chunks REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION public.precis_chunks_body_revision();
+
+
+--
 -- Name: chunks chunks_forbid_body_text_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER chunks_forbid_body_text_update BEFORE UPDATE ON public.chunks FOR EACH ROW WHEN (((new.text IS DISTINCT FROM old.text) AND (old.ord >= 0) AND (old.content_sha IS NULL))) EXECUTE FUNCTION public.chunks_forbid_body_text_update();
+
+
+--
+-- Name: component_spec_values component_spec_values_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER component_spec_values_insert INSTEAD OF INSERT ON public.component_spec_values FOR EACH ROW EXECUTE FUNCTION public.precis_legacy_value_insert('component_specs');
+
+
+--
+-- Name: ref_tags gripe_status_ref_tags; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER gripe_status_ref_tags AFTER INSERT OR DELETE OR UPDATE ON public.ref_tags DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.gripe_status_check();
+
+
+--
+-- Name: refs gripe_status_refs_ins; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER gripe_status_refs_ins AFTER INSERT ON public.refs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.kind = 'gripe'::text)) EXECUTE FUNCTION public.gripe_status_check();
+
+
+--
+-- Name: refs gripe_status_refs_kind; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER gripe_status_refs_kind AFTER UPDATE OF kind ON public.refs DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN ((new.kind = 'gripe'::text)) EXECUTE FUNCTION public.gripe_status_check();
+
+
+--
+-- Name: kinds kinds_covered_del; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER kinds_covered_del AFTER DELETE ON public.kinds REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION public.precis_kinds_covered_del();
+
+
+--
+-- Name: kinds kinds_covered_ins; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER kinds_covered_ins AFTER INSERT ON public.kinds REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION public.precis_kinds_covered_ins();
+
+
+--
+-- Name: kinds kinds_covered_upd; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER kinds_covered_upd AFTER UPDATE OF covered_meta, slug ON public.kinds FOR EACH STATEMENT EXECUTE FUNCTION public.precis_kinds_covered_upd();
+
+
+--
+-- Name: links links_revision_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER links_revision_delete AFTER DELETE ON public.links FOR EACH ROW WHEN ((old.created_at < now())) EXECUTE FUNCTION public.precis_links_revision();
+
+
+--
+-- Name: links links_revision_ends; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER links_revision_ends AFTER UPDATE OF src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation ON public.links FOR EACH ROW EXECUTE FUNCTION public.precis_links_revision();
+
+
+--
+-- Name: links links_revision_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER links_revision_update AFTER UPDATE ON public.links FOR EACH ROW WHEN (((old.meta - '{verified,verified_at,verified_by,verified_claim_sha,candidate,elements}'::text[]) IS DISTINCT FROM (new.meta - '{verified,verified_at,verified_by,verified_claim_sha,candidate,elements}'::text[]))) EXECUTE FUNCTION public.precis_links_revision();
+
+
+--
+-- Name: links links_verified_mirror_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER links_verified_mirror_insert AFTER INSERT ON public.links FOR EACH ROW WHEN ((new.meta ? 'verified_by'::text)) EXECUTE FUNCTION public.precis_link_verified_mirror();
+
+
+--
+-- Name: links links_verified_mirror_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER links_verified_mirror_update AFTER UPDATE ON public.links FOR EACH ROW WHEN (((new.meta ? 'verified_by'::text) AND (((new.meta -> 'verified_by'::text) IS DISTINCT FROM (old.meta -> 'verified_by'::text)) OR ((new.meta -> 'verified_at'::text) IS DISTINCT FROM (old.meta -> 'verified_at'::text))))) EXECUTE FUNCTION public.precis_link_verified_mirror();
+
+
+--
+-- Name: material_values material_values_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER material_values_insert INSTEAD OF INSERT ON public.material_values FOR EACH ROW EXECUTE FUNCTION public.precis_legacy_value_insert('material_properties');
+
+
+--
+-- Name: measures measures_frozen; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER measures_frozen BEFORE UPDATE ON public.measures FOR EACH ROW EXECUTE FUNCTION public.precis_measures_frozen();
+
+
+--
+-- Name: measures measures_no_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER measures_no_delete BEFORE DELETE ON public.measures FOR EACH ROW EXECUTE FUNCTION public.precis_measures_no_delete();
+
+
+--
+-- Name: measures measures_no_truncate; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER measures_no_truncate BEFORE TRUNCATE ON public.measures FOR EACH STATEMENT EXECUTE FUNCTION public.precis_measures_no_delete();
+
+
+--
+-- Name: measures measures_unitless_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER measures_unitless_guard BEFORE INSERT ON public.measures FOR EACH ROW WHEN (((new.reported_unit IS NULL) AND ((new.value_num IS NOT NULL) OR (new.value_low IS NOT NULL) OR (new.value_high IS NOT NULL) OR (new.value_err IS NOT NULL)))) EXECUTE FUNCTION public.precis_measures_unitless_guard();
 
 
 --
@@ -7061,6 +8882,48 @@ CREATE TRIGGER nanopub_ots_proofs_append_only BEFORE DELETE OR UPDATE ON public.
 
 
 --
+-- Name: refs refs_hub_refine_mirror; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_hub_refine_mirror AFTER UPDATE ON public.refs FOR EACH ROW WHEN ((((new.meta -> 'last_refined_at'::text) IS NOT NULL) AND ((new.meta -> 'last_refined_at'::text) IS DISTINCT FROM (old.meta -> 'last_refined_at'::text)))) EXECUTE FUNCTION public.precis_hub_refine_mirror();
+
+
+--
+-- Name: refs refs_revision_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_revision_delete AFTER DELETE ON public.refs FOR EACH ROW WHEN (((old.kind = ANY (ARRAY['citation'::text, 'concept'::text, 'finding'::text, 'memory'::text, 'taxon'::text])) AND (old.created_at < now()))) EXECUTE FUNCTION public.precis_refs_revision();
+
+
+--
+-- Name: refs refs_revision_kind; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_revision_kind AFTER UPDATE OF kind ON public.refs FOR EACH ROW WHEN ((new.kind = ANY (ARRAY['citation'::text, 'concept'::text, 'finding'::text, 'memory'::text, 'taxon'::text]))) EXECUTE FUNCTION public.precis_refs_revision();
+
+
+--
+-- Name: refs refs_revision_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_revision_update AFTER UPDATE ON public.refs FOR EACH ROW WHEN ((old.kind = ANY (ARRAY['citation'::text, 'concept'::text, 'finding'::text, 'memory'::text, 'taxon'::text]))) EXECUTE FUNCTION public.precis_refs_revision();
+
+
+--
+-- Name: refs refs_taxon_unit_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER refs_taxon_unit_guard BEFORE UPDATE OF meta ON public.refs FOR EACH ROW WHEN (((new.kind = 'taxon'::text) AND (((old.meta -> 'canonical_unit'::text) IS DISTINCT FROM (new.meta -> 'canonical_unit'::text)) OR ((old.meta -> 'dimension_kind'::text) IS DISTINCT FROM (new.meta -> 'dimension_kind'::text)) OR ((old.meta -> 'si_vector'::text) IS DISTINCT FROM (new.meta -> 'si_vector'::text))))) EXECUTE FUNCTION public.precis_taxon_unit_guard();
+
+
+--
+-- Name: revisions revisions_seal; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER revisions_seal AFTER INSERT ON public.revisions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.precis_revisions_seal();
+
+
+--
 -- Name: ref_identifiers trg_ref_identifiers_lowercase_doi; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -7089,6 +8952,22 @@ ALTER TABLE ONLY public.cache_state
 
 ALTER TABLE ONLY public.cad_nodes
     ADD CONSTRAINT cad_nodes_ref_id_fkey FOREIGN KEY (ref_id) REFERENCES public.refs(ref_id) ON DELETE CASCADE;
+
+
+--
+-- Name: chase_coverage chase_coverage_chunk_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chase_coverage
+    ADD CONSTRAINT chase_coverage_chunk_id_fkey FOREIGN KEY (chunk_id) REFERENCES public.chunks(chunk_id) ON DELETE CASCADE;
+
+
+--
+-- Name: chase_coverage chase_coverage_hub_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.chase_coverage
+    ADD CONSTRAINT chase_coverage_hub_ref_id_fkey FOREIGN KEY (hub_ref_id) REFERENCES public.refs(ref_id) ON DELETE CASCADE;
 
 
 --
@@ -7305,30 +9184,6 @@ ALTER TABLE ONLY public.cluster_assignments
 
 ALTER TABLE ONLY public.cluster_cells
     ADD CONSTRAINT cluster_cells_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.cluster_runs(run_id) ON DELETE CASCADE;
-
-
---
--- Name: component_spec_values component_spec_values_component_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.component_spec_values
-    ADD CONSTRAINT component_spec_values_component_ref_id_fkey FOREIGN KEY (component_ref_id) REFERENCES public.refs(ref_id) ON DELETE CASCADE;
-
-
---
--- Name: component_spec_values component_spec_values_source_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.component_spec_values
-    ADD CONSTRAINT component_spec_values_source_ref_id_fkey FOREIGN KEY (source_ref_id) REFERENCES public.refs(ref_id) ON DELETE SET NULL;
-
-
---
--- Name: component_spec_values component_spec_values_spec_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.component_spec_values
-    ADD CONSTRAINT component_spec_values_spec_id_fkey FOREIGN KEY (spec_id) REFERENCES public.component_specs(spec_id);
 
 
 --
@@ -7580,27 +9435,59 @@ ALTER TABLE ONLY public.llm_call_log
 
 
 --
--- Name: material_values material_values_material_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: measures material_values_source_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.material_values
-    ADD CONSTRAINT material_values_material_ref_id_fkey FOREIGN KEY (material_ref_id) REFERENCES public.refs(ref_id) ON DELETE CASCADE;
-
-
---
--- Name: material_values material_values_property_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.material_values
-    ADD CONSTRAINT material_values_property_id_fkey FOREIGN KEY (property_id) REFERENCES public.material_properties(prop_id);
-
-
---
--- Name: material_values material_values_source_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.material_values
+ALTER TABLE ONLY public.measures
     ADD CONSTRAINT material_values_source_ref_id_fkey FOREIGN KEY (source_ref_id) REFERENCES public.refs(ref_id) ON DELETE SET NULL;
+
+
+--
+-- Name: measures measures_experiment_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_experiment_fk FOREIGN KEY (experiment_ref_id) REFERENCES public.refs(ref_id);
+
+
+--
+-- Name: measures measures_measurand_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_measurand_fk FOREIGN KEY (measurand_ref_id) REFERENCES public.refs(ref_id);
+
+
+--
+-- Name: measures measures_primary_link_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_primary_link_fk FOREIGN KEY (primary_link_id) REFERENCES public.links(link_id) ON DELETE SET NULL;
+
+
+--
+-- Name: measures measures_subject_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_subject_fk FOREIGN KEY (subject_ref_id) REFERENCES public.refs(ref_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: measures measures_superseded_by_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_superseded_by_fk FOREIGN KEY (superseded_by) REFERENCES public.measures(id);
+
+
+--
+-- Name: measures measures_supersedes_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.measures
+    ADD CONSTRAINT measures_supersedes_fk FOREIGN KEY (supersedes) REFERENCES public.measures(id);
 
 
 --
@@ -8068,30 +9955,6 @@ ALTER TABLE ONLY public.refs
 
 
 --
--- Name: rxn_values rxn_values_property_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.rxn_values
-    ADD CONSTRAINT rxn_values_property_id_fkey FOREIGN KEY (property_id) REFERENCES public.rxn_properties(prop_id);
-
-
---
--- Name: rxn_values rxn_values_rxn_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.rxn_values
-    ADD CONSTRAINT rxn_values_rxn_ref_id_fkey FOREIGN KEY (rxn_ref_id) REFERENCES public.refs(ref_id) ON DELETE CASCADE;
-
-
---
--- Name: rxn_values rxn_values_source_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.rxn_values
-    ADD CONSTRAINT rxn_values_source_ref_id_fkey FOREIGN KEY (source_ref_id) REFERENCES public.refs(ref_id) ON DELETE SET NULL;
-
-
---
 -- Name: s2_neighbors s2_neighbors_held_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8213,7 +10076,7 @@ SET idle_in_transaction_session_timeout = 0;
 SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
+SET LOCAL search_path = public, pg_temp;
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
@@ -8228,9 +10091,9 @@ agent	LLM-mediated tool call	2026-05-21 20:06:05.179981+00
 user	Direct human invocation (CLI, ops)	2026-05-21 20:06:05.179981+00
 system	Server-side automation: sweeps, derived state, defaults	2026-05-21 20:06:05.179981+00
 chase	Citation-chase worker — automated agent that traces findings to their primary sources and flags misattributions along the chain. See docs/design/finding-chase.md.	2026-05-30 21:33:14.261241+00
-dream	Dreaming worker — mints speculative acquisitions from existing findings/claims for later review.	2026-09-28 10:47:27.846323+00
-weave	Quest weave pass — automated quest-graph maintenance and stitching.	2026-09-28 10:47:27.846323+00
-orcid	ORCID author-discovery stub minter — creates stub author records from ORCID lookups.	2026-09-28 10:47:27.846323+00
+dream	Dreaming worker — mints speculative acquisitions from existing findings/claims for later review.	2026-10-05 07:16:44.305001+00
+weave	Quest weave pass — automated quest-graph maintenance and stitching.	2026-10-05 07:16:44.305001+00
+orcid	ORCID author-discovery stub minter — creates stub author records from ORCID lookups.	2026-10-05 07:16:44.305001+00
 \.
 
 
@@ -8310,38 +10173,38 @@ research_report_citation	f	Research-report citation entry	\N	2026-05-21 20:06:05
 finding_body	f	Finding claim text (the measured value plus its bare conditions)	\N	2026-05-30 21:33:14.261241+00
 finding_context	f	Finding setup envelope (instrument, electrode, ambient, technique, geometry)	\N	2026-05-30 21:33:14.261241+00
 table	f	Markdown table emitted by Marker (skip RAKE).	\N	2026-06-04 19:55:50.15863+00
-gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-09-28 10:47:27.710442+00
-job_event	f	Job worker telemetry (forensics, not search)	\N	2026-09-28 10:47:27.710442+00
-job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-09-28 10:47:27.710442+00
-pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-09-28 10:47:27.714769+00
-cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-09-28 10:47:27.716926+00
-message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-09-28 10:47:27.716926+00
+gripe_comment	f	Gripe comment / append-only timeline entry	\N	2026-10-05 07:16:44.174654+00
+job_event	f	Job worker telemetry (forensics, not search)	\N	2026-10-05 07:16:44.174654+00
+job_summary	f	Job completion summary (human-readable, searchable)	\N	2026-10-05 07:16:44.174654+00
+pres_slide	f	Single slide of a deck (one chunk per slide). Distinct from ``paragraph`` so renderers can show slide numbers and so cross-kind search hits can be labelled as slides.	\N	2026-10-05 07:16:44.179153+00
+cron_payload	f	Cron entry body — the natural-language payload that becomes the synthetic prompt to Asa when the cron fires. Searchable; embed + chunk_keywords workers index it normally.	\N	2026-10-05 07:16:44.181273+00
+message_body	f	Outbound message body. The text that gets posted. Searchable so past sends can be retrieved with search(kind='message', q='...').	\N	2026-10-05 07:16:44.181273+00
 flashcard_claim	f	Flashcard claim side	\N	2026-05-21 20:06:05.179981+00
 flashcard_evidence	f	Flashcard evidence side	\N	2026-05-21 20:06:05.179981+00
-job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-09-28 10:47:27.72597+00
-tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-09-28 10:47:27.72597+00
-aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-09-28 10:47:27.737662+00
-listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-09-28 10:47:27.737662+00
-term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-09-28 10:47:27.737662+00
-ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-09-28 10:47:27.74412+00
-olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-09-28 10:47:27.74412+00
-item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-09-28 10:47:27.74412+00
-edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-09-28 10:47:27.769732+00
-figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-09-28 10:47:27.772459+00
-figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-09-28 10:47:27.772459+00
-figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-09-28 10:47:27.772459+00
-figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-09-28 10:47:27.773165+00
-card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-09-28 10:47:27.778688+00
-quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-09-28 10:47:27.780593+00
-mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-09-28 10:47:27.78122+00
-mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-09-28 10:47:27.78122+00
-mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-09-28 10:47:27.78122+00
-mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-09-28 10:47:27.78122+00
-llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-09-28 10:47:27.784707+00
-claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-09-28 10:47:27.801898+00
-run_log	f	Per-seed autocatpath run-log chunk — the tail of the compute child's captured stdout/stderr for one (model, seed) run. Forensics/provenance, not a search card (mirrors job_event / job_summary).	\N	2026-09-28 10:47:27.841303+00
-step	f	One make-tree step (kind=make): an assembly/synthesis action whose conditions (fixture/torque; reagents/temperature) ride chunk meta; addressed mk<chunk_id>, aligned to blocks via made-by links.	\N	2026-09-28 10:47:27.889127+00
-field	f	Sampled signed-distance grid of a cad field:<sha256> leaf. text = the one-line summary (shape, pitch, origin, source); meta.field = the payload header; the float32 samples live in chunk_blobs, content-addressed by sha256. Written by Store.put_field, never updated in place. See docs/backlog/cad-sdf-rounding-and-field-export.md.	\N	2026-09-28 10:47:27.921428+00
+job_result	f	Per-tick audit chunk written by the planner-coroutine when a plan_tick job finalises (verdict + summary + files). Read by the parent todo's next tick for context.	\N	2026-10-05 07:16:44.190474+00
+tag_overflow	f	Long tag-value redirect chunk: when a put attempts to land a tag value longer than 80 chars in a redirectable namespace (ask-user / halt), the full value lands here and the tag becomes ``<ns>:see-chunk-<pos>``.	\N	2026-10-05 07:16:44.190474+00
+aside	f	Draft aside / callout box (admonition; tcolorbox/mdframed on export).	\N	2026-10-05 07:16:44.202291+00
+listing	f	Draft code listing — verbatim code payload, optional caption face.	\N	2026-10-05 07:16:44.202291+00
+term	f	Glossary term — definition as face (text), {short, long, surface_forms} in meta; lives in a draft glossary subtree.	\N	2026-10-05 07:16:44.202291+00
+ulist	f	Draft unordered-list container; its children are `item` chunks (renders to itemize on export).	\N	2026-10-05 07:16:44.208805+00
+olist	f	Draft ordered-list container; its children are `item` chunks (renders to enumerate; meta may carry start/label style).	\N	2026-10-05 07:16:44.208805+00
+item	f	Draft list item — a first-class child chunk under a `ulist`/`olist` (may itself contain nested lists / sub-paragraphs).	\N	2026-10-05 07:16:44.208805+00
+edgar_section	f	One paragraph/section block of an SEC filing, labelled with its standard section via chunks.section_path + meta.item_code (e.g. Item 1A Risk Factors, 8-K Item 2.02). Distinct from ``paragraph`` so section-scoped search and the quarter-to-quarter diff can align the same section across consecutive filings.	\N	2026-10-05 07:16:44.234457+00
+figure_node	f	A figure's SVG source document — the addressable source node (fn<id>). Raw markup: minted meta.no_index=true, never embedded.	\N	2026-10-05 07:16:44.237187+00
+figure_vocab	f	A figure's shared vocabulary + drawing conventions — the negotiated ground truth ("green circles are foos"). Prose, embedded + searchable.	\N	2026-10-05 07:16:44.237187+00
+figure_turn	f	One chat turn on a figure (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-05 07:16:44.237187+00
+figure_notes	f	A figure's implementation notes — the model's private design log (element ids, structural scheme, conventions). Minted meta.no_index=true, never embedded; rendered behind the "Implementation notes" tab.	\N	2026-10-05 07:16:44.237859+00
+card_glossary	t	Per-paper inferred reading glossary (clustered terms + one-line definitions); derived + embeddable, written by the paper_glossary worker at ord=-1000. See docs/design/reading-prep-loop.md.	\N	2026-10-05 07:16:44.243664+00
+quest_log	f	Quest logbook entry — a WORM, dated, append-only ledger row (note / observation / hypothesis / result / decision / dead-end / milestone / reflection / cost) carrying entry_type + by + optional cost in meta. A milestone entry is a deed; a cost entry feeds the tote.	\N	2026-10-05 07:16:44.245616+00
+mermaid_node	f	A mermaid diagram's source document — the addressable source node (mn<id>). Minted meta.no_index=true, never embedded.	\N	2026-10-05 07:16:44.246425+00
+mermaid_vocab	f	A mermaid diagram's shared vocabulary + conventions — the negotiated ground truth. Prose, embedded + searchable.	\N	2026-10-05 07:16:44.246425+00
+mermaid_notes	f	A mermaid diagram's private implementation notes (node ids, structure, conventions) — the model's design log. Minted no_index, not embedded.	\N	2026-10-05 07:16:44.246425+00
+mermaid_turn	f	One chat turn on a mermaid diagram (user message + model reply) — the resumable session log. Prose, embedded + searchable.	\N	2026-10-05 07:16:44.246425+00
+llm_review	f	LLM catalog review-log entry — a WORM, dated, append-only ledger row (published-benchmark / measured-eval / observed-telemetry / agent-review) carrying entry_type + by + provenance in meta. The ledger layer of the catalog; the tote rolls up llm_call_log alongside it (slice 3).	\N	2026-10-05 07:16:44.250162+00
+claim	f	Draft claim statement — a discrete assertion under a Claims-style heading (patent claim drafting or a scientific claim list). Prose like paragraph; kept distinct so a renderer/reviewer can tell a claim from ordinary body text.	\N	2026-10-05 07:16:44.261343+00
+run_log	f	Per-seed autocatpath run-log chunk — the tail of the compute child's captured stdout/stderr for one (model, seed) run. Forensics/provenance, not a search card (mirrors job_event / job_summary).	\N	2026-10-05 07:16:44.29946+00
+step	f	One make-tree step (kind=make): an assembly/synthesis action whose conditions (fixture/torque; reagents/temperature) ride chunk meta; addressed mk<chunk_id>, aligned to blocks via made-by links.	\N	2026-10-05 07:16:44.34871+00
+field	f	Sampled signed-distance grid of a cad field:<sha256> leaf. text = the one-line summary (shape, pitch, origin, source); meta.field = the payload header; the float32 samples live in chunk_blobs, content-addressed by sha256. Written by Store.put_field, never updated in place. See docs/backlog/cad-sdf-rounding-and-field-export.md.	\N	2026-10-05 07:16:44.381132+00
 \.
 
 
@@ -8350,16 +10213,16 @@ field	f	Sampled signed-distance grid of a cad field:<sha256> leaf. text = the on
 --
 
 COPY public.component_categories (category_id, name, status, description, created_at) FROM stdin;
-fastener	Fastener	core	Bolts, screws, nuts, washers, rivets.	2026-09-28 10:47:27.80923+00
-hose	Hose	core	Flexible fluid/gas conveyance.	2026-09-28 10:47:27.80923+00
-pipe	Pipe	core	Rigid fluid/gas conveyance.	2026-09-28 10:47:27.80923+00
-profile	Profile	core	Structural beams / extrusions.	2026-09-28 10:47:27.80923+00
-electronic	Electronic	core	Discrete or module-level electronic components.	2026-09-28 10:47:27.80923+00
-adhesive	Adhesive	core	Bonding compounds / tapes.	2026-09-28 10:47:27.80923+00
-seal	Seal	core	Gaskets, o-rings, packings.	2026-09-28 10:47:27.80923+00
-bearing	Bearing	core	Ball/roller/plain bearings, bushings.	2026-09-28 10:47:27.80923+00
-fitting	Fitting	core	Pipe/hose connectors, adapters, unions.	2026-09-28 10:47:27.80923+00
-laminate	Laminate	core	Layered composite sheet/panel material (measured specs only in v1 - no layer-structure model, see the proposal's deferrals).	2026-09-28 10:47:27.80923+00
+fastener	Fastener	core	Bolts, screws, nuts, washers, rivets.	2026-10-05 07:16:44.271449+00
+hose	Hose	core	Flexible fluid/gas conveyance.	2026-10-05 07:16:44.271449+00
+pipe	Pipe	core	Rigid fluid/gas conveyance.	2026-10-05 07:16:44.271449+00
+profile	Profile	core	Structural beams / extrusions.	2026-10-05 07:16:44.271449+00
+electronic	Electronic	core	Discrete or module-level electronic components.	2026-10-05 07:16:44.271449+00
+adhesive	Adhesive	core	Bonding compounds / tapes.	2026-10-05 07:16:44.271449+00
+seal	Seal	core	Gaskets, o-rings, packings.	2026-10-05 07:16:44.271449+00
+bearing	Bearing	core	Ball/roller/plain bearings, bushings.	2026-10-05 07:16:44.271449+00
+fitting	Fitting	core	Pipe/hose connectors, adapters, unions.	2026-10-05 07:16:44.271449+00
+laminate	Laminate	core	Layered composite sheet/panel material (measured specs only in v1 - no layer-structure model, see the proposal's deferrals).	2026-10-05 07:16:44.271449+00
 \.
 
 
@@ -8368,36 +10231,36 @@ laminate	Laminate	core	Layered composite sheet/panel material (measured specs on
 --
 
 COPY public.component_specs (spec_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, category_id, created_at) FROM stdin;
-mass	Mass	kg	mass	quantity	\N	\N	core	\N	Mass of one unit of the component.	\N	2026-09-28 10:47:27.80923+00
-unit_cost	Unit cost	USD	currency	quantity	\N	\N	core	\N	Cost per unit (each/m/kg/... per uom=); pair with as_of and, for price breaks, conditions={"qty_break": 100}.	\N	2026-09-28 10:47:27.80923+00
-length_overall	Overall length	m	length	quantity	\N	\N	core	\N	Overall length of one unit of the component.	\N	2026-09-28 10:47:27.80923+00
-thread_size	Thread size	\N	categorical	categorical	["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20"]	\N	core	\N	Nominal metric thread designation.	fastener	2026-09-28 10:47:27.80923+00
-thread_pitch	Thread pitch	mm	length	quantity	\N	\N	core	\N	Distance between adjacent thread crests.	fastener	2026-09-28 10:47:27.80923+00
-length	Length	mm	length	quantity	\N	\N	core	\N	Fastener shank/overall length.	fastener	2026-09-28 10:47:27.80923+00
-grade	Grade	\N	categorical	categorical	["4.8", "8.8", "10.9", "12.9", "A2", "A4"]	\N	core	\N	Strength/corrosion-resistance class marking.	fastener	2026-09-28 10:47:27.80923+00
-drive_type	Drive type	\N	categorical	categorical	["hex", "socket", "phillips", "slotted", "torx", "allen"]	\N	core	\N	Tool interface for driving the fastener.	fastener	2026-09-28 10:47:27.80923+00
-bore_diameter	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner (through-bore) diameter.	hose	2026-09-28 10:47:27.80923+00
-max_working_pressure	Maximum working pressure	MPa	pressure/stress	quantity	\N	\N	core	\N	Rated continuous working pressure.	hose	2026-09-28 10:47:27.80923+00
-min_bend_radius	Minimum bend radius	mm	length	quantity	\N	\N	core	\N	Smallest radius the hose may be bent to without kinking/damage.	hose	2026-09-28 10:47:27.80923+00
-temperature_max	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature. Absolute scale (Kelvin).	hose	2026-09-28 10:47:27.80923+00
-bore_diameter_bearing	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner-ring bore diameter.	bearing	2026-09-28 10:47:27.80923+00
-dynamic_load_rating	Dynamic load rating	N	force	quantity	\N	\N	core	\N	Basic dynamic load rating (rated fatigue life at constant load).	bearing	2026-09-28 10:47:27.80923+00
-finish	Surface finish	\N	categorical	categorical	["plain", "zinc-plated", "black-oxide", "anodized"]	\N	proposed	\N	Surface treatment/coating.	fastener	2026-09-28 10:47:27.80923+00
-is_reinforced	Is reinforced	\N	categorical	boolean	\N	\N	proposed	\N	Whether the hose carries a reinforcing braid/wire.	hose	2026-09-28 10:47:27.80923+00
-outer_diameter	Outer diameter	mm	length	quantity	\N	\N	core	\N	Nominal outside diameter of the part's round envelope — screw shank, pipe/tube OD, washer OD, bearing outer race.	\N	2026-09-28 10:47:27.887753+00
-inner_diameter	Inner diameter	mm	length	quantity	\N	\N	core	\N	Nominal through-hole diameter — washer ID, pipe bore, bearing bore. The geometric hole, distinct from the category-scoped functional bores (bore_diameter, bore_diameter_bearing).	\N	2026-09-28 10:47:27.887753+00
-wall_thickness	Wall thickness	mm	length	quantity	\N	\N	core	\N	Wall thickness of a hollow section (tube, pipe, extruded profile).	\N	2026-09-28 10:47:27.887753+00
-thickness	Thickness	mm	length	quantity	\N	\N	core	\N	Thickness of a flat part — sheet, plate, washer, shim. For stock sheet this is the discrete series value a cut part is realized at.	\N	2026-09-28 10:47:27.887753+00
-width	Width	mm	length	quantity	\N	\N	core	\N	Width of the part's bounding extent across its section (rectangular profile, bearing width, strap).	\N	2026-09-28 10:47:27.887753+00
-height	Height	mm	length	quantity	\N	\N	core	\N	Height of the part's bounding extent across its section, perpendicular to width.	\N	2026-09-28 10:47:27.887753+00
-across_flats	Across flats	mm	length	quantity	\N	\N	core	\N	Wrench size — distance between opposing flats of an external hex (bolt head, nut). The spanner/socket the joint needs.	\N	2026-09-28 10:47:27.887753+00
-head_diameter	Head diameter	mm	length	quantity	\N	\N	core	\N	Outside diameter of a fastener head (cap-screw head, washer face). What a counterbore must clear.	\N	2026-09-28 10:47:27.887753+00
-head_height	Head height	mm	length	quantity	\N	\N	core	\N	Head height along the fastener axis — the protrusion above the clamped face, and the counterbore depth that would bury it.	\N	2026-09-28 10:47:27.887753+00
-drive_size	Drive size	mm	length	quantity	\N	\N	core	\N	Size of the internal tool interface — hex-key across flats, Torx nominal. Pairs with drive_type; distinct from across_flats, which is the external hex.	\N	2026-09-28 10:47:27.887753+00
-head_form	Head form	\N	categorical	categorical	["cap", "countersunk", "button", "pan", "hex", "flange", "none"]	\N	core	\N	Shape of a fastener head, which decides what the near member gets: countersunk => a cone, cap/pan/button => a counterbore or plain head clearance, none => a set screw with no head at all.	\N	2026-09-28 10:47:27.912066+00
-point_type	Point type	\N	categorical	categorical	["machine", "tapping-c", "tapping-f", "thread-forming", "insert"]	\N	core	\N	How a fastener's far end engages: machine = a formed thread meeting a nut or a tapped hole; tapping-c = ISO 1478 sharp point, cuts/forms its own thread in a core hole; tapping-f = blunt/flat point; thread-forming = rolls a thread in thermoplastic without cutting; insert = not a screw, a threaded insert the screw meets.	\N	2026-09-28 10:47:27.912066+00
-head_angle	Head angle	deg	angle	quantity	\N	\N	core	\N	Included angle of a countersunk head — 90 for the metric ISO families, 82 for the imperial ones. The angle the stamped countersink is cut at; absent on any other head form.	\N	2026-09-28 10:47:27.912066+00
-drive_code	Drive code	\N	text	text	\N	\N	core	\N	The tool interface by its trade designation — T25, T30 for hexalobular/Torx. Pairs with drive_size (the millimetre extent) and drive_type (the family); this is the one you ask for in a shop.	\N	2026-09-28 10:47:27.912066+00
+mass	Mass	kg	mass	quantity	\N	\N	core	\N	Mass of one unit of the component.	\N	2026-10-05 07:16:44.271449+00
+unit_cost	Unit cost	USD	currency	quantity	\N	\N	core	\N	Cost per unit (each/m/kg/... per uom=); pair with as_of and, for price breaks, conditions={"qty_break": 100}.	\N	2026-10-05 07:16:44.271449+00
+length_overall	Overall length	m	length	quantity	\N	\N	core	\N	Overall length of one unit of the component.	\N	2026-10-05 07:16:44.271449+00
+thread_size	Thread size	\N	categorical	categorical	["M3", "M4", "M5", "M6", "M8", "M10", "M12", "M16", "M20"]	\N	core	\N	Nominal metric thread designation.	fastener	2026-10-05 07:16:44.271449+00
+thread_pitch	Thread pitch	mm	length	quantity	\N	\N	core	\N	Distance between adjacent thread crests.	fastener	2026-10-05 07:16:44.271449+00
+length	Length	mm	length	quantity	\N	\N	core	\N	Fastener shank/overall length.	fastener	2026-10-05 07:16:44.271449+00
+grade	Grade	\N	categorical	categorical	["4.8", "8.8", "10.9", "12.9", "A2", "A4"]	\N	core	\N	Strength/corrosion-resistance class marking.	fastener	2026-10-05 07:16:44.271449+00
+drive_type	Drive type	\N	categorical	categorical	["hex", "socket", "phillips", "slotted", "torx", "allen"]	\N	core	\N	Tool interface for driving the fastener.	fastener	2026-10-05 07:16:44.271449+00
+bore_diameter	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner (through-bore) diameter.	hose	2026-10-05 07:16:44.271449+00
+max_working_pressure	Maximum working pressure	MPa	pressure/stress	quantity	\N	\N	core	\N	Rated continuous working pressure.	hose	2026-10-05 07:16:44.271449+00
+min_bend_radius	Minimum bend radius	mm	length	quantity	\N	\N	core	\N	Smallest radius the hose may be bent to without kinking/damage.	hose	2026-10-05 07:16:44.271449+00
+temperature_max	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature. Absolute scale (Kelvin).	hose	2026-10-05 07:16:44.271449+00
+bore_diameter_bearing	Bore diameter	mm	length	quantity	\N	\N	core	\N	Inner-ring bore diameter.	bearing	2026-10-05 07:16:44.271449+00
+dynamic_load_rating	Dynamic load rating	N	force	quantity	\N	\N	core	\N	Basic dynamic load rating (rated fatigue life at constant load).	bearing	2026-10-05 07:16:44.271449+00
+finish	Surface finish	\N	categorical	categorical	["plain", "zinc-plated", "black-oxide", "anodized"]	\N	proposed	\N	Surface treatment/coating.	fastener	2026-10-05 07:16:44.271449+00
+is_reinforced	Is reinforced	\N	categorical	boolean	\N	\N	proposed	\N	Whether the hose carries a reinforcing braid/wire.	hose	2026-10-05 07:16:44.271449+00
+outer_diameter	Outer diameter	mm	length	quantity	\N	\N	core	\N	Nominal outside diameter of the part's round envelope — screw shank, pipe/tube OD, washer OD, bearing outer race.	\N	2026-10-05 07:16:44.347129+00
+inner_diameter	Inner diameter	mm	length	quantity	\N	\N	core	\N	Nominal through-hole diameter — washer ID, pipe bore, bearing bore. The geometric hole, distinct from the category-scoped functional bores (bore_diameter, bore_diameter_bearing).	\N	2026-10-05 07:16:44.347129+00
+wall_thickness	Wall thickness	mm	length	quantity	\N	\N	core	\N	Wall thickness of a hollow section (tube, pipe, extruded profile).	\N	2026-10-05 07:16:44.347129+00
+thickness	Thickness	mm	length	quantity	\N	\N	core	\N	Thickness of a flat part — sheet, plate, washer, shim. For stock sheet this is the discrete series value a cut part is realized at.	\N	2026-10-05 07:16:44.347129+00
+width	Width	mm	length	quantity	\N	\N	core	\N	Width of the part's bounding extent across its section (rectangular profile, bearing width, strap).	\N	2026-10-05 07:16:44.347129+00
+height	Height	mm	length	quantity	\N	\N	core	\N	Height of the part's bounding extent across its section, perpendicular to width.	\N	2026-10-05 07:16:44.347129+00
+across_flats	Across flats	mm	length	quantity	\N	\N	core	\N	Wrench size — distance between opposing flats of an external hex (bolt head, nut). The spanner/socket the joint needs.	\N	2026-10-05 07:16:44.347129+00
+head_diameter	Head diameter	mm	length	quantity	\N	\N	core	\N	Outside diameter of a fastener head (cap-screw head, washer face). What a counterbore must clear.	\N	2026-10-05 07:16:44.347129+00
+head_height	Head height	mm	length	quantity	\N	\N	core	\N	Head height along the fastener axis — the protrusion above the clamped face, and the counterbore depth that would bury it.	\N	2026-10-05 07:16:44.347129+00
+drive_size	Drive size	mm	length	quantity	\N	\N	core	\N	Size of the internal tool interface — hex-key across flats, Torx nominal. Pairs with drive_type; distinct from across_flats, which is the external hex.	\N	2026-10-05 07:16:44.347129+00
+head_form	Head form	\N	categorical	categorical	["cap", "countersunk", "button", "pan", "hex", "flange", "none"]	\N	core	\N	Shape of a fastener head, which decides what the near member gets: countersunk => a cone, cap/pan/button => a counterbore or plain head clearance, none => a set screw with no head at all.	\N	2026-10-05 07:16:44.371677+00
+point_type	Point type	\N	categorical	categorical	["machine", "tapping-c", "tapping-f", "thread-forming", "insert"]	\N	core	\N	How a fastener's far end engages: machine = a formed thread meeting a nut or a tapped hole; tapping-c = ISO 1478 sharp point, cuts/forms its own thread in a core hole; tapping-f = blunt/flat point; thread-forming = rolls a thread in thermoplastic without cutting; insert = not a screw, a threaded insert the screw meets.	\N	2026-10-05 07:16:44.371677+00
+head_angle	Head angle	deg	angle	quantity	\N	\N	core	\N	Included angle of a countersunk head — 90 for the metric ISO families, 82 for the imperial ones. The angle the stamped countersink is cut at; absent on any other head form.	\N	2026-10-05 07:16:44.371677+00
+drive_code	Drive code	\N	text	text	\N	\N	core	\N	The tool interface by its trade designation — T25, T30 for hexalobular/Torx. Pairs with drive_size (the millimetre extent) and drive_type (the family); this is the one you ask for in a shop.	\N	2026-10-05 07:16:44.371677+00
 \.
 
 
@@ -8406,9 +10269,9 @@ drive_code	Drive code	\N	text	text	\N	\N	core	\N	The tool interface by its trade
 --
 
 COPY public.design_load_cases (case_id, name, family, standard, spec, description, created_at) FROM stdin;
-std_shock	Handling shock	shock	t	{"pulse": "half_sine", "peak_g": 25.0, "duration_s": 0.011}	A dropped or knocked assembly. Half-sine pulse, applied along each principal axis in turn.	2026-09-28 10:47:27.902589+00
-std_vibration	Transport vibration	vibration	t	{"grms": 1.5, "band_hz": [5.0, 500.0]}	Broadband transport vibration — the case that finds resonances a static check cannot see.	2026-09-28 10:47:27.902589+00
-std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary": 0.25}	A quarter of the primary load applied off the intended line of action. Catches designs that only work in one direction.	2026-09-28 10:47:27.902589+00
+std_shock	Handling shock	shock	t	{"pulse": "half_sine", "peak_g": 25.0, "duration_s": 0.011}	A dropped or knocked assembly. Half-sine pulse, applied along each principal axis in turn.	2026-10-05 07:16:44.362248+00
+std_vibration	Transport vibration	vibration	t	{"grms": 1.5, "band_hz": [5.0, 500.0]}	Broadband transport vibration — the case that finds resonances a static check cannot see.	2026-10-05 07:16:44.362248+00
+std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary": 0.25}	A quarter of the primary load applied off the intended line of action. Catches designs that only work in one direction.	2026-10-05 07:16:44.362248+00
 \.
 
 
@@ -8417,9 +10280,9 @@ std_off_axis	Off-axis loading	off_axis	t	{"cone_deg": 30.0, "fraction_of_primary
 --
 
 COPY public.design_service_environments (env_id, name, lifetime_checks, expected_lifetime_s, temp_min_k, temp_max_k, pressure_pa, humidity_pct, vibration_grms, vibration_spectrum, cycle_count, duty_cycle, chemical_exposure, status, description, created_at) FROM stdin;
-bench_week	Bench, one week	f	604800	288	303	\N	\N	\N	\N	1000	0.05	{}	core	A prototype that lives on a bench for a week. lifetime_checks FALSE drops corrosion, creep and fatigue entirely — they are not what kills this design.	2026-09-28 10:47:27.902589+00
-indoor_5yr	Indoor service, five years	t	157680000	283	313	\N	\N	\N	\N	100000	0.2	{}	core	Ordinary indoor service. Fatigue and creep matter; corrosion is mild.	2026-09-28 10:47:27.902589+00
-general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	0.4	{salt,uv}	core	Outdoor-capable general service: the lifetime families all run, and salt plus UV exposure are declared.	2026-09-28 10:47:27.902589+00
+bench_week	Bench, one week	f	604800	288	303	\N	\N	\N	\N	1000	0.05	{}	core	A prototype that lives on a bench for a week. lifetime_checks FALSE drops corrosion, creep and fatigue entirely — they are not what kills this design.	2026-10-05 07:16:44.362248+00
+indoor_5yr	Indoor service, five years	t	157680000	283	313	\N	\N	\N	\N	100000	0.2	{}	core	Ordinary indoor service. Fatigue and creep matter; corrosion is mild.	2026-10-05 07:16:44.362248+00
+general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	0.4	{salt,uv}	core	Outdoor-capable general service: the lifetime families all run, and salt plus UV exposure are declared.	2026-10-05 07:16:44.362248+00
 \.
 
 
@@ -8428,9 +10291,9 @@ general_10yr	General service, ten years	t	315360000	243	333	\N	\N	\N	\N	1000000	
 --
 
 COPY public.design_scenarios (scenario_id, name, quantity, objective_weights, service_env_id, status, description, created_at) FROM stdin;
-prototype	Prototype	1	{"cost": 0.3, "mass": 0.1, "lead_time": 0.6}	bench_week	core	One-off. Getting it in hand beats getting it light or cheap; the lifetime families are off.	2026-09-28 10:47:27.902589+00
-small_batch	Small batch	100	{"cost": 0.4, "mass": 0.3, "lead_time": 0.3}	indoor_5yr	core	Tens to hundreds. Per-unit cost starts to bite and the parts have to last; tooling still does not pay for itself.	2026-09-28 10:47:27.902589+00
-mass_production	Mass production	100000	{"cost": 0.6, "mass": 0.3, "lead_time": 0.1}	general_10yr	core	Tooling amortises, so unit cost dominates and lead time barely registers. Full lifetime physics.	2026-09-28 10:47:27.902589+00
+prototype	Prototype	1	{"cost": 0.3, "mass": 0.1, "lead_time": 0.6}	bench_week	core	One-off. Getting it in hand beats getting it light or cheap; the lifetime families are off.	2026-10-05 07:16:44.362248+00
+small_batch	Small batch	100	{"cost": 0.4, "mass": 0.3, "lead_time": 0.3}	indoor_5yr	core	Tens to hundreds. Per-unit cost starts to bite and the parts have to last; tooling still does not pay for itself.	2026-10-05 07:16:44.362248+00
+mass_production	Mass production	100000	{"cost": 0.6, "mass": 0.3, "lead_time": 0.1}	general_10yr	core	Tooling amortises, so unit cost dominates and lead time barely registers. Full lifetime physics.	2026-10-05 07:16:44.362248+00
 \.
 
 
@@ -8448,11 +10311,11 @@ bge-m3	1024	t	BAAI/bge-m3, dense; 1024-dim; multilingual	\N	2026-05-21 20:06:05.
 --
 
 COPY public.external_rate_limits (provider, capacity, refill_per_sec, tokens, last_refill, daily_cap, day_used, day_start) FROM stdin;
-s2	2	1.0	2	2026-09-28 10:47:27.842007+00	\N	0	2026-09-28
-openalex	10	8.0	10	2026-09-28 10:47:27.842007+00	100000	0	2026-09-28
-unpaywall	5	5.0	5	2026-09-28 10:47:27.842007+00	100000	0	2026-09-28
-arxiv	1	0.34	1	2026-09-28 10:47:27.842007+00	\N	0	2026-09-28
-crossref	20	20.0	20	2026-09-28 10:47:27.842007+00	\N	0	2026-09-28
+s2	2	1.0	2	2026-10-05 07:16:44.300029+00	\N	0	2026-10-05
+openalex	10	8.0	10	2026-10-05 07:16:44.300029+00	100000	0	2026-10-05
+unpaywall	5	5.0	5	2026-10-05 07:16:44.300029+00	100000	0	2026-10-05
+arxiv	1	0.34	1	2026-10-05 07:16:44.300029+00	\N	0	2026-10-05
+crossref	20	20.0	20	2026-10-05 07:16:44.300029+00	\N	0	2026-10-05
 \.
 
 
@@ -8460,68 +10323,69 @@ crossref	20	20.0	20	2026-09-28 10:47:27.842007+00	\N	0	2026-09-28
 -- Data for Name: kinds; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.kinds (slug, is_numeric, title, description, deprecated_at, created_at) FROM stdin;
-paper	f	Paper	Research paper, addressed by cite_key	\N	2026-05-21 20:06:05.179981+00
-book	f	Book	Book or monograph	\N	2026-05-21 20:06:05.179981+00
-patent	f	Patent	Patent document	\N	2026-05-21 20:06:05.179981+00
-research_report	f	Research report	Research / industry report	\N	2026-05-21 20:06:05.179981+00
-oracle	f	Oracle	Oracle / authority node	\N	2026-05-21 20:06:05.179981+00
-skill	f	Skill	Agent skill document	\N	2026-05-21 20:06:05.179981+00
-tool	f	Tool	Tool spec or interface description	\N	2026-05-21 20:06:05.179981+00
-code	f	Code symbol	Function, class, module, or repo symbol	\N	2026-05-21 20:06:05.179981+00
-decision	f	Decision	ADR-style decision log entry	\N	2026-05-21 20:06:05.179981+00
-design	f	Design	Design document / plan	\N	2026-05-21 20:06:05.179981+00
-project	f	Project	Project descriptor (goals, status, …)	\N	2026-05-21 20:06:05.179981+00
-conv	f	Conversation	Conversation transcript	\N	2026-05-21 20:06:05.179981+00
-meeting	f	Meeting	Meeting notes / transcript	\N	2026-05-21 20:06:05.179981+00
-email	f	Email	Email message or thread	\N	2026-05-21 20:06:05.179981+00
-repo	f	Repo	Source-code repository	\N	2026-05-21 20:06:05.179981+00
-issue	f	Issue	Issue tracker item	\N	2026-05-21 20:06:05.179981+00
-todo	t	Todo	Task / action item	\N	2026-05-21 20:06:05.179981+00
-memory	t	Memory	Note, decision, idea, claim	\N	2026-05-21 20:06:05.179981+00
-gripe	t	Gripe	Informal log entry	\N	2026-05-21 20:06:05.179981+00
-web	f	Web query	Cached web / research / think query	\N	2026-05-21 20:06:05.179981+00
-youtube	f	YouTube	Cached YouTube transcript	\N	2026-05-21 20:06:05.179981+00
-math	f	Math result	Cached Wolfram math result	\N	2026-05-21 20:06:05.179981+00
-finding	t	Finding	A retrievable empirical claim with explicit setup context and a provenance chain back to its primary source. Synthesised by the citation-chase worker; never externally citable (see docs/design/finding-chase.md).	\N	2026-05-30 21:33:14.261241+00
-citation	t	Citation	Verified claim → source pointer. Written by the citation-fill workflow after the verifier confirms the source quote supports the claim.	\N	2026-05-31 14:47:51.530091+00
-markdown	f	Markdown file	Read / write .md / .markdown files under a configured root. Slug derived from path; lazy re-ingest on stale mtime; block slugs are content-stable. See src/precis/handlers/markdown.py.	\N	2026-06-04 19:55:50.290874+00
-plaintext	f	Plaintext file	Read / write .txt / .org / .rst files under a configured root. The shared file-kind base; markdown and tex are subclasses. See src/precis/handlers/plaintext.py.	\N	2026-06-04 19:55:50.290874+00
-tex	f	LaTeX file	Read / write .tex files under a configured root. Inherits the plaintext file-kind machinery; adds tex-aware block parsing + input-resolution. See src/precis/handlers/tex.py.	\N	2026-06-04 19:55:50.290874+00
-websearch	f	Web search	Cached perplexity-style web search response. Slug derived from the canonical query + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
-job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-09-28 10:47:27.710442+00
-pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-09-28 10:47:27.714769+00
-cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-09-28 10:47:27.716926+00
-message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-09-28 10:47:27.716926+00
-flashcard	t	Flashcard	Spaced-repetition flashcard	\N	2026-05-21 20:06:05.179981+00
-perplexity-reasoning	f	Think	Cached perplexity ``think`` (chain-of-thought) response. Slug derived from the question + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
-perplexity-research	f	Research report	Cached perplexity ``research`` (deep-research) response. Slug derived from the prompt + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00
-wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-09-28 10:47:27.732074+00
-alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-09-28 10:47:27.735966+00
-draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-09-28 10:47:27.737662+00
-news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-09-28 10:47:27.740157+00
-agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-09-28 10:47:27.741506+00
-orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-09-28 10:47:27.746627+00
-cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-09-28 10:47:27.747926+00
-structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-09-28 10:47:27.749373+00
-pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-09-28 10:47:27.757521+00
-part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-09-28 10:47:27.757521+00
-datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-09-28 10:47:27.757521+00
-folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-09-28 10:47:27.765111+00
-edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-09-28 10:47:27.769732+00
-plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-09-28 10:47:27.771806+00
-figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-09-28 10:47:27.772459+00
-anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-09-28 10:47:27.776304+00
-concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-09-28 10:47:27.779326+00
-quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-09-28 10:47:27.780593+00
-mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-09-28 10:47:27.78122+00
-llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-09-28 10:47:27.784707+00
-material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-09-28 10:47:27.806388+00
-component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-09-28 10:47:27.80923+00
-cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-09-28 10:47:27.837767+00
-make	f	Make	A make-tree: assembly/synthesis order for a design — first-class step nodes on the draft chunk-tree substrate, each carrying its conditions (fixture/torque; reagents/temperature) in chunk meta. Blocks align to steps via made-by links written from the design side. Named ref; steps addressed mk<chunk_id>. See precis-cad-help.	\N	2026-09-28 10:47:27.889127+00
-rxn	f	Reaction	A sourced reaction-fact store: a transformation (reaction SMILES) plus per-property sourced values (yield, temperature, time, catalyst loading, ...) in a typed, growable registry. Many rows per (reaction, property) is the point — the spread across sources and conditions IS the answer. Named `rxn` not `reaction` to avoid colliding with the pathway graph's `reaction` edge kind. See precis-rxn-help.	\N	2026-09-28 10:47:27.891212+00
-checklist	f	Checklist	A named, versioned check ledger — Checklist-Manifesto-style argued gates for LLM agents. Items are judgment tasks or bridges to a domain's own encoded rules (DRC/ERC); per-target verdicts accumulate instead of restarting, and staleness (item revised, target changed) is rendered honestly rather than silently dropped. See precis-checklist-help.	\N	2026-09-28 10:47:27.894303+00
+COPY public.kinds (slug, is_numeric, title, description, deprecated_at, created_at, covered_meta) FROM stdin;
+paper	f	Paper	Research paper, addressed by cite_key	\N	2026-05-21 20:06:05.179981+00	\N
+book	f	Book	Book or monograph	\N	2026-05-21 20:06:05.179981+00	\N
+patent	f	Patent	Patent document	\N	2026-05-21 20:06:05.179981+00	\N
+research_report	f	Research report	Research / industry report	\N	2026-05-21 20:06:05.179981+00	\N
+oracle	f	Oracle	Oracle / authority node	\N	2026-05-21 20:06:05.179981+00	\N
+skill	f	Skill	Agent skill document	\N	2026-05-21 20:06:05.179981+00	\N
+tool	f	Tool	Tool spec or interface description	\N	2026-05-21 20:06:05.179981+00	\N
+code	f	Code symbol	Function, class, module, or repo symbol	\N	2026-05-21 20:06:05.179981+00	\N
+decision	f	Decision	ADR-style decision log entry	\N	2026-05-21 20:06:05.179981+00	\N
+design	f	Design	Design document / plan	\N	2026-05-21 20:06:05.179981+00	\N
+project	f	Project	Project descriptor (goals, status, …)	\N	2026-05-21 20:06:05.179981+00	\N
+conv	f	Conversation	Conversation transcript	\N	2026-05-21 20:06:05.179981+00	\N
+meeting	f	Meeting	Meeting notes / transcript	\N	2026-05-21 20:06:05.179981+00	\N
+email	f	Email	Email message or thread	\N	2026-05-21 20:06:05.179981+00	\N
+repo	f	Repo	Source-code repository	\N	2026-05-21 20:06:05.179981+00	\N
+issue	f	Issue	Issue tracker item	\N	2026-05-21 20:06:05.179981+00	\N
+todo	t	Todo	Task / action item	\N	2026-05-21 20:06:05.179981+00	\N
+gripe	t	Gripe	Informal log entry	\N	2026-05-21 20:06:05.179981+00	\N
+web	f	Web query	Cached web / research / think query	\N	2026-05-21 20:06:05.179981+00	\N
+youtube	f	YouTube	Cached YouTube transcript	\N	2026-05-21 20:06:05.179981+00	\N
+math	f	Math result	Cached Wolfram math result	\N	2026-05-21 20:06:05.179981+00	\N
+markdown	f	Markdown file	Read / write .md / .markdown files under a configured root. Slug derived from path; lazy re-ingest on stale mtime; block slugs are content-stable. See src/precis/handlers/markdown.py.	\N	2026-06-04 19:55:50.290874+00	\N
+plaintext	f	Plaintext file	Read / write .txt / .org / .rst files under a configured root. The shared file-kind base; markdown and tex are subclasses. See src/precis/handlers/plaintext.py.	\N	2026-06-04 19:55:50.290874+00	\N
+tex	f	LaTeX file	Read / write .tex files under a configured root. Inherits the plaintext file-kind machinery; adds tex-aware block parsing + input-resolution. See src/precis/handlers/tex.py.	\N	2026-06-04 19:55:50.290874+00	\N
+websearch	f	Web search	Cached perplexity-style web search response. Slug derived from the canonical query + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
+job	t	Job	Offline run of a task — fix this gripe, run a simulation, benchmark a commit. Addressable by numeric id; status via STATUS: tags; comment timeline via job_event + job_summary chunks.	\N	2026-10-05 07:16:44.174654+00	\N
+pres	f	Presentation	Slide deck, unpublished writeup, or other internal document we want indexed but kept separate from the academic paper library. Slug-addressed; one block per slide (or per paragraph for writeups). Subtype carried as ``subtype:slides|writeup|notes|...`` open tag; ``venue`` and ``date`` live in meta. See ``precis-pres-help``.	\N	2026-10-05 07:16:44.179153+00	\N
+cron	t	Cron	Scheduled wakeup. The cron-tick CLI scans due entries every 60s, fires pg_notify('precis.cron'), advances next_fire_at per recurrence + catch_up policy. Numeric-id; body lives as a ``cron_payload`` chunk. State in meta.next_fire_at, meta.recurring, meta.catch_up, meta.status. See ``precis-cron-help``.	\N	2026-10-05 07:16:44.181273+00	\N
+message	t	Message	Proactive outbound. put(kind='message', target='discord/G/C/T', text='...') stores the ref AND fires pg_notify('precis.messages'). Delivery layer (asa_bot) LISTENs and posts. Numeric-id; one ref per send. Body as ``message_body`` chunk. State in meta.status: 'queued' → 'sent'/'failed'. See ``precis-message-help``.	\N	2026-10-05 07:16:44.181273+00	\N
+flashcard	t	Flashcard	Spaced-repetition flashcard	\N	2026-05-21 20:06:05.179981+00	\N
+perplexity-reasoning	f	Think	Cached perplexity ``think`` (chain-of-thought) response. Slug derived from the question + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
+perplexity-research	f	Research report	Cached perplexity ``research`` (deep-research) response. Slug derived from the prompt + model + freshness window. See src/precis/handlers/perplexity.py.	\N	2026-06-04 20:01:59.625687+00	\N
+wikipedia	f	Wikipedia (on-demand article fetch)	Resolve a query to the best-matching Wikipedia article via the MediaWiki search API, then fetch and cache its plain-text extract. Slug-addressed by query; cached 7 days; block-split + embedded so search(kind='wikipedia', q=...) lands hits inside fetched articles. On-demand — no bulk dump, always current. See ``precis-wikipedia-help``.	\N	2026-10-05 07:16:44.196661+00	\N
+alert	t	Alert	Machine-detected operational / health condition — a worker spin loop, an orphaned todo, a stalled recurring, a stale claim. Addressable by numeric id; deduped on meta.fingerprint; lifecycle via STATUS: tags (open / resolved); source + severity via alert-source: / severity: open tags. Not embedded — surfaced by the /alerts web tab, not semantic search.	\N	2026-10-05 07:16:44.200608+00	\N
+draft	f	Draft	Editable, chunk-native authored document (ADR 0032). The living source of a project's write-up; exports to LaTeX/PDF/Word with Postgres canonical. Body chunks are mutable in structure (reorder/reparent via pos + parent_chunk_id) and in text (via the edit helper + content_sha re-derive). Named ref; chunks addressed by an opaque ¶<handle>. One draft per project; freeze = snapshot. See precis-draft-help.	\N	2026-10-05 07:16:44.202291+00	\N
+news	f	News	Multi-source news aggregation. Articles pulled from RSS/Atom feeds (the news_sources registry) by the news_poll worker, fetched + extracted + embedded like web pages, so search(kind='news', q=...) lands hits inside article bodies. URL-addressed, pinned in cache. Tagged category:news + source:<slug> for filtering. The morning briefing summarizes recent items back out. See ``precis-news-help``.	\N	2026-10-05 07:16:44.204894+00	\N
+agentlog	t	Agent log	Run-attribution record — one per agentic run (plan_tick, operator change request, chat follow-up) that touches the corpus. Carries the full assembled prompt, model + source, and `touched` links to every chunk the run wrote or moved, so a suspicious chunk can be walked back to the run that produced it. Numeric id; deduped per run; GC'd past a retention window (links drop, chunks stay). Not embedded — surfaced by the /agentlogs web tab and chunk connections, not semantic search. See ``precis-agentlog-help``.	\N	2026-10-05 07:16:44.206224+00	\N
+finding	t	Finding	A retrievable empirical claim with explicit setup context and a provenance chain back to its primary source. Synthesised by the citation-chase worker; never externally citable (see docs/design/finding-chase.md).	\N	2026-05-30 21:33:14.261241+00	{scope,caveats}
+memory	t	Memory	Note, decision, idea, claim	\N	2026-05-21 20:06:05.179981+00	{rule,warrant,hook}
+orcid	f	ORCID author	A researcher identity resolved from ORCID (https://orcid.org). Slug-addressed by iD (e.g. 'orcid:0000-0002-1825-0097'). get resolves + stores the record (names, bio, keywords, employments with ROR ids), links works already held, and reports the missing ones — fetching them is LLM-gated via args={'enqueue': N}; search runs over the embedded author card; link/tag attach authorship edges (authored / authored-by) and classification. Durable link hub — never cache-evicted. See ``precis-orcid-help``.	\N	2026-10-05 07:16:44.211316+00	\N
+cad	f	CAD	Parametric solid-model design (ADR 0041) — a boolean DAG of placed analytic primitives (box/cyl/cone/sphere/torus/prism/pyramid) authored via the compact `config` mini-DSL (e.g. cyl:r3h12). Postgres-canonical; the agent probes the model (point/ray/arc/section) and relates whole parts (clearance/interference/translational DOF) analytically rather than meshing. OpenSCAD/STL export is a regenerable downstream view. Named ref; nodes addressed by an opaque ca<id> handle. See precis-cad-help.	\N	2026-10-05 07:16:44.212655+00	\N
+structure	f	Structure	Atomistic cell + bond-graph design for DFT/molecular modelling (ADR 0043). A periodic cell (lattice + per-axis PBC) filled with atoms (a<El><n> labels) and an explicit bond graph (order + provenance + periodic-image offset). The agent edits the graph via typed ops and probes it analytically (neighbours, coordination, MIC distances/angles, a validator gate) in memory — never pixels. Relaxation/DFT and file export (CIF/POSCAR/XYZ) are rented backends. Postgres-canonical; st<id> handle, design-scoped atom paths st<id>#a<El><n>. See precis-structure-help.	\N	2026-10-05 07:16:44.214164+00	\N
+pcb	f	PCB	Electronics/PCB design (ADR 0042) — a netlist + placement graph in dedicated tables, read and authored by the LLM as a traversable graph (ratsnest / measures / signal-trace), never pixels. JLCPCB-native. Postgres-canonical; Freerouting/gerbers/fab are downstream export. See precis-pcb-help.	\N	2026-10-05 07:16:44.222384+00	\N
+part	f	Part	LCSC/JLCPCB catalog part (ADR 0042) — reference data in the `parts` table, addressed by LCSC C-number. Ingest-only (jlcparts dump); not embedded. See precis-part-select-help.	\N	2026-10-05 07:16:44.222384+00	\N
+datasheet	f	Datasheet	Component datasheet (ADR 0042) — a thin PaperHandler sibling (corpus_role=evidence) ingested via the Marker->chunks pipeline and linked datasheet-of a part. One kind for the whole electronics-doc family (app-note/errata via a meta sub-type). See precis-datasheet-help.	\N	2026-10-05 07:16:44.222384+00	\N
+folder	t	Folder	Organizational container (ADR 0045): single-parent placement for authored artifacts via refs.parent_id and the reserved virtual `parent` link relation (ADR 0027, generalized). Folders organize what you MAKE — corpus kinds (paper/cfp) keep their own discovery layer and stream kinds (memory/alert/job) stay out. Shallow by policy. See precis-folder-help.	\N	2026-10-05 07:16:44.229943+00	\N
+edgar	f	SEC Filing	Read-only SEC EDGAR filing (10-K / 10-Q / 8-K / S-1 / …). Accession-slugged (e.g. 0000320193-23-000106). Search merges local + EDGAR full-text; get(id=...) fetches the submissions index + primary document and stores section-labelled blocks. get(id='cik:320193' | 'ticker:aapl') lists a company's recent filings; view='diff' shows quarter-to-quarter section changes. See ``precis-edgar-help``.	\N	2026-10-05 07:16:44.234457+00	\N
+plan	f	Plan	A thread's reasoning outline (ADR 0051 §2b) — a hierarchical todo-list + notes on the same chunk-tree substrate as a draft, addressed by pe<chunk_id>. Rendered whole with [open]/[wip]/done: status markers + a cursor; NEVER exported as a deliverable (corpus_role=none). One plan per project (plan-of link). See precis-overview.	\N	2026-10-05 07:16:44.2365+00	\N
+figure	f	Figure	An interactive SVG canvas you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by fg<ref>/fn<chunk>. Two model-owned documents: the SVG source (figure_node chunks) + a shared vocabulary (figure_vocab); chat persists as figure_turn. NEVER exported as a deliverable (corpus_role=none). Many per project (figure-of link). See precis-figure-help.	\N	2026-10-05 07:16:44.237187+00	\N
+anki	t	Anki card	A spaced-repetition cloze card ({{c1::…}}) that lives in the corpus and syncs to AnkiWeb. Numeric-id ref; body is cloze markup, meta carries the generic Anki note shape (notetype/deck/fields). Anki owns scheduling — no SM-2 here. Supersedes flashcard. See precis-anki-help.	\N	2026-10-05 07:16:44.241097+00	\N
+quest	t	Quest	A perpetual, unachievable striving (the medieval Grail sense) that pulls subtasks and knowledge acquisition into its service. Never `done` — lifecycle is active/dormant/abandoned. Achievable goals beneath it are ordinary todos/projects marked `serves`. Progress is a ledger of deeds, not a percentage. See docs/proposals/quest-layer.md.	\N	2026-10-05 07:16:44.245616+00	\N
+mermaid	f	Mermaid	A mermaid diagram you draw *with* the model — a slug-addressed chunk-tree on the draft substrate, addressed by mm<ref>/mn<chunk>. Model-owned: the mermaid source (mermaid_node) + a shared vocabulary (mermaid_vocab) + private notes (mermaid_notes); chat persists as mermaid_turn. Nodes bind to the chunks they depict (ADR 0057). NEVER exported (corpus_role=none). Many per project (mermaid-of link). See precis-mermaid-help.	\N	2026-10-05 07:16:44.246425+00	\N
+llm	t	LLM catalog	A model catalog card — one ref per model (claude-opus-4-8, qwen-heavy). Body is the capability prose (embedded, so the card is a vector); meta carries the structured facts (model_id, tier_floor, offerings, capability axes, provenance). A reconcile pass keeps the facts true against the live OpenRouter feed and flags drift. Read with get(kind='llm', id='claude-opus-4-8') or search(kind='llm', q=…). Never exported. See docs/proposals/llm-catalog.md.	\N	2026-10-05 07:16:44.250162+00	\N
+material	f	Material	CRC-handbook-style engineering material properties store — a slug entity (name/aliases/class) plus per-property sourced values in a typed, growable property registry. v1 is canonical-units-only: a unit that is not the property's canonical unit is rejected, named. See precis-material-help.	\N	2026-10-05 07:16:44.269027+00	\N
+component	f	Component	General procurable-part store — a slug entity (name/category/mpn/manufacturer) plus per-spec sourced values in a typed, growable, category-scoped spec registry. made-of links a component to the material it is made of. v1 is canonical-units-only, like material. See precis-component-help.	\N	2026-10-05 07:16:44.271449+00	\N
+cfp	f	Call for Proposal	Call-for-proposal / requirements document. A read-only ingested PDF (via `precis add --as cfp` or the inbox/cfp/ watch dir) that a proposal draft must satisfy. Addressable by slug; one ref per document, blocks per chunk — gets search / TOC / keywords like a paper. Spec role: NEVER citable evidence (it is the requirements, not a source). Link it to a proposal project with link(rel='has-requirement') so the planner consults it. Use get(view='toc') to read the required sections + limits.	\N	2026-10-05 07:16:44.296422+00	\N
+make	f	Make	A make-tree: assembly/synthesis order for a design — first-class step nodes on the draft chunk-tree substrate, each carrying its conditions (fixture/torque; reagents/temperature) in chunk meta. Blocks align to steps via made-by links written from the design side. Named ref; steps addressed mk<chunk_id>. See precis-cad-help.	\N	2026-10-05 07:16:44.34871+00	\N
+rxn	f	Reaction	A sourced reaction-fact store: a transformation (reaction SMILES) plus per-property sourced values (yield, temperature, time, catalyst loading, ...) in a typed, growable registry. Many rows per (reaction, property) is the point — the spread across sources and conditions IS the answer. Named `rxn` not `reaction` to avoid colliding with the pathway graph's `reaction` edge kind. See precis-rxn-help.	\N	2026-10-05 07:16:44.35071+00	\N
+checklist	f	Checklist	A named, versioned check ledger — Checklist-Manifesto-style argued gates for LLM agents. Items are judgment tasks or bridges to a domain's own encoded rules (DRC/ERC); per-target verdicts accumulate instead of restarting, and staleness (item revised, target changed) is rendered honestly rather than silently dropped. See precis-checklist-help.	\N	2026-10-05 07:16:44.353697+00	\N
+concept	t	Concept	A node in the learner's personal knowledge graph (reading-prep loop): a term/idea with a continuous mastery field, derived state, embeddable definition, and typed edges (prerequisite / analogy / contrast) to other concepts. Objectives are concepts, not todos. See reading-prep-loop.md.	\N	2026-10-05 07:16:44.244247+00	{name,aliases,definition}
+citation	t	Citation	Verified claim → source pointer. Written by the citation-fill workflow after the verifier confirms the source quote supports the claim.	\N	2026-05-31 14:47:51.530091+00	{claim,source_quote,char_offset,source_handle}
+taxon	t	Taxon	A node in the term taxonomy: a named term with an embeddable definition, an earned status (proposed / systematic), an optional dimension (dimension_kind + si_vector) and, on start nodes, a required-key contract. Body is '<name> - <definition>'. See term-taxonomy.md.	\N	2026-10-05 07:16:44.38315+00	{name,aliases,definition,status,value_type,dimension_kind,canonical_unit,allowed_values,higher_is_better,applies_to_ref,si_vector,required_conditions,display_unit}
 \.
 
 
@@ -8530,25 +10394,63 @@ checklist	f	Checklist	A named, versioned check ledger — Checklist-Manifesto-st
 --
 
 COPY public.material_properties (prop_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, created_at) FROM stdin;
-density	Density	kg/m3	mass/volume	quantity	\N	\N	core	\N	Mass per unit volume.	2026-09-28 10:47:27.806388+00
-tensile_strength_yield	Tensile yield strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Stress at the onset of plastic deformation (0.2% offset).	2026-09-28 10:47:27.806388+00
-tensile_strength_ultimate	Ultimate tensile strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Maximum engineering stress before necking/fracture.	2026-09-28 10:47:27.806388+00
-youngs_modulus	Young's modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic (tensile/compressive) stiffness.	2026-09-28 10:47:27.806388+00
-shear_modulus	Shear modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic shear stiffness.	2026-09-28 10:47:27.806388+00
-poissons_ratio	Poisson's ratio	\N	dimensionless	ratio	\N	\N	core	\N	Negative ratio of transverse to axial strain.	2026-09-28 10:47:27.806388+00
-elongation_at_break	Elongation at break	%	dimensionless	ratio	\N	\N	core	\N	Engineering strain at fracture in a tensile test.	2026-09-28 10:47:27.806388+00
-hardness_vickers	Vickers hardness	HV	hardness (non-convertible scale)	quantity	\N	\N	core	\N	Indentation hardness on the Vickers scale.	2026-09-28 10:47:27.806388+00
-thermal_conductivity	Thermal conductivity	W/(m*K)	power/(length*temperature)	quantity	\N	\N	core	\N	Rate of heat transfer through a unit thickness per unit temperature gradient.	2026-09-28 10:47:27.806388+00
-specific_heat_capacity	Specific heat capacity	J/(kg*K)	energy/(mass*temperature)	quantity	\N	\N	core	\N	Heat required to raise unit mass by one kelvin.	2026-09-28 10:47:27.806388+00
-thermal_expansion_coeff	Coefficient of thermal expansion	1/K	1/temperature	quantity	\N	\N	core	\N	Fractional length change per kelvin (linear CTE).	2026-09-28 10:47:27.806388+00
-melting_point	Melting point	K	temperature	quantity	\N	\N	core	\N	Solid-to-liquid transition temperature. Absolute scale (Kelvin).	2026-09-28 10:47:27.806388+00
-max_service_temperature	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature before properties degrade. Absolute scale.	2026-09-28 10:47:27.806388+00
-electrical_resistivity	Electrical resistivity	ohm*m	resistance*length	quantity	\N	\N	core	\N	Bulk resistivity to electrical current.	2026-09-28 10:47:27.806388+00
-dielectric_strength	Dielectric strength	MV/m	voltage/length	quantity	\N	\N	core	\N	Maximum electric field before insulation breakdown.	2026-09-28 10:47:27.806388+00
-relative_permittivity	Relative permittivity	\N	dimensionless	ratio	\N	\N	core	\N	Permittivity relative to vacuum (dielectric constant).	2026-09-28 10:47:27.806388+00
-cost_per_mass	Cost per unit mass	USD/kg	currency/mass	quantity	\N	\N	core	\N	Market cost per unit mass; pair with as_of (load-bearing for cost).	2026-09-28 10:47:27.806388+00
-crystal_structure	Crystal structure	\N	categorical	categorical	["FCC", "BCC", "HCP"]	\N	proposed	\N	Crystallographic lattice type.	2026-09-28 10:47:27.806388+00
-is_magnetic	Is magnetic	\N	categorical	boolean	\N	\N	proposed	\N	Whether the material is ferro/ferrimagnetic at room temperature.	2026-09-28 10:47:27.806388+00
+density	Density	kg/m3	mass/volume	quantity	\N	\N	core	\N	Mass per unit volume.	2026-10-05 07:16:44.269027+00
+tensile_strength_yield	Tensile yield strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Stress at the onset of plastic deformation (0.2% offset).	2026-10-05 07:16:44.269027+00
+tensile_strength_ultimate	Ultimate tensile strength	MPa	pressure/stress	quantity	\N	\N	core	\N	Maximum engineering stress before necking/fracture.	2026-10-05 07:16:44.269027+00
+youngs_modulus	Young's modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic (tensile/compressive) stiffness.	2026-10-05 07:16:44.269027+00
+shear_modulus	Shear modulus	GPa	pressure/stress	quantity	\N	\N	core	\N	Elastic shear stiffness.	2026-10-05 07:16:44.269027+00
+poissons_ratio	Poisson's ratio	\N	dimensionless	ratio	\N	\N	core	\N	Negative ratio of transverse to axial strain.	2026-10-05 07:16:44.269027+00
+elongation_at_break	Elongation at break	%	dimensionless	ratio	\N	\N	core	\N	Engineering strain at fracture in a tensile test.	2026-10-05 07:16:44.269027+00
+hardness_vickers	Vickers hardness	HV	hardness (non-convertible scale)	quantity	\N	\N	core	\N	Indentation hardness on the Vickers scale.	2026-10-05 07:16:44.269027+00
+thermal_conductivity	Thermal conductivity	W/(m*K)	power/(length*temperature)	quantity	\N	\N	core	\N	Rate of heat transfer through a unit thickness per unit temperature gradient.	2026-10-05 07:16:44.269027+00
+specific_heat_capacity	Specific heat capacity	J/(kg*K)	energy/(mass*temperature)	quantity	\N	\N	core	\N	Heat required to raise unit mass by one kelvin.	2026-10-05 07:16:44.269027+00
+thermal_expansion_coeff	Coefficient of thermal expansion	1/K	1/temperature	quantity	\N	\N	core	\N	Fractional length change per kelvin (linear CTE).	2026-10-05 07:16:44.269027+00
+melting_point	Melting point	K	temperature	quantity	\N	\N	core	\N	Solid-to-liquid transition temperature. Absolute scale (Kelvin).	2026-10-05 07:16:44.269027+00
+max_service_temperature	Maximum service temperature	K	temperature	quantity	\N	\N	core	\N	Upper continuous-use temperature before properties degrade. Absolute scale.	2026-10-05 07:16:44.269027+00
+electrical_resistivity	Electrical resistivity	ohm*m	resistance*length	quantity	\N	\N	core	\N	Bulk resistivity to electrical current.	2026-10-05 07:16:44.269027+00
+dielectric_strength	Dielectric strength	MV/m	voltage/length	quantity	\N	\N	core	\N	Maximum electric field before insulation breakdown.	2026-10-05 07:16:44.269027+00
+relative_permittivity	Relative permittivity	\N	dimensionless	ratio	\N	\N	core	\N	Permittivity relative to vacuum (dielectric constant).	2026-10-05 07:16:44.269027+00
+cost_per_mass	Cost per unit mass	USD/kg	currency/mass	quantity	\N	\N	core	\N	Market cost per unit mass; pair with as_of (load-bearing for cost).	2026-10-05 07:16:44.269027+00
+crystal_structure	Crystal structure	\N	categorical	categorical	["FCC", "BCC", "HCP"]	\N	proposed	\N	Crystallographic lattice type.	2026-10-05 07:16:44.269027+00
+is_magnetic	Is magnetic	\N	categorical	boolean	\N	\N	proposed	\N	Whether the material is ferro/ferrimagnetic at room temperature.	2026-10-05 07:16:44.269027+00
+\.
+
+
+--
+-- Data for Name: measure_unit_compat; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+COPY public.measure_unit_compat (legacy_table, legacy_key, legacy_unit, si_unit, factor, si_offset) FROM stdin;
+component_specs	across_flats	mm	m	0.001	0
+component_specs	bore_diameter	mm	m	0.001	0
+component_specs	bore_diameter_bearing	mm	m	0.001	0
+component_specs	drive_size	mm	m	0.001	0
+component_specs	head_diameter	mm	m	0.001	0
+component_specs	head_height	mm	m	0.001	0
+component_specs	height	mm	m	0.001	0
+component_specs	inner_diameter	mm	m	0.001	0
+component_specs	length	mm	m	0.001	0
+component_specs	min_bend_radius	mm	m	0.001	0
+component_specs	outer_diameter	mm	m	0.001	0
+component_specs	thickness	mm	m	0.001	0
+component_specs	thread_pitch	mm	m	0.001	0
+component_specs	wall_thickness	mm	m	0.001	0
+component_specs	width	mm	m	0.001	0
+component_specs	max_working_pressure	MPa	Pa	1000000	0
+component_specs	head_angle	deg	rad	0.01745329251994329577	0
+material_properties	persistence_length	nm	m	0.000000001	0
+material_properties	unit_length	nm	m	0.000000001	0
+material_properties	delta_length	Å	m	0.0000000001	0
+material_properties	tensile_strength_ultimate	MPa	Pa	1000000	0
+material_properties	tensile_strength_yield	MPa	Pa	1000000	0
+material_properties	shear_modulus	GPa	Pa	1000000000	0
+material_properties	youngs_modulus	GPa	Pa	1000000000	0
+material_properties	dielectric_strength	MV/m	V/m	1000000	0
+material_properties	elongation_at_break	%	1	0.01	0
+rxn_properties	atom_economy	%	1	0.01	0
+rxn_properties	ee	%	1	0.01	0
+rxn_properties	yield	%	1	0.01	0
+rxn_properties	catalyst_loading	mol%	1	0.01	0
 \.
 
 
@@ -8557,11 +10459,11 @@ is_magnetic	Is magnetic	\N	categorical	boolean	\N	\N	proposed	\N	Whether the mat
 --
 
 COPY public.news_sources (source_id, url, title, source_slug, category, default_tags, max_items, enabled, etag, last_modified, last_polled_at, last_status, consecutive_errors, created_at) FROM stdin;
-1	https://feeds.bbci.co.uk/news/world/rss.xml	BBC News — World	bbc	world	{}	50	t	\N	\N	\N	\N	0	2026-09-28 10:47:27.740157+00
-2	https://feeds.npr.org/1001/rss.xml	NPR — News	npr	world	{}	50	t	\N	\N	\N	\N	0	2026-09-28 10:47:27.740157+00
-3	https://www.theguardian.com/world/rss	The Guardian — World	guardian	world	{}	50	t	\N	\N	\N	\N	0	2026-09-28 10:47:27.740157+00
-4	https://feeds.arstechnica.com/arstechnica/index	Ars Technica	arstechnica	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-09-28 10:47:27.740157+00
-5	https://hnrss.org/frontpage	Hacker News — Front Page	hn	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-09-28 10:47:27.740157+00
+1	https://feeds.bbci.co.uk/news/world/rss.xml	BBC News — World	bbc	world	{}	50	t	\N	\N	\N	\N	0	2026-10-05 07:16:44.204894+00
+2	https://feeds.npr.org/1001/rss.xml	NPR — News	npr	world	{}	50	t	\N	\N	\N	\N	0	2026-10-05 07:16:44.204894+00
+3	https://www.theguardian.com/world/rss	The Guardian — World	guardian	world	{}	50	t	\N	\N	\N	\N	0	2026-10-05 07:16:44.204894+00
+4	https://feeds.arstechnica.com/arstechnica/index	Ars Technica	arstechnica	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-05 07:16:44.204894+00
+5	https://hnrss.org/frontpage	Hacker News — Front Page	hn	tech	{topic:tech}	50	t	\N	\N	\N	\N	0	2026-10-05 07:16:44.204894+00
 \.
 
 
@@ -8584,12 +10486,12 @@ local	Local computation / no external source	\N	2026-05-21 20:06:05.179981+00
 retraction_watch	Retraction Watch dataset (CC-BY via Crossref)	\N	2026-05-30 16:07:11.520836+00
 web	Direct web fetch / trafilatura extraction	\N	2026-05-31 18:20:12.906601+00
 epo_ops	European Patent Office Open Patent Services REST API	\N	2026-06-04 20:02:44.133862+00
-wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-09-28 10:47:27.732074+00
-news	RSS / Atom news feeds (news_sources registry)	\N	2026-09-28 10:47:27.740157+00
-orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-09-28 10:47:27.746627+00
-sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-09-28 10:47:27.769732+00
-sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-09-28 10:47:27.769732+00
-markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-09-28 10:47:27.783258+00
+wikipedia	Wikipedia / MediaWiki API (search + plain-text extracts)	\N	2026-10-05 07:16:44.196661+00
+news	RSS / Atom news feeds (news_sources registry)	\N	2026-10-05 07:16:44.204894+00
+orcid	ORCID Public API (https://pub.orcid.org/v3.0/) — author identity + works	\N	2026-10-05 07:16:44.211316+00
+sec_edgar	US SEC EDGAR — company filings (submissions + archive APIs)	\N	2026-10-05 07:16:44.234457+00
+sec_edgar_search	US SEC EDGAR — full-text search (efts.sec.gov)	\N	2026-10-05 07:16:44.234457+00
+markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N	2026-10-05 07:16:44.248622+00
 \.
 
 
@@ -8597,96 +10499,100 @@ markup	Structured full-text ingest (JATS / Elsevier XML / arXiv HTML / LaTeX)	\N
 -- Data for Name: relations; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.relations (slug, is_symmetric, inverse_slug, description, deprecated_at, created_at) FROM stdin;
-related-to	t	\N	Symmetric association	\N	2026-05-21 20:06:05.179981+00
-blocks	f	blocked-by	Source blocks target	\N	2026-05-21 20:06:05.179981+00
-blocked-by	f	blocks	Source is blocked by target	\N	2026-05-21 20:06:05.179981+00
-contradicts	f	contradicted-by	Source contradicts target	\N	2026-05-21 20:06:05.179981+00
-contradicted-by	f	contradicts	Source is contradicted by target	\N	2026-05-21 20:06:05.179981+00
-cites	f	cited-by	Source cites target	\N	2026-05-21 20:06:05.179981+00
-cited-by	f	cites	Source is cited by target	\N	2026-05-21 20:06:05.179981+00
-supersedes	f	superseded-by	Source supersedes target	\N	2026-05-21 20:06:05.179981+00
-superseded-by	f	supersedes	Source is superseded by target	\N	2026-05-21 20:06:05.179981+00
-retracted-by	f	retracts	Source is retracted by target (retraction notice)	\N	2026-05-30 16:07:11.520836+00
-retracts	f	retracted-by	Source retracts target	\N	2026-05-30 16:07:11.520836+00
-corrected-by	f	corrects	Source is corrected by target (corrigendum/erratum/addendum)	\N	2026-05-30 16:07:11.520836+00
-corrects	f	corrected-by	Source corrects target	\N	2026-05-30 16:07:11.520836+00
-concern-raised-by	f	raises-concern-about	Source has an Expression of Concern attached	\N	2026-05-30 16:07:11.520836+00
-raises-concern-about	f	concern-raised-by	Source raises concern about target	\N	2026-05-30 16:07:11.520836+00
-misattributes	f	misattributed-by	Source chunk misrepresents what the target chunk actually says	\N	2026-05-30 21:33:14.261241+00
-misattributed-by	f	misattributes	Source chunk is misrepresented by the linked source chunk	\N	2026-05-30 21:33:14.261241+00
-derived-from	f	derived-into	Source is derived from target (cause/origin)	\N	2026-05-31 18:20:12.906601+00
-derived-into	f	derived-from	Source is the origin from which target derives	\N	2026-05-31 18:20:12.906601+00
-supports	f	supported-by	Source provides evidence for target	\N	2026-05-31 18:20:12.906601+00
-supported-by	f	supports	Source is supported by target	\N	2026-05-31 18:20:12.906601+00
-generalises	f	specialises	Source is a generalisation of target	\N	2026-05-31 18:20:12.906601+00
-specialises	f	generalises	Source is a specialisation of target	\N	2026-05-31 18:20:12.906601+00
-see-also	f	\N	One-way "for context" pointer (no inverse)	\N	2026-05-31 18:20:12.906601+00
-fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-09-28 10:47:27.711307+00
-fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-09-28 10:47:27.711307+00
-draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-09-28 10:47:27.739588+00
-has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-09-28 10:47:27.739588+00
-snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-09-28 10:47:27.739588+00
-has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-09-28 10:47:27.739588+00
-touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-09-28 10:47:27.741506+00
-plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-09-28 10:47:27.744744+00
-plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-09-28 10:47:27.744744+00
-authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-09-28 10:47:27.746027+00
-authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-09-28 10:47:27.746027+00
-has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-09-28 10:47:27.747262+00
-requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-09-28 10:47:27.747262+00
-requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-09-28 10:47:27.756878+00
-requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-09-28 10:47:27.756878+00
-datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-09-28 10:47:27.770414+00
-has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-09-28 10:47:27.770414+00
-plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-09-28 10:47:27.771806+00
-has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-09-28 10:47:27.771806+00
-figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-09-28 10:47:27.772459+00
-has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-09-28 10:47:27.772459+00
-has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-09-28 10:47:27.779326+00
-prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-09-28 10:47:27.779326+00
-analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-09-28 10:47:27.779326+00
-contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-09-28 10:47:27.779326+00
-represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-09-28 10:47:27.779326+00
-represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-09-28 10:47:27.779326+00
-depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-09-28 10:47:27.779937+00
-depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-09-28 10:47:27.779937+00
-serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-09-28 10:47:27.780593+00
-served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-09-28 10:47:27.780593+00
-mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-09-28 10:47:27.78122+00
-has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-09-28 10:47:27.78122+00
-dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-09-28 10:47:27.781893+00
-has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-09-28 10:47:27.781893+00
-entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-09-28 10:47:27.800767+00
-entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-09-28 10:47:27.800767+00
-qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-09-28 10:47:27.800767+00
-qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-09-28 10:47:27.800767+00
-cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-09-28 10:47:27.803029+00
-corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-09-28 10:47:27.803029+00
-superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-09-28 10:47:27.803029+00
-off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-09-28 10:47:27.803029+00
-copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-09-28 10:47:27.804583+00
-has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-09-28 10:47:27.804583+00
-paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-09-28 10:47:27.804843+00
-has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-09-28 10:47:27.804843+00
-made-of	f	used-in	Source component is made of target material.	\N	2026-09-28 10:47:27.80923+00
-used-in	f	made-of	Source material is used in target component.	\N	2026-09-28 10:47:27.80923+00
-establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-09-28 10:47:27.812844+00
-contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-09-28 10:47:27.813685+00
-part-of	f	contains	Source component is structurally part of target component.	\N	2026-09-28 10:47:27.813685+00
-refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-09-28 10:47:27.818359+00
-awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-09-28 10:47:27.824299+00
-same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-09-28 10:47:27.835764+00
-conjunct-of	f	\N	Source claim hub is one atomic conjunct of the target compound claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-09-28 10:47:27.845741+00
-motivated-by	f	\N	Source hypothesis claim hub was provoked by the target artifact (paper, patent, or claim hub) — taproot advisory link; motivation, NOT evidence, and no evidence flows along it.	\N	2026-09-28 10:47:27.86094+00
-tests	f	\N	Source measurement artifact (computed pathway) executed the target hypothesis finding's pre-registered discriminating experiment — quest dialectic measurement-ruling edge; NOT evidence, and no evidence flows along it (sim rulings settle internal hypotheses only).	\N	2026-09-28 10:47:27.875628+00
-disputes	f	\N	Source artifact appears to conflict with the target — a non-blocking open question, free to file, resolved only by adjudication (which alone may derive a blocking `contradicts`).	\N	2026-09-28 10:47:27.886524+00
-analyzed-by	f	analysis-of	Source design/block is analyzed by the target result (finding/estimate with fidelity + validity scope); links.meta {sha, at} pins the analyzed design version.	\N	2026-09-28 10:47:27.888522+00
-analysis-of	f	analyzed-by	Source analysis result describes the target design/block.	\N	2026-09-28 10:47:27.888522+00
-made-by	f	makes	Source design/block is produced by the target make-tree (ref-level) or make-step (chunk-scoped); many-to-many — make-order need not align with design structure.	\N	2026-09-28 10:47:27.889127+00
-makes	f	made-by	Source make-tree/step produces the target design/block.	\N	2026-09-28 10:47:27.889127+00
-realized-by	f	realizes	Source ref is made real by the target (e.g. a cad design's catalog part -> the procurable component that realizes it)	\N	2026-09-28 10:47:27.890632+00
-realizes	f	realized-by	Source ref makes the target real (e.g. a procurable component -> the design that calls for it)	\N	2026-09-28 10:47:27.890632+00
+COPY public.relations (slug, is_symmetric, inverse_slug, description, deprecated_at, created_at, domain_kinds, range_kinds, functional, transitive, acyclic) FROM stdin;
+related-to	t	\N	Symmetric association	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+blocks	f	blocked-by	Source blocks target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+blocked-by	f	blocks	Source is blocked by target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+contradicted-by	f	contradicts	Source is contradicted by target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+cites	f	cited-by	Source cites target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+cited-by	f	cites	Source is cited by target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+supersedes	f	superseded-by	Source supersedes target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+superseded-by	f	supersedes	Source is superseded by target	\N	2026-05-21 20:06:05.179981+00	\N	\N	f	f	f
+retracted-by	f	retracts	Source is retracted by target (retraction notice)	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+retracts	f	retracted-by	Source retracts target	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+corrected-by	f	corrects	Source is corrected by target (corrigendum/erratum/addendum)	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+corrects	f	corrected-by	Source corrects target	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+concern-raised-by	f	raises-concern-about	Source has an Expression of Concern attached	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+raises-concern-about	f	concern-raised-by	Source raises concern about target	\N	2026-05-30 16:07:11.520836+00	\N	\N	f	f	f
+misattributes	f	misattributed-by	Source chunk misrepresents what the target chunk actually says	\N	2026-05-30 21:33:14.261241+00	\N	\N	f	f	f
+misattributed-by	f	misattributes	Source chunk is misrepresented by the linked source chunk	\N	2026-05-30 21:33:14.261241+00	\N	\N	f	f	f
+derived-from	f	derived-into	Source is derived from target (cause/origin)	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+derived-into	f	derived-from	Source is the origin from which target derives	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+supports	f	supported-by	Source provides evidence for target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+supported-by	f	supports	Source is supported by target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+generalises	f	specialises	Source is a generalisation of target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+see-also	f	\N	One-way "for context" pointer (no inverse)	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	f	f
+fixes	f	fixed-by	Source ref offers a fix for the target ref (e.g. a fix_gripe job → its gripe)	\N	2026-10-05 07:16:44.175577+00	\N	\N	f	f	f
+fixed-by	f	fixes	Source ref is being fixed by the target ref	\N	2026-10-05 07:16:44.175577+00	\N	\N	f	f	f
+has-draft	f	draft-of	Source project (todo) has target draft as its working document.	\N	2026-10-05 07:16:44.204246+00	\N	\N	f	f	f
+snapshot-of	f	has-snapshot	Source frozen ref is a point-in-time snapshot of target draft.	\N	2026-10-05 07:16:44.204246+00	\N	\N	f	f	f
+has-snapshot	f	snapshot-of	Source draft has target frozen ref as a snapshot.	\N	2026-10-05 07:16:44.204246+00	\N	\N	f	f	f
+touched	t	\N	Source agent run wrote or moved target chunk (run-attribution). Symmetric for graph purposes — surfaced from either end.	\N	2026-10-05 07:16:44.206224+00	\N	\N	f	f	f
+plots	f	plotted-by	Source figure chunk renders the target data chunk — the figure plots that data. The one reactive edge: editing the data marks the figure stale (ADR 0035).	\N	2026-10-05 07:16:44.209443+00	\N	\N	f	f	f
+plotted-by	f	plots	Source data chunk is rendered by the target figure chunk (inverse of plots).	\N	2026-10-05 07:16:44.209443+00	\N	\N	f	f	f
+authored	f	authored-by	Source author node (kind=orcid) authored the target paper. Ref-level edge; meta carries best-effort author_position / n_authors when known (ADR 0039).	\N	2026-10-05 07:16:44.210689+00	\N	\N	f	f	f
+authored-by	f	authored	Source paper was authored by the target author node (inverse of authored).	\N	2026-10-05 07:16:44.210689+00	\N	\N	f	f	f
+has-requirement	f	requirement-of	Source project (todo) must satisfy target call-for-proposal (cfp).	\N	2026-10-05 07:16:44.212017+00	\N	\N	f	f	f
+requirement-of	f	has-requirement	Source call-for-proposal (cfp) is a requirement of target project.	\N	2026-10-05 07:16:44.212017+00	\N	\N	f	f	f
+requested	f	requested-by	Source todo requested target derived job and waits on it.	\N	2026-10-05 07:16:44.221778+00	\N	\N	f	f	f
+requested-by	f	requested	Source derived job was requested by target todo.	\N	2026-10-05 07:16:44.221778+00	\N	\N	f	f	f
+datasheet-of	f	has-datasheet	Source datasheet documents target part (evidence for its specs).	\N	2026-10-05 07:16:44.235123+00	\N	\N	f	f	f
+has-datasheet	f	datasheet-of	Source part is documented by target datasheet.	\N	2026-10-05 07:16:44.235123+00	\N	\N	f	f	f
+has-plan	f	plan-of	Source project (todo) has target plan as its reasoning outline.	\N	2026-10-05 07:16:44.2365+00	\N	\N	f	f	f
+figure-of	f	has-figure	Source figure belongs to target project (todo). Many-per-project.	\N	2026-10-05 07:16:44.237187+00	\N	\N	f	f	f
+has-figure	f	figure-of	Source project (todo) has target figure. Many-per-project.	\N	2026-10-05 07:16:44.237187+00	\N	\N	f	f	f
+prerequisite-of	f	has-prerequisite	Source concept is a prerequisite of (must be learned before) target.	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	f	f
+analogy-of	t	\N	Source and target concepts are analogous — teach one via the other.	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	f	f
+contrasts-with	t	\N	Source and target concepts are confusably similar but distinct.	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	f	f
+represents	f	represented-by	Source concept is rendered by target card (an anki/other representation).	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	f	f
+represented-by	f	represents	Source card renders (is a representation of) target concept.	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	f	f
+depicts	f	depicted-in	A diagram (figure/mermaid) source chunk depicts the target chunk/ref it illustrates; the depicting element id(s) live in links.meta.elements. Diagram→corpus binding (ADR 0057), the element-granular cousin of plots.	\N	2026-10-05 07:16:44.244934+00	\N	\N	f	f	f
+depicted-in	f	depicts	Source chunk/ref is depicted by the target diagram (inverse of depicts, ADR 0057).	\N	2026-10-05 07:16:44.244934+00	\N	\N	f	f	f
+served-by	f	serves	Source quest is served by the target work/knowledge node.	\N	2026-10-05 07:16:44.245616+00	\N	\N	f	f	f
+mermaid-of	f	has-mermaid	Source mermaid diagram belongs to target project (todo). Many-per-project.	\N	2026-10-05 07:16:44.246425+00	\N	\N	f	f	f
+has-mermaid	f	mermaid-of	Source project (todo) has target mermaid diagram. Many-per-project.	\N	2026-10-05 07:16:44.246425+00	\N	\N	f	f	f
+has-dossier	f	dossier-of	Source quest has the target draft as its research dossier.	\N	2026-10-05 07:16:44.247149+00	\N	\N	f	f	f
+entails	f	entailed-by	Source inference node logically yields the target conclusion lemma (asserted, not proven).	\N	2026-10-05 07:16:44.259112+00	\N	\N	f	f	f
+entailed-by	f	entails	Source lemma is the asserted conclusion of the target inference node.	\N	2026-10-05 07:16:44.259112+00	\N	\N	f	f	f
+qualifies	f	qualified-by	Source caveat node limits/bounds the target claim (finding or lemma).	\N	2026-10-05 07:16:44.259112+00	\N	\N	f	f	f
+qualified-by	f	qualifies	Source claim is limited/bounded by the target caveat node.	\N	2026-10-05 07:16:44.259112+00	\N	\N	f	f	f
+cited-in	f	\N	Paper is woven into and cited by the document; a citation exists. src=paper, dst=dossier draft (optionally its section chunk).	\N	2026-10-05 07:16:44.263362+00	\N	\N	f	f	f
+superseded-in	f	\N	Paper is subsumed by a later or review paper already integrated; recorded, not separately woven.	\N	2026-10-05 07:16:44.263362+00	\N	\N	f	f	f
+off-topic-for	f	\N	Paper was considered for the document and rejected as out of scope.	\N	2026-10-05 07:16:44.263362+00	\N	\N	f	f	f
+copy-of	f	has-copy	Source draft is a fork/deep-copy of target draft (chunks + links copied).	\N	2026-10-05 07:16:44.266115+00	\N	\N	f	f	f
+has-copy	f	copy-of	Source draft has target draft as a fork/deep-copy of itself.	\N	2026-10-05 07:16:44.266115+00	\N	\N	f	f	f
+paper-of	f	has-paper	Source draft is the reader-facing paper projection of the target quest/process's dossier — a separate draft from the dossier itself.	\N	2026-10-05 07:16:44.266796+00	\N	\N	f	f	f
+has-paper	f	paper-of	Source quest/process has the target draft as its reader-facing paper.	\N	2026-10-05 07:16:44.266796+00	\N	\N	f	f	f
+made-of	f	used-in	Source component is made of target material.	\N	2026-10-05 07:16:44.271449+00	\N	\N	f	f	f
+used-in	f	made-of	Source material is used in target component.	\N	2026-10-05 07:16:44.271449+00	\N	\N	f	f	f
+part-of	f	contains	Source component is structurally part of target component.	\N	2026-10-05 07:16:44.275202+00	\N	\N	f	f	f
+refines	f	\N	Source claim hub is a sharper/reworded version of the target claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-05 07:16:44.27948+00	\N	\N	f	f	f
+awaits-evidence	f	\N	An acquisition-mode finding (STATUS:acquiring) awaits corpus evidence from the linked DREAM:acquire paper stub.	\N	2026-10-05 07:16:44.284028+00	\N	\N	f	f	f
+same-family-as	t	\N	Both patent refs are members of the same EPO OPS DOCDB patent family; source is typically a stub ingest, target the family's current publication-date representative.	\N	2026-10-05 07:16:44.29459+00	\N	\N	f	f	f
+conjunct-of	f	\N	Source claim hub is one atomic conjunct of the target compound claim hub (taproot claim→claim advisory link; link-don't-merge, no evidence flow).	\N	2026-10-05 07:16:44.304289+00	\N	\N	f	f	f
+motivated-by	f	\N	Source hypothesis claim hub was provoked by the target artifact (paper, patent, or claim hub) — taproot advisory link; motivation, NOT evidence, and no evidence flows along it.	\N	2026-10-05 07:16:44.319636+00	\N	\N	f	f	f
+tests	f	\N	Source measurement artifact (computed pathway) executed the target hypothesis finding's pre-registered discriminating experiment — quest dialectic measurement-ruling edge; NOT evidence, and no evidence flows along it (sim rulings settle internal hypotheses only).	\N	2026-10-05 07:16:44.334302+00	\N	\N	f	f	f
+disputes	f	\N	Source artifact appears to conflict with the target — a non-blocking open question, free to file, resolved only by adjudication (which alone may derive a blocking `contradicts`).	\N	2026-10-05 07:16:44.345909+00	\N	\N	f	f	f
+analyzed-by	f	analysis-of	Source design/block is analyzed by the target result (finding/estimate with fidelity + validity scope); links.meta {sha, at} pins the analyzed design version.	\N	2026-10-05 07:16:44.348015+00	\N	\N	f	f	f
+analysis-of	f	analyzed-by	Source analysis result describes the target design/block.	\N	2026-10-05 07:16:44.348015+00	\N	\N	f	f	f
+made-by	f	makes	Source design/block is produced by the target make-tree (ref-level) or make-step (chunk-scoped); many-to-many — make-order need not align with design structure.	\N	2026-10-05 07:16:44.34871+00	\N	\N	f	f	f
+makes	f	made-by	Source make-tree/step produces the target design/block.	\N	2026-10-05 07:16:44.34871+00	\N	\N	f	f	f
+realized-by	f	realizes	Source ref is made real by the target (e.g. a cad design's catalog part -> the procurable component that realizes it)	\N	2026-10-05 07:16:44.350074+00	\N	\N	f	f	f
+realizes	f	realized-by	Source ref makes the target real (e.g. a procurable component -> the design that calls for it)	\N	2026-10-05 07:16:44.350074+00	\N	\N	f	f	f
+instance-of	f	has-instance	Source ref is a member of the target taxon (e.g. a material, a measured value -> the term it instantiates).	\N	2026-10-05 07:16:44.38315+00	\N	\N	f	f	f
+has-instance	f	instance-of	Source taxon has the target ref as a member.	\N	2026-10-05 07:16:44.38315+00	\N	\N	f	f	f
+contradicts	f	contradicted-by	Source contradicts target. Claim-graph contradicts is adjudication-derived and cannot be filed manually — file rel='disputes' instead (free, non-blocking). Only memory-to-memory contradicts is fileable.	\N	2026-05-21 20:06:05.179981+00	{memory}	{memory}	f	f	f
+draft-of	f	has-draft	Source draft is the working document of target project (todo).	\N	2026-10-05 07:16:44.204246+00	\N	\N	t	f	f
+plan-of	f	has-plan	Source plan is the reasoning outline of target project (todo).	\N	2026-10-05 07:16:44.2365+00	\N	\N	t	f	f
+dossier-of	f	has-dossier	Source draft is the research dossier of the target quest — the living synthesis rewritten each cycle, and the loop's rolling context.	\N	2026-10-05 07:16:44.247149+00	\N	\N	t	f	f
+establishes	f	\N	Source paper first showed / originated the target claim (taproot evidence edge; originator).	\N	2026-10-05 07:16:44.274517+00	{datasheet,edgar,paper,patent,pathway}	{finding}	f	f	f
+corroborates	f	\N	Paper supports an existing point in the document, grouped with it.	\N	2026-10-05 07:16:44.263362+00	{datasheet,edgar,paper,patent,pathway}	{draft,finding}	f	f	f
+specialises	f	generalises	Source is a specialisation of target	\N	2026-05-31 18:20:12.906601+00	\N	\N	f	t	t
+has-prerequisite	f	prerequisite-of	Source concept requires target concept first (the learning DAG).	\N	2026-10-05 07:16:44.244247+00	\N	\N	f	t	t
+serves	f	served-by	Source (project/todo/concept/paper/job/draft/structure/sub-quest) is in the service of the target quest — the striving DAG above the todo tree.	\N	2026-10-05 07:16:44.245616+00	\N	\N	f	t	t
+contains	f	part-of	Source component structurally contains target component (BOM edge).	\N	2026-10-05 07:16:44.275202+00	\N	\N	f	t	t
+quantifies	f	quantified-by	Source paper (chunk-scoped) states a number for the target measurand taxon. One shared edge per (chunk, measurand); each measure keeps its own anchor_scheme + span on its row, and measures.primary_link_id points at the edge.	\N	2026-10-05 07:16:44.405891+00	\N	\N	f	f	f
+quantified-by	f	quantifies	Source measurand taxon is quantified by the target paper chunk.	\N	2026-10-05 07:16:44.405891+00	\N	\N	f	f	f
 \.
 
 
@@ -8695,16 +10601,16 @@ realizes	f	realized-by	Source ref makes the target real (e.g. a procurable compo
 --
 
 COPY public.rxn_properties (prop_id, name, canonical_unit, dimension, value_type, allowed_values, standard_ref, status, higher_is_better, description, created_at) FROM stdin;
-yield	Yield	%	dimensionless	ratio	\N	\N	core	t	Fraction of theoretical product obtained. Isolated vs assay/NMR yield is a conditions key, not a separate property.	2026-09-28 10:47:27.891212+00
-temperature	Temperature	K	temperature	quantity	\N	\N	core	\N	Reaction temperature. Absolute scale (Kelvin).	2026-09-28 10:47:27.891212+00
-time	Reaction time	s	time	quantity	\N	\N	core	f	Elapsed reaction time.	2026-09-28 10:47:27.891212+00
-pressure	Pressure	Pa	pressure	quantity	\N	\N	core	\N	Reaction pressure.	2026-09-28 10:47:27.891212+00
-catalyst_loading	Catalyst loading	mol%	dimensionless	ratio	\N	\N	core	f	Catalyst charge relative to limiting reagent.	2026-09-28 10:47:27.891212+00
-scale	Scale	mol	amount	quantity	\N	\N	core	\N	Amount of limiting reagent. A yield at 1 mmol and at 1 mol are different claims.	2026-09-28 10:47:27.891212+00
-ee	Enantiomeric excess	%	dimensionless	ratio	\N	\N	core	t	Enantiomeric excess of the product.	2026-09-28 10:47:27.891212+00
-atom_economy	Atom economy	%	dimensionless	ratio	\N	\N	core	t	Mass of desired product over summed mass of reactants. Computable from stoichiometry alone.	2026-09-28 10:47:27.891212+00
-solvent	Solvent	\N	dimensionless	text	\N	\N	core	\N	Reaction solvent. Text in v1; a solvent entity is a later refinement.	2026-09-28 10:47:27.891212+00
-price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase price of a buyable compound. A price is a property of (compound, vendor, pack size, date) — vendor and pack size belong in conditions, the date in as_of, and the source licence in source_licence.	2026-09-28 10:47:27.891212+00
+yield	Yield	%	dimensionless	ratio	\N	\N	core	t	Fraction of theoretical product obtained. Isolated vs assay/NMR yield is a conditions key, not a separate property.	2026-10-05 07:16:44.35071+00
+temperature	Temperature	K	temperature	quantity	\N	\N	core	\N	Reaction temperature. Absolute scale (Kelvin).	2026-10-05 07:16:44.35071+00
+time	Reaction time	s	time	quantity	\N	\N	core	f	Elapsed reaction time.	2026-10-05 07:16:44.35071+00
+pressure	Pressure	Pa	pressure	quantity	\N	\N	core	\N	Reaction pressure.	2026-10-05 07:16:44.35071+00
+catalyst_loading	Catalyst loading	mol%	dimensionless	ratio	\N	\N	core	f	Catalyst charge relative to limiting reagent.	2026-10-05 07:16:44.35071+00
+scale	Scale	mol	amount	quantity	\N	\N	core	\N	Amount of limiting reagent. A yield at 1 mmol and at 1 mol are different claims.	2026-10-05 07:16:44.35071+00
+ee	Enantiomeric excess	%	dimensionless	ratio	\N	\N	core	t	Enantiomeric excess of the product.	2026-10-05 07:16:44.35071+00
+atom_economy	Atom economy	%	dimensionless	ratio	\N	\N	core	t	Mass of desired product over summed mass of reactants. Computable from stoichiometry alone.	2026-10-05 07:16:44.35071+00
+solvent	Solvent	\N	dimensionless	text	\N	\N	core	\N	Reaction solvent. Text in v1; a solvent entity is a later refinement.	2026-10-05 07:16:44.35071+00
+price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase price of a buyable compound. A price is a property of (compound, vendor, pack size, date) — vendor and pack size belong in conditions, the date in as_of, and the source licence in source_licence.	2026-10-05 07:16:44.35071+00
 \.
 
 
@@ -8714,7 +10620,7 @@ price_per_gram	Price per gram	USD/g	currency/mass	quantity	\N	\N	core	f	Purchase
 
 COPY public.summarizers (name, prompt_template, config, is_default, description, deprecated_at, created_at) FROM stdin;
 rake-lemma	\N	{"model": "en_core_sci_sm", "lemmatizer": "scispacy", "max_keywords": 50, "max_phrase_words": 4, "min_phrase_words": 1}	t	RAKE phrase extraction + scispacy lemmatisation	\N	2026-05-21 20:06:05.179981+00
-llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-09-28 10:47:27.731508+00
+llm-v1	\N	{"alias": "summarizer", "model": "qwen3-next-80b-a3b", "format": "brief;detail", "version": "1", "endpoint": "local"}	f	LLM brief+detail chunk summary (Qwen3-Next-80B-A3B via the litellm `summarizer` alias)	\N	2026-10-05 07:16:44.19603+00
 \.
 
 
@@ -8907,4 +10813,18 @@ COPY public._migrations (version, applied_at, checksum, plugin) FROM stdin;
 0168_paper_authors	1970-01-01 00:00:00+00	45dfadd97cb115bfd40a8a3c07b02193c5d37748baf744fc32d38696a65ee441	precis
 0169_design_revisions	1970-01-01 00:00:00+00	f6cc119dcc6c6ea6c5dcd74a457674cfa4131c4c7a10a140207028406ec27696	precis
 0170_chunk_kind_field	1970-01-01 00:00:00+00	6be6425673155eba69d327640f714e0c8de7e0bc4641ec8fd9133db0c65dba5c	precis
+0171_pcb_net_electrical_spec	1970-01-01 00:00:00+00	121b92f014c2a791d4510086ad0dab1b8488230785a7313303a7b7152bc5221b	precis
+0172_design_states_occupancy_pose	1970-01-01 00:00:00+00	55efb1d10f35e0ccaff30e49656e36c596b70b50544ae7ccbf00d3ad1c9d8e83	precis
+0173_taxon_kind	1970-01-01 00:00:00+00	dfcc57b821eadc5d835b0fc7c3c8397e5c07887570d6c401b5590957167d43d0	precis
+0174_taxon_seed	1970-01-01 00:00:00+00	756ccd05d4457c4f7a5af4eca6941db9d3a62c7efd69aab9e4c994fe389ceed4	precis
+0175_chase_coverage	1970-01-01 00:00:00+00	4c080cfa683b6fdd60ca4e7a7985274f415bdffc821039436b4ba6d905c84376	precis
+0176_gripe_status_required	1970-01-01 00:00:00+00	f23b04081b0aab34a9fe3a0427cca2c43f41f984c0f203123183e3b5476e75d8	precis
+0179_llm_call_log_placement_routed	1970-01-01 00:00:00+00	2c0cafc29dbb3f4e628d9dd716cb25cb61702cf0dc10a483561cefe54335e0e9	precis
+0180_relation_constraints	1970-01-01 00:00:00+00	a112d544b9c73564cb98ea022e1f200068248c2b6f2822b5bcbcedb357103e78	precis
+0181_nanopub_composite_artifact_type	1970-01-01 00:00:00+00	ba81150e776a2caeaccf4776ac39c538528770dcf34464addfd5fc89d3b97f29	precis
+0182_se_measurand_seed	1970-01-01 00:00:00+00	7a69406c89551ccfbf3c9d9cb72ec4ce160e583b168857f633dbfabf80c5ce4e	precis
+0185_reviews_and_revisions	1970-01-01 00:00:00+00	ac01adf7f672348a939c602401b9f2311bed274ef563e76a5c8a61303122afcd	precis
+0187_measures	1970-01-01 00:00:00+00	09f985f24dd07552bc4b41d4d9b0938b098f0e7e0359f3eebdd5afe208a4e963	precis
+0188_measures_si	1970-01-01 00:00:00+00	f1e223ece582b6a4e49ebe62ff1f08c22e17835be4be8836663798c07f234a19	precis
+0189_secret_hint_counts	1970-01-01 00:00:00+00	f736c84f3266e5f2c896936265113ebb8397cdbb47e97a375e630b444e3175dc	precis
 \.
