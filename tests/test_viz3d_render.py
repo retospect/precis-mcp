@@ -242,14 +242,16 @@ def test_scalebar_pixel_length_matches_the_ortho_scale_exactly() -> None:
     assert f">{2:g} Å<" in svg
 
 
-def test_scalebar_omitted_under_perspective() -> None:
+def test_scalebar_qualified_under_perspective() -> None:
     scene = Scene3(
         primitives=[Ball(center=(0.0, 0.0, 0.0), radius=0.5, color="#404040")],
         unit_label="Å",
     )
     camera = Camera(target=(0.0, 0.0, 0.0), projection="persp")
     svg = render_svg(scene, camera, refine=1)
-    assert 'stroke="#000000" fill="#000000"' not in svg
+    assert "at target depth" in svg
+    svg_off = render_svg(scene, camera, refine=1, style=Style(scalebar=False))
+    assert "at target depth" not in svg_off
 
 
 def test_scalebar_explicit_length_and_false() -> None:

@@ -27,10 +27,13 @@ scene-list position — same inputs always produce a byte-identical string,
 with no reliance on dict/set iteration order or object identity anywhere
 in the pipeline.
 
-**Scalebar.** Ortho only: perspective scale is depth-dependent (a bar drawn
-at one depth doesn't represent the same real length at another), so there
-is no correct single bar to draw — ``style.scalebar`` is silently ignored
-under ``projection="persp"`` rather than drawing a misleading one.
+**Perspective scale.** Screen xy is normalized by distance/f after camera
+projection so px_per_unit means world-unit pixels at target depth; radii
+retain distance/depth scaling. Camera.project remains dimensionless.
+
+**Scalebar.** Ortho scale is uniform. Perspective scale is depth-dependent:
+a universal bar would mislead, so its label explicitly says "at target depth"
+and measures that plane only. ``style.scalebar=False`` disables either bar.
 :func:`pick_scalebar_length` is exposed standalone (pure function of a
 world-unit span) so a caller — or a test — can compute the expected auto
 value directly.
@@ -304,8 +307,12 @@ def _project_one(camera: Camera, style: Style, p: Point3) -> tuple[float, float,
     pixel position (y flipped for SVG's y-down axis, scaled by
     ``style.px_per_unit``) plus its camera-space depth."""
     xy, depth = project(camera, np.asarray([p], dtype=np.float64))
-    sx = float(xy[0, 0]) * style.px_per_unit
-    sy = -float(xy[0, 1]) * style.px_per_unit
+    scale = style.px_per_unit
+    if camera.projection == "persp":
+        f = 1.0 / math.tan(math.radians(camera.fov_deg) / 2.0)
+        scale *= camera.distance / f
+    sx = float(xy[0, 0]) * scale
+    sy = -float(xy[0, 1]) * scale
     return sx, sy, float(depth[0])
 
 
@@ -314,9 +321,8 @@ def _projected_radius(
 ) -> float:
     if camera.projection == "ortho":
         return world_radius * camera.zoom * style.px_per_unit
-    f = 1.0 / math.tan(math.radians(camera.fov_deg) / 2.0)
     d = depth if depth != 0.0 else 1e-9
-    return world_radius * f / d * style.px_per_unit
+    return world_radius * camera.distance / d * style.px_per_unit
 
 
 # --------------------------------------------------------------------- r0 --
@@ -624,13 +630,10 @@ def _scalebar_fragment(
     style: Style,
     viewbox: tuple[float, float, float, float],
 ) -> str | None:
-    """Ortho only — see the module docstring for why ``persp`` never draws
-    one. Bar length spans the world-unit value against the SAME
-    ``zoom * px_per_unit`` scale factor used for every other pixel in the
-    frame, so it's exact by construction, not a calibrated overlay."""
-    if camera.projection != "ortho" or style.scalebar is False:
+    """World-unit bar, uniform under ortho or explicitly at perspective target depth."""
+    if style.scalebar is False:
         return None
-    scale = camera.zoom * style.px_per_unit
+    scale = style.px_per_unit * (camera.zoom if camera.projection == "ortho" else 1.0)
     if scale <= 0.0:
         return None
     minx, miny, w, h = viewbox
@@ -647,6 +650,8 @@ def _scalebar_fragment(
     y0 = miny + h - 0.06 * h
     x1 = x0 + bar_px
     label = f"{_format_number(value)} {scene.unit_label}".strip()
+    if camera.projection == "persp":
+        label += " (at target depth)"
     return (
         '<g stroke="#000000" fill="#000000">'
         f'<line x1="{_fmt(x0)}" y1="{_fmt(y0)}" x2="{_fmt(x1)}" y2="{_fmt(y0)}" stroke-width="2"/>'

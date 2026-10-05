@@ -17,6 +17,11 @@ on the scalebar, which is the sole place a unit surfaces at all.
 Callers own the unit (the ``stickfig`` adapter fixes it to Å because
 :mod:`precis.structure` is Å-native — see that package's docstring).
 
+Perspective SVG normalizes pixels per world unit at target depth, keeping
+near/far perspective without shrinking figures by distance/f. Its scalebar
+is qualified to that plane; a universal depth-independent bar would mislead.
+Camera projection itself retains its dimensionless perspective contract.
+
 **Refine contract**: ``refine`` (0/1/2, with ``r3`` raytrace reserved for a
 later slice) governs render QUALITY only — wireframe vs. shaded, sorted vs.
 unsorted, gradient vs. flat. It never changes scene geometry or which atoms/
