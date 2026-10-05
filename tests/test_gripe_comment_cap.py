@@ -3,7 +3,9 @@
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import Unsupported
 from precis.handlers.gripe import GripeHandler
+from precis.store import Tag
 from precis.store.types import ChunkInsert
 
 
@@ -44,3 +46,18 @@ def test_comment_timeline_default_and_full(hub: Hub, count: int) -> None:
         assert f"fixture-comment-{i:03d}" in full
     # Audit log remains an independent read, never repurposed as comments.
     assert "fixture-comment-" not in handler.get(id=rid, view="log").body
+
+
+def test_legacy_body_and_view_recovery(hub: Hub) -> None:
+    handler = GripeHandler(hub=hub)
+    with handler.store.tx() as conn:
+        ref = handler.store.insert_ref(
+            kind="gripe", slug=None, title="Synthetic legacy body", conn=conn
+        )
+        handler.store.add_tag(ref.id, Tag.closed("STATUS", "open"), conn=conn)
+    assert "Synthetic legacy body" in handler.get(id=ref.id).body
+    assert "Synthetic legacy body" in handler.get(id=ref.id, view="comments").body
+    with pytest.raises(Unsupported) as error:
+        handler.get(id=ref.id, view="bad-view")
+    assert error.value.options is not None
+    assert "comments" in error.value.options

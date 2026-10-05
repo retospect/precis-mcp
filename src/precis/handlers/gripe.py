@@ -32,10 +32,10 @@ from typing import Any, ClassVar
 
 from psycopg.errors import ForeignKeyViolation
 
-from precis.errors import BadInput, Upstream
+from precis.errors import BadInput, Unsupported, Upstream
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -435,6 +435,13 @@ class GripeHandler(NumericRefHandler):
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
                 body=self._render_timeline(ref, self.store.tags_for(ref.id), limit=None)
+            )
+        if view is not None and view not in _BASE_VIEWS:
+            views = [*_BASE_VIEWS, "comments"]
+            raise Unsupported(
+                f"unknown view {view!r} for kind='gripe'",
+                options=views,
+                next="get(kind='gripe', id=<id>, view='comments') for the full timeline",
             )
         return super().get(id=id, view=view, q=q, **_kw)
 
