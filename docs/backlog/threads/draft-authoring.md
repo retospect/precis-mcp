@@ -19,7 +19,7 @@ Current declared activity: [fleet roster](../../../.claude/fleet/threads.tsv); d
 format without a human working around the tool. Do-next is ordered by what
 the month's preprint hits (quest qu459585; October = td459586, the nanobud
 paper dr173020); triaged against it 2026-10-02.
-**Last reviewed:** 2026-10-02
+**Last reviewed:** 2026-10-05
 **Worktree:** `draft-authoring`
 **Allocation decision (historical):** yes — Reto 2026-10-01: "draft authoring must work".
 
@@ -72,7 +72,11 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   deployed; the submission export can pass `doi_links`/`library_links` as job
   params) · `endnote-export-validation` (hits only if submission goes docx +
   EndNote) · `export-glyph-allowlist` (jo461157 compiled with no glyph
-  failures) · `draft-poster-genre-and-themes` · `draft-section-styles`.
+  failures) · [draft-poster-genre-and-themes](../draft-poster-genre-and-themes.md)
+  (Reto 2026-10-05: one generic beamer poster template + per-user branding
+  profiles, institution/sponsor logos and export validation; docs amendment,
+  implementation still open; path to Reto's generic template awaits him) ·
+  `draft-section-styles`.
 - **Content model** — `smartdraft-review-parity` (may hit td461162, the Phase 5
   review from the web review block; re-check when it starts) ·
   `draft-table-structured-enrichment` · `draft-footnotes-annotations` ·

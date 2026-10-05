@@ -1,11 +1,11 @@
 ---
 status: draft
 pillar: memory-graph
-title: Poster/deck genre for drafts + a named theme system (palette, block chrome, typographic rules) carried as data, not as a hand-kept .tex
+title: Poster/deck drafts with a generic template and per-user branding profiles
 prio: normal
 ---
 
-# Poster/deck genre for drafts, with named themes
+# Poster/deck genre for drafts, with per-user branding
 
 ## Motivation / why
 
@@ -40,73 +40,98 @@ same path that already produces docx/pdf.
 
 ## In scope
 
-1. **`poster` and `slides` entries in `DOC_TYPES`**, each with its register
-   brief and a section skeleton (a poster's skeleton is blocks with a declared
-   column, not `## Introduction`).
-2. **A `theme` kind, or themes as data under `precis/data/themes/<slug>/`** —
-   whichever the schema review prefers. A theme owns: the role→hue table, the
-   block chrome (title band, body tint, inter-block skip), the font stack and
-   sizes, and the logo strip. `meta.workspace.theme` selects it.
-3. **A documentclass switch in export** keyed on
-   `(doc_type, theme)` → preamble + body template, replacing the single
-   hardcoded `preamble.tex`.
-4. **Semantic-emphasis macros as a theme contract, not ad-hoc `\textbf`.** The
-   theme declares the emphasis roles a genre may use and what each means; the
-   renderer emits them. This is the part with teeth — see the worked example.
-5. **The nanobud poster carried in as the first theme (`ul-bernal`) and the
-   first worked example**, so the theme system is validated against a document
-   that actually went on a board.
+- Add `poster` and `slides` to `DOC_TYPES`. A poster remains `kind='draft'`,
+  with `meta.workspace.doc_type='poster'` and column hints on its blocks.
+- One product-owned generic `beamerposter` template, supplied by Reto, owns
+  layout, block chrome, typographic rules, columns, allowed fonts and colour
+  roles. It contains no institution hues or logos. The nanobud `ul-bernal`
+  specifics become a branding profile on top, not another template.
+- Per-user branding profiles are data, not `.tex`: role→hue values for every
+  declared role (accent, heading, band, body tint, citation, measured,
+  computed, plus text foreground roles), an allowed font, and separate ordered
+  institution and sponsor/funder logo lists. Each logo has a file handle,
+  alt text, preferred height, light/dark variant and order.
+- Resolve fields from poster `meta.workspace` overrides, then the owning
+  author's user-profile default, then product default. Multi-author posters
+  use the recorded owning user's profile, never the first author or exporting
+  user. Co-author institution logos and extra sponsors are per-poster additions;
+  adding them does not edit anyone's profile. The strip re-flows within the
+  generic template's reserved space.
+- Keep profiles user-scoped in private storage, following the per-user vault
+  convention (`precis.export.remarkable`, `precis.users`, `precis.secrets`);
+  keep logo binaries under a user-scoped private asset root outside the repo.
+  Apply the storage/ACL ADR conventions at implementation: names alone are
+  not access control; self-service edits check ownership and export jobs read
+  only the poster's authorized assets. The repo is PUBLIC: no real institution
+  logos or brand files in tracked files. The shipped example uses placeholder
+  logos and neutral branding. Users are responsible for logo licences.
+- Prefer vector PDF/SVG (SVG→PDF precedent in §5); accept PNG/JPEG too.
+  Limit each logo to 10 MiB, raster decoding to 40 megapixels, profile JSON
+  to 64 KiB and the rendered strip to 20 logos; PDFs are single-page.
+- Validate before export: `poster_role_missing` for any unfilled declared
+  role; `poster_role_unknown` for an undeclared semantic role;
+  `poster_logo_missing` for an absent selected file; `poster_logo_resolution_low`
+  for raster logos below 300 ppi in either dimension at their rendered size.
+  Check text-on-band and text-on-body contrast at **4.5:1 minimum**, using
+  relative luminance from [WCAG 2.2 SC 1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
+  after tint/background composition; fail `poster_contrast_insufficient`.
+  This adopts its normal-text floor for all poster text; 300 ppi is a product
+  print-quality floor. Preserve existing TeX hardening.
+- Users set their default through MCP `edit` on a user/profile object and
+  the web account/settings page. These are planned profile surfaces, not an
+  assertion that a MCP profile kind already exists. `/drafts/new` offers
+  genre `poster` with the user's profile preselected.
 
 ## Explicitly NOT in scope
 
-- Rendering a poster in the web UI. Export to PDF only.
-- Authoring posters through the `pres` kind. `pres` stays the ingest side;
-  this is `draft` + genre + theme. If the two want to converge later, that is a
-  separate item.
-- A WYSIWYG layout editor, or any interactive column-balancing. The layout
-  numbers are measured by building and re-measuring (below) — automating that
-  loop is a possible follow-up, not this.
-- Brand compliance checking against an institution's published guidelines.
+- Web poster rendering, WYSIWYG layout editing or interactive balancing.
+- Authoring through `pres`, which remains the finished-slide ingest path.
+- Institution-specific templates, arbitrary user `.tex`, or checking brand
+  compliance/licences. Generic chrome and typography belong to the template;
+  profiles change only allowed fonts, hues and the logo strip.
+- A new theme kind: branding profiles are data. A discoverable template
+  catalogue can revisit kind-vs-data later; it is unnecessary for one template.
 
 ## Acceptance criteria
 
-- `put(kind='draft', …)` with `doc_type='poster'` and `theme='ul-bernal'`
-  yields a draft whose export is an A0 portrait poster with the UL block
-  chrome, with no hand-written `.tex` anywhere in the path.
-- Changing `theme` on an existing poster draft and re-exporting changes every
-  hue and font and **nothing else** — no content edit, no layout edit. This is
-  the test that the role indirection is real.
-- A second theme exists (even a deliberately ugly one) purely so criterion 2
-  is falsifiable.
-- The semantic-emphasis contract is enforced: a draft that uses a role the
-  theme does not declare fails export with a named error, rather than
-  silently rendering as plain bold.
-- `docs/conventions/` gains the typographic rules that are genre-independent
-  (below), so they are cited rather than rediscovered.
+- A poster draft with the private `ul-bernal` profile exports an A0 portrait
+  poster through the generic template, without hand-kept `.tex`.
+- Export the same poster under two users' profiles (controlled owner fixtures):
+  only hues, allowed fonts and logo strip differ; content, column model and
+  generic layout rules stay the same. Product fixtures use placeholder logos.
+- Adding one sponsor per poster re-flows the strip without layout edits and
+  leaves the user's profile unchanged. Co-author institution logos are explicit
+  additions; the owning user's default wins unless the poster overrides it.
+- Export fails with the named errors above on an unfilled role, missing logo,
+  inadequate contrast, low-resolution raster or undeclared semantic role.
+- MCP/profile settings agree; `/drafts/new` preselects the owner's profile.
+- `docs/conventions/` gains the genre-independent typography rules below.
 
 ## Target + blast radius
 
-`precis.draft.scaffolds` (DOC_TYPES) · `precis/data/templates/draft/`
-(preamble → template set) · `precis.render.latex` and
-`precis.workers.job_types.draft_export` (the documentclass switch) ·
-`precis.handlers.draft` (`scaffold=` surface) · `precis_web.routes.drafts`
-(the `/drafts/new` form gains genre + theme selects) · possibly a new kind,
-which pulls in the kind-totality pincer (`test_kind_totality` +
-`test_item_view` together).
+`precis.draft.scaffolds` (`DOC_TYPES`) · `precis/data/templates/draft/`
+(generic template, neutral example) · `precis.render.latex`,
+`precis.export.latex`, `precis.workers.job_types.draft_export` (branding
+resolution and checks) · `precis.handlers.draft` (workspace overrides) ·
+user/profile storage and its authenticated MCP edit surface ·
+`precis_web.routes.account` (settings) and `precis_web.routes.drafts`
+(`/drafts/new`). Confirm the storage/ACL design before implementation;
+this amendment adds no code or schema.
 
 ---
 
-# Worked example — the `ul-bernal` theme, from the nanobud poster
+# Worked example — the `ul-bernal` profile, from the nanobud poster
 
-Everything below is in production use on one A0 board. Taken as the seed
-content for the first theme, and as the evidence for the rules the theme
-system has to be able to express.
+The historical A0 board is the worked example: its palette/fonts/logos seed
+the private `ul-bernal` profile; its chrome, typography and columns inform
+the generic template. The TeX below records the original technique, not a
+tracked branding file or a separate institutional template to ship.
 
 ## 1. Palette — roles, not hues
 
 The institutional palette is declared once, then **every downstream rule names
 a role**. A rebrand is then a handful of `\colorlet` lines and no other edit —
-which is exactly acceptance criterion 2 above.
+which motivates the two-profile acceptance criterion above.
 
 ```latex
 % University of Limerick brand palette. Green-led per UL guidance; the
@@ -255,7 +280,7 @@ ad-hoc markup, which is what makes it themeable at all:
 | Palette | `\definecolor` + `\colorlet` role aliases | A theme is a colour table; a rebrand touches nothing else |
 | Chrome | `\setbeamercolor{block title / block body / banner / logostrip}` | Named slots — a theme fills them, a document never names a hue |
 | Block bands | `\setbeamertemplate{block begin / block end}` | Where the `\vphantom{Ay}` and the asymmetric vskips live |
-| Type scale | `\setbeamerfont{block title}` + explicit `\fontsize` for refs | The one place genre and theme overlap; needs a decided owner |
+| Type scale | `\setbeamerfont{block title}` + explicit `\fontsize` for refs | Template owns sizes; profile chooses an allowed font |
 | Columns | `columns` / `column` + fixed-height stretch `minipage` | See §4 — the `\colheight` loop |
 
 Extra packages the genre needs and the current `draft` preamble does not
@@ -263,10 +288,10 @@ carry: `upgreek` (upright unit prefixes, §3), `booktabs` + `array` (the
 `>{\colorlet{gfill}{…}}` per-column trick, §2), `multicol` (the 3-column
 reference list), `graphicx` for the logo strip.
 
-**Build is `tectonic -X compile poster.tex`.** This is a constraint, not a
-preference — the authoring machine has no `latexmk` and no `pdflatex`, and
-`precis/data/templates/draft/latexmkrc` assumes otherwise. Two consequences
-worth recording before anyone automates the layout loop:
+**Historical build: `tectonic -X compile poster.tex`.** That authoring
+machine had no `latexmk` or `pdflatex`; this is evidence from the example,
+not a change to the product compile engine. Two consequences worth recording
+before anyone automates the layout loop:
 
 - Tectonic **does not write a `.log` by default.** Diagnostics have to be read
   off stdout (`2>&1 | grep 'Overfull \vbox'`) or measured out of the PDF with
@@ -309,17 +334,11 @@ stricter, because poster prose is read in glances:
 
 ## Open questions / decisions log
 
-- **Theme as a kind, or as data?** A kind buys search, tags and links (a theme
-  could cite the institution's brand guideline paper); data under
-  `precis/data/themes/` buys no schema work and no totality-pincer exposure.
-  Leaning data-first, kind later if themes acquire provenance.
-- **Does `poster` need a column model in the draft schema**, or is a column
-  hint in block meta (`meta.column = 1|2|3`) enough? The latter keeps the
-  draft linear and readable; the former is what a balancer would need.
-- **Who owns the `\colheight` loop?** Doing it in the export worker means the
-  export builds the document two or three times. Acceptable for a poster;
-  check it against the export job's budget.
-- **Whether the `\src` citation macro collides with the existing cite
-  pipeline** (`cite_findings_only_policy` — prose cites are `[fi<id>]` hubs).
-  A poster's numbered reference list is a rendering of those hubs, so this is
-  probably a renderer concern only, but confirm before building.
+- **Path to Reto's generic template:** where is the generic beamer poster
+  template the product should adopt?
+
+Reto, 2026-10-05: per-user branding profiles are data. This settles the
+branding part of “theme as kind or data”; a future template catalogue remains
+separate. Existing column-hint, layout-probe and citation-pipeline details
+remain implementation work within the template/export seams, not additional
+questions for this backlog amendment.
