@@ -612,6 +612,8 @@ class SlurmRunner:
                 result = self.transport.run(
                     ["cat", path], max_output=self.limits.max_output_bytes
                 )
+                if result.returncode == 255:
+                    raise RemoteError("transport_unavailable")
                 if result.returncode:
                     missing.append(name)
                     continue

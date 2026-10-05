@@ -16,5 +16,6 @@ No construction, import or web status render triggers authentication.
 Staging preflights canonical inventory paths against generated and temporary
 names, then rechecks all hashes before readiness. Collection failures journal
 every task without erasing scheduler evidence; retries reuse the same intent.
+OpenSSH status255 is a pending transport failure, not proof of a missing file.
 These filesystem/ledger guarantees stay generic; adapters own domain validation.
 """

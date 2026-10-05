@@ -156,6 +156,10 @@ def test_every_task_gets_outcome(tmp_path: Path, scheduler: str, expected: str) 
         "task0": expected,
         "task1": expected,
     }
+    saved = json.loads((tmp_path / (TOKEN + ".json")).read_text())
+    assert saved["collection"]["status"] == "complete"
+    assert saved["collection"]["error"] is None
+    assert saved["missing"] == ["result.json"]
 
 
 def test_hash_budget_and_intent_conflict(tmp_path: Path) -> None:
@@ -375,6 +379,7 @@ def test_final_inventory_drift_prevents_readiness_and_submit(
     "fault, code, outcome",
     [
         ("transport", "transport_timeout", "collection_pending"),
+        ("ssh_return255", "transport_unavailable", "collection_pending"),
         ("checksum_transport", "transport_unavailable", "collection_pending"),
         ("checksum_command", "output_checksum_failed", "collection_pending"),
         ("checksum_mismatch", "output_hash_mismatch", "invalid_output"),
@@ -400,6 +405,10 @@ def test_collection_failure_journals_every_task_and_retries_same_intent(
                     if command == "cat":
                         if fault == "transport":
                             raise RemoteError("transport_timeout")
+                        if fault == "ssh_return255":
+                            return CommandResult(
+                                255, b"", b"SYNTHETIC_PRIVATE_SENTINEL"
+                            )
                         if fault == "output_cap":
                             raise RemoteError("output_limit")
                         if fault == "oversize_response":
@@ -452,10 +461,14 @@ def test_collection_failure_journals_every_task_and_retries_same_intent(
         "job_id",
         "job_hash",
         "resources",
+        "token",
+        "user",
+        "profile_id",
     ]:
         assert saved[key] == known[key]
     assert saved["collection"]["attempts"] == 1
     assert saved["collection"]["failed_attempts"] == 1
+    assert saved["missing"] == []
     if fault != "status_transport":
         assert saved["output_hashes"] == {
             "first.json": hashlib.sha256(b"first").hexdigest()

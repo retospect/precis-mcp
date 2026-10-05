@@ -97,9 +97,11 @@ OpenSSH BEGIN/END markers but no actual line breaks or literal newline escapes:
 `multiline_framing_missing`, before algorithm/encryption or agent validation.
 No private content was emitted, rewritten or converted; no SSH or `myquota`
 attempted. Reto must restore original multiline text to the same vault entry
-through a newline-preserving writer. The announced deployed46591fa40b3c still
-has single-line web inputs; local reviewed multiline controls are not deployed.
-Algorithm/encryption/usability remain unverified until corrected input validates.
+through a newline-preserving writer. R10 version8.35.9/source516dc91de45b9616990be475458bc5785b4be4b5
+deployed and runtime-verified the reviewed multiline web writer. This resolves
+the writer-integration dependency, not stored-key restoration or pilot success.
+The latest private check identified unencrypted Ed25519 metadata but still no
+line breaks; cryptographic usability/authentication remain unverified.
 
 ## Credential / host contract — Precis
 
@@ -350,6 +352,9 @@ counts and hashes, with no raw exception/transport text. The returned success
 contract is unchanged; chemistry owns scientific/domain envelopes. Synthetic
 regressions cover all three reported filename counterexamples, final-inventory
 drift, transport/checksum/output-cap failure, durable all-task outcomes and retry.
+OpenSSH connection-error status255 from output `cat` must enter that same
+durable collection-pending path before missing-file handling; it proves no
+artifact absence. Known absent-file command status retains missing-output behavior.
 
 | Operation | Required behavior |
 |---|---|
