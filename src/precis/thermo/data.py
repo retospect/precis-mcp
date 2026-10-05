@@ -41,7 +41,9 @@ class SpeciesData:
 
 @lru_cache(maxsize=1)
 def _records() -> dict[str, Any]:
-    return json.loads(Path(__file__).with_name("nasa7.json").read_text())["species"]
+    return json.loads(
+        Path(__file__).with_name("nasa7.json").read_text(encoding="utf-8")
+    )["species"]
 
 
 def _evaluate(record: dict[str, Any], T: float) -> tuple[float, float, float]:
