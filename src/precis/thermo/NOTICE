@@ -26,19 +26,52 @@ NIST WebBook identity URL and recorded page hash. Other CAS are unavailable.
 An approved species ID identifies a neutral species; atom-count equality
 is never used to discover an isomer or charged identity.
 
-These files do NOT incorporate any Burcat/ATcT/Glarborg polynomial subset.
-Actual Alzueta/Glarborg mechanism records were examined for H2NO and HNOH,
-but Cantera example-data explicitly disclaims granting mechanism licences,
-and the 2005 Burcat report restricts commercial use of any database part
-without written author permission. The missing permission is unresolved.
-Their sentinel records contain no coefficients and produce unavailable
-energetics. HNOH's inspected source note is 'trans & Equ T11/11', which
-also needs an exact conformer/ensemble decision before admission.
+Glarborg-2018 academic-use subset (Reto ruling, 2026-10-05)
+--------------------------------------------------------
+Values extracted from a published mechanism, no explicit licence grant from
+the authors, academic use, cited. This is not an assertion of an open-data
+licence or unrestricted/commercial redistribution permission. R13 initially
+withheld these records because public download and repository code licences
+do not grant third-party rights; the academic-use ruling authorizes this
+five-record R14 subset, not a whole Burcat database or complete mechanism.
 
-The licensed NASA NH2OH TPIS89 fit is older than the inspected ATcT/A
-Klippenstein-2011 fit. They are different source versions; do not silently
-substitute their enthalpies or present the older fit as current ATcT.
-Forcing a source fit to match rounded acceptance numbers is prohibited.
+Citation: P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein,
+Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion
+Science 67 (2018) 31–68. DOI: 10.1016/j.pecs.2018.01.002.
+Publication metadata: https://orbit.dtu.dk/en/publications/modeling-nitrogen-chemistry-in-combustion/
+Original CHEMKIN thermo.dat is retrieved from the published-mechanism mirror:
+https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat
+SHA256: 46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666
+The companion mech.dat header names this nitrogen review (its prepublication
+year says 2017; the DOI/DTU record establishes the published 2018 date).
+No mechanism reactions, transport data or runtime dependency are incorporated.
+
+Only H2NO, HNOH, NH2OH, HNO and NH2 are extracted, with unchanged NASA7
+coefficients. Original headers, record lines, reference notes and full pins
+are preserved per species in nasa7.json:
+- H2NO: RADICAL T09/09; Goos/Burcat/Ruscic database with ATcT updates,
+  accessed July2013; gas, neutral H2N–O radical, 200/1000/6000 K.
+- HNOH: trans & Equ T11/11; same original database reference, gas neutral
+  hydroxyamidogen, 200/1000/6000 K. This literal source-defined record is
+  retained without guessing ensemble weights or declaring pure-trans/cis.
+  A separate cis record is commented out in the mechanism and NOT vendored.
+- NH2OH: ATcT/A; same original database reference, gas hydroxylamine,
+  200/1000/6000 K. This replaces the older NASA TPIS89 fit, not an estimate.
+- HNO: ATcT3E; ATcT ver.1.122, DHf298=106.96 ±0.11 kJ/mol, fit JAN17;
+  gas nitroxyl, 200/1000/6000 K.
+- NH2: ATcT3E; ATcT ver.1.122, DHf298=186.02 ±0.12 kJ/mol, fit JAN17;
+  gas amidogen, 200/1000/3000 K. Its shorter published range is enforced.
+
+The ledger adopts the same 1 bar reference convention for all fits. The
+original CHEMKIN mechanism does not explicitly encode reference pressure;
+this is a disclosed convention, not pressure metadata proved by that file.
+No entropy constant is adjusted. Independent frozen-source comparisons use
+Cantera species thermodynamic functions directly, not a mechanism kinetics
+simulation or its default phase pressure. Fit enthalpies reproduce source
+reference values to fit accuracy; they are not asserted to be measurements.
+NASA elemental-reference fits remain fixed; balanced reference terms cancel.
+Source changes therefore affect intermediate steps, not the overall NO
+hydrogenation with unchanged NASA reactants/products.
 
 No estimates (including JOBACK), xTB or extrapolation are substituted.
 Polynomial ranges describe fit coverage, not phase-equilibrium stability;

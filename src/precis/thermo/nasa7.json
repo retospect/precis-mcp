@@ -1,8 +1,8 @@
 {
-  "dataset": "NASA-TM-4513 neutral subset via Cantera v3.2.0",
+  "dataset": "NASA-TM-4513 neutral subset plus five Glarborg2018 academic-use nitrogen fits",
   "standard_pressure_Pa": 100000,
   "retrieved": "2026-10-05",
-  "version": "NASA TM-4513 (1993), Cantera v3.2.0",
+  "version": "NASA TM-4513 (1993), Cantera v3.2.0; Glarborg2018 original CHEMKIN subset, mirror 7c39629e45bda071d9355818169946a30d777017",
   "report_url": "https://ntrs.nasa.gov/citations/19940013151",
   "report_sha256": "6b274fb921918f938b01d4525d8a7b7e8dff50b9990a496886db32354e2c4947",
   "permission_url": "https://ntrs.nasa.gov/api/citations/19940013151",
@@ -15,6 +15,17 @@
     "nasa_condensed.yaml": {
       "url": "https://raw.githubusercontent.com/Cantera/cantera/v3.2.0/data/nasa_condensed.yaml",
       "sha256": "ae1756efa10f41fb7050cb6a22fcda8e20c2cbd337a093509ada3e57341aeeb9"
+    },
+    "Glarborg2018/thermo.dat": {
+      "url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
+      "revision": "7c39629e45bda071d9355818169946a30d777017",
+      "git_blob": "6c3efa1f7008b5ee26adb45229cd3d5b01375a9f",
+      "citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "retrieved": "2026-10-05",
+      "mirror": "Original CHEMKIN thermo.dat mirrored by CollectionOfMechanisms; mech.dat header names nitrogen review (header year2017 is prepublication; DTU confirms2018)",
+      "mechanism_sha256": "aea1819ad65906306a1e27a83a7ffd9315a41dcb13efc2b0777119ba82724e50",
+      "independent_yaml_sha256": "bce1ce20e14cf054c71847d5ff58b39c8e3df7cf3e9f930811f4855809d65a77"
     }
   },
   "species": {
@@ -166,31 +177,53 @@
       ],
       "coefficients": [
         [
-          4.53525882,
-          -0.0056854691,
-          1.85199976e-05,
-          -1.71883674e-08,
-          5.5583309e-12,
-          11039.8805,
-          1.74314734
+          4.5532616,
+          -0.00584531688,
+          1.88853744e-05,
+          -1.76039893e-08,
+          5.72889621e-12,
+          11631.5603,
+          1.66850841
         ],
         [
-          3.16554762,
-          0.00300005132,
-          -3.94350282e-07,
-          -3.85787491e-11,
-          7.08091931e-15,
-          11194.4169,
-          7.64764695
+          3.24129053,
+          0.00272377193,
+          -1.60633296e-07,
+          -9.79134982e-11,
+          1.17103944e-14,
+          11774.5744,
+          7.27913637
         ]
       ],
-      "source_note": "L12/89",
-      "source_file": "nasa_gas.yaml",
-      "source_sha256": "4de6199d65d2d3db782e30573720c723130953707336add59713b02d8667e4db",
+      "source_note": "ATcT3E; HNO <g> ATcT ver. 1.122, DHf298 = 106.96 ± 0.11 kJ/mol - fit JAN17",
+      "source_file": "Glarborg2018/thermo.dat",
+      "source_sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
       "original_species_id": "HNO",
-      "method": "NASA7 polynomial fit; not a measured point value",
-      "source_url": "https://raw.githubusercontent.com/Cantera/cantera/v3.2.0/data/nasa_gas.yaml",
-      "permission": "NASA-TM-4513: Work of the US Gov. Public Use Permitted; see NOTICE"
+      "original_header": "HNO               ATcT3EH   1N   1O   1    0G    200.00   6000.00 1000.00      1",
+      "original_thermo_reference": [
+        "HNO <g> ATcT ver. 1.122, DHf298 = 106.96 ± 0.11 kJ/mol - fit JAN17"
+      ],
+      "original_record_lines": [
+        "HNO               ATcT3EH   1N   1O   1    0G    200.00   6000.00 1000.00      1",
+        " 3.24129053E+00 2.72377193E-03-1.60633296E-07-9.79134982E-11 1.17103944E-14    2",
+        " 1.17745744E+04 7.27913637E+00 4.55326160E+00-5.84531688E-03 1.88853744E-05    3",
+        "-1.76039893E-08 5.72889621E-12 1.16315603E+04 1.66850841E+00 1.28640914E+04    4"
+      ],
+      "original_line_number": 759,
+      "method": "NASA7 polynomial fit from published nitrogen mechanism; not a measured point value",
+      "source_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "source_revision": "7c39629e45bda071d9355818169946a30d777017",
+      "source_citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "paper_citation": "P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein, Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion Science 67 (2018) 31–68",
+      "paper_doi": "10.1016/j.pecs.2018.01.002",
+      "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
+      "standard_pressure_Pa": 100000,
+      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "supersedes_source": {
+        "source": "NASA-TM-4513",
+        "source_note": "L12/89",
+        "reason": "newer mechanism thermochemistry: ATcT/A or ATcT1.122 JAN17, with original source attribution retained"
+      }
     },
     "H2": {
       "name": "hydrogen",
@@ -368,41 +401,63 @@
       "phase": "g",
       "charge": 0,
       "composition": {
-        "N": 1,
-        "H": 2
+        "H": 2,
+        "N": 1
       },
       "ranges": [
         200.0,
         1000.0,
-        6000.0
+        3000.0
       ],
       "coefficients": [
         [
-          4.20556857,
-          -0.00213561363,
-          7.26851301e-06,
-          -5.93069876e-09,
-          1.80690978e-12,
-          21535.2231,
-          -0.14666277
+          4.06463329,
+          -0.00110021454,
+          4.25849068e-06,
+          -2.68223583e-09,
+          5.89267407e-13,
+          21176.8668,
+          0.43985077
         ],
         [
-          2.84768992,
-          0.00314280035,
-          -8.98641458e-07,
-          1.30318284e-10,
-          -7.48812926e-15,
-          21823.9049,
-          6.47165433
+          2.62499312,
+          0.00339841177,
+          -1.01630968e-06,
+          1.25510796e-10,
+          -2.66500843e-15,
+          21541.9104,
+          7.73537416
         ]
       ],
-      "source_note": "L12/89",
-      "source_file": "nasa_gas.yaml",
-      "source_sha256": "4de6199d65d2d3db782e30573720c723130953707336add59713b02d8667e4db",
+      "source_note": "ATcT3E; NH2 <g> ATcT ver. 1.122, DHf298 = 186.02 ± 0.12 kJ/mol - fit JAN17",
+      "source_file": "Glarborg2018/thermo.dat",
+      "source_sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
       "original_species_id": "NH2",
-      "method": "NASA7 polynomial fit; not a measured point value",
-      "source_url": "https://raw.githubusercontent.com/Cantera/cantera/v3.2.0/data/nasa_gas.yaml",
-      "permission": "NASA-TM-4513: Work of the US Gov. Public Use Permitted; see NOTICE"
+      "original_header": "NH2               ATcT3EH   2N   1    0    0G    200.00   3000.00 1000.00      1",
+      "original_thermo_reference": [
+        "NH2 <g> ATcT ver. 1.122, DHf298 = 186.02 ± 0.12 kJ/mol - fit JAN17"
+      ],
+      "original_record_lines": [
+        "NH2               ATcT3EH   2N   1    0    0G    200.00   3000.00 1000.00      1",
+        " 2.62499312E+00 3.39841177E-03-1.01630968E-06 1.25510796E-10-2.66500843E-15    2",
+        " 2.15419104E+04 7.73537416E+00 4.06463329E+00-1.10021454E-03 4.25849068E-06    3",
+        "-2.68223583E-09 5.89267407E-13 2.11768668E+04 4.39850770E-01 2.23724635E+04    4"
+      ],
+      "original_line_number": 656,
+      "method": "NASA7 polynomial fit from published nitrogen mechanism; not a measured point value",
+      "source_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "source_revision": "7c39629e45bda071d9355818169946a30d777017",
+      "source_citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "paper_citation": "P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein, Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion Science 67 (2018) 31–68",
+      "paper_doi": "10.1016/j.pecs.2018.01.002",
+      "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
+      "standard_pressure_Pa": 100000,
+      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "supersedes_source": {
+        "source": "NASA-TM-4513",
+        "source_note": "L12/89",
+        "reason": "newer mechanism thermochemistry: ATcT/A or ATcT1.122 JAN17, with original source attribution retained"
+      }
     },
     "NH3": {
       "name": "ammonia",
@@ -454,8 +509,8 @@
       "phase": "g",
       "charge": 0,
       "composition": {
-        "N": 1,
         "H": 3,
+        "N": 1,
         "O": 1
       },
       "ranges": [
@@ -465,31 +520,55 @@
       ],
       "coefficients": [
         [
-          3.21016076,
-          0.0061967178,
-          1.10594913e-05,
-          -1.96668207e-08,
-          8.82516311e-12,
-          -7309.12839,
-          7.9329364
+          3.21016092,
+          0.00619671676,
+          1.10594948e-05,
+          -1.96668262e-08,
+          8.8251659e-12,
+          -6581.48481,
+          7.93293571
         ],
         [
-          3.88112362,
-          0.00815708719,
-          -2.82615742e-06,
-          4.3793133e-10,
-          -2.52724921e-14,
-          -7587.82727,
-          3.79156901
+          3.88112502,
+          0.00815708448,
+          -2.82615576e-06,
+          4.37930933e-10,
+          -2.52724604e-14,
+          -6860.18419,
+          3.79156136
         ]
       ],
-      "source_note": "TPIS89",
-      "source_file": "nasa_gas.yaml",
-      "source_sha256": "4de6199d65d2d3db782e30573720c723130953707336add59713b02d8667e4db",
+      "source_note": "ATcT/A; E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at  http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013.",
+      "source_file": "Glarborg2018/thermo.dat",
+      "source_sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
       "original_species_id": "NH2OH",
-      "method": "NASA7 polynomial fit; not a measured point value",
-      "source_url": "https://raw.githubusercontent.com/Cantera/cantera/v3.2.0/data/nasa_gas.yaml",
-      "permission": "NASA-TM-4513: Work of the US Gov. Public Use Permitted; see NOTICE"
+      "original_header": "NH2OH             ATcT/AN  1.H  3.O  1.   0.G   200.000  6000.000 1000.        1",
+      "original_thermo_reference": [
+        "E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical",
+        "tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at ",
+        "http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013."
+      ],
+      "original_record_lines": [
+        "NH2OH             ATcT/AN  1.H  3.O  1.   0.G   200.000  6000.000 1000.        1",
+        " 3.88112502E+00 8.15708448E-03-2.82615576E-06 4.37930933E-10-2.52724604E-14    2",
+        "-6.86018419E+03 3.79156136E+00 3.21016092E+00 6.19671676E-03 1.10594948E-05    3",
+        "-1.96668262E-08 8.82516590E-12-6.58148481E+03 7.93293571E+00-5.28593988E+03    4"
+      ],
+      "original_line_number": 727,
+      "method": "NASA7 polynomial fit from published nitrogen mechanism; not a measured point value",
+      "source_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "source_revision": "7c39629e45bda071d9355818169946a30d777017",
+      "source_citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "paper_citation": "P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein, Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion Science 67 (2018) 31–68",
+      "paper_doi": "10.1016/j.pecs.2018.01.002",
+      "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
+      "standard_pressure_Pa": 100000,
+      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "supersedes_source": {
+        "source": "NASA-TM-4513",
+        "source_note": "TPIS89",
+        "reason": "newer mechanism thermochemistry: ATcT/A or ATcT1.122 JAN17, with original source attribution retained"
+      }
     },
     "NO": {
       "name": "nitric oxide",
@@ -822,7 +901,7 @@
       "permission": "NASA-TM-4513: Work of the US Gov. Public Use Permitted; see NOTICE"
     },
     "H2NO": {
-      "name": "identity unavailable (unapproved mechanism ID H2NO)",
+      "name": "aminoxyl radical (H2N–O connectivity)",
       "cas": null,
       "phase": "g",
       "charge": 0,
@@ -831,11 +910,61 @@
         "N": 1,
         "O": 1
       },
-      "unavailable_reason": "no approved fit: NASA-TM-4513 lacks this species; inspected Alzueta/Glarborg coefficients require unresolved third-party redistribution permission",
-      "original_species_id": "H2NO"
+      "ranges": [
+        200.0,
+        1000.0,
+        6000.0
+      ],
+      "coefficients": [
+        [
+          3.93201139,
+          -0.000164028165,
+          1.39161409e-05,
+          -1.62747853e-08,
+          6.00352834e-12,
+          6711.78975,
+          4.58837038
+        ],
+        [
+          3.75555914,
+          0.00516219354,
+          -1.76387387e-06,
+          2.75052692e-10,
+          -1.60643143e-14,
+          6518.26177,
+          4.30933053
+        ]
+      ],
+      "source_note": "RADICAL     T09/09; E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at  http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013.",
+      "source_file": "Glarborg2018/thermo.dat",
+      "source_sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
+      "original_species_id": "H2NO",
+      "original_header": "H2NO  RADICAL     T09/09N  1.H  2.O  1.   0.G   200.000  6000.000 1000.        1",
+      "original_thermo_reference": [
+        "E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical",
+        "tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at ",
+        "http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013."
+      ],
+      "original_record_lines": [
+        "H2NO  RADICAL     T09/09N  1.H  2.O  1.   0.G   200.000  6000.000 1000.        1",
+        " 3.75555914E+00 5.16219354E-03-1.76387387E-06 2.75052692E-10-1.60643143E-14    2",
+        " 6.51826177E+03 4.30933053E+00 3.93201139E+00-1.64028165E-04 1.39161409E-05    3",
+        "-1.62747853E-08 6.00352834E-12 6.71178975E+03 4.58837038E+00 7.97044877E+03    4"
+      ],
+      "original_line_number": 735,
+      "method": "NASA7 polynomial fit from published nitrogen mechanism; not a measured point value",
+      "source_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "source_revision": "7c39629e45bda071d9355818169946a30d777017",
+      "source_citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "paper_citation": "P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein, Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion Science 67 (2018) 31–68",
+      "paper_doi": "10.1016/j.pecs.2018.01.002",
+      "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
+      "standard_pressure_Pa": 100000,
+      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "identity_note": "Neutral H2N–O radical, distinct connectivity from HNOH; no charged-species lookup"
     },
     "HNOH": {
-      "name": "identity unavailable (unapproved mechanism ID HNOH)",
+      "name": "hydroxyamidogen radical (source: trans & Equ)",
       "cas": null,
       "phase": "g",
       "charge": 0,
@@ -844,8 +973,61 @@
         "N": 1,
         "O": 1
       },
-      "unavailable_reason": "no approved fit: NASA-TM-4513 lacks this species; inspected Alzueta/Glarborg coefficients require unresolved third-party redistribution permission",
-      "original_species_id": "HNOH"
+      "ranges": [
+        200.0,
+        1000.0,
+        6000.0
+      ],
+      "coefficients": [
+        [
+          3.95608248,
+          -0.0030261102,
+          2.56874396e-05,
+          -3.1564512e-08,
+          1.24084574e-11,
+          10919.979,
+          5.55950983
+        ],
+        [
+          3.98321933,
+          0.00488846374,
+          -1.65086637e-06,
+          2.55371446e-10,
+          -1.48308561e-14,
+          10578.0106,
+          3.62582838
+        ]
+      ],
+      "source_note": "trans & Equ  T11/11; E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at  http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013. E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at  http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013.",
+      "source_file": "Glarborg2018/thermo.dat",
+      "source_sha256": "46399906982b30923833febeba96ae89720efbc19a7332fcff651179aac8d666",
+      "original_species_id": "HNOH",
+      "original_header": "HNOH trans & Equ  T11/11H  2.N  1.O  1.   0.G   200.000  6000.000 1000.        1",
+      "original_thermo_reference": [
+        "E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical",
+        "tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at ",
+        "http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013.",
+        "E Goos A Burcat B Ruscic Ideal gas thermochemical database with updates from active thermochemical",
+        "tables (ftp://ftp.technion.ac.il/pub/supported/aetdd/thermodynamics; mirrored at ",
+        "http://garfield.chem.elte.hu/burcat/burcat.html. Accessed July 2013."
+      ],
+      "original_record_lines": [
+        "HNOH trans & Equ  T11/11H  2.N  1.O  1.   0.G   200.000  6000.000 1000.        1",
+        " 3.98321933E+00 4.88846374E-03-1.65086637E-06 2.55371446E-10-1.48308561E-14    2",
+        " 1.05780106E+04 3.62582838E+00 3.95608248E+00-3.02611020E-03 2.56874396E-05    3",
+        "-3.15645120E-08 1.24084574E-11 1.09199790E+04 5.55950983E+00 1.21354115E+04    4"
+      ],
+      "original_line_number": 743,
+      "method": "NASA7 polynomial fit from published nitrogen mechanism; not a measured point value",
+      "source_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/thermo.dat",
+      "source_revision": "7c39629e45bda071d9355818169946a30d777017",
+      "source_citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
+      "paper_citation": "P. Glarborg, J. A. Miller, B. Ruscic, S. J. Klippenstein, Modeling nitrogen chemistry in combustion, Progress in Energy and Combustion Science 67 (2018) 31–68",
+      "paper_doi": "10.1016/j.pecs.2018.01.002",
+      "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
+      "standard_pressure_Pa": 100000,
+      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "identity_note": "Exact source label: trans & Equ T11/11; retain the mechanism-defined record, not a separately resolved pure-trans or cis fit; no guessed ensemble weights"
     }
   }
 }

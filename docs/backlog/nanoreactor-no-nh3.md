@@ -60,29 +60,51 @@ Weierstrass–Enneper smooth layer) only where a step needs a hard turn.
 
 ## Energetics so far
 
-Tabulated gas-phase data, 298 K, H2O as gas (`chemicals` package; Hf from
-ATcT/TRC):
+Pinned source-fit ledger, 298.15 K, H2O as gas. Stable endpoints use
+NASA-TM-4513; HNO/H2NO/HNOH/NH2OH use the Glarborg et al. (2018) mechanism
+subset (DOI [10.1016/j.pecs.2018.01.002](https://doi.org/10.1016/j.pecs.2018.01.002)).
+Academic use is authorized; there is no explicit author licence grant.
+The ledger adopts a 1 bar convention; the mechanism does not explicitly
+encode reference pressure. Original coefficients/notes/ranges are pinned
+in `precis.thermo/nasa7.json`; values were checked against an independent
+source-file evaluation. These replace prototype table/hand estimates;
+Joback NH2OH ΔHf=-161.8 kJ/mol is excluded. The published ATcT/A fit gives
+ΔHf298=-43.94975 kJ/mol and S298=236.18008 J/mol/K.
 
 | step | ΔH kJ/mol | ΔG kJ/mol |
 |---|---|---|
-| NO + 5/2 H2 → NH3 + H2O | −378.5 | −332.0 |
-| NO + 3/2 H2 → NH2OH | −134.6 | (no S° for NH2OH in the table) |
-| NH2OH + H2 → NH3 + H2O | −243.9 | — |
-| NO + 1/2 H2 → HNO | **+15.8** | ≈ +32 (hand estimate) |
-| H2 → 2 H | +436 | — |
+| NO + 5/2 H2 → NH3 + H2O | −379.033 | −332.566 |
+| NO + 3/2 H2 → NH2OH | −135.218 | −84.358 |
+| NO + 1/2 H2 → HNO | **+15.689** | **+32.155** |
+| HNO + 1/2 H2 → H2NO | −40.688 | −23.352 |
+| H2NO + 1/2 H2 → NH2OH | −110.220 | −93.160 |
+| NH2OH + H2 → NH3 + H2O | −243.815 | −248.208 |
+| HNO + 1/2 H2 → HNOH | −6.058 | **+9.652** |
+| HNOH + 1/2 H2 → NH2OH | −144.849 | −126.164 |
+| H2NO → HNOH | +34.629 | +33.004 |
+| H2 → 2 H | +435.994 | +406.551 |
+
+The four H2NO steps sum to the overall equation, as do the alternate four
+steps through HNOH, with explicit H2 partners and no N2-fixation step.
+HNOH retains exactly the mechanism's active **"trans & Equ T11/11"**
+record; the commented-out cis fit is not used. H2NO is a different neutral
+radical/connectivity, so its lower energy cannot be silently assigned to HNOH.
 
 What this says:
 - The H–H bonds are already paid for inside the overall −332 kJ/mol ΔG per
   NO (−664 for 2 NO + 5 H2). The surplus after splitting H2 is large:
   about 3.4 eV per NO, roughly seven ATP equivalents.
-- Run as an electrochemical cell (protons through the lining, electrons
-  through the conducting tube), −332 kJ/mol over 5 e⁻ is E° ≈ 0.69 V.
+- With n=5 for that displayed overall equation, E=-ΔG/(nF)=0.689361 V.
+  This arithmetic alone supplies no electrode or solution reference.
 - About two thirds of the energy is released at the cleavage step, so the
   tethered route stores its energy until the end. Cleavage is downhill by
-  ~244 kJ/mol; its problem is the kinetic barrier, not the supply.
+  243.815 kJ/mol in ΔH and 248.208 kJ/mol in ΔG. These gas-phase numbers
+  supply no barrier or proof that a surface pathway is kinetically feasible.
 - The **first** step is uphill from H2 (+16 kJ/mol ΔH). Starting from an H
-  atom it is −202. Station 1 needs either an H2-splitting site or a strong
-  binding pocket for HNO.
+  atom it is about −202 kJ/mol in ΔH. Station 1 needs either an H2-splitting
+  site or a strong binding pocket for HNO. The HNOH second step is also
+  uphill in gas-phase ΔG despite downhill ΔH; the H2NO route avoids this
+  additional thermodynamic climb. Neither comparison supplies a TS barrier.
 - Using the surplus: spending it as a ratchet (every later step strongly
   downhill, so nothing goes backwards) is free. Harvesting it into work
   that drives the uphill first step needs explicit coupling, mechanical or

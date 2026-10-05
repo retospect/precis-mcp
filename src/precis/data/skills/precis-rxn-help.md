@@ -200,12 +200,16 @@ The pathway includes every step's species/source rows. `n_electrons` is supporte
 only on single-reaction calls; use separate calls for step-specific E values.
 T and n must be finite and positive; each species' fit range is enforced.
 
-**Gaps are reported, never filled.** N/H/O/OH/NH/NH2/HNO/NH2OH/N2O and stable
-target species have pinned NASA-TM-4513 fits, with real H/S/Cp temperature
-dependence at standard pressure 1 bar. NH2OH uses the older TPIS89 source,
-not modern ATcT. H2NO and HNOH lack approved redistribution permission in
-the inspected third-party mechanism: their energies and dependent cumulative
-totals remain `unavailable`. Unknown formulas (including ambiguous C2H6O)
+**Sources and gaps.** Stable species and N/H/O/OH/NH/N2O use pinned NASA-TM-4513
+fits. H2NO/HNOH/NH2OH/HNO/NH2 use five published Glarborg-2018 fits for cited
+academic use, with no explicit author licence grant. HNOH is exactly the
+source's "trans & Equ" record, not a separate pure-trans/cis assignment.
+NH2 supports 200..3000 K; the other four support 200..6000 K. Source H/S/Cp
+are evaluated with a 1 bar convention; the mechanism file does not explicitly
+encode reference pressure. `NO+1/2 H2->HNO; HNO+1/2 H2->H2NO;
+H2NO+1/2 H2->NH2OH; NH2OH+H2->NH3+H2O` returns a complete ledger within
+the common fit range; substitute HNOH for H2NO for the alternate source path.
+Unknown formulas (including ambiguous C2H6O)
 cannot silently select an isomer. No group-contribution, xTB or extrapolation
 fills a gap. An explicit liquid fit may extend into metastability; phase
 equilibrium is not inferred. Full sources and permissions: `precis.thermo/NOTICE`.

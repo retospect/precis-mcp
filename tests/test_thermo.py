@@ -115,16 +115,46 @@ def test_temperature_dependence_and_reference_convention() -> None:
         assert all(sp.data.dHf == 0 and sp.data.dGf == 0 for sp in r.species)
 
 
-def test_nh2oh_is_older_licensed_fit_and_permission_gaps_remain() -> None:
+def test_radical_subset_has_published_source_and_explicit_academic_notice() -> None:
     r = reaction_energetics("NO + 3/2 H2 -> NH2OH")
     nh2oh = r.species[-1].data
     assert nh2oh.S is not None and nh2oh.dHf is not None
-    assert "TPIS89" in nh2oh.tables and "ATcT" not in nh2oh.tables
+    assert "ATcT/A" in nh2oh.tables and "TPIS89" not in nh2oh.tables
+    assert _kj(nh2oh.dHf) == pytest.approx(-43.949749565546114, abs=1e-8)
     assert not r.unavailable
-    for equation in ["HNO + 1/2 H2 -> H2NO", "H2NO -> HNOH"]:
-        gap = reaction_energetics(equation, n_electrons=1)
-        assert gap.dH is None and gap.dG is None and gap.E is None
-        assert any("redistribution permission" in u for u in gap.unavailable)
+    for key in ["H2NO", "HNOH", "NH2OH", "HNO", "NH2"]:
+        record = _records()[key]
+        assert record["paper_doi"] == "10.1016/j.pecs.2018.01.002"
+        assert record["original_species_id"] == key
+        assert record["original_thermo_reference"]
+        assert "no explicit licence grant" in record["permission"]
+        assert "academic use, cited" in record["permission"]
+        result = reaction_energetics(f"{key} -> {key}").species[0].data
+        assert result.charge == 0
+        assert "Glarborg et al. (2018)" in result.tables
+        assert "no explicit author licence grant" in result.tables
+    hnoh = reaction_energetics("H2NO -> HNOH").species[-1].data
+    assert hnoh.name is not None and "trans & Equ" in hnoh.name
+    assert "not a separately resolved pure-trans or cis fit" in hnoh.note
+    assert hnoh.cas is None
+    assert _records()["NH2"]["ranges"] == [200, 1000, 3000]
+    with pytest.raises(BadInput, match="out of range"):
+        reaction_energetics("NH2 -> NH2", T=3000.001)
+
+
+@pytest.mark.parametrize(
+    "equation",
+    [key for key in REFERENCE["radical_reactions_298_15"] if "->" in key],
+)
+def test_radical_reactions_match_independent_source_ledger(equation: str) -> None:
+    """Original upstream fits evaluated with Cantera, without Precis imports."""
+    expected = REFERENCE["radical_reactions_298_15"][equation]
+    r = reaction_energetics(equation, n_electrons=1)
+    assert not r.unavailable
+    assert _kj(r.dH) == pytest.approx(expected["dH_kJ_mol"], abs=1e-8)
+    assert _kj(r.dG) == pytest.approx(expected["dG_kJ_mol"], abs=1e-8)
+    assert r.dS == pytest.approx(expected["dS_J_mol_K"], abs=1e-8)
+    assert pytest.approx(-expected["dG_kJ_mol"] * 1000 / F_CONST) == r.E
 
 
 def test_neutral_oh_and_isomer_identities() -> None:
@@ -253,17 +283,38 @@ def test_pathway_cumulative_and_species_rows() -> None:
         pathway_ledger([])
 
 
-def test_actual_radical_pathway_with_partners_preserves_gaps() -> None:
+@pytest.mark.parametrize("intermediate", ["H2NO", "HNOH"])
+@pytest.mark.parametrize("temperature", [298.15, 1500])
+def test_actual_radical_pathway_with_partners_is_complete(
+    intermediate: str, temperature: float
+) -> None:
     equations = [
         "NO + 1/2 H2 -> HNO",
-        "HNO + 1/2 H2 -> H2NO",
-        "H2NO + 1/2 H2 -> NH2OH",
+        f"HNO + 1/2 H2 -> {intermediate}",
+        f"{intermediate} + 1/2 H2 -> NH2OH",
         "NH2OH + H2 -> NH3 + H2O",
     ]
-    led = pathway_ledger(equations)
+    led = pathway_ledger(equations, T=temperature)
+    assert all(not step.unavailable for step in led.steps)
+    assert all(value is not None for value in led.cum_dH + led.cum_dG)
+    overall = reaction_energetics(NO_TO_NH3, T=temperature)
+    assert led.cum_dH[-1] == pytest.approx(overall.dH)
+    assert led.cum_dG[-1] == pytest.approx(overall.dG)
+    if temperature == 298.15:
+        assert led.steps[0].uphill == (True, "ΔG")
+        assert led.steps[1].uphill == (intermediate == "HNOH", "ΔG")
+    rendered = render_energetics(";".join(equations), T=temperature).body
+    assert "Glarborg et al. (2018)" in rendered and "hydroxylamine" in rendered
+    assert (
+        "trans & Equ" in rendered if intermediate == "HNOH" else "aminoxyl" in rendered
+    )
+
+
+def test_unknown_identity_still_withholds_dependent_pathway_totals() -> None:
+    led = pathway_ledger(["NO + 1/2 H2 -> HNO", "HNO -> NOH", NO_TO_NH3])
     assert led.cum_dH[0] is not None and led.cum_dG[0] is not None
-    assert led.cum_dH[1:] == [None, None, None]
-    assert led.cum_dG[1:] == [None, None, None]
+    assert led.cum_dH[1:] == [None, None]
+    assert led.cum_dG[1:] == [None, None]
     assert led.steps[-1].dH is not None and led.steps[-1].dG is not None
 
 
@@ -302,6 +353,30 @@ def test_actual_public_get_and_fastmcp_schema(
     assert "ΔG(400 K)" in text and "E° = " in text
     assert "nitric oxide" in text and "nasa7-fit" in text
     assert "[error:" not in text
+    for intermediate in ["H2NO", "HNOH"]:
+        pathway = (
+            f"NO+1/2 H2->HNO; HNO+1/2 H2->{intermediate}; "
+            f"{intermediate}+1/2 H2->NH2OH; NH2OH+H2->NH3+H2O"
+        )
+        result = asyncio.run(
+            server.call_tool(
+                "get",
+                {
+                    "kind": "rxn",
+                    "view": "energetics",
+                    "q": pathway,
+                    "args": {"T": 298.15},
+                },
+            )
+        )
+        rendered = str(result)
+        assert "[error:" not in rendered and "pathway energetics" in rendered
+        assert "Glarborg et al. (2018)" in rendered
+        assert (
+            "hydroxylamine" in rendered
+            and "no explicit author licence grant" in rendered
+        )
+        assert "−332.6" in rendered or "-332.6" in rendered
     for parameter in ("T", "n_electrons"):
         for value in (0, float("inf"), float("nan")):
             bad = core.get(

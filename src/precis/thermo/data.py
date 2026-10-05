@@ -69,8 +69,8 @@ def lookup_species(
 ) -> SpeciesData:
     """Exact vetted source ID only; never select an isomer or ion by formula.
 
-    The unavailable radical records carry identity hints but no coefficients:
-    their third-party redistribution permission is unresolved.
+    HNOH keeps the mechanism's literal ``trans & Equ`` identity; this is
+    not an alias for a separately resolved cis or pure-trans conformer.
     """
     key = "H2O(L)" if formula == "H2O" and phase == "l" else formula
     record = _records().get(key)
@@ -113,7 +113,10 @@ def lookup_species(
         s_ref += count * rs / divisor
     hf = h - h_ref
     ranges = record["ranges"]
-    source = f"NASA-TM-4513 ID={key}, {record['source_note']}; {record['source_file']} sha256={record['source_sha256'][:12]} (full pin in nasa7.json)"
+    citation = record.get("source_citation", "NASA-TM-4513")
+    source = f"{citation} ID={key}, {record['source_note']}; {record['source_file']} sha256={record['source_sha256'][:12]} (full pin in nasa7.json)"
+    if record.get("paper_doi"):
+        source += "; academic use, no explicit author licence grant; 1 bar convention adopted (mechanism does not encode reference pressure)"
     return SpeciesData(
         formula,
         phase,
@@ -126,5 +129,6 @@ def lookup_species(
         H=h,
         Cp=cp,
         charge=0,
-        note=f"polynomial fit, standard pressure 1 bar; range {ranges[0]:g}..{ranges[-1]:g} K",
+        note=f"polynomial fit, standard pressure 1 bar; range {ranges[0]:g}..{ranges[-1]:g} K"
+        + (f"; {record['identity_note']}" if record.get("identity_note") else ""),
     )
