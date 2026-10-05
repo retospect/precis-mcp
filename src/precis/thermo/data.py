@@ -54,7 +54,7 @@ def _evaluate(record: dict[str, Any], T: float) -> tuple[float, float, float]:
         raise BadInput("T must be finite and > 0 K", next="args={'T': 298.15}")
     if not ranges[0] <= T <= ranges[-1]:
         raise BadInput(
-            f"{record['name']} NASA-7 fit supports {ranges[0]:g}..{ranges[-1]:g} K; T={T:g} is out of range",
+            f"{record['name']} NASA-7 fit supports {ranges[0]:g}..{ranges[-1]:g} K; T={T!r} is out of range",
             next="choose T within every species' published fit range",
         )
     i = next(i for i, upper in enumerate(ranges[1:]) if upper >= T)

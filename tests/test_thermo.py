@@ -389,6 +389,48 @@ def test_import_is_lazy() -> None:
     subprocess.run([__import__("sys").executable, "-c", script], check=True)
 
 
+@pytest.mark.parametrize(
+    ("equation", "max_T", "n_electrons", "name"),
+    [
+        ("NH2 -> NH2", 3000.0, None, "amidogen radical"),
+        (NO_TO_NH3, 6000.0, 5, "nitric oxide"),
+    ],
+)
+def test_public_temperature_range_diagnostic_preserves_rejected_value(
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    equation: str,
+    max_T: float,
+    n_electrons: int | None,
+    name: str,
+) -> None:
+    from mcp.server.fastmcp import FastMCP
+
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_dispatch", runtime_with_store.dispatch)
+    server = FastMCP("thermo-temperature-precision-regression")
+    server.add_tool(core.get)
+    args: dict[str, float] = {"T": max_T}
+    if n_electrons is not None:
+        args["n_electrons"] = n_electrons
+    call = {"kind": "rxn", "view": "energetics", "q": equation, "args": args}
+    endpoint = str(asyncio.run(server.call_tool("get", call)))
+    assert "[error:" not in endpoint
+    assert "ΔH = " in endpoint and "ΔH = unavailable" not in endpoint
+    assert f"ΔG({max_T:g} K) = " in endpoint
+    assert f"ΔG({max_T:g} K) = unavailable" not in endpoint
+
+    rejected_T = max_T + 0.001
+    args["T"] = rejected_T
+    rejected = str(asyncio.run(server.call_tool("get", call)))
+    assert "[error:BadInput]" in rejected
+    assert (
+        f"{name} NASA-7 fit supports 200..{max_T:g} K; T={rejected_T!r} is out of range"
+    ) in rejected
+    assert "choose T within every species' published fit range" in rejected
+
+
 def test_actual_public_get_and_fastmcp_schema(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
