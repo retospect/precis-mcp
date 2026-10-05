@@ -10,6 +10,8 @@ that matches on both a body block and its card is not double-listed
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from precis.dispatch import Hub
@@ -178,3 +180,55 @@ def test_handler_dedup_total_matches_rows_shown(store: Store) -> None:
     out = _handler(store).search(q="attention mechanism", page_size=3)
     assert "1 of 2" not in out.body
     assert "see more of the" not in out.body
+
+
+@pytest.mark.parametrize("cap", [1, 2])
+def test_capped_search_prefers_body_before_paging(store: Store, cap: int) -> None:
+    """A stronger card cannot steal a body slot; card-only papers survive."""
+    _rid, body_ids, card_id = _seed(
+        store,
+        slug="body-match",
+        body=["copper catalyst mechanism", "copper surface analysis"],
+        card_text="copper " * 20,
+    )
+    _other_rid, _other_body, fallback_id = _seed(
+        store,
+        slug="card-only",
+        body=["unrelated graphene geometry"],
+        card_text="copper " * 10,
+    )
+    kwargs: dict[str, Any] = dict(
+        q_texts=["copper"],
+        query_vecs=[],
+        mode="lexical",
+        kind="paper",
+        card_kinds=("card_combined",),
+        per_paper=cap,
+    )
+    # Establish the regression trigger and default store compatibility:
+    # the higher-ranked card consumes a slot unless preference is opted in.
+    raw = store.chunks.search_chunks_multi(**kwargs)
+    assert raw[0][0].id == card_id
+    expected = [fallback_id, *body_ids[:cap]]
+    hits = store.chunks.search_chunks_multi(**kwargs, prefer_body=True)
+    assert [b.id for b, _r, _s in hits] == expected
+    pages = [
+        store.chunks.search_chunks_multi(**kwargs, prefer_body=True, offset=i, limit=1)
+        for i in range(len(expected) + 1)
+    ]
+    assert [b.id for page in pages for b, _r, _s in page] == expected
+    assert pages[-1] == []
+
+    # Public paper path opts in before its page probe, so continuations
+    # contain the body evidence and never an empty page from card removal.
+    handler = _handler(store)
+    card_handle = handle_registry.try_format("paper", card_id, chunk=True)
+    assert card_handle is not None
+    for page, cid in enumerate(expected, start=1):
+        out = handler.search(
+            q="copper", mode="lexical", per_paper=cap, page_size=1, page=page
+        )
+        handle = handle_registry.try_format("paper", cid, chunk=True)
+        assert handle is not None and handle in out.body
+        assert card_handle not in out.body
+        assert ("see more of the fused matches" in out.body) == (page < len(expected))

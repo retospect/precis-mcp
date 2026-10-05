@@ -965,6 +965,7 @@ class FusedBlockSearch:
                 year_to=year_to,
                 card_kinds=("card_combined",),
                 per_paper=per_paper_cap,
+                prefer_body=kind == "paper" and per_paper_cap is not None,
             )
             _log.debug(
                 "paper search: SQL legs stage (broad, mode=%s, %d legs) took %.3fs",

@@ -18,6 +18,12 @@ orders browse by creation; cross-kind chunk search accepts ``created`` and
 existing callers' modification-first browse or creation-first search order;
 both new orders use ref id ties and require no derived clock or schema.
 
+Capped paper search opts into ``search_chunks_multi(prefer_body=True)``:
+discard a synthetic card when the fused candidate pool contains a body hit
+for that ref, before the diversity cap and page slice. Otherwise a stronger
+card can consume the paper's only slot and hide quotable evidence. Card-only
+matches survive; other store consumers retain their ranking by default.
+
 Decomposition (in progress, codereview-store-decomposition): the
 stateful pool/tx lifecycle lives in :class:`precis.store.core.StoreCore`;
 domain sub-stores hold a core and are reached as composed properties —

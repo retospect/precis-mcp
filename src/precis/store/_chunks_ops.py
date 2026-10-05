@@ -1232,6 +1232,7 @@ class ChunkStore:
         chunk_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         per_paper: int | None = None,
+        prefer_body: bool = False,
         pool_per_leg: int = 80,
     ) -> list[tuple[ChunkRow, Ref, float]]:
         """Multi-leg reciprocal-rank fusion for broad/high-recall
@@ -1256,6 +1257,10 @@ class ChunkStore:
 
         ``per_paper`` optionally caps hits per ref in the fused result
         (diversity knob); ``None`` disables it.
+        ``prefer_body`` drops synthetic cards for refs with body hits in
+        the fused candidate pool before capping/paging. Opt-in so callers
+        that rank cards as evidence keep their existing ordering. Neither
+        option applies to the verbatim keyword path.
 
         Returns ``(ChunkRow, Ref, fused_score)``, best first.
         """
@@ -1368,10 +1373,21 @@ class ChunkStore:
         # Sort by fused score desc; deterministic tiebreak on chunk id.
         ordered = sorted(fused.items(), key=lambda kv: (-kv[1], kv[0]))
 
+        body_ref_ids = (
+            {
+                ref.id
+                for block, ref in seen.values()
+                if not block.chunk_kind.startswith("card_")
+            }
+            if prefer_body
+            else set()
+        )
         results: list[tuple[ChunkRow, Ref, float]] = []
         per_paper_count: dict[int, int] = {}
         for cid, score in ordered:
             block, ref = seen[cid]
+            if ref.id in body_ref_ids and block.chunk_kind.startswith("card_"):
+                continue
             if per_paper is not None:
                 taken = per_paper_count.get(ref.id, 0)
                 if taken >= per_paper:
