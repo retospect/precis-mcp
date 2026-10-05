@@ -186,3 +186,16 @@ Focused canonical thermo/rxn validation: 183 passed, no xfails; actual
 FastMCP/core.get exercises both complete partners-explicit radical paths.
 Unknown NOH identity still withholds dependent cumulative totals. Root's
 independent review, locked image and full ship gate remain required.
+
+### Accepted R14 review clarity follow-up
+
+Independent source/science review PASS at `3d211531a`; root accepts integration
+under the disclosed adopted-pressure assumption. Correct only ancillary
+provenance and wording: companion `mech.dat` raw SHA256 is
+`e90b07e855783551ce1bb3a15df9dac301062972ffe3a2dcc946bf12c8f05f3a`;
+the earlier `aea1819a...` hash is CP1252-decoded/UTF8-encoded content with
+CRLF retained, and must be labelled separately. Global result notes, species
+data notes and metadata must repeat adopted 1 bar interpretation, original
+reference pressure unverified, entropy constants unadjusted. Add focused
+metadata/result-note regressions. No coefficient or entropy conversion,
+scientific jobs, extreme-n repair, R13 or dependency changes.

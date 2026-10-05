@@ -18,6 +18,7 @@ from precis.errors import BadInput
 
 R = 8.31446261815324  # J/mol/K, current SI molar gas constant
 NASA7 = "nasa7-fit"
+_PRESSURE_NOTE = "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted"
 _REFERENCES = {"H": ("H2", 2), "N": ("N2", 2), "O": ("O2", 2), "C": ("C(gr)", 1)}
 
 
@@ -100,7 +101,7 @@ def lookup_species(
             None,
             None,
             missing=["H(T)", "S(T)", "Cp(T)"],
-            note=why,
+            note=f"{why}; {_PRESSURE_NOTE}" if record.get("paper_doi") else why,
             name=record["name"],
             charge=record["charge"],
         )
@@ -115,8 +116,10 @@ def lookup_species(
     ranges = record["ranges"]
     citation = record.get("source_citation", "NASA-TM-4513")
     source = f"{citation} ID={key}, {record['source_note']}; {record['source_file']} sha256={record['source_sha256'][:12]} (full pin in nasa7.json)"
+    pressure_note = "standard pressure 1 bar"
     if record.get("paper_doi"):
-        source += "; academic use, no explicit author licence grant; 1 bar convention adopted (mechanism does not encode reference pressure)"
+        pressure_note = _PRESSURE_NOTE
+        source += f"; academic use, no explicit author licence grant; {pressure_note}"
     return SpeciesData(
         formula,
         phase,
@@ -129,6 +132,6 @@ def lookup_species(
         H=h,
         Cp=cp,
         charge=0,
-        note=f"polynomial fit, standard pressure 1 bar; range {ranges[0]:g}..{ranges[-1]:g} K"
+        note=f"polynomial fit; {pressure_note}; range {ranges[0]:g}..{ranges[-1]:g} K"
         + (f"; {record['identity_note']}" if record.get("identity_note") else ""),
     )

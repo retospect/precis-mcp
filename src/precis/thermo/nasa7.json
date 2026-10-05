@@ -24,8 +24,12 @@
       "citation": "Glarborg et al. (2018), doi:10.1016/j.pecs.2018.01.002",
       "retrieved": "2026-10-05",
       "mirror": "Original CHEMKIN thermo.dat mirrored by CollectionOfMechanisms; mech.dat header names nitrogen review (header year2017 is prepublication; DTU confirms2018)",
-      "mechanism_sha256": "aea1819ad65906306a1e27a83a7ffd9315a41dcb13efc2b0777119ba82724e50",
-      "independent_yaml_sha256": "bce1ce20e14cf054c71847d5ff58b39c8e3df7cf3e9f930811f4855809d65a77"
+      "mechanism_sha256": "e90b07e855783551ce1bb3a15df9dac301062972ffe3a2dcc946bf12c8f05f3a",
+      "independent_yaml_sha256": "bce1ce20e14cf054c71847d5ff58b39c8e3df7cf3e9f930811f4855809d65a77",
+      "mechanism_raw_bytes": 323890,
+      "mechanism_url": "https://raw.githubusercontent.com/jiweiqi/CollectionOfMechanisms/7c39629e45bda071d9355818169946a30d777017/Nitrogen/Glarborg/mech.dat",
+      "mechanism_transformed_sha256": "aea1819ad65906306a1e27a83a7ffd9315a41dcb13efc2b0777119ba82724e50",
+      "mechanism_hash_transformation": "raw companion mech.dat bytes decoded as CP1252, then encoded as UTF-8; CRLF retained"
     }
   },
   "species": {
@@ -218,7 +222,7 @@
       "paper_doi": "10.1016/j.pecs.2018.01.002",
       "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
       "standard_pressure_Pa": 100000,
-      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "standard_pressure_note": "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted",
       "supersedes_source": {
         "source": "NASA-TM-4513",
         "source_note": "L12/89",
@@ -452,7 +456,7 @@
       "paper_doi": "10.1016/j.pecs.2018.01.002",
       "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
       "standard_pressure_Pa": 100000,
-      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "standard_pressure_note": "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted",
       "supersedes_source": {
         "source": "NASA-TM-4513",
         "source_note": "L12/89",
@@ -563,7 +567,7 @@
       "paper_doi": "10.1016/j.pecs.2018.01.002",
       "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
       "standard_pressure_Pa": 100000,
-      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "standard_pressure_note": "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted",
       "supersedes_source": {
         "source": "NASA-TM-4513",
         "source_note": "TPIS89",
@@ -960,7 +964,7 @@
       "paper_doi": "10.1016/j.pecs.2018.01.002",
       "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
       "standard_pressure_Pa": 100000,
-      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "standard_pressure_note": "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted",
       "identity_note": "Neutral H2N–O radical, distinct connectivity from HNOH; no charged-species lookup"
     },
     "HNOH": {
@@ -1026,8 +1030,9 @@
       "paper_doi": "10.1016/j.pecs.2018.01.002",
       "permission": "Values extracted from a published mechanism; no explicit licence grant from the authors; academic use, cited; Reto ruling 2026-10-05; see NOTICE",
       "standard_pressure_Pa": 100000,
-      "standard_pressure_note": "1 bar source-database convention adopted consistently with NASA subset; CHEMKIN mechanism does not explicitly encode reference pressure",
+      "standard_pressure_note": "adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted",
       "identity_note": "Exact source label: trans & Equ T11/11; retain the mechanism-defined record, not a separately resolved pure-trans or cis fit; no guessed ensemble weights"
     }
-  }
+  },
+  "standard_pressure_note": "NASA-TM-4513 fits use standard pressure 1 bar; Glarborg mechanism fits: adopted 1 bar interpretation; original reference pressure unverified; entropy constants unadjusted"
 }

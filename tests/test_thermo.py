@@ -142,6 +142,70 @@ def test_radical_subset_has_published_source_and_explicit_academic_notice() -> N
         reaction_energetics("NH2 -> NH2", T=3000.001)
 
 
+def test_companion_mechanism_pin_distinguishes_raw_and_transformed_bytes() -> None:
+    dataset = json.loads(
+        (Path(__file__).parents[1] / "src/precis/thermo/nasa7.json").read_text()
+    )
+    source = dataset["sources"]["Glarborg2018/thermo.dat"]
+    assert source == REFERENCE["source_hashes"]["Glarborg2018/thermo.dat"]
+    assert source["mechanism_sha256"] == (
+        "e90b07e855783551ce1bb3a15df9dac301062972ffe3a2dcc946bf12c8f05f3a"
+    )
+    assert source["mechanism_raw_bytes"] == 323890
+    assert source["mechanism_transformed_sha256"] == (
+        "aea1819ad65906306a1e27a83a7ffd9315a41dcb13efc2b0777119ba82724e50"
+    )
+    assert "CP1252" in source["mechanism_hash_transformation"]
+    assert "UTF-8" in source["mechanism_hash_transformation"]
+    assert "CRLF retained" in source["mechanism_hash_transformation"]
+    assert source["mechanism_url"].endswith("/mech.dat")
+    for phrase in [
+        "adopted 1 bar interpretation",
+        "original reference pressure unverified",
+        "entropy constants unadjusted",
+    ]:
+        assert phrase in dataset["standard_pressure_note"]
+
+
+@pytest.mark.parametrize(
+    "equation",
+    ["HNO + 1/2 H2 -> H2NO", "H2NO -> HNOH", "NO + 3/2 H2 -> NH2OH", "NH2 -> NH2"],
+)
+def test_radical_data_and_result_notes_disclose_adopted_pressure(equation: str) -> None:
+    r = reaction_energetics(equation)
+    assert not r.unavailable
+    rendered = render_energetics(equation).body
+    for phrase in [
+        "adopted 1 bar interpretation",
+        "original reference pressure unverified",
+        "entropy constants unadjusted",
+    ]:
+        assert phrase in " ".join(r.notes) and phrase in rendered
+        for species in r.species:
+            record = _records()[species.data.formula]
+            if record.get("paper_doi"):
+                assert phrase in species.data.note and phrase in species.data.tables
+                assert phrase in record["standard_pressure_note"]
+
+
+def test_nasa_only_result_keeps_its_verified_pressure_note() -> None:
+    notes = " ".join(reaction_energetics("OH -> O + H").notes)
+    assert "NASA-TM-4513 fits: standard pressure 1 bar" in notes
+    assert "original reference pressure unverified" not in notes
+
+
+def test_unavailable_radical_phase_still_discloses_pressure_assumption() -> None:
+    r = reaction_energetics("NH2(l) -> NH2(l)")
+    assert r.unavailable and r.dH is None and r.dG is None
+    for phrase in [
+        "adopted 1 bar interpretation",
+        "original reference pressure unverified",
+        "entropy constants unadjusted",
+    ]:
+        assert phrase in " ".join(r.notes)
+        assert all(phrase in sp.data.note for sp in r.species)
+
+
 @pytest.mark.parametrize(
     "equation",
     [key for key in REFERENCE["radical_reactions_298_15"] if "->" in key],

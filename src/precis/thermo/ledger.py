@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass, field
 
 from precis.errors import BadInput
-from precis.thermo.data import SpeciesData, lookup_species
+from precis.thermo.data import _PRESSURE_NOTE, SpeciesData, lookup_species
 from precis.thermo.equation import Equation, Term, parse_equation
 
 #: Faraday constant, C/mol.
@@ -18,7 +18,7 @@ F_CONST = 96485.33212
 
 T_REF = 298.15
 
-_NOTE_T = "H(T), S(T), Cp(T): NASA-7 polynomial fits, standard pressure 1 bar; not measured point values"
+_NOTE_T = "H(T), S(T), Cp(T): NASA-7 polynomial fits; not measured point values"
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,9 @@ def _energetics(eq: Equation, T: float, n_electrons: float | None) -> ReactionRe
         unavailable.append("ΔG unavailable: " + "; ".join(why_s))
     notes: list[str] = [
         _NOTE_T,
+        _PRESSURE_NOTE
+        if any(_PRESSURE_NOTE in sp.data.note for sp in species)
+        else "NASA-TM-4513 fits: standard pressure 1 bar",
         "energies and n refer to one displayed reaction extent; E=-ΔG/(nF) does not define an electrode reference",
     ]
     if eq.auto_balanced:
