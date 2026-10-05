@@ -41,6 +41,12 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 ``{key}_untrusted_value``), and trust-gated kinetics scalars
 ``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/``drc_top``.
 
+``step_retry`` is an unwired eligibility prerequisite: it selects only
+quantity-cited fatal convergence records and withholds all selection on
+endpoint mismatch. State-only basin failures cannot safely name a retry
+step; the pinned engine's seed entry point still runs whole networks.
+Dispatch, durable retry caps and partial replacement remain unimplemented.
+
 Gated on **dependency presence**, not a feature flag: with no
 ``autocatpath``/``[catalyst]`` extra installed the handler raises
 ``InitError`` at registration and the ``pathway`` kind just doesn't

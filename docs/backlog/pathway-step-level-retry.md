@@ -54,3 +54,46 @@ candidate (frontier first), verify forces ≥ 3 seeds, and rubric axes can be
 flagged `optional: true` (`frontier._optional_objectives_for`). What remains
 here is exactly the design above: re-dispatching ONE blocked step with a
 fresh seed instead of a whole verify run.
+
+## R14 slice 1 — convergence-blocker eligibility (2026-10-05)
+
+Premise checked against fetched main `ab90f225a`: this item is still open.
+`quest.compute` retries infrastructure failures at the seed/network level;
+`precis_pathway.runner.run_seed_partial` calls `run_one_seed` for the whole
+network. The pinned catpath `0.22.0@973491d4` has no single-step argument on
+that entry point. Neither the aggregate nor the seed job consumes quantity
+blockers to re-dispatch a step.
+
+**Acceptance for this slice:** a pure, unwired selector returns only fatal
+`neb_convergence` / `relax_convergence` records explicitly cited by an
+unavailable barrier or selectivity quantity. Match structured records by
+opaque id: barrier blockers are ids, while selectivity blockers carry ids
+under `reasons`. Preserve complete records, including model, state, seed
+and attempt; the id alone is not unique across models. Require a named
+step and a nonnegative integer seed. Do not infer a step from a state id.
+
+No selection for available quantities, spectators, marginal/pass records,
+missing/unknown trust schema, unresolved ids, budget/job error strings,
+or other checks. Any fatal-fail trust record with an endpoint
+identity/agreement check or explicit `endpoint-mismatch` evidence withholds
+the entire selection:
+those records can be state-only, so assigning them to a safe step requires
+a later basin-aware policy. This deliberately conservative first slice
+does not establish that any returned record is safe to dispatch.
+
+Synthetic tests must cover both blocker shapes, state-at-step ids with
+attempt suffixes, model identity, and these exclusions; no calculation,
+store write or scheduler call. This internal prerequisite adds no runtime
+caller or public response field and needs no version/dependency bump.
+
+**Still open:** all other check classes, endpoint/basin diagnosis, durable
+per-step retry counts (default cap 2), fresh-seed/content-key allocation,
+single-step execution, replacement/aggregation semantics, and automatic
+dispatch → clean retry → available quantity. Do not substitute a full
+network rerun. No catpath upgrade, release-SHA selection, production run,
+or change to items 23/25 holds is authorized by this slice.
+
+**Decision before execution wiring:** should the catpath owner provide a
+supported single-step retry/partial-replacement API on an explicitly
+approved release before precis wires dispatch? The current whole-network
+API cannot meet this item's one-step acceptance criterion unchanged.
