@@ -14,6 +14,10 @@ ref's chunk to avoid attributing an unrelated passage. These are advisory
 records, not adjudications; rendering never refreshes conflict search or
 changes the approval gate.
 
+Gripe summary counts link to the existing list route with exact workflow
+status filters; the live total retains the nonterminal cohort. Filtering
+happens in SQL so a clicked count cannot silently show the whole queue.
+
 **Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
 ``link_type`` for folding/annotations: adsorption and desorption keep their
 columns; only supply→reaction folds. Raw ``kind=supply`` still excludes

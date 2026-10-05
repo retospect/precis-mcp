@@ -189,8 +189,10 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
     # trigger makes that unreachable, but the list must never hide one).
     clauses = ["r.kind = 'gripe'", "r.retired_at IS NULL"]
     terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
-    if status_filter == "wontfix":
-        clauses.append("t.value = 'wontfix'")
+    params: list[Any] = []
+    if status_filter in _RANKED_VALUES:
+        clauses.append("COALESCE(t.value, 'open') = %s")
+        params.append(status_filter)
     elif status_filter != "all":
         clauses.append(f"COALESCE(t.value, 'open') NOT IN ({terminals})")
     sql = f"""
@@ -212,7 +214,7 @@ def _rows(store: Store, *, status_filter: str) -> list[dict[str, Any]]:
                   r.updated_at DESC
     """
     with store.pool.connection() as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         out.append(
@@ -251,7 +253,7 @@ def _group_by_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def gripes(request: Request, status: str = "live") -> HTMLResponse:
     """List gripes — default view excludes ``wontfix`` (the "live" queue)."""
     store = get_store(request)
-    status = status if status in ("live", "wontfix", "all") else "live"
+    status = status if status in ("live", "all", *_RANKED_VALUES) else "live"
     rows = _rows(store, status_filter=status)
     return templates.TemplateResponse(
         request,
