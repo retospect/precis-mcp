@@ -18,12 +18,19 @@ is not added twice:
    handle API (JSON, no redirect followed, so a Cloudflare-gated publisher
    is never touched); stops at the first that does not resolve.
 4. **Landing page** — publisher link patterns (ACS ``suppl_file``,
-   Elsevier ``mmc<n>``, RSC ``suppdata``, Wiley ``downloadSupplement``),
-   minted only from a link whose URL or anchor text says
-   supplement/supporting/ESI/suppl/mmc.
+   Elsevier ``mmc<n>``, RSC ``suppdata``, Wiley ``downloadSupplement``,
+   Springer Nature ``esm/.../MOESM<n>_ESM``),
+   minted from a link whose URL/text says supplement/supporting/ESI/suppl/mmc
+   or whose URL is a Springer ESM file (source data can lack those words).
 
 A blocked source (403, ``cf-mitigated: challenge``) is a recorded miss with
 its URL — never something to get around.
+
+DOI landing requests negotiate HTML, not Crossref's JSON transform. Only
+the explicit API sources request JSON. Springer ESM file URLs also identify
+source data with no "supplement" in the label; peer-review files are excluded.
+Non-PDF candidates survive discovery for a named skip in the worker/UI,
+without downloading them through the PDF pipeline.
 """
 
 from __future__ import annotations
@@ -65,6 +72,12 @@ _PUBLISHER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"mmc\d+", re.IGNORECASE),  # Elsevier
     re.compile(r"suppdata", re.IGNORECASE),  # RSC
     re.compile(r"downloadSupplement", re.IGNORECASE),  # Wiley
+)
+_SPRINGER_ESM_RE = re.compile(
+    r"^https?://(?:static-content\.springer\.com/esm/|"
+    r"media\.springernature\.com/original/springer-static/esm/)"
+    r"[^?#]+/[^/?#]*_MOESM\d+_ESM\.[a-z0-9]+(?:\?[^#]*)?$",
+    re.IGNORECASE,
 )
 _NON_PDF_EXTS = (
     ".zip",
@@ -268,6 +281,7 @@ def parse_landing_links(html: str, base_url: str) -> list[SiCandidate]:
     AND the URL looks like a file (so a "Supporting Information" tab link
     to an HTML page does not mint). A plain article-PDF link
     (``/doi/pdf/...``, "Download PDF") matches neither.
+    Springer ESM paths also identify source-data files; peer review is omitted.
     """
     parser = _AnchorParser()
     try:
@@ -284,14 +298,20 @@ def parse_landing_links(html: str, base_url: str) -> list[SiCandidate]:
         if not url.startswith(("http://", "https://")) or url in seen:
             continue
         name = filename_from_url(url)
+        springer_esm = bool(_SPRINGER_ESM_RE.search(url))
+        if springer_esm and re.search(r"peer\s*review", text, re.IGNORECASE):
+            continue
         pattern_hit = any(p.search(url) for p in _PUBLISHER_PATTERNS)
         text_hit = bool(_SUPP_WORDS_RE.search(text)) and bool(
             re.search(r"\.[a-z0-9]{2,4}$", name, re.IGNORECASE)
         )
-        if not (pattern_hit or text_hit):
+        if not (pattern_hit or text_hit or springer_esm):
             continue
-        # Guard: even a pattern hit must carry a supplement word somewhere.
-        if not (_SUPP_WORDS_RE.search(url) or _SUPP_WORDS_RE.search(text)):
+        # Springer ESM identifies source data by path; other patterns still
+        # need a supplement word so ordinary article files are not collected.
+        if not (
+            springer_esm or _SUPP_WORDS_RE.search(url) or _SUPP_WORDS_RE.search(text)
+        ):
             continue
         seen.add(url)
         out.append(SiCandidate(url=url, source=SOURCE_LANDING, filename=name))
@@ -461,9 +481,16 @@ def default_fetch(email: str = "") -> FetchFn:
 
     def _fetch(url: str) -> HttpResult:
         throttle.wait(urlparse(url).netloc)
+        accept = (
+            "application/json"
+            if url.startswith(
+                (_FIGSHARE_API + "/", _CROSSREF_API + "/", _HANDLE_API + "/")
+            )
+            else "text/html"
+        )
         with http_client(
             timeout=timeout,
-            headers={"Accept": "application/json,text/html;q=0.9,*/*;q=0.5"},
+            headers={"Accept": accept},
             user_agent=ua,
         ) as client:
             resp = safe_get(client, url)

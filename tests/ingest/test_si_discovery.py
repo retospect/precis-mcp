@@ -3,11 +3,60 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from pathlib import Path
+
+import httpx
 
 from precis.ingest import si_discovery as sd
 from precis.ingest.si_discovery import HttpResult, SiCandidate, discover
 
 DOI = "10.1021/acscatal.3c01963"
+
+
+def test_default_fetch_landing_html_api_json(monkeypatch) -> None:
+    from precis.utils import http, safe_fetch
+
+    accepts: list[str] = []
+
+    @contextmanager
+    def client(**kwargs):
+        accepts.append(kwargs["headers"]["Accept"])
+        yield object()
+
+    monkeypatch.setattr(http, "http_client", client)
+    monkeypatch.setattr(sd._HostThrottle, "wait", lambda *_: None)
+    monkeypatch.setattr(
+        safe_fetch,
+        "safe_get",
+        lambda _, url: httpx.Response(200, request=httpx.Request("GET", url)),
+    )
+    fetch = sd.default_fetch()
+    fetch(f"https://doi.org/{DOI}")
+    for url in (
+        f"https://doi.org/api/handles/{DOI}.s001",
+        f"https://api.crossref.org/works/{DOI}",
+        f"https://api.figshare.com/v2/articles?resource_doi={DOI}",
+    ):
+        fetch(url)
+    assert accepts == [
+        "text/html",
+        "application/json",
+        "application/json",
+        "application/json",
+    ]
+
+
+def test_real_springer_moesm_includes_source_data_not_peer_review() -> None:
+    fixture = Path(__file__).parents[1] / "fixtures/si/nature-s41467-023-40259-0.html"
+    got = sd.parse_landing_links(
+        fixture.read_text(), "https://www.nature.com/articles/s41467-023-40259-0"
+    )
+    assert [c.filename for c in got] == [
+        "41467_2023_40259_MOESM1_ESM.pdf",
+        "41467_2023_40259_MOESM3_ESM.xlsx",
+    ]
+    assert got[0].is_pdf and not got[1].is_pdf
 
 
 def _json(obj: object, status: int = 200) -> HttpResult:

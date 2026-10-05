@@ -103,6 +103,13 @@ def test_found_si_downloads_sidecar_and_records(store, tmp_path, monkeypatch) ->
     meta = _meta(store, pid)
     assert meta["si_found"] == 2 and meta["si_fetched"] == 1
     assert [s["filename"] for s in meta["si_skipped"]] == ["data.zip"]
+    assert meta["si_skipped"][0]["reason"] == "non_pdf"
+    from precis.dispatch import Hub
+    from precis.handlers.paper import PaperHandler
+
+    overview = PaperHandler(hub=Hub(store=store)).get(id="smith2023cat").body
+    assert "supplement exists, not ingested (non_pdf)" in overview
+    assert "https://ndownloader.figshare.com/files/10" in overview
     assert meta["si_checked_at"] > meta["si_fetch"]["requested_at"]
     with store.pool.connection() as conn:
         ev = conn.execute(

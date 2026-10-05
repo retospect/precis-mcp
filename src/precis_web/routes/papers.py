@@ -534,6 +534,14 @@ def _render_detail(
         "author_rows": _author_rows(store, ref, ref_idents.get("doi") or ""),
         "paper_scholar_url": paper_scholar_link(ref_idents.get("doi") or "", ref.title),
         "abstract": _abstract_full(ref),
+        # Non-PDF supplements are evidence of SI, not PDF ingestion failures.
+        "si_skipped": [
+            item
+            for item in (meta.get("si_skipped") or [])
+            if isinstance(item, dict)
+            and isinstance(item.get("url"), str)
+            and item["url"].lower().startswith(("http://", "https://"))
+        ],
         "ingested": stamps,
         "pdf_on_disk": found is not None,
         # Diagnostics for the "file expected but missing" case (a

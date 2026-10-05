@@ -1584,10 +1584,15 @@ class PaperHandler(Handler):
             return []
         with self.store.pool.connection() as conn:
             kids = supplement_children(conn, ref.id)
-        if not kids:
-            return []
         shown = ", ".join(k[1] or str(k[0]) for k in kids)
-        return [f"supplementary information: {shown}"]
+        lines = [f"supplementary information: {shown}"] if kids else []
+        for item in meta.get("si_skipped") or []:
+            if isinstance(item, dict) and item.get("url"):
+                lines.append(
+                    f"supplement exists, not ingested ({item.get('reason') or 'non_pdf'}): "
+                    f"{item['url']}"
+                )
+        return lines
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}
