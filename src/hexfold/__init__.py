@@ -13,7 +13,9 @@ the spec is the truth, the code follows it.
 ``join.compose_k3`` adds the equal-120° sp² straight Y over private open
 zigzag segments of resolved planar carbon blocks. Defined endpoints avoid
 pretending a finite segment is a cyclic Port; declaration and SD-pattern
-refusals precede rigid placement. It performs no relaxation, public grammar
+refusals precede rigid placement. All copied bond/face indices must be local
+integers and faces simple closed input bond walks, so offsets cannot hide
+corrupt topology as cross-block faces. It performs no relaxation, public grammar
 or SE mutation. Closed internal tube rails/curved placement for nanoreactor
 T2 remain separate; a straight deterministic fixture is not that capability.
 

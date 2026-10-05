@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** R13 S1 snapshot correction is locally ready for root re-review: one SQL statement reads identity/version/cell/live atoms, including same-version import rewrites. Version bracketing was rejected because import versions can repeat. Selector/provenance/row-wise metric regressions retained; canonical DB seam covered. Root integration/exact-deploy dogfood remain. Separately accepted private k3 helper correction stays on its own branch; no k3/public/T2 work in this S1 correction. No live relaxation/regeneration.
+- **Next:** Root accepted S1 one-statement identity/version/cell/live-atom snapshot and private equal120 k3 copied-graph corrections for R14 assembly; integrated full gate and exact-deploy dogfood remain. Version bracketing was rejected because import versions can repeat. Every copied bond/face index is a local integer and each face a simple closed input bond walk before placement/mint. No public grammar/compiler/T2 expansion or live relaxation/regeneration.
 - **Blocked by:** Native plan-only table/lid read remains unavailable. Positive theta-p dogfood requires an actual recorded scene measurement; absent data is unknown. Live construction, relaxation and all scientific/hero holds remain. Source readiness is not deployed native acceptance.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.

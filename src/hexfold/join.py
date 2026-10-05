@@ -905,11 +905,24 @@ def _segment_frame(block: Block, rim: _ZigzagSegment) -> np.ndarray | None:
     if any(e != "C" for e in block.elements):
         return None
     if any(
-        i == j or not (0 <= i < len(pos) and 0 <= j < len(pos))
+        type(i) is not int
+        or type(j) is not int
+        or i == j
+        or not (0 <= i < len(pos) and 0 <= j < len(pos))
         for i, j, _ in block.bonds
     ):
         return None
     adj = _adjacency(block.bonds)
+    # Validate EVERY copied face before offsets can disguise a local
+    # out-of-range/negative index as a valid atom in a different block.
+    for ring in block.rings:
+        if (
+            len(ring) < 3
+            or any(type(i) is not int or not 0 <= i < len(pos) for i in ring)
+            or len(set(ring)) != len(ring)
+            or any(b not in adj.get(a, ()) for a, b in zip(ring, ring[1:] + ring[:1]))
+        ):
+            return None
     if any(b not in adj.get(a, ()) for a, b in pairwise(walk)):
         return None
     if any(len(adj.get(d, ())) != 2 for d in rim.dangling):

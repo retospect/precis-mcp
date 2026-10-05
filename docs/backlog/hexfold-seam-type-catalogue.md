@@ -27,6 +27,15 @@ syntax. The proposed authored syntax/round-trip checks below are a later
 port-grammar item, not this build's acceptance. Nonzero cyclic phase is
 refused for the finite segment; no wraparound or endpoint guessing.
 
+**Copied-graph admission:** every local bond endpoint and face vertex must
+be an integer in that block's range before concatenation/placement/mint.
+Each copied face has at least three unique vertices and follows real input
+bonds, including its closing edge. Negative/oversized cross-block aliases,
+float/bool indices, repeated vertices or invented/unclosed faces return the
+empty `port.mismatch` refusal. Focused regressions trap `_place_k3` for each
+case in each of the three input blocks. This extends input validation only;
+the accepted private helper scope does not add public grammar/compiler/T2.
+
 Nanoreactor T2 needs more than this fixture: named internal rails on a
 closed tube, their segment/closed-curve endpoint topology and registry,
 compatible attachment rails on the two reservoir sheets, placement around

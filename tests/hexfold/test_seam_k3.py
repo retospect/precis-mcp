@@ -286,3 +286,78 @@ def test_bad_segment_refused_before_placement(
         "fit.unsolvable" if bad == "sigma" else "port.mismatch"
     )
     assert not result.bonds and len(result.coords) == 0
+
+
+@pytest.mark.parametrize("block_index", [0, 1, 2])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "negative_ring",
+        "oversized_ring",
+        "float_ring",
+        "bool_ring",
+        "invented_walk",
+        "repeat_vertex",
+        "unclosed_walk",
+        "short_ring",
+        "float_bond",
+        "bool_bond",
+        "negative_bond",
+        "oversized_bond",
+    ],
+)
+def test_every_copied_graph_index_and_face_validated_before_mint(
+    monkeypatch: pytest.MonkeyPatch, block_index: int, bad: str
+) -> None:
+    monkeypatch.setattr(
+        join,
+        "_place_k3",
+        lambda *_: pytest.fail("invalid graph reached placement/mint"),
+    )
+    blocks, rims = inputs()
+    block = blocks[block_index]
+    original = copy.deepcopy(blocks)
+    face = list(block.rings[0])
+    if bad == "negative_ring":
+        face[0] = -1
+    elif bad == "oversized_ring":
+        # In block0 this aliases block2's first atom after concatenation.
+        face[0] = 2 * len(block.elements)
+    elif bad == "float_ring":
+        face[0] = float(face[0])  # type: ignore[call-overload]
+    elif bad == "bool_ring":
+        face[0] = True
+    elif bad == "invented_walk":
+        face = [0, 1, 2]  # valid local indices, no closed bond walk
+    elif bad == "repeat_vertex":
+        face.append(face[0])
+    elif bad == "unclosed_walk":
+        face = face[:-1]  # existing consecutive edges, missing closing bond
+    elif bad == "short_ring":
+        face = face[:2]
+    elif bad.endswith("bond"):
+        a, b, order = block.bonds[0]
+        replacement = {
+            "float_bond": float(a),
+            "bool_bond": True,
+            "negative_bond": -1,
+            "oversized_bond": len(block.elements),
+        }[bad]
+        block.bonds = ((replacement, b, order), *block.bonds[1:])  # type: ignore[arg-type]
+    if not bad.endswith("bond"):
+        block.rings = (tuple(face), *block.rings[1:])
+    malformed = copy.deepcopy(block)
+    result = call(blocks, rims)
+    assert result.findings[0].code == "port.mismatch"
+    assert result.findings[0].severity == Severity.ERROR
+    assert not result.seam_atoms and not result.elements and not result.bonds
+    assert result.coords.shape == (0, 3)
+    np.testing.assert_array_equal(block.coords, malformed.coords)
+    assert block.bonds == malformed.bonds and block.rings == malformed.rings
+    for i, untouched in enumerate(original):
+        if i != block_index:
+            np.testing.assert_array_equal(blocks[i].coords, untouched.coords)
+            assert (
+                blocks[i].bonds == untouched.bonds
+                and blocks[i].rings == untouched.rings
+            )
