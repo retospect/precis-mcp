@@ -153,6 +153,35 @@ class TestTaxonRead:
         assert "dimension_kind: si" in body
         assert "si_vector: 0,0,-1,0,0,0,0" in body
 
+    def test_boundary_examples_render_on_get_and_stay_out_of_the_card(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        rid = _created_id(
+            h.put(
+                text=TOF,
+                meta={
+                    "includes": ["CO oxidation cycles per Pt site per second"],
+                    "excludes": ["moles of product per gram per hour → zorbspecific"],
+                },
+            )
+        )
+        body = h.get(id=rid).body
+        assert "includes:\n- CO oxidation cycles" in body
+        assert "excludes:\n- moles of product" in body
+        with store.pool.connection() as conn:
+            card = conn.execute(
+                "select text from chunks where ref_id=%s and ord=-1", (rid,)
+            ).fetchone()
+        assert "zorbspecific" not in card[0]
+        assert "CO oxidation" not in card[0]
+
+    def test_boundary_examples_must_be_nonempty_strings(self, store: Any) -> None:
+        with pytest.raises(BadInput, match="excludes must be a list"):
+            _handler(store).put(text=TOF, meta={"excludes": "one string"})
+        with pytest.raises(BadInput, match="includes must be a list"):
+            validate_taxon_meta({"includes": ["ok", " "]})
+
     def test_definition_is_in_the_searchable_card_and_name_search_hits(
         self, store: Any
     ) -> None:

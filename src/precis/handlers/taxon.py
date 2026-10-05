@@ -54,6 +54,7 @@ from precis.protocol import KindSpec
 from precis.reading.concepts import normalize_name, split_name_def
 from precis.response import Response
 from precis.taxonomy.nodes import (
+    BOUNDARY_KEYS,
     STATUS_PROPOSED,
     initial_taxon_meta,
     slugify,
@@ -591,6 +592,9 @@ class TaxonHandler(NumericRefHandler):
             out += ["", meta["definition"]]
         if meta.get("aliases"):
             out += ["", "aka: " + ", ".join(meta["aliases"])]
+        for key in BOUNDARY_KEYS:
+            if meta.get(key):
+                out += ["", f"{key}:"] + [f"- {e}" for e in meta[key]]
         facts = [f"status: {meta.get('status', '?')}"]
         for key in ("dimension_kind", "si_vector", "canonical_unit"):
             if meta.get(key):

@@ -34,7 +34,10 @@ path-form ids. Truth for all of that lives in `handlers/taxon.py`,
   embeddings; calibrate against the 79 seeded nodes once prod has embedded
   their cards.
 - **`put(link=)` path form.** `get`, `under=` and `link(target=)` resolve
-  `measurand/temperature`; create-time `put(link=)` still needs `tn<id>`.
+  `measurand/temperature`; create-time `put(link=)` still needs `tn<id>`,
+  and so does `link(target='taxon:a/b')` from a non-taxon source
+  (`instance-of`): only `TaxonHandler.link` resolves paths, other kinds
+  fall to `parse_link_target`, which wants an integer.
 - **Fresh-DB bootstrap.** A DB built from the baseline marks 0174 applied
   without running it, so it has no start nodes (same class as the
   baseline-skips-seed-INSERTs gap). Lazily minting the two start nodes on

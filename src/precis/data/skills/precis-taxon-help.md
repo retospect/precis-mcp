@@ -24,7 +24,8 @@ kinds: [taxon]
 A `taxon` is a named term: a name, a one-sentence definition that states the
 whole meaning on its own, and optional structure (dimension, aliases, a
 required-key contract on root nodes). Handle `tn<id>`. Nodes form a hierarchy
-(a node can have several parents).
+(a node can have several parents). Which node to attach a ref to, when to
+mint, and how to keep siblings from overlapping: `precis-classify-help`.
 
 ## Add a term
 
@@ -59,6 +60,7 @@ Only these are accepted; any other key is refused and the allowed set is listed.
 | `si_vector` | seven comma-separated integers (SI base exponents), e.g. `"0,0,-1,0,0,0,0"`. Required with `dimension_kind='si'`, refused without it |
 | `canonical_unit`, `value_type`, `allowed_values`, `standard_ref`, `higher_is_better` | descriptive, stored as given |
 | `display_unit` | the unit people expect for a measurand (`Å`, `eV`, `%`, `µmol h⁻¹ cm⁻²`); measures are stored in SI (`canonical_unit`) and shown in this unit. A unit pint reads with the same dimension as `canonical_unit`; a `canonical_unit` pint cannot convert (`USD`, `pH`) allows only itself. See `precis-measure-help` |
+| `includes`, `excludes` | lists of non-empty strings: boundary examples that belong, and near-misses that do not (each naming the node it belongs to). Shown on `get`, not searched. How to write them: `precis-classify-help` |
 | `start`, `contract` | `start=true` marks a root; `contract={"required_keys": [...]}` only on a start node |
 | `legacy_source`, `applies_to_ref` | provenance and a pointer to the subject node |
 | `required_conditions` | list of condition names a measure of this term must have among its input rows (e.g. `["product", "potential"]`); allowed on any node, a descendant inherits its ancestors' names along `specialises`. A missing one flags the measure, never refuses it. Not the same as `contract.required_keys`, which binds taxon meta |
@@ -107,13 +109,14 @@ nodes seeded from the legacy registries whose dimension could not be mapped
 
 ## Address a node
 
-Anywhere an id is taken (`get`, `link(target='taxon:...')`, `search(under=)`):
+In `get`, `search(under=)` and `link(kind='taxon', target='taxon:...')`:
 `42`, `tn42`, `taxon:42`, or a path of names, slugs or aliases joined by `/`
 and never starting with one: `measurand/temperature` means a node
 `temperature` whose parent is `measurand`. A lone `temperature` is a plain
 term lookup. Several matches are refused with each candidate's handle and
 path; no match lists near candidates. A leading `/` is a list view
-(`/unrooted`, `/unmapped`, `/recent`).
+(`/unrooted`, `/unmapped`, `/recent`). A link from another kind
+(`rel='instance-of'`) and create-time `put(link=)` take the id only.
 
 ## Search
 

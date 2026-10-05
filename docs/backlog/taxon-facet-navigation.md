@@ -89,9 +89,12 @@ today's fields (definition text, aliases, `meta.axis`):
   read the siblings' excludes before choosing; use `other` instead of
   guessing; search aliases before minting; never mint a taxon to hold one
   item; never mint a combined (pre-coordinated) node.
-- *Definition shape:* genus + differentia naming the excluded sibling,
-  then `Includes:` and `Excludes:` lines in the definition text, in a
-  fixed shape slice 4 can parse.
+- *Definition shape:* genus + differentia naming the excluded sibling;
+  boundary examples in two new taxon meta keys `includes` / `excludes`
+  (lists of strings, rendered on `get`, kept out of the embedded card so
+  a near-miss naming a sibling does not pull that sibling's queries).
+  Built with slice 0 (2026-10-05) instead of parsing definition text in
+  slice 4.
 - *Reader (browse protocol):* start at the node, read `view='facets'`
   (slice 3; until then `search(kind='taxon', under=, depth=1)` per
   axis), cut on the axis that splits the set most evenly, add `q=` only

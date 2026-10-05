@@ -32,8 +32,13 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "legacy_source",
         "applies_to_ref",
         "required_conditions",
+        "includes",
+        "excludes",
     }
 )
+#: Boundary-example keys: shown on ``get``, kept out of the embedded card so
+#: a near-miss naming a sibling does not pull that sibling's queries.
+BOUNDARY_KEYS: tuple[str, ...] = ("includes", "excludes")
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
 HANDLER_KEYS: frozenset[str] = frozenset({"name", "norm_name", "slug"})
 ALLOWED_KEYS: frozenset[str] = CALLER_KEYS | HANDLER_KEYS
@@ -161,6 +166,17 @@ def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
             "required_conditions must be a list of non-empty strings",
             next="required_conditions=['product', 'potential']",
         )
+
+    for key in BOUNDARY_KEYS:
+        examples = out.get(key)
+        if examples is not None and (
+            not isinstance(examples, list)
+            or not all(isinstance(e, str) and e.strip() for e in examples)
+        ):
+            raise BadInput(
+                f"{key} must be a list of non-empty strings",
+                next=f"{key}=['a boundary example', 'a near-miss → tn<id>']",
+            )
 
     display = out.get("display_unit")
     if display is not None:
