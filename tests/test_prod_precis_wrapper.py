@@ -2,9 +2,15 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only bash wrapper and executable shell fixture",
+)
 
 
 @pytest.mark.parametrize(
@@ -26,15 +32,18 @@ def test_cloud_url_child_environment(
     secret_dir = tmp_path / "synthetic-home" / ".secrets" / "pw"
     secret_dir.mkdir(parents=True)
     (secret_dir / "PRECIS_DATABASE_URL").write_text(
-        "postgresql://fixture@host.docker.internal:1/fixture\n"
+        "postgresql://fixture@host.docker.internal:1/fixture\n", encoding="utf-8"
     )
     if file_url is not None:
-        (secret_dir / "PRECIS_LLM_BASE_URL").write_text(file_url + "\n")
+        (secret_dir / "PRECIS_LLM_BASE_URL").write_text(
+            file_url + "\n", encoding="utf-8"
+        )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_uv = fake_bin / "uv"
     fake_uv.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "url=${PRECIS_LLM_BASE_URL-unset}" "dsn=${PRECIS_DATABASE_URL-unset}" "args=$*"\n'
+        '#!/bin/sh\nprintf "%s\\n" "url=${PRECIS_LLM_BASE_URL-unset}" "dsn=${PRECIS_DATABASE_URL-unset}" "args=$*"\n',
+        encoding="utf-8",
     )
     fake_uv.chmod(0o755)
     env = {

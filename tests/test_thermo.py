@@ -144,7 +144,9 @@ def test_radical_subset_has_published_source_and_explicit_academic_notice() -> N
 
 def test_companion_mechanism_pin_distinguishes_raw_and_transformed_bytes() -> None:
     dataset = json.loads(
-        (Path(__file__).parents[1] / "src/precis/thermo/nasa7.json").read_text()
+        (Path(__file__).parents[1] / "src/precis/thermo/nasa7.json").read_text(
+            encoding="utf-8"
+        )
     )
     source = dataset["sources"]["Glarborg2018/thermo.dat"]
     assert source == REFERENCE["source_hashes"]["Glarborg2018/thermo.dat"]

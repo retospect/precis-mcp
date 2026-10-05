@@ -192,6 +192,26 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "incremental re-realize for edited segments; same unwired "
         "route-edit gap as rip_net"
     ),
+    "src/precis/pcb/snapshot.py::export_snapshot": (
+        "internal manual SELECT-only capture of raw routing inputs; "
+        "pcb/__init__.py documents dev/test replay instead of a public op, "
+        "and tests/test_pcb_snapshot.py exercises export/replay round trips"
+    ),
+    "src/precis/pcb/snapshot.py::load_snapshot": (
+        "internal dev/test fixture replay into a fresh slug, with database "
+        "and shared-cache guards in its own implementation; snapshot tests "
+        "exercise it, but no production handler or job should load fixtures"
+    ),
+    "src/precis/pcb/snapshot.py::canonical_json": (
+        "manual diagnostic fixture serializer with sorted keys and stable "
+        "JSON formatting; snapshot.py defines source-version-bound replay, "
+        "not a public export format or production serialization path"
+    ),
+    "src/precis/pcb/snapshot.py::read_snapshot": (
+        "internal JSON/gzip fixture reader used by test_pcb_snapshot.py and "
+        "test_pcb_escape_replay.py; snapshot.py explicitly excludes a public "
+        "op, so production ingest does not consume these diagnostic files"
+    ),
     "src/precis/pcb/tiling.py::expansion_rate_from_objective": (
         "Slice 5's copper-tiling engine (module docstring) -- not yet "
         "invoked from realize.py's copper-generation path (docs/backlog/"

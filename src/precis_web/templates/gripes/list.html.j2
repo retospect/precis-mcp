@@ -58,6 +58,9 @@
     ✓ Nothing marked won't-fix.
     {% elif status == 'all' %}
     ✓ No gripes filed yet.
+    {% elif status == 'live' %}
+    ✓ No live gripes. File friction as you hit it — use the form above, or
+    <span class="font-mono">put(kind='gripe', text='…')</span>.
     {% else %}
     ✓ No gripes with status {{ status }}.
     {% endif %}
