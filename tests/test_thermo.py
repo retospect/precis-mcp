@@ -7,6 +7,7 @@ import json
 import subprocess
 from fractions import Fraction
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,7 +19,9 @@ from precis.thermo.data import _evaluate, _records
 
 NO_TO_NH3 = "NO + 5/2 H2 -> NH3 + H2O"
 REFERENCE = json.loads(
-    (Path(__file__).parent / "fixtures/thermo/nasa7-reference.json").read_text()
+    (Path(__file__).parent / "fixtures/thermo/nasa7-reference.json").read_text(
+        encoding="utf-8"
+    )
 )
 
 
@@ -101,8 +104,10 @@ def test_temperature_dependence_and_reference_convention() -> None:
     low = reaction_energetics(NO_TO_NH3)
     high = reaction_energetics(NO_TO_NH3, T=1500)
     assert low.dH != high.dH and low.dS != high.dS
-    assert high.dG == pytest.approx(high.dH - 1500 * high.dS)  # type: ignore[operator]
-    assert high.dG > low.dG  # type: ignore[operator]
+    assert high.dH is not None and high.dS is not None
+    assert high.dG is not None and low.dG is not None
+    assert high.dG == pytest.approx(high.dH - 1500 * high.dS)
+    assert high.dG > low.dG
     for t in [298.15, 1000, 1500]:
         r = reaction_energetics("H2 + N2 + O2 -> H2 + N2 + O2", T=t)
         assert r.dH == pytest.approx(0, abs=1e-8)
@@ -169,8 +174,9 @@ def test_balance_energy_electron_scaling_consistency() -> None:
     same = reaction_energetics(NO_TO_NH3, n_electrons=5)
     doubled = reaction_energetics("2 NO + 5 H2 -> 2 NH3 + 2 H2O", n_electrons=10)
     assert auto.dH == same.dH and auto.dG == same.dG and auto.E == same.E
-    assert doubled.dH == pytest.approx(2 * same.dH)  # type: ignore[operator]
-    assert doubled.dG == pytest.approx(2 * same.dG)  # type: ignore[operator]
+    assert same.dH is not None and same.dG is not None
+    assert doubled.dH == pytest.approx(2 * same.dH)
+    assert doubled.dG == pytest.approx(2 * same.dG)
     assert pytest.approx(same.E) == doubled.E
     assert parse_equation("2NO + 5.0 H2 = 2NH3 + 2H2O").reactants[0].coef == 2
     assert parse_equation("NO + H2 -> NH3 + H2O").reactants[1].coef == Fraction(5, 2)
@@ -222,9 +228,10 @@ def test_garbage_and_charged_formulas_are_bad_input(eq: str) -> None:
     "value", [0, -5, float("inf"), float("-inf"), float("nan"), "garbage"]
 )
 def test_bad_physical_parameters(parameter: str, value: float | str) -> None:
-    kwargs = {parameter: value}
+    # Deliberately invalid runtime inputs exercise the rejection contract.
+    kwargs: dict[str, Any] = {parameter: value}
     with pytest.raises(BadInput):
-        reaction_energetics(NO_TO_NH3, **kwargs)  # type: ignore[arg-type]
+        reaction_energetics(NO_TO_NH3, **kwargs)
     with pytest.raises(BadInput):
         render_energetics(NO_TO_NH3, **kwargs)
 
