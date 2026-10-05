@@ -28,6 +28,7 @@ def _seed(
     slug: str,
     body: list[str],
     card_text: str,
+    title: str | None = None,
     embedder: MockEmbedder | None = None,
     embed_card: bool = False,
 ) -> tuple[int, list[int], int]:
@@ -35,7 +36,7 @@ def _seed(
 
     Returns ``(ref_id, body_block_ids, card_chunk_id)``.
     """
-    ref = store.insert_ref(kind="paper", slug=slug, title=slug)
+    ref = store.insert_ref(kind="paper", slug=slug, title=title or slug)
     e = embedder or MockEmbedder(dim=1024)
     blocks = store.chunks.insert_chunks(
         ref.id,
@@ -183,11 +184,15 @@ def test_handler_dedup_total_matches_rows_shown(store: Store) -> None:
 
 
 @pytest.mark.parametrize("cap", [1, 2])
-def test_capped_search_prefers_body_before_paging(store: Store, cap: int) -> None:
+@pytest.mark.parametrize("exact_title", [False, True])
+def test_capped_search_prefers_body_before_paging(
+    store: Store, cap: int, exact_title: bool
+) -> None:
     """A stronger card cannot steal a body slot; card-only papers survive."""
     _rid, body_ids, card_id = _seed(
         store,
         slug="body-match",
+        title="copper" if exact_title else None,
         body=["copper catalyst mechanism", "copper surface analysis"],
         card_text="copper " * 20,
     )
@@ -230,5 +235,13 @@ def test_capped_search_prefers_body_before_paging(store: Store, cap: int) -> Non
         )
         handle = handle_registry.try_format("paper", cid, chunk=True)
         assert handle is not None and handle in out.body
+        rows = [
+            line.split("\t", 1)[0]
+            for line in out.body.splitlines()
+            if line.startswith("pc")
+        ]
+        assert rows == [handle]
         assert card_handle not in out.body
         assert ("see more of the fused matches" in out.body) == (page < len(expected))
+        if exact_title and page == 1:
+            assert handle_registry.format_handle("paper", _rid) in out.body

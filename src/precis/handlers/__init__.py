@@ -8,6 +8,12 @@ sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
 
+Capped non-verbatim paper search keeps exact-title matches as record
+callouts without promoting rows. Its store-selected page already applies
+body preference and diversity caps; inserting a representative card after
+that slice could hide a ranked paper and repeat the title match on later
+pages. Uncapped title promotion retains its existing behavior.
+
 Memory authoring reuses ``utils.edit_resolve`` for anchored body edits.
 All handler body writes lock the owning ref; anchored writes also compare
 the previous body with the resolver's snapshot inside the transaction.

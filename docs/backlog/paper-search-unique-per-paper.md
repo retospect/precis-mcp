@@ -24,6 +24,11 @@ Acceptance: in non-verbatim broad paper search with `per_paper=1`, if a
 paper's card outranks its matching body chunk in the retrieved candidate
 pool, return the body chunk. Keep card-only matches and fill/paginate the
 result after this filtering. Larger caps retain the best body chunks.
+Exact-title matches must not reinsert a discarded card or replace another
+paper's ranked row on page one: capped non-verbatim search keeps title
+callouts without title-driven row promotion (review PAPER-R14-1). Test
+caps 1/2 with the title-matched paper's bodies beyond the first page and
+a card-only paper ahead of them; every expected chunk appears once.
 
 Implement an opt-in store `prefer_body` flag, enabled by the capped paper
 handler; filter redundant cards before the cap and offset/limit. Other

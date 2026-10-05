@@ -575,6 +575,7 @@ class FusedBlockSearch:
         q: str,
         kind: str,
         page_size: int,
+        promote_rows: bool = True,
     ) -> tuple[list[Any], list[tuple[str, str]], set[int]]:
         """Promote near-exact title matches to the front of ``hits``.
 
@@ -586,6 +587,11 @@ class FusedBlockSearch:
         by ref_id so a paper already in ``hits`` is reordered rather
         than duplicated. Best-effort: any lookup hiccup returns
         ``hits`` unchanged.
+
+        ``promote_rows=False`` retains only the record callout. Capped
+        paper search uses this to preserve its already-selected page:
+        injecting a representative card could undo body preference and
+        replace a ranked paper that no later page will return.
 
         Returns ``(hits, callout_lines, promoted_ref_ids)`` —
         ``promoted_ref_ids`` names the papers now at the front (newly
@@ -622,6 +628,8 @@ class FusedBlockSearch:
                 ref = refs_map.get(rid)
                 if ref is not None:
                     callouts.append(_title_match_line(ref))
+                if not promote_rows:
+                    continue
                 if rid in existing:
                     front.append(existing[rid])  # reorder, don't refetch
                     continue
@@ -910,6 +918,11 @@ class FusedBlockSearch:
         extra_queries = [s for s in (queries or []) if s and s.strip()]
         hyde_answers = [s for s in (answers or []) if s and s.strip()]
         per_paper_cap = per_paper  # validated by the caller (positive int, no bool)
+        capped_body_search = (
+            kind == "paper"
+            and per_paper_cap is not None
+            and (mode or "hybrid").strip().lower() != "verbatim"
+        )
         broad = bool(extra_queries or hyde_answers) or per_paper_cap is not None
         # ``broad_has_more``: the fused candidate list extended past this
         # page's slice (probed via limit+1 below). Broad mode's pagination
@@ -965,7 +978,7 @@ class FusedBlockSearch:
                 year_to=year_to,
                 card_kinds=("card_combined",),
                 per_paper=per_paper_cap,
-                prefer_body=kind == "paper" and per_paper_cap is not None,
+                prefer_body=capped_body_search,
             )
             _log.debug(
                 "paper search: SQL legs stage (broad, mode=%s, %d legs) took %.3fs",
@@ -1045,7 +1058,11 @@ class FusedBlockSearch:
             and not normalized_tags
         ):
             hits, title_matches, _promoted = self._inject_title_matches(
-                hits, q=q, kind=kind, page_size=page_size
+                hits,
+                q=q,
+                kind=kind,
+                page_size=page_size,
+                promote_rows=not capped_body_search,
             )
 
         # When a publish-date filter is active, count papers that match
