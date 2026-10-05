@@ -54,6 +54,9 @@ scoped container types (8 files) and Ruff/format (9 files) passed. The real-stor
 inverse test caught `fetch_refs_by_ids` including deleted refs by default;
 the person view explicitly requests live refs only. The focused registry walk
 also proves repeated file-detail opens preserve stored snapshots. Actual
-Chromium dev navigation and production-count receipt are recorded in the
-shared ready inbox after their checks; production/authenticated deployment
-and full release gate remain coordinator-owned.
+fresh Chromium151 dev navigation passed on source1767d720e: both all-kind
+Drive rows open, ORCID identifier/held paper render, legacy agentlog alias
+redirects, zero JavaScript/console errors. Exact template hash and browser
+receipts are in the shared ready inbox. Production count inventory remains
+pending the coordinator read; authenticated deployment/full release gate
+remain coordinator-owned.

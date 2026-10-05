@@ -7,8 +7,10 @@ R14 sort-unify and kind-buckets are pushed separate candidates; review remains
 coordinator-owned. Discover/correction commits and Return/Showcase storage
 proposal are immutable; no new personal-history/collection implementation.
 
-Next: finish R15 focused checks and actual dev Chromium navigation; provide
-exact branch/commit/coverage in shared drive-ux-refs-kind-gate-ready inbox.
+Next: coordinator independent review of R15 source1767d720e and integration
+selection. Shared drive-ux-refs-kind-gate-ready inbox has the exact SHA/receipts.
+Evidence: 483 focused checks, scoped types/Ruff, fresh actual dev Chromium
+Drive ORCID/agentlog navigation all pass; browser reports zero JS errors.
 Blocker: read-only production count inventory requested from coordinator;
 no production DB/auth credentials inferred. Independent review/full gate and
 release metadata/integration/deploy belong to coordinator.
