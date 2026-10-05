@@ -80,6 +80,30 @@ Promotion of a relation is NOT a row flip: it emits a migration-proposal
 `todo` (`waiting-for:reto`) because the relation registry changes only by
 migration.
 
+### Sibling disjointness (Reto 2026-10-05, with `taxon-facet-navigation.md`)
+
+On an axis declared `exclusive`, siblings must not overlap in meaning.
+The trigger for merge/split work there is measured confusion, not child
+count (a soft cap of about 50 children per axis is for token cost only).
+Three signals flag a sibling pair:
+
+- **Confusion** — two classification runs (or a cheap and a strong model)
+  over the same items swap the pair's labels. This is the
+  taxonomy-bootstrap cross-run agreement, broken down per pair; the probe
+  runs already produce the inputs.
+- **Shared instances** — one item `instance-of` both siblings on an
+  exclusive axis.
+- **Definition distance** — embedding similarity of the two definitions;
+  early warning only.
+
+A flagged pair gets one of four proposals: **merge** (one becomes an
+alias), **sharpen** (add `Excludes:`/`Includes:` boundary examples, then
+re-run the discrimination test), **re-axis** (the distinction belongs on
+another axis), **re-parent** (the pair is parent and child). Merge and
+re-axis rewrite edges, so they go through the review rule below; a
+sharpen that passes the discrimination test may apply on the `reviews`
+ledger alone.
+
 **Only edges near a new boundary get the per-edge read** after a merge or
 split; the rest are remapped in bulk.
 
@@ -133,6 +157,9 @@ applies unchanged here.
    as an alias; undo restores both nodes and every repointed mention.
 5. A pass over a clean graph emits zero proposals and zero log entries,
    and cools after the configured number of empty runs.
+6. Two seeded siblings on an exclusive axis whose labels swap across two
+   classification runs yield one proposal (merge, sharpen, re-axis or
+   re-parent) carrying the per-pair confusion; a clean pair yields none.
 
 ## Target + blast radius
 
