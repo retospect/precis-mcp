@@ -174,6 +174,11 @@ Explicit chunk pins retain precedence; malformed, ref-only or foreign
 pins must not display an unrelated passage. No model calls, refresh,
 worker changes, schema changes or new approval gate.
 
+Review regression: digit-like Unicode metadata such as `fb²` must remain
+an unavailable passage, not raise from registry integer conversion and
+break the claim GET. Catch that conversion failure locally; valid typed
+handles and explicit pins still resolve, and approval stays non-blocking.
+
 Acceptance for this slice (the third criterion above, stored-results
 portion): a planted opposing claim linked by the worker's metadata shape
 shows its passage, support verdict and reasoning before the approve form;

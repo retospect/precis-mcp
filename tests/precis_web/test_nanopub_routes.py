@@ -87,8 +87,12 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert 'id="np-review"' in deep.text
 
 
+@pytest.mark.parametrize("source_handle", [None, "fb²"])
 def test_stored_conflict_visible_before_approval_without_blocking(
-    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    runtime_with_store,
+    monkeypatch: pytest.MonkeyPatch,
+    source_handle: str | None,
 ) -> None:
     """A worker-shaped opposing-claim edge is advice before freeze, not a veto."""
     import json
@@ -119,7 +123,8 @@ def test_stored_conflict_visible_before_approval_without_blocking(
         dst_ref_id=hub,
         relation="disputes",
         meta={
-            "source_handle": format_handle("finding", int(row[0]), chunk=True),
+            "source_handle": source_handle
+            or format_handle("finding", int(row[0]), chunk=True),
             "support": "no",
             "support_reason": "reports the opposite outcome <unreviewed>",
             "via": "conflict_search",
@@ -130,7 +135,11 @@ def test_stored_conflict_visible_before_approval_without_blocking(
     assert response.status_code == 200, response.text
     assert "Recorded support verdict: no (advisory)" in response.text
     assert "Reason: reports the opposite outcome &lt;unreviewed&gt;" in response.text
-    assert f"“{opposition}”" in response.text
+    if source_handle is None:
+        assert f"“{opposition}”" in response.text
+    else:
+        assert "No passage pinned on the disputes edge." in response.text
+        assert f"“{opposition}”" not in response.text
     assert response.text.index("Recorded support verdict") < response.text.index(
         f'action="/nanopub/fi{hub}/approve"'
     )

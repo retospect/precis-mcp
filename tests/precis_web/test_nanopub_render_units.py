@@ -199,6 +199,7 @@ def test_dispute_panel_returns_disputes_edge_entries_with_counterpart_info(
         dst_ref_id=hub,
         src_pos=0,
         relation="disputes",
+        meta={"source_handle": "fb²"},  # Explicit pin wins over malformed fallback.
     )
 
     entries = _dispute_panel(store, hub)
@@ -258,7 +259,7 @@ def test_dispute_panel_resolves_passage_from_meta_source_handle(
 
 
 @pytest.mark.parametrize(
-    "pin", ["malformed", "ref", "wrong-kind", "foreign", "missing"]
+    "pin", ["malformed", "unicode-digit", "ref", "wrong-kind", "foreign", "missing"]
 )
 def test_dispute_panel_does_not_misattribute_invalid_metadata_pins(
     store: Any, pin: str
@@ -272,6 +273,7 @@ def test_dispute_panel_does_not_misattribute_invalid_metadata_pins(
     _, foreign_chunk, _ = _seed_paper(store)
     handle = {
         "malformed": "pcbogus",
+        "unicode-digit": "fb²",
         "ref": f"pa{chunk}",
         "wrong-kind": f"fb{chunk}",
         "foreign": f"pc{foreign_chunk}",

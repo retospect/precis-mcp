@@ -860,7 +860,12 @@ def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
         if col is not None:
             return col
         handle = str((e.meta or {}).get("source_handle") or "")
-        parsed = handle_registry.parse(handle)
+        try:
+            parsed = handle_registry.parse(handle)
+        except ValueError:
+            # Stored advisory metadata may contain digit-like Unicode
+            # (e.g. fb²) that the registry cannot convert to an integer.
+            return None
         if parsed is not None and parsed[0] == e.kind and parsed[1]:
             return parsed[2]
         return None
