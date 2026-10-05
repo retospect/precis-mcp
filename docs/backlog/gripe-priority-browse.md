@@ -20,3 +20,18 @@ and provide a working call for the current shape. No schema changes.
 Tests through tools + runtime: recency recovery, stable priority pages incl
 unset/default/ties, status filters across three kinds; source-search regressions.
 Coordinator owns full release/version gate; no deployment/closure claim.
+
+## gr468293 — Reto-expanded live browse contract
+
+Native open, stored priority2, linked gr468266; claimed wip. Queryless
+status/tag or unfiltered browse defaults to nonterminal for todo/gripe/quest/alert.
+Explicit status or lifecycle tag (including terminal), or status='*', overrides
+that default. Preserve ranked-search defaults. Todo terminals done/won't-do/
+abandoned; gripe done/wontfix; quest abandoned (dormant stays visible); alert
+alert-state:resolved. Alerts use open tags, not STATUS; status='closed' is a
+read shorthand for resolved. Show actual per-row lifecycle in one bulk tag
+query, and exact hidden terminal count for the requested tag scope, before
+SQL LIMIT/OFFSET. No close/tag cleanup mutations; housekeeping24 owns those.
+Negative tag filters compose internally in list/count SQL; no schema/endpoint
+changes. Regression each lifecycle/opt-out/explicit-state/empty page/priority
+composition, real synthetic DB, and memory/ranked/source behavior preserved.

@@ -84,6 +84,15 @@ _SUMMARY_MAX_CHARS = 180
 _SENTENCE_TERMINATORS = (". ", "! ", "? ")
 
 
+# Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
+_BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
+    "todo": ("STATUS:done", "STATUS:won't-do", "STATUS:abandoned"),
+    "gripe": ("STATUS:done", "STATUS:wontfix"),
+    "quest": ("STATUS:abandoned",),
+    "alert": ("alert-state:resolved",),
+}
+
+
 def _extract_summary(body: str) -> tuple[str, int]:
     """Return ``(summary, remaining_words)`` for the list-view TOON row.
 
@@ -473,7 +482,21 @@ class NumericRefHandler(Handler):
         # the effective tag filter. An explicit status= always applies;
         # the implicit default only fires when the caller neither passed
         # status= nor already pinned a STATUS: tag; status='*' opts out.
-        effective_tags, status_note = self._apply_status_default(status, tags)
+        browse = (
+            not (q and q.strip()) and self.kind in _BROWSE_TERMINALS and link is None
+        )
+        explicit_state = status is not None or any(
+            t.strip().startswith("STATUS:")
+            or (self.kind == "alert" and t.strip().startswith("alert-state:"))
+            for t in (tags or [])
+        )
+        excluded = (
+            list(_BROWSE_TERMINALS[self.kind]) if browse and not explicit_state else []
+        )
+        if excluded:
+            effective_tags, status_note = tags, "(default: live statuses)"
+        else:
+            effective_tags, status_note = self._apply_status_default(status, tags)
 
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
@@ -488,7 +511,7 @@ class NumericRefHandler(Handler):
         # degrade to a recency-ordered list, which is what the user
         # wanted in the first place.
         if q is None or not q.strip():
-            if normalized_tags or sort is not None:
+            if normalized_tags or sort is not None or browse:
                 return self._list_by_tags(
                     normalized_tags or [],
                     page_size=page_size,
@@ -496,6 +519,7 @@ class NumericRefHandler(Handler):
                     offset=offset,
                     page=page,
                     sort=sort or "recency",
+                    exclude_tags=excluded,
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -649,6 +673,18 @@ class NumericRefHandler(Handler):
         as the closed axis (a mixed-case ``Status:`` parses as an open
         tag, so it must not suppress the default).
         """
+        if self.kind == "alert" and status is not None and status != "*":
+            state = "resolved" if status == "closed" else status
+            if state not in {"open", "resolved"}:
+                raise BadInput(
+                    "alert status must be open, resolved, closed or *",
+                    next="search(kind='alert', status='*')",
+                )
+            alert_tags = [
+                t for t in (tags or []) if not t.strip().startswith("alert-state:")
+            ]
+            alert_tags.append(f"alert-state:{state}")
+            return alert_tags, ""
         effective: list[str] = list(tags) if tags else []
         has_status_tag = any(t.strip().startswith("STATUS:") for t in effective)
         explicit = status is not None
@@ -704,6 +740,7 @@ class NumericRefHandler(Handler):
         offset: int = 0,
         page: int = 1,
         sort: str = "recency",
+        exclude_tags: list[str] | None = None,
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -720,18 +757,25 @@ class NumericRefHandler(Handler):
         (gripe gr204291: ``page=`` was accepted but dropped on the floor
         for every tag-scoped/status-scoped listing).
         """
+        filters: dict[str, Any] = {"exclude_tags": exclude_tags} if exclude_tags else {}
         refs = self.store.list_refs(
             kind=self.kind,
             tags=tags,
             limit=page_size,
             offset=offset,
             order_by="prio_asc" if sort == "prio" else "updated_desc",
+            **filters,
         )
         # Total tagged population (list_refs caps at page_size) so the
         # header can flag pagination the same way the ranked path does,
         # and so a beyond-the-end page can say "still N total" rather
         # than misreporting an empty tag set.
-        total = self.store.count_refs(kind=self.kind, tags=tags)
+        total = self.store.count_refs(kind=self.kind, tags=tags, **filters)
+        if exclude_tags:
+            hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
+            note = (
+                note + f"\n{hidden} terminal entries hidden; status='*' to include"
+            ).strip()
         if not refs:
             if page > 1 and total > 0:
                 # Past the last page — total is still positive, so this
@@ -1963,18 +2007,28 @@ class NumericRefHandler(Handler):
         if not refs:
             return ""
         link_counts = self.store.count_links_for_refs([r.id for r in refs])
+        lifecycle = self.kind in _BROWSE_TERMINALS
+        tag_rows = self.store.ref_tags_bulk([r.id for r in refs]) if lifecycle else {}
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
         for r in refs:
             body = r.title or ""
             summary, remaining_words = _extract_summary(body)
             age_days = max(0, (now - r.updated_at).days)
+            state = "unspecified"
+            if lifecycle:
+                for ns, val in tag_rows.get(r.id, []):
+                    if ns == "STATUS":
+                        state = val
+                    elif self.kind == "alert" and val.startswith("alert-state:"):
+                        state = val.partition(":")[2]
             rows.append(
                 {
                     "kind": self.kind,
                     # the universal handle (e.g. ``me158``) is the
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
+                    **({"status": state} if lifecycle else {}),
                     "summary": summary,
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
@@ -1982,6 +2036,8 @@ class NumericRefHandler(Handler):
                 }
             )
         schema = ["kind", "id", "summary", "remaining_words", "links", "age"]
+        if lifecycle:
+            schema.insert(2, "status")
         return render_agent_table(rows, schema=schema)
 
     def _render_create_ack(self, ref_id: int) -> Response:

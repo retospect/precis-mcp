@@ -53,8 +53,9 @@ Search before you file. Duplicates are OK but the existing thread
 often has the context you'd otherwise rediscover. Body text and
 every comment chunk are searchable.
 
-**`STATUS:open` is the default filter.** A bare `search(kind='gripe',
-…)` shows only open gripes — the everyday "what's still open?" shape.
+**Queryless browse defaults to live statuses** (hiding done/wontfix), with
+status per row and an exact hidden count. Query-based search retains its
+`STATUS:open` default.
 The response header names the default so it's never silent. Override it:
 
 ```python

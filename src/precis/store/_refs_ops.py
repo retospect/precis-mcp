@@ -2326,6 +2326,7 @@ class RefsMixin:
         provider: str | None = None,
         updated_after: datetime | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
@@ -2393,6 +2394,10 @@ class RefsMixin:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for tag in exclude_tags or []:
+            excluded_frag, excluded_params = build_tag_filter([tag], ref_alias="r")
+            clauses.append(f"NOT ({excluded_frag})")
+            params.extend(excluded_params)
 
         order_sql = self._LIST_ORDER_BY.get(
             order_by, self._LIST_ORDER_BY["updated_desc"]
@@ -2939,6 +2944,7 @@ class RefsMixin:
         kind: str | None = None,
         provider: str | None = None,
         tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
     ) -> int:
         """Count active (not soft-deleted) refs, optionally filtered.
 
@@ -2962,6 +2968,10 @@ class RefsMixin:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        for tag in exclude_tags or []:
+            excluded_frag, excluded_params = build_tag_filter([tag], ref_alias="r")
+            clauses.append(f"NOT ({excluded_frag})")
+            params.extend(excluded_params)
         sql = "SELECT count(*) FROM refs r WHERE " + " AND ".join(clauses)
         with self.pool.connection() as conn:
             row = conn.execute(sql, params).fetchone()

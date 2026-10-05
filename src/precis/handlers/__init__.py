@@ -70,6 +70,12 @@ Queryless gripe/todo/quest status/tag browse accepts recency and priority.
 Runtime keeps these reads out of query-based source search; priority ordering
 runs before SQL pagination, with unset priority at 5 and ref-id ties.
 
+Lifecycle browse defaults to live rows without changing ranked defaults:
+explicit status/tags or status='*' include terminal history. Shared list/count
+SQL excludes terminal tags before paging and reports their exact hidden count.
+Rows expose real state from a bulk tag read; alerts retain alert-state tags.
+Closing/tag cleanup belongs to the write owner, never to a browse request.
+
 The todo tree
 =============
 

@@ -489,3 +489,9 @@ Status/tag filters and pagination compose with either sort.
 search(kind='gripe', status='open', sort='prio', page_size=20)
 search(kind='todo', tags=['waiting-for:reto'], sort='recency')
 ```
+
+Queryless lifecycle browse (`todo`, `gripe`, `quest`, `alert`) defaults to live
+rows, shows their status and reports terminal entries hidden by your tag scope.
+Pass `status='*'`, a specific status, or an explicit lifecycle tag to include
+terminal history. Dormant quests remain live; abandoned quests do not. Alerts
+use `alert-state:` tags; `status='resolved'` (or `'closed'`) reads their history.
