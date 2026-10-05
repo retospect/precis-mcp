@@ -242,7 +242,9 @@ laundered into a draft.
 **A claim can move backwards.** When the widening pass attaches a
 `contradicts` edge, the hub's publish posture follows the evidence: a
 `reviewed`/`signed` hub reopens to `candidate` (it must earn approval
-again), while an `anchored`/`published` one cannot be reopened — its
+again). This legacy signed demotion still needs alignment: signing is now
+the correction boundary; never use reopen to edit a signed claim. An
+`anchored`/`published` claim cannot be reopened — its
 bytes are frozen — so it raises an alert for a human to supersede or
 retract. So a `state` you read yesterday is not a promise about today;
 re-check before citing.
@@ -398,9 +400,10 @@ hub in place (rejects a plain finding); see `precis-taproot-mint-help`'s
 (`{}` clears it; only the `scope` key is accepted; `dry_run=True`
 previews) — scope is part of the hub's identity, so it re-derives the
 `pub_id` and keeps the old one as an alias, like a retitle; see
-`precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=` sharpen a still-`candidate`
-hypothesis's falsification terms (rejected on any other finding, or once
-a human has reviewed it) — see `precis-nanopub-help`'s "Sharpening".
+`precis-taproot-hub-edit-help`'s "Rescope a hub". `testable_by=`/`motivation=`
+sharpen an unsigned (`candidate`/`reviewed`) hypothesis's falsification terms.
+Unsigned edits reopen its review and flag/list consumers; signed claims refuse.
+See `precis-nanopub-help`'s "Sharpening".
 `unacquirable_note=`
 records a **claim-level** declaration — an author assertion about THIS
 claim, never inherited from its source paper — that a print-only/

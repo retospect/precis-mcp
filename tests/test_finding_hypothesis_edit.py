@@ -4,7 +4,7 @@ hypothesis's falsification terms (gr263258).
 DB-backed (real `refs`/`links`/`ref_tags` via the `store` fixture); no LLM.
 Companion to `test_finding_hypothesis_put.py` (the mint side); this file
 covers the edit door: the ordinary-finding rejection, the happy path
-(payload patch + history), and the already-reviewed/signed refusal.
+(payload patch + history), unsigned review reopening, and signed refusal.
 """
 
 from __future__ import annotations
@@ -135,12 +135,9 @@ def test_sharpen_refused_on_an_ordinary_finding(store: Store) -> None:
         _handler(store).edit(id=ref_id, testable_by="anything")
 
 
-def test_sharpen_refused_once_the_publish_row_left_candidate(store: Store) -> None:
-    """`nanopub/mint.py::approve` freezes ``testable_by``/``motivation``
-    into the review row's ``grounding`` the moment a human reviews it
-    (``state='reviewed'``) — well before ``sign``. A live edit past that
-    point would silently diverge from what was reviewed, so the door
-    refuses as soon as the row leaves ``candidate``."""
+@pytest.mark.parametrize("state", ["reviewed", "signed", "anchored", "published"])
+def test_sharpen_signing_boundary(store: Store, state: str) -> None:
+    """Unsigned review reopens; signed content refuses without mutation."""
     hub_id = _mint_hypothesis(store)
     ref = store.fetch_refs_by_ids([hub_id])[hub_id]
     payload = ref.meta[META_PROPOSED_PAYLOAD]
@@ -154,13 +151,40 @@ def test_sharpen_refused_once_the_publish_row_left_candidate(store: Store) -> No
         grounding=payload,
     )
 
-    with pytest.raises(BadInput, match="candidate"):
-        _handler(store).edit(id=hub_id, testable_by="too late now")
-
-    # Nothing was written — the parked payload is untouched.
-    ref = store.fetch_refs_by_ids([hub_id])[hub_id]
-    assert ref.meta[META_PROPOSED_PAYLOAD]["testable_by"] == payload["testable_by"]
-    assert "testable_by_history" not in ref.meta
+    consumer = seed_ref(store, kind="todo", title="Review hypothesis")
+    store.add_link(
+        src_ref_id=consumer, dst_ref_id=hub_id, relation="related-to", set_by="system"
+    )
+    if state != "reviewed":
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE nanopub_publish SET state = %s WHERE id = %s", (state, row.id)
+            )
+        with pytest.raises(BadInput, match="signed bytes"):
+            _handler(store).edit(id=hub_id, testable_by="too late now")
+        ref = store.fetch_refs_by_ids([hub_id])[hub_id]
+        assert ref.meta[META_PROPOSED_PAYLOAD]["testable_by"] == payload["testable_by"]
+        assert "testable_by_history" not in ref.meta
+        assert (
+            "claim_review_required"
+            not in store.fetch_refs_by_ids([consumer])[consumer].meta
+        )
+    else:
+        response = _handler(store).edit(id=hub_id, testable_by="sharper test")
+        assert f"needs re-review because fi{hub_id}" in response.body
+        updated = store.nanopub_publish_row(hub_id)
+        assert (
+            updated is not None
+            and updated.id == row.id
+            and updated.state == "candidate"
+        )
+        assert updated.grounding == {}
+        assert (
+            f"fi{hub_id}"
+            in store.fetch_refs_by_ids([consumer])[consumer].meta[
+                "claim_review_required"
+            ]
+        )
 
 
 def test_sharpen_and_other_ops_are_mutually_exclusive(store: Store) -> None:

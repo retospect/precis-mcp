@@ -472,18 +472,11 @@ def mint_hub(
 
 
 class HubFrozenError(ValueError):
-    """A reword/rescope refused because the hub has an ``anchored`` or
-    ``published`` nanopub: the artifact is irreversible, so changing the live
-    hub's sentence or scope would silently diverge it from what was
-    published. The honest move is a supersede, not an edit."""
+    """A content edit refused because the hub has signed nanopub bytes.
 
-
-#: Publish states whose artifact is irreversible — :func:`refine_claim_sentence`
-#: refuses a hub carrying a live row in one of them. ``reviewed``/``signed``
-#: stay editable: the mint drift gate (``nanopub/gates.py::check_drift``)
-#: catches a changed sentence before anything irreversible happens, and
-#: approve's own title override goes through this door.
-_IRREVERSIBLE_STATES = ("anchored", "published")
+    Changing live content would diverge it from the immutable artifact;
+    correction requires a successor rather than an in-place edit.
+    """
 
 
 def refine_claim_sentence(
@@ -532,15 +525,19 @@ def refine_claim_sentence(
         :func:`~precis.taproot.notation.lint_notation`'s advisory warnings
         for the new sentence (never blocks, never rewrites).
 
-    Refuses (:class:`HubFrozenError`) a hub with a live ``anchored`` or
-    ``published`` ``nanopub_publish`` row — its identity is in an
+    Flags every live graph user for re-review in the same transaction and
+    returns the affected list in ``needs_review``. An unsigned reviewed row
+    returns to candidate in place; unchanged edits do not invalidate reviews.
+
+    Refuses (:class:`HubFrozenError`) a hub with a ``signed``, ``anchored`` or
+    ``published`` row, or a live row with a historical signed artifact — its identity is in an
     irreversible artifact; supersede it instead. A bulk caller (a notation
     repair sweep) catches that, skips the hub and reports it.
 
     Raises:
         ValueError: not a live ``TAPROOT:claim`` hub, empty ``sentence``, or
             the new pub_id belongs to a different ref.
-        HubFrozenError: the hub's nanopub is anchored or published.
+        HubFrozenError: the hub's nanopub has already been signed.
         TitleRoundTripError: the written title didn't read back equal.
     """
     stripped = sentence.strip() if sentence else ""
@@ -550,17 +547,10 @@ def refine_claim_sentence(
     def _do(c: Any) -> dict[str, Any]:
         if not _is_claim_hub(hub_ref_id, conn=c):
             raise ValueError(f"ref_id={hub_ref_id} is not a TAPROOT:claim hub")
-        frozen = c.execute(
-            "SELECT state FROM nanopub_publish WHERE claim_ref_id = %s "
-            "AND state = ANY(%s) LIMIT 1",
-            (hub_ref_id, list(_IRREVERSIBLE_STATES)),
-        ).fetchone()
-        if frozen is not None:
-            raise HubFrozenError(
-                f"fi{hub_ref_id} has a {frozen[0]} nanopub — its sentence and "
-                "scope are in an irreversible artifact; supersede it instead of "
-                "editing the hub"
-            )
+        from precis.taproot import consumer_review
+
+        users = consumer_review.lock_users(c, hub_ref_id)
+        consumer_review.require_unsigned(c, hub_ref_id)
 
         row = c.execute(
             "SELECT title, meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
@@ -577,6 +567,38 @@ def refine_claim_sentence(
         )
 
         new_title = stripped
+        if new_title == old_title and effective_scope == dict(
+            current_meta.get("scope") or {}
+        ):
+            return {
+                "hub_ref_id": hub_ref_id,
+                "old_title": old_title,
+                "new_title": new_title,
+                "pub_id": make_pub_id(
+                    make_taproot_hub_paper_id(new_title, effective_scope)
+                ),
+                "pub_id_alias_kept": False,
+                "notation": lint_notation(new_title),
+                "needs_review": [],
+            }
+        # Body replacement deletes old chunk rows and FK-cascades their
+        # links. Until retargeting is supported, refuse rather than silently
+        # orphan a chunk-level user. Ref-level citations remain supported.
+        chunk_links = c.execute(
+            "SELECT 1 FROM links l JOIN chunks ch ON "
+            "(l.src_chunk_id = ch.chunk_id OR l.dst_chunk_id = ch.chunk_id) "
+            "WHERE ch.ref_id = %s AND (ch.chunk_kind = 'finding_body' OR ch.ord < 0) LIMIT 1",
+            (hub_ref_id,),
+        ).fetchone()
+        if chunk_links or any("chunk-reference" in u["relations"] for u in users):
+            raise BadInput(
+                f"fi{hub_ref_id} has chunk-level users; an in-place edit would orphan them",
+                next="chunk-linked claim edits need reference retargeting support; no changes made",
+            )
+        # Invalidate an unsigned approval without creating a version row.
+        # Keeping the same transaction prevents a signer from winning a stale
+        # reviewed→signed CAS after the edit has committed.
+        consumer_review.reopen_unsigned(c, hub_ref_id)
         store.update_ref(
             hub_ref_id,
             title=new_title,
@@ -635,6 +657,7 @@ def refine_claim_sentence(
             "pub_id": new_pub_id,
             "pub_id_alias_kept": alias_kept,
             "notation": lint_notation(new_title),
+            "needs_review": consumer_review.invalidate(store, c, hub_ref_id, users),
         }
 
     if conn is not None:

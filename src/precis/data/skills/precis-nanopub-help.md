@@ -8,7 +8,7 @@ answers:
   - can I mint or sign a nanopub myself as an agent?
   - how do I propose a hypothesis for a human to review?
   - how do I check my payload against the mint gates without approving?
-  - why can't I edit a hub that's already reviewed or published?
+  - when does signing freeze a claim's content?
   - why does a claim hub show as unmintable?
 applies-to: get (kind='finding', view='nanopub'|'mint-preflight'); put (kind='finding', hypothesis=True); precis nanopub CLI (human-run); reading publish state
 status: active
@@ -45,18 +45,13 @@ missing results do not establish that no opposition exists.
   `reviewed`). A hub with a live `contradicts` edge renders an
   UNMINTABLE warning — disputed claims are visible internally,
   unpublishable externally, until adjudicated by artifacts.
-- **State moves backwards too.** When the widening pass attaches a
-  `contradicts` edge, the hub's posture follows the evidence: a
-  `reviewed` or `signed` hub is reopened to `candidate` (the frozen
-  string/artifact pointer is discarded; the append-only artifact row
-  stays) and has to be approved again against the new evidence. Editing
-  the hub's title has the same reopening effect — never edit a
-  `reviewed`-or-later hub to "fix" its wording; propose the change
-  instead. Past the anchor nothing reopens — an anchored/published
-  artifact's bytes are frozen and a third party holds the trusty URI —
-  so an alert is raised for a human to supersede or retract instead. A
-  state you read earlier is not a promise about now; re-read before
-  acting on it.
+- **Signing is the correction boundary.** Candidate/reviewed claims are
+  internal: edit in place, returning unsigned approvals to candidate and
+  flagging their consumers for re-review. Once signed, correct through a
+  successor nanopublication (`npx:supersedes`), including anchored/published
+  predecessors. Existing bytes and proofs remain immutable. Legacy signed
+  reopen/demotion paths still need alignment; do not use them to change a
+  signed claim. Re-read the current state before acting.
 - `get(kind='finding', id='fi<id>', view='mint-preflight')` — run the
   **real** mint gates read-only and get the violation list back. Pass a
   candidate envelope as `args={'payload': {...}}`; omit it and whatever
@@ -154,11 +149,12 @@ envelope so the human's approve form comes pre-filled. Confirm with
 sentence) against what you parked.
 
 **Sharpening.** `motivation=`/`testable_by=` aren't frozen at mint: while
-the hub's publish row is still `candidate`, `edit(kind='finding',
+the claim is unsigned (`candidate`/`reviewed`), `edit(kind='finding',
 id='fi<N>', testable_by=…)` (and/or `motivation=…`) patches the parked
 envelope and keeps the prior wording in `meta.testable_by_history` /
-`meta.motivation_history`. Refused once a human has reviewed it
-(`state != 'candidate'`) — mint a fresh hypothesis instead.
+`meta.motivation_history`. An unsigned review reopens in place and consumers
+are flagged/listed for re-review. Once signed, correction requires a successor
+nanopublication; this edit door refuses.
 
 ## Mint gates (why a claim you drafted may not mint)
 
@@ -258,8 +254,8 @@ preflight list, `precis nanopub check` and `precis nanopub sign` warn
 claim names that no grounding passage carries, and name up to three chunks
 of the hub's papers that do, figure captions and methods first. Sign
 refuses when evidence was attached after the grounding froze (gate
-`grounding-stale`); re-review with `precis nanopub reopen fi<id>` then
-approve again, or sign with the explicit confirm after checking the newer
+`grounding-stale`); for an unsigned row, re-review with
+`precis nanopub reopen fi<id>` then approve again, or sign with the explicit confirm after checking the newer
 evidence. A row approved before 2026-10-04 has no recorded freeze time; its
 last state change stands in, so evidence linked before that change is not
 listed — compare the hub's evidence against the grounding by hand.
@@ -476,3 +472,28 @@ artifacts are frozen by construction (the code IS the content hash);
 Retraction/supersede are *flags derived from edges* (only a same-signer,
 verified retraction counts), never exclusions. Concurrence — an external
 nanopub asserting one of our AIDA sentences — raises an `alert`.
+
+## Correcting a claim: signing is the boundary
+
+Before signing (candidate/reviewed), edit the claim in place with
+`edit(kind='finding', id='fi<N>', title='...')` or `meta={'scope': {...}}`.
+Hypotheses also accept `testable_by='...'` / `motivation='...'` with prior
+prose retained in metadata history.
+No version row is created. A changed claim returns its unsigned review row to
+candidate and lists every direct graph user flagged for re-review: drafts,
+linked findings/claims, pathways, quests and todos. Draft approval watermarks
+are revoked; each affected ref stores `meta.claim_review_required['fi<N>']`
+with the UTC change time and reason (numeric kinds: `view='raw'`; drafts:
+`view='review'` lists notices while review is pending). Chunk-addressed users
+currently cause title/scope edits to refuse atomically until reference
+retargeting is supported.
+No-op and scope dry-run edits leave review state unchanged.
+
+Once signed (including anchored/published), use a new nanopublication whose
+pubinfo asserts `<successor> npx:supersedes <predecessor trusty URI>`, signed with
+the same key. Existing bytes and OTS proofs are immutable. `npx:retracts` is
+withdrawal without a successor. The explicit relationship/migration and local
+supersede door are a follow-up; until then, the in-place edit refuses signed
+claims. The older reopen/demotion paths still need alignment with this boundary;
+do not use them to edit a signed artifact's claim. Actual approval/signing and
+publication of successors remain the normal human flow.

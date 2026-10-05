@@ -23,6 +23,16 @@ a discriminating experiment instead, ``refs.meta.artifact_type``, minted via
 confirmation engine for its own guess). Design: ``docs/backlog/taproot.md``;
 governance: taproot evidence relations (+ the living citation pins).
 
+Unsigned claim title/scope and hypothesis-prose edits keep the hub identity
+and reopen unsigned approval in place. ``consumer_review`` invalidates draft review watermarks and
+records a review-ledger proposal plus timestamped per-source metadata on every
+live graph consumer; the edit acknowledgement lists them. This shares the claim
+transaction and ordered ref locks, avoiding half-applied edits and reciprocal
+consumer-update deadlocks. Signing is the freeze boundary; a historical signed
+artifact on a reopened row still requires supersession. No versions are minted
+for internal edits. General signed reopen/demotion alignment remains in the
+nanopub supersede backlog slice; immutable artifact/proof bytes stay untouched.
+
 Three layers, one domain (glossary "finding / taproot / nanopub"):
 ``finding``, the ref kind this module overlays, is owned by
 :mod:`precis.handlers.finding`; ``nanopub``, the downstream pipeline that

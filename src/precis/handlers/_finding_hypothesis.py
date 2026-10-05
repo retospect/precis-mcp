@@ -399,75 +399,77 @@ def update_hypothesis(
     testable_by: str | None,
     motivation: str | None,
 ) -> Response:
-    """``edit(kind='finding', testable_by=…/motivation=…)``'s write path
-    (gr263258) — sharpen a still-``candidate`` hypothesis's falsification
-    terms.
+    """Edit unsigned falsification prose with history and atomic consumer review.
 
-    Re-runs the same non-empty mandatory-field checks
-    :func:`put_hypothesis` runs at mint (a hypothesis is defined by its
-    falsifiability — a blank ``testable_by``/``motivation`` is as invalid
-    post-mint as it is at mint), patches ``meta.proposed_payload``, and
-    appends the prior value onto ``meta.testable_by_history`` /
-    ``meta.motivation_history`` (``{value, replaced_at}``) so a sharpened
-    discriminator stays visibly distinct from the original conjecture.
-    Callers (:mod:`precis.handlers._finding_edit`) are responsible for the
-    artifact-type gate and the publish-state refusal — this function
-    trusts both preconditions already hold."""
-    ref = store.fetch_refs_by_ids([hub_ref_id]).get(hub_ref_id)
-    if ref is None:
-        raise BadInput(f"no live finding with ref_id={hub_ref_id}")
-    meta = dict(ref.meta or {})
-    payload = dict(meta.get(META_PROPOSED_PAYLOAD) or {})
+    Reviewed prose used to be refused because it was frozen in grounding.
+    Reopening that unsigned approval in the same transaction now makes edits
+    safe; signed artifacts still refuse. No version rows are minted.
+    """
+    from precis.taproot import consumer_review
 
-    now = datetime.now(UTC).isoformat()
-    meta_patch: dict[str, Any] = {}
-    changed: list[str] = []
+    with store.tx() as conn:
+        users = consumer_review.lock_users(conn, hub_ref_id)
+        consumer_review.require_unsigned(conn, hub_ref_id)
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s AND retired_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+        if row is None or (row[0] or {}).get(META_ARTIFACT_TYPE) != ARTIFACT_HYPOTHESIS:
+            raise BadInput(f"fi{hub_ref_id} is not a live hypothesis")
+        meta = dict(row[0] or {})
+        payload = dict(meta.get(META_PROPOSED_PAYLOAD) or {})
 
-    if testable_by is not None:
-        stripped = testable_by.strip()
-        if not stripped:
-            raise BadInput(
-                "a hypothesis needs testable_by= — the discriminating "
-                "experiment is what separates a conjecture from vibes.",
-                next=f"edit(kind='finding', id='fi{hub_ref_id}', testable_by='conductance "
-                "modulation under electrode displacement in junctions of …')",
+        now = datetime.now(UTC).isoformat()
+        meta_patch: dict[str, Any] = {}
+        changed: list[str] = []
+
+        if testable_by is not None:
+            stripped = testable_by.strip()
+            if not stripped:
+                raise BadInput(
+                    "a hypothesis needs testable_by= — the discriminating "
+                    "experiment is what separates a conjecture from vibes.",
+                    next=f"edit(kind='finding', id='fi{hub_ref_id}', testable_by='conductance "
+                    "modulation under electrode displacement in junctions of …')",
+                )
+            prior = str(payload.get("testable_by") or "").strip()
+            if prior != stripped:
+                history = list(meta.get("testable_by_history") or [])
+                history.append({"value": prior, "replaced_at": now})
+                meta_patch["testable_by_history"] = history
+                payload["testable_by"] = stripped
+                changed.append("testable_by")
+
+        if motivation is not None:
+            stripped = motivation.strip()
+            if not stripped:
+                raise BadInput(
+                    "a hypothesis needs motivation= prose naming the inferential leap.",
+                    next=f"edit(kind='finding', id='fi{hub_ref_id}', motivation='Both systems "
+                    "attribute X to the same mechanism; the transfer to Y is "
+                    "untested.')",
+                )
+            prior = str(payload.get("motivation") or "").strip()
+            if prior != stripped:
+                history = list(meta.get("motivation_history") or [])
+                history.append({"value": prior, "replaced_at": now})
+                meta_patch["motivation_history"] = history
+                payload["motivation"] = stripped
+                changed.append("motivation")
+
+        handle = handle_registry.format_handle("finding", hub_ref_id)
+        if not changed:
+            return Response(
+                body=(
+                    f"no change on hypothesis {handle} — the given value(s) "
+                    "already match the live payload"
+                )
             )
-        prior = str(payload.get("testable_by") or "").strip()
-        if prior != stripped:
-            history = list(meta.get("testable_by_history") or [])
-            history.append({"value": prior, "replaced_at": now})
-            meta_patch["testable_by_history"] = history
-            payload["testable_by"] = stripped
-            changed.append("testable_by")
 
-    if motivation is not None:
-        stripped = motivation.strip()
-        if not stripped:
-            raise BadInput(
-                "a hypothesis needs motivation= prose naming the inferential leap.",
-                next=f"edit(kind='finding', id='fi{hub_ref_id}', motivation='Both systems "
-                "attribute X to the same mechanism; the transfer to Y is "
-                "untested.')",
-            )
-        prior = str(payload.get("motivation") or "").strip()
-        if prior != stripped:
-            history = list(meta.get("motivation_history") or [])
-            history.append({"value": prior, "replaced_at": now})
-            meta_patch["motivation_history"] = history
-            payload["motivation"] = stripped
-            changed.append("motivation")
-
-    handle = handle_registry.format_handle("finding", hub_ref_id)
-    if not changed:
-        return Response(
-            body=(
-                f"no change on hypothesis {handle} — the given value(s) "
-                "already match the live payload"
-            )
-        )
-
-    meta_patch[META_PROPOSED_PAYLOAD] = payload
-    store.update_ref(hub_ref_id, meta_patch=meta_patch)
+        meta_patch[META_PROPOSED_PAYLOAD] = payload
+        consumer_review.reopen_unsigned(conn, hub_ref_id)
+        store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
+        users = consumer_review.invalidate(store, conn, hub_ref_id, users)
 
     return Response(
         body=(
@@ -475,7 +477,7 @@ def update_hypothesis(
             f"prior value(s) preserved in "
             f"meta.{'/meta.'.join(f'{f}_history' for f in changed)}\n"
             f"check it before leaving it: get(kind='finding', id='{handle}', "
-            "view='mint-preflight')"
+            "view='mint-preflight')" + consumer_review.render_users(users)
         )
     )
 

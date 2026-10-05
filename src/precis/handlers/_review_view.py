@@ -86,6 +86,11 @@ def render_review_view(store: Store, ref: Ref) -> Response:
             else f" (+{len(dirty_for_human) - 10} more)"
         )
         trailer += f"\n⚠ {len(dirty_for_human)} chunk(s) dirty-for-human: {names}{more}"
+        notices = (ref.meta or {}).get("claim_review_required")
+        if isinstance(notices, dict):
+            for source, notice in sorted(notices.items()):
+                if isinstance(notice, dict) and notice.get("reason"):
+                    trailer += f"\n- {notice['reason']}"
     else:
         trailer += "\n✓ nothing dirty-for-human"
     trailer += (

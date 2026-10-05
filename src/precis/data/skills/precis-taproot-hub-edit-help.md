@@ -65,8 +65,12 @@ chunk is DELETE+INSERT re-emitted (embedding/summary cascade re-runs —
 this is also the chunk hub dedup retrieves over, so the reword is
 picked up automatically), stale card variants (`ord < 0`) drop, and a new
 content-derived `pub_id` is added — the **old** one is kept as an alias,
-so existing `[<pub_id>]` cites keep resolving. Evidence edges are
-untouched. Rejects a non-hub finding and `dry_run` (no preview; the
+so existing `[<pub_id>]` cites keep resolving. Ref-level evidence edges are
+untouched; chunk-addressed users cause an atomic refusal until retargeting is
+supported. Candidate/reviewed claims edit in place; unsigned approval reopens
+and the response lists consumers flagged for re-review. Signed claims refuse
+(including anchored/published): see `precis-nanopub-help`'s correction boundary.
+Rejects a non-hub finding and `dry_run` (no preview; the
 write is direct). If the new wording's `pub_id` already belongs to a
 *different* live ref, that's a duplicate-hub signal — the call raises
 naming that ref rather than silently fusing it; see "Merge duplicate

@@ -525,6 +525,7 @@ def test_refine_claim_sentence_rejects_non_hub(store: Any) -> None:
     [
         ("candidate", False),
         ("reviewed", False),
+        ("signed", True),
         ("anchored", True),
         ("published", True),
     ],
@@ -534,7 +535,7 @@ def test_refine_claim_sentence_refuses_an_irreversible_hub(
 ) -> None:
     """An anchored/published nanopub froze the hub's identity: a reword or
     rescope must not silently diverge the live hub from it (supersede
-    instead). Reviewed/signed stay editable — the drift gate catches them."""
+    instead). Only candidate/reviewed rows without signed artifacts stay editable."""
     from precis.taproot.hub import HubFrozenError
 
     hub = mint_hub(store, _CLAIM)

@@ -20,6 +20,7 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.response import Response
 from precis.store.types import Tag
 from precis.taproot import authoring, hub
+from precis.taproot.consumer_review import render_users
 from precis.taproot.sentence_lint import lint_scope
 
 if TYPE_CHECKING:
@@ -28,10 +29,10 @@ if TYPE_CHECKING:
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
 
-#: ``next=`` for a retitle/rescope refused on an anchored/published hub
+#: ``next=`` for a retitle/rescope refused after signing
 #: (:class:`precis.taproot.hub.HubFrozenError`).
 _FROZEN_NEXT = (
-    "the hub's nanopub is anchored/published, so its identity is frozen — "
+    "the hub has signed nanopub bytes, so its identity is frozen — "
     "supersede the nanopub (a human door) and edit the successor instead"
 )
 
@@ -117,8 +118,9 @@ def edit(
     ``SCOPE_KEYS`` are reported in the response, never refused (a refusal
     would make a hub the mint path accepts impossible to correct).
     ``dry_run=True`` previews old -> new scope and old -> new ``pub_id`` and
-    writes nothing. Like ``title=``, not gated on the nanopub publish
-    state: a hub past ``candidate`` is rescoped just as it is retitled.
+    writes nothing. Like ``title=``, unsigned candidate/reviewed hubs are
+    editable in place; signed hubs require a successor. Changed edits return
+    the complete list of graph users flagged for re-review.
     Mutually exclusive with ``pick_candidate=`` / ``unacquirable_note=`` /
     ``testable_by=`` / ``motivation=``; combinable with ``title=``.
 
@@ -171,15 +173,9 @@ def edit(
     appends the prior value to ``meta.testable_by_history`` /
     ``meta.motivation_history`` (``{value, replaced_at}``) so a sharpened
     discriminator is visibly distinct from the original conjecture.
-    Refused once the hub has left ``candidate`` in the nanopub publish
-    state machine — ``nanopub/mint.py::approve`` freezes ``testable_by``/
-    ``motivation`` into the review row's ``grounding`` the moment a human
-    reviews it (``state='reviewed'``), well before ``sign``, so an edit to
-    the still-live ``meta.proposed_payload`` past that point would either
-    silently diverge from what was reviewed or, once actually signed
-    (``state`` in ``'signed'``/``'anchored'``/``'published'``), from what
-    was cryptographically attested. Mint a fresh hypothesis and link it to
-    this one instead.
+    Candidate/reviewed hypotheses edit in place and flag their consumers.
+    An unsigned review is reopened atomically because its grounding froze
+    the old prose; signed/anchored/published content refuses correction here.
 
     Only the ``meta={'scope': …}`` door supports ``dry_run`` (see above);
     every other op rejects it.
@@ -517,6 +513,7 @@ def _rescope_hub(
             f"pub_id: {old_pub_id} -> {result['pub_id']}{alias_note}",
             lints,
         )
+        + render_users(result["needs_review"])
     )
 
 
@@ -587,6 +584,7 @@ def _retitle_hub(store: Store, *, id: int | str | None, title: str) -> Response:
             f"old: {result['old_title']}\n"
             f"new: {result['new_title']}\n"
             f"pub_id: {result['pub_id']}{alias_note}"
+            + render_users(result["needs_review"])
         )
     )
 
@@ -604,10 +602,8 @@ def _sharpen_hypothesis(
 
     ``id`` must resolve to a hypothesis hub
     (``meta.artifact_type == 'hypothesis'``) — a ``BadInput`` on any
-    other finding, mirroring the ``title=`` non-hub rejection. Refused
-    once the hub's publish row has left ``candidate``: see the module
-    docstring's "Sharpen a hypothesis" section for why ``reviewed`` (not
-    just ``signed``) is already too late.
+    other finding, mirroring the ``title=`` non-hub rejection. The shared
+    unsigned guard and review propagation run inside the write transaction.
     """
     finding_ref_id = _resolve_finding_ref_id(store, kind=kind, raw_id=raw_id)
     ref = store.fetch_refs_by_ids([finding_ref_id]).get(finding_ref_id)
@@ -625,27 +621,15 @@ def _sharpen_hypothesis(
                 "fresh put() instead"
             ),
         )
-    row_fn = getattr(store, "nanopub_publish_row", None)
-    row = row_fn(finding_ref_id) if row_fn is not None else None
-    if row is not None and row.state != "candidate":
-        raise BadInput(
-            f"fi{finding_ref_id}'s publish row {row.id} is {row.state!r}, "
-            "not candidate — testable_by/motivation already froze into the "
-            "reviewed grounding (or a signed artifact) and a live edit "
-            "would silently diverge from what was reviewed/signed",
-            next=(
-                "mint a fresh hypothesis with the sharpened terms "
-                "(put(kind='finding', hypothesis=True, ...)) and link it to "
-                "fi" + str(finding_ref_id) + " — a supersede, not an edit, "
-                "once the prior conjecture left candidate"
-            ),
+    try:
+        return _finding_hypothesis.update_hypothesis(
+            store,
+            hub_ref_id=finding_ref_id,
+            testable_by=testable_by,
+            motivation=motivation,
         )
-    return _finding_hypothesis.update_hypothesis(
-        store,
-        hub_ref_id=finding_ref_id,
-        testable_by=testable_by,
-        motivation=motivation,
-    )
+    except hub.HubFrozenError as exc:
+        raise BadInput(str(exc)) from exc
 
 
 def _set_unacquirable_override(
