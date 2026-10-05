@@ -16,7 +16,9 @@ changes the approval gate.
 
 Gripe summary counts link to the existing list route with exact workflow
 status filters; the live total retains the nonterminal cohort. Filtering
-happens in SQL so a clicked count cannot silently show the whole queue.
+happens in SQL so a clicked count cannot silently show the whole queue. Empty
+exact-status lists name that selected status rather than making a claim about
+the whole live queue.
 
 **Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
 ``link_type`` for folding/annotations: adsorption and desorption keep their

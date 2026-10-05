@@ -38,3 +38,23 @@ def test_status_count_navigation(
     invalid = client.get("/gripes?status=not-a-status")
     assert "fixture-count-open" in invalid.text
     assert "fixture-count-done" not in invalid.text
+
+
+def test_empty_exact_status_names_selected_status(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    from precis_web.routes import gripes
+
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="gripe", slug=None, title="fixture-populated-triaged", conn=conn
+        )
+        store.add_tag(ref.id, Tag.closed("STATUS", "triaged"), conn=conn)
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    response = client.get("/gripes?status=open")
+
+    assert response.status_code == 200
+    assert "No gripes with status open." in response.text
+    assert "No live gripes." not in response.text
+    assert "fixture-populated-triaged" not in response.text
