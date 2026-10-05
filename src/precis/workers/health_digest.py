@@ -615,49 +615,79 @@ def _check_chunks_extracted(conn: Any) -> CheckResult:
 
 
 #: Budget for :func:`_check_taproot_edges` — the retired freshness row's
-#: own 6h, kept: a claim hub that has sat this long with no edge is a
-#: mint pipeline that stopped half-way, not a slow one.
+#: own 6h, kept for overdue eligible work with no recent edge progress.
 _TAPROOT_EDGES_BUDGET_HOURS = 6.0
 
 
 def _check_taproot_edges(conn: Any) -> CheckResult:
-    """Taproot edge liveness: input-aware, mirrors :func:`_check_chunks_extracted`.
+    """Overdue chase work without edge progress; quiet empty queues are healthy.
 
-    The retired freshness row read ``max(links.created_at)`` over the hub
-    roles (:data:`_TAPROOT_HUB_ROLES`) against a 6h budget — but a
-    findings→claims edge is only ever minted when there is a new claim hub
-    (or a chase over a new paper) to hang it on, so a quiet corpus tripped
-    it every night: 15 open/resolve episodes and 531 sightings in the 30
-    days to 2026-09-25, every one of them "idle", none a stuck pass. Same
-    fix as extraction: stale only when a ``TAPROOT:claim`` hub landed more
-    than budget ago that is *newer* than the newest hub-role edge (input
-    arrived, nothing linked since — which already implies the edge itself
-    is past budget too). Quiet when no such hub exists.
+    Mirrors ``chase.claim_tracing_findings`` and its default 60/1440-minute
+    backoff, without row locks or importing the worker's model hooks. Queue
+    parity is fixture-tested. Neither output silence nor a new canonical
+    hub proves chase has work: real hubs are explicitly not chase inputs.
+    Age from queue entry / last progress / backoff expiry, not just ref
+    creation, so intentional cooldowns do not become false stalls.
     """
     sql = """
+        WITH candidates AS (
+            SELECT GREATEST(
+                       r.created_at, queue.entered_at,
+                       last_chase.ts + CASE WHEN last_chase.event = 'waiting'
+                           THEN LEAST(60 * POWER(2,
+                               LEAST(GREATEST(wait_run.waits - 1, 0), 60)),
+                               1440) * INTERVAL '1 minute'
+                           ELSE INTERVAL '0 minutes' END
+                   ) AS eligible_since,
+                   last_chase.event,
+                   last_chase.ts + LEAST(60 * POWER(2,
+                       LEAST(GREATEST(wait_run.waits - 1, 0), 60)),
+                       1440) * INTERVAL '1 minute' AS waiting_until
+              FROM refs r
+              JOIN LATERAL (
+                  SELECT max(rt.created_at) AS entered_at
+                    FROM ref_tags rt JOIN tags t USING (tag_id)
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                     AND t.value IN ('tracing', 'acquiring')
+              ) queue ON queue.entered_at IS NOT NULL
+              LEFT JOIN LATERAL (
+                  SELECT e.event, e.ts FROM ref_events e
+                   WHERE e.ref_id = r.ref_id AND e.source = 'chase'
+                   ORDER BY e.ts DESC LIMIT 1
+              ) last_chase ON TRUE
+              LEFT JOIN LATERAL (
+                  SELECT count(*)::int AS waits FROM ref_events e
+                   WHERE e.ref_id = r.ref_id AND e.source = 'chase'
+                     AND e.event = 'waiting'
+                     AND e.ts > COALESCE(
+                         (SELECT max(e2.ts) FROM ref_events e2
+                           WHERE e2.ref_id = r.ref_id AND e2.source = 'chase'
+                             AND e2.event <> 'waiting'),
+                         '-infinity'::timestamptz)
+              ) wait_run ON TRUE
+             WHERE r.kind = 'finding' AND r.retired_at IS NULL
+               AND NOT (
+                   EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                            WHERE rt.ref_id = r.ref_id AND t.namespace = 'TAPROOT'
+                              AND t.value = 'claim')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                        WHERE rt.ref_id = r.ref_id AND t.namespace = 'TAPROOTCASCADE')
+               )
+        ), eligible AS (
+            SELECT eligible_since FROM candidates
+             WHERE NOT COALESCE(event = 'waiting' AND waiting_until > now(), FALSE)
+        )
         SELECT
             (SELECT max(created_at) FROM links
               WHERE relation = ANY(%(roles)s::text[])) AS newest_edge_ts,
-            (SELECT max(r.created_at)
-               FROM refs r
-               JOIN ref_tags rt ON rt.ref_id = r.ref_id
-               JOIN tags t ON t.tag_id = rt.tag_id
-              WHERE r.kind = 'finding' AND r.retired_at IS NULL
-                AND t.namespace = 'TAPROOT' AND t.value = 'claim'
-                AND r.created_at < now() - (%(budget)s || ' hours')::interval
-                AND r.created_at > COALESCE(
-                      (SELECT max(created_at) FROM links
-                        WHERE relation = ANY(%(roles)s::text[])),
-                      '-infinity'::timestamptz)
-            ) AS stale_input_ts
+            count(*) AS eligible_count, min(eligible_since) AS oldest_eligible
+          FROM eligible
     """
-    params = {
-        "roles": list(_TAPROOT_HUB_ROLES),
-        "budget": _TAPROOT_EDGES_BUDGET_HOURS,
-    }
+    params = {"roles": list(_TAPROOT_HUB_ROLES)}
     try:
         row = conn.execute(sql, params).fetchone()
-        newest_edge_ts, stale_input_ts = (row[0], row[1]) if row else (None, None)
+        newest_edge_ts, eligible_count, oldest_eligible = row
     except Exception:
         log.exception("health_digest: taproot_edges probe failed")
         try:
@@ -672,24 +702,29 @@ def _check_taproot_edges(conn: Any) -> CheckResult:
             _WARN,
         )
     age = _hours_since(newest_edge_ts)
-    if stale_input_ts is None:
-        seen = f"{age:.1f}h ago" if age is not None else "never"
+    seen = f"{age:.1f}h ago" if age is not None else "never"
+    if eligible_count == 0:
         return CheckResult(
             "knowledge",
             "taproot_edges",
             "ok",
-            f"a findings→claims taproot edge: {seen} "
-            "(idle — no new claim hub waiting for an edge)",
+            f"a findings→claims taproot edge: {seen} (idle: 0 eligible)",
             _WARN,
             age,
         )
+    oldest_age = _hours_since(oldest_eligible)
+    stale = (
+        oldest_age is not None
+        and oldest_age > _TAPROOT_EDGES_BUDGET_HOURS
+        and (age is None or age > _TAPROOT_EDGES_BUDGET_HOURS)
+    )
     return CheckResult(
         "knowledge",
         "taproot_edges",
-        "stale",
-        f"a findings→claims taproot edge: last edge {age:.1f}h ago "
-        f"(budget {_TAPROOT_EDGES_BUDGET_HOURS:.0f}h) while a claim hub landed "
-        f"{_hours_since(stale_input_ts):.1f}h ago with nothing linked since",
+        "stale" if stale else "ok",
+        f"a findings→claims taproot edge: last edge {seen}; "
+        f"{eligible_count} eligible, oldest waiting {oldest_age:.1f}h "
+        f"(budget {_TAPROOT_EDGES_BUDGET_HOURS:.0f}h)",
         _WARN,
         age,
     )

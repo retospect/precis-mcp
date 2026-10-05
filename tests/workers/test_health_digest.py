@@ -29,6 +29,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
@@ -656,7 +658,7 @@ def test_chunks_extracted_ignores_card_forge_rewrite(store) -> None:
     assert result.status == "stale"
 
 
-# ── taproot_edges: input-aware staleness (mirrors chunks_extracted) ──────
+# ── taproot_edges: overdue chase backlog without edge progress ─────────
 
 
 def _seed_claim_hub(store, *, hours_ago: float) -> int:
@@ -683,18 +685,43 @@ def _seed_hub_edge(store, src: int, dst: int, *, hours_ago: float) -> None:
         conn.commit()
 
 
+def _seed_chase_waiter(store, *, hours_ago: float, status: str = "tracing") -> int:
+    ref_id = seed_ref(store, title="queued chase finding", kind="finding")
+    store.add_tag(ref_id, Tag.closed("STATUS", status), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - %s * interval '1 hour' "
+            "WHERE ref_id = %s",
+            (hours_ago, ref_id),
+        )
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - %s * interval '1 hour' "
+            "WHERE ref_id = %s",
+            (hours_ago, ref_id),
+        )
+    return ref_id
+
+
+def _seed_chase_outcome(store, ref_id: int, event: str, *, hours_ago: float) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, ts) "
+            "VALUES (%s, 'chase', %s, now() - %s * interval '1 hour')",
+            (ref_id, event, hours_ago),
+        )
+
+
 def test_taproot_edges_quiet_when_no_new_hub_since_the_last_edge(store) -> None:
-    """The retired freshness row fired on exactly this shape every quiet
-    night (15 episodes / 531 sightings in 30 days): an edge well past the
-    6h budget with no newer claim hub behind it is idle, not stuck."""
+    """Old output is healthy when chase has no eligible input."""
     hub = _seed_claim_hub(store, hours_ago=30)
     evidence = seed_ref(store, title="evidence", kind="finding")
     _seed_hub_edge(store, evidence, hub, hours_ago=20)
+    _seed_claim_hub(store, hours_ago=10)  # A newer hub is not chase backlog.
 
     with store.pool.connection() as conn:
         result = _check_taproot_edges(conn)
     assert result.status == "ok"
-    assert "idle" in result.detail
+    assert "idle: 0 eligible" in result.detail
 
 
 def test_taproot_edges_quiet_when_never_any_edge_and_no_hub(store) -> None:
@@ -702,33 +729,110 @@ def test_taproot_edges_quiet_when_never_any_edge_and_no_hub(store) -> None:
         result = _check_taproot_edges(conn)
     assert result.status == "ok"
     assert "never" in result.detail
+    assert "idle: 0 eligible" in result.detail
 
 
-def test_taproot_edges_stale_when_hub_newer_than_edge_past_budget(store) -> None:
-    """A claim hub landed after the newest edge and has sat past budget
-    with nothing linked to it — the mint pipeline stopped half-way."""
-    old_hub = _seed_claim_hub(store, hours_ago=30)
-    evidence = seed_ref(store, title="evidence", kind="finding")
-    _seed_hub_edge(store, evidence, old_hub, hours_ago=20)
-    _seed_claim_hub(store, hours_ago=10)  # newer than the edge, > 6h old
+@pytest.mark.parametrize("edge_hours", [None, 20])
+def test_taproot_edges_stale_when_backlog_overdue_without_progress(
+    store, edge_hours
+) -> None:
+    _seed_chase_waiter(store, hours_ago=30)  # Older than edge: still work waiting.
+    if edge_hours is not None:
+        hub = _seed_claim_hub(store, hours_ago=40)
+        evidence = seed_ref(store, title="evidence", kind="finding")
+        _seed_hub_edge(store, evidence, hub, hours_ago=edge_hours)
 
     with store.pool.connection() as conn:
         result = _check_taproot_edges(conn)
     assert result.status == "stale"
-    assert "claim hub landed" in result.detail
+    assert "1 eligible, oldest waiting 30.0h" in result.detail
 
 
-def test_taproot_edges_quiet_while_a_fresh_hub_is_still_inside_budget(store) -> None:
-    """A hub minted an hour ago with its edge still pending is inside the
-    6h budget — no alarm yet."""
+def test_taproot_edges_quiet_while_eligible_work_is_inside_budget(store) -> None:
     old_hub = _seed_claim_hub(store, hours_ago=30)
     evidence = seed_ref(store, title="evidence", kind="finding")
     _seed_hub_edge(store, evidence, old_hub, hours_ago=20)
-    _seed_claim_hub(store, hours_ago=1)
+    _seed_chase_waiter(store, hours_ago=1)
 
     with store.pool.connection() as conn:
         result = _check_taproot_edges(conn)
     assert result.status == "ok"
+    assert "1 eligible" in result.detail
+
+
+def test_taproot_edges_bursty_progress_is_healthy_with_old_backlog(store) -> None:
+    _seed_chase_waiter(store, hours_ago=50)
+    hub = _seed_claim_hub(store, hours_ago=40)
+    evidence = seed_ref(store, title="evidence", kind="finding")
+    _seed_hub_edge(store, evidence, hub, hours_ago=1)
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+    assert result.status == "ok"
+    assert "1 eligible, oldest waiting 50.0h" in result.detail
+
+
+def test_taproot_edges_requeued_old_finding_gets_a_fresh_budget(store) -> None:
+    ref_id = _seed_chase_waiter(store, hours_ago=100)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '1 hour' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        result = _check_taproot_edges(conn)
+    assert result.status == "ok"
+    assert "oldest waiting 1.0h" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("waits", "last_hours", "expected", "eligible"),
+    [
+        (1, 0.5, "ok", 0),
+        (1, 2, "ok", 1),
+        (1, 8, "stale", 1),
+        (6, 23, "ok", 0),
+        (6, 25, "ok", 1),
+        (6, 31, "stale", 1),
+    ],
+)
+def test_taproot_edges_respects_chase_backoff_and_ages_from_expiry(
+    store, waits, last_hours, expected, eligible
+) -> None:
+    from precis.workers.chase import claim_tracing_findings
+
+    fid = _seed_chase_waiter(store, hours_ago=100)
+    for i in range(waits):
+        _seed_chase_outcome(store, fid, "waiting", hours_ago=last_hours + i)
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+        claimed = claim_tracing_findings(conn, limit=10)
+    assert result.status == expected
+    assert f"{eligible} eligible" in result.detail
+    assert {r.ref_id for r in claimed} == ({fid} if eligible else set())
+
+
+def test_taproot_edges_queue_matches_chase_exclusions_and_progress_reset(store) -> None:
+    from precis.workers.chase import claim_tracing_findings
+
+    acquiring = _seed_chase_waiter(store, hours_ago=20, status="acquiring")
+    cascade = _seed_chase_waiter(store, hours_ago=20)
+    store.add_tag(cascade, Tag.closed("TAPROOT", "claim"), set_by="system")
+    store.add_tag(cascade, Tag.closed("TAPROOTCASCADE", "1"), set_by="system")
+    real_hub = _seed_chase_waiter(store, hours_ago=20)
+    store.add_tag(real_hub, Tag.closed("TAPROOT", "claim"), set_by="system")
+    _seed_chase_waiter(store, hours_ago=20, status="canonical")
+    retired = _seed_chase_waiter(store, hours_ago=20)
+    for fid in (acquiring, cascade):
+        for i in range(6):
+            _seed_chase_outcome(store, fid, "waiting", hours_ago=2 + i)
+        _seed_chase_outcome(store, fid, "advanced", hours_ago=1)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (retired,))
+        result = _check_taproot_edges(conn)
+        claimed = claim_tracing_findings(conn, limit=10)
+    assert {r.ref_id for r in claimed} == {acquiring, cascade}
+    assert result.status == "ok"
+    assert "2 eligible, oldest waiting 1.0h" in result.detail
 
 
 # ── claim_hub_dedup_index: strict claim-hub definition ────────────────────
