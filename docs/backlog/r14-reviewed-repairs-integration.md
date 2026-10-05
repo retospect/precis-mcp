@@ -18,6 +18,11 @@ correction e76d76155 only (original exact-status wording P3 closed). Keep
 the separate live-aggregate empty wording P3 nonblocking and unchanged.
 Exclude gr173580acd review-only work and all other candidates. Preserve
 existing specs, singleton WIP and all scientific/service holds.
+Root additionally approves graph-memory slice(b) f1ef4d2c6 from4b7d64594:
+unsigned claim edits invalidate identified consumers for re-review without
+store/schema/version/dependency changes. Preserve its explicit refusal of
+signed/historical-artifact edits. Slice(a), stash93ee and migration /go work
+remain excluded/held; no signing or publishing acceptance is implied.
 Only static Ruff/format, AST, whitespace and reviewed-source preservation
 checks here; combined canonical validation remains pending root scheduling.
 Publish only the non-force integration branch after checks, verify its exact
