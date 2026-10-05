@@ -4549,6 +4549,8 @@ class PcbHandler(Handler):
                 "or net assignments. Mating orientation, vendor numbering and "
                 "proposed nets/NC semantics: unknown.\n"
             )
+            if not proposals:
+                head += "No proposed assignments (pins=[]).\n"
         missing_hint = None
         if not footprint or not footprint.get("pads"):
             hint = (

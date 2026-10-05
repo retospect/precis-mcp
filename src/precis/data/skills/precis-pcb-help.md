@@ -229,7 +229,9 @@ Only `pins` is accepted; each entry requires exactly name/string and
 pad/exact-string-or-null. Null means unknown binding; even the label NC does
 not establish disconnection. Mating orientation and vendor numbering remain
 unknown. Conflicting drafts are shown with canonical-authoring refusal hints,
-never selected or persisted. Missing geometry stays unavailable with a manual
+never selected or persisted. This includes one name with both null and bound
+pads; distinct null-bound names stay unknown, not conflicting. `pins=[]`
+explicitly means no proposed assignments. Missing geometry stays unavailable with a manual
 inspection/authoring hint. Duplicate physical pads remain distinct rows.
 
 Limits: one instance,32 proposed entries,64 physical rows,64-character names,

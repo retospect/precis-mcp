@@ -125,6 +125,22 @@ def test_invalid_geometry_and_mixed_unknown_binding_do_not_choose_a_pad():
     assert "pad binding unknown" in " ".join(result["proposals"][1]["notes"])
 
 
+def test_distinct_null_names_remain_unknown_without_ownership_conflict():
+    result = eyes.pinout_preview(
+        {},
+        _fp(),
+        [],
+        ["F.Cu"],
+        [{"name": "UNKNOWN_A", "pad": None}, {"name": "UNKNOWN_B", "pad": None}],
+    )
+    assert [e["state"] for e in result["proposals"]] == ["unknown", "unknown"]
+    assert all(row["proposal_state"] == "not-proposed" for row in result["rows"])
+    assert all(
+        "canonical authoring would refuse" not in " ".join(e["notes"])
+        for e in result["proposals"]
+    )
+
+
 @pytest.fixture
 def board(store):
     pcb = PcbHandler(hub=Hub(store=store))
@@ -302,6 +318,7 @@ def test_unknown_refdes_empty_proposal_and_unplaced(board):
         id="preview-test#J_UNPLACED", view="pinout-preview", args={"pins": []}
     ).body
     assert "not-proposed" in text and "board coordinates: unavailable" in text
+    assert "No proposed assignments (pins=[])." in text
     assert "pinout-preview" in board.spec.views
 
 

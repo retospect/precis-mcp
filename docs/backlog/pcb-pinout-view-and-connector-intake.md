@@ -92,7 +92,8 @@ existing `get(..., view='pinout')` continues to report only persisted evidence.
 Implementation seam is the handler's existing stored-footprint/instance
 read path and pure row computation, not pcb_apply, IR, routing or providers.
 
-`args` accepts only `pins`, required list of at most32 objects. Each object
+`args` accepts only `pins`, required list of at most32 objects.
+`pins=[]` is valid and explicitly reports no proposed assignments. Each object
 accepts only `name` (nonempty stripped string, at most64 characters) and `pad`
 (required exact nonempty string at most32 characters, or explicit null).
 Reject malformed/extra keys with typed correction, not ignored args. Do not
@@ -113,7 +114,8 @@ ambiguity independently; disagreement with footprint naming or stored binding
 is an observed difference, not a mapping decision or alias policy.
 
 For proposed evidence: two names on one non-null pad or one name on different
-pads is `conflicting`; echo all entries with a one-canonical-name/correct-pad
+pads (including null plus bound) is `conflicting`; two distinct null-bound
+names remain unknown, not an ownership conflict. Echo all entries with a one-canonical-name/correct-pad
 hint and say canonical authoring would refuse. Identical repeated pairs are
 labelled repeated proposals, not extra canonical pins. Duplicate **physical**
 pad numbers remain separate rows; one proposal appears on each matching row.
@@ -139,9 +141,13 @@ mating/net semantics. No SVG/browser renderer, font engine or new schema.
 **Numbered acceptance and future native replay (no calls in this spec turn):**
 
 1. Existing P1 authored echo remains supported and unchanged; preview works on
-   a stored instance without authoring its proposed pins. Use an already
-   provisioned labelled synthetic fixture; if absent, stop for fixture setup
-   authorization rather than creating it during zero-write replay.
+   a stored instance without authoring its proposed pins. ONE labelled partless
+   synthetic fixture setup is already authorized for postdeploy replay: first
+   inspect the exact existing fixture and reuse it if matching. If absent,
+   author only the required stored geometry/instances without catalog IDs,
+   providers or jobs. Record setup separately; capture baseline snapshots
+   AFTER setup and then prove preview has zero unintended writes. No blind
+   re-put or historical real-board repair; no further setup permission loop.
 2. Exact asymmetric2x3 oracle below distinguishes row-major from zigzag with
    proposed VCC/CLK/DATA/GND/NC/AUX bound explicitly to pad1…6. Echo CLK.pad2
    at(0,1) for row-major and(-2,-1) for zigzag. Never choose a convention from
