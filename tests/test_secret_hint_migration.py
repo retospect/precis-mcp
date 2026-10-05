@@ -122,7 +122,8 @@ def test_saved_hint_tail_preserves_legacy_and_permissions(
                     "synthetic_roundtrip": True,
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
     finally:
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
@@ -154,9 +155,12 @@ def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
                 admin_dsn,
                 MIGRATIONS,
                 scratch_db="precis_counts_dump_" + uuid.uuid4().hex,
-            )
+            ),
+            encoding="utf-8",
         )
-    baked = TAIL in dict(schema_dump.parse_baseline_ledger(baseline.read_text()))
+    baked = TAIL in dict(
+        schema_dump.parse_baseline_ledger(baseline.read_text(encoding="utf-8"))
+    )
     if snapshot == "regenerated":
         assert baked, "regeneration reproduction must bake0189"
     with psycopg.connect(admin_dsn, autocommit=True) as admin:
@@ -205,7 +209,8 @@ def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
                     else "current actual baseline",
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
     finally:
         with psycopg.connect(admin_dsn, autocommit=True) as admin:

@@ -212,7 +212,7 @@ def test_saved_hint_html_is_write_only(
     scratch = Path(__file__).parents[1] / ".scratch"
     scratch.mkdir(exist_ok=True)
     (scratch / "browser-saved-inventory.json").write_text(
-        json.dumps(inventory, default=str)
+        json.dumps(inventory, default=str), encoding="utf-8"
     )
     rows = [r for r in rows if r["name"] == name]
     env = Environment(
