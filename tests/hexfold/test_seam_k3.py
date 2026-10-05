@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import math
 from dataclasses import replace
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -317,14 +317,15 @@ def test_every_copied_graph_index_and_face_validated_before_mint(
     blocks, rims = inputs()
     block = blocks[block_index]
     original = copy.deepcopy(blocks)
-    face = list(block.rings[0])
+    # These fixtures deliberately violate the production integer graph types.
+    face: list[Any] = list(block.rings[0])
     if bad == "negative_ring":
         face[0] = -1
     elif bad == "oversized_ring":
         # In block0 this aliases block2's first atom after concatenation.
         face[0] = 2 * len(block.elements)
     elif bad == "float_ring":
-        face[0] = float(face[0])  # type: ignore[call-overload]
+        face[0] = float(face[0])
     elif bad == "bool_ring":
         face[0] = True
     elif bad == "invented_walk":
@@ -337,13 +338,13 @@ def test_every_copied_graph_index_and_face_validated_before_mint(
         face = face[:2]
     elif bad.endswith("bond"):
         a, b, order = block.bonds[0]
-        replacement = {
+        replacement: Any = {
             "float_bond": float(a),
             "bool_bond": True,
             "negative_bond": -1,
             "oversized_bond": len(block.elements),
         }[bad]
-        block.bonds = ((replacement, b, order), *block.bonds[1:])  # type: ignore[arg-type]
+        block.bonds = ((replacement, b, order), *block.bonds[1:])
     if not bad.endswith("bond"):
         block.rings = (tuple(face), *block.rings[1:])
     malformed = copy.deepcopy(block)
