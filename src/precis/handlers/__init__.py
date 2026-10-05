@@ -66,6 +66,10 @@ Create receipts read committed lifecycle tags because creation may override
 open/active atomically; request defaults misreported parked todos/quests.
 Todo receipts offer start-work only for open, unhalted refs.
 
+Queryless gripe/todo/quest status/tag browse accepts recency and priority.
+Runtime keeps these reads out of query-based source search; priority ordering
+runs before SQL pagination, with unset priority at 5 and ref-id ties.
+
 The todo tree
 =============
 

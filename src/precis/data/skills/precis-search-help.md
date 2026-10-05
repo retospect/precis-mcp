@@ -478,3 +478,14 @@ the local store. CQL details in `precis-patent-search-help`.
 - [[precis-tags]] — axis vocabulary
 - [[precis-relations]] — link vocabulary
 - [[precis-toc-help]] — drilling into hits via /toc
+
+## Browse gripes, todos and quests by priority
+
+Without a query or special view, `sort='prio'` lists lower priorities first
+(unset priority sorts at 5); `sort='recency'` lists most recently updated first.
+Status/tag filters and pagination compose with either sort.
+
+```python
+search(kind='gripe', status='open', sort='prio', page_size=20)
+search(kind='todo', tags=['waiting-for:reto'], sort='recency')
+```

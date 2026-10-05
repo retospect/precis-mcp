@@ -1041,7 +1041,13 @@ class DispatchMixin(RuntimeShape):
         # by relevance (default) or recency. Distinct from the per-handler
         # fan-out below. Intercept before kind resolution so it composes
         # with a single kind, a comma-list, a wildcard, or an omitted kind.
-        if verb == "search" and self._is_source_search_request(args):
+        from precis.utils.browse_sort import numeric_browse
+
+        if (
+            verb == "search"
+            and self._is_source_search_request(args)
+            and not numeric_browse(kind, args)
+        ):
             return self._dispatch_source_search(kind, dict(args))
 
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the

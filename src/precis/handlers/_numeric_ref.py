@@ -440,6 +440,7 @@ class NumericRefHandler(Handler):
         page_size: int = 10,
         page: int = 1,
         mode: str | None = None,
+        sort: str | None = None,
         # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
         # ._resolve_cited_include — ``search(uncited=<draft>)`` /
         # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
@@ -451,6 +452,18 @@ class NumericRefHandler(Handler):
         include_ref_ids: list[int] | None = None,
         **_kw: Any,
     ) -> Response:
+        if sort is not None:
+            sort = sort.strip().lower()
+            if (
+                self.kind not in {"gripe", "todo", "quest"}
+                or (q and q.strip())
+                or sort not in {"prio", "recency"}
+            ):
+                raise BadInput(
+                    "sort= is supported here only for queryless gripe/todo/quest browse",
+                    next="use sort='prio' or sort='recency' without q=",
+                )
+        # A named browse sort also permits an unfiltered enumeration.
         # page=N → offset = (page-1) * page_size. Clamped to >= 0 so a
         # stray page=0 doesn't blow the query up. Mirrors the convention
         # in _paper_search.py's ranked search path.
@@ -475,13 +488,14 @@ class NumericRefHandler(Handler):
         # degrade to a recency-ordered list, which is what the user
         # wanted in the first place.
         if q is None or not q.strip():
-            if normalized_tags:
+            if normalized_tags or sort is not None:
                 return self._list_by_tags(
-                    normalized_tags,
+                    normalized_tags or [],
                     page_size=page_size,
                     note=status_note,
                     offset=offset,
                     page=page,
+                    sort=sort or "recency",
                 )
             # gr311342: ``link=`` alone is a fully-determined filter (the
             # target ref is resolved to an exact id, not a fuzzy match),
@@ -689,6 +703,7 @@ class NumericRefHandler(Handler):
         note: str = "",
         offset: int = 0,
         page: int = 1,
+        sort: str = "recency",
     ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
@@ -706,7 +721,11 @@ class NumericRefHandler(Handler):
         for every tag-scoped/status-scoped listing).
         """
         refs = self.store.list_refs(
-            kind=self.kind, tags=tags, limit=page_size, offset=offset
+            kind=self.kind,
+            tags=tags,
+            limit=page_size,
+            offset=offset,
+            order_by="prio_asc" if sort == "prio" else "updated_desc",
         )
         # Total tagged population (list_refs caps at page_size) so the
         # header can flag pagination the same way the ranked path does,
@@ -755,7 +774,7 @@ class NumericRefHandler(Handler):
         header = (
             f"# {count_frag} {self._sense()} entr"
             f"{'y' if total == 1 else 'ies'} tagged {tags} "
-            f"(by recency)"
+            f"(by {sort})"
         )
         parts = [header]
         if note:

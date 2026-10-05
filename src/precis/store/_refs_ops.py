@@ -2294,6 +2294,7 @@ class RefsMixin:
     #: values from this map reach the query.
     _LIST_ORDER_BY: ClassVar[dict[str, str]] = {
         "updated_desc": "r.updated_at DESC",
+        "prio_asc": "coalesce(r.prio, 5) ASC, r.updated_at DESC, r.ref_id DESC",
         "updated_asc": "r.updated_at ASC",
         # Most recently *opened* in the reader first; never-opened refs fall
         # to the bottom, then by last write. Backs the drafts list.

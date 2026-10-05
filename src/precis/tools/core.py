@@ -772,18 +772,33 @@ def search(
             )
         )
 
-    # Validate the source-search sort at the boundary so a typo surfaces
-    # as the canonical BadInput envelope instead of silently falling
-    # through to a plain relevance search (the intercept only fires on a
-    # recognised value).
-    if sort is not None and sort.strip().lower() not in ("relevance", "recency"):
+    # Browse and ranked source searches accept different sort contracts.
+    from precis.utils.browse_sort import numeric_browse
+
+    browse = numeric_browse(
+        kind,
+        {
+            "q": q,
+            "view": view,
+            "since": since,
+            "until": until,
+            "link": link,
+            "folder": folder,
+        },
+    )
+    sorts = ("recency", "prio") if browse else ("relevance", "recency")
+    if sort is not None and sort.strip().lower() not in sorts:
         runtime = _get_runtime()
+        next_call = (
+            f"search(kind={kind!r}, sort='prio') or "
+            f"search(kind={kind!r}, sort='recency')"
+            if browse
+            else "search(kind='paper,patent', q='your query', sort='recency') "
+            "or sort='relevance' with q="
+        )
         return _validation_error(
             runtime.render_error(
-                BadInput(
-                    f"unknown search sort {sort!r}",
-                    next="sort='recency' (newest first) | 'relevance' (default)",
-                )
+                BadInput(f"unknown search sort {sort!r}", next=next_call)
             )
         )
 
