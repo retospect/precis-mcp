@@ -74,9 +74,9 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
-from precis_web.item_view import _OPEN_URL_OVERRIDES
 from precis_web.paper_ident import paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
+from precis_web.ref_urls import ref_url
 from precis_web.timefmt import utc_date
 
 if TYPE_CHECKING:
@@ -311,7 +311,7 @@ _BACKLINKS_GROUP_CAP = 40
 
 def _src_url(ref: Any) -> str:
     """Canonical in-app URL for a *linking source* ref, kind-agnostic. Mirrors
-    ``item_view.open_url`` (the shared ``_OPEN_URL_OVERRIDES`` map + the
+    ``item_view.open_url`` (the shared ``ref_urls`` map + the
     ``/refs/<kind>/<id>`` fallback), plus two overrides that map can't
     express: a ``finding`` opens its claim page ``/claim/fi<id>`` (the
     ``/claim`` route renders a friendly stub for a non-hub finding, so it's
@@ -322,10 +322,7 @@ def _src_url(ref: Any) -> str:
         return f"/claim/{format_handle('finding', ref.id)}"
     if ref.kind == "paper":
         return f"/papers/{ref.slug or ref.id}"
-    tmpl = _OPEN_URL_OVERRIDES.get(ref.kind)
-    if tmpl:
-        return tmpl.format(id=ref.id, slug=ref.slug or ref.id)
-    return f"/refs/{ref.kind}/{ref.id}"
+    return ref_url(ref.kind, ref.id, getattr(ref, "slug", None))
 
 
 def _backlinks(store: LinksStore, ref_id: int) -> list[dict[str, Any]]:

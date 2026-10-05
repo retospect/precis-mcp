@@ -17,6 +17,21 @@
   </p>
 </div>
 
+{% if orcid_meta %}
+<section class="mb-4 rounded-lg border p-3" aria-label="Researcher">
+  {% if orcid_meta.identifier %}
+  <p>ORCID <a href="{{ orcid_meta.url }}" target="_blank" rel="noopener"
+              class="text-sky-700 hover:underline">{{ orcid_meta.identifier }}</a></p>
+  {% endif %}
+  <h2 class="mt-3 font-semibold">Papers in this corpus</h2>
+  <ul>
+    {% for paper in orcid_meta.papers %}
+    <li><a href="{{ paper.url }}" class="text-sky-700 hover:underline">{{ paper.title }}</a></li>
+    {% else %}<li class="text-sm text-slate-500">No linked papers in this corpus.</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {# Tag strip — every browsable kind gets one. Closed-vocab tags
    render as inert pills (no × button); free OPEN tags carry a ×
    that posts ``remove=ns:value`` to the edit_tags route. New tags

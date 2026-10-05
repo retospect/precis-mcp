@@ -6,7 +6,9 @@ the unified ``/items`` list: a name, the matching-chunk preview, a
 richer hover peek, an optional thumbnail, kind-specific actions, and the
 click-through URL. The default covers *every* kind through the generic
 ``/refs/<kind>/<id>`` detail route; a kind with a richer reader overrides
-``open_url`` via :data:`_OPEN_URL_OVERRIDES`.
+``open_url`` via the shared :mod:`precis_web.ref_urls` reader map. Drive,
+handle resolution and tag pivots use that same map; browse-menu membership
+never determines whether a stored ref can be read.
 
 The full method contract from the proposal is now present
 (``name``/``open_url``/``preview``/``title_meta``/``chunk_full``/
@@ -39,6 +41,7 @@ from precis_web.paper_links import (
     scholar_url,
     uol_url,
 )
+from precis_web.ref_urls import ref_url
 from precis_web.timefmt import utc_date
 
 #: Max characters of the matching chunk shown as the row preview.
@@ -75,31 +78,6 @@ def display_title(title: str | None, *, limit: int = DISPLAY_TITLE_LIMIT) -> str
         one_line = one_line[: limit - 1].rstrip() + "…"
     return one_line
 
-
-#: Kinds with a richer detail view than the generic ``/refs`` browser.
-#: ``{id}`` / ``{slug}`` are filled from the ref. Every other kind falls
-#: back to ``/refs/<kind>/<id>`` (which exists for all kinds), so the map
-#: only needs the exceptions — grow it as kinds gain dedicated readers.
-_OPEN_URL_OVERRIDES: dict[str, str] = {
-    "paper": "/papers/{id}",
-    "draft": "/smartdraft/{id}",
-    "datasheet": "/datasheets/{id}",
-    "cad": "/cad/{slug}",
-    "se": "/se/{slug}",
-    "structure": "/structure/{slug}",
-    "figure": "/figure/{slug}",
-    "mermaid": "/mermaid/{slug}",
-    # The board workbench (fab render + net-label schematic + vitals).
-    # Without this the row fell back to ``/refs/pcb/<id>``, which 400s —
-    # ``pcb`` has no browse tab (see ``_REFS_BROWSABLE_KINDS``).
-    "pcb": "/pcb/{slug}",
-    # Work-facet rows (Drive's "Work" chip row): a quest opens its hub
-    # dashboard, a todo drills into just its own subtree on /todo (never
-    # the full 5000-row tree). Mirrors the folder-child map in
-    # ``routes/drive.py`` (``_READER_URL``) so both row builders agree.
-    "quest": "/refs/quest/{id}",
-    "todo": "/todo?focus={id}",
-}
 
 #: Kinds whose ingest runs a fetch→PDF→chunk pipeline, so the
 #: stub-vs-ingested distinction is meaningful. Other kinds (web,
@@ -169,13 +147,7 @@ class ItemPresenter:
         )
 
     def open_url(self, ref: Any) -> str:
-        tmpl = _OPEN_URL_OVERRIDES.get(self.kind)
-        if tmpl:
-            return tmpl.format(
-                id=getattr(ref, "id", ""),
-                slug=getattr(ref, "slug", None) or getattr(ref, "id", ""),
-            )
-        return f"/refs/{self.kind}/{getattr(ref, 'id', '')}"
+        return ref_url(self.kind, ref.id, getattr(ref, "slug", None))
 
     def preview(self, block: Any, summary: str | None = None) -> str:
         """Row preview text: the matching chunk's ``llm-v1`` gloss when

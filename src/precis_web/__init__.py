@@ -7,6 +7,13 @@ error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
 
+**Ref readers.** ``ref_urls`` is the shared native-reader map for Drive,
+handle resolution and tag pivots. Browse-menu membership cannot gate stored
+ref detail: optional kinds still render when their handler is absent. ORCID
+reads its stored identity/authored papers without upstream refresh. File kinds
+read stored chunks; calling filesystem ``get`` could retire a ref merely
+because this web process lacks its originating corpus mount.
+
 **Claim approval.** The open-disputes panel reads stored support verdicts
 and reasoning alongside pinned passages, including typed paper, patent
 and finding handles from ``conflict_search``. Pins must name the counterpart

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.store._tags_ops import escape_like
 from precis_web.deps import get_store, templates
+from precis_web.ref_urls import ref_url
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -190,6 +191,7 @@ async def refs_by_tag(
         count_row = conn.execute(count_sql, tuple(params)).fetchone()
         total = int(count_row[0]) if count_row and count_row[0] is not None else 0
         rows = conn.execute(page_sql, (*params, page_size, offset)).fetchall()
+    refs = store.fetch_refs_by_ids([int(r[1]) for r in rows])
     # Group by kind, preserving the SQL order.
     by_kind: dict[str, list[dict[str, object]]] = {}
     for r in rows:
@@ -203,7 +205,9 @@ async def refs_by_tag(
                 "id": ref_id,
                 "title": title or "(untitled)",
                 "deleted": bool(r[3]),
-                "url": _ref_url(row_kind, ref_id),
+                "url": ref_url(
+                    row_kind, ref_id, getattr(refs.get(ref_id), "slug", None)
+                ),
             }
         )
     if has_tag and kind:
@@ -265,23 +269,6 @@ async def refs_by_tag(
             "trail_gap": hi < total_pages - 1,
         },
     )
-
-
-#: Per-kind URL shape for the native detail viewer. Falls back to a
-#: generic ``/refs/{kind}/{id}`` for kinds that don't have their own
-#: tab; the refs router rejects with a friendly 404 if that kind isn't
-#: browsable, which is acceptable — the row is still readable in the
-#: list above.
-_KIND_URLS: dict[str, str] = {
-    "paper": "/papers/{id}",
-    "todo": "/todo?focus={id}",
-    "job": "/todo?focus={id}",
-}
-
-
-def _ref_url(kind: str, ref_id: int) -> str:
-    template = _KIND_URLS.get(kind, "/refs/{kind}/{id}")
-    return template.format(kind=kind, id=ref_id)
 
 
 @router.post("/delete")

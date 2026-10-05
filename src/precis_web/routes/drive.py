@@ -49,6 +49,7 @@ from precis.handlers._query_identifier import resolve_query_identifier
 from precis.workers.fetch_oa import run_oa_fetch_pass
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.item_view import artifact_kinds, display_title, presenter_for
+from precis_web.ref_urls import ref_url
 from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
 from precis_web.routes.flags import (
     ACQUIRE_FLAG_DEFS,
@@ -85,18 +86,6 @@ log = logging.getLogger(__name__)
 #: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
 #: function, two mounted paths (no logic fork).
 router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
-
-#: Per-kind reader deep links. Kinds without a dedicated reader render
-#: as plain rows (the handle still tells the operator what to `get`).
-_READER_URL = {
-    "draft": "/smartdraft/{ident}",
-    "structure": "/structure/{ident}",
-    "cad": "/cad/{ident}",
-    "figure": "/figure/{ident}",
-    "mermaid": "/mermaid/{ident}",
-    "datasheet": "/datasheets/{ident}",
-    "todo": "/todo?focus={ref_id}",
-}
 
 _KIND_ICON = {
     "folder": "📁",
@@ -242,7 +231,6 @@ def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
     )
     meta = r[5] if len(r) > 5 and isinstance(r[5], dict) else {}
     ident = slug if slug is not None else str(ref_id)
-    url = _READER_URL.get(kind)
     # A cast draft (morning brief / evening meditation) carries its published
     # episode id in meta once narrated — surface the mp3 + compiled PDF as
     # download links so the audio "shows up in the Drive" beside its text.
@@ -256,7 +244,7 @@ def _row(r: tuple, *, kinds_with_slug: bool = True) -> dict[str, Any]:
         "ident": ident,
         # link() addresses slug kinds by slug, numeric kinds by int id.
         "handler_id": ident,
-        "url": url.format(ident=ident, ref_id=ref_id) if url else None,
+        "url": ref_url(kind, ref_id, slug),
         "audio_url": f"/podcast/audio/{episode_id}" if episode_id else None,
         "pdf_url": f"/drafts/{ident}/pdf" if is_cast else None,
         "updated": _ago(updated_at) if updated_at is not None else "",
