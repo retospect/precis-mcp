@@ -94,6 +94,8 @@ The three uses:
    credentials needed, and they unblock the MOF library.
 2. **The reference-comparison hook + distrust flag.** First fed from the
    ODAC23 slice; Catalysis-Hub feeds it once the SUNCAT credentials land.
+   How a record is matched to a Pd slab model and what is compared:
+   `catalyst-library-pd-slab-tie-in.md`.
 3. **The Catalysis-Hub credential path:** thread `X-API-Key` from a precis
    secret, and give a clean keyless error (`structure-import.md`).
 4. **BEAST DB** (licence check first) and **Materials Project** adapters.

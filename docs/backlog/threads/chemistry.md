@@ -168,7 +168,10 @@ it at five; engine-over-UI still holds.
    import, show-and-flag only. Build order in the item; step 1 (CIF import
    + CoRE MOF/QMOF adapter) needs no credentials. Ranked here because the
    November trust-demo paper needs reference energies UMA was not trained
-   on.
+   on. Its mechanism for the Pd slabs (typed reference, match key,
+   bare-host calibration panel, distrust flag) is
+   **backlog/catalyst-library-pd-slab-tie-in.md** (draft, Reto
+   2026-10-05); its slice A needs no credentials either.
 6. **backlog/autocatpath-integration.md** — the remaining slices of the
    native integration (most shipped; present state is in the
    `src/precis_pathway/` docstrings and ADR 0069); read with 4.
