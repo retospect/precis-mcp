@@ -48,6 +48,12 @@ Map, in pipeline order (design doc:
   (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
   Specctra, optional).
 
+Internal :mod:`~precis.pcb.snapshot` captures raw relational routing inputs and
+checkpoints for dev/test replay. Public graph/hash projections omit geometry and
+copper intentionally; generator re-expansion and authoring inference were refused
+as clone mechanisms because they change the board under diagnosis. Replay creates
+a fresh slug atomically and refuses production targets or conflicting shared caches.
+
 Dependencies: shapely is imported at module top by ``drc``, ``generators``,
 ``gerber``, ``ir``, ``planes``, ``realize`` and ``tiling`` — it is a core
 dependency (pyproject), not confined to the tiling pass any more.

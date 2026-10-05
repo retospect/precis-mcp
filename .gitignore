@@ -177,3 +177,6 @@ scripts/llm_eval/gold_set/local/
 
 # Generated thread navigation; roster and Resume fields are the sources.
 docs/backlog/threads/PRIORITIES.md
+
+# PCB snapshot/replay capture: exact board data is opt-in, not public test data.
+.scratch/pcb-snapshot/

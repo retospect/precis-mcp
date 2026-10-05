@@ -1,0 +1,49 @@
+#!/usr/bin/env -S uv run python
+"""Internal PCB fixture capture/replay; see pcb-board-snapshot-replay spec."""
+
+import argparse
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import psycopg
+
+from precis.pcb.snapshot import (
+    canonical_json,
+    export_query,
+    load_snapshot,
+    normalize,
+    read_snapshot,
+)
+
+parser = argparse.ArgumentParser(description=__doc__)
+commands = parser.add_subparsers(dest="command", required=True)
+export = commands.add_parser("export-prod", help="one SELECT through prod-psql --ro")
+export.add_argument("slug")
+export.add_argument("output", type=Path)
+load = commands.add_parser("load-test", help="fresh slug; requires PRECIS_TEST_PG_URL")
+load.add_argument("fixture", type=Path)
+load.add_argument("slug")
+args = parser.parse_args()
+if args.command == "export-prod":
+    completed = subprocess.run(
+        [
+            str(Path(__file__).resolve().parent / "prod-psql"),
+            "--ro",
+            export_query(args.slug),
+        ],
+        env={**os.environ, "PRECIS_PROD_PSQL_OPTS": "-Atq"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # -q suppresses transaction tags; exactly one JSON row is required.
+    fixture = normalize(json.loads(completed.stdout))
+    args.output.write_text(canonical_json(fixture), encoding="utf-8")
+    print(f"captured {args.slug}: {args.output.stat().st_size} bytes")
+else:
+    fixture = read_snapshot(args.fixture)
+    with psycopg.connect(os.environ["PRECIS_TEST_PG_URL"]) as conn:
+        ref_id, params = load_snapshot(conn, fixture, args.slug)
+    print(json.dumps({"slug": args.slug, "ref_id": ref_id, "route_params": params}))
