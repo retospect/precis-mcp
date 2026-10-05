@@ -35,6 +35,10 @@ _SPECIES_SCHEMA = [
     "dGf_kJ/mol",
     "source",
     "cas",
+    "name",
+    "charge",
+    "H_kJ/mol",
+    "Cp_J/mol/K",
 ]
 _PATHWAY_SCHEMA = [
     "step",
@@ -74,7 +78,13 @@ def _species_table(r: ReactionResult) -> str:
             "S_J/mol/K": _num(sp.data.S, 2),
             "dGf_kJ/mol": _kj(sp.data.dGf),
             "source": _source(sp),
-            "cas": sp.data.cas or "—",
+            "cas": sp.data.cas or "unavailable",
+            "name": sp.data.name or "identity unavailable",
+            "charge": str(sp.data.charge)
+            if sp.data.charge is not None
+            else "unavailable",
+            "H_kJ/mol": _kj(sp.data.H),
+            "Cp_J/mol/K": _num(sp.data.Cp, 2),
         }
         for sp in r.species
     ]
@@ -124,6 +134,7 @@ def _render_pathway(p: PathwayLedger) -> str:
         render_agent_table(rows, schema=_PATHWAY_SCHEMA),
     ]
     for i, s in enumerate(p.steps, 1):
+        out += [f"step {i}: {s.equation}", _species_table(s)]
         out += [f"⚠ step {i}: {u}" for u in s.unavailable]
     out += [f"note: {n}" for n in sorted({n for s in p.steps for n in s.notes})]
     out.append(
@@ -138,7 +149,7 @@ def _as_float(name: str, v: Any, default: float | None) -> float | None:
         return default
     try:
         return float(v)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise BadInput(f"{name}={v!r} must be a number", next=_NEXT) from exc
 
 
@@ -153,10 +164,16 @@ def render_energetics(
             next=_NEXT,
         )
     eqs = [e.strip() for e in re.split(r"[;\n]", str(q)) if e.strip()]
-    t = _as_float("T", T, 298.15) or 298.15
+    t = _as_float("T", T, 298.15)
+    assert t is not None
     n = _as_float("n_electrons", n_electrons, None)
     if len(eqs) == 1:
         return Response(
             body=_render_one(reaction_energetics(eqs[0], T=t, n_electrons=n))
+        )
+    if n_electrons is not None:
+        raise BadInput(
+            "n_electrons is supported for a single reaction only; supply it per step in separate calls",
+            next=_NEXT,
         )
     return Response(body=_render_pathway(pathway_ledger(eqs, T=t)))

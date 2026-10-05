@@ -1,34 +1,50 @@
-"""precis.thermo — tabulated reaction thermochemistry. Pure: no DB, no network.
+"""precis.thermo — balanced, source-backed thermochemistry. No DB or network.
 
-Answers "how much energy does this balanced reaction release, and how is it
-split across steps?" from tabulated standard-state data (the ``chemicals``
-package: ΔHf° and S° at 298.15 K, ATcT/TRC/others; its data ships in the
-wheel, so tests and the cluster need no network).
+Answers "how much energy does this reaction release across steps?" with a
+small pinned NASA-TM-4513 NASA-7 subset, converted by Cantera v3.2.0. H(T),
+S(T), Cp(T) use the source intervals and 1 bar standard state; see NOTICE
+and nasa7.json for original IDs, source notes, hashes and permissions.
 
 Modules:
 
 * :mod:`~precis.thermo.equation` — parse ``NO + 5/2 H2 -> NH3 + H2O`` into
-  species, coefficients and phase hints; check element balance.
-* :mod:`~precis.thermo.data` — one species → ΔHf°, S°, ΔGf° with a source
-  label (``tabulated``) per quantity, or an explicit ``unavailable``.
+  species, coefficients and phase hints; auto-balance an exact nullspace.
+* :mod:`~precis.thermo.data` — explicit neutral identity → NASA-7 H/S/Cp,
+  formation H/G and source labels, or an explicit ``unavailable``.
 * :mod:`~precis.thermo.ledger` — reaction ΔH, ΔS, ΔG(T), E°, and the
   per-step plus cumulative pathway ledger with uphill flags.
 
 Why it is shaped this way:
 
-* **Never guess.** A missing ΔHf° or S° (NH2OH has no S°; H2NO and HNOH are
-  absent) makes that term ``unavailable`` and the dependent totals
-  ``unavailable``, naming the species and quantity. Nothing is estimated and
-  nothing silently mixes methods. A computed fallback (xTB + ideal gas) is a
-  later slice and will be labelled by its own method, never ``tabulated``.
-* **Temperature.** ΔHf° and S° are 298.15 K values. At another T the ledger
-  still uses them (ΔG = ΔH − TΔS) and says so; no Cp correction is applied.
-* **Phase.** Gas by default; ``(l)`` selects the liquid-phase tables. A
-  phase the tables lack is ``unavailable``, not silently swapped for gas.
+* **Never guess identity or data.** Molecular formulas cannot distinguish
+  isomers or ions. Only vetted source IDs resolve: OH is neutral hydroxyl;
+  CH3OCH3 and C2H5OH are distinct. Unknown IDs fail closed. H2NO/HNOH have
+  no approved fit: inspected third-party data has unresolved redistribution
+  permission. Dependent cumulative totals become unavailable at the first
+  gap. The prototype's xTB/ideal-gas fallback stays deferred: an absolute
+  formation reference must be established before mixing a computed method.
+* **Dependencies.** Existing lazy SymPy supplies exact nullspace and positive
+  feasibility checks. ChemPy 0.10.2 adds solver/ODE dependencies and defaults
+  to integers; minimizing an underdetermined balance would conceal ambiguity.
+  Balanced scaling is preserved; auto-balanced equations normalize the first
+  reactant to one. n applies to that displayed extent. The prototype's
+  chemicals formula lookup could select an isomer or ion and its 298 K tables
+  cannot provide these temperature functions, so its core dependency is removed.
+  Cantera/RMG are unnecessary runtime dependencies for nineteen small fits.
+* **Reference and temperature.** NASA H is anchored to elemental 298 K zeros;
+  formation H/G subtract the same-source elemental H/S at the requested T.
+  Balanced reaction sums cancel those references. Modern SI R is used, with
+  unmodified coefficients. Out-of-range T is rejected, replacing the
+  prototype's disclosed constant-H/S approximation. Fits are not measured
+  point values, and the older NH2OH TPIS89 fit is not modern ATcT.
+* **Phase.** Gas by default; explicit water(l) uses its liquid polynomial.
+  Unsupported phases remain unavailable. Fit coverage includes metastable
+  liquid extensions; the ledger does not select phase-equilibrium states.
 
 Surface: ``get(kind='rxn', view='energetics', q=<equation(s)>, args={'T': ...,
 'n_electrons': ...})`` via ``precis.handlers.rxn`` — stateless, no id. The
-``chemicals`` import is lazy (inside functions) to keep cold start light.
+data load and ASE/SymPy imports are lazy to keep cold start light. E=-ΔG/(nF)
+does not establish an electrochemical reference or infer electron stoichiometry.
 
 See ``precis-rxn-help``.
 """

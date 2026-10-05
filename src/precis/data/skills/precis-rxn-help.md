@@ -173,9 +173,9 @@ always the bare canonical string.
 - **Ground the lever before proposing it.** Search the corpus for the
   transformation, cite what you lean on, then record the value.
 
-## How much energy does a balanced reaction release?
+## How much energy does a reaction release?
 
-Stateless, no id, no stored rows: tabulated standard-state thermochemistry
+Stateless, no id, no stored rows: source-backed standard-state thermochemistry
 for the equation in `q=`.
 
 ```python
@@ -183,18 +183,32 @@ get(kind='rxn', view='energetics', q='NO + 5/2 H2 -> NH3 + H2O',
     args={'T': 298.15, 'n_electrons': 5})
 ```
 
-You get ΔHf°, S° and ΔGf° per species (with the table each came from), then
+You get resolved name/CAS (or unavailable identity), neutral charge, NASA-7
+source ID/note/hash, H(T), Cp(T), ΔHf°, S° and ΔGf° per species, then
 ΔH, ΔS, ΔG = ΔH − TΔS and, if you give `n_electrons`, E° = −ΔG/nF.
 Separate `->` or `=`; coefficients may be `2`, `2.5` or `5/2`; `(l)` after a
-formula picks the liquid (default gas). An unbalanced equation is rejected
-naming the element. Several equations joined by `;` give a pathway: per-step
+formula picks an approved liquid fit (default gas). Loose equations auto-balance
+with exact fractions: `NO + H2 -> NH3 + H2O` becomes
+`NO + 5/2 H2 -> NH3 + H2O`. Auto-balance normalizes the first reactant to one;
+already balanced scaling is preserved. Energies and supplied n refer to that
+displayed extent. Impossible and nonunique balances are refused; include actual
+partners rather than a bare chemically impossible arrow. E=-ΔG/(nF) supplies
+no electrode reference. Several equations joined by `;` give a pathway: per-step
 and cumulative ΔH/ΔG, with each ΔG > 0 step flagged uphill.
 
-**Gaps are reported, never filled.** NH2OH has no tabulated S°; H2NO and HNOH
-are absent. That term reads `unavailable`, ΔG (or ΔH too) is withheld and the
-species is named. Estimated values (group contribution) are excluded. Away
-from 298.15 K the tabulated 298 K values are reused with no heat-capacity
-correction, and the output says so.
+The pathway includes every step's species/source rows. `n_electrons` is supported
+only on single-reaction calls; use separate calls for step-specific E values.
+T and n must be finite and positive; each species' fit range is enforced.
+
+**Gaps are reported, never filled.** N/H/O/OH/NH/NH2/HNO/NH2OH/N2O and stable
+target species have pinned NASA-TM-4513 fits, with real H/S/Cp temperature
+dependence at standard pressure 1 bar. NH2OH uses the older TPIS89 source,
+not modern ATcT. H2NO and HNOH lack approved redistribution permission in
+the inspected third-party mechanism: their energies and dependent cumulative
+totals remain `unavailable`. Unknown formulas (including ambiguous C2H6O)
+cannot silently select an isomer. No group-contribution, xTB or extrapolation
+fills a gap. An explicit liquid fit may extend into metastability; phase
+equilibrium is not inferred. Full sources and permissions: `precis.thermo/NOTICE`.
 
 ## Not in this slice
 

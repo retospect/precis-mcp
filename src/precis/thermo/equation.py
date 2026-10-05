@@ -1,10 +1,9 @@
-"""Parse and balance-check a reaction equation string. Pure; no chemicals import
-beyond the formula parser, imported lazily."""
+"""Parse neutral formulas and balance with an exact, lazy SymPy nullspace."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 
 from precis.errors import BadInput
@@ -37,12 +36,13 @@ class Equation:
     text: str
     reactants: tuple[Term, ...]
     products: tuple[Term, ...]
+    auto_balanced: bool = False
 
 
 def formula_atoms(formula: str) -> dict[str, int]:
     """Element counts of a plain formula; ``BadInput`` when it is not one."""
     from ase.data import chemical_symbols
-    from chemicals import nested_formula_parser
+    from ase.formula import Formula
 
     if not _FORMULA_RE.match(formula):
         raise BadInput(
@@ -50,14 +50,14 @@ def formula_atoms(formula: str) -> dict[str, int]:
             next=_NEXT,
         )
     try:
-        atoms = nested_formula_parser(formula)
-    except Exception as exc:  # chemicals raises bare ValueError/KeyError
+        atoms = Formula(formula).count()
+    except (ValueError, AssertionError) as exc:
         raise BadInput(
             f"could not parse species formula {formula!r}: {exc}",
             next=_NEXT,
         ) from exc
     unknown = sorted(el for el in atoms if el not in chemical_symbols[1:])
-    if not atoms or unknown:
+    if not atoms or unknown or any(n <= 0 for n in atoms.values()):
         raise BadInput(
             f"species {formula!r} is not a chemical formula"
             + (f" (not elements: {', '.join(unknown)})" if unknown else ""),
@@ -104,8 +104,8 @@ def _imbalance(
 
 
 def parse_equation(text: str) -> Equation:
-    """Parse ``'NO + 5/2 H2 -> NH3 + H2O'``; ``BadInput`` if unparseable or
-    unbalanced (naming the elements that do not balance)."""
+    """Preserve a balanced equation's extent; otherwise balance uniquely and
+    normalize the first reactant to one. Never introduce missing partners."""
     eq = text.strip()
     if not eq:
         raise BadInput("empty equation", next=_NEXT)
@@ -119,13 +119,65 @@ def parse_equation(text: str) -> Equation:
     products = _parse_side(parts[1], eq=eq)
     bad = _imbalance(reactants, products)
     if bad:
-        detail = ", ".join(
-            f"{el} (product side has {abs(v)} "
-            f"{'more' if v > 0 else 'fewer'} than the reactant side)"
-            for el, v in sorted(bad.items())
-        )
+        reactants, products = _balance(reactants, products)
+        eq = _side_text(reactants) + " -> " + _side_text(products)
+        return Equation(eq, reactants, products, auto_balanced=True)
+    return Equation(eq, reactants, products)
+
+
+def _side_text(terms: tuple[Term, ...]) -> str:
+    return " + ".join(
+        (f"{t.coef} " if t.coef != 1 else "")
+        + t.formula
+        + (f"({t.phase})" if t.phase != "g" else "")
+        for t in terms
+    )
+
+
+def _balance(
+    reactants: tuple[Term, ...], products: tuple[Term, ...]
+) -> tuple[tuple[Term, ...], tuple[Term, ...]]:
+    from sympy import Eq, Matrix, symbols
+    from sympy.solvers.simplex import InfeasibleLPError, lpmin
+
+    terms = reactants + products
+    elements = sorted({el for t in terms for el in t.atoms})
+    rows = [
+        [
+            t.atoms.get(el, 0) * (-1 if i < len(reactants) else 1)
+            for i, t in enumerate(terms)
+        ]
+        for el in elements
+    ]
+    basis = Matrix(rows).nullspace()
+    if not basis:
         raise BadInput(
-            f"equation {eq!r} is not balanced: {detail}",
+            "no valid balance using these species; supply actual partners", next=_NEXT
+        )
+    if len(basis) > 1:
+        # A strictly positive solution, if one exists, can be scaled so all
+        # coefficients >= 1. Exact simplex distinguishes infeasibility from
+        # an infinite family; a minimum-integer answer would hide ambiguity.
+        x = symbols(f"x:{len(terms)}")
+        try:
+            lpmin(
+                0,
+                [Eq(sum(v * z for v, z in zip(row, x, strict=True)), 0) for row in rows]
+                + [z >= 1 for z in x],
+            )
+        except InfeasibleLPError as exc:
+            raise BadInput(
+                "no valid positive balance using these species", next=_NEXT
+            ) from exc
+        raise BadInput(
+            "nonunique/underdetermined balance; supply balanced coefficients",
             next=_NEXT,
         )
-    return Equation(eq, reactants, products)
+    vector = basis[0]
+    if vector[0] == 0 or any(v / vector[0] <= 0 for v in vector):
+        raise BadInput("no valid positive balance using all these species", next=_NEXT)
+    balanced = tuple(
+        replace(t, coef=Fraction(int(v.p), int(v.q)))
+        for t, v in zip(terms, vector / vector[0], strict=True)
+    )
+    return balanced[: len(reactants)], balanced[len(reactants) :]

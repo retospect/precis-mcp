@@ -1,0 +1,46 @@
+NASA-7 neutral-species subset
+============================
+The coefficients in nasa7.json derive from B. J. McBride, S. Gordon and
+M. A. Reno, Coefficients for Calculating Thermodynamic and Transport
+Properties of Individual Species, NASA TM-4513 (October 1993).
+Original report: https://ntrs.nasa.gov/citations/19940013151
+Original permission metadata: https://ntrs.nasa.gov/api/citations/19940013151
+NTRS copyright: Work of the US Gov. Public Use Permitted.
+
+The original report, section Standard States, Reference States, and
+Fundamental Constants, specifies standard pressure 1 bar. The values are
+polynomial fits, not measurements at each queried temperature. Source-note
+codes are retained per species; see TM-4513 Six-Character Reference Codes
+and its bibliography (L = NASA Lewis; TPIS = Thermodynamic Properties of
+Individual Substances; X = reference code in that report). The NASA fits
+combine reference enthalpies with fitted thermodynamic functions. The
+modern SI gas constant is used here; no source coefficients are adjusted.
+
+The mechanical YAML conversion is from Cantera v3.2.0, nasa_gas.yaml and
+nasa_condensed.yaml. Preserve Cantera-License.txt for the conversion's BSD
+notice; that software licence is not asserted to license third-party data.
+Each original URL, source-file SHA256, species ID, note, charge, phase,
+composition, temperature ranges and coefficients is retained in nasa7.json.
+CAS numbers, where present, were separately checked against the indicated
+NIST WebBook identity URL and recorded page hash. Other CAS are unavailable.
+An approved species ID identifies a neutral species; atom-count equality
+is never used to discover an isomer or charged identity.
+
+These files do NOT incorporate any Burcat/ATcT/Glarborg polynomial subset.
+Actual Alzueta/Glarborg mechanism records were examined for H2NO and HNOH,
+but Cantera example-data explicitly disclaims granting mechanism licences,
+and the 2005 Burcat report restricts commercial use of any database part
+without written author permission. The missing permission is unresolved.
+Their sentinel records contain no coefficients and produce unavailable
+energetics. HNOH's inspected source note is 'trans & Equ T11/11', which
+also needs an exact conformer/ensemble decision before admission.
+
+The licensed NASA NH2OH TPIS89 fit is older than the inspected ATcT/A
+Klippenstein-2011 fit. They are different source versions; do not silently
+substitute their enthalpies or present the older fit as current ATcT.
+Forcing a source fit to match rounded acceptance numbers is prohibited.
+
+No estimates (including JOBACK), xTB or extrapolation are substituted.
+Polynomial ranges describe fit coverage, not phase-equilibrium stability;
+explicit liquid water selects the liquid fit, including its metastable
+extension, and never an automatic phase transition.

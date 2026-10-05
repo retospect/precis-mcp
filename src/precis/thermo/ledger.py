@@ -6,6 +6,7 @@ Energies are J/mol internally (``None`` = unavailable); the renderer in
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from precis.errors import BadInput
@@ -17,11 +18,7 @@ F_CONST = 96485.33212
 
 T_REF = 298.15
 
-_NOTE_T = (
-    "T != 298.15 K: ΔHf° and S° are the 298.15 K tabulated values and "
-    "ΔG = ΔH − TΔS uses them as-is; no Cp correction is applied"
-)
-_NOTE_XTB = "a computed (xtb-idealgas) fallback for missing species is a later slice"
+_NOTE_T = "H(T), S(T), Cp(T): NASA-7 polynomial fits, standard pressure 1 bar; not measured point values"
 
 
 @dataclass(frozen=True)
@@ -74,12 +71,12 @@ def _species(term: Term, side: str, T: float) -> SpeciesResult:
 def _check_T(T: float) -> float:
     try:
         t = float(T)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise BadInput(
             f"T={T!r} must be a number (kelvin)", next="args={'T': 298.15}"
         ) from exc
-    if not t > 0:
-        raise BadInput(f"T={T!r} must be > 0 K", next="args={'T': 298.15}")
+    if not math.isfinite(t) or not t > 0:
+        raise BadInput(f"T={T!r} must be finite and > 0 K", next="args={'T': 298.15}")
     return t
 
 
@@ -92,7 +89,7 @@ def _total(
     for sp in species:
         v = getattr(sp.data, attr)
         if v is None:
-            why = "not in the tabulated data" if sp.data.cas is None else "unavailable"
+            why = "unavailable: " + sp.data.note
             reasons.append(f"{sp.data.formula}({sp.data.phase}) {quantity} {why}")
             continue
         total += (sp.coef if sp.side == "product" else -sp.coef) * v
@@ -103,7 +100,7 @@ def _energetics(eq: Equation, T: float, n_electrons: float | None) -> ReactionRe
     species = [_species(t, "reactant", T) for t in eq.reactants] + [
         _species(t, "product", T) for t in eq.products
     ]
-    dH, why_h = _total(species, "dHf", "ΔHf°")
+    dH, why_h = _total(species, "H", "H(T)")
     dS, why_s = _total(species, "S", "S°")
     dG = None if dH is None or dS is None else dH - T * dS
     unavailable: list[str] = []
@@ -111,18 +108,16 @@ def _energetics(eq: Equation, T: float, n_electrons: float | None) -> ReactionRe
         unavailable.append("ΔH and ΔG unavailable: " + "; ".join(why_h + why_s))
     elif why_s:
         unavailable.append("ΔG unavailable: " + "; ".join(why_s))
-    notes: list[str] = []
-    if unavailable:
-        notes.append(_NOTE_XTB)
-    if abs(T - T_REF) > 1e-9:
-        notes.append(_NOTE_T)
+    notes: list[str] = [
+        _NOTE_T,
+        "energies and n refer to one displayed reaction extent; E=-ΔG/(nF) does not define an electrode reference",
+    ]
+    if eq.auto_balanced:
+        notes.append(
+            "auto-balanced: normalized first reactant coefficient to 1; supplied n_electrons applies to this equation"
+        )
     E: float | None = None
     if n_electrons is not None:
-        if not n_electrons > 0:
-            raise BadInput(
-                f"n_electrons={n_electrons!r} must be > 0",
-                next="args={'T': 298.15, 'n_electrons': 5}",
-            )
         if dG is not None:
             E = -dG / (n_electrons * F_CONST)
     return ReactionResult(
@@ -133,9 +128,21 @@ def _energetics(eq: Equation, T: float, n_electrons: float | None) -> ReactionRe
 def reaction_energetics(
     equation: str, *, T: float = T_REF, n_electrons: float | None = None
 ) -> ReactionResult:
-    """Energetics of one balanced equation. ``BadInput`` if unparseable,
-    unbalanced, or a bad ``T`` / ``n_electrons``."""
+    """Energetics of one supplied or uniquely auto-balanced equation.
+    ``BadInput`` for invalid inputs, impossible or nonunique balancing."""
     t = _check_T(T)
+    if n_electrons is not None:
+        try:
+            n_electrons = float(n_electrons)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise BadInput(
+                "n_electrons must be a finite positive number",
+                next="args={'n_electrons': 5}",
+            ) from exc
+        if not math.isfinite(n_electrons) or n_electrons <= 0:
+            raise BadInput(
+                "n_electrons must be finite and > 0", next="args={'n_electrons': 5}"
+            )
     return _energetics(parse_equation(equation), t, n_electrons)
 
 
@@ -146,7 +153,7 @@ def pathway_ledger(equations: list[str], *, T: float = T_REF) -> PathwayLedger:
     if not equations:
         raise BadInput(
             "no equations given",
-            next="get(kind='rxn', view='energetics', q='A -> B; B -> C')",
+            next="get(kind='rxn', view='energetics', q='NO + 1/2 H2 -> HNO; HNO + 2 H2 -> NH3 + H2O')",
         )
     steps = [_energetics(parse_equation(e), t, None) for e in equations]
     cum_h: list[float | None] = []
