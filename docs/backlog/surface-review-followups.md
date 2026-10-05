@@ -29,12 +29,13 @@ schema regen and the two changed product skills (`precis-fisheye-help`,
 
 ## The order, and why it is an order
 
-1. **`gripe-comment-timeline-uncapped`** — extract the shared capped-section
-   renderer; make the existing links cap its first caller.
+1. **Shared render cap** — `src/precis/handlers/_capped_section.py` now
+   serves inline links and routine gripe comments in prepared R14 source;
+   combined gate and deployed replay remain pending.
 2. **`singleton-id-no-batch-form`** — make `_coerce_id` the id normalizer
    (scalar-or-list in, list out, clean `BadInput` otherwise).
 
-**1 gates 2.** A batch `get` of 50 gripes whose comment timelines are
+**Deployed 1 gates 2.** A batch `get` of 50 gripes whose comment timelines are
 uncapped is worse than the singleton loop it replaces. Doing 2 first
 actively makes things worse, which is the kind of thing that is obvious in
 sequence and invisible in a backlog list.

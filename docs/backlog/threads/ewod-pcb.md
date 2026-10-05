@@ -4,12 +4,17 @@
 
 - **Pillar:** 3d-design
 - **Next:** Codex source review of snapshot/replay and measured grid refinement on `work/pcb/board-snapshot-replay`; root owns merge/version/full gate/deploy. After exact runtime announcement, same owner runs the R13 intake-preview dogfood checklist. EasyEDA remains parked.
+- **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
+- **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
+- **Acceptance:** After exact runtime announcement, use the same-owner R13 intake-preview dogfood checklist; retain the source/native distinction in current evidence below.
+- **Worktree:** Source commands in `pcb-pad-retention`, branch `work/pcb/board-snapshot-replay`; original `codex-pcb` branches/scratch and pane registration retained. Owner `pcb`, thread `01a108d5-fdb2-7913-a2e2-ee7a08e58d40`, pane `%23` (window6).
+- **Builds:** Not estimated here; use the owning slice estimate.
+- **Detail:** fleet-state `inbox/pcb-snapshot-ready.md/.json`, `inbox/pcb-escape-diagnosis.md/.json`, then `inbox/pcb-escape-ready.md`. [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
+
+## Current source evidence
+
 - **Current evidence:** R12 cdd1980c /8.35.11 verified deployed/closed by coordinator. R13 preview8b055 passed source review and root integration; no later native runtime claim here. gr467885 remains OPEN for its stated observable-proof remainder; 23 P1 checks remain historical PASS.
 - **Routing:** Reto authorizes ewod-dogfood-N route/place/rebuild and public fixtures; non-dogfood boards remain protected. Exact ewod-dogfood-6 replay preserves all raw routing inputs and stored22 routed/33 failed/3 dangling. Actual-terminal/B.Cu probes classify all17 no_path labels as congestion. Half-grid measurement23/32/3, zero routed DRC errors, with12 gained/11 lost nets; deterministic regression and source review govern readiness. Diagnostic endpoint/layer parity remains separate.
-- **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
-- **Worktree:** Source commands in `pcb-pad-retention`, branch `work/pcb/board-snapshot-replay`; original `codex-pcb` branches/scratch and pane registration retained. Owner `pcb`, thread `01a108d5-fdb2-7913-a2e2-ee7a08e58d40`, pane `%23` (window6).
-- **Holds:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
-- **Detail:** fleet-state `inbox/pcb-snapshot-ready.md/.json`, `inbox/pcb-escape-diagnosis.md/.json`, then `inbox/pcb-escape-ready.md`. [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
 2026-10-04 bounded reconciliation: R9 is CLOSED; four-host attestation is coordinator evidence, while this owner's single native status independently verifies the served SHA/version above. R7 and all deployment/route measurements below are historical. Fixture correction authorized using existing `ARR1_SINK_0` / C639448; BOM confirms queued acquisition. Part read is NotFound, lexical job search returns no entry; request/job/link/readback cannot be completed through returned hints. The stored route summary (22 routed, 33 failed, 3 dangling) is not a fresh routing or DRC result. No board mutations, new jobs, tests, deploy or provider probe. EasyEDA stays PARKED; pcb-platform inactive. Checkpoint: shared fleet `inbox/pcb-postdeploy-reconcile.md` + `.json`; FINISH and wait.
 

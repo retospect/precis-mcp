@@ -66,8 +66,8 @@ on — it has no server log.
 The crash and the missing batch form are the same fact, and both live at one
 place: `_coerce_id` is the single funnel every numeric-ref verb's `id` passes
 through. Fixing them per-verb would mean N guard clauses that the N+1th verb
-forgets — the same trap as the render caps (see
-`gripe-comment-timeline-uncapped.md`).
+forgets — the same trap addressed by the shared render cap in
+`precis.handlers._capped_section`.
 
 Make `_coerce_id` **the normalizer**: accept a scalar or a list, always return
 a list, and reject anything else with a clean `BadInput`. Then

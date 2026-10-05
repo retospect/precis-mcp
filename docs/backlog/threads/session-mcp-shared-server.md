@@ -309,8 +309,9 @@ check their state first.
    kwarg is a silent no-op for every session. Platform pass 2026-10-02.
 7. **backlog/singleton-id-no-batch-form.md** — numeric-ref verbs take one
    id; `id=[...]` crashes instead of batching.
-8. **backlog/gripe-comment-timeline-uncapped.md** — a bare get on a gripe
-    renders every comment; unbounded response on the shared server.
+8. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
+    reads at the newest20 comments; `view='comments'` exposes full history.
+    R14 source is prepared; deployed replay remains pending.
 9. **backlog/perplexity-block-handle-guard.md** — get on a perplexity kind
     with a search block handle cost ~$0.50; a spend guard on the surface.
 10. **backlog/time-kind.md** — stateless time/date kind like calc; no
