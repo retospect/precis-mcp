@@ -776,6 +776,14 @@ class SeHandler(Handler):
         **_kw: Any,
     ) -> Response:
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
+            if (view or "").strip().lower() == "surface_deviation":
+                raise BadInput(
+                    "surface_deviation requires a specific SE design id",
+                    next="get(kind='se', id='<design>', view='surface_deviation', "
+                    "args={'name':'<bound-block-or-#uid>', 'target':{'features':[]}, "
+                    "'z_offset_A':0}); features=[] explicitly authors a flat sheet; "
+                    "supply your authored feature profiles for a shaped target",
+                )
             return self._render_list()
         ref = self.store.get_ref(kind="se", id=str(id).strip())
         if ref is None:
@@ -812,7 +820,9 @@ class SeHandler(Handler):
                 from precis_se.atomic.surface_deviation import render_surface_deviation
 
                 return Response(
-                    body=render_surface_deviation(self.store, node, args or {})
+                    body=render_surface_deviation(
+                        self.store, node, args or {}, design_slug=str(ref.slug)
+                    )
                 )
             return Response(body=_render_block(tree, node, self.store, ref.id))
         if v == "ports":

@@ -5,6 +5,9 @@ stored structure-local Å atoms and an explicit caller-authored meridian. The
 target is never inferred from a planner/derived mesh; absent target data is
 unknown. Only the supplied rigid z offset is subtracted, so SE poses and fitted
 rotation/scale cannot hide deviation or rewrite generation provenance.
+Structure ID/version are checked around the independent cell/atom reads;
+monotonic transactional saves make any interleaving unknown/retry, never
+metrics with a later/earlier label. Missing design IDs cannot substitute a list.
 
 The landing zone for the ``nm`` kind's domain code as it folds into ``se``
 (docs/backlog/nm-se-merge.md). se and nm were built as siblings on the

@@ -90,9 +90,15 @@ def _features(target: Any) -> list[Feature]:
     return features
 
 
-def render_surface_deviation(store: Any, node: Any, args: dict[str, Any]) -> str:
+def render_surface_deviation(
+    store: Any, node: Any, args: dict[str, Any], *, design_slug: str | None = None
+) -> str:
     """Read-only S1 integration; unknown inputs never become zero/PASS."""
     header = f"# authored-surface deviation — block {node.name!r}"
+    header += (
+        f"\n\nsource: se:{design_slug or 'unknown'}; "
+        f"block UID={'#' + str(node.uid) if node.uid is not None else 'unknown'}"
+    )
     offset = _number(args.get("z_offset_A", 0), "z_offset_A")
     if args.get("target") is None:
         return (
@@ -109,7 +115,29 @@ def render_surface_deviation(store: Any, node: Any, args: dict[str, Any]) -> str
     ref = store.get_ref(kind="structure", id=node.bound)
     if ref is None:
         return header + "\n\nunknown: bound structure is missing"
-    scene, _handles = store.structure_load(ref.id)
+    # structure_save commits cell/atom rows and a monotonic version together.
+    # Bracket structure_load's separate reads: a commit anywhere across those
+    # reads invalidates the sample. Capture scalars, not a mutable ref/meta.
+    ref_id = ref.id
+    version = (ref.meta or {}).get("version")
+    if type(version) is not int or version < 1:
+        return (
+            header
+            + "\n\nunknown: structure version identity unavailable; retry this read"
+        )
+    scene, _handles = store.structure_load(ref_id)
+    after = store.get_ref(kind="structure", id=ref_id)
+    after_version = (after.meta or {}).get("version") if after is not None else None
+    if (
+        after is None
+        or after.id != ref_id
+        or type(after_version) is not int
+        or after_version != version
+    ):
+        return (
+            header
+            + "\n\nunknown: structure changed or version identity unavailable across loading; retry this read; no metrics computed"
+        )
     try:
         points = np.asarray(
             [scene.cell.frac_to_cart(atom.frac) for atom in scene.atoms.values()],
@@ -135,7 +163,7 @@ def render_surface_deviation(store: Any, node: Any, args: dict[str, Any]) -> str
     table = [{"region": name, **values} for name, values in rows.items()]
     return (
         header
-        + f"\n\ncoordinates: structure:{node.bound}, version={(ref.meta or {}).get('version', 'unknown')}; structure-local Å; SE pose/rotation/scale not applied"
+        + f"\n\ncoordinates: structure:{node.bound}, version={version}; structure-local Å; SE pose/rotation/scale not applied"
         + "\ntarget: caller-authored request; original generation target provenance unverified"
         + f"\nalignment: subtract rigid z_offset_A={offset!r} Å only; no fitted rotation/scale or target substitution"
         + "\njudge: precis_surface.deviation.surface_distance + summary (existing S1); distances in Å; no bar/stability verdict\n\n"

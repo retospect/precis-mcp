@@ -221,6 +221,14 @@ duplicate names, unknown keys, nonfinite inputs or overlapping feature discs
 returns actionable BadInput using existing judge validation. Template/array
 instances are unknown: this slice does not guess placement/target frames.
 Missing/blank selector cannot list all boards/designs as a substitute.
+The registered public get refuses id None/empty/whitespace/'/' specifically
+for this view with a complete id/name/target correction; ordinary SE listing
+remains unchanged. Source provenance includes SE slug and block UID where known.
+The renderer captures the structure ID and positive integer version before
+loading cell/atoms and rechecks both after loading, relying on the existing
+monotonic transactional save contract. Changed/missing/unverifiable identity
+returns unknown/retry before metrics; no automatic retry or later-label repair.
+This is a handler-local guard, not a shared-store/schema/pool change.
 
 Fixtures: local deterministic atoms on a vertical authored cylinder plus
 sheet atoms with known normal offsets. Assert nonzero mean/p95/max, exact
@@ -232,7 +240,9 @@ No hero/r4 regeneration, live relax, k3 solver, science, provider or threshold
 change. Native exact-deploy/same-owner read dogfood follows root's reviewed
 integration/deployment; local fixtures are not generated scientific evidence.
 Code review must precede merge. Preserve H1 branch/scratch; R13 branch is
-`work/hexfold/r13-authored-deviation` in the existing isolated task worktree.
+`work/hexfold/r13-authored-deviation` is preserved. Source-review corrections
+use `work/hexfold/r13-s1-review-fixes` from the original S1 commit, without
+the separately held k3 work, in the existing isolated task worktree.
 
 - New: a surface-spec module, which may live in `precis_surface` beside
   `revolution`.

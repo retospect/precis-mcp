@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** R13 S1 stored-atoms read exposure is locally ready for Codex review, root integration and exact-deploy dogfood; contract in [the owning backlog](../hexfold-ideal-surface-then-tile.md#r13--s1-read-only-exposure-bounded-implementation). Next queued slice is the equal-120° zigzag k=3 sp² catalogue spec; review precedes its implementation. No live relaxation/regeneration.
+- **Next:** R13 S1 P2 source-review corrections are locally ready for root re-review: structure ID/version guard returns unknown on interleaving; registered public get rejects missing design IDs only for deviation. Source/UID provenance and row-wise metric regressions included. Root integration/exact-deploy dogfood remain. Separately held k3 branch/scratch preserved; no k3 work in this correction. No live relaxation/regeneration.
 - **Blocked by:** Native plan-only table/lid read remains unavailable. Positive theta-p dogfood requires an actual recorded scene measurement; absent data is unknown. Live construction, relaxation and all scientific/hero holds remain. Source readiness is not deployed native acceptance.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/r13-authored-deviation`, `codex-hexfold`; H1 branch `work/hexfold/bootstrap` and scratch preserved. Earlier `hexa` work is historical.
+- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/r13-s1-review-fixes` from original S1; `work/hexfold/r13-authored-deviation`, H1 `work/hexfold/bootstrap` and scratch preserved. Earlier `hexa` work is historical.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 

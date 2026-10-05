@@ -70,7 +70,13 @@ def test_metrics_in_angstrom_and_only_supplied_rigid_z_removed() -> None:
     assert "original generation target provenance unverified" in text
     assert "z_offset_A=2.0" in text and "no fitted rotation/scale" in text
     assert "tube" in text and "sheet" in text and "p95" in text
-    assert "0.58" in text and "0.29" in text and "0.6" in text
+    rows = {
+        parts[0]: [float(v) for v in parts[1:]]
+        for line in text.splitlines()
+        if (parts := line.split("\t"))[0] in {"sheet", "tube"}
+    }
+    assert rows["tube"] == pytest.approx([2, 0.2, 0.29, 0.3])
+    assert rows["sheet"] == pytest.approx([2, 0.4, 0.58, 0.6])
     assert target == TARGET
     assert all(
         np.array_equal(store.scene.atoms[k].frac, v.frac) for k, v in before.items()
@@ -169,3 +175,160 @@ def test_bad_z_offset_refused(offset: Any) -> None:
         render_surface_deviation(
             ReadStore([]), node(), {"target": TARGET, "z_offset_A": offset}
         )
+
+
+class VersionedReadStore(ReadStore):
+    """Committed-save interleavings; no live writer or database required."""
+
+    def __init__(self, change: str = "stable") -> None:
+        super().__init__([[0, 0, 0.4]])
+        self.change = change
+        self.loads = 0
+        self.design = SimpleNamespace(
+            id=3, slug="source-design", title="Design", meta={}
+        )
+
+    def get_ref(self, **kwargs: Any) -> Any:
+        if kwargs["kind"] == "se":
+            return self.design
+        assert kwargs["kind"] == "structure"
+        return self.ref
+
+    def structure_load(self, _ref_id: int) -> Any:
+        self.loads += 1
+        assert _ref_id == 7
+        assert self.ref is not None
+        if self.change in ("between_reads", "inside_load"):
+            old_cell = self.scene.cell
+            self.ref.meta["version"] = 5
+            self.scene = SimpleNamespace(
+                cell=Cell(np.eye(3) * 20),
+                atoms={"a": SimpleNamespace(frac=np.array([0, 0, 0.035]))},
+            )
+            if self.change == "inside_load":
+                # Old v4 cell with new v5 atoms: a save inside the loader.
+                self.scene.cell = old_cell
+        elif self.change == "lost_version":
+            self.ref.meta = {}
+        elif self.change == "deleted":
+            self.ref = None
+        elif self.change == "identity":
+            self.ref.id = 8
+        return self.scene, {}
+
+
+@pytest.fixture
+def public_get(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Actual registered core.get -> invocation gate -> handler -> renderer.
+
+    Replace IO only; never replace the get tool, gate or handler method.
+    """
+    from precis.protocol import Response
+    from precis.runtime.dispatch import DispatchMixin
+    from precis.tools import TOOL_REGISTRY, core
+
+    tree = SeTree()
+    tree.blocks["tube"] = node(uid=41)
+    monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
+    runtime = object.__new__(DispatchMixin)
+    setattr(runtime, "default_tags_resolved", [])  # noqa: B010
+    store = VersionedReadStore()
+    handler = SeHandler(hub=cast(Hub, SimpleNamespace(store=store, embedder=None)))
+    monkeypatch.setattr(
+        handler, "_render_list", lambda: Response(body="DEFAULT-DESIGN-LIST-SENTINEL")
+    )
+
+    def dispatch(verb: str, payload: dict[str, Any]) -> str:
+        return runtime._invoke_handler(
+            handler,
+            verb,
+            kind=payload.pop("kind"),
+            kind_was_defaulted=False,
+            args=payload,
+        ).body
+
+    monkeypatch.setattr(core, "_dispatch", dispatch)
+    fn = TOOL_REGISTRY["get"]["func"]
+    assert fn is core.get
+    return fn, store
+
+
+@pytest.mark.parametrize("selector", [None, "", "   ", "/"])
+def test_public_get_missing_design_rejects_deviation_only(
+    public_get: Any, selector: Any
+) -> None:
+    fn, store = public_get
+    args = {"name": "tube", "target": {"features": []}}
+    with pytest.raises(BadInput, match="specific SE design id") as caught:
+        fn(kind="se", id=selector, view=" Surface_Deviation ", args=args)
+    correction = str(caught.value.next)
+    assert all(
+        token in correction
+        for token in [
+            "id='<design>'",
+            "'name'",
+            "'target'",
+            "'features'",
+            "view='surface_deviation'",
+        ]
+    )
+    assert store.loads == 0
+    assert fn(kind="se", id=selector).startswith("DEFAULT-DESIGN-LIST-SENTINEL")
+    assert fn(kind="se", id=selector, view="tree").startswith(
+        "DEFAULT-DESIGN-LIST-SENTINEL"
+    )
+
+
+def test_public_get_stable_version_and_design_uid_provenance(public_get: Any) -> None:
+    fn, store = public_get
+    body = fn(
+        kind="se",
+        id="source-design",
+        view="surface_deviation",
+        args={"name": "#41", "target": {"features": []}},
+    )
+    assert "source: se:source-design" in body and "block UID=#41" in body
+    assert "version=4" in body
+    row = next(
+        line.split("\t") for line in body.splitlines() if line.startswith("sheet\t")
+    )
+    assert row[:2] == ["sheet", "1"]
+    assert [float(v) for v in row[2:]] == pytest.approx([0.4] * 3)
+    assert store.loads == 1
+
+
+@pytest.mark.parametrize(
+    "change", ["between_reads", "inside_load", "lost_version", "deleted", "identity"]
+)
+def test_public_get_interleaved_cell_atoms_or_identity_is_unknown(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    fn, store = public_get
+    store.change = change
+    import precis_se.atomic.surface_deviation as renderer
+
+    monkeypatch.setattr(
+        renderer,
+        "surface_distance",
+        lambda *_a, **_k: pytest.fail("unstable snapshot reached metrics"),
+    )
+    body = fn(
+        kind="se",
+        id="source-design",
+        view="surface_deviation",
+        args={"name": "tube", "target": {"features": []}},
+    )
+    assert "unknown: structure changed or version identity unavailable" in body
+    assert "retry this read" in body and "no metrics computed" in body
+    assert "version=4" not in body and "version=5" not in body
+    assert "{region" not in body and store.loads == 1
+
+
+@pytest.mark.parametrize("version", [None, "4", True, 0, -1])
+def test_unverifiable_initial_version_unknown_without_loading(version: Any) -> None:
+    store = VersionedReadStore()
+    assert store.ref is not None
+    store.ref.meta["version"] = version
+    body = render_surface_deviation(store, node(), {"target": {"features": []}})
+    assert "unknown: structure version identity unavailable" in body
+    assert "retry this read" in body and store.loads == 0
