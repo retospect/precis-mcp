@@ -224,18 +224,24 @@ Missing/blank selector cannot list all boards/designs as a substitute.
 The registered public get refuses id None/empty/whitespace/'/' specifically
 for this view with a complete id/name/target correction; ordinary SE listing
 remains unchanged. Source provenance includes SE slug and block UID where known.
-The renderer captures the structure ID and positive integer version before
-loading cell/atoms and rechecks both after loading, relying on the existing
-monotonic transactional save contract. Changed/missing/unverifiable identity
-returns unknown/retry before metrics; no automatic retry or later-label repair.
-This is a handler-local guard, not a shared-store/schema/pool change.
+The owning store's narrow read-only `structure_positions_snapshot(ref_id)`
+returns identity/version/lattice/live fractions from ONE SQL statement. Label
+and coordinates both use that row snapshot, not `structure_load`/separate ref
+metadata. The earlier version bracket is rejected: concurrent imports can
+rewrite cell/atoms at the same supplied version. Missing/unverifiable snapshot
+identity/version returns unknown/retry before metrics; no automatic retry or
+later-label repair. No writer/schema/global-pool/isolation rewrite is involved.
+Canonical DB coverage commits a same-version rewrite after the statement is
+evaluated but before result retrieval: the read retains coherent old cell/atoms,
+and a following statement reads coherent new cell/atoms at that SAME version.
 
 Fixtures: local deterministic atoms on a vertical authored cylinder plus
 sheet atoms with known normal offsets. Assert nonzero mean/p95/max, exact
 rigid-z removal and absence of rotation/scale fitting; use existing analytic
 S1 tests as kernel regression. Instrument build/relax/persistence/job boundaries
 and preserve input target/coordinates. Unknown/malformed/empty cases and SE
-get dispatch/args rejection require focused canonical tests/types/Ruff.
+get dispatch/args rejection and same-version read coherence require focused
+canonical tests/types/Ruff.
 No hero/r4 regeneration, live relax, k3 solver, science, provider or threshold
 change. Native exact-deploy/same-owner read dogfood follows root's reviewed
 integration/deployment; local fixtures are not generated scientific evidence.

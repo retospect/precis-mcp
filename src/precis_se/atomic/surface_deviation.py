@@ -14,6 +14,7 @@ import numpy as np
 
 from precis.errors import BadInput
 from precis.format import render_agent_table
+from precis.structure.cell import Cell
 from precis_surface.deviation import Feature, summary, surface_distance
 from precis_surface.revolution import authored_meridian
 
@@ -115,32 +116,25 @@ def render_surface_deviation(
     ref = store.get_ref(kind="structure", id=node.bound)
     if ref is None:
         return header + "\n\nunknown: bound structure is missing"
-    # structure_save commits cell/atom rows and a monotonic version together.
-    # Bracket structure_load's separate reads: a commit anywhere across those
-    # reads invalidates the sample. Capture scalars, not a mutable ref/meta.
+    # Same-version imports defeat version brackets. Label and coordinates
+    # must come from the same statement snapshot, never structure_load.
     ref_id = ref.id
-    version = (ref.meta or {}).get("version")
+    snapshot = store.structure_positions_snapshot(ref_id)
+    if snapshot is None or snapshot["ref_id"] != ref_id:
+        return (
+            header
+            + "\n\nunknown: bound structure snapshot identity unavailable; retry this read"
+        )
+    version = snapshot["version"]
     if type(version) is not int or version < 1:
         return (
             header
             + "\n\nunknown: structure version identity unavailable; retry this read"
         )
-    scene, _handles = store.structure_load(ref_id)
-    after = store.get_ref(kind="structure", id=ref_id)
-    after_version = (after.meta or {}).get("version") if after is not None else None
-    if (
-        after is None
-        or after.id != ref_id
-        or type(after_version) is not int
-        or after_version != version
-    ):
-        return (
-            header
-            + "\n\nunknown: structure changed or version identity unavailable across loading; retry this read; no metrics computed"
-        )
     try:
+        cell = Cell(np.asarray(snapshot["lattice"], dtype=np.float64))
         points = np.asarray(
-            [scene.cell.frac_to_cart(atom.frac) for atom in scene.atoms.values()],
+            [cell.frac_to_cart(frac) for frac in snapshot["fractional"]],
             dtype=np.float64,
         )
     except (TypeError, ValueError):

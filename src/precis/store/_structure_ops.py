@@ -17,6 +17,10 @@ first and bonds map through a ``{label: id}`` lookup.
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``self.insert_ref`` / ``self.get_ref``.
+
+``structure_positions_snapshot`` reads identity/version/cell/live fractions
+in one SQL statement for S1. Importers can rewrite at the same caller version,
+so a version bracket around separate cell/atom reads is not a snapshot.
 """
 
 from __future__ import annotations
@@ -34,6 +38,15 @@ from precis.structure.cell import Cell, as_image3
 from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
+
+
+class StructurePositionsSnapshot(TypedDict):
+    """One statement's live structure identity, cell and fractional positions."""
+
+    ref_id: int
+    version: Any
+    lattice: Any
+    fractional: list[list[float]]
 
 
 class StructRunRow(TypedDict):
@@ -454,6 +467,39 @@ class StructureMixin:
         return int(inserted[0])
 
     # -- read ------------------------------------------------------------
+    def structure_positions_snapshot(
+        self, ref_id: int
+    ) -> StructurePositionsSnapshot | None:
+        """Read S1's inputs from one PostgreSQL statement snapshot, no writes.
+
+        An equal-version re-import may replace lattice and atoms together.
+        Joining their rows within one statement sees one committed geometry,
+        regardless of the caller-assigned version. This intentionally omits
+        bonds/measures and does not change structure_load or pool isolation.
+        """
+        with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT r.ref_id, r.meta, "
+                "COALESCE(jsonb_agg(jsonb_build_array(a.fa, a.fb, a.fc) "
+                "ORDER BY a.id) FILTER (WHERE a.id IS NOT NULL), '[]'::jsonb) "
+                "AS fractional FROM refs r "
+                "LEFT JOIN struct_atoms a ON a.ref_id = r.ref_id "
+                "AND a.retired_version IS NULL "
+                "WHERE r.ref_id = %s AND r.kind = 'structure' AND r.retired_at IS NULL "
+                "GROUP BY r.ref_id",
+                (ref_id,),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        meta = row["meta"] or {}
+        return {
+            "ref_id": int(row["ref_id"]),
+            "version": meta.get("version"),
+            "lattice": meta.get("lattice", (np.eye(3) * 10).tolist()),
+            "fractional": row["fractional"],
+        }
+
     def structure_load(
         self, ref_id: int, *, version: int | None = None
     ) -> tuple[Scene, dict[str, int]]:

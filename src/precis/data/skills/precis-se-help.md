@@ -32,8 +32,9 @@ not proof of the original generation target; no inference from geometry/plans.
 Only the supplied rigid z shift is removed, no fitted rotation/scale or SE pose.
 Missing target/binding/coordinates reports unknown. Explicit `features:[]` means
 a sheet-only target; feature discs must be disjoint. A specific design id is
-required. A structure version change or unverifiable version across loading
-returns unknown/retry, without automatically retrying or measuring mixed data.
+required. Identity/version/cell/live atoms use one SQL statement snapshot, so
+even a same-version re-import cannot mix geometry. Missing snapshot or
+unverifiable version returns unknown/retry without automatic retries.
 Source SE slug/block UID and stable bound structure version are separate
 provenance. No build/relax/write/job.
 

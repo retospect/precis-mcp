@@ -48,7 +48,17 @@ class ReadStore:
         return self.ref
 
     def structure_load(self, _ref_id: int) -> Any:
-        return self.scene, {}
+        pytest.fail("S1 must use the single-statement snapshot, not structure_load")
+
+    def structure_positions_snapshot(self, _ref_id: int) -> Any:
+        if self.ref is None:
+            return None
+        return {
+            "ref_id": self.ref.id,
+            "version": self.ref.meta.get("version"),
+            "lattice": self.scene.cell.lattice.tolist(),
+            "fractional": [a.frac.tolist() for a in self.scene.atoms.values()],
+        }
 
     def __getattr__(self, name: str) -> Any:
         pytest.fail(
@@ -194,27 +204,37 @@ class VersionedReadStore(ReadStore):
         assert kwargs["kind"] == "structure"
         return self.ref
 
+    def _rewrite(self) -> None:
+        assert self.ref is not None
+        if self.change not in ("same_version", "after_snapshot"):
+            self.ref.meta["version"] = 5
+        self.scene = SimpleNamespace(
+            cell=Cell(np.eye(3) * 20),
+            atoms={"a": SimpleNamespace(frac=np.array([0, 0, 0.035]))},
+        )
+
     def structure_load(self, _ref_id: int) -> Any:
+        """Legacy mixed read demonstrating why equal version cannot guard it."""
+        old_cell = self.scene.cell
+        self._rewrite()
+        return SimpleNamespace(cell=old_cell, atoms=self.scene.atoms), {}
+
+    def structure_positions_snapshot(self, _ref_id: int) -> Any:
         self.loads += 1
         assert _ref_id == 7
         assert self.ref is not None
-        if self.change in ("between_reads", "inside_load"):
-            old_cell = self.scene.cell
-            self.ref.meta["version"] = 5
-            self.scene = SimpleNamespace(
-                cell=Cell(np.eye(3) * 20),
-                atoms={"a": SimpleNamespace(frac=np.array([0, 0, 0.035]))},
-            )
-            if self.change == "inside_load":
-                # Old v4 cell with new v5 atoms: a save inside the loader.
-                self.scene.cell = old_cell
+        if self.change in ("between_reads", "inside_load", "same_version"):
+            self._rewrite()
         elif self.change == "lost_version":
             self.ref.meta = {}
         elif self.change == "deleted":
             self.ref = None
         elif self.change == "identity":
             self.ref.id = 8
-        return self.scene, {}
+        snapshot = super().structure_positions_snapshot(_ref_id)
+        if self.change == "after_snapshot":
+            self._rewrite()
+        return snapshot
 
 
 @pytest.fixture
@@ -297,9 +317,7 @@ def test_public_get_stable_version_and_design_uid_provenance(public_get: Any) ->
     assert store.loads == 1
 
 
-@pytest.mark.parametrize(
-    "change", ["between_reads", "inside_load", "lost_version", "deleted", "identity"]
-)
+@pytest.mark.parametrize("change", ["lost_version", "deleted", "identity"])
 def test_public_get_interleaved_cell_atoms_or_identity_is_unknown(
     public_get: Any, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
@@ -318,8 +336,7 @@ def test_public_get_interleaved_cell_atoms_or_identity_is_unknown(
         view="surface_deviation",
         args={"name": "tube", "target": {"features": []}},
     )
-    assert "unknown: structure changed or version identity unavailable" in body
-    assert "retry this read" in body and "no metrics computed" in body
+    assert "unknown:" in body and "retry this read" in body
     assert "version=4" not in body and "version=5" not in body
     assert "{region" not in body and store.loads == 1
 
@@ -331,4 +348,45 @@ def test_unverifiable_initial_version_unknown_without_loading(version: Any) -> N
     store.ref.meta["version"] = version
     body = render_surface_deviation(store, node(), {"target": {"features": []}})
     assert "unknown: structure version identity unavailable" in body
-    assert "retry this read" in body and store.loads == 0
+    assert "retry this read" in body and store.loads == 1
+
+
+@pytest.mark.parametrize(
+    "change,version,value",
+    [
+        ("between_reads", 5, 0.7),
+        ("inside_load", 5, 0.7),
+        ("same_version", 4, 0.7),
+        ("after_snapshot", 4, 0.4),
+    ],
+)
+def test_public_get_one_snapshot_across_versioned_and_same_version_rewrites(
+    public_get: Any, change: str, version: int, value: float
+) -> None:
+    fn, store = public_get
+    store.change = change
+    body = fn(
+        kind="se",
+        id="source-design",
+        view="surface_deviation",
+        args={"name": "tube", "target": {"features": []}},
+    )
+    assert f"version={version}" in body
+    row = next(
+        line.split("\t") for line in body.splitlines() if line.startswith("sheet\t")
+    )
+    assert [float(v) for v in row[2:]] == pytest.approx([value] * 3)
+    assert store.loads == 1
+
+
+def test_legacy_loader_can_mix_same_version_but_snapshot_does_not() -> None:
+    store = VersionedReadStore("same_version")
+    mixed, _ = store.structure_load(7)
+    assert store.ref is not None and store.ref.meta["version"] == 4
+    atom = next(iter(mixed.atoms.values()))
+    assert mixed.cell.frac_to_cart(atom.frac)[2] == pytest.approx(0.35)
+    coherent = store.structure_positions_snapshot(7)
+    assert coherent["version"] == 4
+    assert (np.asarray(coherent["fractional"]) @ np.asarray(coherent["lattice"]))[
+        0, 2
+    ] == pytest.approx(0.7)
