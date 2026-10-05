@@ -18,4 +18,11 @@ names, then rechecks all hashes before readiness. Collection failures journal
 every task without erasing scheduler evidence; retries reuse the same intent.
 OpenSSH status255 is a pending transport failure, not proof of a missing file.
 These filesystem/ledger guarantees stay generic; adapters own domain validation.
+
+Compute bootstrap freezes expected system Python and staged uv identities,
+allocation/ABI/driver and peak byte/inode budgets before model execution. Its
+standalone checker supports baseline Python3.6 so missing target venv/runtime
+does not erase early failure facts. Neutral observations go to the workload's
+separate report producer; neither default modules nor a second allocation can
+silently replace a failed expectation. No runtime tool becomes a package dependency.
 """

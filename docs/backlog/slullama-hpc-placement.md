@@ -9,8 +9,10 @@ Coordinator accepted spec and credential plan; implementation plus one bounded
 real ML pilot now authorized. Source/synthetic security review precedes actual
 secret use; afterward authentication, one quota query and one <=10-min/one-node
 fixture within allocation and <=25USD limit need no further user permission.
-User login is confirmed; automation authentication and
-project entitlement remain unverified. Canonical integration spec consolidating
+Pinned vault-backed authentication and ONE quota query were verified2026-10-05;
+p200916 has50 monthly GPU node-hours remaining in that accepted snapshot.
+Compute runtime, complete storage/artifact closure and live ML success remain
+unverified. Canonical integration spec consolidating
 communicator's draft and the chemistry/local-compute ownership boundary.
 
 Owner: meluxina; Precis orchestrates credentials/jobs/graph outcomes; a generic
@@ -33,6 +35,65 @@ The repository reference pins reviewed documentation, not a production engine
 selection; it works independently of a sibling worktree's session layout.
 
 ## Scope / holds
+
+R13 bounded completion: generic Precis bootstrap owns deterministic expected
+runtime/resource/path checks; chemistry owns its structured early-safe preflight
+report producer/adapter and all 65 pinned dependency archives. No duplicate
+report schema or domain validation. Render/bootstrap bytes are hash-bound in the
+final wheelhouse inventory. A fixed baseline system Python can run metadata
+checks before the target venv exists; exact target Python patch/path/hash,
+Linux/x86_64/glibc>=2.28, compatible CUDA13 driver, hash-bound Linux uv, allocation
+identity/resource/time and selected private path/headroom checks fail closed
+inside the SAME sole allocation, before install/model. No second preflight job,
+automatic fallback, module default, dependency resolution or login-node install.
+System-Python/no-modules is an explicit expected policy, not an assertion about
+compute-node availability; a pinned uv runtime artifact adds no package dependency.
+Chemistry's early-safe report CLI remains its owning contract. Generic bootstrap
+exports bounded neutral facts and fails closed; chemistry's thin wrapper maps
+these to its aliases/intermediate report without raw command stderr. Hash both
+the generic component and final workload wrapper, never assume their contracts
+are interchangeable.
+
+Proposed concrete sole vector: p200916/gpu/test, one exclusive node, one task,
+128 CPUs, 4 GPUs,491520MiB and explicit600s; freeze only after parent/higher
+association and covered-allocation/cost evidence. Existing runner flags and
+<=3GiB payload override stay unchanged. Stage/run/env/temp/output/venv/generated
+metadata/dirs/symlinks/pyc counts and peak bytes require complete chemistry
+inventory plus shared-project reserve against the accepted26664-file headroom;
+no SCRATCH or other-user/home environment adoption. Final packet records every
+unknown separately, exact command/immutable identities and source review status;
+source review precedes merge/stage. R13's verified65-wheel inventory measures
+24408 expanded files plus2307 directory upper bound; conservative shared-project
+peak80102 inodes plus1024 reserve exceeds accepted26664 free files. The existing
+generic runner uses one remote root for stage and run. No separate home/SCRATCH
+scope or root split is selected automatically: admitted storage and any narrowly
+reviewed path contract are prerequisites for a runnable freeze. This is authorisation to finish R13 source
+and factual gates, not to submit while any gate is missing.
+
+R13 candidate identities (login observations, not compute attestation): baseline
+`/usr/bin/python3`3.6.8 SHA256
+`6f8a05e5f9a6eb002ea9561c313ed1e00d11e84a9bcfde56af92ccf21dee9c4c`;
+target `/usr/bin/python3.12`3.12.14 SHA256
+`8fd63eaafaf82d27382341500cefe715cb94098a01627fbb3540cbdb056a9fa5`.
+Launchers do not hash-attest the whole OS or dynamic libraries. Staged Linux
+x86_64 uv0.12.22 executable47991416 bytes SHA256
+`96e1603cb62aebb1a804fe9866a5708ee8bba4c39d07202ad29cf256a67366c3`
+was extracted from the size/hash-verified official PyPI wheel; never executed
+locally or installed. Pin source URL/archive hash in the final artifact record.
+The private runtime copy and temp directory consume additional bytes/inodes.
+Require authoritative `confstr` glibc>=2.28 and CUDA13 driver>=580.65.06 on the
+actual allocated A100 node, exact hashes/versions and available `venv`; no default
+modules. UTC scheduler start/end and actual allocation owner/node/vector/time are
+parsed rather than filled from expectations; missing early-report primitives fail.
+
+Association cache now establishes u10418617621→p20091610543→luxembourg5→root1;
+no tighter observed inherited per-job wall/node/TRES fields. p200916's GPU-node
+minute limit3057 with0 used covers10 minutes; own MaxSubmit100/current0 is distinct
+from aggregate parent counts. Proposed covered-allocation lane consumes at most
+1/6 of the accepted50 GPU node-hours, with no purchase action. Native quota/limits
+do not reveal a USD tariff or contract billing: do not fabricate a zero-dollar
+rate. A paid-metered lane would require verified rate<=150USD/node-hour to remain
+within25USD for600s; coordinator reviews the covered-allocation interpretation.
 
 First slice: opt-in remote manifest, immutable locally built catpath wheel,
 stage/submit/recover/cancel/collect, one independent real ML energy/forces
