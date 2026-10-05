@@ -48,14 +48,6 @@ def test_no_to_nh3_matches_independent_acceptance() -> None:
         ("H2 -> 2 H", 436),
         ("O2 -> 2 O", 498),
         ("H2O -> 2 H + O", 927),
-        pytest.param(
-            "OH -> O + H",
-            430,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="NASA-TM-4513 TPIS78 OH gives 427.8239466 kJ/mol; requested 430±2 disagrees by 0.1760534 beyond tolerance; source unchanged",
-            ),
-        ),
         ("NH3 -> N + 3 H", 1172),
     ],
 )
@@ -64,6 +56,15 @@ def test_atomization_acceptance(equation: str, target: float) -> None:
     assert not r.unavailable
     assert _kj(r.dH) == pytest.approx(target, abs=2)
     assert r.dH is not None and r.dH > 0
+
+
+def test_oh_atomization_matches_accepted_nasa_tpis78_source() -> None:
+    """Reto/delegate ruling supersedes the rough ATcT 430±2 target."""
+    r = reaction_energetics("OH -> O + H")
+    assert not r.unavailable
+    assert _kj(r.dH) == pytest.approx(427.8239465937423, rel=1e-11, abs=1e-8)
+    oh = r.species[0].data
+    assert "NASA-TM-4513" in oh.tables and "TPIS78" in oh.tables
 
 
 @pytest.mark.parametrize("key", sorted(REFERENCE["values"]))

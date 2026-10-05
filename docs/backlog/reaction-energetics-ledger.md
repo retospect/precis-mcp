@@ -35,7 +35,9 @@ This revision supersedes the prototype's xTB fallback and constant-H/S scope.
   and retain E=-ΔG/(nF) with reaction normalization and no inferred electrode.
 - Public `tools.core.get`/FastMCP schema regression, neutral OH and ether/ethanol
   identity regressions; independent frozen-source checks and atomization targets
-  (kJ/mol, tolerance 2): N2 945, H2 436, O2 498, H2O 927, OH ~430, NH3 ~1172.
+  (kJ/mol, tolerance 2): N2 945, H2 436, O2 498, H2O 927, NH3 ~1172.
+  OH uses the authoritative pinned NASA-TM-4513/TPIS78 result
+  427.8239465937423 kJ/mol with arithmetic tolerance (Reto/delegate ruling).
   NO + 5/2 H2 -> NH3 + H2O: ΔH≈-378.5, ΔG≈-332.0, E≈0.69 V (n=5).
 - Pathway fixtures show actual balancing partners: NO + 1/2 H2 -> HNO;
   HNO + 1/2 H2 -> H2NO; H2NO + 1/2 H2 -> NH2OH;
@@ -74,11 +76,11 @@ without written author permission. Their coefficients are not vendored;
 dependent pathway totals remain unavailable. HNOH's source note additionally
 says trans & equilibrium, requiring an explicit identity/ensemble decision.
 
-**Source disagreements:** independent Cantera 3.2.0 evaluation of the pinned
-files gives OH->O+H ΔH=427.8239466 kJ/mol, 0.1760534 beyond the requested
-430±2 tolerance. Its unchanged TPIS78 coefficients are verified against the
-frozen oracle; the requested acceptance is a strict expected failure, not a
-PASS. A licensed newer OH fit is still needed to meet that numeric target.
+**Accepted source criterion (2026-10-05):** Reto/delegate accepted T0 for R13
+and superseded the rough newer ATcT OH target of 430±2 with the pinned
+NASA-TM-4513/TPIS78 result, 427.8239465937423 kJ/mol. Unchanged coefficients
+remain verified against the frozen oracle; the OH regression now uses only
+arithmetic tolerance and has no expected-failure marker.
 NASA NH2OH TPIS89 ΔHf298=-49.9997151 kJ/mol differs from the inspected
 ATcT/A mechanism fit (-43.94975) and the prototype's chemicals table (-43.48);
 the older source is labelled and never silently updated.
@@ -91,7 +93,8 @@ and actual public FastMCP route use `scripts/test` without UV_WITH; removing
 chemicals resolves the prototype's missing-core-dependency problem in the
 existing image. Root still owns the locked-image reproducibility/full gate.
 
-Focused canonical run: 165 passed, 1 strict xfail (OH acceptance above);
+Historical focused canonical run before the criterion ruling: 165 passed,
+1 strict xfail (now superseded by the accepted OH regression);
 thermo/renderer statement coverage 96%. Scoped container typecheck and
 whole-tree Ruff check/format pass. The actual registered FastMCP call reaches
 tools.core.get, extras forwarding, runtime and handler; tests also reject
