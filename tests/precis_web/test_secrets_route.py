@@ -41,6 +41,10 @@ def test_secrets_page_renders_masked_inventory(
     assert "PRECIS_CORE_API_KEY" in r.text
     assert "sk-…9f2" in r.text  # masked hint shown, never a plaintext
     assert 'action="/secrets/set"' in r.text
+    # Counts begin empty even beside an existing masked hint; no stored length claim.
+    assert "data-secret-entry-count" in r.text
+    assert "Entered: 0 chars · 0 lines" in r.text
+    assert "not the saved value or its validity" in r.text
 
 
 def test_secrets_set_writes_and_redirects(

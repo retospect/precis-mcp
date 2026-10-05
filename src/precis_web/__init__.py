@@ -41,7 +41,10 @@ Basic credential) + session-cookie delete.
 existing values never populate it. Password inputs discard pasted line breaks,
 so multiline values use a textarea and cannot switch to a password input while
 line breaks remain. Blank replacement leaves the stored value unchanged; the
-editor reads only masked inventory.
+editor reads only masked inventory. Live character/line counts describe only
+current input (Unicode code points and newline-delimited segments), not stored
+lengths or validity: retaining write-only inventory avoids decrypting secrets
+just to offer entry feedback.
 
 Nav (template ``templates/base.html.j2``; badges ``nav.py::nav_badges``):
 Daily (Drive, Tags, ToDo, Design) always visible; Browse ▾ (Quests,
