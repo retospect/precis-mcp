@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Write the `precis-classify-help` authoring guide ([taxon-facet-navigation](../taxon-facet-navigation.md) slice 0, docs only). Once 0188 is live, verify converted legacy rows; then address the six measures-pilot gaps (FE grouped by product and review-aware best_measure first), then upkeep slice 1b.
+- **Next:** After the next deploy, run [taxon-facet-navigation](../taxon-facet-navigation.md) AC 0 (cold agent + `precis-classify-help`); review and land slices 1–3 from the Sonnet coder's worktree branch (dispatched 2026-10-05, not yet reported). Once 0188 is live, verify converted legacy rows; then address the six measures-pilot gaps (FE grouped by product and review-aware best_measure first), then upkeep slice 1b.
 - **Blocked by:** 0188 deployment for conversion dogfood. Taxonomy and upkeep slice 0 separately wait on [local-compute](local-compute.md#resume)’s Castor serving.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
 - **Acceptance:** Use [the latest handoff](#thread-context): legacy views return legacy numbers, measures stores SI and measure_unit_compat contains its seed rows; follow [ranked work](#do-next) for pilot gaps.
@@ -63,10 +63,12 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
-1. **backlog/taxon-facet-navigation.md slice 0** — the `precis-classify-help`
-   authoring guide (Reto 2026-10-05: in early, before the mesh fills).
-   Docs only, unblocked, about half a build; every `instance-of` written
-   before it sets the classification shape by accident.
+1. **backlog/taxon-facet-navigation.md slice 0 AC 0** — the
+   `precis-classify-help` guide and the `includes`/`excludes` taxon keys
+   landed 2026-10-05 (04c13fd28, Opus-reviewed), not yet deployed. Open:
+   after the deploy, the cold-agent check (10 seeded AFM items). Ranked
+   first because every `instance-of` written before it sets the
+   classification shape by accident.
 2. **backlog/taxonomy-bootstrap.md §Resume** — waits on castor's local
    big model (Reto, knowledge-mesh-9: wait for castor; no date, Slice 0
    not run; local-compute pings on serving). Then: two

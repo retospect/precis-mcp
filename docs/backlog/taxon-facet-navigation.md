@@ -80,7 +80,9 @@ browsing", CHI '03, 401–408, doi:10.1145/642611.642681, precis paper
 
 Slices ship independently, in this order.
 
-**Slice 0 — the authoring guide (docs only, unblocked).** New skill
+**Slice 0 — the authoring guide.** Landed 2026-10-05 except AC 0's
+cold-agent check, which runs after deploy; the skill is the truth for its
+rules now, and the list below is the original brief. New skill
 `precis-classify-help`, the writer's and reader's rules, usable with
 today's fields (definition text, aliases, `meta.axis`):
 
