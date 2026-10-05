@@ -341,6 +341,8 @@ task set.
 12. **gr458727** — the capacity-idle monitor ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned with
     `backlog/graph-maintenance-queue.md` (Ruled 2026-10-01, `INDEX.md`).
+13. **backlog/local-coder-batch-harness.md** — idea (Reto 2026-10-04); last
+    because it needs the standing castor server and has no quality number.
 
 ## Parked
 
