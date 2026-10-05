@@ -88,8 +88,14 @@ review this packaging seam without weakening the worker's scientific checks.
 
 PROJECT holds one image plus small hashed control files/results; internal
 image members consume no separate project inodes. Budget upload temp,
-generated ledger/job files, bounded logs/result publication temps and private
-application caches as well. Image bootstrap is a proposed separate closed
+generated ledger/job files and bounded logs/result publication temps. Runtime
+HOME/config/cache/tmp, including outer Apptainer and inner uv/Torch caches,
+belong in a UID/job-private directory under documented GPU `$LOCALSCRATCH`,
+explicitly bound rw at `/scratch`; stage stays ro and persistent results rw.
+Freeze local peak bytes/inodes separately; verify actual path, ownership,
+writability, headroom and cleanup inside the same allocation. No writes to
+Reto's HOME, default tmp or PROJECT runtime caches, and no extraction fallback.
+Image bootstrap is a proposed separate closed
 runtime mode: outer host verifies actual allocation/driver/project headroom
 and pinned image/Apptainer, then inner checker verifies image Python/uv/ABI
 and installed stack. It must not copy uv or install/extract65 wheels into
@@ -108,6 +114,19 @@ fallback only after explicit contract review and measured unpack/runtime
 budget; revise>=540 rule explicitly if needed, never silently. HOME, project
 environment expansion and unrelated cleanup remain prohibited. A provider
 quota request is a long-term user action, not the pilot's default dependency.
+
+Saved ONE-myquota observation at2026-10-05T07:02:07Z reports PROJECT
+`/project/home/p200916`:973336/1000000files, hence26664free. This is the
+project/group data allocation, not the separate HOME100000-file user row
+(7used). Snapshot provenance is retained; it does not attest every lower
+Lustre limit or current admission. Recheck only at final admission, no polling.
+Provider [data docs](https://docs.lxp.lu/first-steps/managing_data/) document
+GPU local SSD, job-end cleanup and copy-back; [allocation docs](https://docs.lxp.lu/access/allocation_monitoring/)
+identify project/group quotas and `myquota -t data` with a10s minimum interval.
+The secondary perplexity-reasoning:468799 claim that the site specifically
+recommends Apptainer for small-file Python environments was not located in
+these pages or the linked Python/software-installation/FAQ pages. The SIF
+choice is our inode-reduction inference from documented container support.
 
 Proposed concrete sole vector: p200916/gpu/test, one exclusive node, one task,
 128 CPUs, 4 GPUs,491520MiB and explicit600s; freeze only after parent/higher
