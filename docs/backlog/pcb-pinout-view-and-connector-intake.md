@@ -17,7 +17,9 @@ pillar: 3d-design
 
 ## The gap
 
-Connector intake still needs checkable signal-to-pad assignment from prose.
+Authored explicit signal-to-pad echo is already available through P1 before
+routing. The remaining narrow gap is inspecting an **unsaved explicit proposal**
+against an existing instance's stored geometry without an authoring put.
 The per-instance `get(kind='pcb', id='<board>#<REFDES>', view='pinout')`
 reads stored physical pad geometry, placement and mapping evidence; see
 `src/precis/pcb/__init__.py` and `precis-pcb-help` for its current contract.
@@ -50,11 +52,131 @@ Consequences for the design:
 1. **Pinout extensions:** consider a part-kind view for an uninstantiated
    footprint and an optional spatial map. Keep parsed/authored provenance
    explicit; do not infer missing pad geometry or mating orientation.
-2. **Echo-back on connector intake.** After mapping prose → pads, render
-   the result spatially ("pad 1 top-left, pad 2 to its right, …") so a
-   mismatch against the user's description is visible *before* routing.
+2. **Unsaved explicit intake echo:** proposed `view='pinout-preview'` below.
+   P1 already echoes authored mappings; do not rebuild that workflow or infer
+   mappings from prose. Preview adds a non-authoring inspection step.
 3. **Store signal↔pad explicitly**, so the mapping is reviewable later and
    a future reader is not re-deriving it from remembered prose.
+
+### Proposal 2 selected slice — unsaved explicit pinout preview (review pending)
+
+Premise checked at integrated main `04c13fd28998b9e2e10891a536da100a4890bfa3`;
+deployed R12 `cdd1980c0731a2874bc824b64aecd765c9061045` is a separate anchor.
+`PcbHandler.get` (pcb.py:711–733) dispatches P1 with no draft args;
+`_render_pinout` (:4474–4518) loads stored neighbors and raw cached/local pads.
+`eyes.pinout` (eyes.py:43–165) already provides spatial rows and provenance.
+Thus `put(...components[].pins...)` then `get(...#J1, view='pinout')` already
+checks **authored** input. That put changes state and can queue catalog-part
+datasheets; it cannot supply a zero-authoring preview. Only the latter is new.
+
+**Proposed API, not shipped:**
+
+```python
+get(kind='pcb', id='<existing-board>#<existing-REFDES>',
+    view='pinout-preview',
+    args={'pins': [{'name': 'CLK', 'pad': '2'},
+                   {'name': 'DATA', 'pad': '3'},
+                   {'name': 'UNKNOWN', 'pad': None}]})
+```
+
+Reuse the single-instance selector before legacy fragment dispatch, exactly
+as P1 does. Missing/empty/multiple selectors or `@NET` give short BadInput with
+the complete example; unknown board/refdes gives NotFound plus its supported
+parent read. No alternate default view or fragment behavior changes. The
+existing `get(..., view='pinout')` continues to report only persisted evidence.
+Implementation seam is the handler's existing stored-footprint/instance
+read path and pure row computation, not pcb_apply, IR, routing or providers.
+
+`args` accepts only `pins`, required list of at most32 objects. Each object
+accepts only `name` (nonempty stripped string, at most64 characters) and `pad`
+(required exact nonempty string at most32 characters, or explicit null).
+Reject malformed/extra keys with typed correction, not ignored args. Do not
+infer pad numbers, coerce prose/numbers into numbering, or accept net/placement/
+mating declarations here. `name` is an explicit proposed semantic pin/signal
+label; it does not assign a net. Null pad means proposed binding unknown, not
+NC/unconnected. Label NC does not establish electrical disconnection.
+
+Read stored physical pads in original order and reuse authoritative
+`padplace.place_pad_point` (padplace.py:194): mirror local X on bottom, rotate
+CW, then translate. Local +X right/+Y up; board frame is top-view. Return raw
+pad number/index, local and available board mm, side/rotation/layers, physical
+duplicate indices and existing stored pin/net/mapping-source/geometry evidence.
+Add separate proposed names and proposal-entry indices, provenance
+`proposed-explicit` and proposal state. Never replace stored names/nets or
+present a proposal as canonical/cache/vendor evidence. Preserve stored P1
+ambiguity independently; disagreement with footprint naming or stored binding
+is an observed difference, not a mapping decision or alias policy.
+
+For proposed evidence: two names on one non-null pad or one name on different
+pads is `conflicting`; echo all entries with a one-canonical-name/correct-pad
+hint and say canonical authoring would refuse. Identical repeated pairs are
+labelled repeated proposals, not extra canonical pins. Duplicate **physical**
+pad numbers remain separate rows; one proposal appears on each matching row.
+Null proposals are listed as unknown; nonexistent pad IDs are listed unmatched
+with an explicit correct-pad hint. No winner, net merge, hidden metadata storage
+or canonical-ownership relaxation. Canonical gr467885 refusal remains unchanged.
+
+Missing/invalid stored pad geometry stays unavailable; keep proposal and
+unknowns visible with an explicit manual authoring/cache-inspection hint. No
+automatic fetch/footprint synthesis. Missing pose leaves board coordinates
+unavailable, never origin. Stored side/rotation follow the existing transform;
+unknown/missing pose is identified as such. Connector mating side/orientation,
+vendor numbering correctness and proposed nets remain unknown even when the
+stored instance has a known pose. Geometry is not a mating/numbering claim.
+
+Bound response to one instance, at most64 raw physical rows and32 proposals;
+no silent row/proposal truncation. Target maximum16,384 returned text characters;
+overflow returns short actionable BadInput (use existing P1 for large stored
+instances or reduce proposals). Heading must say unsaved/read-only proposal,
+geometry provenance (design-local-authored or catalog-cache/source), and unknown
+mating/net semantics. No SVG/browser renderer, font engine or new schema.
+
+**Numbered acceptance and future native replay (no calls in this spec turn):**
+
+1. Existing P1 authored echo remains supported and unchanged; preview works on
+   a stored instance without authoring its proposed pins. Use an already
+   provisioned labelled synthetic fixture; if absent, stop for fixture setup
+   authorization rather than creating it during zero-write replay.
+2. Exact asymmetric2x3 oracle below distinguishes row-major from zigzag with
+   proposed VCC/CLK/DATA/GND/NC/AUX bound explicitly to pad1…6. Echo CLK.pad2
+   at(0,1) for row-major and(-2,-1) for zigzag. Never choose a convention from
+   prose or rename/reorder raw pad IDs.
+3. Top J_TOP=(10,20),rot0; bottom J_BOTTOM=(30,40),rot90, B.Cu. Compare every
+   raw row against the independent table. Unplaced pose retains local rows
+   with unavailable board mm; mating orientation remains unknown throughout.
+4. Unknown/null proposal, absent pad99, missing geometry and malformed selector
+   show explicit unknown/unmatched/actionable hints, no provider/synthesis call.
+5. Append a second physical pad6 at local(4,-1): preserve both pad6 rows and
+   duplicate indices; bottom extra point=(29,44). Proposed CLK.pad2/OTHER.pad2
+   and contradictory CLK.pad2/CLK.pad3 return all conflicting draft evidence,
+   never canonical bindings. Existing stored-versus-footprint ambiguity remains
+   separate. Identical proposals do not claim extra electrical identities.
+6. Provenance separates proposed-explicit from stored explicit-pin-pad,
+   footprint-pin-map and identity fallback; unknown proposed nets/NC are not
+   inferred from a label. Stored rows and raw footprint source are unchanged.
+7. Supported native board/legacy/P1 snapshots before/after identical preview
+   calls are byte-equal; repeated preview is deterministic. Focused future
+   read-only transaction/snapshot plus provider/enqueue tripwires prove zero
+   authoring/provider/job side effects; native snapshots alone prove only
+   exposed state, not hidden DB internals. No live job/provider query needed.
+8. Validate input/output bounds and typed errors; ordinary board/#REFDES/@NET
+   and P1 get behavior unchanged. Browser is optional display-only consumption
+   of the same rows, no browser editor/physical claim or new browser scope.
+
+| Physical row | Local(x,y) | Row-major pad | Zigzag pad | Top board(x,y) | Bottom board(x,y) |
+|---|---|---|---|---|---|
+| upper-left | (-2,1) | 1 | 1 | (8,21) | (31,38) |
+| upper-middle | (0,1) | 2 | 3 | (10,21) | (31,40) |
+| upper-right | (3,1) | 3 | 5 | (13,21) | (31,43) |
+| lower-left | (-2,-1) | 4 | 2 | (8,19) | (29,38) |
+| lower-middle | (0,-1) | 5 | 4 | (10,19) | (29,40) |
+| lower-right | (3,-1) | 6 | 6 | (13,19) | (29,43) |
+
+All values describe supplied synthetic stored geometry, not a vendor connector.
+Scope excludes prose-to-pad inference, uninstantiated part intake, schema/alias
+model, ERC, optimizer, provider/import, silk/font, placement/routing/manufacture
+and gr467885 metadata-observability closure. Root contract review is required
+before implementation. No future view is ready merely because this spec exists.
 
 ## Silkscreen labelling — mostly code, but one piece is missing
 
