@@ -177,7 +177,13 @@ PAD_LAYER = PAD_LAYER
 
 #: Routing-grid pitch as a fraction of the board's clearance — see the
 #: `maze.grid_for` call in `_realize_maze` for the measurement behind it.
-_PITCH_PER_CLEARANCE = 2.0 / 3.0
+# Faithful ewod-dogfood-6 replay: halving the clearance-derived pitch cap
+# realizes 23/55 connections instead of 22/55, recovering 5 of 17 stored
+# no_path labels with zero routed DRC errors. A quarter-cap arm produces
+# the same result at grid_for's existing pitch floor. Clearance and fixed
+# copper remain constraints; routing-order tradeoffs include 12 gains and
+# 11 losses, and diagnostic endpoint/layer parity remains a separate defect.
+_PITCH_PER_CLEARANCE = 1.0 / 3.0
 
 
 #: Most negotiation iterations one route op may ask for (``negotiate=``);

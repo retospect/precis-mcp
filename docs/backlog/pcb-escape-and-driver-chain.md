@@ -853,3 +853,40 @@ so `.points` and `.vias` are both there) and `realize._realize_maze`
 keep-out), `pcb/ir.py` (pad set), `pcb/session.py`
 (`apply_real_pin_offsets`), `pcb/realize.py` (`pads_for_ir`,
 `_claim_fixed_copper`), `pcb/drc.py`, `handlers/pcb.py`.
+
+### 2026-10-05 faithful-snapshot diagnosis and bounded grid repair
+
+Claude/Reto reopened ewod-pcb routing; EasyEDA remains parked. Reto explicitly
+permits route/place/rebuild on ewod-dogfood-N, which are public dogfood data;
+non-dogfood boards remain protected. Snapshot/replay is internal, no schema/op.
+Source branch work/pcb/board-snapshot-replay, snapshot checkpoint a101e5665.
+Exact fixture tests/fixtures/pcb/ewod-dogfood-6-replay-v1.json.gz captures 2instances,
+58nets, 55escape connections. Its pre-reroute status is22routed/33failed/3dangling;
+fixed-pose realization reproduces22/33 and zero routed geometric DRC errors.
+
+All17 historical no_path labels are congestion under the ACTUAL route request:
+_seg_request's fixed-copper island terminals, permitted B.Cu layer and full width
+find a path for each on the static-only grid. _diagnose_unrouted probes native pad
+centres/board-wide layers instead; diagnostic parity is a separate known defect,
+not evidence to remove fixed copper, widen layer locks or invent topology.
+
+Measured candidate comparison (same stored poses, pads, fixed copper and rules):
+existing four-iteration negotiation22routed; resolved maximum across58net rules
+still0.15mm and22routed; half default grid-pitch cap23routed; quarter arm also23 because
+grid_for's existing minimum pitch clamps it. Every arm has zero routed DRC errors.
+Select the smallest measured routing change: _PITCH_PER_CLEARANCE 2/3→1/3.
+Bump route CODE_VERSION2→3 so unchanged requests do not reuse old jobs.
+No clearance/width/voltage/layer/copper rule changes; grid_for's floor/bounds/search
+budget remain authoritative. It recovers5 of the17 (R1C3,R1C5,R1C6,R2C3,R6C1),
+12previouslyfailed nets total, while11previouslyrouted nets now fail: net+1.
+This is the strongest measured bounded candidate, not a global routing optimum.
+
+Acceptance: canonical slow fixture regression forces old coefficient for baseline
+22routed/33failed/3dangling, then uses new default twice and requires identical
+failed-net set and complete realized copper,23routed/32failed/3dangling. Geometric
+DRC must remain zero errors and all escape router tracks must remain B.Cu. Fresh
+copy only; no source implementation/deploy on production before Codex review.
+Adjacent realizer/fixed-copper/bottom-pad/negotiation tests, scoped container types,
+Ruff/format/diff check. Root owns full gate/version/merge/deploy. Postdeploy replay
+may reroute the labelled dogfood board; source-review checkpoint reports fixture
+before/after honestly, not an already-deployed production improvement.

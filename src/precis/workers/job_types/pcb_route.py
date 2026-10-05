@@ -63,7 +63,8 @@ log = logging.getLogger(__name__)
 # whenever a change alters what the route job produces for an unchanged
 # board, or a pending/complete job keeps serving the old result.
 # 2 = pin swaps restored before the layer sketch (5d50cd44a).
-CODE_VERSION = 2
+# 3 = finer clearance-derived occupancy grid cap (faithful replay net+1).
+CODE_VERSION = 3
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
