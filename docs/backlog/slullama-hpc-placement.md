@@ -54,6 +54,14 @@ these to its aliases/intermediate report without raw command stderr. Hash both
 the generic component and final workload wrapper, never assume their contracts
 are interchangeable.
 
+R14 correction R13-1: initialize nonzero exported status and clear prior
+observations/runtime paths before any sourced-hook guard. Preserve the actual
+checker/source return code; success-only paths are exported only on success.
+Chemistry owns the wrapper and must retain the source return code before report
+work. Seed stale success exports in missing-context and baseline-hash regressions,
+and re-render/hash the changed generic hook and workload wrapper independently.
+This correction leaves frozen R13 and existing credential/core/pilot2 reviews intact.
+
 Proposed concrete sole vector: p200916/gpu/test, one exclusive node, one task,
 128 CPUs, 4 GPUs,491520MiB and explicit600s; freeze only after parent/higher
 association and covered-allocation/cost evidence. Existing runner flags and

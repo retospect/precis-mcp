@@ -25,4 +25,7 @@ standalone checker supports baseline Python3.6 so missing target venv/runtime
 does not erase early failure facts. Neutral observations go to the workload's
 separate report producer; neither default modules nor a second allocation can
 silently replace a failed expectation. No runtime tool becomes a package dependency.
+The sourced hook clears prior success exports before its first guard and keeps
+nonzero status until the checker succeeds; consumers preserve the real source
+return code so an early failure cannot reuse another invocation's success facts.
 """

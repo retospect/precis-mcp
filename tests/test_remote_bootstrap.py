@@ -265,6 +265,91 @@ def test_real_sourced_bootstrap_stops_before_model_and_preserves_facts(
     assert not (run / ".runtime-tools").exists()
 
 
+@pytest.mark.parametrize("failure", ["job", "stage", "run", "baseline_hash"])
+def test_early_sourced_guard_clears_seeded_success_without_running_checker(
+    fixture: Any, failure: str
+) -> None:
+    plan, stage, run = fixture
+    if failure == "baseline_hash":
+        plan["baseline_python"]["sha256"] = "0" * 64
+    for name, body in runtime_artifacts(plan).items():
+        (stage / name).write_bytes(body)
+    (stage / "runtime-check.py").write_text(
+        "from pathlib import Path\nimport sys\n"
+        "Path(sys.argv[3], 'CHECKER_STARTED').touch()\n"
+    )
+    result = _source_seeded_hook(stage, run, failure)
+    assert result.returncode == 70
+    assert result.stdout.splitlines() == [b"70", b"", b"", b"", b"", b""]
+    assert result.stderr == b""
+    assert not (run / "CHECKER_STARTED").exists()
+    assert not (run / ".runtime-tools").exists()
+
+
+@pytest.mark.parametrize("checker_rc", [0, 23])
+def test_sourced_checker_retains_actual_status_and_replaces_seeded_facts(
+    fixture: Any, checker_rc: int
+) -> None:
+    plan, stage, run = fixture
+    for name, body in runtime_artifacts(plan).items():
+        (stage / name).write_bytes(body)
+    observations = json.dumps({"status": "passed" if checker_rc == 0 else "failed"})
+    (stage / "runtime-check.py").write_text(
+        f"import sys\nprint({observations!r})\nsys.exit({checker_rc})\n"
+    )
+    result = _source_seeded_hook(stage, run)
+    assert result.returncode == checker_rc
+    values = result.stdout.splitlines()
+    assert values[:2] == [str(checker_rc).encode(), observations.encode()]
+    if checker_rc == 0:
+        assert values[2:] == [
+            plan["python"]["path"].encode(),
+            str(run / ".runtime-tools/uv").encode(),
+            str(run / ".runtime-temp").encode(),
+            b"1",
+        ]
+    else:
+        assert values[2:] == [b"", b"", b"", b""]
+    assert result.stderr == b""
+
+
+def _source_seeded_hook(
+    stage: Path, run: Path, missing: str | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    # Consumer saves the real source rc before any reporter command can replace it.
+    script = (
+        "set -e; pilot_stage=$1; pilot_run=$2; "
+        'if source "$3/runtime-bootstrap.sh"; then source_rc=0; else source_rc=$?; fi; '
+        'printf "%s\\n" "$REMOTE_RUNTIME_CHECK_STATUS" "$REMOTE_RUNTIME_OBSERVATIONS" '
+        '"$REMOTE_RUNTIME_PYTHON" "$REMOTE_RUNTIME_UV" "${TMPDIR:-}" '
+        '"${PYTHONDONTWRITEBYTECODE:-}"; exit "$source_rc"'
+    )
+    environment = {
+        **os.environ,
+        "SLURM_JOB_ID": "1" if missing != "job" else "",
+        "REMOTE_RUNTIME_CHECK_STATUS": "0",
+        "REMOTE_RUNTIME_OBSERVATIONS": "STALE_SUCCESS_FACTS",
+        "REMOTE_RUNTIME_PYTHON": "/stale/python",
+        "REMOTE_RUNTIME_UV": "/stale/uv",
+        "TMPDIR": "/stale/temp",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            script,
+            "seeded-bootstrap-test",
+            "" if missing == "stage" else str(stage),
+            "" if missing == "run" else str(run),
+            str(stage),
+        ],
+        env=environment,
+        capture_output=True,
+        timeout=10,
+    )
+
+
 def test_metadata_timeout_is_classified_and_reaped() -> None:
     with pytest.raises(checker.CheckError, match="command_timeout"):
         checker.bounded_command([sys.executable, "-c", "import time; time.sleep(10)"])

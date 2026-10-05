@@ -129,19 +129,26 @@ def runtime_artifacts(plan: dict[str, Any]) -> dict[str, bytes]:
     script = (
         "#!/bin/sh\n"
         "# Sourced inside the same allocation; workload producer persists these neutral facts.\n"
+        "REMOTE_RUNTIME_CHECK_STATUS=70\n"
+        "REMOTE_RUNTIME_OBSERVATIONS= REMOTE_RUNTIME_PYTHON= REMOTE_RUNTIME_UV=\n"
+        "export REMOTE_RUNTIME_CHECK_STATUS REMOTE_RUNTIME_OBSERVATIONS REMOTE_RUNTIME_PYTHON REMOTE_RUNTIME_UV\n"
+        "unset TMPDIR PYTHONDONTWRITEBYTECODE\n"
         "umask 077\n"
         "unset PYTHONPATH PYTHONHOME LD_PRELOAD LD_LIBRARY_PATH BASH_ENV ENV SLURM_TIME_FORMAT\n"
         "export PATH=/usr/bin:/bin\n"
         "export TZ=UTC\n"
         'test -n "${SLURM_JOB_ID:-}" || return 70\n'
         'test -n "${pilot_stage:-}" && test -n "${pilot_run:-}" || return 70\n'
-        "REMOTE_RUNTIME_CHECK_STATUS=0\n"
         f"printf '%s  %s\\n' {shlex.quote(plan['baseline_python']['sha256'])} {shlex.quote(plan['baseline_python']['path'])} "
         "| /usr/bin/sha256sum --check --status 2>/dev/null || return 70\n"
-        f"REMOTE_RUNTIME_OBSERVATIONS=$({shlex.quote(plan['baseline_python']['path'])} "
+        f"if REMOTE_RUNTIME_OBSERVATIONS=$({shlex.quote(plan['baseline_python']['path'])} "
         '"$pilot_stage/runtime-check.py" "$pilot_stage/runtime-plan.json" "$pilot_stage" "$pilot_run" 2>/dev/null) '
-        "|| REMOTE_RUNTIME_CHECK_STATUS=$?\n"
-        "export REMOTE_RUNTIME_CHECK_STATUS REMOTE_RUNTIME_OBSERVATIONS\n"
+        "; then\n"
+        "  REMOTE_RUNTIME_CHECK_STATUS=0\n"
+        "else\n"
+        "  REMOTE_RUNTIME_CHECK_STATUS=$?\n"
+        '  return "$REMOTE_RUNTIME_CHECK_STATUS"\n'
+        "fi\n"
         f"REMOTE_RUNTIME_PYTHON={shlex.quote(plan['python']['path'])}\n"
         'REMOTE_RUNTIME_UV="$pilot_run/.runtime-tools/uv"\n'
         "export REMOTE_RUNTIME_PYTHON REMOTE_RUNTIME_UV\n"
