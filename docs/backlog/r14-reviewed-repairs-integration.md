@@ -12,9 +12,12 @@ Preserve corrected health-age origins and package rationale, R13 hygiene,
 8.35.13 and the exact dependency graph/Catpath 0.22 pin. Mechanical doc/version
 conflicts may be resolved; behavioral ambiguity stops for root review.
 
-Exclude the cloud wrapper's unresolved P2, gr173580acd review-only work and
-all other candidates. Count-link empty-state wording P3 remains a separate
-correction. Preserve existing specs and all scientific/service holds.
+Root's continuation from clean91695c5e7 additionally approves cloud wrapper
+96ddc76a3 plus42769f8f4 (explicit-empty override P2 closed) and count-link
+correction e76d76155 only (original exact-status wording P3 closed). Keep
+the separate live-aggregate empty wording P3 nonblocking and unchanged.
+Exclude gr173580acd review-only work and all other candidates. Preserve
+existing specs, singleton WIP and all scientific/service holds.
 Only static Ruff/format, AST, whitespace and reviewed-source preservation
 checks here; combined canonical validation remains pending root scheduling.
 Publish only the non-force integration branch after checks, verify its exact
