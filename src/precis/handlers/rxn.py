@@ -22,7 +22,8 @@ with its conditions and citation), ``view='properties'`` the registry.
 ``search(property=..., min=, max=, reaction_class=)`` is the precedent read
 this kind exists for: *"what yields do amide couplings actually give?"*
 
-NOT in this slice: scoring, route integration, bulk import. See the ship order
+``view='energetics'`` is stateless thermochemistry (:mod:`precis.thermo`),
+not stored rows. NOT in this slice: scoring, route integration, bulk import. See the ship order
 in the design doc.
 
 Duplication note: the registry/value machinery is deliberately the ``material``
@@ -40,6 +41,7 @@ from typing import Any, ClassVar
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._rxn_energetics import render_energetics
 from precis.handlers._rxn_ids import (
     RxnParseError,
     parse_reaction_smiles,
@@ -67,7 +69,7 @@ _METHODS: tuple[str, ...] = (
 #: omits it — patents are where the reaction literature actually lives.
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "patent", "datasheet")
 
-_VIEWS: tuple[str, ...] = ("table", "properties")
+_VIEWS: tuple[str, ...] = ("table", "properties", "energetics")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
@@ -134,7 +136,9 @@ class RxnHandler(Handler):
             "MANY rows per (reaction, property) is intended — the spread "
             "across sources IS the answer, never an average. get(id=<slug>) "
             "is the reaction page grouped by property; view='properties' "
-            "lists the registry. search(property=, min=, max=, "
+            "lists the registry; get(view='energetics', q='NO + 5/2 H2 -> "
+            "NH3 + H2O', args={'T': 298.15, 'n_electrons': 5}) returns "
+            "tabulated reaction dH/dG/E0 (stateless, no id). search(property=, min=, max=, "
             "reaction_class=) is the precedent read; plain q= matches "
             "title/SMILES/class. See precis-rxn-help."
         ),
@@ -591,15 +595,24 @@ class RxnHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        q: str | None = None,
+        T: float | None = None,
+        n_electrons: float | None = None,
         **_kw: Any,
     ) -> Response:
         v = (view or "").strip().lower()
+        if v == "energetics":
+            # Stateless: tabulated thermochemistry of the equation(s) in q=.
+            return render_energetics(q, T=T, n_electrons=n_electrons)
         if v in ("properties", "registry"):
             return self._render_registry()
         if v and v not in ("table", "page"):
             raise BadInput(
                 f"unknown rxn view {view!r}",
-                next="view='properties' (the registry) | omit for the page",
+                next=(
+                    "view='properties' (the registry) | view='energetics' "
+                    "with q='<equation>' | omit for the page"
+                ),
             )
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()

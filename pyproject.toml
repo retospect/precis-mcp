@@ -225,6 +225,7 @@ dependencies = [
     "trafilatura>=1.6",            # web page → markdown extractor
     "feedparser>=6.0",             # RSS/Atom for the news kind / news_poll
     "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
+    "chemicals>=1.5.2",
 ]
 
 [project.urls]

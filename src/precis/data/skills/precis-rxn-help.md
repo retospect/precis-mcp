@@ -173,6 +173,29 @@ always the bare canonical string.
 - **Ground the lever before proposing it.** Search the corpus for the
   transformation, cite what you lean on, then record the value.
 
+## How much energy does a balanced reaction release?
+
+Stateless, no id, no stored rows: tabulated standard-state thermochemistry
+for the equation in `q=`.
+
+```python
+get(kind='rxn', view='energetics', q='NO + 5/2 H2 -> NH3 + H2O',
+    args={'T': 298.15, 'n_electrons': 5})
+```
+
+You get ΔHf°, S° and ΔGf° per species (with the table each came from), then
+ΔH, ΔS, ΔG = ΔH − TΔS and, if you give `n_electrons`, E° = −ΔG/nF.
+Separate `->` or `=`; coefficients may be `2`, `2.5` or `5/2`; `(l)` after a
+formula picks the liquid (default gas). An unbalanced equation is rejected
+naming the element. Several equations joined by `;` give a pathway: per-step
+and cumulative ΔH/ΔG, with each ΔG > 0 step flagged uphill.
+
+**Gaps are reported, never filled.** NH2OH has no tabulated S°; H2NO and HNOH
+are absent. That term reads `unavailable`, ΔG (or ΔH too) is withheld and the
+species is named. Estimated values (group contribution) are excluded. Away
+from 298.15 K the tabulated 298 K values are reused with no heat-capacity
+correction, and the output says so.
+
 ## Not in this slice
 
 Route scoring, cost vectors, stock termination, and bulk import are later

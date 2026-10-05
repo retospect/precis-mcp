@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When activated, review and mark [reaction-energetics-ledger](../reaction-energetics-ledger.md) `ready`, then ship it.
+- **Next:** When activated, finish [reaction-energetics-ledger](../reaction-energetics-ledger.md) (xTB fallback for missing species).
 - **Blocked by:** No declared active owner (dormant, filed 2026-10-04). T2 waits on hexfold's k = 3 seams.
 - **Unblocks:** The per-station barrier ledger that decides whether the NO → NH3 nanoreactor needs a drive; the reaction movie.
 - **Acceptance:** Each item's own acceptance criteria; the thread ends with the T6 movie of a designed nanoreactor.
@@ -23,8 +23,9 @@ follows the data: each tool consumes the previous one's output.
 
 ## Do next
 
-1. **backlog/reaction-energetics-ledger.md** — T0; ships on its own and
-   gives every later step its thermodynamic reference.
+1. **backlog/reaction-energetics-ledger.md** — T0; tabulated slice shipped
+   (`get(kind='rxn', view='energetics')`); remaining: the xTB fallback for
+   NH2OH S° and the H2NO/HNOH radicals, then property-row storage.
 2. **backlog/nanoreactor-station-path-finder.md** — T1; the bare and
    theozyme tiers decide whether a drive is needed, and its station record
    is the contract every later tool reads.
