@@ -62,6 +62,53 @@ work. Seed stale success exports in missing-context and baseline-hash regression
 and re-render/hash the changed generic hook and workload wrapper independently.
 This correction leaves frozen R13 and existing credential/core/pilot2 reviews intact.
 
+### Placement direction: one immutable runtime image first
+
+The orchestrator prefers an off-cluster-built read-only SIF containing the
+Python runtime, hash-locked installed65-wheel environment, uv, approved engine
+wheel, model and workload code. Keep its final manifest/identity external to
+avoid an image-hash cycle. MeluXina documents compute-only Apptainer, `--nv`
+and explicit project binds; its2025 production table lists
+`Apptainer/1.4.2-GCCcore-14.2.0`. These are provider facts, not a live module
+availability or mount-timing observation. Freeze the exact module/runtime
+launcher before stage; verify actual availability inside the sole allocation.
+No unprivileged SIF-to-sandbox extraction or writable overlay fallback.
+
+An explicit linux/amd64 build is required: inspected local dev images/daemon
+are ARM64; existing Colima builder advertises linux/amd64 but emulated build
+execution/tooling remains unverified. Freeze base image digest, matching glibc
+and exact Python3.12.14/uv0.12.22 hashes, full wheel/model/worker input census,
+recipe/toolchain provenance, installed-file census and final SIF bytes/hash.
+Image size and launch time are unknown until measured; compressed wheel bytes
+do not prove a ~3GiB SIF. Existing explicit3GiB stage cap remains fail-closed.
+Bind external GPU/CPU manifests read-only at fixed image payload paths beside
+their referenced immutable model/wheel/locks; do not silently reuse the current
+host adapter's loose-file checks for image-internal inputs. Chemistry must
+review this packaging seam without weakening the worker's scientific checks.
+
+PROJECT holds one image plus small hashed control files/results; internal
+image members consume no separate project inodes. Budget upload temp,
+generated ledger/job files, bounded logs/result publication temps and private
+application caches as well. Image bootstrap is a proposed separate closed
+runtime mode: outer host verifies actual allocation/driver/project headroom
+and pinned image/Apptainer, then inner checker verifies image Python/uv/ABI
+and installed stack. It must not copy uv or install/extract65 wheels into
+PROJECT. `--nv` driver-library injection and explicit stage-ro/run-rw binds
+need reviewed isolation, environment allowlist and host/image glibc checks;
+host HOME/default tmp/cache binds are forbidden. Preserve actual source rc,
+early persistent failure report, all-task ledger and single-handle recovery.
+Retain>=540seconds before model after image checks; no second preflight job.
+
+Chemistry owns image build/installed-stack provenance and its workload
+adapter/manifest/report changes; Precis owns neutral bootstrap/outer-inner
+checks. Current adapter requires loose model/wheel/wheelhouse and current
+checker copies staged uv: neither supports this mode implicitly. Independent
+plan/source/artifact review precedes stage. Node-local archive expansion is
+fallback only after explicit contract review and measured unpack/runtime
+budget; revise>=540 rule explicitly if needed, never silently. HOME, project
+environment expansion and unrelated cleanup remain prohibited. A provider
+quota request is a long-term user action, not the pilot's default dependency.
+
 Proposed concrete sole vector: p200916/gpu/test, one exclusive node, one task,
 128 CPUs, 4 GPUs,491520MiB and explicit600s; freeze only after parent/higher
 association and covered-allocation/cost evidence. Existing runner flags and
