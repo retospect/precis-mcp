@@ -17,6 +17,36 @@ registration phase and MUST retain that meaning. No unequal-dihedral
 solver, k=4 motif, census research or scientific stability claim is
 authorized. This is a deterministic geometric construction contract.
 
+**Step 2 approved:** use a private open zigzag segment input in
+`hexfold.join`, with two explicit endpoint ordinals and an alternating
+S-D-…-D-S walk. Six D sites are the fixture's six seam periods. Public
+`Port`, `.hx` grammar/canonical JSON, multi-rim compiler and SE mutation
+remain unchanged. Here the selector is `compose_k3(...,
+seam_type='k3-sp2-120-z', dihedrals_deg=(120,120,120))`, not new parser
+syntax. The proposed authored syntax/round-trip checks below are a later
+port-grammar item, not this build's acceptance. Nonzero cyclic phase is
+refused for the finite segment; no wraparound or endpoint guessing.
+
+Nanoreactor T2 needs more than this fixture: named internal rails on a
+closed tube, their segment/closed-curve endpoint topology and registry,
+compatible attachment rails on the two reservoir sheets, placement around
+the tube's curved surface, and per-sheet Euler/face bookkeeping through
+those boundaries. It also has separate pores, inward site coordinates and
+later scientifically authorized relaxation/measurement. None is supplied
+by the straight six-period Y, and none is silently inferred from it.
+
+**Local implementation evidence:** six seam periods, 198 atoms/270 bonds;
+all six seam atoms degree-3 sp². Bond lengths 1.4199999999999977–
+1.420000000000003 Å, seam angles 119.99999999999991–120.0000000000001°,
+maximum absolute normalized triple product 1.63e-15. Existing geometry
+checker reports no clash or bad bond lengths. Its regular-polygon angle
+comparison emits `geom.angle.dev` WARN for the nonplanar eight-cycles;
+these remain visible. This is a pinned bond/coplanarity/no-clash PASS,
+not an all-warning-free geometry/stability result. The 15 local eight-cycle
+faces come from the finite fixture graph, not a general carbon census.
+Replay: `.scratch/k3/replay.py`/`.json`; canonical focused tests and
+scoped types/Ruff recorded in fleet-state `inbox/hexfold-k3-ready` pair.
+
 ### Verified premise and owning seam
 
 Current source at `0655b224f7de53249870fcb516b8458e353efa2e`:

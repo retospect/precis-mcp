@@ -19,6 +19,12 @@ they take rim-walk/dangling ordinal tuples and a position array, not a
 The se side (`precis_se/atomic/join.py`, not built here) is a thin
 store-aware wrapper: it rebuilds each block's ``Net`` from its persisted
 generator spec, calls :func:`compose`, and mints the composite structure.
+
+``compose_k3`` is a separate deterministic straight-Y entry over private
+open SD segments, with explicit equal-120 type/dihedrals. Endpoint-aware
+segments avoid cyclic Port guesses; no relaxer, compiler grammar or SE
+mutation is involved. Its eight-cycle faces are actual local topology,
+not a measured/stable carbon motif or a closed-tube rail implementation.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import math
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -828,3 +835,243 @@ def compose(
         seam=seam,
         transform=(r, t),
     )
+
+
+@dataclass(frozen=True)
+class _ZigzagSegment:
+    """Private straight open rim: S-D-...-D-S, endpoints are first/last S.
+
+    D sites have two sheet bonds; internal S sites have three. This is
+    neither a cyclic Port nor a new authored port/rail grammar.
+    """
+
+    name: str
+    atoms: tuple[int, ...]
+    dangling: tuple[int, ...]
+    endpoints: tuple[int, int]
+
+
+@dataclass
+class _K3Composite:
+    """Local Y result, not a port-bearing/SE composite or relaxed structure."""
+
+    elements: tuple[str, ...]
+    coords: np.ndarray
+    bonds: tuple[tuple[int, int, int], ...]
+    rings: tuple[tuple[int, ...], ...]
+    hybridisation: tuple[str, ...]
+    seam_atoms: tuple[int, ...]
+    transforms: tuple[tuple[np.ndarray, np.ndarray], ...]
+    findings: list[Finding]
+
+
+def _k3_refusal(code: str, message: str, **requested: Any) -> _K3Composite:
+    return _K3Composite(
+        (),
+        np.empty((0, 3)),
+        (),
+        (),
+        (),
+        (),
+        (),
+        [
+            Finding(
+                code,
+                Severity.ERROR,
+                message,
+                data=tuple(requested.items()),
+                fix="use three carbon zigzag segments, equal 120 degree dihedrals, phase=0",
+            )
+        ],
+    )
+
+
+def _segment_frame(block: Block, rim: _ZigzagSegment) -> np.ndarray | None:
+    """Validate the SD walk and planar outward half-sheet before placement."""
+    n = len(rim.dangling)
+    walk = rim.atoms
+    if (
+        n < 2
+        or len(walk) != 2 * n + 1
+        or len(set(walk)) != len(walk)
+        or walk[1::2] != rim.dangling
+        or rim.endpoints != (walk[0], walk[-1])
+        or any(type(i) is not int or not 0 <= i < len(block.elements) for i in walk)
+    ):
+        return None
+    pos = np.asarray(block.coords)
+    if pos.shape != (len(block.elements), 3) or not np.isfinite(pos).all():
+        return None
+    if any(e != "C" for e in block.elements):
+        return None
+    if any(
+        i == j or not (0 <= i < len(pos) and 0 <= j < len(pos))
+        for i, j, _ in block.bonds
+    ):
+        return None
+    adj = _adjacency(block.bonds)
+    if any(b not in adj.get(a, ()) for a, b in pairwise(walk)):
+        return None
+    if any(len(adj.get(d, ())) != 2 for d in rim.dangling):
+        return None
+    if any(len(adj.get(s, ())) != 3 for s in walk[2:-1:2]):
+        return None
+    dpos = pos[list(rim.dangling)]
+    delta = np.diff(dpos, axis=0)
+    period = math.sqrt(3) * block.sigma
+    if not np.allclose(np.linalg.norm(delta, axis=1), period):
+        return None
+    tangent = delta[0] / np.linalg.norm(delta[0])
+    if not np.allclose(delta, period * tangent):
+        return None
+    outward = pos.mean(axis=0) - dpos[0]
+    outward -= outward.dot(tangent) * tangent
+    length = np.linalg.norm(outward)
+    if length == 0:
+        return None
+    outward /= length
+    normal = np.cross(tangent, outward)
+    local = (pos - dpos[0]) @ np.column_stack((tangent, outward, normal))
+    if not np.allclose(local[:, 2], 0) or np.any(local[:, 1] < -1e-8):
+        return None
+    # Bondable D atoms are collinear; intervening S sites sit half a
+    # sigma into the sheet and halfway along the zigzag period.
+    expected = np.column_stack(
+        (
+            np.arange(-0.5, n, 0.5) * period,
+            np.tile([0.5 * block.sigma, 0], n + 1)[: 2 * n + 1],
+            np.zeros(2 * n + 1),
+        )
+    )
+    if not np.allclose(local[list(walk)], expected):
+        return None
+    return np.column_stack((tangent, outward, normal))
+
+
+def _place_k3(
+    blocks: tuple[Block, ...],
+    rims: tuple[_ZigzagSegment, ...],
+    frames: list[np.ndarray],
+) -> _K3Composite:
+    """Rigidly place the three validated half-sheets; mint only seam atoms."""
+    sigma = blocks[0].sigma
+    n = len(rims[0].dangling)
+    coords: list[np.ndarray] = []
+    transforms: list[tuple[np.ndarray, np.ndarray]] = []
+    bonds: list[tuple[int, int, int]] = []
+    rings: list[tuple[int, ...]] = []
+    walks: list[tuple[int, ...]] = []
+    dangling: list[tuple[int, ...]] = []
+    elements: tuple[str, ...] = ()
+    offset = 0
+    for j, (block, rim, frame) in enumerate(zip(blocks, rims, frames)):
+        angle = 2 * math.pi * j / 3
+        radial = np.array([0.0, math.cos(angle), math.sin(angle)])
+        target = np.column_stack(
+            (np.array([1.0, 0.0, 0.0]), radial, np.cross([1.0, 0.0, 0.0], radial))
+        )
+        rotation = target @ frame.T
+        shift = sigma * radial - rotation @ block.coords[rim.dangling[0]]
+        coords.append(block.coords @ rotation.T + shift)
+        transforms.append((rotation, shift))
+        bonds.extend((a + offset, b + offset, kind) for a, b, kind in block.bonds)
+        rings.extend(tuple(i + offset for i in ring) for ring in block.rings)
+        walks.append(tuple(i + offset for i in rim.atoms))
+        dangling.append(tuple(i + offset for i in rim.dangling))
+        elements += block.elements
+        offset += len(block.elements)
+    seam = tuple(range(offset, offset + n))
+    spos = np.zeros((n, 3))
+    spos[:, 0] = np.arange(n) * math.sqrt(3) * sigma
+    coords.append(spos)
+    for i, atom in enumerate(seam):
+        bonds.extend((dangling[j][i], atom, 1) for j in range(3))
+    # Each adjacent pair of seam sites bounds an eight-cycle between
+    # each sheet pair. No cyclic endpoint wraparound; actual graph faces.
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        for i in range(n - 1):
+            rings.append(
+                (
+                    seam[i],
+                    dangling[a][i],
+                    walks[a][2 * i + 2],
+                    dangling[a][i + 1],
+                    seam[i + 1],
+                    dangling[b][i + 1],
+                    walks[b][2 * i + 2],
+                    dangling[b][i],
+                )
+            )
+    return _K3Composite(
+        elements + ("C",) * n,
+        np.vstack(coords),
+        tuple(bonds),
+        tuple(rings),
+        ("sp2",) * (offset + n),
+        seam,
+        tuple(transforms),
+        [],
+    )
+
+
+def compose_k3(
+    blocks: tuple[Block, ...],
+    rims: tuple[_ZigzagSegment, ...],
+    *,
+    seam_type: str,
+    dihedrals_deg: tuple[float, ...],
+    phase: int = 0,
+) -> _K3Composite:
+    """Selected k3-sp2-120-z join: private segments, deterministic, no relax.
+
+    Refuse unsupported declarations before examining coordinates/placement.
+    All blocks must be finite planar carbon half-sheets at the same sigma;
+    SD walks must have equal counts, spacing and defined open endpoints.
+    No public cyclic Port, parser, compiler or SE mutation is changed.
+    """
+    if (
+        len(blocks) != 3
+        or len(rims) != 3
+        or seam_type != "k3-sp2-120-z"
+        or len(dihedrals_deg) != 3
+        or any(
+            isinstance(a, bool) or not isinstance(a, int | float) or a != 120
+            for a in dihedrals_deg
+        )
+        or type(phase) is not int
+        or phase != 0
+    ):
+        return _k3_refusal(
+            "fit.unsolvable",
+            "unsupported authored k3 seam declaration",
+            multiplicity=len(rims),
+            seam_type=seam_type,
+            dihedrals_deg=dihedrals_deg,
+            phase=phase,
+        )
+    sigma = blocks[0].sigma
+    if (
+        not math.isfinite(sigma)
+        or sigma <= 0
+        or any(not math.isclose(b.sigma, sigma, rel_tol=1e-12) for b in blocks)
+    ):
+        return _k3_refusal(
+            "fit.unsolvable", "segments require one finite positive sigma"
+        )
+    counts = tuple(len(r.dangling) for r in rims)
+    if len(set(counts)) != 1:
+        return _k3_refusal(
+            "port.mismatch", "zigzag segment dangling counts differ", counts=counts
+        )
+    frames: list[np.ndarray] = []
+    for block, rim in zip(blocks, rims):
+        frame = _segment_frame(block, rim)
+        if frame is None:
+            return _k3_refusal(
+                "port.mismatch",
+                "invalid straight carbon SD segment/frame",
+                rim=rim.name,
+                endpoints=rim.endpoints,
+            )
+        frames.append(frame)
+    return _place_k3(blocks, rims, frames)

@@ -454,6 +454,18 @@ and reported as `seam.rings` and excluded from every sheet census (§6.3).
 Acceptance example: a sheet with a pill above and a bump below meeting
 along the pill's foot ring — a closed, in-plane-curved triple seam.
 
+**Private straight-Y join**: `join.compose_k3` supports only
+`seam_type='k3-sp2-120-z'`, explicit `dihedrals_deg=(120,120,120)` and
+phase 0 over three planar carbon blocks with open zigzag SD segments.
+Each private segment declares an S-D-…-D-S walk and its two endpoint
+ordinals. Unsupported declarations (including unequal angles or five
+rims) are `fit.unsolvable`; bad SD/count/frame inputs are `port.mismatch`,
+before placement or seam minting. This performs rigid deterministic
+placement without relaxation. It does not change this public `seam`
+grammar or cyclic `Port` semantics, implement general rail endpoints or
+solve curved/closed seams. Closed internal tube rails for nanoreactor T2
+need a later authored-port/topology and placement contract.
+
 #### 11.4 Holes and openings `[impl 0.1]`
 
 `- pentagon@<site>` / `- hexagon@<site>` removes the ring of that
