@@ -116,9 +116,10 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
   health-digest-ops.md``.
   Taproot edge silence is unhealthy only with chase-eligible work overdue
   beyond6h: the check mirrors tracing/acquiring eligibility, canonical-hub
-  exclusion and waiting backoff. Eligibility age starts at queue entry or
-  backoff expiry, not old ref creation; bursty output and empty queues
-  must not masquerade as stalled producers (gr346342).
+  exclusion and waiting backoff. Eligibility age starts at queue entry,
+  genuine advance or completed backoff expiry; failed/unknown activity
+  cannot erase that origin. Bursty output and empty queues must not
+  masquerade as stalled producers (gr346342).
 * ``disk_check`` — SQL-free, every node: ``shutil.disk_usage`` over
   ``PRECIS_DISK_WATCH_PATHS``, warn/critical alerts.
 * ``structural`` (5h dedup)/``deep_review`` (144h) — opus reviewers via

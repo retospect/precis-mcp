@@ -811,6 +811,66 @@ def test_taproot_edges_respects_chase_backoff_and_ages_from_expiry(
     assert {r.ref_id for r in claimed} == ({fid} if eligible else set())
 
 
+@pytest.mark.parametrize("edge_hours", [None, 48])
+@pytest.mark.parametrize("activity", ["failed", "unknown"])
+def test_taproot_edges_failed_or_unknown_activity_does_not_refresh_age(
+    store, edge_hours, activity
+) -> None:
+    from precis.workers.chase import claim_tracing_findings
+
+    fid = _seed_chase_waiter(store, hours_ago=48)
+    for hours in range(1, 48):
+        _seed_chase_outcome(store, fid, activity, hours_ago=hours)
+    if edge_hours is not None:
+        hub = _seed_claim_hub(store, hours_ago=50)
+        evidence = seed_ref(store, title="evidence", kind="finding")
+        _seed_hub_edge(store, evidence, hub, hours_ago=edge_hours)
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+        claimed = claim_tracing_findings(conn, limit=10)
+    assert {r.ref_id for r in claimed} == {fid}
+    assert result.status == "stale"
+    assert "1 eligible, oldest waiting 48.0h" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("advance_hours", "failure_hours", "expected"),
+    [(12, 1, "stale"), (1, 0.5, "ok")],
+)
+def test_taproot_edges_preserves_genuine_advance_through_failure(
+    store, advance_hours, failure_hours, expected
+) -> None:
+    from precis.workers.chase import claim_tracing_findings
+
+    fid = _seed_chase_waiter(store, hours_ago=48)
+    _seed_chase_outcome(store, fid, "advanced", hours_ago=advance_hours)
+    _seed_chase_outcome(store, fid, "failed", hours_ago=failure_hours)
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+        claimed = claim_tracing_findings(conn, limit=10)
+    assert {r.ref_id for r in claimed} == {fid}
+    assert result.status == expected
+    assert f"oldest waiting {advance_hours:.1f}h" in result.detail
+
+
+@pytest.mark.parametrize(("waits", "last_hours"), [(1, 8), (6, 31)])
+def test_taproot_edges_preserves_wait_expiry_through_failure(
+    store, waits, last_hours
+) -> None:
+    from precis.workers.chase import claim_tracing_findings
+
+    fid = _seed_chase_waiter(store, hours_ago=48)
+    for i in range(waits):
+        _seed_chase_outcome(store, fid, "waiting", hours_ago=last_hours + i)
+    _seed_chase_outcome(store, fid, "failed", hours_ago=1)
+    with store.pool.connection() as conn:
+        result = _check_taproot_edges(conn)
+        claimed = claim_tracing_findings(conn, limit=10)
+    assert {r.ref_id for r in claimed} == {fid}
+    assert result.status == "stale"
+    assert "1 eligible, oldest waiting 7.0h" in result.detail
+
+
 def test_taproot_edges_queue_matches_chase_exclusions_and_progress_reset(store) -> None:
     from precis.workers.chase import claim_tracing_findings
 

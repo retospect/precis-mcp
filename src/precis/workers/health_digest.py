@@ -627,17 +627,14 @@ def _check_taproot_edges(conn: Any) -> CheckResult:
     parity is fixture-tested. Neither output silence nor a new canonical
     hub proves chase has work: real hubs are explicitly not chase inputs.
     Age from queue entry / last progress / backoff expiry, not just ref
-    creation, so intentional cooldowns do not become false stalls.
+    creation, so intentional cooldowns do not become false stalls. Failed
+    or unknown activity never resets age; historical waiting expiries
+    survive subsequent failures even though membership uses the last event.
     """
     sql = """
         WITH candidates AS (
             SELECT GREATEST(
-                       r.created_at, queue.entered_at,
-                       last_chase.ts + CASE WHEN last_chase.event = 'waiting'
-                           THEN LEAST(60 * POWER(2,
-                               LEAST(GREATEST(wait_run.waits - 1, 0), 60)),
-                               1440) * INTERVAL '1 minute'
-                           ELSE INTERVAL '0 minutes' END
+                       r.created_at, queue.entered_at, progress.eligible_since
                    ) AS eligible_since,
                    last_chase.event,
                    last_chase.ts + LEAST(60 * POWER(2,
@@ -665,6 +662,36 @@ def _check_taproot_edges(conn: Any) -> CheckResult:
                              AND e2.event <> 'waiting'),
                          '-infinity'::timestamptz)
               ) wait_run ON TRUE
+              LEFT JOIN LATERAL (
+                  -- Age is separate from membership: only semantic progress
+                  -- or an actual cooldown expiry opens a fresh age budget.
+                  SELECT max(transition_at) AS eligible_since
+                    FROM (
+                        SELECT CASE WHEN event = 'advanced' THEN ts
+                                    WHEN event = 'waiting' THEN
+                                        ts + LEAST(60 * POWER(2,
+                                            LEAST(GREATEST(waits - 1, 0), 60)),
+                                            1440) * INTERVAL '1 minute'
+                               END AS transition_at
+                          FROM (
+                              SELECT event, ts,
+                                     count(*) FILTER (WHERE event = 'waiting')
+                                         OVER (PARTITION BY run ORDER BY ts) AS waits
+                                FROM (
+                                    SELECT event, ts,
+                                           max(ts) FILTER (WHERE event <> 'waiting')
+                                               OVER (ORDER BY ts) AS run
+                                      FROM ref_events
+                                     WHERE ref_id = r.ref_id AND source = 'chase'
+                                ) history
+                               -- Match the worker's strict ts > last non-wait
+                               -- rule, including equal-timestamp peers.
+                               WHERE run IS NULL OR ts > run
+                                  OR event <> 'waiting'
+                          ) waiting_runs
+                    ) transitions
+                   WHERE transition_at <= now()
+              ) progress ON TRUE
              WHERE r.kind = 'finding' AND r.retired_at IS NULL
                AND NOT (
                    EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
