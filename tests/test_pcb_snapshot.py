@@ -250,6 +250,78 @@ def test_late_cache_conflict_rolls_back_every_design_row(store):
         )
 
 
+@pytest.mark.parametrize("cache", ["parts", "part_footprints"])
+def test_source_absent_referenced_cache_refuses_atomically(store, cache):
+    fixture = read_snapshot(Path("tests/fixtures/pcb/ewod-dogfood-6-replay-v1.json.gz"))
+    assert "C639448" in {
+        c.get("part_lcsc") for c in fixture["tables"]["pcb_components"]
+    }
+    # Actual source lacks parts[C639448]. The second case also makes its
+    # referenced footprint uncached; target geometry must not fill that gap.
+    fixture["tables"][cache] = []
+    with store.pool.connection() as conn:
+        if cache == "parts":
+            conn.execute(
+                "INSERT INTO parts(lcsc,basic) VALUES (%s,false)", ("C639448",)
+            )
+        else:
+            conn.execute(
+                "INSERT INTO part_footprints(lcsc,pads) VALUES (%s,%s)",
+                ("C639448", Jsonb([{"number": "1", "w": 9, "h": 8}])),
+            )
+        conn.commit()
+        tables = ("refs", "ref_identifiers", *TABLES)
+        before = {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in tables
+        }
+        target_cache = conn.execute(
+            f"SELECT to_jsonb(t) FROM {cache} t WHERE lcsc=%s", ("C639448",)
+        ).fetchone()[0]
+        with pytest.raises(
+            ValueError, match=f"source-absent {cache} cache for C639448"
+        ):
+            load_snapshot(conn, fixture, "snapshot-negative-cache")
+        assert {
+            table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in tables
+        } == before
+        assert (
+            conn.execute(
+                "SELECT 1 FROM ref_identifiers WHERE id_kind='cite_key' AND id_value=%s",
+                ("snapshot-negative-cache",),
+            ).fetchone()
+            is None
+        )
+        assert (
+            conn.execute(
+                f"SELECT to_jsonb(t) FROM {cache} t WHERE lcsc=%s", ("C639448",)
+            ).fetchone()[0]
+            == target_cache
+        )
+
+
+@pytest.mark.parametrize("part_lcsc", [None, "C123"])
+def test_unreferenced_target_caches_do_not_block_replay(store, part_lcsc):
+    fixture = _fixture()
+    fixture["tables"]["pcb_components"][0]["part_lcsc"] = part_lcsc
+    # NULL components and source-absent references do not claim unrelated keys.
+    with store.pool.connection() as conn:
+        _, params = load_snapshot(conn, fixture, "snapshot-cache-source")
+        fixture = export_snapshot(conn, "snapshot-cache-source", route_params=params)
+        conn.execute("INSERT INTO parts(lcsc,basic) VALUES ('C999',false)")
+        conn.execute(
+            "INSERT INTO part_footprints(lcsc,pads) VALUES (%s,%s)",
+            ("C999", Jsonb([])),
+        )
+        conn.commit()
+        _, params = load_snapshot(conn, fixture, "snapshot-unrelated-cache")
+        assert (
+            export_snapshot(conn, "snapshot-unrelated-cache", route_params=params)
+            == fixture
+        )
+
+
 @pytest.mark.parametrize("change", ["version", "table"])
 def test_invalid_format_refused(store, change):
     fixture = copy.deepcopy(_fixture())

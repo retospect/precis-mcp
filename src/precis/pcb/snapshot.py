@@ -195,7 +195,7 @@ def load_snapshot(
     """Insert a fresh dev/test design atomically; return its ID and replay params.
 
     Re-export with the returned params: no jobs are cloned/enqueued. Shared cached
-    geometry must already equal the fixture or be absent, never overwritten.
+    geometry must match source presence/absence and row data, never overwritten.
     """
     if (
         not slug
@@ -233,8 +233,27 @@ def load_snapshot(
             "INSERT INTO ref_identifiers(id_kind,id_value,ref_id) VALUES (%s,%s,%s)",
             ("cite_key", slug, ref_id),
         )
+        referenced_lcsc = {
+            component["part_lcsc"]
+            for component in fixture["tables"]["pcb_components"]
+            if component.get("part_lcsc") is not None
+        }
         maps: dict[str, dict[int, int]] = {"ref_id": {1: ref_id}}
         for table in TABLES:
+            if table in {"parts", "part_footprints"}:
+                source_keys = {row["lcsc"] for row in fixture["tables"][table]}
+                # Absence is routing input too: target knowledge must not fill
+                # a source gap through the normal graph/geometry cache joins.
+                for lcsc in sorted(referenced_lcsc - source_keys):
+                    if conn.execute(
+                        sql.SQL("SELECT 1 FROM {} WHERE lcsc=%s").format(
+                            sql.Identifier(table)
+                        ),
+                        (lcsc,),
+                    ).fetchone():
+                        raise ValueError(
+                            f"source-absent {table} cache for {lcsc}; use an isolated test DB"
+                        )
             key = IDENTITIES.get(table)
             for original in fixture["tables"][table]:
                 row = copy.deepcopy(original)

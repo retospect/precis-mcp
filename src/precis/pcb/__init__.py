@@ -53,6 +53,9 @@ checkpoints for dev/test replay. Public graph/hash projections omit geometry and
 copper intentionally; generator re-expansion and authoring inference were refused
 as clone mechanisms because they change the board under diagnosis. Replay creates
 a fresh slug atomically and refuses production targets or conflicting shared caches.
+Source-absent referenced catalog/footprint keys must also stay absent: target cache
+knowledge would otherwise change graph flags or geometry on the replayed board.
+Deleting target data or inventing source placeholders was refused.
 
 Dependencies: shapely is imported at module top by ``drc``, ``generators``,
 ``gerber``, ``ir``, ``planes``, ``realize`` and ``tiling`` — it is a core

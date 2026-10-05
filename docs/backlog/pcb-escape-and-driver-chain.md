@@ -890,3 +890,22 @@ Adjacent realizer/fixed-copper/bottom-pad/negotiation tests, scoped container ty
 Ruff/format/diff check. Root owns full gate/version/merge/deploy. Postdeploy replay
 may reroute the labelled dogfood board; source-review checkpoint reports fixture
 before/after honestly, not an already-deployed production improvement.
+
+
+### R14 snapshot review correction — negative cache fidelity
+
+R13 excludes optional snapshot a101e5665 after independent P2 review. For every
+non-NULL part_lcsc referenced by captured components, replay must enforce
+source presence/absence in BOTH parts and part_footprints, as well as existing
+row equality. A target row for a source-absent key refuses the entire design
+transaction with table/key guidance; never delete/overwrite target caches or
+invent source placeholders. Unreferenced target cache rows are irrelevant.
+Keep existing source-present cache insertion/equality, fresh slug/dev-only
+guards and no-job behavior unchanged. No API/schema/routing changes.
+
+Acceptance: actual C639448 source-absent catalog shape and source-absent
+referenced footprint each refuse with all design/identifier/checkpoint counts
+unchanged and target cache data identical; transaction remains usable.
+Unrelated target cache keys and NULL/unbound components still replay exactly.
+Focused canonical snapshot tests, scoped container types and Ruff/diff checks;
+publish exact R14 candidate for review, root owns integration/release.
