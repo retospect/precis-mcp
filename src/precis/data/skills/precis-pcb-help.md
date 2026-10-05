@@ -48,6 +48,13 @@ hand-authored pads), and the pattern playbooks [[precis-decoupling-help]],
 connections in one transaction; re-`put`ting the same slug **extends** it
 (existing refdes/net names are reused, not duplicated).
 
+A physical pad has one canonical electrical pin name:
+conflicting explicit ownership or contradictory same-name pads refuse the
+whole put. Use one canonical name in pins/connections or correct the pad.
+Existing refdes are reused, not pin-edited/backfilled; conflicting supplied
+declarations still refuse on re-put. NULL/unbound pins and repeated physical
+footprint pad rows remain legal.
+
 ```python
 put(
     kind="pcb",

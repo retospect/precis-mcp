@@ -15,6 +15,12 @@ components+pins+instances/nets/connections in one transaction,
 :meth:`pcb_net_members`) back graph traversal; the derived layer
 (ratsnest/crossings) is computed by the handler, not stored.
 
+Canonical electrical pads have one active pin name. Conflicting authored
+declarations refuse the whole batch, including on a skipped existing refdes:
+silently dropping a declaration lets connections recreate it unbound. Physical
+footprint pad duplicates remain geometry, not separate electrical identities.
+Re-put is create-or-extend, not a pin editor or historical-data repair.
+
 Mixin assumes the concrete Store provides ``self.pool``/``self.tx``/
 ``self.insert_ref``/``self.get_ref``.
 """
@@ -28,6 +34,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import Any
 
 from psycopg import Connection
+from psycopg.errors import UniqueViolation
 from psycopg.types.json import Jsonb
 
 from precis.errors import NotFound
@@ -36,6 +43,33 @@ from precis.pcb import generators as pcb_generators
 from precis.pcb import geom as pcb_geom
 from precis.pcb.capabilities import capability_for
 from precis.store.types import ActorSlug
+
+
+def _validate_pin_declarations(pins: list[dict[str, Any]], component: str) -> None:
+    """Check canonical ownership without choosing a winner or rebinding."""
+    by_name: dict[str, str | None] = {}
+    by_pad: dict[str, str] = {}
+    for pin in pins:
+        name = str(pin.get("name") or "").strip()
+        if not name:
+            continue
+        pad = str(pin["pad"]) if pin.get("pad") is not None else None
+        if name in by_name and by_name[name] != pad:
+            raise ValueError(
+                f"component {component}: pin {name!r} declares contradictory pads "
+                f"{by_name[name]!r} and {pad!r}; use one pad declaration for this "
+                "canonical name or correct the erroneous pad number"
+            )
+        if pad is not None and pad in by_pad and by_pad[pad] != name:
+            raise ValueError(
+                f"component {component}: pad {pad!r} is claimed by pins "
+                f"{by_pad[pad]!r} and {name!r}; use one canonical name for this "
+                "physical pad in pins and connections, or correct the erroneous "
+                "pad number"
+            )
+        by_name[name] = pad
+        if pad is not None:
+            by_pad[pad] = name
 
 
 def _jsonb_or_none(value: Any) -> Jsonb | None:
@@ -575,15 +609,20 @@ class PcbMixin:
             ),
         )
 
+        declarations: dict[str, list[dict[str, Any]]] = {}
         for c in components:
             refdes = str(c.get("refdes") or "").strip()
             if not refdes:
                 raise ValueError("pcb component needs a refdes")
+            declarations.setdefault(refdes, []).extend(c.get("pins") or [])
+            _validate_pin_declarations(declarations[refdes], refdes)
             if refdes in inst_by_refdes:
                 continue  # already placed; skip (re-runnable)
             comp_id = self._pcb_insert_component(conn, ref.id, c, part_cache)
             counts["components"] += 1
-            counts["pins"] += self._pcb_insert_pins(conn, comp_id, c.get("pins") or [])
+            counts["pins"] += self._pcb_insert_pins(
+                conn, comp_id, c.get("pins") or [], refdes=refdes
+            )
             inst_id = self._pcb_insert_instance(
                 conn, ref.id, board_id, comp_id, refdes, c
             )
@@ -877,30 +916,63 @@ class PcbMixin:
         return out
 
     def _pcb_insert_pins(
-        self, conn: Connection, component_id: int, pins: list[dict[str, Any]]
+        self,
+        conn: Connection,
+        component_id: int,
+        pins: list[dict[str, Any]],
+        *,
+        refdes: str | None = None,
     ) -> int:
+        component = refdes or str(component_id)
+        existing = [
+            {"name": row[0], "pad": row[1]}
+            for row in conn.execute(
+                "SELECT name, pad FROM pcb_pins "
+                "WHERE component_id = %s AND retired_at IS NULL",
+                (component_id,),
+            ).fetchall()
+        ]
+        _validate_pin_declarations(existing + pins, component)
         n = 0
         for p in pins:
             name = str(p.get("name") or "").strip()
             if not name:
                 continue
-            conn.execute(
-                """
+            try:
+                # A DB pad conflict remains authoritative. Unwind its
+                # savepoint before looking up the owner or translating it.
+                with conn.transaction():
+                    result = conn.execute(
+                        """
                 INSERT INTO pcb_pins
                     (component_id, pad, name, tags, description, note)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
+                ON CONFLICT (component_id, name) WHERE retired_at IS NULL DO NOTHING
                 """,
-                (
-                    component_id,
-                    p.get("pad"),
-                    name,
-                    list(p.get("tags") or []),
-                    p.get("description"),
-                    p.get("note"),
-                ),
-            )
-            n += 1
+                        (
+                            component_id,
+                            p.get("pad"),
+                            name,
+                            list(p.get("tags") or []),
+                            p.get("description"),
+                            p.get("note"),
+                        ),
+                    )
+            except UniqueViolation as exc:
+                if exc.diag.constraint_name != "pcb_pins_comp_pad_key":
+                    raise
+                owner = conn.execute(
+                    "SELECT name FROM pcb_pins WHERE component_id = %s "
+                    "AND pad = %s AND retired_at IS NULL",
+                    (component_id, p.get("pad")),
+                ).fetchone()
+                raise ValueError(
+                    f"component {component}: pad {p.get('pad')!r} is claimed by "
+                    f"pins {owner[0] if owner else 'concurrent owner'!r} and {name!r}; "
+                    "use one canonical name for this physical pad in pins and "
+                    "connections, or correct the erroneous pad number"
+                ) from exc
+            n += result.rowcount
         return n
 
     def _pcb_insert_instance(

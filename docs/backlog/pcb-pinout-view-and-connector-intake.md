@@ -17,7 +17,7 @@ pillar: 3d-design
 
 ## The gap
 
-### gr467885 — explicit duplicate pad retention: schema boundary
+### gr467885 — explicit pad ownership: atomic refusal (reviewed A)
 
 At R11 `1b4d8b5c7d12b82cb476400bfe1f7d54df89226e`, an existing
 `put(kind='pcb', id='<isolated-board>', args=...)` with one partless instance,
@@ -32,18 +32,44 @@ unique `(component_id, pad)` index `pcb_pins_comp_pad_key` (migration 0047;
 current baseline retains it). `_pcb_pin_id` then creates OTHER with NULL pad
 when its connection is added. This is not failed footprint inference.
 
-Approved acceptance requires BOTH persisted pad-2 bindings, independent CLK
-and OTHER nets, and existing pinout ambiguous/conflicting evidence without
-choosing a winner; omitted pads retain existing inference and legacy selector
-behavior. The current schema forbids that stored state. No handler/parser-only
-fix can satisfy it. Dropping/replacing the index requires a forward migration;
-alternate metadata storage would change mapping semantics. Both exceed the
-bounded no-schema repair authorization. Stop for coordinator scope decision;
-do not alter sealed migration 0047, silently replace CLK, or claim fixed.
+Reviewed contract A supersedes the earlier both-bindings acceptance: reject
+conflicting canonical electrical declarations with actionable BadInput and
+roll back the complete authoring operation. Identify refdes/component, pad,
+both names and correction (one canonical name in pins/connections or correct
+the erroneous pad). Reject contradictory same-name pad declarations too.
+Validate supplied declarations before existing-refdes skip; valid re-put is
+create-or-extend, never a pin editor/backfill. Identical name+pad declarations,
+multiple NULL-pad names, lazy unbound pins and duplicate physical footprint
+pad rows remain legal. Preserve both DB indexes as final authority, narrow
+conflict suppression to name idempotency, and unwind SQL failures before
+translation. Refusal rolls back refs/identifiers, title/meta, board, footprints,
+earlier components/pins, nets/connections/cards and dependent writes; no
+post-commit jobs/providers follow. No inference/read-side/schema change.
 
-Reproducer/checkpoint: task `.scratch/pcb-pad-retention/` holds the focused
-regression and failing canonical log; `inbox/pcb-pad-retention-ready.md`
-records exact commands and the deferred deployed replay. gr467885 remains OPEN.
+Alternative B (both canonical bindings) is deferred: routing/IR/fabrication
+and import consumers depend on one canonical electrical pin per physical pad.
+Aliases/conflicts need separate model and consumer design, not a weakened
+index or metadata workaround. Do not choose a winner, merge nets, clear a
+loser, edit sealed migration0047 or backfill historical damage.
+
+Acceptance: actual DB snapshots for fresh and existing-board refusal (including
+earlier valid writes/title/meta/footprints), direct store/supplied transactions,
+reversed ownership/no connections/same-net conflicts, existing-refdes invalid
+input, same-name contradiction, identical/idempotent and NULL/lazy controls,
+and duplicate physical rows visible through pinout. Postdeploy use a fresh
+labelled invalid synthetic request with typed refusal/no partial state plus
+valid controls. Prior 23 P1 PASS stand; duplicate-canonical native ambiguity
+remains unsupported/UNVERIFIED. gr467885 stays OPEN until deployed replay.
+
+The shared store now validates normalized names/pads, including repeated
+entries for one refdes, before each existing-refdes skip. SQL only suppresses
+name-idempotency conflicts; the pad index remains authoritative and its
+violation is translated after savepoint rollback. Mixed bound/unbound repeated
+declarations for one name also refuse rather than silently choosing one.
+Canonical regression: `tests/test_pcb_explicit_pad_retention.py`; original
+loss/before-refusal logs remain historical in task `.scratch/pcb-pad-retention/`.
+`inbox/pcb-pad-retention-ready.md` records focused validation and the deferred
+deployed replay. gr467885 remains OPEN.
 
 Connector intake still needs checkable signal-to-pad assignment from prose.
 The per-instance `get(kind='pcb', id='<board>#<REFDES>', view='pinout')`
