@@ -26,6 +26,12 @@ needed), and a DB-backed convergence test proves
 ``load-baseline + tail`` produces the same schema as a full from-scratch
 replay.
 
+Schema DDL keeps pg_dump's empty search path. Seed COPY needs a local
+``public, pg_temp`` path because sealed trigger bodies call unqualified
+public helpers; the loader resets the session path after the transaction.
+All extension prerequisites, including the vault's pgcrypto, are emitted
+explicitly because a schema-filtered dump omits their creation.
+
 This is a dual-track scheme (Rails ``schema.rb`` / Ecto
 ``structure.sql``), **not** a third greenfield: the numbered migrations
 stay sealed in the tree as the upgrade path for existing databases.
@@ -108,7 +114,7 @@ SEED_TABLES: tuple[str, ...] = (
 
 #: Extensions ``pg_dump --schema=public`` omits; prepended manually so a
 #: truly-empty database can load the baseline in one shot.
-EXTENSIONS: tuple[str, ...] = ("vector", "pg_trgm", "btree_gist")
+EXTENSIONS: tuple[str, ...] = ("vector", "pg_trgm", "btree_gist", "pgcrypto")
 
 #: Where the snapshot lives, relative to the migrations dir. A
 #: subdirectory keeps it out of ``glob("*.sql")`` discovery (same trick
@@ -213,7 +219,7 @@ def _run_pg_dump(pg_dump_bin: str, scratch_dsn: str, extra: list[str]) -> str:
     return proc.stdout
 
 
-def _clean_dump(text: str) -> str:
+def _clean_dump(text: str, *, seed_data: bool = False) -> str:
     """Strip psql-only artefacts pg_dump emits that we don't want baked.
 
     ``\\restrict`` / ``\\unrestrict`` are psql-only dump markers pg_dump
@@ -221,6 +227,10 @@ def _clean_dump(text: str) -> str:
     tolerates them, but they add noise) and a bare ``CREATE SCHEMA
     public`` is rewritten to ``IF NOT EXISTS`` so fresh databases that
     already have the default schema don't error.
+
+    Only the seed dump gets a transaction-local public path: COPY fires
+    existing triggers whose sealed bodies use unqualified helper names.
+    Keep DDL's empty path and all function definitions/permissions intact.
     """
     out: list[str] = []
     for line in text.splitlines():
@@ -229,6 +239,9 @@ def _clean_dump(text: str) -> str:
             continue
         if s.rstrip() == "CREATE SCHEMA public;":
             out.append("CREATE SCHEMA IF NOT EXISTS public;")
+            continue
+        if seed_data and s == "SELECT pg_catalog.set_config('search_path', '', false);":
+            out.append("SET LOCAL search_path = public, pg_temp;")
             continue
         out.append(line)
     return "\n".join(out)
@@ -301,7 +314,9 @@ def generate_baseline_sql(
         seed_extra = ["--data-only"]
         for t in SEED_TABLES:
             seed_extra += ["--table", f"public.{t}"]
-        seed_data = _clean_dump(_run_pg_dump(pg_dump_bin, scratch_dsn, seed_extra))
+        seed_data = _clean_dump(
+            _run_pg_dump(pg_dump_bin, scratch_dsn, seed_extra), seed_data=True
+        )
         ledger = _render_ledger_copy(migrations_dir)
         return _assemble(schema_ddl, seed_data, ledger, head=head)
     finally:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -32,12 +33,14 @@ from precis.store.migrate import (
     _load_migrations,
 )
 from precis.store.schema_dump import (
+    SEED_TABLES,
     _render_ledger_copy,
     baseline_at_head_errors,
     baseline_integrity_errors,
     baseline_lag,
     baseline_path,
     parse_baseline_ledger,
+    write_baseline,
 )
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "src" / "precis" / "migrations"
@@ -225,9 +228,35 @@ def _drop_schema(dsn: str, name: str) -> None:
         conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
 
 
+def _assert_seed_copy_roundtrip(dsn: str, baseline: Path) -> None:
+    """Every canonical seed COPY survives loading, including all column values."""
+    found: set[str] = set()
+    lines = iter(baseline.read_text(encoding="utf-8").splitlines())
+    with psycopg.connect(dsn) as conn:
+        for line in lines:
+            if not line.startswith("COPY public.") or not line.endswith(" FROM stdin;"):
+                continue
+            table = line.split()[1].removeprefix("public.")
+            expected = []
+            for row in lines:
+                if row == "\\.":
+                    break
+                expected.append(row)
+            if table not in SEED_TABLES:
+                continue
+            found.add(table)
+            with conn.cursor().copy(
+                line.replace(" FROM stdin;", " TO stdout;")
+            ) as copy:
+                actual = b"".join(copy).decode().splitlines()
+            assert sorted(actual) == sorted(expected), f"seed data diverges: {table}"
+    assert found == set(SEED_TABLES), "canonical baseline omitted a seed table"
+
+
 @pytest.mark.db
+@pytest.mark.parametrize("snapshot", ["current", "regenerated"])
 def test_schema_convergence(
-    fresh_db: str, drop_public_objects: Callable[[str], None]
+    fresh_db: str, drop_public_objects: Callable[[str], None], snapshot: str
 ) -> None:
     """load-baseline + tail == full from-scratch replay (schema + ledger).
 
@@ -245,6 +274,21 @@ def test_schema_convergence(
     if pg_dump_bin is None:
         pytest.skip("pg_dump not available")
     dsn = fresh_db  # schema already stripped; teardown re-applies
+    baseline = BASELINE
+    if snapshot == "regenerated":
+        scratch = (
+            MIGRATIONS_DIR.parents[2] / ".scratch" / ("baseline_" + uuid.uuid4().hex)
+        )
+        baseline = write_baseline(
+            dsn,
+            MIGRATIONS_DIR,
+            output=scratch / "schema.sql",
+            scratch_db="precis_baseline_dump_" + uuid.uuid4().hex,
+            pg_dump_bin=pg_dump_bin,
+        )
+        assert dict(
+            parse_baseline_ledger(baseline.read_text(encoding="utf-8"))
+        ) == dict(parse_baseline_ledger(_render_ledger_copy(MIGRATIONS_DIR)))
 
     # Path A: full from-scratch replay (no baseline).
     Migrator(dsn, MIGRATIONS_DIR).apply_all()
@@ -259,7 +303,16 @@ def test_schema_convergence(
     # the pg_dump output (a truly fresh install never has them yet).
     drop_public_objects(dsn)
     _drop_schema(dsn, "vault")
-    Migrator(dsn, MIGRATIONS_DIR, baseline=BASELINE).apply_all()
+    runner = Migrator(dsn, MIGRATIONS_DIR, baseline=baseline)
+    if snapshot == "regenerated":
+        # Match apply_all's connection mode while checking the same-session
+        # post-load path, before the convergence comparison opens fresh ones.
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            before_path = conn.execute("SHOW search_path").fetchone()
+            runner._load_baseline(conn)
+            assert conn.execute("SHOW search_path").fetchone() == before_path
+        _assert_seed_copy_roundtrip(dsn, baseline)
+    runner.apply_all()
     schema_b = _dump_schema(pg_dump_bin, dsn)
     ledger_b = _applied_ledger(dsn)
 

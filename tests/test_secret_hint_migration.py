@@ -47,10 +47,6 @@ def test_saved_hint_tail_preserves_legacy_and_permissions(
     try:
         # Stable legacy fixture: replay only sealed pre-tail files. A regenerated
         # current baseline can already contain0189 and is not a pre-tail source.
-        # Match the vault test prerequisite: the current generated baseline
-        # omits pgcrypto, while the numbered chain provisions it in 0059.
-        with psycopg.connect(dsn) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
         old = Migrator(dsn, prior)
         fresh_pending = old.pending()
         old.apply_all()
@@ -138,9 +134,7 @@ def test_saved_hint_tail_preserves_legacy_and_permissions(
 
 
 @pytest.mark.parametrize("snapshot", ["current", "regenerated"])
-def test_current_baseline_final_saved_hint_behavior(
-    snapshot: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_current_baseline_final_saved_hint_behavior(snapshot: str) -> None:
     from precis.store import schema_dump
 
     if not _pg_available():
@@ -152,10 +146,8 @@ def test_current_baseline_final_saved_hint_behavior(
     scratch.mkdir(parents=True)
     baseline = MIGRATIONS / "baseline/schema.sql"
     if snapshot == "regenerated":
-        # Canonical schema+ledger generation reproduces baked0189. Only the inert actors seed table is included; other seed data
-        # is outside this vault regression (and currently hits an unrelated
-        # kinds-trigger/search_path issue in full generated snapshots).
-        monkeypatch.setattr(schema_dump, "SEED_TABLES", ("actors",))
+        # The complete canonical artifact must bootstrap without externally
+        # installed extensions or omitting seed tables with active triggers.
         baseline = scratch / "regenerated-schema.sql"
         baseline.write_text(
             schema_dump.generate_baseline_sql(
@@ -170,9 +162,10 @@ def test_current_baseline_final_saved_hint_behavior(
     with psycopg.connect(admin_dsn, autocommit=True) as admin:
         admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     try:
-        # Existing vault prerequisite qualification; no baseline/product edits.
         with psycopg.connect(dsn) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            assert conn.execute(
+                "SELECT extname FROM pg_extension ORDER BY extname"
+            ).fetchall() == [("plpgsql",)]
         runner = Migrator(dsn, MIGRATIONS, baseline=baseline)
         pending = runner.pending()
         assert (("precis", TAIL) in pending) == (not baked)
@@ -183,6 +176,9 @@ def test_current_baseline_final_saved_hint_behavior(
         keyed = make_conninfo(dsn, options="-c app.secret_key=synthetic-bootstrap-key")
         value = "synthetic😀\r\n\r\nend\r"
         with psycopg.connect(keyed) as conn:
+            assert conn.execute(
+                "SELECT extname FROM pg_extension WHERE extname='pgcrypto'"
+            ).fetchone() == ("pgcrypto",)
             conn.execute("SELECT vault.set_secret('TEST_BOOTSTRAP', %s)", (value,))
             row = conn.execute(
                 "SELECT hint FROM vault.list() WHERE name='TEST_BOOTSTRAP'"
@@ -203,8 +199,8 @@ def test_current_baseline_final_saved_hint_behavior(
                     "final_saved_counts": True,
                     "exact_roundtrip": True,
                     "idempotent": True,
-                    "pgcrypto_preprovisioned": True,
-                    "regenerated_scope": "canonical schema+ledger, actors-only seed fixture"
+                    "pgcrypto_preprovisioned": False,
+                    "regenerated_scope": "canonical schema+ledger+all seed tables"
                     if snapshot == "regenerated"
                     else "current actual baseline",
                 },
