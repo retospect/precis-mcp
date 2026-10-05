@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from precis_web import nanopub_render as _nanopub_render
 from precis_web.nanopub_render import (
     _contradicted_panel,
@@ -210,18 +212,20 @@ def test_dispute_panel_returns_disputes_edge_entries_with_counterpart_info(
     assert chunk_id  # sanity: the pinned chunk really was resolved
 
 
-def test_dispute_panel_resolves_passage_from_meta_source_handle(store: Any) -> None:
-    """The production writers (``workers/hub_refine.py``) set NO chunk
-    column on the edge — their pointer is ``links.meta['source_handle']``
-    (``pc<id>``), same as evidence edges. The panel must resolve the
-    passage from that fallback, or every automatically-filed dispute
-    renders with an empty passage (pre-ship review finding #2)."""
+@pytest.mark.parametrize("kind", ["paper", "patent", "finding"])
+@pytest.mark.parametrize("direction", ["in", "out"])
+def test_dispute_panel_resolves_passage_from_meta_source_handle(
+    store: Any, kind: str, direction: str
+) -> None:
+    """Automated disputes use typed metadata pins, not chunk columns.
+    The worker's verdict/reason must reach the reviewer with the passage."""
     from precis.taproot.canon import CanonicalClaim
     from precis.taproot.hub import mint_hub
+    from precis.utils.handle_registry import format_handle
     from tests.workers._helpers import seed_ref
 
     hub = mint_hub(store, CanonicalClaim(sentence="a handle-pinned claim", scope={}))
-    paper = seed_ref(store, title="a disputing paper", kind="paper")
+    paper = seed_ref(store, title=f"a disputing {kind}", kind=kind)
     with store.pool.connection() as conn:
         row = conn.execute(
             "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text) "
@@ -232,18 +236,58 @@ def test_dispute_panel_resolves_passage_from_meta_source_handle(store: Any) -> N
         chunk_id = int(row[0])
         conn.commit()
     store.add_link(
-        src_ref_id=paper,
-        dst_ref_id=hub,
+        src_ref_id=paper if direction == "in" else hub,
+        dst_ref_id=hub if direction == "in" else paper,
         relation="disputes",
-        meta={"source_handle": f"pc{chunk_id}", "dialectic": None},
+        meta={
+            "source_handle": format_handle(kind, chunk_id, chunk=True),
+            "support": "no",
+            "support_reason": "reports the opposite outcome",
+            "via": "conflict_search",
+        },
     )
 
     entries = _dispute_panel(store, hub)
 
     assert len(entries) == 1
     assert entries[0]["ref_id"] == paper
-    assert entries[0]["direction"] == "in"
+    assert entries[0]["direction"] == direction
     assert entries[0]["passage"] == "The measured modulus runs counter to the claim."
+    assert entries[0]["support"] == "no"
+    assert entries[0]["support_reason"] == "reports the opposite outcome"
+
+
+@pytest.mark.parametrize(
+    "pin", ["malformed", "ref", "wrong-kind", "foreign", "missing"]
+)
+def test_dispute_panel_does_not_misattribute_invalid_metadata_pins(
+    store: Any, pin: str
+) -> None:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+    from tests.test_nanopub_gates_mint import _seed_paper
+
+    hub = mint_hub(store, CanonicalClaim(sentence="a pin-checked claim", scope={}))
+    paper, chunk, _ = _seed_paper(store)
+    _, foreign_chunk, _ = _seed_paper(store)
+    handle = {
+        "malformed": "pcbogus",
+        "ref": f"pa{chunk}",
+        "wrong-kind": f"fb{chunk}",
+        "foreign": f"pc{foreign_chunk}",
+        "missing": "pc9223372036854775807",
+    }[pin]
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub,
+        relation="disputes",
+        meta={"source_handle": handle},
+    )
+
+    entry = _dispute_panel(store, hub)[0]
+    assert entry["passage"] == ""
+    assert entry["support"] is None
+    assert entry["support_reason"] is None
 
 
 def test_dispute_panel_empty_when_no_live_disputes_edge(store: Any) -> None:

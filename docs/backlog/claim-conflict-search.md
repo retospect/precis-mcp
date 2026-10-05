@@ -159,6 +159,31 @@ conflicts hide where coverage is thickest.
 
 ## Open questions / decisions log
 
+### R14 bounded slice: stored opposition at approval
+
+Premise checked against main `ab90f225a84e0165b418e00bc64f89d01ad086f2`:
+the worker and its first-slice tests already exist. The approve page has
+an open-disputes panel, but drops `support` / `support_reason` and only
+resolves `pc` metadata pins, although the worker emits typed paper,
+patent and finding chunk handles.
+
+Extend that existing read-only panel: resolve counterpart chunk handles
+through the handle registry; show the stored support verdict and reason
+as an advisory. Never infer adjudication from the automated verdict.
+Explicit chunk pins retain precedence; malformed, ref-only or foreign
+pins must not display an unrelated passage. No model calls, refresh,
+worker changes, schema changes or new approval gate.
+
+Acceptance for this slice (the third criterion above, stored-results
+portion): a planted opposing claim linked by the worker's metadata shape
+shows its passage, support verdict and reasoning before the approve form;
+the same candidate can still be approved. Exercise paper/patent/finding
+handles, absent metadata and invalid pins in focused tests.
+
+Remaining: coverage/freshness advisory and re-sweep policy, counter-claim
+minting, initial backfill tuning, and the provenance question below.
+This slice does not claim automatic refresh or a full item-4 completion.
+
 - **Decided (2026-09-02, Reto):** trigger is claim-mint + retro backfill
   via one watermarked worker pass, not approve-only; coverage must be
   tracked; trust ranks but never rejects.

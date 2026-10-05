@@ -74,6 +74,12 @@
         {% else %}
         <p class="text-slate-500">No passage pinned on the disputes edge.</p>
         {% endif %}
+        {% if d.support %}
+        <p class="mt-2 text-sky-700">Recorded support verdict: {{ d.support }} (advisory)</p>
+        {% endif %}
+        {% if d.support_reason %}
+        <p class="mt-1 text-slate-600">Reason: {{ d.support_reason }}</p>
+        {% endif %}
       </div>
     </div>
     {% endfor %}

@@ -87,6 +87,64 @@ def test_index_is_the_three_pane_tree(client: TestClient, runtime_with_store) ->
     assert 'id="np-review"' in deep.text
 
 
+def test_stored_conflict_visible_before_approval_without_blocking(
+    client: TestClient, runtime_with_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker-shaped opposing-claim edge is advice before freeze, not a veto."""
+    import json
+
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+    from precis.utils.handle_registry import format_handle
+    from precis_web import nanopub_render
+
+    _stub_dedup_judge(monkeypatch)
+    monkeypatch.setattr(
+        nanopub_render, "_lazy_enqueue_context_sentences", lambda *_: None
+    )
+    store = _store(runtime_with_store)
+    paper, chunk, sha = _seed_paper(store)
+    title = "DFT finds the anisotropy can reach a 400:1 ratio."
+    hub = _seed_hub(store, title, paper, chunk)
+    opposition = "DFT finds the anisotropy does not reach a 400:1 ratio."
+    opponent = mint_hub(store, CanonicalClaim(sentence=opposition, scope={}))
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0",
+            (opponent,),
+        ).fetchone()
+    assert row is not None
+    store.add_link(
+        src_ref_id=opponent,
+        dst_ref_id=hub,
+        relation="disputes",
+        meta={
+            "source_handle": format_handle("finding", int(row[0]), chunk=True),
+            "support": "no",
+            "support_reason": "reports the opposite outcome <unreviewed>",
+            "via": "conflict_search",
+        },
+    )
+
+    response = client.get(f"/claim/fi{hub}")
+    assert response.status_code == 200, response.text
+    assert "Recorded support verdict: no (advisory)" in response.text
+    assert "Reason: reports the opposite outcome &lt;unreviewed&gt;" in response.text
+    assert f"“{opposition}”" in response.text
+    assert response.text.index("Recorded support verdict") < response.text.index(
+        f'action="/nanopub/fi{hub}/approve"'
+    )
+    assert store.nanopub_publish_row(hub) is None
+
+    approved = client.post(
+        f"/nanopub/fi{hub}/approve",
+        data={"title": title, "payload": json.dumps(_payload(chunk, sha))},
+        follow_redirects=False,
+    )
+    assert approved.status_code == 303, approved.text
+    assert store.nanopub_publish_row(hub).state == "reviewed"
+
+
 def test_an_htmx_request_gets_the_chromeless_fragment(
     client: TestClient, runtime_with_store
 ) -> None:

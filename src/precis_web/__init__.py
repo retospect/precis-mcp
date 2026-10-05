@@ -7,6 +7,13 @@ error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
 
+**Claim approval.** The open-disputes panel reads stored support verdicts
+and reasoning alongside pinned passages, including typed paper, patent
+and finding handles from ``conflict_search``. Pins must name the counterpart
+ref's chunk to avoid attributing an unrelated passage. These are advisory
+records, not adjudications; rendering never refreshes conflict search or
+changes the approval gate.
+
 **Pathway diagram.** ``refs._pathway_graph_payload`` preserves catpath's
 ``link_type`` for folding/annotations: adsorption and desorption keep their
 columns; only supply→reaction folds. Raw ``kind=supply`` still excludes

@@ -853,16 +853,16 @@ def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     # when the edge points AT this hub (``direction == 'in'``), or the
     # target's pin (``dst_chunk_id``) when this hub is the one filing the
     # question (``direction == 'out'``). The automated writers
-    # (``workers/hub_refine.py``) don't set the chunk columns at all —
-    # their pointer is ``links.meta['source_handle']`` (``pc<id>``), same
-    # as evidence edges — so that is the fallback pin.
+    # (``workers/hub_refine.py``, ``workers/conflict_search.py``) don't
+    # set the chunk columns — their typed ``source_handle`` is the fallback.
     def _pin(e: Any) -> int | None:
         col = e.src_chunk_id if e.direction == "in" else e.dst_chunk_id
         if col is not None:
             return col
         handle = str((e.meta or {}).get("source_handle") or "")
-        if handle.startswith("pc") and handle[2:].isdigit():
-            return int(handle[2:])
+        parsed = handle_registry.parse(handle)
+        if parsed is not None and parsed[0] == e.kind and parsed[1]:
+            return parsed[2]
         return None
 
     pins = {(e.ref_id, e.direction): _pin(e) for e in edges}
@@ -874,6 +874,9 @@ def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
     for e in edges:
         pin = pins[(e.ref_id, e.direction)]
         chunk = chunks.get(pin) if pin is not None else None
+        # A well-formed handle alone cannot prove passage ownership.
+        if chunk is not None and chunk.ref_id != e.ref_id:
+            chunk = None
         out.append(
             {
                 "ref_id": e.ref_id,
@@ -881,6 +884,8 @@ def _dispute_panel(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
                 "title": e.title,
                 "direction": e.direction,
                 "passage": chunk.text if chunk is not None else "",
+                "support": e.meta.get("support"),
+                "support_reason": e.meta.get("support_reason"),
             }
         )
     return out

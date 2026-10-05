@@ -29,6 +29,11 @@ stays authoritative; the nanopub is the frozen published form.
 
 ## What an agent can do
 
+The web approval page's open questions show stored disputing passages,
+support verdicts and reasoning when available. These are advisory, never
+an approval veto. Reading the panel does not re-run conflict search;
+missing results do not establish that no opposition exists.
+
 - `get(kind='finding', id='fi<id>', view='nanopub')` — the TriG
   rendering. Pre-mint you get an **unsigned draft** (placeholder URI,
   `#` status comments; missing grounding is flagged, not invented).
