@@ -48,7 +48,9 @@ def test_a_cap_is_convex_and_closes_on_the_axis() -> None:
 
 def test_ball12_overhanging_sphere_owns_aC343_and_its_foot() -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text()
+        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text(
+            encoding="utf-8"
+        )
     )
     args = fixture["call"]["args"]
     target = args["target"]["features"][0]

@@ -72,7 +72,9 @@ def test_poster_template_print_layout(
         check=False,
     )
     assert compiled.returncode == 0, compiled.stdout + compiled.stderr
-    assert r"Overfull \vbox" not in (tmp_path / "poster.log").read_text()
+    assert r"Overfull \vbox" not in (tmp_path / "poster.log").read_text(
+        encoding="utf-8"
+    )
     with fitz.open(tmp_path / "poster.pdf") as pdf:
         assert len(pdf) == 1
         page = pdf[0]

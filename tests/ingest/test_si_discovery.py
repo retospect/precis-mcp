@@ -50,7 +50,8 @@ def test_default_fetch_landing_html_api_json(monkeypatch) -> None:
 def test_real_springer_moesm_includes_source_data_not_peer_review() -> None:
     fixture = Path(__file__).parents[1] / "fixtures/si/nature-s41467-023-40259-0.html"
     got = sd.parse_landing_links(
-        fixture.read_text(), "https://www.nature.com/articles/s41467-023-40259-0"
+        fixture.read_text(encoding="utf-8"),
+        "https://www.nature.com/articles/s41467-023-40259-0",
     )
     assert [c.filename for c in got] == [
         "41467_2023_40259_MOESM1_ESM.pdf",

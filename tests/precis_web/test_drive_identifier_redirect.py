@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
-from precis_web.routes.tags import _ref_url
+from precis_web.ref_urls import ref_url
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def _handle(kind: str, ref_id: int) -> str:
 
 def _assert_redirect(resp: Any, kind: str, ref_id: int) -> None:
     assert resp.status_code == 302, f"expected 302, got {resp.status_code}"
-    assert resp.headers["location"] == _ref_url(kind, ref_id)
+    assert resp.headers["location"] == ref_url(kind, ref_id)
 
 
 def _assert_search_page(resp: Any) -> None:

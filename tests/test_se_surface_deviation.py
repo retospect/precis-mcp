@@ -305,7 +305,9 @@ def test_public_get_exact_ball12_call_scores_aC343_against_sphere(
     public_get: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text()
+        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text(
+            encoding="utf-8"
+        )
     )
     fn, store = public_get
     store.design.slug = "hexfold-dogfood-r4"
