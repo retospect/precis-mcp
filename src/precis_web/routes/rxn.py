@@ -1,9 +1,14 @@
 """Tabulated reaction ledger and explicit keep through the rxn handler.
 
-The existing handler computes and formats every ledger and source note;
-the shared reader's TOON renderer turns those tables into HTML. No web
-thermochemistry or text-to-number parsing lives here. Keep uses rxn refs,
-leaving catalyst pathway runs and future station records distinct.
+The rxn handler owns computations, ledger tables and source/licence notes;
+the shared TOON renderer presents them unchanged, without recalculation or
+text-to-number parsing. Explicit keep validates inputs and stores them with
+an archival ledger in an rxn ref. The `/refs/rxn/<id>` reader recomputes
+through that same handler instead of using the snapshot.
+
+Equation sets use rxn refs so catalyst pathway runs and future station
+records remain separate. This view supplies tabulated energetics; it creates
+no barriers, electrode references or measured property rows.
 """
 
 from __future__ import annotations

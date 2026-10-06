@@ -7,12 +7,8 @@ error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
 
-**Reaction ledger (`/rxn`).** Stateless equation inputs go through the rxn
-handler; the shared TOON renderer displays its tables and source/licence
-notes unchanged. Explicit keep stores validated inputs and an archival
-ledger in an rxn ref; `/refs/rxn/<id>` recomputes through the same handler.
-These tabulated equation sets stay distinct from catpath pathway runs,
-without inventing barriers, electrode references or measured property rows.
+**Reaction ledger (`/rxn`).** Handler-computed ledgers and kept rxn records;
+readers recompute. Storage/scientific rationale: `routes/rxn.py`.
 
 **Ref readers.** ``ref_urls`` is the shared native-reader map for Drive,
 handle resolution and tag pivots. Browse-menu membership cannot gate stored
