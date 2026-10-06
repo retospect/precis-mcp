@@ -1030,6 +1030,17 @@ def _try_publisher(
     )
 
 
+def _validate_elsevier_body(target: Path) -> None:
+    """Require structured article body, not a valid HTTP 200 preview.
+
+    OA=false is not a refusal: institutional keys can retrieve closed full
+    text. Body structure, rather than byte/character count, is the gate.
+    """
+    from precis.ingest.markup import parse_elsevier
+
+    parse_elsevier(target.read_bytes())
+
+
 def _try_elsevier(
     stub: StubRef,
     *,
@@ -1041,10 +1052,11 @@ def _try_elsevier(
     Returns ``None`` (silent fall-through, no event) when there's no
     API key, no DOI, the DOI is malformed, or its prefix isn't an
     Elsevier one. Otherwise hits ``content/article/doi/<doi>`` with the
-    API key and ``Accept: application/pdf``; the ``%PDF-`` guard gates
-    the result, so a non-entitled / non-OA article (which the API
-    answers with an XML error body, not a PDF) degrades to
-    ``fetch_failed`` and the cascade continues.
+    API key. An XML preflight must contain a real article body before
+    requesting ``Accept: application/pdf``: valid PDF magic alone also
+    admits entitlement-limited previews. Missing body records
+    ``fetch_failed`` with reason ``entitlement`` and continues the cascade.
+    OA=false is allowed when the key can retrieve full text.
     """
     if not api_key or not stub.doi:
         return None
@@ -1056,18 +1068,40 @@ def _try_elsevier(
     filename = _stub_filename(stub) + ".pdf"
     target = inbox_dir / filename
     inbox_dir.mkdir(parents=True, exist_ok=True)
+    # The watcher ignores .staging; preflight XML must never be an intake.
+    preflight = inbox_dir / ".staging" / target.with_suffix(".entitlement.xml").name
+    preflight.parent.mkdir(parents=True, exist_ok=True)
     try:
+        _download_markup(
+            url,
+            preflight,
+            extra_headers={"X-ELS-APIKey": api_key, "Accept": "text/xml"},
+        )
+        _validate_elsevier_body(preflight)
         size_bytes = _download_pdf(
             url,
             target,
             extra_headers={"X-ELS-APIKey": api_key, "Accept": "application/pdf"},
         )
     except Exception as exc:
+        from precis.ingest.markup import MarkupParseError
+
         return FetchOutcome(
             event="fetch_failed",
-            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            payload={
+                "doi": stub.doi,
+                "url": url,
+                "error": str(exc)[:200],
+                **(
+                    {"reason": "entitlement"}
+                    if isinstance(exc, MarkupParseError)
+                    else {}
+                ),
+            },
             duration_ms=_ms(t0),
         )
+    finally:
+        preflight.unlink(missing_ok=True)
     return FetchOutcome(
         event="fetch_ok",
         payload={
@@ -1106,7 +1140,9 @@ def _try_elsevier_markup(
     XML error/stub body that has no ``<body>`` (or an empty one), which
     :func:`~precis.ingest.markup.parse_elsevier` raises
     :class:`~precis.ingest.markup.MarkupParseError` on — a loud ingest
-    failure instead of a silent short paper.
+    failure instead of a silent short paper. Validate before recording
+    ``fetch_ok`` or publishing the trigger, so that failure continues the
+    acquisition cascade rather than stranding the paper downstream.
 
     Returns ``None`` (silent fall-through, no event) under the same
     conditions as :func:`_try_elsevier`: no key, no DOI, or a non-Elsevier
@@ -1130,10 +1166,23 @@ def _try_elsevier_markup(
             target,
             extra_headers={"X-ELS-APIKey": api_key, "Accept": "text/xml"},
         )
+        _validate_elsevier_body(target)
     except Exception as exc:
+        from precis.ingest.markup import MarkupParseError
+
+        target.unlink(missing_ok=True)
         return FetchOutcome(
             event="fetch_failed",
-            payload={"doi": stub.doi, "url": url, "error": str(exc)[:200]},
+            payload={
+                "doi": stub.doi,
+                "url": url,
+                "error": str(exc)[:200],
+                **(
+                    {"reason": "entitlement"}
+                    if isinstance(exc, MarkupParseError)
+                    else {}
+                ),
+            },
             duration_ms=_ms(t0),
         )
     return FetchOutcome(

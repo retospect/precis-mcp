@@ -57,7 +57,10 @@ that nanopubs signed here attribute to), sign-out, podcast subscribe URL
 only other source). Sign-out = 401 with a fresh challenge (evicts cached
 Basic credential) + session-cookie delete.
 
-**Secrets.** Add/replacement controls offer a write-only multiline editor;
+**Secrets.** Elsevier key checks use fixed OA Article Retrieval metadata;
+ScienceDirect Search needs a separate entitlement and falsely rejects working
+retrieval keys. CORE throttling preserves HTTP 429 as a rate-limited detail.
+Add/replacement controls offer a write-only multiline editor;
 existing values never populate it. Password inputs discard pasted line breaks,
 so multiline values use a textarea and cannot switch to a password input while
 line breaks remain. Blank replacement leaves the stored value unchanged; the

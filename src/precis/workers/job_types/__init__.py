@@ -24,6 +24,10 @@ entry-point group; failure isolation mirrors
 :func:`precis.dispatch._load_plugins` — one broken plugin must not
 brick the worker.
 
+``elsevier_abstract_backfill`` is deterministic: explicit confirmed IDs,
+expected-count guard and dry-run default re-arm existing fetch pins without
+removing body/hash/event evidence or calling a provider/model.
+
 ``fix_gripe`` deployment + trust model: ``docs/runbooks/fix-gripe-ops.md``.
 """
 
@@ -622,6 +626,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "taproot_backfill":
         _REGISTRY["taproot_backfill"] = _load_taproot_backfill()
         return _REGISTRY["taproot_backfill"]
+    if name == "elsevier_abstract_backfill":
+        from precis.workers.job_types.elsevier_abstract_backfill import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "reground_claim":
         _REGISTRY["reground_claim"] = _load_reground_claim()
         return _REGISTRY["reground_claim"]
@@ -721,6 +730,7 @@ def known_job_types() -> list[str]:
         "doctor_tick",
         "draft_export",
         "taproot_backfill",
+        "elsevier_abstract_backfill",
         "reground_claim",
         "draft_refresh",
         "remarkable_send",
