@@ -75,7 +75,8 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   failures) · [draft-poster-genre-and-themes](../draft-poster-genre-and-themes.md)
   (Reto 2026-10-05: one generic beamer poster template + per-user branding
   profiles, institution/sponsor logos and export validation; docs amendment,
-  implementation still open; path to Reto's generic template awaits him) ·
+  stripped generic scaffold supplied 2026-10-06; poster dispatch and private
+  profile implementation still open) ·
   `draft-section-styles`.
 - **Content model** — `smartdraft-review-parity` (may hit td461162, the Phase 5
   review from the web review block; re-check when it starts) ·

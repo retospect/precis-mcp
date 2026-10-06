@@ -98,9 +98,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.alerts import notify_critical_alert, raise_alert, resolve_stale_alerts
-from precis.handlers._todo_guards import todo_root_sql
-from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
+from precis.store._todo_sql import _doable_exclusion_clause, todo_root_sql
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)

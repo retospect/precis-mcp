@@ -109,6 +109,13 @@ def _seed_paper_stub(
     return ref_id
 
 
+def _write_fulltext_xml(url, target, **kw):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
+    target.write_bytes(data)
+    return len(data)
+
+
 def _write_synthetic_pdf(path: Path, *, size: int = 1024) -> int:
     """Drop a tiny file that starts with the ``%PDF-`` magic bytes.
 
@@ -1068,6 +1075,10 @@ class TestTryPublisher:
 
 
 class TestTryElsevier:
+    @pytest.fixture(autouse=True)
+    def _fulltext_preflight(self, monkeypatch):
+        monkeypatch.setattr(fetch_oa, "_download_markup", _write_fulltext_xml)
+
     def test_none_without_key(self, tmp_path: Path) -> None:
         assert (
             _try_elsevier(
@@ -1173,7 +1184,9 @@ class TestTryElsevierMarkup:
             seen["url"] = url
             seen["headers"] = extra_headers
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"<full-text-retrieval-response/>")
+            target.write_bytes(
+                b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
+            )
             return target.stat().st_size
 
         monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
@@ -1239,7 +1252,9 @@ class TestRunMarkupCascade:
 
         def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"<full-text-retrieval-response/>")
+            target.write_bytes(
+                b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
+            )
             return target.stat().st_size
 
         monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
@@ -1312,7 +1327,9 @@ class TestRunMarkupCascade:
 
         def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"<full-text-retrieval-response/>")
+            target.write_bytes(
+                b"<full-text-retrieval-response><body><para>Synthetic full article body.</para></body></full-text-retrieval-response>"
+            )
             return target.stat().st_size
 
         monkeypatch.setattr(fetch_oa, "_download_markup", _capture)
@@ -1354,6 +1371,7 @@ class TestRunMarkupCascade:
     ) -> tuple[fetch_oa._StagedMarkup | None, int, list[tuple[str, str, Any]]]:
         monkeypatch.setenv("PRECIS_FETCH_MARKUP", "1")
         ref_id = _seed_paper_stub(store, cite_key="eprint2022")
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
 
         def _fake(url: str, target: Path, *, extra_headers: Any = None) -> int:
             if "/e-print/" not in url:
@@ -2436,6 +2454,7 @@ class TestRunCascade:
         # leg — before Unpaywall (which only has the doi.org landing
         # page) is consulted.
         ref_id = _seed_paper_stub(store, doi="10.1016/j.amf.2025.200253")
+        monkeypatch.setattr(fetch_oa, "_download_markup", _write_fulltext_xml)
         seen: dict[str, Any] = {}
 
         def _capture(url: str, target: Path, *, extra_headers: Any = None) -> int:

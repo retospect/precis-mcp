@@ -26,10 +26,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import render_slug_ref_list, resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
-
-
-def _num(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
+from precis.utils.text import fmt_num
 
 
 class DiagramHandler(Handler):
@@ -76,7 +73,7 @@ class DiagramHandler(Handler):
 
     def _box_str(self, bounds: Any) -> str:
         if isinstance(bounds, (list, tuple)) and len(bounds) == 4:
-            return f"{_num(bounds[2])}×{_num(bounds[3])}"
+            return f"{fmt_num(bounds[2])}×{fmt_num(bounds[3])}"
         return ""
 
     def _ref_meta(self, bounds: Any) -> dict[str, Any]:

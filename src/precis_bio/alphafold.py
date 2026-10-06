@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from precis.utils.coerce import as_float
 from precis.utils.container_limits import container_limit_flags
 from precis_bio.ir import (
     MODE_DE_NOVO,
@@ -138,13 +139,6 @@ def build_fold_argv(
     return argv
 
 
-def _as_float(v: Any) -> float | None:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _find_one(out_dir: str, suffix: str) -> Path | None:
     """The (lexically first) file under ``out_dir`` whose name ends ``suffix``.
 
@@ -205,9 +199,9 @@ def parse_af3_output(
         mode=mode,
         cif=cif,
         plddt_mean=mean_plddt_from_cif(cif) if cif else None,
-        ptm=_as_float(summary.get("ptm")),
-        iptm=_as_float(summary.get("iptm")),
-        ranking_score=_as_float(summary.get("ranking_score")),
+        ptm=as_float(summary.get("ptm")),
+        iptm=as_float(summary.get("iptm")),
+        ranking_score=as_float(summary.get("ranking_score")),
         n_residues=len(seq),
         seeds=[int(s) for s in (seeds or [])],
         provenance=provenance,

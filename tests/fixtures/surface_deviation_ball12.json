@@ -1,0 +1,17 @@
+{
+  "provenance": "gr469873 exact native curved request on R14; fitted/reconstructed target, not original generation provenance. aC343 from eight-decimal native extxyz export.",
+  "call": {
+    "kind": "se", "id": "hexfold-dogfood-r4", "view": "surface_deviation",
+    "args": {
+      "name": "ball12",
+      "target": {"features": [{
+        "name": "q", "centre_A": [3.0568896312807077, -1.3718044792797102],
+        "r0_A": 9.69732218899367,
+        "pieces": [["arc", 5, 90], ["line", 12.78], ["arc", 4.054931468541357, 51.702395357417046], ["arc", 10.067387222435341, -141.70239535741706]]
+      }]},
+      "z_offset_A": 40.567281861210226
+    }
+  },
+  "atom": {"label": "aC343", "xyz_A": [9.47976239, -8.68156672, 9.06851434]},
+  "sphere": {"centre_A": [3.0568896312807077, -1.3718044792797102, 11.704053941345249], "radius_A": 10.067387222435341}
+}

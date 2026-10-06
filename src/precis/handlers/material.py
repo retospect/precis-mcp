@@ -34,28 +34,35 @@ See ``precis-material-help``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
-from precis.handlers._link_target import LinkTarget, parse_link_target
-from precis.protocol import Handler, KindSpec
+from precis.handlers._value_entity import (
+    _MATURITIES,
+    ValueEntityHandler,
+)
+from precis.handlers._value_entity import (
+    display_value as _display_value,
+)
+from precis.handlers._value_entity import (
+    fmt_conditions as _fmt_conditions,
+)
+from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
 
-_MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 #: ``material_values.method`` (migration 0092's comment: "measured |
 #: datasheet | dft | estimated | ..."). The column carries no DB CHECK
 #: (unlike ``maturity``) — this tuple is the handler-layer enforcement of
 #: that documented vocabulary.
 _METHODS: tuple[str, ...] = ("measured", "datasheet", "dft", "estimated")
-_SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = ("table", "properties")
-_VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
-class MaterialHandler(Handler):
+class MaterialHandler(ValueEntityHandler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="material",
         title="Material",
@@ -125,7 +132,7 @@ class MaterialHandler(Handler):
         if property is not None:
             return self._put_value(
                 slug,
-                property=str(property).strip(),
+                key=str(property).strip(),
                 value=value,
                 unit=unit,
                 conditions=conditions,
@@ -169,132 +176,45 @@ class MaterialHandler(Handler):
             lines.append("aka: " + ", ".join(rmeta["aliases"]))
         return Response(body="\n".join(lines))
 
-    def _put_value(
+    _VE_KIND: ClassVar[str] = "material"
+    _VE_ARG: ClassVar[str] = "property"
+    _VE_ID: ClassVar[str] = "prop_id"
+    _VE_PLURAL: ClassVar[str] = "properties"
+    _VE_METHODS: ClassVar[tuple[str, ...]] = _METHODS
+    _VE_CREATE_HINT: ClassVar[str] = (
+        "put(kind='material', id={slug}, title='...', meta={{'material_class': '...'}})"
+    )
+
+    def _ve_registry_row(
         self,
-        slug: str,
+        entity_ref: Any,
+        key: str,
         *,
-        property: str,
         value: Any,
         unit: str | None,
-        conditions: dict[str, Any] | None,
-        maturity: str | None,
-        method: str | None = None,
-        source: str | None,
-        chunk: str | None,
-        as_of: str | None = None,
-        value_type: str | None = None,
-        allowed_values: list[Any] | None = None,
-        value_low: float | None = None,
-        value_high: float | None = None,
-    ) -> Response:
-        if not property:
-            raise BadInput(
-                "put(kind='material') with property= needs a non-empty prop_id",
-                next="get(kind='material', view='properties') to see the registry",
-            )
-        material_ref = self.store.get_ref(kind="material", id=slug)
-        if material_ref is None:
-            raise NotFound(
-                f"material {slug!r} not found - create the entity first",
-                next=(
-                    f"put(kind='material', id={slug!r}, "
-                    "title='...', meta={'material_class': '...'})"
-                ),
-            )
-        if conditions is not None and not isinstance(conditions, dict):
-            raise BadInput("put(kind='material') conditions= must be a dict")
-
-        self._validate_type_args(value_type, allowed_values)
-
-        prop = self.store.material_property_get(property)
+        value_type: str | None,
+        allowed_values: list[Any] | None,
+    ) -> dict[str, Any]:
+        prop = self.store.material_property_get(key)
         if prop is None:
-            prop = self._mint_property(
-                property,
+            return self._mint_property(
+                key,
                 value=value,
                 unit=unit,
                 value_type=value_type,
                 allowed_values=allowed_values,
             )
-        else:
-            self._check_type_consistency(
-                prop, value_type=value_type, allowed_values=allowed_values
-            )
-
-        self._check_unit(prop, unit)
-        value_kwargs = self._route_value(
-            prop, value, value_low=value_low, value_high=value_high
+        self._check_type_consistency(
+            prop, value_type=value_type, allowed_values=allowed_values
         )
+        return prop
 
-        if maturity is not None and maturity not in _MATURITIES:
-            raise BadInput(
-                f"maturity={maturity!r} must be one of {list(_MATURITIES)}",
-                next=f"put(kind='material', id={slug!r}, property={property!r}, "
-                f"value=..., maturity='lab')",
-            )
-        if method is not None and method not in _METHODS:
-            raise BadInput(
-                f"method={method!r} must be one of {list(_METHODS)}",
-                next=f"put(kind='material', id={slug!r}, property={property!r}, "
-                f"value=..., method='measured')",
-            )
-
-        source_ref_id, source_chunk, source_url = self._resolve_source(source, chunk)
-
-        value_id = self.store.material_value_insert(
-            material_ref_id=material_ref.id,
-            property_id=prop["prop_id"],
-            conditions=conditions,
-            maturity=maturity or "lab",
-            method=method,
-            source_ref_id=source_ref_id,
-            source_chunk=source_chunk,
-            source_url=source_url,
-            as_of=as_of,
-            **value_kwargs,
+    def _ve_insert(
+        self, entity_ref_id: int, row: Mapping[str, Any], **kwargs: Any
+    ) -> int:
+        return self.store.material_value_insert(
+            material_ref_id=entity_ref_id, property_id=row["prop_id"], **kwargs
         )
-        display_value = _display_value(
-            {
-                "value_num": value_kwargs.get("value_num"),
-                "value_low": value_kwargs.get("value_low"),
-                "value_high": value_kwargs.get("value_high"),
-                "value_bool": value_kwargs.get("value_bool"),
-                "value_text": value_kwargs.get("value_text"),
-            }
-        )
-        unit_note = f" {unit}" if unit else ""
-        source_note = ""
-        if source_ref_id is not None:
-            source_note = f" (source={source!r})"
-        elif source_url is not None:
-            source_note = f" (source_url={source_url!r})"
-        return Response(
-            body=(
-                f"recorded {slug}.{prop['prop_id']} = {display_value}{unit_note} "
-                f"(id={value_id}, maturity={maturity or 'lab'})"
-                f"{source_note}"
-            )
-        )
-
-    @staticmethod
-    def _validate_type_args(
-        value_type: str | None, allowed_values: list[Any] | None
-    ) -> None:
-        """Validate ``value_type=``/``allowed_values=`` shape, independent
-        of whether this write mints a fresh property or targets an existing
-        one (``_check_type_consistency`` covers the latter)."""
-        if value_type is not None and value_type not in _VALUE_TYPES:
-            raise BadInput(
-                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
-            )
-        if allowed_values is not None and value_type != "categorical":
-            raise BadInput(
-                "allowed_values= is only valid with value_type='categorical'",
-                next=(
-                    "put(kind='material', id=<slug>, property=<prop_id>, "
-                    "value=..., value_type='categorical', "
-                    "allowed_values=['a', 'b'])"
-                ),
-            )
 
     @staticmethod
     def _check_type_consistency(
@@ -422,171 +342,6 @@ class MaterialHandler(Handler):
             dimension=dimension,
             value_type=inferred_type,
         )
-
-    @staticmethod
-    def _check_unit(prop: dict[str, Any], unit: str | None) -> None:
-        canonical = prop.get("canonical_unit")
-        given = None if unit is None else (str(unit).strip() or None)
-        if canonical is not None:
-            if given != canonical:
-                raise BadInput(
-                    f"unit={unit!r} is not {prop['prop_id']}'s canonical "
-                    f"unit ({canonical!r}) - v1 is canonical-unit-only, "
-                    "no conversion",
-                    next=(
-                        f"put(kind='material', id=<slug>, "
-                        f"property={prop['prop_id']!r}, value=..., "
-                        f"unit={canonical!r})"
-                    ),
-                )
-        elif given is not None:
-            raise BadInput(
-                f"{prop['prop_id']} has no canonical unit "
-                "(dimensionless/categorical/boolean/text) - drop unit=",
-                next=(
-                    f"put(kind='material', id=<slug>, "
-                    f"property={prop['prop_id']!r}, value=...)"
-                ),
-            )
-
-    @staticmethod
-    def _route_value(
-        prop: dict[str, Any],
-        value: Any,
-        *,
-        value_low: float | None = None,
-        value_high: float | None = None,
-    ) -> dict[str, Any]:
-        prop_id = prop["prop_id"]
-        value_type = prop["value_type"]
-        has_band = value_low is not None or value_high is not None
-
-        if has_band and value_type not in ("quantity", "ratio"):
-            raise BadInput(
-                f"{prop_id} is a {value_type} property - value_low=/"
-                "value_high= apply only to numeric (quantity/ratio) properties",
-            )
-
-        if value_type in ("quantity", "ratio"):
-            if (
-                value_low is not None
-                and value_high is not None
-                and value_low > value_high
-            ):
-                raise BadInput(
-                    f"value_low={value_low!r} must be <= value_high={value_high!r}",
-                )
-            if value is not None:
-                if isinstance(value, bool):
-                    raise BadInput(
-                        f"{prop_id} is a {value_type} property - value= must be "
-                        f"numeric, got {value!r}"
-                    )
-                try:
-                    num = float(value)
-                except (TypeError, ValueError):
-                    raise BadInput(
-                        f"{prop_id} is a {value_type} property - value= must be "
-                        f"numeric, got {value!r}"
-                    ) from None
-            elif value_low is not None and value_high is not None:
-                num = (float(value_low) + float(value_high)) / 2
-            elif has_band:
-                raise BadInput(
-                    f"put(kind='material', property={prop_id!r}) needs "
-                    "value=, or both value_low= and value_high=",
-                )
-            else:
-                raise BadInput(
-                    f"put(kind='material', property={prop_id!r}) needs value=",
-                )
-            out: dict[str, Any] = {"value_num": num}
-            if value_low is not None:
-                out["value_low"] = float(value_low)
-            if value_high is not None:
-                out["value_high"] = float(value_high)
-            return out
-        if value is None:
-            raise BadInput(
-                f"put(kind='material', property={prop_id!r}) needs value=",
-            )
-        if value_type == "boolean":
-            b = _coerce_bool(value)
-            if b is None:
-                raise BadInput(
-                    f"{prop_id} is boolean - value= must be true/false, got {value!r}"
-                )
-            return {"value_bool": b}
-        if value_type == "categorical":
-            s = str(value).strip()
-            allowed = prop.get("allowed_values") or []
-            if allowed and s not in allowed:
-                raise BadInput(
-                    f"{prop_id} value {s!r} is not in allowed_values {allowed!r}",
-                    next=f"pick one of {allowed!r}",
-                )
-            return {"value_text": s}
-        # text
-        return {"value_text": str(value).strip()}
-
-    def _resolve_source(
-        self, source: str | None, chunk: str | None
-    ) -> tuple[int | None, str | None, str | None]:
-        """Resolve ``source=``/``chunk=`` to ``(source_ref_id, source_chunk,
-        source_url)``. Mirrors ``citation``'s validation depth: the
-        referenced ref must exist; a resolvable ``pc<id>`` universal handle
-        for ``chunk=`` is normalised, a bare ordinal/handle is stored as
-        given (no hard resolution requirement, same leniency citation
-        applies)."""
-        if source is None or not str(source).strip():
-            if chunk is not None:
-                raise BadInput(
-                    "chunk= requires source= (the ref the chunk belongs to)",
-                    next="put(kind='material', id=<slug>, property=..., "
-                    "value=..., source='paper:<slug>', chunk='<slug>~5')",
-                )
-            return None, None, None
-        s = str(source).strip()
-        if s.lower().startswith("http://") or s.lower().startswith("https://"):
-            if chunk is not None:
-                raise BadInput(
-                    "chunk= is only meaningful with a ref source= "
-                    "('paper:<slug>' / a handle), not a bare source_url",
-                )
-            return None, None, s
-        target = parse_link_target(s, store=self.store)
-        if target.kind not in _SOURCE_KINDS:
-            raise BadInput(
-                f"source={source!r} resolves to kind={target.kind!r}; "
-                f"material sources must be one of {list(_SOURCE_KINDS)}, or "
-                "a bare http(s) URL",
-            )
-        source_chunk: str | None = None
-        if chunk is not None:
-            c = str(chunk).strip()
-            if handle_registry.parse(c) is not None:
-                resolved = self.store.resolve_handle(c)
-                if resolved is not None and resolved.chunk_ord is not None:
-                    if resolved.ref_id != target.ref_id:
-                        src_public = self._source_public_id(target)
-                        raise BadInput(
-                            f"chunk={chunk!r} belongs to {resolved.public_id!r}, "
-                            f"not source={source!r} ({src_public!r})",
-                            next="pass source= and chunk= from the same ref, "
-                            "or drop one of them",
-                        )
-                    c = f"{resolved.public_id}~{resolved.chunk_ord}"
-            source_chunk = c
-        elif target.pos is not None:
-            # source= itself was a chunk-level handle (e.g. 'pc<id>') with no
-            # separate chunk= — record that chunk instead of dropping to ref
-            # granularity.
-            source_chunk = f"{self._source_public_id(target)}~{target.pos}"
-        return target.ref_id, source_chunk, None
-
-    def _source_public_id(self, target: LinkTarget) -> str:
-        ref = self.store.get_ref(kind=target.kind, id=target.ref_id)
-        return ref.public_id if ref is not None else str(target.ref_id)
 
     # ── get ──────────────────────────────────────────────────────────
 
@@ -841,39 +596,6 @@ class MaterialHandler(Handler):
                 rows, schema=["material", "value", "conditions", "maturity", "source"]
             )
         )
-
-
-def _coerce_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("true", "yes", "1"):
-            return True
-        if s in ("false", "no", "0"):
-            return False
-    return None
-
-
-def _display_value(v: dict[str, Any]) -> str:
-    if v["value_num"] is not None:
-        base = str(v["value_num"])
-        low = v.get("value_low")
-        high = v.get("value_high")
-        if low is not None and high is not None:
-            return f"{base} ({low}–{high})"
-        return base
-    if v["value_bool"] is not None:
-        return str(v["value_bool"])
-    if v["value_text"] is not None:
-        return v["value_text"]
-    return "—"
-
-
-def _fmt_conditions(conditions: Any) -> str:
-    if not conditions:
-        return ""
-    return ", ".join(f"{k}={v}" for k, v in conditions.items())
 
 
 def _display_source(v: dict[str, Any]) -> str:

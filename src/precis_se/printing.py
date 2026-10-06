@@ -59,6 +59,14 @@ hidden. :func:`write_mesh` ships that same mesh (the
 report carries it, so it is computed once), plus a ``mesh_cleanup`` info
 line counting welded/dropped degenerate triangles, remaining slivers and
 lifted tail vertices.
+
+``view='print'`` renders it: no args for one section per fdm block,
+``args={'block': ...}`` for the full candidate table, ``+{'fmt': 'stl'|'3mf'}``
+to write the file in the build frame. ``set_build_frame``/
+``clear_build_frame`` pin and unpin the direction (``se_blocks.build_frame``).
+``view='fab'`` is the top-level index — one row per implementation-bearing
+block, any source (purchase/fdm/atomic/unimplemented), pointing at each row's
+own handle; it never exports itself.
 """
 
 from __future__ import annotations

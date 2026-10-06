@@ -87,6 +87,8 @@ import math
 import re
 from dataclasses import dataclass, field
 
+from precis.utils.text import esc
+
 #: A drill is an absence of material, not a coloured feature — painting
 #: PTH/NPTH the same way as a filled copper/mask/legend layer (dark fill on
 #: this document's dark background) is exactly how a real render's 26
@@ -544,18 +546,6 @@ def parse_excellon(text: str) -> list[tuple[float, float, float]]:
     return holes
 
 
-def _esc(text: str) -> str:
-    """Minimal XML text escaping — a net/refdes carrying ``&``/``<``/``>``
-    would otherwise land inside an SVG ``<title>`` and break the document,
-    for the sake of a hover label."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
 def _pt(x: float, y: float) -> str:
     return f"({x:.4f}, {y:.4f}) mm"
 
@@ -575,7 +565,7 @@ def _title(layer: str, coords: str, kind: str, belongs_to: str = "") -> str:
     then (last, and only when the gerber said so) what it BELONGS TO on
     the schematic — see the module docstring's own example."""
     parts = [layer, coords, kind, *([belongs_to] if belongs_to else [])]
-    return _esc(" · ".join(parts))
+    return esc(" · ".join(parts), quote=True)
 
 
 def _flash_title(layer: str, flash: Flash) -> str:
@@ -980,8 +970,8 @@ def render_fab_svg(
     doc_w = _LEGEND_GUTTER_PX + vw
     doc_h = max(vh, legend_h + 8.0)
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {doc_w:.1f} {doc_h:.1f}"
- width="{doc_w:.0f}" height="{doc_h:.0f}" role="img" aria-label="{_esc(title)}">
-<title>{_esc(title)} — rendered from gerbers</title>
+ width="{doc_w:.0f}" height="{doc_h:.0f}" role="img" aria-label="{esc(title, quote=True)}">
+<title>{esc(title, quote=True)} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}
   .legend {{ font: 11px ui-monospace, monospace; fill: #d8d8d8; }}

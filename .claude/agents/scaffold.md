@@ -105,3 +105,5 @@ Something worth tracking that's outside your remit to fix: `search(kind='gripe',
 q='...')` first, then `put(kind='gripe', text='...')` if it isn't already open.
 File it and move on. That `put` lands in PROD (the session MCP is write-capable)
 and is the only prod write you may make.
+
+Commit with a conventional subject (`type(scope): what changed`) before shipping, or pass `-m`; a placeholder subject fails ship immediately.

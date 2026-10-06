@@ -13,22 +13,14 @@ from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.handlers.finding import FindingHandler
 from precis.handlers.todo import TodoHandler
-from precis.store import ChunkInsert, Store
+from precis.store import Store
 from precis.store.types import Tag
 from precis.utils import handle_registry
+from tests.factories import seed_paper_with_body
 
 docx = pytest.importorskip("docx")  # python-docx (the `docx` extra)
 
 from precis.export.docx import export_docx
-
-
-def _seed_paper(store: Store, slug: str, title: str = "a paper") -> None:
-    store.insert_ref(kind="paper", slug=slug, title=title, provider="manual")
-    paper_ref = store.get_ref(kind="paper", id=slug)
-    assert paper_ref is not None
-    store.chunks.insert_chunks(
-        paper_ref.id, [ChunkInsert(ord=0, text="body", slug="b0")]
-    )
 
 
 def _new_project(hub: Hub) -> int:
@@ -52,7 +44,7 @@ def _finding(
 ) -> int:
     """A plain (non-hub) finding, promoted to ``status`` with the given
     chain/dead_reason/override meta."""
-    _seed_paper(hub.live_store, cite_key)
+    seed_paper_with_body(hub.live_store, cite_key)
     resp = FindingHandler(hub=hub).put(
         title="Pd/C catalyzes Suzuki coupling at RT",
         body="claim body",

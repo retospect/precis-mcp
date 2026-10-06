@@ -361,6 +361,10 @@ the server.
 
 ## CLI
 
+Routed EasyEDA Pro intake: `uv run precis pcb import-epro LOCAL.epro2 --slug PREVIEW`
+preserves straight/arc tracks and through vias as fixed source copper. Use
+`--dry-run` to inspect first or `--copper none` for measurement-only intake.
+
 ```text
 # Serving
 precis serve                       # Start the MCP stdio server.

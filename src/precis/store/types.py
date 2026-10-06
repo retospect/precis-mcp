@@ -1326,3 +1326,17 @@ class ChunkInsert:
     embedding: list[float] | None = None
     density: Density | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+
+
+# Cross-layer constants: workers read these, so they live below handlers
+# (import-linter contract "workers import store and utils, never handlers").
+
+#: Chunk kind holding a todo's optional details body.
+TODO_BODY_KIND = "todo_body"
+
+#: Ref meta flag marking a patent family-stub ingest (biblio only, no
+#: description/claim blocks). Absent (never ``False``) on a full ingest.
+FAMILY_STUB_META_KEY = "family_stub"
+
+#: Publish states that mean "a human key attested this claim".
+SIGNED_FINDING_STATES = ("signed", "anchored", "published")

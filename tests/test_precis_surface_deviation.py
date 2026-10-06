@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -42,6 +44,102 @@ def test_a_cap_is_convex_and_closes_on_the_axis() -> None:
     assert cap.end[0] == pytest.approx(0.0, abs=1e-9)
     assert cap.end[1] == pytest.approx(3.0 + 8.0 + 4.7)
     assert m.max_curvature_sum == pytest.approx(2.0 / 4.7, rel=1e-3)
+
+
+def test_ball12_overhanging_sphere_owns_aC343_and_its_foot() -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    args = fixture["call"]["args"]
+    target = args["target"]["features"][0]
+    feature = Feature(
+        target["name"],
+        tuple(target["centre_A"]),
+        rv.authored_meridian(target["r0_A"], target["pieces"]),
+    )
+    points = np.array([fixture["atom"]["xyz_A"]])
+    sphere = fixture["sphere"]
+    centre = np.array(sphere["centre_A"])
+    expected = abs(np.linalg.norm(points[0] - centre) - sphere["radius_A"])
+    assert feature.reach == pytest.approx(sphere["radius_A"], abs=1e-12)
+    distances, owners = surface_distance(
+        points, [feature], ds=1.0, z_offset=args["z_offset_A"]
+    )
+    assert owners.tolist() == [0]
+    assert distances[0] == pytest.approx(expected, abs=1e-12)
+    assert distances[0] < 0.5
+    feet, normals = surface_foot(points, [feature], ds=1.0, z_offset=args["z_offset_A"])
+    assert np.linalg.norm(feet[0] - centre) == pytest.approx(sphere["radius_A"])
+    assert np.linalg.norm(points[0] - feet[0]) == pytest.approx(expected, abs=1e-12)
+    assert np.linalg.norm(normals[0]) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_reach_uses_only_extrema_inside_the_authored_arc(reverse: bool) -> None:
+    # This arc does not reach the full circle's radial maximum (7).
+    angles = (math.pi / 3, 2 * math.pi / 3)
+    if reverse:
+        angles = angles[::-1]
+    arc = rv._fillet("partial", (3.0, 0.0), 4.0, *angles)
+    assert Feature(
+        "partial", (0, 0), rv.Meridian((arc,), (), None, 0)
+    ).reach == pytest.approx(5.0)
+    # The radial maximum lies inside this sweep, across angle zero.
+    arc = rv._fillet("bulge", (3.0, 0.0), 4.0, -0.7, 0.3)
+    if reverse:
+        arc = rv._fillet("bulge", (3.0, 0.0), 4.0, 0.3, -0.7)
+    feature = Feature("bulge", (0, 0), rv.Meridian((arc,), (), None, 0))
+    assert feature.reach == pytest.approx(7.0)
+    distances, owners = surface_distance(
+        np.array([[7, 0, 0], [7.001, 0, 2]]), [feature], ds=1
+    )
+    assert owners.tolist() == [0, -1]
+    assert distances == pytest.approx([0, 2])
+
+
+def test_overhanging_target_discs_refuse_overlap() -> None:
+    arc = rv._fillet("bulge", (3.0, 0.0), 4.0, -0.7, 0.3)
+    meridian = rv.Meridian((arc,), (), None, 0)
+    features = [Feature("a", (0, 0), meridian), Feature("b", (13.5, 0), meridian)]
+    with pytest.raises(ValueError, match="overlap"):
+        surface_distance(np.zeros((1, 3)), features, ds=1)
+    with pytest.raises(ValueError, match="overlap"):
+        surface_foot(np.zeros((1, 3)), features, ds=1)
+
+
+def test_catenoid_reach_includes_the_outward_endpoint() -> None:
+    segment = rv._catenoid("neck", 2.0, 0.0, -1.0, 3.0)
+    feature = Feature("neck", (0, 0), rv.Meridian((segment,), (), None, 0))
+    # An outward endpoint beyond the initial foot must remain on the target.
+    endpoint = np.array([[2 * math.cosh(1.5), 0, 3.0]])
+    assert feature.reach == pytest.approx(endpoint[0, 0])
+    distance, owner = surface_distance(endpoint, [feature], ds=0.1)
+    assert owner.tolist() == [0]
+    assert distance[0] == pytest.approx(0, abs=1e-12)
+
+
+def test_empty_meridian_refuses_surface_distance() -> None:
+    feature = Feature("empty", (0, 0), rv.authored_meridian(5.0, []))
+    with pytest.raises(ValueError, match="empty meridian"):
+        surface_distance(np.array([[1, 0, 0], [0, 0, 1]]), [feature], ds=1)
+
+
+def test_empty_meridian_refuses_surface_foot() -> None:
+    feature = Feature("empty", (0, 0), rv.authored_meridian(5.0, []))
+    with pytest.raises(ValueError, match="empty meridian"):
+        surface_foot(np.array([[1, 0, 0], [0, 0, 1]]), [feature], ds=1)
+
+
+def test_empty_feature_list_remains_an_authored_sheet() -> None:
+    points = np.array([[1, 0, 0], [0, 0, 1]])
+    distances, owners = surface_distance(points, [], ds=1)
+    assert distances.tolist() == [0, 1]
+    assert owners.tolist() == [-1, -1]
+    feet, normals = surface_foot(points, [], ds=1)
+    assert feet.tolist() == [[1, 0, 0], [0, 0, 0]]
+    assert normals.tolist() == [[0, 0, 1], [0, 0, 1]]
 
 
 @pytest.mark.parametrize(

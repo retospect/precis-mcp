@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Synthetic Article Retrieval HTTP 200 preview; no real paper content. -->
+<full-text-retrieval-response xmlns:ce="http://www.elsevier.com/xml/common/dtd">
+ <coredata><title>Synthetic entitlement fixture</title><openaccess>0</openaccess></coredata>
+ <originalText><serial-item><article><head><ce:abstract>
+  <ce:para>Synthetic abstract only, not the article body.</ce:para>
+ </ce:abstract></head></article></serial-item></originalText>
+</full-text-retrieval-response>

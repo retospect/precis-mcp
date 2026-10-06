@@ -323,3 +323,54 @@ Measured on `heaterBaseTest.epro2`; each one changed the code.
   `slow`-marked, env-gated `test_a_real_board_routes_at_all`. This bears
   on the whole thread, since re-routing is why the board is imported at
   all.
+
+
+## gr470192 — routed intake preservation (2026-10-06)
+
+Reto/Claude now requests routed-source preview, superseding the earlier
+2026-09-30 regenerate-only policy for fresh intake. Existing reasons above
+remain historical: source copper constrains later re-placement, so it must
+be marked authored/fixed, never pretend to be a regenerated route/sketch.
+
+Premise: dogfood-r13-intake-preview-v1 (pcb468457/board11) was authored as
+a six-component synthetic netlist with local footprints; its recorded
+setup has no epro import or source copper. R13 accepted pin-map preview,
+not copper import. Empty copper on that fixture is expected from that
+setup; no source-file association can be inferred from its name. Separate
+actual importer defect: LINE and ARC parse/transform correctly, but
+import_epro deliberately sends neither tracks nor vias to the store.
+
+Implementation: fresh import_epro defaults to copper=fixed, CLI
+import-epro --copper fixed|none (none retains regenerate-only intake).
+Existing --update remains conservative copper=none by default; fixed
+update refuses before writes because its partial netlist/outline update
+cannot safely attach changed source copper. No automatic fixture repair.
+Preserve each accepted source LINE/ARC as one fixed track row, with exact
+converted width, layer, net, line/arc segments, centre and handedness.
+Ordinary through vias use the existing extraction too. Invalid/unsupported
+source records retain explicit existing warnings rather than fabricated
+geometry. No TRACK alias inferred: this spiked epro2 format uses LINE/ARC.
+Use existing pcb_fixed_copper_put in the SAME import transaction, after
+net/stackup creation, with reserved __epro_source owner and source hash
+provenance. No schema/IR/sketch/router changes, providers or routing.
+
+Acceptance: synthetic tiny source with one straight and one arc record
+persists exactly two fixed track rows; geometry/net/layer match source
+conversion, real board SVG emits arc, pinout-preview read changes no
+copper and proposed signal remains unsaved. Synthetic through via persists;
+explicit none and dry-run write no fixed copper. Injected copper-write
+failure rolls back new ref/design/footprints/board. Existing slug and
+source-part pose protections retained; no route-success/DRCclean claim.
+
+Indexed native source lives in serving /src (/app runtime), not this
+isolated pcb-intake-copper tree, based on verified e77f51e0 R15. Native
+Python search+outline preceded targeted local reads. Source review/root
+normal land precedes exact deployed replay. Real .epro2 remains local;
+local source path/board UUID for pcb468457 requested, absent from original
+synthetic setup. Same-board dogfood replay cannot prove source preservation
+until that association is supplied. Ready inbox/pcb-intake-copper-ready.md.
+
+Explicit source copper net names absent from NET declarations are added to
+fresh fixed intake's net table, without inferred pin connections. Measurement-only
+and partial-update net handling remain unchanged. The store's unknown-net check
+and enclosing rollback stay authoritative.

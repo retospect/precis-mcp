@@ -411,12 +411,19 @@ def parse_elsevier(
                 entry["family"] = surname
             ext.authors.append(entry)
 
-    body = _find_first(root, {"body", "serial-item"})
+    # serial-item also wraps the head/abstract of entitlement previews.
+    # Only an actual article body may satisfy full-text acquisition.
+    body = _find_first(root, {"body"})
     if body is None:
         raise MarkupParseError("Elsevier XML: no <body>", fmt="elsevier_xml")
     _walk_xml(body, _ELSEVIER_PROFILE, [], ext.blocks)
-    if not ext.blocks:
+    if not any(b["type"] != "references" for b in ext.blocks):
         raise MarkupParseError("Elsevier XML: no body blocks", fmt="elsevier_xml")
+    # Traverse the wrapper after the body gate to retain tail bibliography.
+    serial = _find_first(root, {"serial-item"})
+    if serial is not None:
+        ext.blocks.clear()
+        _walk_xml(serial, _ELSEVIER_PROFILE, [], ext.blocks)
     log.info(
         "markup.parse_elsevier: title=%r doi=%s blocks=%d",
         ext.title[:60],

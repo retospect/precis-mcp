@@ -27,6 +27,11 @@ re-arm.
 The event source is ``si_fetch``, deliberately NOT ``fetcher:*``: those
 sources arm the stub claim's retry window / backoff (``claim_stubs_to_fetch``),
 and an SI check on a still-unfetched parent must not delay its main-PDF retry.
+
+Every late claim records its deadline miss/event, even when re-armed, so
+retry counters cannot advance without evidence. ``si_misses`` describes
+the latest attempt; prior misses remain in events. Non-PDF supplements
+are recorded as ``non_pdf`` skips with URLs rather than silently discarded.
 """
 
 from __future__ import annotations
@@ -200,38 +205,37 @@ def _fetch_one_parent(
         # Claimed after the budget ran out: no network, just try again next pass.
         with store.pool.connection() as conn:
             late_retries = _rearm(conn, parent.ref_id)
-            if late_retries is None:
-                # Retry cap reached: record the miss so the parent does not
-                # vanish silently (the claim stamp already blocks a re-claim).
-                miss = [{"url": None, "source": "si_pass", "reason": "deadline"}]
-                conn.execute(
-                    "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
-                    (
-                        Jsonb(
-                            {
-                                "si_found": 0,
-                                "si_fetched": 0,
-                                "si_misses": miss,
-                                "si_skipped": [],
-                            }
-                        ),
-                        parent.ref_id,
+            miss = [{"url": None, "source": "si_pass", "reason": "deadline"}]
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+                (
+                    Jsonb(
+                        {
+                            "si_found": 0,
+                            "si_fetched": 0,
+                            "si_misses": miss,
+                            "si_skipped": [],
+                        }
                     ),
-                )
-            conn.commit()
-        if late_retries is None:
-            store.append_event(
-                parent.ref_id,
-                source=SI_EVENT_SOURCE,
-                event="si_blocked",
-                payload={
-                    "candidates": [],
-                    "queued": [],
-                    "skipped": [],
-                    "misses": miss,
-                    "deadline_retries": MAX_DEADLINE_RETRIES,
-                },
+                    parent.ref_id,
+                ),
             )
+            conn.commit()
+        store.append_event(
+            parent.ref_id,
+            source=SI_EVENT_SOURCE,
+            event="si_blocked",
+            payload={
+                "candidates": [],
+                "queued": [],
+                "skipped": [],
+                "misses": miss,
+                "deadline_retries": late_retries
+                if late_retries is not None
+                else MAX_DEADLINE_RETRIES,
+                **({"rearmed": True} if late_retries is not None else {}),
+            },
+        )
         return {"found": 0, "fetched": 0}
     if parent.doi:
         found: DiscoveryResult = discover(parent.doi, fetch)
@@ -247,7 +251,12 @@ def _fetch_one_parent(
     for n, cand in enumerate(cands, start=1):
         if not cand.is_pdf:
             skipped.append(
-                {"url": cand.url, "filename": cand.filename, "source": cand.source}
+                {
+                    "url": cand.url,
+                    "filename": cand.filename,
+                    "source": cand.source,
+                    "reason": "non_pdf",
+                }
             )
             continue
         if len(queued) >= MAX_SI_PDFS_PER_PARENT:

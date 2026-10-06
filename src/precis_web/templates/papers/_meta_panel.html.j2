@@ -7,6 +7,14 @@
    retraction, extra_identifiers, s2_citation_count, s2_fields, read_first,
    keywords) built by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
+  {% if si_skipped %}
+  <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">supplements</dt><dd>
+    <p>supplement exists, not ingested</p>
+    {% for si in si_skipped %}
+    <p><a class="text-teal-700 hover:underline" href="{{ si.url }}" rel="noopener noreferrer">{{ si.filename or si.url }}</a> — {{ si.reason or 'non_pdf' }}</p>
+    {% endfor %}
+  </dd></div>
+  {% endif %}
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
   {% if paper.slug %}<div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">cite_key</dt><dd class="font-mono">{{ paper.slug }}</dd></div>{% endif %}

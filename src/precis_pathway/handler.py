@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.dispatch import Hub, InitError
@@ -31,6 +30,7 @@ from precis.handlers._mode_help import require_mode
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import ChunkInsert
+from precis.utils.text import slugify
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -43,7 +43,6 @@ from .persist import BODY_KIND, pathway_title, persist_result
 #: node instead of running autocatpath in-process (slice 1). The gateway sets it to
 #: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 #: Views that accept the CHE potential lever ``args={'U': <V vs RHE>}``
@@ -190,7 +189,9 @@ class PathwayHandler(Handler):
             raw = _load_yaml(text)
             effective = runner.effective_config(raw, force_backend=force)
             key = runner.content_key(effective)
-            slug = self._slugify(id or effective.get("name") or "pathway")
+            slug = slugify(
+                str(id or effective.get("name") or "pathway"), default="pathway"
+            )
         except BadInput:
             raise
         except Exception as e:
@@ -352,7 +353,7 @@ class PathwayHandler(Handler):
         # deep-links) — dispatch's universal-handle/slug routing reattaches
         # any ``~selector`` suffix to the resolved id untouched (it only
         # recognises chunk/view selectors of its own, e.g. ``~ord``), so it
-        # reaches us as one string. ``_slugify`` never produces ``~``, so
+        # reaches us as one string. ``slugify`` never produces ``~``, so
         # splitting on the first one is unambiguous.
         ident = str(id)
         slug, sep, step_label = ident.partition("~")
@@ -736,11 +737,6 @@ class PathwayHandler(Handler):
         return Response(body=f"tagged pathway '{id}'")
 
     # -- helpers ---------------------------------------------------------
-    @staticmethod
-    def _slugify(name: Any) -> str:
-        s = _SLUG_RE.sub("-", str(name).strip().lower()).strip("-")
-        return s or "pathway"
-
     @staticmethod
     def _put_summary(slug: str, verb: str, artifact: PathwayArtifact) -> str:
         r = artifact["results_json"]

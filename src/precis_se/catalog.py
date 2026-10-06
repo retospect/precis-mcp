@@ -32,6 +32,9 @@ Dispatch is on **which specs are present**, not on a guessed sub-type
 (:data:`_FASTENER_FORMS`) — `component` has one flat `fastener` category
 covering screws, nuts and washers, and the spec shape is the only
 evidence available for a hand-entered row that carries no series.
+
+Reached at load time by ``persist.attach_catalog`` and **derived, never
+stored**, so re-dimensioning a component reaches every design bound to it.
 """
 
 from __future__ import annotations

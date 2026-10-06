@@ -85,6 +85,24 @@ hand-edit collision the derived-feature rule exists to avoid; and the
 relations that make them meaningful*) — blocked on the measure layer
 having no derived-row concept, so :func:`_pattern_findings` reports the
 slack in prose as a stopgap.
+
+**Core data and printed members.** The clearance-hole table is core, not
+se's: :mod:`precis.fit_classes` (ISO 273 fine/medium/coarse plus the house
+``d + 0.2`` rule), the same file-not-a-table posture as
+:mod:`precis.component_series`, whose ISO fastener tables the cad catalog
+also reads. A screw's thread is read as a **lead with limits**: metres per
+turn from the catalog pitch, bounded by the engagement the stack leaves,
+cross-checked against a declared ``params.lead``. Rung 3 stamped ``d − P``
+into whatever the stack ended in, which is right in aluminium and wrong in
+an FDM boss, so the terminal member's **mode** decides: metal keeps the cut
+thread; a printed member takes its declared
+``joint.params.thread_strategy`` (``nut`` · ``nut-trap`` · ``insert`` ·
+``thread-forming``) and, undeclared, gets **nothing stamped** plus a finding
+naming the four (:mod:`precis.thread_forming` holds the numbers, each marked
+transcribed or shop rule). A countersunk head's 90° cone is stamped because
+the screw does not seat without it; burying a cap head is a choice
+(``params.counterbore``) and is reported rather than done. Findings fold
+into ``view='drc'``; ``view='fasten'`` is the readout.
 """
 
 from __future__ import annotations

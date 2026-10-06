@@ -434,6 +434,14 @@ if [[ -n "$(git status --porcelain)" ]]; then
 ${CO_AUTHOR}"
 fi
 
+# Resolve + lint the squash message NOW (cheap), before any lint/gate/CI: -m, or
+# the branch's own real commit(s); never a ship(...)/wip(...) placeholder.
+. "${WORKTREE}/scripts/lib/ship-subject.sh"
+_base="$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
+_msg_err="$(mktemp)"
+MSG="$(ship_resolve_msg "$MSG" "$_base" 2>"$_msg_err")" || die "$(cat "$_msg_err")"
+rm -f "$_msg_err"; unset _base _msg_err
+
 # Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
 # so sibling gates queue instead of OOM-killing each other against the
 # shared Docker VM ceiling. Acquired/released inside run_gate. Sourced even
@@ -1727,7 +1735,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         git merge-base --is-ancestor "$OLD_MAIN" HEAD \
             || die "internal: HEAD lacks OLD_MAIN (${OLD_MAIN:0:8}) — refusing to squash a tree that would revert main. Lock released, nothing pushed. Re-run scripts/ship and report this."
         NEW="$(git commit-tree "$TREE" -p "$OLD_MAIN" -F - <<EOF
-${MSG:-ship(${BRANCH}): squash-merge to main}
+${MSG}
 
 ${TRAILERS}
 EOF

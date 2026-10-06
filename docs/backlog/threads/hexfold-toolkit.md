@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Root accepted S1 one-statement identity/version/cell/live-atom snapshot and private equal120 k3 copied-graph corrections for R14 assembly; integrated full gate and exact-deploy dogfood remain. Version bracketing was rejected because import versions can repeat. Every copied bond/face index is a local integer and each face a simple closed input bond walk before placement/mint. No public grammar/compiler/T2 expansion or live relaxation/regeneration.
-- **Blocked by:** Native plan-only table/lid read remains unavailable. Positive theta-p dogfood requires an actual recorded scene measurement; absent data is unknown. Live construction, relaxation and all scientific/hero holds remain. Source readiness is not deployed native acceptance.
+- **Next:** gr469873 R15 reach correction: full authored target extent, including the sphere radius beyond initial r0; exact ball12/aC343 kernel and public-get regressions. Independent review/root full gate/version/deploy precede native fraction remeasurement against 414/2406 (17.20698%). R14 S1 snapshot and private k3 corrections are source-reviewed and root-deployed; private k3 remains local-only.
+- **Blocked by:** Native fresh different-radius sphere plus cylinder/saddle is Melchior-only after the fix deploys, with stored dogfood tree/viewer link. Authenticated browser/access and bounded compute dispatch remain prerequisites; no workstation build. Existing ball12 reference is fitted/reconstructed, not recovered generation provenance. Native plan-only table/lid remains unavailable; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/r13-s1-review-fixes` from original S1; `work/hexfold/r13-authored-deviation`, H1 `work/hexfold/bootstrap` and scratch preserved. Earlier `hexa` work is historical.
+- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/r15-reach-fix` based on verified R14 `110f6dd4b464565a6b5503f4c48451872b5a6089`; S1/k3/H1 branches and scratch preserved. Earlier `hexa` work is historical.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 

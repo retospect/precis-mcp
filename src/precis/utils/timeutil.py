@@ -39,3 +39,8 @@ def as_utc(value: Any) -> datetime | None:
     else:
         return None
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def now_iso() -> str:
+    """Current UTC time as ``YYYY-MM-DDTHH:MM:SSZ`` (second precision, ``Z``-labelled)."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

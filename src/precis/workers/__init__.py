@@ -1,5 +1,12 @@
 """Background work: worker passes, scheduler cadences, and job executors.
 
+Elsevier acquisition requires a structured XML body before success, including
+a preflight for PDFs: HTTP 200 and PDF magic also admit abstract previews.
+Missing body records an entitlement miss and continues the OA cascade; neither
+short body length nor OA=false denies entitled full text. The explicit-cohort
+``elsevier_abstract_backfill`` job preserves bodies/hashes/events and re-arms
+existing fetch pins, with a dry-run default and no provider/model calls.
+
 Derived-queue core
 -----------------------------
 The worker's "queue" is the data itself: a chunk with no row in

@@ -36,7 +36,6 @@ import logging
 import re
 import tempfile
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +44,7 @@ import psycopg
 from precis.pcb.jlc_api import JlcApiClient
 from precis.utils.http import http_client, require_httpx
 from precis.utils.safe_fetch import SsrfBlocked, safe_stream
+from precis.utils.timeutil import now_iso
 from precis.workers.job_types import JobTypeSpec
 
 if TYPE_CHECKING:
@@ -88,10 +88,6 @@ class _Failed(Exception):
         super().__init__(reason)
         self.reason = reason
         self.detail = detail
-
-
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _jlc_client(store: Store) -> JlcApiClient:
@@ -263,7 +259,7 @@ def pull(store: Store, lcsc: str) -> dict[str, Any]:
             "status": "ok",
             "url": final_url,
             "sha256": sha,
-            "at": _now(),
+            "at": now_iso(),
         }
         if _body_chunks(store, ds_id) == 0:
             # Marker down (or an image-only PDF) ingests "successfully" with
@@ -272,7 +268,7 @@ def pull(store: Store, lcsc: str) -> dict[str, Any]:
             record["reason"] = "ingest_empty"
             record["detail"] = "datasheet ingested with 0 body chunks"
     except _Failed as exc:
-        record = {"status": "failed", "reason": exc.reason, "at": _now()}
+        record = {"status": "failed", "reason": exc.reason, "at": now_iso()}
         if exc.detail:
             record["detail"] = exc.detail[:300]
         if url:

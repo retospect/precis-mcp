@@ -18,6 +18,30 @@ def _block(pos: int, text: str, keywords: list[str]) -> SimpleNamespace:
 # ── slug routing ────────────────────────────────────────────────────
 
 
+def test_paper_page_shows_non_pdf_supplement_skip(client, runtime) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.meta["si_skipped"] = [
+        {
+            "url": "https://example.org/supplement.xlsx",
+            "filename": "supplement.xlsx",
+            "source": "landing_page",
+            "reason": "non_pdf",
+        }
+    ]
+    resp = client.get("/papers/smith2024")
+    assert "supplement exists, not ingested" in resp.text
+    assert "https://example.org/supplement.xlsx" in resp.text
+    assert "non_pdf" in resp.text
+
+
+def test_non_pdf_supplement_page_does_not_link_unsafe_url(client, runtime) -> None:
+    ref = runtime.store.get_ref(kind="paper", id="smith2024")
+    ref.meta["si_skipped"] = [
+        {"url": "javascript:alert(1)", "filename": "unsafe.xlsx", "reason": "non_pdf"}
+    ]
+    assert "unsafe.xlsx" not in client.get("/papers/smith2024").text
+
+
 def test_detail_numeric_id_redirects_to_slug(client) -> None:
     """A numeric /papers/<id> 301-redirects to the canonical slug URL."""
     resp = client.get("/papers/10", follow_redirects=False)

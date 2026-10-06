@@ -83,19 +83,14 @@ row per strand 5'→3', refusing an unorderable strand by name);
 ``structure`` ``view='pdb'`` writes one realized region. Not built: A-RNA templates (an RNA helix is refused,
 not approximated), import of any of those formats, H-bonds as bonds.
 
-**Walker states** (``se-walker-light-protocol`` slice A, 2026-09-30): a
-walker is a plain block with tethered legs (``declare_strand``'s
-``anchor=``/``tether_nt=``); a **station** is a declared state whose
-``occupancy`` (:mod:`precis_se.chain.occupancy`) says which foothold each
-leg's foot domain sits on. ``relax_chain(state=...)`` settles the walker as
-one more rigid body in the bundle and stores the result in the state's own
-pose slot (:func:`precis.design.states.set_state_pose`) rather than the
-tree's default pose; a read applies the stored pose then the occupancy
-(:func:`precis_se.handler._apply_state_arg`). ``declare_stations`` sugars
-the hand-over-hand gait into states + transitions in one call. Slice B
-(same day): a transition's ``params.guard`` is a predicate over the
-from-state's occupancy (:func:`precis_se.chain.occupancy.vet_guard`,
-reported as ``chain_transition_guard``); :mod:`precis_se.chain.spectral`
+**Walker states** (agent contract: skill ``precis-se-walker-help``). The
+station settle stores its result in the state's own pose slot
+(:func:`precis.design.states.set_state_pose`) rather than the tree's default
+pose, and a read applies the stored pose then the occupancy
+(:func:`precis_se.handler._apply_state_arg`); ``declare_stations`` sugars the
+gait into states + transitions. Transition guards are vetted by
+:func:`precis_se.chain.occupancy.vet_guard` and reported as
+``chain_transition_guard``; :mod:`precis_se.chain.spectral`
 is the spectral channel budget (``chain_channel_budget`` against
 ``set_optics(channels_available=)``, ``chain_spectral_crosstalk`` between
 Gaussian bands from ``material`` ``lambda_max``/``fwhm`` rows); and
@@ -134,6 +129,17 @@ register-correct crossovers. That claim is **false as argued** — its
 ``3*(k - k0) == 16 (mod 32)`` does have solutions, 3 being invertible mod 32 —
 and the joint system over both crossover pairs was never written out. Treat
 four-arm register-correctness as an open question, not a constraint.
+
+**Readout and clash scope.** ``view='chain'`` is the readout (migration
+``0015_se_chain.sql``). ``chain_loop_short`` at ``n=0`` IS the crossover
+register check, since the kernel's ``(n+1)``-bond contour convention gives a
+zero-nt crossover exactly one bond of reach. ``chain_floppy`` is the first
+superseding finding in se: the handler-side pass replaces the pure rows when
+the design carries a ``material`` persistence-length row. Segment↔segment
+pairs are excluded from :func:`precis_se.validate.envelope_overlaps`
+wholesale, because the kernel's capsule pass answers that question for a
+whole origami at once while the SDF scan would spend its entire budget on
+it.
 """
 
 from __future__ import annotations

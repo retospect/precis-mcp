@@ -75,3 +75,5 @@ breaks every other client's writes (2026-10-02).
 
 Stay in your tier: implement the decided change well and prove it works. Kick
 design questions up, not sideways.
+
+Commit with a conventional subject (`type(scope): what changed`) before shipping, or pass `-m`; a placeholder subject fails ship immediately.

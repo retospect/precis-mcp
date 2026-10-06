@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from precis.utils import kind_facts
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract, paper_head
+from precis_web.ref_urls import ref_url
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -86,22 +87,6 @@ def _numeric_kinds(hub: Any) -> frozenset[str]:
     except Exception:
         return _NUMERIC_KINDS_FALLBACK
 
-
-#: Per-kind URL shapes for the click-through redirector. Slug or id
-#: substituted via ``{id}``. The match order is unimportant — falls
-#: back to ``/refs/{kind}/{id}`` for unlisted kinds.
-_NATIVE_URL: dict[str, str] = {
-    "paper": "/papers/{id}",
-    "todo": "/todo?focus={id}",
-    "job": "/todo?focus={id}",
-    "patent": "/refs/patent/{id}",
-    "memory": "/refs/memory/{id}",
-    "conv": "/refs/conv/{id}",
-    "oracle": "/refs/oracle/{id}",
-    "gripe": "/refs/gripe/{id}",
-    "pres": "/refs/pres/{id}",
-    "agentlog": "/agentlogs/{id}",
-}
 
 #: ``~chunk`` suffix variants the resolver understands. Anything else
 #: is ignored and the redirector lands on the ref overview.
@@ -348,8 +333,8 @@ async def resolve(
                 status_code=303,
             )
 
-    template = _NATIVE_URL.get(kind, "/refs/{kind}/{id}")
-    target = template.format(kind=kind, id=numeric_id)
+    ref = store.fetch_refs_by_ids([numeric_id]).get(numeric_id)
+    target = ref_url(kind, numeric_id, getattr(ref, "slug", None))
     return RedirectResponse(url=target, status_code=303)
 
 

@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.utils.authors import author_names
+from precis.utils.text import clip_total
 from precis_web.timefmt import utc_date
 
 #: The kinds whose ``/preview`` hover leads with a paper identity header
@@ -113,11 +114,6 @@ class PaperHead:
         }
 
 
-def _clip(text: str, limit: int) -> str:
-    text = text.strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
 def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
     """Build the shared identity header from a ``refs`` row.
 
@@ -130,7 +126,7 @@ def paper_head(ref: Any, *, held: bool, handle: str = "") -> PaperHead:
     meta = getattr(ref, "meta", None) or {}
     if not isinstance(meta, dict):
         meta = {}
-    journal = _clip(str(meta.get("journal") or ""), _JOURNAL_MAX)
+    journal = clip_total(str(meta.get("journal") or ""), _JOURNAL_MAX)
     names = author_names(getattr(ref, "authors", None))
     first = names[0] if names else ""
     last = names[-1] if names else ""

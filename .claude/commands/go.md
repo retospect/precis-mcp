@@ -26,6 +26,8 @@ Optional ship message from the user: `$ARGUMENTS`
 
 2. **Decide the message.** Use `$ARGUMENTS` if non-empty; otherwise write a
    concise conventional-commit one-liner describing what this branch changes.
+   The message is required: ship takes it from `-m`/this argument or reuses the
+   branch's own commit, and refuses `ship(...)`/`wip(...)`/unprefixed subjects.
 
 3. **Refresh touched docs (terse, in-place).** For each subsystem the diff
    changes, re-read the owning package docstring, the

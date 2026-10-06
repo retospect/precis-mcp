@@ -14,10 +14,7 @@ from typing import Any
 
 from precis.store.types import ChunkInsert
 from precis.taproot.resolve import BibResolution, resolve_citation
-
-
-def _seed_paper(store: Any, *, slug: str) -> int:
-    return int(store.insert_ref(kind="paper", slug=slug, title=f"P {slug}", meta={}).id)
+from tests.factories import seed_paper_ref
 
 
 def _seed_chunk(store: Any, ref_id: int, text: str) -> int:
@@ -64,8 +61,8 @@ def _seed_citation(store: Any, chunk_id: int, marker: int, bib_entry_id: int) ->
 
 
 def test_resolve_held_citation_returns_identity(store: Any) -> None:
-    citing = _seed_paper(store, slug="res-citing")
-    cited = _seed_paper(store, slug="res-cited")
+    citing = seed_paper_ref(store, slug="res-citing")
+    cited = seed_paper_ref(store, slug="res-cited")
     entry = _seed_entry(
         store,
         citing,
@@ -91,7 +88,7 @@ def test_resolve_held_citation_returns_identity(store: Any) -> None:
 
 
 def test_resolve_not_held_citation_has_doi_but_no_held_ref(store: Any) -> None:
-    citing = _seed_paper(store, slug="res-notheld")
+    citing = seed_paper_ref(store, slug="res-notheld")
     entry = _seed_entry(store, citing, 42, doi="10.9999/unheld", held_ref_id=None)
     chunk = _seed_chunk(store, citing, "as reported [42].")
     _seed_citation(store, chunk, 42, entry)
@@ -107,8 +104,8 @@ def test_resolve_retired_held_ref_degrades_to_not_held(store: Any) -> None:
     # gr341498: a bib entry can point at a ref that gets soft-deleted after
     # resolution (e.g. a dedup merge that predates the repoint fix, or any
     # other retirement path). A retired ref must never surface as held.
-    citing = _seed_paper(store, slug="res-retired-citing")
-    retired = _seed_paper(store, slug="res-retired-held")
+    citing = seed_paper_ref(store, slug="res-retired-citing")
+    retired = seed_paper_ref(store, slug="res-retired-held")
     entry = _seed_entry(store, citing, 99, held_ref_id=retired)
     chunk = _seed_chunk(store, citing, "as shown [99].")
     _seed_citation(store, chunk, 99, entry)
@@ -127,9 +124,9 @@ def test_resolve_retired_held_ref_follows_supersedes_to_survivor(store: Any) -> 
     # The merge always records a `supersedes` edge (survivor -> duplicate);
     # when present, resolve should hand back the live survivor instead of
     # degrading to not-held.
-    citing = _seed_paper(store, slug="res-super-citing")
-    survivor = _seed_paper(store, slug="res-super-survivor")
-    retired = _seed_paper(store, slug="res-super-retired")
+    citing = seed_paper_ref(store, slug="res-super-citing")
+    survivor = seed_paper_ref(store, slug="res-super-survivor")
+    retired = seed_paper_ref(store, slug="res-super-retired")
     entry = _seed_entry(store, citing, 100, held_ref_id=retired)
     chunk = _seed_chunk(store, citing, "as shown [100].")
     _seed_citation(store, chunk, 100, entry)
@@ -150,7 +147,7 @@ def test_resolve_retired_held_ref_follows_supersedes_to_survivor(store: Any) -> 
 
 
 def test_resolve_unknown_marker_returns_none(store: Any) -> None:
-    citing = _seed_paper(store, slug="res-none")
+    citing = seed_paper_ref(store, slug="res-none")
     entry = _seed_entry(store, citing, 5)
     chunk = _seed_chunk(store, citing, "single cite [5].")
     _seed_citation(store, chunk, 5, entry)

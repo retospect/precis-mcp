@@ -43,6 +43,7 @@ from precis.pcb._http import (
     VendorError,
     with_backoff,
 )
+from precis.utils.coerce import to_int
 
 if TYPE_CHECKING:
     import httpx
@@ -204,13 +205,6 @@ def _to_bool(v: Any) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "basic", "preferred")
 
 
-def _to_int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
     """Map one JLCPCB Open API component row to the same ``parts`` columns
     :func:`precis.pcb.catalog.normalize_jlcparts_row` produces, so
@@ -236,7 +230,7 @@ def normalize_api_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "basic": _to_bool(row.get("basic"))
         or _to_bool(row.get("preferred"))
         or str(row.get("componentLibraryType") or "").strip().lower() == "base",
-        "stock": _to_int(row.get("stockCount") or row.get("stock")) or 0,
+        "stock": to_int(row.get("stockCount") or row.get("stock")) or 0,
         "price": row.get("componentPrices") or row.get("price"),
         "package": row.get("componentSpecificationEn") or row.get("package"),
         "height_mm": None,  # not carried by this endpoint; the footprint

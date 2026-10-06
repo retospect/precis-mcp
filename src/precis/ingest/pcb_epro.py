@@ -17,11 +17,15 @@ only the four questions that need a database:
 4. **Provenance**, stamped on the ref so a future format failure can be
    dated to an editor version and a source file.
 
-The source's tracks and vias are NOT imported (Reto, 2026-09-30: "We
-extract the points and fix our model to match, then regenerate"). Slice 1c
-measures them instead — :func:`report_copper`, also run by every import —
-and :mod:`precis.pcb.copper_report` puts each net's measured widths, vias
-and gaps beside the rules precis resolves for it.
+Fresh routed intake preserves source tracks/arcs/vias as authored fixed
+copper (gr470192, Reto 2026-10-06), in the same transaction as the design.
+Each accepted LINE/ARC remains one track row: counts and bendy corners
+survive. This is source geometry, not an inferred routing sketch or a
+validity certificate. The older 2026-09-30 regenerate-only ruling remains
+available as copper="none", also the conservative partial-update default:
+changed copper cannot safely attach to deliberately unchanged nets/outline.
+Every import still reports source widths, vias and gaps through
+:func:`report_copper` and :mod:`precis.pcb.copper_report`.
 
 ``--update`` (the rest of 1c) re-reads the source onto an existing import
 of the same board: moved parts take their new pose, new parts are added,
@@ -496,6 +500,31 @@ def derive_stackup(
     return stackup, planes, warnings
 
 
+def _intake_copper_rows(
+    board: epro.EproDocument, frame: epro.Frame, source_hash: str
+) -> list[dict[str, Any]]:
+    """Split measurement chains into one row per accepted source LINE/ARC.
+
+    Preserve the reader's board-frame segment, width and arc handedness;
+    unsupported records retain its warnings, never fabricated geometry.
+    """
+    rows = []
+    for track in epro.extract_tracks(board, frame).tracks:
+        for segment in track["geom"]["segments"]:
+            rows.append(
+                {
+                    **track,
+                    "geom": {**track["geom"], "segments": [segment]},
+                    "meta": {"source_sha256": source_hash},
+                }
+            )
+    rows.extend(
+        {**via, "meta": {"source_sha256": source_hash}}
+        for via in epro.extract_vias(board, frame).vias
+    )
+    return rows
+
+
 def import_epro(
     store: Any,
     data: bytes,
@@ -507,6 +536,7 @@ def import_epro(
     dry_run: bool = False,
     update: bool = False,
     freeze: bool = False,
+    copper: str | None = None,
 ) -> ImportResult:
     """Import one ``.epro2`` board into the ``pcb`` kind under ``slug``.
 
@@ -526,6 +556,15 @@ def import_epro(
     author's annotations, not a blanket lock. ``--update`` still applies
     the source's moves to locked parts, as before.
     """
+    copper_mode = copper if copper is not None else ("none" if update else "fixed")
+    if copper_mode not in {"fixed", "none"}:
+        raise EproImportError("copper must be 'fixed' (preserve source) or 'none'")
+    if update and copper_mode == "fixed":
+        raise EproImportError(
+            "fixed-copper intake requires a fresh slug: --update deliberately "
+            "retains some old nets/outline. Use --copper none for that partial "
+            "update, or import into a new preview slug to preserve source copper"
+        )
     project = epro.read_archive(data)
     board = project.pcb(board_uuid)
     design, frame = epro.build_design(project, board)
@@ -601,6 +640,19 @@ def import_epro(
         stats=dict(design.stats),
         alignment_candidates=alignment_candidates(design),
     )
+    source_rows = _intake_copper_rows(board, frame, hashlib.sha256(data).hexdigest())
+    result.stats["source_track_records"] = sum(
+        r["ctype"] == "track" for r in source_rows
+    )
+    result.stats["source_vias"] = sum(r["ctype"] == "via" for r in source_rows)
+    if copper_mode == "fixed":
+        # Copper records carry their own explicit netName. Some source files
+        # omit the corresponding NET declaration; retain that name rather
+        # than dropping its geometry or inventing a pin connection.
+        known_nets = {n["name"] for n in design.nets}
+        copper_nets = {str(r["net"]) for r in source_rows}
+        design.nets.extend({"name": n} for n in sorted(copper_nets - known_nets))
+        result.stats["nets"] = len(design.nets)
     if dry_run:
         # The pads a real import would write, placed in memory: the same
         # normaliser the store applies, so --dry-run measures gaps to pads
@@ -612,7 +664,12 @@ def import_epro(
         result.warnings.extend(copper_warnings)
         return result
 
-    meta = {"epro": _provenance(data, project, board, source_name)}
+    meta = {
+        "epro": {
+            **_provenance(data, project, board, source_name),
+            "copper_mode": copper_mode,
+        }
+    }
     # ONE transaction for the design, the stackup and the planes. A board
     # that got its instances but not its stackup would silently keep
     # DEFAULT_STACKUP, which claims a GND plane on In1.Cu — so a partial
@@ -641,6 +698,16 @@ def import_epro(
             for layer, net in sorted(planes.items())
             if not store.pcb_assign_plane(result.ref_id, layer, net, conn=conn)
         ]
+        if copper_mode == "fixed":
+            result.counts["fixed_copper"] = store.pcb_fixed_copper_put(
+                result.ref_id,
+                board_id,
+                "__epro_source",
+                "epro_import",
+                "1",
+                source_rows,
+                conn=conn,
+            )
     for layer in unresolved:
         result.warnings.append(
             f"plane {layer} -> {planes[layer]}: the net did not survive the "

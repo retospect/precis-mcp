@@ -21,7 +21,8 @@ Each programme below serves one or more:
   `serving` (owns the MCP ceiling and the eval spine).
 - **personal-integration** — HELD; no programme yet.
 - **platform** — `plugin-split` + `monitors-that-go-quiet` + `factory` +
-  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` (created 2026-10-02); serves all four indirectly (nothing ships without it).
+  `ship-gate-ci` · `deploy-fleet-ops` · `security-hardening` ·
+  [drive-ux](drive-ux.md) (created 2026-10-02); serves all four indirectly (nothing ships without it).
 
 ## Activity and next actions
 

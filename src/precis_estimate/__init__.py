@@ -9,8 +9,8 @@ precis substrate, snapping in through the ``precis.handlers`` /
 **What it is.** An `estimate` ref is a citable, cache-backed semi-empirical
 workup — undergrad-ish non-ML chemistry (element-property lookups, tight-
 binding/Newns-Anderson-style d-band arithmetic, Hume-Rothery-style alloying
-heuristics) computed in milliseconds, *in order to set up* the slow stuff
-(MLIP relax, NEB, QE/VASP DFT). It exists so a quest agent arguing mechanism
+heuristics) computed in milliseconds as a pre-screen for the slow
+computations (MLIP relax, NEB, QE/VASP DFT). It exists so a quest agent arguing mechanism
 ("d-band shift", "strain-dominated alloying") has an actual in-system
 observable to cite instead of an unfalsifiable inference from element
 identity + energies.
@@ -26,14 +26,10 @@ and a **compare** view (doped-vs-pristine delta — the core argument form).
 The seams for those live in this handler's `views=` gap and the (currently
 empty) `compute/` package; slice 1 does not build them.
 
-**Epistemic grade — read before citing.** Every `estimate` row is a
-*hypothesis-generator*, **inadmissible for rulings**. The ladder: estimate
-(ms) → MLIP sim (min) → QE autopsy (h) → literature. An `[es…]` cite is
-visibly estimate-branded so a reader downstream never mistakes a d-band
-heuristic for a measured barrier. Validate the semi-empirical layer against
-knowns the campaign already measured (Au-vs-Pt d-band ordering, the d¹⁰
-weak-interaction pattern) before trusting it in an argument — that
-validation is itself a citable finding, not an assumption.
+**Epistemic grade.** Every `estimate` row is a *hypothesis-generator*,
+**inadmissible for rulings**; the rung ladder and the validate-before-citing
+rule are agent-facing contract, owned by skill ``precis-estimate-help``. The
+`[es…]` cite is estimate-branded by design (see ``handles.py``).
 
 Results cache by ``hash(canonicalised composition)`` (deterministic — same
 composition, same panel, pinned TTL) and mint an `es` universal handle

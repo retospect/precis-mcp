@@ -40,6 +40,15 @@ information only, never a guessed clamp direction).
 outside the per-material row shape entirely — the top-level
 ``orientation`` block in the JSON file, read through
 :func:`orientation_policy`.
+
+Every ``fdm`` ``se_capabilities.json`` row carries the full process-figure
+set (layer height, line width, overhang, bridge, bed contact, min
+feature/hole, strength-vs-layer ratio, build volume) plus a family-level
+``orientation`` weights block for the build-frame search.
+:func:`resolve` chains a block's own ``process_overrides`` (migration
+``0011_se_process_overrides.sql``, ops ``set_process_override``/
+``clear_process_override``) over the unimplemented load-derived slot over
+:func:`capability`'s house tier, always clamped to the physical floor.
 """
 
 from __future__ import annotations

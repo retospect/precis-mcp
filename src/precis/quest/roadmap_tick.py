@@ -93,6 +93,7 @@ from precis.quest.weave_tick import (
     mark_roadmap_quest,
 )
 from precis.utils import handle_registry
+from precis.utils.coerce import num
 from precis.utils.llm.json_reply import extract_json_object
 
 if TYPE_CHECKING:
@@ -782,12 +783,6 @@ def _ask(client: Any, prompt: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _num(raw: Any) -> float | None:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    return float(raw)
-
-
 def _quest_handler(store: Store) -> Any:
     from precis.dispatch import Hub
     from precis.handlers.quest import QuestHandler
@@ -815,7 +810,7 @@ def _run_demand(
     store: Store, client: Any, root: Ref, choice: RoleChoice, prompt: str
 ) -> dict[str, Any]:
     reply = _ask(client, prompt)
-    value = _num(reply.get("value"))
+    value = num(reply.get("value"))
     source = str(reply.get("source") or "").strip()
     reason = str(reply.get("reason") or "").strip()
     calculation = str(reply.get("calculation") or "").strip()
@@ -1069,7 +1064,7 @@ def _supply_tick(
         fh = FindingHandler(hub=Hub(store=store))
         for f in findings:
             claim = str(f.get("claim") or "").strip()
-            value = _num(f.get("value"))
+            value = num(f.get("value"))
             paper = str(f.get("paper") or "").strip()
             card = by_handle.get(paper)
             if not claim or value is None or card is None:
@@ -1203,7 +1198,7 @@ def _clean_entries(raw: Any, *, produces: bool) -> list[dict[str, Any]]:
     for e in raw:
         if not isinstance(e, dict):
             continue
-        value = _num(e.get("value"))
+        value = num(e.get("value"))
         cap = e.get("capability")
         key = e.get("key")
         if value is None or not isinstance(cap, str) or not isinstance(key, str):
@@ -1382,7 +1377,7 @@ def _run_bridge(
         have = {(c["capability"], c["key"]) for c in consumes}
         for key, _sense, _unit in ledger.capability_axes(benign):
             entry = b_demand.get(key) if isinstance(b_demand, dict) else None
-            value = _num(entry.get("value")) if isinstance(entry, dict) else None
+            value = num(entry.get("value")) if isinstance(entry, dict) else None
             if value is None or (b_handle, key) in have:
                 continue
             consumes.append({"capability": b_handle, "key": key, "value": value})
@@ -1458,7 +1453,7 @@ def previous_ledger_signature(store: Store, root_id: int) -> dict[str, float] | 
     raw = (chunk.meta or {}).get("signature")
     if not isinstance(raw, dict):
         return {}
-    return {str(k): float(v) for k, v in raw.items() if _num(v) is not None}
+    return {str(k): float(v) for k, v in raw.items() if num(v) is not None}
 
 
 def update_capability_ledger_chunk(

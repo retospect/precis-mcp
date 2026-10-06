@@ -213,7 +213,7 @@ def test_clean_apply_release_commit_forward_merge_and_branch_reset(
     # main: a real merge, parents (OLD_MAIN, R1), the Gate trailer, the fix
     assert rr.parents(main) == [old_main, rel]
     m_msg = rr.msg(main)
-    assert m_msg.startswith(f"Merge {REL} fix forward: ship fix1"), m_msg
+    assert m_msg.startswith(f"Merge {REL} fix forward: chore(test): ship fix1"), m_msg
     assert re.search(
         rf"^Gate: release-forward; lint on feat-fix1 {head[:8]}$", m_msg, re.M
     ), m_msg
@@ -333,7 +333,7 @@ def test_lost_cas_on_the_release_ref_retries_in_the_lock_and_lands(
     log_msgs = rr.g(
         rr.origin, "log", "--format=%s", "--first-parent", f"{rr.cut_sha}..{rel}"
     ).splitlines()
-    assert log_msgs == ["ship cas", "hook racer 1"], log_msgs
+    assert log_msgs == ["chore(test): ship cas", "hook racer 1"], log_msgs
     assert "L1" in rr.show(rel, "app.py")
     assert rr.parents(main)[1] == rel
     assert rr.show(main, "hook_1.txt") == "1"  # the forward merge carries it
@@ -561,7 +561,7 @@ def test_main_moving_during_the_section_still_lands(rr: ReleaseRig) -> None:
         "log",
         "-1",
         "--format=%H",
-        f"--grep=^Merge {REL} fix forward: ship move",
+        f"--grep=^Merge {REL} fix forward: chore(test): ship move",
         "main",
     )
     assert m, "the forward merge is not on main"

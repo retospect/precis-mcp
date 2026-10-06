@@ -85,6 +85,13 @@ concurrent writer either committed before the lock was granted (so the
 load sees it) or waits. The lock is transaction-scoped, so no failure
 path can leak it. Long work (a solve) happens OUTSIDE the lock on a
 snapshot and re-validates its inputs against a fresh load inside it.
+
+A ``component`` binding additionally **projects onto a ``realized-by``
+link** on every save (:func:`sync_realized_by`, migration 0156's realization
+edge, the same one cad writes for its ``part`` lines). The plugin table stays
+authoritative and the link is derived and rebuilt, so one ``links`` query
+answers "what does this artifact resolve to" — and its inverse "who calls
+for this component" — across both tracks.
 """
 
 from __future__ import annotations

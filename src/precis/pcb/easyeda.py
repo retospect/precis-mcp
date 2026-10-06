@@ -41,6 +41,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb._http import with_backoff
+from precis.utils.coerce import float_or_zero
 
 if TYPE_CHECKING:
     import httpx
@@ -160,8 +161,8 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     head = data.get("head") or {}
-    origin_x = _to_mm(_num(head.get("x")))
-    origin_y = _to_mm(_num(head.get("y")))
+    origin_x = _to_mm(float_or_zero(head.get("x")))
+    origin_y = _to_mm(float_or_zero(head.get("y")))
 
     pads: list[dict[str, Any]] = []
     outline: list[tuple[float, float]] = []
@@ -292,17 +293,17 @@ def _parse_pad(
         return None
     try:
         shape = fields[1]
-        x = _to_mm(_num(fields[2])) - origin_x
-        y = -(_to_mm(_num(fields[3])) - origin_y)  # Y grows down in EasyEDA
-        w = _to_mm(_num(fields[4]))
-        h = _to_mm(_num(fields[5]))
+        x = _to_mm(float_or_zero(fields[2])) - origin_x
+        y = -(_to_mm(float_or_zero(fields[3])) - origin_y)  # Y grows down in EasyEDA
+        w = _to_mm(float_or_zero(fields[4]))
+        h = _to_mm(float_or_zero(fields[5]))
         layer_id = int(fields[6]) if fields[6] else 1
         number = fields[8]
     except (ValueError, IndexError):
         return None
 
-    hole_radius = _num(fields[9]) if len(fields) > 9 and fields[9] else 0.0
-    rotation = _num(fields[11]) if len(fields) > 11 and fields[11] else 0.0
+    hole_radius = float_or_zero(fields[9]) if len(fields) > 9 and fields[9] else 0.0
+    rotation = float_or_zero(fields[11]) if len(fields) > 11 and fields[11] else 0.0
     drill = round(_to_mm(hole_radius) * 2, 4) if hole_radius > 0 else None
 
     pad: dict[str, Any] = {
@@ -342,8 +343,8 @@ def _parse_points_field(
     pts: list[tuple[float, float]] = []
     for i in range(0, len(parts) - 1, 2):
         try:
-            x = _to_mm(_num(parts[i])) - origin_x
-            y = -(_to_mm(_num(parts[i + 1])) - origin_y)
+            x = _to_mm(float_or_zero(parts[i])) - origin_x
+            y = -(_to_mm(float_or_zero(parts[i + 1])) - origin_y)
         except ValueError:
             continue
         pts.append((x, y))
@@ -407,16 +408,6 @@ def _centroid(pads: list[dict[str, Any]]) -> dict[str, float]:
 def _to_mm(units_10mil: float) -> float:
     """EasyEDA's native unit is 10 mil (0.01 inch) -> mm."""
     return units_10mil * _MM_PER_UNIT
-
-
-def _num(raw: Any) -> float:
-    """Best-effort float — EasyEDA fields are sometimes empty strings."""
-    if raw in (None, ""):
-        return 0.0
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 __all__ = ["fetch_component", "parse_component"]

@@ -17,7 +17,6 @@ import tempfile
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,7 @@ from precis.taxonomy.types import (
     Snapshot,
     Thresholds,
 )
+from precis.utils.timeutil import now_iso
 
 _VERSION_RE = re.compile(r"^list\.v(\d+)\.yaml$")
 
@@ -62,10 +62,6 @@ def freeze(
         stability=stability,
         rejected=tuple(rejected),
     )
-
-
-def _utc_now_z() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def write_list(
@@ -106,7 +102,7 @@ def write_list(
     path = directory / f"list.v{lst.version}.yaml"
     document = lst.to_json()
     document["procedure_version"] = PROCEDURE_VERSION
-    document["generated_at"] = _utc_now_z()
+    document["generated_at"] = now_iso()
     if census_digest is not None:
         document["census_digest"] = census_digest
     text = yaml.safe_dump(

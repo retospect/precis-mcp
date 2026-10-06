@@ -2434,6 +2434,8 @@ def _ping_deadman_private(url: str) -> None:
     from precis.utils.http import require_httpx
 
     httpx = require_httpx()
+    # Raw httpx.Client, not http_client: operator-opted-in LAN target, so the
+    # pinning transport (which rejects private addresses) must not apply.
     with httpx.Client(timeout=10.0, follow_redirects=True) as client:
         client.get(url, headers={"User-Agent": "precis-mcp/health_digest"})
 

@@ -62,7 +62,8 @@ See ``precis-component-help``.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, TypedDict
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from precis import component_series as cseries
 from precis import supply
@@ -75,9 +76,19 @@ from precis.handlers._link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
-from precis.handlers._link_target import LinkTarget, parse_link_target
+from precis.handlers._link_target import parse_link_target
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.protocol import Handler, KindSpec
+from precis.handlers._value_entity import (
+    _MATURITIES,
+    ValueEntityHandler,
+)
+from precis.handlers._value_entity import (
+    display_value as _display_value,
+)
+from precis.handlers._value_entity import (
+    fmt_conditions as _fmt_conditions,
+)
+from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store._component_ops import (
     ComponentCategoryRow,
@@ -86,14 +97,12 @@ from precis.store._component_ops import (
 )
 from precis.utils import handle_registry
 
-_MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 #: ``component_spec_values.method`` (migration 0093's comment: "measured |
 #: datasheet | estimated | ..."), plus ``standard`` — already written
 #: (unvalidated) by the series-mint path (``_write_series_specs`` below).
 #: The column carries no DB CHECK (unlike ``maturity``) — this tuple is the
 #: handler-layer enforcement of that vocabulary.
 _METHODS: tuple[str, ...] = ("measured", "datasheet", "estimated", "standard")
-_SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = (
     "table",
     "specs",
@@ -103,10 +112,9 @@ _VIEWS: tuple[str, ...] = (
     "series",
     "stock",
 )
-_VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
-class ComponentHandler(Handler):
+class ComponentHandler(ValueEntityHandler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="component",
         title="Component",
@@ -209,7 +217,7 @@ class ComponentHandler(Handler):
         if spec is not None:
             resp = self._put_value(
                 slug,
-                spec=str(spec).strip(),
+                key=str(spec).strip(),
                 value=value,
                 unit=unit,
                 conditions=conditions,
@@ -685,48 +693,30 @@ class ComponentHandler(Handler):
             note += f" [{ref_designator}]"
         return Response(body=base.body + f"\n{note}")
 
-    def _put_value(
+    _VE_KIND: ClassVar[str] = "component"
+    _VE_ARG: ClassVar[str] = "spec"
+    _VE_ID: ClassVar[str] = "spec_id"
+    _VE_PLURAL: ClassVar[str] = "specs"
+    _VE_METHODS: ClassVar[tuple[str, ...]] = _METHODS
+    _VE_CREATE_HINT: ClassVar[str] = (
+        "put(kind='component', id={slug}, title='...', category='...')"
+    )
+
+    def _ve_registry_row(
         self,
-        slug: str,
+        entity_ref: Any,
+        key: str,
         *,
-        spec: str,
         value: Any,
         unit: str | None,
-        conditions: dict[str, Any] | None,
-        maturity: str | None,
-        method: str | None = None,
-        source: str | None,
-        chunk: str | None,
-        as_of: str | None,
-        value_type: str | None = None,
-        allowed_values: list[Any] | None = None,
-        value_low: float | None = None,
-        value_high: float | None = None,
-    ) -> Response:
-        if not spec:
-            raise BadInput(
-                "put(kind='component') with spec= needs a non-empty spec_id",
-                next="get(kind='component', view='specs') to see the registry",
-            )
-        component_ref = self.store.get_ref(kind="component", id=slug)
-        if component_ref is None:
-            raise NotFound(
-                f"component {slug!r} not found - create the entity first",
-                next=(
-                    f"put(kind='component', id={slug!r}, title='...', category='...')"
-                ),
-            )
-        if conditions is not None and not isinstance(conditions, dict):
-            raise BadInput("put(kind='component') conditions= must be a dict")
-
-        self._validate_type_args(value_type, allowed_values)
-
-        component_category = (component_ref.meta or {}).get("category")
-
-        spec_row = self.store.component_spec_get(spec)
+        value_type: str | None,
+        allowed_values: list[Any] | None,
+    ) -> ComponentSpecRow:
+        component_category = (entity_ref.meta or {}).get("category")
+        spec_row = self.store.component_spec_get(key)
         if spec_row is None:
             spec_row = self._mint_spec(
-                spec,
+                key,
                 value=value,
                 unit=unit,
                 category_id=component_category,
@@ -737,84 +727,15 @@ class ComponentHandler(Handler):
             self._check_type_consistency(
                 spec_row, value_type=value_type, allowed_values=allowed_values
             )
-
         self._check_applicability(spec_row, component_category)
-        self._check_unit(spec_row, unit)
-        value_kwargs = self._route_value(
-            spec_row, value, value_low=value_low, value_high=value_high
-        )
+        return spec_row
 
-        if maturity is not None and maturity not in _MATURITIES:
-            raise BadInput(
-                f"maturity={maturity!r} must be one of {list(_MATURITIES)}",
-                next=f"put(kind='component', id={slug!r}, spec={spec!r}, "
-                f"value=..., maturity='lab')",
-            )
-        if method is not None and method not in _METHODS:
-            raise BadInput(
-                f"method={method!r} must be one of {list(_METHODS)}",
-                next=f"put(kind='component', id={slug!r}, spec={spec!r}, "
-                f"value=..., method='measured')",
-            )
-
-        source_ref_id, source_chunk, source_url = self._resolve_source(source, chunk)
-
-        value_id = self.store.component_value_insert(
-            component_ref_id=component_ref.id,
-            spec_id=spec_row["spec_id"],
-            conditions=conditions,
-            maturity=maturity or "lab",
-            method=method,
-            source_ref_id=source_ref_id,
-            source_chunk=source_chunk,
-            source_url=source_url,
-            as_of=as_of,
-            **value_kwargs,
+    def _ve_insert(
+        self, entity_ref_id: int, row: Mapping[str, Any], **kwargs: Any
+    ) -> int:
+        return self.store.component_value_insert(
+            component_ref_id=entity_ref_id, spec_id=row["spec_id"], **kwargs
         )
-        display_value = _display_value(
-            {
-                "value_num": value_kwargs.get("value_num"),
-                "value_low": value_kwargs.get("value_low"),
-                "value_high": value_kwargs.get("value_high"),
-                "value_bool": value_kwargs.get("value_bool"),
-                "value_text": value_kwargs.get("value_text"),
-            }
-        )
-        unit_note = f" {unit}" if unit else ""
-        source_note = ""
-        if source_ref_id is not None:
-            source_note = f" (source={source!r})"
-        elif source_url is not None:
-            source_note = f" (source_url={source_url!r})"
-        return Response(
-            body=(
-                f"recorded {slug}.{spec_row['spec_id']} = "
-                f"{display_value}{unit_note} "
-                f"(id={value_id}, maturity={maturity or 'lab'})"
-                f"{source_note}"
-            )
-        )
-
-    @staticmethod
-    def _validate_type_args(
-        value_type: str | None, allowed_values: list[Any] | None
-    ) -> None:
-        """Validate ``value_type=``/``allowed_values=`` shape, independent
-        of whether this write mints a fresh spec or targets an existing
-        one (``_check_type_consistency`` covers the latter)."""
-        if value_type is not None and value_type not in _VALUE_TYPES:
-            raise BadInput(
-                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
-            )
-        if allowed_values is not None and value_type != "categorical":
-            raise BadInput(
-                "allowed_values= is only valid with value_type='categorical'",
-                next=(
-                    "put(kind='component', id=<slug>, spec=<spec_id>, "
-                    "value=..., value_type='categorical', "
-                    "allowed_values=['a', 'b'])"
-                ),
-            )
 
     @staticmethod
     def _check_type_consistency(
@@ -958,165 +879,6 @@ class ComponentHandler(Handler):
             value_type=inferred_type,
             category_id=category_id,
         )
-
-    @staticmethod
-    def _check_unit(spec_row: ComponentSpecRow, unit: str | None) -> None:
-        canonical = spec_row.get("canonical_unit")
-        given = None if unit is None else (str(unit).strip() or None)
-        if canonical is not None:
-            if given != canonical:
-                raise BadInput(
-                    f"unit={unit!r} is not {spec_row['spec_id']}'s canonical "
-                    f"unit ({canonical!r}) - v1 is canonical-unit-only, "
-                    "no conversion",
-                    next=(
-                        f"put(kind='component', id=<slug>, "
-                        f"spec={spec_row['spec_id']!r}, value=..., "
-                        f"unit={canonical!r})"
-                    ),
-                )
-        elif given is not None:
-            raise BadInput(
-                f"{spec_row['spec_id']} has no canonical unit "
-                "(dimensionless/categorical/boolean/text) - drop unit=",
-                next=(
-                    f"put(kind='component', id=<slug>, "
-                    f"spec={spec_row['spec_id']!r}, value=...)"
-                ),
-            )
-
-    @staticmethod
-    def _route_value(
-        spec_row: ComponentSpecRow,
-        value: Any,
-        *,
-        value_low: float | None = None,
-        value_high: float | None = None,
-    ) -> dict[str, Any]:
-        spec_id = spec_row["spec_id"]
-        value_type = spec_row["value_type"]
-        has_band = value_low is not None or value_high is not None
-
-        if has_band and value_type not in ("quantity", "ratio"):
-            raise BadInput(
-                f"{spec_id} is a {value_type} spec - value_low=/value_high= "
-                "apply only to numeric (quantity/ratio) specs",
-            )
-
-        if value_type in ("quantity", "ratio"):
-            if (
-                value_low is not None
-                and value_high is not None
-                and value_low > value_high
-            ):
-                raise BadInput(
-                    f"value_low={value_low!r} must be <= value_high={value_high!r}",
-                )
-            if value is not None:
-                if isinstance(value, bool):
-                    raise BadInput(
-                        f"{spec_id} is a {value_type} spec - value= must be "
-                        f"numeric, got {value!r}"
-                    )
-                try:
-                    num = float(value)
-                except (TypeError, ValueError):
-                    raise BadInput(
-                        f"{spec_id} is a {value_type} spec - value= must be "
-                        f"numeric, got {value!r}"
-                    ) from None
-            elif value_low is not None and value_high is not None:
-                num = (float(value_low) + float(value_high)) / 2
-            elif has_band:
-                raise BadInput(
-                    f"put(kind='component', spec={spec_id!r}) needs "
-                    "value=, or both value_low= and value_high=",
-                )
-            else:
-                raise BadInput(
-                    f"put(kind='component', spec={spec_id!r}) needs value=",
-                )
-            out: dict[str, Any] = {"value_num": num}
-            if value_low is not None:
-                out["value_low"] = float(value_low)
-            if value_high is not None:
-                out["value_high"] = float(value_high)
-            return out
-        if value is None:
-            raise BadInput(
-                f"put(kind='component', spec={spec_id!r}) needs value=",
-            )
-        if value_type == "boolean":
-            b = _coerce_bool(value)
-            if b is None:
-                raise BadInput(
-                    f"{spec_id} is boolean - value= must be true/false, got {value!r}"
-                )
-            return {"value_bool": b}
-        if value_type == "categorical":
-            s = str(value).strip()
-            allowed = spec_row.get("allowed_values") or []
-            if allowed and s not in allowed:
-                raise BadInput(
-                    f"{spec_id} value {s!r} is not in allowed_values {allowed!r}",
-                    next=f"pick one of {allowed!r}",
-                )
-            return {"value_text": s}
-        # text
-        return {"value_text": str(value).strip()}
-
-    def _resolve_source(
-        self, source: str | None, chunk: str | None
-    ) -> tuple[int | None, str | None, str | None]:
-        """Resolve ``source=``/``chunk=`` to ``(source_ref_id, source_chunk,
-        source_url)``. Copied from ``MaterialHandler._resolve_source`` — see
-        that docstring for the full contract."""
-        if source is None or not str(source).strip():
-            if chunk is not None:
-                raise BadInput(
-                    "chunk= requires source= (the ref the chunk belongs to)",
-                    next="put(kind='component', id=<slug>, spec=..., "
-                    "value=..., source='paper:<slug>', chunk='<slug>~5')",
-                )
-            return None, None, None
-        s = str(source).strip()
-        if s.lower().startswith("http://") or s.lower().startswith("https://"):
-            if chunk is not None:
-                raise BadInput(
-                    "chunk= is only meaningful with a ref source= "
-                    "('paper:<slug>' / a handle), not a bare source_url",
-                )
-            return None, None, s
-        target = parse_link_target(s, store=self.store)
-        if target.kind not in _SOURCE_KINDS:
-            raise BadInput(
-                f"source={source!r} resolves to kind={target.kind!r}; "
-                f"component sources must be one of {list(_SOURCE_KINDS)}, or "
-                "a bare http(s) URL",
-            )
-        source_chunk: str | None = None
-        if chunk is not None:
-            c = str(chunk).strip()
-            if handle_registry.parse(c) is not None:
-                resolved = self.store.resolve_handle(c)
-                if resolved is not None and resolved.chunk_ord is not None:
-                    if resolved.ref_id != target.ref_id:
-                        src_public = self._source_public_id(target)
-                        raise BadInput(
-                            f"chunk={chunk!r} belongs to {resolved.public_id!r}, "
-                            f"not source={source!r} ({src_public!r})",
-                            next="pass source= and chunk= from the same ref, "
-                            "or drop one of them",
-                        )
-                    c = f"{resolved.public_id}~{resolved.chunk_ord}"
-            source_chunk = c
-        elif target.pos is not None:
-            source_chunk = f"{self._source_public_id(target)}~{target.pos}"
-        return target.ref_id, source_chunk, None
-
-    def _source_public_id(self, target: LinkTarget) -> str:
-        ref = self.store.get_ref(kind=target.kind, id=target.ref_id)
-        return ref.public_id if ref is not None else str(target.ref_id)
 
     # ── get ──────────────────────────────────────────────────────────
 
@@ -1722,52 +1484,6 @@ def _spec_uniformity_summary(spec_id: str, spec_values: dict[int, str | None]) -
         verb = "has" if missing == 1 else "have"
         summary += f" ({missing} {noun} {verb} no {spec_id})"
     return summary
-
-
-def _coerce_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in ("true", "yes", "1"):
-            return True
-        if s in ("false", "no", "0"):
-            return False
-    return None
-
-
-class _ValueDisplayFields(TypedDict):
-    """The subset of a value row ``_display_value`` needs — narrower than
-    :class:`ComponentValueRow` so ``_put_value``'s just-inserted
-    ``value_kwargs`` echo (no ``id``/``created_at``/... yet, since the row
-    isn't re-fetched after insert) satisfies it too."""
-
-    value_num: float | None
-    value_low: float | None
-    value_high: float | None
-    value_text: str | None
-    value_bool: bool | None
-
-
-def _display_value(v: _ValueDisplayFields) -> str:
-    if v["value_num"] is not None:
-        base = str(v["value_num"])
-        low = v.get("value_low")
-        high = v.get("value_high")
-        if low is not None and high is not None:
-            return f"{base} ({low}–{high})"
-        return base
-    if v["value_bool"] is not None:
-        return str(v["value_bool"])
-    if v["value_text"] is not None:
-        return v["value_text"]
-    return "—"
-
-
-def _fmt_conditions(conditions: Any) -> str:
-    if not conditions:
-        return ""
-    return ", ".join(f"{k}={v}" for k, v in conditions.items())
 
 
 def _display_source(v: ComponentValueRowWithSource) -> str:

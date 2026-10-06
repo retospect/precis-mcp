@@ -267,31 +267,26 @@ refused.
 ## 2d.1 — model groups: what prints, the group frame, the 3MF
 
 Rules for a `model` group (§2d); `manufacture` groups differ from §2e on.
+Stand-in sourcing, frame precedence and the shared membership walk are
+owned by the module docstring of `precis/src/precis_se/printgroup.py`
+(`get(kind='python', id=…)`).
 
 **`model` = a fit-test model, any scale.** Every fdm member prints its
 realized solid (stamped holes included, compensation kept). Every
-**purchase** member prints as a **stand-in**: the analytic catalog solid
-(`part <family>:<size>` from the cad catalog, threads dropped, no drive
-recess) when its bound `component` was minted from a series the catalog
-reads; else a solid from its spec dims (a bearing = outer cylinder minus
-bore; anything else the catalog envelope, said so). Fasteners print too —
-the fit is the point. Joints with DOF and rigid joints alike stay separate
-parts. A purchase member with nothing to draw is a `no_stand_in` finding
-(warn) naming what it needs — a `component` binding, or the spec dims —
-never a silent skip. Instances/arrays and non-fdm/non-purchase members are
+**purchase** member prints as a **stand-in** — the catalog solid, else a
+solid from its spec dims; fasteners print too, the fit is the point. DOF
+and rigid joints alike stay separate parts. A purchase member with nothing
+to draw is a `no_stand_in` finding (warn) naming what it needs, never a
+silent skip. Instances/arrays and non-fdm/non-purchase members are
 `member_skipped` (info). Loads are never scaled: a 1:6 toy gets its own
 `set_load`.
 
-**One build frame for the group**, chosen by the same orientation search
-on the **union** of the member meshes in their world poses (the root's
-mode names the process). A `set_build_frame` on the root pins it. A
-SIMP-realized member (`build_frame.origin == 'simp'`) pins the group to
-its baked `build_dir`; the search is skipped and the report says which
-member it followed. Two SIMP members that disagree are a
-`simp_frame_conflict` finding (error) — the first by name wins, the
-finding names both. Every member's frame findings (overhang, bridge, bed
-contact, `layer_vs_load`) are judged at the group frame, each on its own
-footprint the way a slicer's drop-to-bed places it.
+**One build frame for the group**: the orientation search on the **union**
+of the member meshes in world pose; `set_build_frame` on the root pins it;
+a SIMP-realized member pins it to its baked `build_dir` (search skipped,
+the report names the member), and two that disagree are a
+`simp_frame_conflict` finding (error). Every member's frame findings are
+judged at the group frame.
 
 **Output**: `fmt='3mf'` only — one 3MF, one object per member (stand-ins
 are objects too, a multi-component member contributes `<member>/<part>`
@@ -343,12 +338,12 @@ get(kind="se", id="switch1", view="print",
 `knuckle` and `pin` each get their own `edit` call ahead of the
 `strategy='manufacture'` one.)
 
-Same group rules as `model` (§2d). `realize(strategy='manufacture')` on
-the **root** composes the members into ONE cad design in the root's
-frame whose root is a **mixed analytic+field expression**: every
-member's own node tree placed at its pose (analytic — holes, their
-printed-hole compensation, every sub-pitch feature exactly as stored), a
-`field:` leaf ONLY where a field op is required; never a mesh. Bound to
+Same group rules as `model` (§2d); the construction (mixed analytic +
+field expression, seam-local gaps, export lattice) is owned by the module
+docstring of `precis/src/precis_se/manufacture.py`.
+`realize(strategy='manufacture')` on the **root** composes the members
+into ONE cad design in the root's frame — placed analytic member trees,
+a `field:` leaf only where a field op is required, never a mesh. Bound to
 the root as `<design>-<root>-mfg` (re-run: `-2`, `-3`… sibling; the root
 must not carry a solid of its own). Every render lists each member/
 cavity as `analytic` | `field (gap)` | `field (cavity fit)` | `field
@@ -370,14 +365,11 @@ and each bought member:
   chain a later member's cuts also cut earlier members where they overlap
   (`blend_chain` info).
 - **DOF pairs get the in-place gap, seam-locally**: each printed side is
-  **carved back by `gap/2` from its partner** (`A' = A \ dilate(B,
-  gap/2)`, an `offset` on the partner's re-distanced sample, plus half a
-  pitch because the re-distance binarises — `gap` is a floor; face-to-
-  face and pin-in-bore come out at `gap`, a re-entrant corner's worst case
-  is `gap/2`; the report quotes the **measured** separation per joint).
-  The eroded member becomes ONE `field:` leaf on a grid sized to its own
-  box at the group pitch; nothing else moves, so a rigid seam with a third
-  member stays exact. A DOF pair a rigid path joins anyway is
+  carved back from its partner, so face-to-face and pin-in-bore come out
+  at `gap` (a floor — the report quotes the **measured** separation per
+  joint; a re-entrant corner's worst case is `gap/2`). The eroded member
+  becomes ONE `field:` leaf; nothing else moves, so a rigid seam with a
+  third member stays exact. A DOF pair a rigid path joins anyway is
   `dof_bridged` (error, export refused). `gap=` (m) is required unless
   the house `min_clearance` capability resolves (null in every fdm row
   today — `set_process_override(block=<root>, field='min_clearance',
@@ -389,9 +381,8 @@ and each bought member:
   box meets: `fit=` (m, required whenever there is a cavity, no default)
   is the radial clearance — `fit=0` on an add-only stand-in cuts the
   analytic stand-in directly; `fit>0` (or a stand-in with cuts of its own,
-  a bearing's bore) is one `field:` leaf, the stand-in re-distanced and
-  dilated by `fit` (+ half a pitch) on its own grid (a box grown by `fit`
-  is not its dilation; never done). No insertion path is searched: the
+  a bearing's bore) is one `field:` leaf, the stand-in dilated by `fit` (+
+  half a pitch). No insertion path is searched: the
   report names each cavity's **top layer above the bed** as the mid-print
   pause height (the `bambuuzle` rung). No stand-in → `cavity_missing`.
 - **fasteners are elided** when their grip stack (`view='fasten'`) is two
@@ -423,10 +414,8 @@ design's `meta.se_manufacture`. `view='print'` on the root reports the
 frame (root pin > SIMP member's `build_dir` > search on the fused mesh),
 the per-part form lines, the objects, the gaps, the cavities with pause
 heights and the elisions; `fmt='3mf'` writes **one object per connected
-component** of the root — labelled once on the export lattice at
-realize time, each object then meshed as the exact fold of its own
-components (nothing masked or invented) — a DOF-separated pair comes out
-as two objects, a fused pair as one; an analytic member's mesh
+component** of the root — a DOF-separated pair comes out as two objects,
+a fused pair as one; an analytic member's mesh
 interpolates its exact distances, so a compensated hole survives a pitch
 coarser than the compensation. The split lives on the design
 (`meta.export_objects`): exporting the `-mfg` cad design itself

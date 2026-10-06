@@ -12,6 +12,7 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis.reading.concepts import normalize_name
+from precis.utils.text import slugify
 
 #: Keys a caller may put in ``meta=`` (the spec's fixed set).
 CALLER_KEYS: frozenset[str] = frozenset(
@@ -55,13 +56,6 @@ STATUSES: tuple[str, ...] = ("proposed", "systematic")
 STATUS_PROPOSED = "proposed"
 
 _SI_VECTOR_RE = re.compile(r"^-?\d+(,-?\d+){6}$")
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def slugify(name: str) -> str:
-    """Lowercase, runs of non-alphanumerics to one hyphen. For resolution
-    only — a slug is not identity and need not be unique."""
-    return _SLUG_RE.sub("-", (name or "").lower()).strip("-")
 
 
 def taxon_card_text(

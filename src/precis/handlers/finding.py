@@ -108,7 +108,7 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.ingest.glyph_health import glyph_caveat
 from precis.protocol import KindSpec
 from precis.response import Response
-from precis.store.types import ChunkInsert, Ref, Tag
+from precis.store.types import SIGNED_FINDING_STATES, ChunkInsert, Ref, Tag
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
@@ -159,7 +159,7 @@ _TRUST_VALUES = (_TRUST_SIGNED, _TRUST_VERIFIED, _TRUST_DISPUTED, _TRUST_ANY)
 #: fetches this many pages to keep a full page after the filter (gr458942).
 _COHORT_OVERFETCH = 4
 #: Publish states that mean "a human key attested this claim".
-_SIGNED_STATES = ("signed", "anchored", "published")
+_SIGNED_STATES = SIGNED_FINDING_STATES
 #: ``trust=`` filters *after* retrieval (the posture lives in publish rows
 #: and links, not in the search index), so the retrieval leg has to over-
 #: fetch or the filter would just thin an already-truncated page. Factor,

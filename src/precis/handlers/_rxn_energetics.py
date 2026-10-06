@@ -144,7 +144,7 @@ def _render_pathway(p: PathwayLedger) -> str:
     return "\n".join(out)
 
 
-def _as_float(name: str, v: Any, default: float | None) -> float | None:
+def _float_arg(name: str, v: Any, default: float | None) -> float | None:
     if v is None:
         return default
     try:
@@ -164,9 +164,9 @@ def render_energetics(
             next=_NEXT,
         )
     eqs = [e.strip() for e in re.split(r"[;\n]", str(q)) if e.strip()]
-    t = _as_float("T", T, 298.15)
+    t = _float_arg("T", T, 298.15)
     assert t is not None
-    n = _as_float("n_electrons", n_electrons, None)
+    n = _float_arg("n_electrons", n_electrons, None)
     if len(eqs) == 1:
         return Response(
             body=_render_one(reaction_energetics(eqs[0], T=t, n_electrons=n))

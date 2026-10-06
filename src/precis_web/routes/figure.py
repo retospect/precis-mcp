@@ -37,6 +37,7 @@ from precis.errors import NotFound
 from precis.figure.svg import DEFAULT_VIEWBOX, default_svg, lint_svg, sanitize_svg
 from precis.figure.turn import run_turn
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.utils.text import fmt_num
 from precis_web.deps import get_store, templates
 
 if TYPE_CHECKING:
@@ -126,9 +127,9 @@ async def figure_detail(request: Request, slug: str) -> HTMLResponse:
         # Only the last couple of turns — the memory is the vocab + notes, not
         # the chat log; showing more is noise (and the log persists for search).
         "turns": turns[-2:],
-        "viewbox": " ".join(_num(v) for v in box),
-        "vb_w": _num(box[2]),
-        "vb_h": _num(box[3]),
+        "viewbox": " ".join(fmt_num(v) for v in box),
+        "vb_w": fmt_num(box[2]),
+        "vb_h": fmt_num(box[3]),
         "findings": [{"kind": f.kind, "message": f.message} for f in findings],
         "bindings": _bindings(store, ref.id),
     }
@@ -189,10 +190,6 @@ async def figure_turn(
             ],
         }
     )
-
-
-def _num(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
 
 
 def _safe_svg(svg: str) -> str:

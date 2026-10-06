@@ -33,6 +33,8 @@ import io
 import re
 from typing import Any
 
+from precis.utils.text import esc_quoted
+
 # Default fab/board constants (JLCPCB 4-layer default).
 DEFAULT_THICKNESS_MM = 1.6
 DEFAULT_TRACK_UM = 250  # 0.25 mm — JLCPCB economical minimum is 0.127
@@ -234,9 +236,9 @@ def kicad_netlist(model: dict[str, Any], *, name: str = "design") -> str:
     for i in sorted(model["instances"], key=lambda r: _natural_key(r["refdes"])):
         fp = str(i.get("footprint") or "")
         val = str(i.get("label") or i["refdes"])
-        line = f'    (comp (ref "{i["refdes"]}") (value "{_esc(val)}")'
+        line = f'    (comp (ref "{i["refdes"]}") (value "{esc_quoted(val)}")'
         if fp:
-            line += f' (footprint "{_esc(fp)}")'
+            line += f' (footprint "{esc_quoted(fp)}")'
         if i.get("part_lcsc"):
             line += f' (property (name "LCSC") (value "{i["part_lcsc"]}"))'
         out.append(line + ")")
@@ -245,16 +247,14 @@ def kicad_netlist(model: dict[str, Any], *, name: str = "design") -> str:
     for code, net in enumerate(
         sorted(model["nets"], key=lambda n: _natural_key(n["name"])), start=1
     ):
-        out.append(f'    (net (code "{code}") (name "{_esc(net["name"])}")')
+        out.append(f'    (net (code "{code}") (name "{esc_quoted(net["name"])}")')
         for m in sorted(net["members"], key=lambda x: _natural_key(x["refdes"])):
-            out.append(f'      (node (ref "{m["refdes"]}") (pin "{_esc(m["pin"])}"))')
+            out.append(
+                f'      (node (ref "{m["refdes"]}") (pin "{esc_quoted(m["pin"])}"))'
+            )
         out.append("    )")
     out.append("  ))")
     return "\n".join(out) + "\n"
-
-
-def _esc(s: str) -> str:
-    return str(s).replace("\\", "\\\\").replace('"', '\\"')
 
 
 # ─────────────────────────────────────────────────────────────────────

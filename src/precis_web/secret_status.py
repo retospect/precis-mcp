@@ -403,16 +403,26 @@ async def _probe_core(client: httpx.AsyncClient, values: dict[str, str]) -> Chec
         params={"q": "test", "limit": 1},
         headers={"Authorization": f"Bearer {values['PRECIS_CORE_API_KEY']}"},
     )
+    if r.status_code == 429:
+        return CheckResult("unknown", "HTTP 429 — rate limited")
     return _classify_status(r.status_code)
 
 
 async def _probe_elsevier(
     client: httpx.AsyncClient, values: dict[str, str]
 ) -> CheckResult:
+    """Probe Article Retrieval auth; Search requires a separate entitlement.
+
+    Metadata for a fixed OA article avoids mistaking unavailable full-text
+    entitlement for a rejected key. Response content is never persisted.
+    """
     r = await client.get(
-        "https://api.elsevier.com/content/search/sciencedirect",
-        params={"query": "test", "count": 1},
-        headers={"X-ELS-APIKey": values["PRECIS_ELSEVIER_API_KEY"]},
+        "https://api.elsevier.com/content/article/doi/10.1016/j.heliyon.2019.e03087",
+        params={"view": "META_ABS"},
+        headers={
+            "X-ELS-APIKey": values["PRECIS_ELSEVIER_API_KEY"],
+            "Accept": "application/json",
+        },
     )
     return _classify_status(r.status_code, bad_codes=(401, 403))
 

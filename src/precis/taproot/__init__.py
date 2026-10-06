@@ -24,14 +24,14 @@ confirmation engine for its own guess). Design: ``docs/backlog/taproot.md``;
 governance: taproot evidence relations (+ the living citation pins).
 
 Unsigned claim title/scope and hypothesis-prose edits keep the hub identity
-and reopen unsigned approval in place. ``consumer_review`` invalidates draft review watermarks and
-records a review-ledger proposal plus timestamped per-source metadata on every
-live graph consumer; the edit acknowledgement lists them. This shares the claim
-transaction and ordered ref locks, avoiding half-applied edits and reciprocal
-consumer-update deadlocks. Signing is the freeze boundary; a historical signed
-artifact on a reopened row still requires supersession. No versions are minted
-for internal edits. General signed reopen/demotion alignment remains in the
-nanopub supersede backlog slice; immutable artifact/proof bytes stay untouched.
+and reopen unsigned approval in place. ``consumer_review`` invalidates draft
+review watermarks and records a review-ledger proposal plus timestamped
+per-source metadata on every live graph consumer; the edit acknowledgement
+lists them. It shares the claim transaction and ordered ref locks, so edits
+never half-apply and reciprocal consumer updates never deadlock. Signing is the
+freeze boundary: a historical signed artifact on a reopened row still requires
+supersession, internal edits mint no versions, and artifact/proof bytes stay
+untouched (signed reopen/demotion alignment: the nanopub supersede slice).
 
 Three layers, one domain (glossary "finding / taproot / nanopub"):
 ``finding``, the ref kind this module overlays, is owned by
@@ -63,11 +63,10 @@ demoted until a new ``disputes`` filing (Part 1) or an adjudicated
 marking (dark) — both re-open, neither adjudicates (stage 8 is still
 absent, so a re-opened claim stays unblessed). **Scale changes the risk of
 a wrong judge**: at ~1.5k hubs a
-bad-verdict rate that's a nuisance by hand is a corpus-wide event, and a
+bad-verdict rate that is a nuisance by hand is corpus-wide, and a
 demoter wired to a bad judge can un-approve as fast as a good one approves —
 every automated writer here needs a confidence floor, an idempotency story,
-and a dry-run mode before its first large run (``place``'s confidence gate
-on ``contradicts`` is one instance, not a one-off).
+and a dry-run mode before its first large run.
 
 **Support is a verdict, never a default.** ``links.meta.support`` is written
 only together with ``support_reason`` + ``verified_by`` (+ ``verified_at``,
@@ -130,41 +129,10 @@ Module map (detail lives in each module's own docstring):
 - :mod:`.grounding` — the "is this chunk evidence-grounding-eligible"
   predicate, shared (not duplicated) by backfill, reground, chase, repair.
 
-Producers (dark by default; no-op with no embedder). **Enablement, two
-mechanisms — one looks like the other and isn't.** A pass that is its own
-**service**
-(``hub_refine``, ``chase_trigger``, the axis classifier) flips live via a
-``service_config`` prio row (``precis service prio <host> <service> 1``, no
-redeploy) — since the §L cutover a ``ServiceSpec``'s ``enable_env`` is
-**never read**, so ``PRECIS_TAPROOT_REFINE_ENABLED`` in a plist does
-nothing; the per-cycle ``pass_gate`` is the one decision point. A
-**sub-feature of another pass** has no ``ServiceSpec``, so it keeps a
-genuine in-pass env flag: the forward chase bridge
-(``PRECIS_TAPROOT_CHASE_ENABLED``) and the inbound chase/citer sidecar
-(``PRECIS_INBOUND_CHASE_ENABLED``) are live env vars — do not "modernize"
-them into ``service prio``. Enable a service producer on **one host** —
-``hub_refine``'s rejection memo is a read-modify-write on ``meta``
-(``docs/runbooks/taproot-chase-enablement.md``).
-
-- **Forward chase bridge** (``workers/chase.py::_taproot_bridge``) — on a
-  finding's established-terminal hop, builds the claim from the finding's
-  own title and runs block->judge->place->``apply_placement`` in the same
-  transaction as the ``STATUS:established`` flip (savepoint-isolated).
-- **hub_refine** (``workers/hub_refine.py``, stage 5 *Widen*) — revisits
-  existing hubs off a due-set (``TAPROOT_DUE`` tag / sha-reopen / 90d
-  backstop); excludes composite hubs (evidence attaches to atoms only);
-  discovers via corpus semantic ANN + citation-following; re-verifies each
-  hub's own unverified edges per pass. Grown into **reground**
-  (``docs/backlog/taproot-reground.md``) — a strict per-edge KEEP/PRUNE/
-  CONTRADICTS audit, deeper same-paper re-discovery, and removal through
-  :func:`.hub.remove_evidence` — behind ``PRECIS_TAPROOT_REGROUND*``; the
-  prune sub-stage additionally gates on :mod:`.slice_refine_eval` passing.
-- **chase_trigger** (``workers/chase_trigger.py``) — the incremental
-  due-set watermark: reverse ANN from newly-embedded paper/patent chunks
-  marks near hubs ``TAPROOT_DUE``.
-- **TAPROOT axis classifier** (``data/axes/taproot.yaml`` via
-  ``workers/axis_pass.py``) — tags ``finding`` rows ``TAPROOT:claim`` vs
-  ``TAPROOT:review``; fail-open (ambiguous stays re-claimable).
+Producers (dark by default; no-op with no embedder): the forward chase bridge,
+``hub_refine`` (stage 5, grown into reground), ``chase_trigger`` and the
+TAPROOT axis classifier, with their enablement rules — owned by the
+``precis.workers.hub_refine`` module docstring.
 
 Authoring doors (all through :mod:`.hub`): ``put(kind='finding',
 supporters=[…])`` / ``precis taproot mint`` (:mod:`.authoring`);

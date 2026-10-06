@@ -15,10 +15,10 @@ is the second (``precis.mermaid.mermaid.MERMAID_LANG``). ``precis.figure.turn``
 generic core here, so the figure handler / web route / tests are untouched by
 the factoring.
 
-Element→chunk bindings: a node (by its stable id) binds to the chunk it
-depicts via a chunk-level ``depicts`` link (element id in
-``links.meta.elements``); the prepared context lists each node + topology +
-the linked chunk body, and a ``[binding]`` lint catches drift.
+Element→chunk bindings: a ``depicts`` link at chunk level (element id in
+``links.meta.elements``) ties a node's stable id to its chunk; the prepared
+context carries node, topology and linked chunk body, and a ``[binding]`` lint
+catches drift (agent-facing contract: skill ``precis-mermaid-help``).
 
 Autonomous tick: the ``diagram_propose`` job_type (``precis.workers.job_types.diagram_propose``) runs **one** turn from an
 instruction + seed chunk handles, mutating the diagram in place and

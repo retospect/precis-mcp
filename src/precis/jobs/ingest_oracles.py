@@ -37,7 +37,6 @@ Modes:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +46,7 @@ import yaml
 from precis.embedder import Embedder
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
+from precis.utils.timeutil import now_iso
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -147,10 +147,6 @@ def section_path(entry: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 # Ingest
 # ---------------------------------------------------------------------------
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _validate_doc(yaml_path: Path, doc: Any) -> dict[str, Any]:
@@ -273,7 +269,7 @@ def ingest_paper(
     ref_meta = {
         "tradition": slug,
         "description": description,
-        "ingested_at": _now_iso(),
+        "ingested_at": now_iso(),
     }
 
     def _write(c: Connection) -> None:

@@ -16,6 +16,7 @@ from typing import Any
 import precis.workers.bib_mark as bib_mark
 from precis.store.types import ChunkInsert
 from precis.workers.bib_mark import BIBMARK_VERSION, _extract_markers, run_bib_mark_pass
+from tests.factories import seed_paper_ref
 
 # ── _extract_markers (unit) ──────────────────────────────────────────
 
@@ -61,10 +62,6 @@ class TestExtractMarkers:
 
 
 # ── seeding helpers ──────────────────────────────────────────────────
-
-
-def _seed_paper(store: Any, *, slug: str) -> int:
-    return int(store.insert_ref(kind="paper", slug=slug, title=f"P {slug}", meta={}).id)
 
 
 def _seed_entry(store: Any, ref_id: int, marker: int) -> int:
@@ -113,7 +110,7 @@ def _bibmark_tagged(store: Any, chunk_id: int, version: str = BIBMARK_VERSION) -
 
 
 def test_worked_example_markers_and_expansion(store: Any) -> None:
-    paper = _seed_paper(store, slug="bm-worked")
+    paper = seed_paper_ref(store, slug="bm-worked")
     e126 = _seed_entry(store, paper, 126)
     e127 = _seed_entry(store, paper, 127)
     e129 = _seed_entry(store, paper, 129)
@@ -141,7 +138,7 @@ def test_worked_example_markers_and_expansion(store: Any) -> None:
 
 
 def test_swept_chunk_not_reclaimed_at_same_version(store: Any) -> None:
-    paper = _seed_paper(store, slug="bm-idem")
+    paper = seed_paper_ref(store, slug="bm-idem")
     _seed_entry(store, paper, 5)
     chunk = _seed_chunk(store, paper, 0, "prior result [5].")
 
@@ -157,7 +154,7 @@ def test_swept_chunk_not_reclaimed_at_same_version(store: Any) -> None:
 def test_chunk_with_no_valid_markers_is_swept_but_writes_nothing(store: Any) -> None:
     """Convergence: a body chunk whose only bracketed number isn't a bib
     marker is still marked swept (never re-probed) but writes no rows."""
-    paper = _seed_paper(store, slug="bm-empty")
+    paper = seed_paper_ref(store, slug="bm-empty")
     _seed_entry(store, paper, 12)
     chunk = _seed_chunk(store, paper, 0, "unrelated figure [999] reference only.")
 
@@ -168,7 +165,7 @@ def test_chunk_with_no_valid_markers_is_swept_but_writes_nothing(store: Any) -> 
 
 
 def test_paper_without_bib_entries_is_not_swept(store: Any) -> None:
-    paper = _seed_paper(store, slug="bm-nobib")
+    paper = seed_paper_ref(store, slug="bm-nobib")
     chunk = _seed_chunk(store, paper, 0, "text with [1] a marker but no parsed bib.")
 
     result = run_bib_mark_pass(store, batch_size=50)
@@ -177,7 +174,7 @@ def test_paper_without_bib_entries_is_not_swept(store: Any) -> None:
 
 
 def test_version_bump_resweeps(store: Any, monkeypatch) -> None:
-    paper = _seed_paper(store, slug="bm-bump")
+    paper = seed_paper_ref(store, slug="bm-bump")
     _seed_entry(store, paper, 7)
     chunk = _seed_chunk(store, paper, 0, "a claim [7].")
 

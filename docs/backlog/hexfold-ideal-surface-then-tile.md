@@ -185,6 +185,40 @@ judge co-optimise the surface again (orchestrator, S1 verdict 2026-10-03).
 
 ## Target + blast radius
 
+### R15 — authored sphere reach correction (gr469873)
+
+Reto's 2026-10-06 ruling: membership uses the full radial extent described
+by the authored target, including the sphere radius beyond an initial
+meridian `r0`. `Feature.reach` is the maximum radial coordinate of the
+meridian. Line/catenoid maxima are at endpoints; circular arcs also include
+their radial maximum when that angle is within the authored sweep. No grid,
+atom fitting, threshold, new target field or schema. Sheet ownership is the
+complement; expanded feature discs retain the existing overlap refusal.
+`surface_foot` and `surface_distance` share this same rule.
+An existing feature with an empty meridian explicitly refuses evaluation
+with ValueError in both judge paths; absent target geometry must not become
+zero reach, false sheet matches, infinite distances or zero normals. An
+empty feature list remains a valid sheet. This is direct-kernel validation;
+the public parser already refuses empty pieces and is unchanged.
+
+Pinned replay is the exact native ball12 request in
+fleet-state/inbox/hexfold-dogfood-curved-ready.json: sphere radius
+10.067387222435341 Å exceeds r0=9.69732218899367 Å. Atom aC343 at
+[9.47976239,-8.68156672,9.06851434] Å must be owned by q and measured
+against its spherical arc, rather than the sheet (~31.50 Å). Permanent
+kernel and registered public-get regressions pin this call; analytic sweep,
+boundary and expanded-overlap cases protect the membership rule.
+
+Independent review precedes root integration/full gate/version/deploy.
+After exact deployment, same-owner native ball12 remeasurement and an export
+replay compare whole-scene fraction within0.5 Å to 414/2406 (17.20698%).
+That replay preserves the reconstructed/fitted-target provenance limit;
+it does not recover the original generation target. Fresh different-radius
+dogfood sphere plus cylinder/saddle is Melchior-only after deployment,
+stored under se:hexfold-dogfood-*; authenticated viewer/access and supported
+bounded compute remain prerequisites. No workstation build, model/science,
+private-k3 public extension, hero regeneration or hold changes.
+
 ### R13 — S1 read-only exposure (bounded implementation)
 
 S1's judge is built: `precis_surface.deviation.surface_distance` + `summary`

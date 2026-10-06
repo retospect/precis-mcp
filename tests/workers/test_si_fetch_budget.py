@@ -242,7 +242,9 @@ def test_parent_claimed_after_deadline_runs_no_discovery(
     meta = _meta(store, pid)
     assert meta["si_fetch"]["deadline_retries"] == 1
     assert meta["si_fetch"]["requested_at"] > meta["si_checked_at"]
-    assert "si_misses" not in meta
+    assert meta["si_misses"] == [
+        {"url": None, "source": "si_pass", "reason": "deadline"}
+    ]
     assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 1
 
 
@@ -263,7 +265,9 @@ def test_late_claim_at_retry_cap_records_miss_and_event(store, tmp_path) -> None
     _flag(store, pid, "2026-10-03T10:00:00.000000Z")
     for _ in range(3):
         si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
-    assert "si_misses" not in _meta(store, pid)
+    assert _meta(store, pid)["si_misses"] == [
+        {"url": None, "source": "si_pass", "reason": "deadline"}
+    ]
     si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
     meta = _meta(store, pid)
     assert meta["si_misses"] == [
@@ -275,8 +279,8 @@ def test_late_claim_at_retry_cap_records_miss_and_event(store, tmp_path) -> None
             "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
             (pid, si_fetch.SI_EVENT_SOURCE),
         ).fetchall()
-    assert [r[0] for r in rows] == ["si_blocked"]
-    assert rows[0][1]["deadline_retries"] == 3
+    assert [r[0] for r in rows] == ["si_blocked"] * 4
+    assert rows[-1][1]["deadline_retries"] == 3
     assert si_fetch.run_si_pass(store, tmp_path, fetch=_no_si)["claimed"] == 0
 
 
@@ -299,6 +303,24 @@ def _events(store, pid: int) -> list[Any]:
             "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
             (pid, si_fetch.SI_EVENT_SOURCE),
         ).fetchall()
+
+
+def test_late_claim_records_deadline_miss_and_event_on_every_retry(
+    store, tmp_path
+) -> None:
+    pid = _seed(store)
+    _flag(store, pid, "2026-10-03T10:00:00.000000Z")
+    for n in (1, 2, 3, 4):
+        si_fetch.run_si_pass(store, tmp_path, fetch=_no_si, deadline_s=-1.0)
+        meta = _meta(store, pid)
+        assert meta["si_misses"] == [
+            {"url": None, "source": "si_pass", "reason": "deadline"}
+        ]
+        events = _events(store, pid)
+        assert len(events) == n
+        assert events[-1][0] == "si_blocked"
+        assert events[-1][1]["deadline_retries"] == min(n, 3)
+        assert events[-1][1].get("rearmed", False) is (n <= 3)
 
 
 def test_connect_timeout_with_nothing_queued_rearms(store, tmp_path) -> None:

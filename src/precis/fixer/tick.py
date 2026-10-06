@@ -335,9 +335,9 @@ def format_log_line(
 
 def _append_tick_log(work_dir: Path, item: WorkItem, report: Report) -> None:
     """Append one ``format_log_line`` record to ``<work_dir>/fixer.log``."""
-    from datetime import UTC, datetime
+    from precis.utils.timeutil import now_iso
 
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    timestamp = now_iso()
     line = format_log_line(
         timestamp, report.status.value, item.slug, item.branch, report.detail
     )

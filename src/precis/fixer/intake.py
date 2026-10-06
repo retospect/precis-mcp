@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+from precis.utils.text import slugify
+
 log = logging.getLogger("precis.fixer")
 
 #: Front-matter fence: a leading ``---`` line, body, closing ``---``.
@@ -93,12 +95,6 @@ def parse_front_matter(text: str) -> dict[str, str]:
     return out
 
 
-def _slugify(stem: str) -> str:
-    """Normalise a file stem into a branch-safe slug."""
-    slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
-    return slug or "proposal"
-
-
 def _title_from_body(text: str, fallback: str) -> str:
     """First ``# heading`` after the front-matter, else the fallback."""
     body = _FRONT_MATTER_RE.sub("", text, count=1)
@@ -132,7 +128,7 @@ def ready_items(backlog_dir: Path) -> list[WorkItem]:
         fm = parse_front_matter(text)
         if fm.get("status", "").lower() != "ready":
             continue
-        slug = _slugify(path.stem)
+        slug = slugify(path.stem, default="proposal")
         title = fm.get("title") or _title_from_body(text, slug)
         prio = (fm.get("prio") or "normal").lower()
         items.append(

@@ -8,8 +8,10 @@ module and one pair of templates behind every tab.
 * List reads off the DB: ``search_refs_lexical`` when a query is
   present (ranked), else ``list_refs`` with the date / tag filters and
   the whitelisted sort. Pagination is offset-based.
-* Detail renders the handler's own ``get`` output read-only (through
-  the in-process runtime, so the rendering can't drift from MCP).
+* Detail accepts every stored kind, independently of the curated browse
+  menu and optional handler availability. Shared reader URLs redirect native
+  kinds; generic pages render handler output or stored content. ORCID reads
+  the stored person and authored-paper links, never refreshing upstream.
 
 Read-only: mutations stay on verb-specific tabs (Todo) or the Console.
 Slug kinds (conv/oracle/patent/pres) and numeric kinds (memory/gripe) are
@@ -58,6 +60,7 @@ from precis_web.deps import (
 from precis_web.item_view import display_title
 from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.pathway_kinetics import kinetics_payload
+from precis_web.ref_urls import ref_url
 from precis_web.routes.structure import _geom_payload
 from precis_web.timefmt import abs_ts
 
@@ -106,19 +109,16 @@ _SORT_KEYS = {k for k, _ in SORT_CHOICES}
 _PAGE_SIZE = 50
 
 
-def _require_kind(kind: str) -> None:
-    # ``_REF_KIND_SET`` is the old per-kind nav list (memory / conv /
-    # oracle / gripe / patent / pres). After T12.6 the detail + list
-    # routes serve every kind in ``_REFS_BROWSABLE_KINDS`` (web,
-    # youtube, perplexity-research, etc. — anything search lists),
-    # so the gate has to use that set or live refs like /refs/youtube/N
-    # 400 with "no browse tab" even though their detail page renders
-    # fine.
-    if kind not in _REFS_BROWSABLE_KINDS:
-        raise NotFound(
-            f"no browse tab for kind={kind!r}",
-            next=f"browsable kinds: {sorted(_REFS_BROWSABLE_KINDS)}",
-        )
+def _require_kind(kind: str, request: Request) -> None:
+    """Accept registered kinds, including optional handlers absent at boot."""
+    if kind in _REFS_BROWSABLE_KINDS:
+        return
+    with get_store(request).pool.connection() as conn:
+        registered = conn.execute(
+            "SELECT 1 FROM kinds WHERE slug = %s", (kind,)
+        ).fetchone()
+    if not registered:
+        raise NotFound(f"unknown kind={kind!r}")
 
 
 def _parse_tags(raw: str | None) -> list[str]:
@@ -2569,17 +2569,8 @@ async def consolidated(
     )
 
 
-#: Per-kind URL shape for the native detail viewer in consolidated view.
-_CONSOLIDATED_KIND_URLS: dict[str, str] = {
-    "paper": "/papers/{id}",
-    "todo": "/todo?focus={id}",
-    "job": "/todo?focus={id}",
-}
-
-
 def _consolidated_ref_url(kind: str, ref_id: int) -> str:
-    template = _CONSOLIDATED_KIND_URLS.get(kind, "/refs/{kind}/{id}")
-    return template.format(kind=kind, id=ref_id)
+    return ref_url(kind, ref_id)
 
 
 async def _quest_index(request: Request, store: Store) -> HTMLResponse:
@@ -2687,7 +2678,7 @@ async def index(
         if q and q.strip():
             params.append(("q", q.strip()))
         return RedirectResponse(url="/drive?" + urlencode(params))
-    _require_kind(kind)
+    _require_kind(kind, request)
     store = get_store(request)
 
     # Quests get a dedicated tree view (the `serves` DAG) instead of the
@@ -2746,12 +2737,42 @@ async def index(
     )
 
 
+def _orcid_meta(store: Store, ref: Any) -> dict[str, Any]:
+    """Stored author identity and held papers, without an upstream request."""
+    from precis.errors import BadInput
+    from precis.ingest.orcid import normalize_orcid_id
+
+    raw = (ref.meta or {}).get("orcid_id") or ref.slug or ""
+    try:
+        identifier = normalize_orcid_id(str(raw))
+    except BadInput:
+        identifier = ""
+    links = store.links_for(ref.id, direction="out", relation="authored")
+    # links_for includes incoming inverse ``authored-by`` edges too.
+    refs = store.fetch_refs_by_ids(
+        [
+            link.dst_ref_id if link.src_ref_id == ref.id else link.src_ref_id
+            for link in links
+        ],
+        include_deleted=False,
+    )
+    papers = [
+        {"title": paper.title, "url": ref_url("paper", paper.id)}
+        for paper in refs.values()
+        if paper.kind == "paper"
+    ]
+    return {
+        "identifier": identifier,
+        "url": f"https://orcid.org/{identifier}" if identifier else "",
+        "papers": papers,
+    }
+
+
 @router.get("/{kind}/{ref_id}", response_class=HTMLResponse, response_model=None)
 async def detail(
     request: Request, kind: str, ref_id: int
 ) -> HTMLResponse | RedirectResponse:
-    """Read-only detail: the handler's own ``get`` output for this ref."""
-    _require_kind(kind)
+    """Read-only reader for every stored kind, independent of browse menus."""
     store = get_store(request)
     refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
     ref = refs.get(ref_id)
@@ -2778,18 +2799,9 @@ async def detail(
             )
         raise NotFound(f"{kind} id={ref_id} not found")
 
-    # Structures have a dedicated interactive 3D viewer at /structure/{slug};
-    # the generic handler-card render is just ASCII. Send humans to the viewer.
-    if kind == "structure" and ref.slug:
-        return RedirectResponse(url=f"/structure/{ref.slug}", status_code=303)
-
-    # Same for a pcb board: /pcb/{slug} is the workbench (fab render +
-    # schematic + netlist/route/DRC vitals); the handler card here is the
-    # agent-facing text. Drive rows link the workbench directly
-    # (``item_view._OPEN_URL_OVERRIDES``); this catches every other
-    # surface's generic /refs fallback.
-    if kind == "pcb" and ref.slug:
-        return RedirectResponse(url=f"/pcb/{ref.slug}", status_code=303)
+    target = ref_url(kind, ref.id, ref.slug)
+    if target != f"/refs/{kind}/{ref.id}":
+        return RedirectResponse(url=target, status_code=303)
 
     # A finding that is a live TAPROOT:claim hub has ONE canonical view — the
     # rich /claim/<head> evidence page (originators/corroborators/grounding/
@@ -2862,7 +2874,21 @@ async def detail(
     # body and never spends.
     if kind in _CACHE_BACKED_KINDS:
         get_args["no_fetch"] = True
-    body, is_error = await await_dispatch(request, "get", get_args)
+    if kind == "orcid":
+        # The stored person is sufficient; handler get may fetch on a miss.
+        body, is_error = (ref.meta or {}).get("biography", ""), False
+    elif kind in {"markdown", "plaintext", "tex"}:
+        # File get synchronizes with its local corpus and may retire a ref
+        # absent there. A browser must read the stored snapshot, even when
+        # this process does not mount the originating filesystem.
+        body = "\n\n".join(
+            chunk.text
+            for chunk in store.chunks.list_chunks_for_ref(ref.id)
+            if chunk.text
+        )
+        is_error = False
+    else:
+        body, is_error = await await_dispatch(request, "get", get_args)
 
     # Disabled-but-cached fallback: when the handler is currently
     # registered-but-disabled (math without WOLFRAM_APP_ID, web without
@@ -2872,7 +2898,9 @@ async def detail(
     # valuable even when fresh fetches can't run — that's why we keep
     # it. Tag the response so the template can show a quiet banner.
     body_disabled_notice: str | None = None
-    if is_error and "disabled in this build" in (body or ""):
+    if is_error and any(
+        reason in (body or "") for reason in ("disabled in this build", "unknown kind")
+    ):
         cached_chunks = list(store.chunks.list_chunks_for_ref(ref.id))
         if cached_chunks:
             cached_text = "\n\n".join(
@@ -2882,9 +2910,8 @@ async def detail(
                 body = cached_text
                 is_error = False
                 body_disabled_notice = (
-                    f"kind {kind!r} is currently disabled in this build; "
-                    "showing the cached body. Fresh fetches will resume "
-                    "once the required env (e.g. WOLFRAM_APP_ID) is set."
+                    f"kind {kind!r} is unavailable in this process; "
+                    "showing the stored body."
                 )
 
     # Patent body text lives in body chunks; the handler's overview
@@ -2963,6 +2990,7 @@ async def detail(
             "references": references,
             "job_actions": job_actions,
             "youtube_meta": youtube_meta,
+            "orcid_meta": _orcid_meta(store, ref) if kind == "orcid" else None,
             # The generic "Ask & think" Discussion box is a dream-memory
             # affordance; a job wants the actions strip, not an agentic
             # side-thread. Suppress it for jobs.
@@ -2996,7 +3024,7 @@ async def edit_tags(
     ``namespace:value`` from a chip's × button. Both flow through
     the handler so tag-vocabulary validation stays single-sourced.
     """
-    _require_kind(kind)
+    _require_kind(kind, request)
     add_list = _split_tag_input(add)
     remove_list = _split_tag_input(remove)
     redirect_url = f"/refs/{kind}/{ref_id}"
@@ -3020,7 +3048,7 @@ async def undelete(request: Request, kind: str, ref_id: int) -> Response:
     and redirects back to the detail URL, which now resolves: a restored
     structure 303-hops on to its ``/structure/{slug}`` viewer.
     """
-    _require_kind(kind)
+    _require_kind(kind, request)
     store = get_store(request)
     # Restore only a ref that actually IS this kind — ``restore_ref`` keys on
     # ref_id alone, so without this guard ``/refs/<any-kind>/<id>/undelete``
@@ -3201,7 +3229,7 @@ async def ask_followup(
     chunk: str = Form(""),
 ) -> Response:
     """Ask a follow-up about a ref (or a specific chunk via ``chunk=N``)."""
-    _require_kind(kind)
+    _require_kind(kind, request)
     chunk_pos: int | None = None
     if chunk.strip():
         try:

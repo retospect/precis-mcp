@@ -27,9 +27,9 @@ modelling precedent: [`per-user-library-link.md`](./per-user-library-link.md).
 ## In scope
 
 1. Ownership: `email_account` gains an owner referencing a precis user
-   (`web_users`, web-basic-auth-users.md §2a; `abbrev` is the short handle).
+   (`web_users.id`; web-basic-auth-users.md §2a).
 2. Credential scope in the vault: a per-user name convention, e.g.
-   `user:<abbrev>/email/<account>`, enforced by the vault's access layer. The
+   `user/<id>/email/<account>`, enforced by the vault's access layer. The
    flat-name vault cannot enforce it today, so this item depends on the
    `vault.acl` per-name ACL (or an equivalent per-user check in `get_secret`).
 3. The `email` handler and the `mail_poll` / `inject_scan` workers
@@ -70,7 +70,15 @@ secret `email.<account>.imap_password`; the code uses `.password`.
 
 ## Open questions / decisions log
 
-- Identity: is the web basic-auth user (`web_users.abbrev`) the right owner, or
-  a person ref (`orcid`)? MCP agent calls carry no web identity today (same gap
-  as per-user-library-link.md), so the handler needs a requesting-user source
-  for MCP sessions before the scope can be enforced there.
+- 2026-10-06 (Reto): the owner is the web user, not an orcid — orcid is an
+  optional attribute of a user, never the key (not every orcid record has a
+  precis account). The key is `web_users.id` (bigint identity PK), used for the
+  `email_account` owner column, the vault ACL and the secret-name scope;
+  `login` and `abbrev` (e.g. `rs`) are display only, joined in where a human
+  reads them. Keyed on `id` for rename stability. Migration 0164 keys
+  `refs.owner_login` on `web_users(login)`; that is the existing exception, to
+  move to an id column only when something touches it.
+- 2026-10-06 (Reto): MCP sessions carry no requesting-user identity today; the
+  binding is a per-user token minted at /account, never a hardcoded user. Filed
+  as mcp-session-user-identity.md; the handler reads the requesting user from
+  that item's session context.

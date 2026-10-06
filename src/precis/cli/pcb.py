@@ -88,6 +88,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     ie.add_argument("path", help="Path to the .epro2 file.")
     ie.add_argument(
+        "--copper",
+        choices=("fixed", "none"),
+        default=None,
+        help="Source copper: fresh intake defaults to fixed (tracks/arcs/vias); "
+        "none keeps measurement-only intake. Partial --update defaults to "
+        "none and refuses fixed.",
+    )
+    ie.add_argument(
         "--slug",
         required=True,
         help="The pcb slug to create. Refuses if it already exists unless "
@@ -264,6 +272,7 @@ def _import_epro(args: argparse.Namespace) -> None:
             store,
             data,
             slug=args.slug,
+            copper=getattr(args, "copper", None),
             title=args.title,
             board_uuid=args.board,
             source_name=path.name,

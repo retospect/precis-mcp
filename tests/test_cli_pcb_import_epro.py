@@ -299,3 +299,32 @@ def test_an_import_prints_its_copper_report(
     _stub(monkeypatch, dataclasses.replace(_OK, copper=_a_report()))
     pcb_cli.run(_args(epro_file))
     assert "! source widens to 1.000 mm" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["fixed", "none", None])
+def test_import_passes_the_explicit_copper_policy(monkeypatch, epro_file, mode):
+    _stub(monkeypatch, _OK)
+    from precis.ingest import pcb_epro
+
+    seen = {}
+
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return _OK
+
+    monkeypatch.setattr(pcb_epro, "import_epro", capture)
+    pcb_cli.run(_args(epro_file, copper=mode, dry_run=True))
+    assert seen["copper"] == mode
+
+
+def test_import_parser_advertises_and_validates_copper_policy():
+    parser = argparse.ArgumentParser()
+    pcb_cli.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(
+        ["pcb", "import-epro", "x.epro2", "--slug", "x", "--copper", "fixed"]
+    )
+    assert args.copper == "fixed"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["pcb", "import-epro", "x.epro2", "--slug", "x", "--copper", "guess"]
+        )

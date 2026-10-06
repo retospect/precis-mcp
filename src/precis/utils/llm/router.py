@@ -43,7 +43,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
 from enum import StrEnum
@@ -1212,6 +1212,9 @@ class LlmRequest:
     log_event: tuple[Any, int, str] | None = None
     # Extra CLI flags forwarded to the claude_* transports.
     extra_args: tuple[str, ...] = field(default_factory=tuple)
+    #: Extra top-level ``--settings`` JSON keys for the ``claude_agent``
+    #: transport (asa: ``autoMemoryEnabled``/``disableBundledSkills``).
+    settings_extra: Mapping[str, Any] | None = None
     #: Extra env vars overlaid onto the ``claude_agent`` subprocess env (the
     #: planner tick's runtime back-doors: ``PRECIS_CURRENT_TODO``/``_MODEL``/
     #: ``PRECIS_WORKSPACE``/the agentlog id/``PRECIS_KINDS_DISABLED``). The
@@ -1311,6 +1314,7 @@ class ClaudeAgentProvider:
                 output_format=req.output_format,
                 disallowed_tools=req.disallowed_tools,
                 extra_args=req.extra_args,
+                settings_extra=req.settings_extra,
                 log_event=req.log_event,
                 env_overlay=req.env_overlay,
                 cwd=req.cwd,
@@ -2369,6 +2373,7 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
             output_format=req.output_format,
             disallowed_tools=req.disallowed_tools,
             extra_args=req.extra_args,
+            settings_extra=req.settings_extra,
             log_event=req.log_event,
             env_overlay=req.env_overlay,
             cwd=req.cwd,

@@ -947,3 +947,115 @@ def test_dry_run_still_refuses(store) -> None:
         pcb_epro.import_epro(
             store, _zip(two_layer.encode("utf-8")), slug="epro-dry-3", dry_run=True
         )
+
+
+def _routed_synthetic_zip() -> bytes:
+    return _zip((_FIXTURE / "routed-board.epru").read_bytes())
+
+
+def test_routed_intake_keeps_each_source_line_and_arc_as_fixed_copper(store):
+    data = _routed_synthetic_zip()
+    result = pcb_epro.import_epro(store, data, slug="intake-bendy")
+    board_id = store.pcb_load(result.ref_id)["board"]["board_id"]
+    copper = store.pcb_fixed_copper_list(board_id)
+    tracks = [r for r in copper if r["ctype"] == "track"]
+    assert len(tracks) == 2  # two source LINE/ARC records, not one chained run
+    assert result.stats["source_track_records"] == 2
+    assert result.counts["fixed_copper"] == 3
+    assert all(r["net"] == "SIG" and r["layer"] == "F.Cu" for r in tracks)
+    assert sorted(s["shape"] for r in tracks for s in r["segments"]) == ["arc", "line"]
+    assert len([r for r in copper if r["ctype"] == "via"]) == 1
+
+
+def test_routed_intake_arc_geometry_and_preview_are_lossless(store, pcb):
+    import re
+
+    result = pcb_epro.import_epro(
+        store, _routed_synthetic_zip(), slug="intake-arc-oracle"
+    )
+    board_id = store.pcb_load(result.ref_id)["board"]["board_id"]
+    before = store.pcb_fixed_copper_list(board_id)
+    arc = next(
+        s
+        for r in before
+        if r["ctype"] == "track"
+        for s in r["segments"]
+        if s["shape"] == "arc"
+    )
+    assert arc["start"] == pytest.approx([2.54, 11.43])
+    assert arc["end"] == pytest.approx([3.81, 10.16])
+    assert arc["center"] == pytest.approx([2.54, 10.16])
+    assert arc["cw"] is True
+    assert all(
+        r["width_mm"] == pytest.approx(0.254) for r in before if r["ctype"] == "track"
+    )
+    assert all(r["generator_name"] == "__epro_source" for r in before)
+    graph_before = store.pcb_graph(result.ref_id)
+    legacy_before = pcb.get(id=f"{result.slug}#U1").body
+    pinout_before = pcb.get(id=f"{result.slug}#U1", view="pinout").body
+    preview = pcb.get(
+        id=f"{result.slug}#U1",
+        view="pinout-preview",
+        args={"pins": [{"name": "DRAFT_CLK", "pad": "1"}]},
+    )
+    assert "DRAFT_CLK" in preview.body
+    assert store.pcb_fixed_copper_list(board_id) == before
+    assert store.pcb_graph(result.ref_id) == graph_before
+    assert pcb.get(id=f"{result.slug}#U1").body == legacy_before
+    assert pcb.get(id=f"{result.slug}#U1", view="pinout").body == pinout_before
+    svg = pcb.get(id=result.slug, view="svg").body
+    assert re.search(r"A [\d.]+ [\d.]+ 0 [01] [01] [\d.,-]+", svg), svg[:500]
+
+
+def test_routed_intake_none_and_dry_run_do_not_write_copper(store):
+    dry = pcb_epro.import_epro(
+        store, _routed_synthetic_zip(), slug="intake-dry", dry_run=True
+    )
+    assert store.get_ref(kind="pcb", id="intake-dry") is None
+    assert dry.stats["source_track_records"] == 2
+    no = pcb_epro.import_epro(
+        store, _routed_synthetic_zip(), slug="intake-none", copper="none"
+    )
+    assert (
+        store.pcb_fixed_copper_list(store.pcb_load(no.ref_id)["board"]["board_id"])
+        == []
+    )
+
+
+def test_routed_intake_copper_failure_rolls_back_design(store, monkeypatch):
+    def refuse(*args, **kwargs):
+        # Confirm preceding design writes exist in the SAME transaction.
+        conn = kwargs["conn"]
+        assert conn.execute("SELECT count(*) FROM pcb_instances").fetchone()[0] > 0
+        raise RuntimeError("synthetic copper write failure")
+
+    monkeypatch.setattr(type(store), "pcb_fixed_copper_put", refuse)
+    with pytest.raises(RuntimeError, match="synthetic copper write failure"):
+        pcb_epro.import_epro(store, _routed_synthetic_zip(), slug="intake-atomic")
+    assert store.get_ref(kind="pcb", id="intake-atomic") is None
+    with store.pool.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM pcb_instances").fetchone()[0] == 0
+        assert (
+            conn.execute("SELECT count(*) FROM pcb_local_footprints").fetchone()[0] == 0
+        )
+        assert conn.execute("SELECT count(*) FROM pcb_fixed_copper").fetchone()[0] == 0
+
+
+def test_routed_intake_fixed_partial_update_refuses_before_write(store):
+    with pytest.raises(pcb_epro.EproImportError, match="fresh slug"):
+        pcb_epro.import_epro(
+            store,
+            _routed_synthetic_zip(),
+            slug="intake-no-update",
+            update=True,
+            copper="fixed",
+        )
+    assert store.get_ref(kind="pcb", id="intake-no-update") is None
+
+
+def test_routed_intake_preserves_explicit_copper_only_net_names(store):
+    result = pcb_epro.import_epro(store, _zip(), slug="intake-copper-nets")
+    board_id = store.pcb_load(result.ref_id)["board"]["board_id"]
+    copper = store.pcb_fixed_copper_list(board_id)
+    assert any(r["net"] == "TEE" for r in copper)
+    assert "TEE" in {n["name"] for n in store.pcb_graph(result.ref_id)["nets"]}

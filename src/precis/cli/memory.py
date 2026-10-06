@@ -43,6 +43,7 @@ from typing import Any
 
 from precis.cli._common import resolve_dsn
 from precis.store import Store
+from precis.utils.text import slugify
 
 log = logging.getLogger(__name__)
 
@@ -147,11 +148,6 @@ class _Section:
     bullets: list[_Bullet] = field(default_factory=list)
 
 
-def _slugify(text: str) -> str:
-    """Lowercase, alnum runs joined by ``-`` — a space-free tag/meta value."""
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-
 def parse_index(text: str) -> list[_Section]:
     """Parse ``MEMORY.md`` into sections of bullets (headers present, in order).
 
@@ -163,7 +159,7 @@ def parse_index(text: str) -> list[_Section]:
         line = raw.rstrip()
         if line.startswith("## "):
             title = line[3:].strip()
-            sections.append(_Section(title, _slugify(title), len(sections) + 1))
+            sections.append(_Section(title, slugify(title), len(sections) + 1))
             continue
         m = _BULLET_RE.match(line)
         if m is None or not sections:
@@ -576,7 +572,7 @@ def _render_loaded(
     grouped: list[tuple[str, list[Any]]] = []
     known: set[str] = set()
     for sec in sorted(sections, key=_order_key):
-        slug = str((sec.meta or {}).get("section") or _slugify(sec.title))
+        slug = str((sec.meta or {}).get("section") or slugify(sec.title))
         known.add(slug)
         grouped.append((sec.title, sorted(topics.get(slug, []), key=_order_key)))
     stray = [n for slug, nodes in topics.items() if slug not in known for n in nodes]

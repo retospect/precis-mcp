@@ -36,6 +36,17 @@ from the Stop-hook capture shim
 (``deploy/roles/asa_bot/files/capture_assistant_turn.py``, keyed off
 ``ASA_CONV_SLUG``, untouched by this migration). The two can be
 reconciled, or one retired, later; for now they simply coexist.
+
+Context hygiene: every turn is a fresh ``claude -p``, so whatever the CLI
+advertises is paid for in every prompt. Three knobs trim it. ``--tools``
+(:data:`_ASA_TOOLS`) restricts the advertised built-in tool set to the four
+pre-approved tools (denied tools stay advertised, so the hard deny list is
+kept as belt and braces); MCP tools are unaffected. ``autoMemoryEnabled:
+false`` drops the auto-memory section and ``disableBundledSkills: true`` drops
+the bundled skills list (code-review, loop, ...), both passed via ``--settings``
+(:data:`_ASA_SETTINGS`) so the behaviour does not depend on the deployed user
+settings file alone. The Agent roster is intentional and stays; the
+environment block is not configurable.
 """
 
 from __future__ import annotations
@@ -106,6 +117,18 @@ _ASA_DISALLOWED_TOOLS: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
 )
+
+# Advertised built-in tool set (``--tools``): exactly the four pre-approved in
+# the deployed settings. Passed in ``extra_args`` — the argv ends with ``--``
+# before the prompt, so ``--tools``' variadic cannot swallow it.
+_ASA_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep", "Agent")
+_ASA_EXTRA_ARGS: tuple[str, ...] = ("--tools", ",".join(_ASA_TOOLS))
+
+# Top-level ``--settings`` keys (context hygiene, see module docstring).
+_ASA_SETTINGS: dict[str, Any] = {
+    "autoMemoryEnabled": False,
+    "disableBundledSkills": True,
+}
 
 # Chain-lane turns hold a thread for the WHOLE turn (sync route, up to
 # turn_timeout_seconds each) — on asyncio's shared default executor that
@@ -302,6 +325,8 @@ async def invoke(
         max_usd=_MAX_USD_CEILING,
         timeout_s=float(cfg.turn_timeout_seconds),
         disallowed_tools=_ASA_DISALLOWED_TOOLS,
+        extra_args=_ASA_EXTRA_ARGS,
+        settings_extra=_ASA_SETTINGS,
         # Required for the on_event stream this whole module is built on —
         # not read from cfg.command since the parsing below hard-depends on
         # it (not a user-overridable knob the way --model/--max-turns are).
@@ -383,6 +408,8 @@ async def _invoke_via_chain(
         max_usd=_MAX_USD_CEILING,
         timeout_s=float(cfg.turn_timeout_seconds),
         disallowed_tools=_ASA_DISALLOWED_TOOLS,
+        extra_args=_ASA_EXTRA_ARGS,
+        settings_extra=_ASA_SETTINGS,
         source="asa_bot",
         env_overlay=overlay,
         cwd=cfg.cwd,

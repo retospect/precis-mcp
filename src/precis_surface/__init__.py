@@ -50,7 +50,11 @@ Modules:
   docs/backlog/hexfold-ideal-surface-then-tile.md).
 - :mod:`precis_surface.deviation` -- a sheet scene of authored
   axisymmetric features and each point's distance to it: the judge a
-  tiling of a fixed surface is measured by.
+  tiling of a fixed surface is measured by. Feature membership uses the
+  full target's radial extent (analytic arc/endpoint extrema), including
+  a sphere wider than its initial foot; clipping at the start radius
+  silently judged overhanging sphere atoms against the sheet (gr469873).
+  Expanded discs retain overlap refusal; no atom fitting or sampled reach.
 - :mod:`precis_surface.relax` -- spring + umbrella FIRE relaxation of a
   fitted carbon net, and POAV1 pyramidalisation (the smooth-drum slice).
 """

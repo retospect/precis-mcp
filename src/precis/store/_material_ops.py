@@ -24,6 +24,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.store._measures_ops import register_legacy_unit
+from precis.store._value_entity_ops import entity_upsert, value_insert
 
 _PROPERTY_COLS = (
     "prop_id, name, canonical_unit, dimension, value_type, allowed_values, "
@@ -103,28 +104,9 @@ class MaterialMixin:
         doesn't clobber an already-recorded ``material_class``). Returns
         ``(ref, created)``.
         """
-        existing = self.get_ref(kind="material", id=slug)
-        with self.tx() as conn:
-            if existing is None:
-                ref = self.insert_ref(
-                    kind="material",
-                    slug=slug,
-                    title=title,
-                    meta=dict(meta_patch),
-                    conn=conn,
-                )
-                return ref, True
-            merged = {**(existing.meta or {}), **meta_patch}
-            conn.execute(
-                "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
-                (title, Jsonb(merged), existing.id),
-            )
-        # Read AFTER the transaction commits: ``get_ref`` takes no ``conn`` and
-        # always opens its own pooled connection, so reading inside the block
-        # above returns the PRE-update row under READ COMMITTED. gr329810.
-        updated = self.get_ref(kind="material", id=slug)
-        assert updated is not None
-        return updated, False
+        return entity_upsert(
+            self, kind="material", slug=slug, title=title, meta_patch=meta_patch
+        )
 
     # -- property registry -------------------------------------------------
 
@@ -221,36 +203,28 @@ class MaterialMixin:
         notes: str | None = None,
     ) -> int:
         """Insert one sourced measurement row. Returns the new ``id``."""
-        with self.tx() as conn:
-            row = conn.execute(
-                "INSERT INTO material_values "
-                "(material_ref_id, property_id, value_num, value_low, "
-                " value_high, value_text, value_bool, conditions, maturity, "
-                " method, source_ref_id, source_chunk, source_url, as_of, "
-                " set_by, notes) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "RETURNING id",
-                (
-                    material_ref_id,
-                    property_id,
-                    value_num,
-                    value_low,
-                    value_high,
-                    value_text,
-                    value_bool,
-                    Jsonb(conditions or {}),
-                    maturity,
-                    method,
-                    source_ref_id,
-                    source_chunk,
-                    source_url,
-                    as_of,
-                    set_by,
-                    notes,
-                ),
-            ).fetchone()
-        assert row is not None
-        return int(row[0])
+        return value_insert(
+            self,
+            table="material_values",
+            ref_col="material_ref_id",
+            key_col="property_id",
+            ref_id=material_ref_id,
+            key=property_id,
+            value_num=value_num,
+            value_low=value_low,
+            value_high=value_high,
+            value_text=value_text,
+            value_bool=value_bool,
+            conditions=conditions,
+            maturity=maturity,
+            method=method,
+            source_ref_id=source_ref_id,
+            source_chunk=source_chunk,
+            source_url=source_url,
+            as_of=as_of,
+            set_by=set_by,
+            notes=notes,
+        )
 
     def material_values_for_ref(self, material_ref_id: int) -> list[dict[str, Any]]:
         """Every value row for one material, grouped by property (ordered

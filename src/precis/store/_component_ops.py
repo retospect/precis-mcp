@@ -33,6 +33,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from precis.store._measures_ops import register_legacy_unit
+from precis.store._value_entity_ops import entity_upsert, value_insert
 
 #: THE "current value" tie-break for an append-only
 #: ``component_spec_values`` history, in ONE place so the single-spec and
@@ -157,27 +158,9 @@ class ComponentMixin:
         doesn't clobber an already-recorded ``category``/``mpn``). Returns
         ``(ref, created)``.
         """
-        existing = self.get_ref(kind="component", id=slug)
-        with self.tx() as conn:
-            if existing is None:
-                ref = self.insert_ref(
-                    kind="component",
-                    slug=slug,
-                    title=title,
-                    meta=dict(meta_patch),
-                    conn=conn,
-                )
-                return ref, True
-            merged = {**(existing.meta or {}), **meta_patch}
-            conn.execute(
-                "UPDATE refs SET title = %s, meta = %s WHERE ref_id = %s",
-                (title, Jsonb(merged), existing.id),
-            )
-        # Read AFTER the transaction commits — see the note in
-        # ``_material_ops.material_entity_upsert``. gr329810.
-        updated = self.get_ref(kind="component", id=slug)
-        assert updated is not None
-        return updated, False
+        return entity_upsert(
+            self, kind="component", slug=slug, title=title, meta_patch=meta_patch
+        )
 
     # -- category registry ------------------------------------------------
 
@@ -337,36 +320,28 @@ class ComponentMixin:
         notes: str | None = None,
     ) -> int:
         """Insert one sourced measurement row. Returns the new ``id``."""
-        with self.tx() as conn:
-            row = conn.execute(
-                "INSERT INTO component_spec_values "
-                "(component_ref_id, spec_id, value_num, value_low, "
-                " value_high, value_text, value_bool, conditions, maturity, "
-                " method, source_ref_id, source_chunk, source_url, as_of, "
-                " set_by, notes) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "RETURNING id",
-                (
-                    component_ref_id,
-                    spec_id,
-                    value_num,
-                    value_low,
-                    value_high,
-                    value_text,
-                    value_bool,
-                    Jsonb(conditions or {}),
-                    maturity,
-                    method,
-                    source_ref_id,
-                    source_chunk,
-                    source_url,
-                    as_of,
-                    set_by,
-                    notes,
-                ),
-            ).fetchone()
-        assert row is not None
-        return int(row[0])
+        return value_insert(
+            self,
+            table="component_spec_values",
+            ref_col="component_ref_id",
+            key_col="spec_id",
+            ref_id=component_ref_id,
+            key=spec_id,
+            value_num=value_num,
+            value_low=value_low,
+            value_high=value_high,
+            value_text=value_text,
+            value_bool=value_bool,
+            conditions=conditions,
+            maturity=maturity,
+            method=method,
+            source_ref_id=source_ref_id,
+            source_chunk=source_chunk,
+            source_url=source_url,
+            as_of=as_of,
+            set_by=set_by,
+            notes=notes,
+        )
 
     def component_values_for_ref(
         self, component_ref_id: int

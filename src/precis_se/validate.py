@@ -30,6 +30,17 @@ finding. Envelope-vs-envelope only, via the cad kernel's exact-sign
 Poses are treated as world-frame, the nm ``view='clearance'`` v1
 convention; array members are not expanded (the array node itself is
 checked at its own pose — a later increment poses members).
+
+**Kernel scale.** The cad kernel's tolerances used to be absolute
+(``LINEAR_EPS = 1e-6``: fine for Å and mm callers, fatal for a
+nanometre-scale box whose every face it culled). They are now
+scale-relative (``precis.cad.vec.LINEAR_REL_EPS``, each primitive's own
+governing length). Geometry queries still pass through :func:`kernel_scale`,
+which normalizes out-of-band designs into O(100) kernel units and converts
+results back to metres — belt-and-suspenders, and because
+``_CROSS_SCALE_RATIO`` still refuses to combine wildly different-scale
+blocks in one SDF query (a conditioning problem the kernel fix doesn't
+solve). In-band designs go through unscaled, bit-identical.
 """
 
 from __future__ import annotations

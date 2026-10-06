@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
-from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.liveness import (
     NO_ADVERTISED_BOOT_ID,
     RECLAIM_WHY_EPOCH,
@@ -36,6 +35,7 @@ from precis.store._resource_slots_ops import (
     release_resource_slots,
     reserve_resource_slots,
 )
+from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import ChunkInsert, Tag
 from precis.utils.llm.quota import QUOTA_RESET_PATTERN
 from precis.workers.executors import suspended_job_types

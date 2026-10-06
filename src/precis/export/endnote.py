@@ -27,9 +27,9 @@ is itself well-formed.
 from __future__ import annotations
 
 from typing import Any
-from xml.sax.saxutils import escape as _xml_escape
 
 from precis.utils.authors import author_display
+from precis.utils.text import esc
 
 #: EndNote ``ref-type`` codes (name, numeric code), verified against a real
 #: EndNote-authored field (Journal Article = 17). The others are the standard
@@ -48,11 +48,6 @@ _REF_TYPES: dict[str, tuple[str, int]] = {
 #: deterministic.
 _DB_ID = "precismcp0traveling0library000000000"
 _TIMESTAMP = "1700000000"  # fixed → deterministic export bytes
-
-
-def _esc(value: Any) -> str:
-    """XML-escape a text value for embedding in the EndNote payload."""
-    return _xml_escape("" if value is None else str(value))
 
 
 def _author_list(authors: list[dict[str, Any]] | None) -> list[str]:
@@ -111,38 +106,37 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
         f"<rec-number>{rec}</rec-number>",
         f'<foreign-keys><key app="EN" db-id="{_DB_ID}" '
         f'timestamp="{_TIMESTAMP}">{rec}</key></foreign-keys>',
-        f'<ref-type name="{_esc(name)}">{code}</ref-type>',
+        f'<ref-type name="{esc(name)}">{code}</ref-type>',
     ]
     authors = _author_list(source.get("authors"))
     if authors:
-        inner = "".join(f"<author>{_esc(a)}</author>" for a in authors)
+        inner = "".join(f"<author>{esc(a)}</author>" for a in authors)
         parts.append(f"<contributors><authors>{inner}</authors></contributors>")
-    titles = [f"<title>{_esc(source.get('title'))}</title>"]
+    titles = [f"<title>{esc(source.get('title'))}</title>"]
     if source.get("journal"):
-        titles.append(f"<secondary-title>{_esc(source['journal'])}</secondary-title>")
+        titles.append(f"<secondary-title>{esc(source['journal'])}</secondary-title>")
     parts.append("<titles>" + "".join(titles) + "</titles>")
     if source.get("journal"):
         parts.append(
-            f"<periodical><full-title>{_esc(source['journal'])}"
+            f"<periodical><full-title>{esc(source['journal'])}"
             "</full-title></periodical>"
         )
     if source.get("pages"):
-        parts.append(f"<pages>{_esc(source['pages'])}</pages>")
+        parts.append(f"<pages>{esc(source['pages'])}</pages>")
     if source.get("volume"):
-        parts.append(f"<volume>{_esc(source['volume'])}</volume>")
+        parts.append(f"<volume>{esc(source['volume'])}</volume>")
     if source.get("number"):
-        parts.append(f"<number>{_esc(source['number'])}</number>")
+        parts.append(f"<number>{esc(source['number'])}</number>")
     if source.get("year"):
-        parts.append(f"<dates><year>{_esc(source['year'])}</year></dates>")
+        parts.append(f"<dates><year>{esc(source['year'])}</year></dates>")
     if source.get("doi"):
         # EndNote stores the DOI in <electronic-resource-num>.
         parts.append(
-            f"<electronic-resource-num>{_esc(source['doi'])}</electronic-resource-num>"
+            f"<electronic-resource-num>{esc(source['doi'])}</electronic-resource-num>"
         )
     if source.get("url"):
         parts.append(
-            f"<urls><related-urls><url>{_esc(source['url'])}</url>"
-            "</related-urls></urls>"
+            f"<urls><related-urls><url>{esc(source['url'])}</url></related-urls></urls>"
         )
     else:
         parts.append("<urls></urls>")
@@ -150,7 +144,7 @@ def build_record(source: dict[str, Any], notes: str | None = None) -> str:
         text = notes.strip()
         if len(text) > _NOTE_MAX_CHARS:
             text = text[:_NOTE_MAX_CHARS].rstrip() + "…"
-        parts.append(f"<research-notes>{_esc(text)}</research-notes>")
+        parts.append(f"<research-notes>{esc(text)}</research-notes>")
     parts.append("</record>")
     return "".join(parts)
 
@@ -165,10 +159,10 @@ def citation_payload(source: dict[str, Any], notes: str | None = None) -> str:
     rec = source["rec_number"]
     return (
         "<EndNote><Cite>"
-        f"<Author>{_esc(first_family)}</Author>"
-        f"<Year>{_esc(year) if year else ''}</Year>"
+        f"<Author>{esc(first_family)}</Author>"
+        f"<Year>{esc(year) if year else ''}</Year>"
         f"<RecNum>{rec}</RecNum>"
-        f"<DisplayText>{_esc(display)}</DisplayText>"
+        f"<DisplayText>{esc(display)}</DisplayText>"
         f"{build_record(source, notes)}"
         "</Cite></EndNote>"
     )
@@ -268,7 +262,7 @@ _INSTANT_FORMAT = (
 
 def _layout(style: str) -> str:
     return (
-        f"<ENLayout><Style>{_esc(style)}</Style><LeftDelim>{{</LeftDelim>"
+        f"<ENLayout><Style>{esc(style)}</Style><LeftDelim>{{</LeftDelim>"
         "<RightDelim>}</RightDelim><FontName>Calibri</FontName><FontSize>11"
         "</FontSize><ReflistTitle></ReflistTitle><StartingRefnum>1"
         "</StartingRefnum><FirstLineIndent>0</FirstLineIndent><HangingIndent>720"

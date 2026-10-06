@@ -307,3 +307,39 @@ def test_unknown_vault_extra_present_dot_is_emerald(
     assert r.status_code == 200
     assert "SOME_UNLISTED_SECRET" in r.text
     assert "bg-emerald-500" in r.text
+
+
+def test_elsevier_probe_uses_article_retrieval_not_search() -> None:
+    import httpx
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            return await secret_status._probe_elsevier(
+                client, {"PRECIS_ELSEVIER_API_KEY": "synthetic"}
+            )
+
+    assert asyncio.run(run()).state == "ok"
+    assert "/content/article/doi/10.1016/" in str(requests[0].url)
+    assert "/search/" not in str(requests[0].url)
+
+
+def test_core_probe_429_is_rate_limited_with_code() -> None:
+    import httpx
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(429))
+        ) as client:
+            return await secret_status._probe_core(
+                client, {"PRECIS_CORE_API_KEY": "synthetic"}
+            )
+
+    result = asyncio.run(run())
+    assert "429" in result.detail
+    assert "rate limited" in result.detail
