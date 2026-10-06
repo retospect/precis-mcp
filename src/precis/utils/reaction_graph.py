@@ -31,6 +31,8 @@ from collections import deque
 from itertools import pairwise
 from typing import Any, cast
 
+from precis.utils.coerce import finite_or
+
 
 def roots(graph: dict[str, Any], results: dict[str, Any]) -> tuple[str, str]:
     """Resolve the (root, target) node ids. The substrate *label* (``NO``) may
@@ -43,19 +45,6 @@ def roots(graph: dict[str, Any], results: dict[str, Any]) -> tuple[str, str]:
     tgt = results.get("target")
     target = tgt if tgt in nodes else (order[-1] if order else (tgt or ""))
     return cast(str, root), cast(str, target)
-
-
-def _num(x: Any, default: float = 0.0) -> float:
-    """A non-finite barrier/energy is persisted as JSON null (see
-    ``precis_pathway.persist._json_finite``); coerce that null back to a numeric
-    default so the graph math below never does ``float(None)``/``None > float``.
-    A raw NaN/inf (the graph straight off the engine, before persist) is treated
-    the same way: NaN compares false both ways, so left in a ``max()`` it made
-    the answer depend on iteration order (gr460408)."""
-    if x is None:
-        return default
-    v = float(x)
-    return v if math.isfinite(v) else default
 
 
 def _finite_or_none(x: Any) -> float | None:
@@ -128,7 +117,7 @@ def rate_limiting(
     if not steps:
         return None
     # A null barrier (a non-finite EMT value persisted as JSON null) sorts last.
-    top = max(steps, key=lambda e: _num(e.get("barrier"), float("-inf")))
+    top = max(steps, key=lambda e: finite_or(e.get("barrier"), float("-inf")))
     return {
         "step": f"{top['source']}→{top['target']}",
         "ea": _finite_or_none(top.get("barrier")),
@@ -145,13 +134,13 @@ def energetic_span(graph: dict[str, Any], root: str, target: str) -> float | Non
     if len(path) < 2:
         return None
     nm = _node_map(graph)
-    state_e = [_num(nm.get(s, {}).get("rel_energy")) for s in path]
+    state_e = [finite_or(nm.get(s, {}).get("rel_energy")) for s in path]
     span = 0.0
     min_state = state_e[0]
     for i, (a, b) in enumerate(pairwise(path)):
         e = _edge(graph, a, b)
         # supply bridges carry no barrier — no extra climb at that step.
-        ea = 0.0 if (e is None or _is_supply(e)) else _num(e.get("barrier"))
+        ea = 0.0 if (e is None or _is_supply(e)) else finite_or(e.get("barrier"))
         ts_energy = state_e[i] + ea  # cumulative TS height
         min_state = min(min_state, state_e[i])
         span = max(span, ts_energy - min_state)
@@ -275,8 +264,8 @@ def at_potential(graph: dict[str, Any], U: float) -> dict[str, Any]:
     n_h: dict[str, float] = {}
     for n in graph.get("nodes", []):
         nn = dict(n)
-        shift = _num(n.get("n_H")) * U
-        n_h[str(n.get("id"))] = _num(n.get("n_H"))
+        shift = finite_or(n.get("n_H")) * U
+        n_h[str(n.get("id"))] = finite_or(n.get("n_H"))
         for key in ("rel_energy", "energy"):
             if nn.get(key) is not None:
                 nn[key] = float(nn[key]) + shift

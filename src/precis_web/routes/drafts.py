@@ -134,6 +134,7 @@ from precis.utils.authors import (
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
 from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.table_data import Scalar
+from precis.utils.text import slugify
 from precis_web import draft_eyes
 from precis_web.auth import current_user
 from precis_web.deps import (
@@ -820,12 +821,6 @@ async def index(q: str | None = None) -> Response:
     return RedirectResponse(url="/drive?" + urlencode(params))
 
 
-def _slugify(title: str) -> str:
-    """A short kebab slug from a title (the draft's address)."""
-    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    return s[:40] or "draft"
-
-
 def _parse_id(body: str) -> int | None:
     m = re.search(r"id=(\d+)", body or "")
     return int(m.group(1)) if m else None
@@ -914,7 +909,7 @@ async def new_draft(
             },
             status_code=400,
         )
-    slug = _slugify(slug.strip() or title)
+    slug = slugify(slug.strip() or title, max_len=40, default="draft")
     workspace: dict[str, Any] = {"path": f"projects/{slug}", "format": "tex"}
     doctype = doctype.strip() or "paper"
     if doctype in _DOC_TYPE_BRIEF:

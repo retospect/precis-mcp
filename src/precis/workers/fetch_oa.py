@@ -84,7 +84,7 @@ from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
-from precis.utils.http import retry_transient
+from precis.utils.http import http_client, retry_transient
 from precis.workers import activity
 
 if TYPE_CHECKING:
@@ -925,7 +925,7 @@ def _query_openalex_credits_remaining(api_key: str) -> int | None:
     missing/malformed number — the caller treats that as "can't read a balance"
     and clears rather than raises a spurious alert.
     """
-    with httpx.Client(timeout=_API_TIMEOUT_S) as client:
+    with http_client(timeout=_API_TIMEOUT_S, user_agent=None) as client:
         resp = client.get(_OPENALEX_RATE_LIMIT_URL, params={"api_key": api_key})
         resp.raise_for_status()
         data = resp.json()
@@ -2734,7 +2734,7 @@ def _query_unpaywall(doi: str, *, email: str) -> dict[str, Any]:
     return shape is documented at https://unpaywall.org/data-format.
     """
     url = f"{_UNPAYWALL_BASE}/{doi}"
-    with httpx.Client(timeout=_API_TIMEOUT_S) as client:
+    with http_client(timeout=_API_TIMEOUT_S, user_agent=None) as client:
         resp = client.get(url, params={"email": email})
         resp.raise_for_status()
         return resp.json()
@@ -2749,7 +2749,7 @@ def _query_crossref_pdf_links(doi: str, *, email: str) -> list[str]:
     those are handled by the dedicated Elsevier leg, not here.
     """
     url = f"https://api.crossref.org/works/{doi}"
-    with httpx.Client(
+    with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
         resp = retry_transient(
@@ -2776,7 +2776,7 @@ def _query_openalex_pdf_urls(doi: str, *, email: str) -> list[str]:
     """
     url = f"https://api.openalex.org/works/doi:{doi}"
     params = {"mailto": email} if email else {}
-    with httpx.Client(
+    with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
         resp = client.get(url, params=params)
@@ -2801,7 +2801,7 @@ def _query_europepmc_oa_pmcid(doi: str) -> str | None:
     """
     url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
     params = {"query": f'DOI:"{doi}"', "format": "json", "resultType": "core"}
-    with httpx.Client(
+    with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header()}
     ) as client:
         resp = client.get(url, params=params)
@@ -2862,7 +2862,7 @@ def _query_core_fulltext_urls(doi: str, *, api_key: str) -> list[str]:
     """
     params: dict[str, str | int] = {"q": f'doi:"{doi}"', "limit": 5}
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _BROWSER_UA}
-    with httpx.Client(timeout=_API_TIMEOUT_S, headers=headers) as client:
+    with http_client(timeout=_API_TIMEOUT_S, headers=headers) as client:
         resp = client.get(_CORE_SEARCH_BASE, params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -2898,7 +2898,7 @@ def _query_openalex_content_urls(doi: str, *, email: str = "") -> dict[str, str]
     """
     url = f"https://api.openalex.org/works/doi:{doi}"
     params = {"mailto": email} if email else {}
-    with httpx.Client(
+    with http_client(
         timeout=_API_TIMEOUT_S, headers={"User-Agent": _user_agent_header(email)}
     ) as client:
         resp = client.get(url, params=params)

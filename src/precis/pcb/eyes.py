@@ -28,6 +28,7 @@ from typing import Any
 
 from precis.pcb import padplace
 from precis.pcb.geom import Point, dist
+from precis.utils.coerce import num_finite
 
 
 def _pinout_number(value: Any) -> float | None:
@@ -343,13 +344,6 @@ def bind_feature_operands(
     return out if changed else measures
 
 
-def _num(v: Any) -> float | None:
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
-        return None
-    f = float(v)
-    return f if math.isfinite(f) else None
-
-
 def _operand(op: Any) -> tuple[str, Any] | None:
     """One align operand -> ``("inst", refdes)`` / ``("datum", (x, y))``;
     ``None`` when it does not resolve (a ``feature_id`` reaching here was
@@ -361,7 +355,7 @@ def _operand(op: Any) -> tuple[str, Any] | None:
         return ("inst", ref)
     pt = op.get("point")
     if isinstance(pt, (list, tuple)) and len(pt) == 2:
-        x, y = _num(pt[0]), _num(pt[1])
+        x, y = num_finite(pt[0]), num_finite(pt[1])
         if x is not None and y is not None:
             return ("datum", (x, y))
     return None
@@ -398,12 +392,12 @@ def parse_align(m: dict[str, Any]) -> AlignSpec | None:
     if off is not None:
         if not isinstance(off, (list, tuple)) or len(off) != 2:
             return None
-        vx, vy = _num(off[0]), _num(off[1])
+        vx, vy = num_finite(off[0]), num_finite(off[1])
         if vx is None or vy is None:
             return None
         ox, oy = vx, vy
     goal = m.get("goal")
-    tol = ALIGN_DEFAULT_TOL_MM if goal is None else _num(goal)
+    tol = ALIGN_DEFAULT_TOL_MM if goal is None else num_finite(goal)
     if tol is None or tol < 0:
         return None
     if first[0] == "inst" and second[0] == "inst":

@@ -31,6 +31,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 from precis.diagram.lang import Element, LintFinding
+from precis.utils.text import fmt_num
 
 __all__ = [
     "DEFAULT_VIEWBOX",
@@ -249,17 +250,12 @@ def default_svg(
 ) -> str:
     """A starter empty canvas at ``viewbox`` — the birth source of a figure."""
     x, y, w, h = viewbox
-    vb = f"{_num(x)} {_num(y)} {_num(w)} {_num(h)}"
+    vb = f"{fmt_num(x)} {fmt_num(y)} {fmt_num(w)} {fmt_num(h)}"
     return (
         f'<svg xmlns="{SVG_NS}" viewBox="{vb}">\n'
         f"  <!-- empty canvas — draw here -->\n"
         f"</svg>\n"
     )
-
-
-def _num(v: float) -> str:
-    """Format a float without a trailing ``.0`` (256.0 → ``256``)."""
-    return str(int(v)) if v == int(v) else str(v)
 
 
 def lint_svg(
@@ -295,8 +291,8 @@ def lint_svg(
                 LintFinding(
                     "bounds",
                     node,
-                    f"{node} extends outside the {_num(w)}×{_num(h)} viewBox "
-                    f"(bbox {_num(x0)},{_num(y0)}…{_num(x1)},{_num(y1)})",
+                    f"{node} extends outside the {fmt_num(w)}×{fmt_num(h)} viewBox "
+                    f"(bbox {fmt_num(x0)},{fmt_num(y0)}…{fmt_num(x1)},{fmt_num(y1)})",
                 )
             )
     return findings
@@ -353,7 +349,7 @@ def _coords_str(el: ET.Element) -> str:
     bbox = _shape_bbox(el)
     if bbox is not None:
         x0, y0, x1, y1 = bbox
-        return f"bbox {_num(x0)},{_num(y0)}…{_num(x1)},{_num(y1)}"
+        return f"bbox {fmt_num(x0)},{fmt_num(y0)}…{fmt_num(x1)},{fmt_num(y1)}"
     return ""
 
 

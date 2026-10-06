@@ -30,19 +30,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis.utils.coerce import as_float
 from precis_chem.ir import RouteGraph, RouteStep, normalize_smiles
 
 #: Bind-mount points inside the container + the AiZynth output filename.
 CONTAINER_IN = "/work/in"
 CONTAINER_OUT = "/work/out"
 TREES_FILE = "trees.json"
-
-
-def _as_float(v: Any) -> float | None:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _extract_routes(data: Any) -> list[dict[str, Any]]:
@@ -118,7 +112,7 @@ def parse_aizynth_trees(
                     template_id=str(tmpl) if tmpl is not None else None,
                     reaction_smarts=rxn.get("smiles"),
                     conditions=md.get("classification") or None,
-                    confidence=_as_float(md.get("policy_probability")),
+                    confidence=as_float(md.get("policy_probability")),
                     in_stock=bool(precursors)
                     and all(p.get("in_stock", False) for p in precursors),
                 )
@@ -149,7 +143,7 @@ def parse_aizynth_trees(
         engine_version=engine_version,
         steps=steps,
         solved=solved,
-        score=_as_float(root.get("scores", {}).get("state score"))
+        score=as_float(root.get("scores", {}).get("state score"))
         if isinstance(root.get("scores"), dict)
         else None,
         provenance={"engine": "aizynth", "n_routes": len(routes)},

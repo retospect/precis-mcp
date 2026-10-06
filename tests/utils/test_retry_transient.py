@@ -129,7 +129,8 @@ def test_fetch_oa_crossref_leg_retries(
     real = httpx.Client
 
     def factory(**kw: Any) -> httpx.Client:
-        return real(transport=httpx.MockTransport(handler), **kw)
+        kw["transport"] = httpx.MockTransport(handler)
+        return real(**kw)
 
     monkeypatch.setattr(fetch_oa.httpx, "Client", factory)
     assert fetch_oa._query_crossref_pdf_links("10.1/x", email="a@b.c") == [

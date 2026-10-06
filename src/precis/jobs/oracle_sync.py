@@ -40,12 +40,12 @@ import logging
 import os
 import socket
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import precis as _precis_pkg
 from precis.jobs.ingest_oracles import bundled_oracle_dir, ingest_directory
+from precis.utils.timeutil import now_iso
 
 if TYPE_CHECKING:
     from psycopg import Connection
@@ -184,7 +184,7 @@ def _write_state(store: Any, state: CorpusState) -> None:
     partial state still gates correctly on the next boot via
     sha256 mismatch.
     """
-    now = datetime.now(UTC).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = now_iso()
     host = socket.gethostname() or "unknown"
     try:
         store.set_setting(_KEY_VERSION, str(state.version))
@@ -202,7 +202,7 @@ def _write_state_conn(conn: Connection, state: CorpusState) -> None:
     **atomically with the data** — a crash mid-ingest can't leave the
     marker claiming a corpus that didn't fully land.
     """
-    now = datetime.now(UTC).replace(tzinfo=None).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = now_iso()
     host = socket.gethostname() or "unknown"
     for key, val in (
         (_KEY_VERSION, str(state.version)),

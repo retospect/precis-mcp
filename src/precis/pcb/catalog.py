@@ -18,6 +18,8 @@ import sqlite3
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.coerce import to_int
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -39,13 +41,6 @@ def _to_bool(v: Any) -> bool:
     if isinstance(v, (int, float)):
         return v != 0
     return str(v).strip().lower() in ("1", "true", "yes", "basic", "preferred")
-
-
-def _to_int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _height_mm(extra: Any) -> float | None:
@@ -88,7 +83,7 @@ def normalize_jlcparts_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "description": row.get("description") or "",
         "jlcpcb_assemblable": True,  # the dump IS the JLCPCB assembly catalog
         "basic": _to_bool(row.get("basic")) or _to_bool(row.get("preferred")),
-        "stock": _to_int(row.get("stock")) or 0,
+        "stock": to_int(row.get("stock")) or 0,
         "price": row.get("price"),  # JSON list of qty breaks → jsonb
         "package": row.get("package") or row.get("footprint"),
         "height_mm": _height_mm(extra),

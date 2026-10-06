@@ -60,6 +60,7 @@ import yaml
 from precis.store.types import Tag
 from precis.utils.llm.json_reply import extract_json_object
 from precis.workers import ref_lease
+from precis.workers._claim import claim_batch
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -239,35 +240,21 @@ def _claim(
     persistently-failing ref must not be re-fetched and re-LLM'd every
     sweep). ``ref_ids`` optionally restricts the sweep to specific refs
     (targeted backfill / tests)."""
-    ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
-    sql = f"""
-        SELECT r.ref_id, r.title
-        FROM refs r
-        WHERE r.kind = ANY(%(kinds)s) AND r.retired_at IS NULL
-          {ref_filter}
-          AND EXISTS (
-            SELECT 1 FROM chunks c
-            WHERE c.ref_id = r.ref_id AND c.ord >= 0 AND c.retired_at IS NULL
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-            WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s AND t.value = %(marker_value)s
-          )
-          {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
-        ORDER BY r.ref_id
-        LIMIT %(limit)s
-    """
-    params: dict[str, Any] = {
-        "kinds": ["paper", "patent"],
-        "ns": MARKER_NAMESPACE,
-        "marker_value": marker_value,
-        "attempt_ns": ref_lease.attempt_ns(MARKER_NAMESPACE),
-        "limit": limit,
-    }
-    if ref_ids:
-        params["ref_ids"] = list(ref_ids)
-    rows = conn.execute(sql, params).fetchall()
-    return [(int(r[0]), str(r[1] or "")) for r in rows]
+    return claim_batch(
+        conn,
+        kinds=["paper", "patent"],
+        not_done_sql="""
+            NOT EXISTS (
+              SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+              WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s
+                AND t.value = %(marker_value)s
+            )
+        """,
+        params={"ns": MARKER_NAMESPACE, "marker_value": marker_value},
+        limit=limit,
+        ref_ids=ref_ids,
+        lease_ns=ref_lease.attempt_ns(MARKER_NAMESPACE),
+    )
 
 
 def _context_text(conn: Any, ref_id: int) -> str:

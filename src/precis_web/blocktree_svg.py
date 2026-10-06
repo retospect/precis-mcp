@@ -73,6 +73,7 @@ from precis.blocktree.types import BlockNode, Connect, Tree
 from precis.cad.tessellate import apply_rigid, mesh_config
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
+from precis.utils.text import esc
 
 Axis = Literal["x", "y", "z"]
 AXES: tuple[Axis, ...] = ("x", "y", "z")
@@ -555,10 +556,6 @@ class MemberLine:
 # ── SVG emission ─────────────────────────────────────────────────────────
 
 
-def _esc(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 _MARGIN = 24.0
 _HEADER_LINE_H = 18.0
 _HEADER_PAD = 10.0
@@ -609,7 +606,7 @@ def render_svg(
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {canvas_w:.1f} '
         f'{total_h:.1f}" font-family="ui-monospace, monospace">',
-        f"<title>{_esc(' | '.join(header_lines))}</title>",
+        f"<title>{esc(' | '.join(header_lines))}</title>",
         f'<rect x="0" y="0" width="{canvas_w:.1f}" height="{header_h:.1f}" '
         f'fill="{_TIER_BG[tier]}"/>',
     ]
@@ -617,7 +614,7 @@ def render_svg(
         y = _HEADER_PAD + (i + 1) * _HEADER_LINE_H - 4
         parts.append(
             f'<text x="{_HEADER_PAD:.1f}" y="{y:.1f}" font-size="12" '
-            f'fill="{_TIER_FG[tier]}">{_esc(line)}</text>'
+            f'fill="{_TIER_FG[tier]}">{esc(line)}</text>'
         )
     parts.append(
         f'<rect x="0" y="{header_h:.1f}" width="{canvas_w:.1f}" '
@@ -630,7 +627,7 @@ def render_svg(
         parts.append(
             f'<polygon points="{pts}" fill="{fill}" fill-opacity="0.55" '
             f'stroke="{fill}" stroke-width="1.5"{dash}>'
-            f"<title>{_esc(d.name)}</title></polygon>"
+            f"<title>{esc(d.name)}</title></polygon>"
         )
     for m in members:
         ax, ay = to_svg(m.a)
@@ -638,7 +635,7 @@ def render_svg(
         parts.append(
             f'<line x1="{ax:.2f}" y1="{ay:.2f}" x2="{bx:.2f}" y2="{by:.2f}" '
             f'stroke="{m.colour}" stroke-width="3">'
-            f"<title>{_esc(m.subject)}</title></line>"
+            f"<title>{esc(m.subject)}</title></line>"
         )
     parts.append("</svg>")
     return "\n".join(parts)

@@ -38,10 +38,10 @@ def test_to_mm_is_10_mil_to_mm():
 
 
 def test_num_defensive_on_empty_and_junk():
-    assert easyeda._num("") == 0.0
-    assert easyeda._num(None) == 0.0
-    assert easyeda._num("3.5") == 3.5
-    assert easyeda._num("not-a-number") == 0.0
+    assert easyeda.float_or_zero("") == 0.0
+    assert easyeda.float_or_zero(None) == 0.0
+    assert easyeda.float_or_zero("3.5") == 3.5
+    assert easyeda.float_or_zero("not-a-number") == 0.0
 
 
 def test_parse_pad_applies_origin_and_y_flip():

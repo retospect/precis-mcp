@@ -62,6 +62,8 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
+from precis.workers._claim import claim_batch
+
 # Reuse bib_parse's proven content-based detector so the remediation pass and
 # the parse pass agree, byte-for-byte, on what a bibliography chunk is.
 from precis.workers.bib_parse import _chunk_is_bibliography
@@ -118,33 +120,18 @@ def _claim(
     whose bibliography is ALREADY correctly ``references`` is still claimed and
     stamped — converging it out of every future sweep.
     """
-    ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
-    sql = f"""
-        SELECT r.ref_id, r.title
-        FROM refs r
-        WHERE r.kind = 'paper' AND r.retired_at IS NULL
-          {ref_filter}
-          AND EXISTS (
-            SELECT 1 FROM chunks c
-            WHERE c.ref_id = r.ref_id AND c.ord >= 0 AND c.retired_at IS NULL
-          )
-          AND (
+    return claim_batch(
+        conn,
+        kinds=["paper"],
+        not_done_sql="""
             NOT (r.meta ? %(mk)s)
             OR COALESCE((r.meta->>%(mk)s)::int, 0) < %(ver)s
-          )
-        ORDER BY r.ref_id
-        LIMIT %(limit)s
-        FOR UPDATE OF r SKIP LOCKED
-    """
-    params: dict[str, Any] = {
-        "mk": _META_VERSION_KEY,
-        "ver": BIB_RETAG_VERSION,
-        "limit": limit,
-    }
-    if ref_ids:
-        params["ref_ids"] = list(ref_ids)
-    rows = conn.execute(sql, params).fetchall()
-    return [(int(r[0]), str(r[1] or "")) for r in rows]
+        """,
+        params={"mk": _META_VERSION_KEY, "ver": BIB_RETAG_VERSION},
+        limit=limit,
+        ref_ids=ref_ids,
+        skip_locked=True,
+    )
 
 
 def _paragraph_chunks(conn: Any, ref_id: int) -> list[tuple[int, str]]:

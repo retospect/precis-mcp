@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from precis.utils.coerce import as_float
 from precis_chem.ir import IR_VERSION, RouteGraph, RouteStep, normalize_smiles
 
 #: The filename the container shim writes beside the engine's native output.
@@ -46,16 +47,9 @@ def _step_from_json(d: dict[str, Any], *, fallback_id: int) -> RouteStep:
         # (same as slice-1b's parse_aizynth_trees). Accept either key.
         reaction_smarts=d.get("reaction_smiles") or d.get("reaction_smarts"),
         conditions=(str(d["conditions"]) if d.get("conditions") is not None else None),
-        confidence=_as_float(d.get("confidence")),
+        confidence=as_float(d.get("confidence")),
         in_stock=bool(d.get("in_stock", False)),
     )
-
-
-def _as_float(v: Any) -> float | None:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def parse_syngraph(
@@ -100,7 +94,7 @@ def parse_syngraph(
         engine_version=ev,
         steps=steps,
         solved=bool(data.get("solved", False)),
-        score=_as_float(data.get("score")),
+        score=as_float(data.get("score")),
         metrics=dict(data.get("metrics") or {}),
         provenance=provenance,
     )

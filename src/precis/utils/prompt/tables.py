@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from precis.format import render_agent_table
 from precis.utils.handle_registry import code_for_kind
+from precis.utils.text import clip
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -139,11 +140,6 @@ def _first_line(text: str) -> str:
     return (text or "").strip().splitlines()[0] if (text or "").strip() else ""
 
 
-def _clip(text: str, n: int = 160) -> str:
-    t = " ".join((text or "").split())
-    return t if len(t) <= n else t[:n].rstrip() + "…"
-
-
 def _disclosure(views: dict[str, dict[str, str]], handle: str) -> tuple[str, str]:
     """Pick the cheapest faithful disclosure for a neighbour row.
 
@@ -153,10 +149,10 @@ def _disclosure(views: dict[str, dict[str, str]], handle: str) -> tuple[str, str
     v = views.get(handle, {})
     summary = (v.get("summary") or "").strip()
     if summary:
-        return "gist", _clip(_first_line(summary))
+        return "gist", clip(_first_line(summary))
     kws = (v.get("keywords") or "").strip()
     if kws:
-        return "keywords", _clip(kws)
+        return "keywords", clip(kws)
     return "", ""
 
 
@@ -212,11 +208,11 @@ def doc_context_table(store: Store, anchor: str) -> str:
         rows.append({"id": handle, "what": what, "how": how, "details": details})
 
     if parent is not None:
-        _add(parent, "parent section", "path", _clip(_first_line(parent.text)))
+        _add(parent, "parent section", "path", clip(_first_line(parent.text)))
     if prev is not None:
         how, details = _disclosure(views, prev.handle)
         _add(prev, "prev sibling", how or "—", details)
-    _add(base, "current (change-request target)", "verbatim", _clip(base.text, 400))
+    _add(base, "current (change-request target)", "verbatim", clip(base.text, 400))
     if nxt is not None:
         how, details = _disclosure(views, nxt.handle)
         _add(nxt, "next sibling", how or "—", details)
@@ -236,7 +232,7 @@ def doc_context_table(store: Store, anchor: str) -> str:
                 "id": ident,
                 "what": f"{conn['relation']} ({conn['direction']})",
                 "how": "gist",
-                "details": _clip(conn.get("title") or ""),
+                "details": clip(conn.get("title") or ""),
             }
         )
 
@@ -289,7 +285,7 @@ def section_review_block(store: Store, anchor: str) -> str:
         if used >= _SECTION_TOTAL_CAP:
             truncated += 1
             continue
-        text = _clip((c.text or "").strip(), _SECTION_PER_CHUNK_CAP)
+        text = clip((c.text or "").strip(), _SECTION_PER_CHUNK_CAP)
         entry = f"[dc{c.chunk_id}] ({c.chunk_kind}) {text}".rstrip()
         lines.append(entry)
         used += len(entry)
@@ -308,7 +304,7 @@ def glossary_table(store: Store, draft_ref_id: int) -> str:
     off-model linkify pass). Returns ``""`` when the draft has no terms."""
     terms = store.drafts.draft_terms(draft_ref_id)  # {handle: (short, long)}
     rows = [
-        {"term": short, "short": short, "long": _clip(long, 120), "handle": h}
+        {"term": short, "short": short, "long": clip(long, 120), "handle": h}
         for h, (short, long) in sorted(terms.items(), key=lambda t: t[1][0].lower())
         if short
     ]

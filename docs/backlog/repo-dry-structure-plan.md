@@ -77,13 +77,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
    value handling (`_put_value`, `_route_value`, `_resolve_source`,
    `_check_unit`, `_validate_type_args`) and the store-mixin row helpers;
    behaviour-preserving, existing tests green.
-3. **utils-tail** (coder). `utils/text.py` (`esc`, `clip`, `slugify` →
-   reuse `chunk_slug`) and `utils/coerce.py` (`as_float`, `num`,
-   `to_int`); one `now_iso` in `utils/timefmt`; route the eight raw
-   `httpx.Client` sites through `http_client`; one
-   `workers/_claim.py::claim_batch` for the seven `_claim*` functions.
-   Promote `_seed_paper` / `FakeStore` to `tests/conftest.py` or
-   `tests/factories.py`.
 4. **layering-contract** (coder). import-linter contract "workers import
    store and utils, never handlers", with the 29 current imports listed
    under `ignore_imports` as a ratchet (no new violations); migrate the
@@ -114,8 +107,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 
 - `handlers/material.py` no longer defines `_put_value`,
   `_route_value`, `_resolve_source`; component/material tests green.
-- Zero `def _esc(`, `def _slugify(`, `def _as_float(` under `src/`
-  outside `utils/`; zero `httpx.Client(` outside `utils/http.py`.
 - `uv run lint-imports` passes with the new workers→handlers contract.
 
 ## Target + blast radius

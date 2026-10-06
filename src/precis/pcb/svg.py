@@ -63,9 +63,9 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from typing import Any
-from xml.sax.saxutils import escape as _xml_escape
 
 from precis.pcb import ir as pcb_ir
+from precis.utils.text import esc
 
 # ── palette + non-colour layer cues ─────────────────────────────────────
 # Okabe-Ito colourblind-safe palette, reordered so the two layers compared
@@ -127,10 +127,6 @@ def _fmt(v: float) -> str:
 def _pt(p: Iterable[float]) -> str:
     x, y = p
     return f"{_fmt(x)},{_fmt(y)}"
-
-
-def _esc(s: str) -> str:
-    return _xml_escape(str(s))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -625,7 +621,7 @@ def render_board(
     if title:
         body.append(
             f'<text x="{_fmt(vb_x + 1)}" y="{_fmt(vb_y + 3)}" font-size="2.5" '
-            f'font-family="sans-serif">{_esc(title)}</text>'
+            f'font-family="sans-serif">{esc(title)}</text>'
         )
 
     return _wrap_svg(vb_x, vb_y, vb_w, vb_h, "".join(p for p in body if p))
@@ -707,7 +703,7 @@ def render_sketch(
         body.append(
             f'<text x="{_fmt(x + marker)}" y="{_fmt(y)}" '
             f'font-size="{_fmt(marker * 1.5)}" font-family="sans-serif">'
-            f"{_esc(refdes)}</text>"
+            f"{esc(refdes)}</text>"
         )
 
     if scale_bar:
@@ -715,7 +711,7 @@ def render_sketch(
     if title:
         body.append(
             f'<text x="{_fmt(vb_x + 1)}" y="{_fmt(vb_y + 3)}" font-size="2.5" '
-            f'font-family="sans-serif">{_esc(title)}</text>'
+            f'font-family="sans-serif">{esc(title)}</text>'
         )
 
     return _wrap_svg(vb_x, vb_y, vb_w, vb_h, "".join(p for p in body if p))
@@ -806,13 +802,13 @@ def render_capability_map(
         body.append(
             f'<text x="{_fmt(x)}" y="{_fmt(y)}" font-size="{_fmt(max(label_half * 0.5, 0.4))}" '
             'font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">'
-            f"{_esc(pin)}</text>"
+            f"{esc(pin)}</text>"
         )
         if not usable and info.get("reason"):
             body.append(
                 f'<text x="{_fmt(x)}" y="{_fmt(y + label_half * 0.75)}" '
                 f'font-size="{_fmt(max(label_half * 0.28, 0.25))}" font-family="sans-serif" '
-                f'text-anchor="middle">{_esc(str(info["reason"]))}</text>'
+                f'text-anchor="middle">{esc(str(info["reason"]))}</text>'
             )
         via = info.get("via")
         if via:
@@ -852,7 +848,7 @@ def render_capability_map(
         body.append(
             f'<text x="{_fmt(x)}" y="{_fmt(y - slot_radius * 1.3 - 0.3)}" '
             f'font-size="{_fmt(max(half * 0.3, 0.3))}" font-family="sans-serif" '
-            f'text-anchor="middle">{_esc(slot_key)}</text>'
+            f'text-anchor="middle">{esc(slot_key)}</text>'
         )
 
     if pad_extents:
@@ -919,7 +915,7 @@ def render_capability_map(
     for i, line in enumerate(info_lines):
         body.append(
             f'<text x="{_fmt(vb_x + 1)}" y="{_fmt(vb_y + 3 + i * line_h)}" '
-            f'font-size="1.8" font-family="sans-serif">{_esc(line)}</text>'
+            f'font-size="1.8" font-family="sans-serif">{esc(line)}</text>'
         )
 
     legend_y0 = vb_y + 3 + len(info_lines) * line_h
@@ -931,7 +927,7 @@ def render_capability_map(
         )
         body.append(
             f'<text x="{_fmt(vb_x + 2.8)}" y="{_fmt(row_y)}" font-size="1.4" '
-            f'font-family="sans-serif">{_esc(label)}</text>'
+            f'font-family="sans-serif">{esc(label)}</text>'
         )
 
     body.append(_scale_bar(vb_x, vb_y, vb_w, vb_h))

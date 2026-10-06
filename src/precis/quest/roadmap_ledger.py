@@ -40,6 +40,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.coerce import num
+
 if TYPE_CHECKING:
     from precis.store import Ref, Store
 
@@ -143,12 +145,6 @@ def meets(value: float | None, demanded: float | None, sense: str) -> bool:
     if value is None or demanded is None:
         return False
     return value <= demanded if sense == "min" else value >= demanded
-
-
-def _num(raw: Any) -> float | None:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return None
-    return float(raw)
 
 
 def _handles(raw: Any) -> tuple[str, ...]:
@@ -295,7 +291,7 @@ def _produced(
             continue
         if entry.get("capability") != capability or entry.get("key") != key:
             continue
-        value = _num(entry.get("value"))
+        value = num(entry.get("value"))
         if value is None:
             continue
         return value, _handles(entry.get("evidence"))
@@ -319,7 +315,7 @@ def _best_supply_from(
     supply = (capability_ref.meta or {}).get("supply")
     entry = supply.get(key) if isinstance(supply, dict) else None
     if isinstance(entry, dict):
-        value = _num(entry.get("value"))
+        value = num(entry.get("value"))
         if value is not None:
             best, evidence = value, _handles(entry.get("evidence"))
 
@@ -516,7 +512,7 @@ def _row_for(
     cap_handle = _handle("quest", cap.id)
     demand = (cap.meta or {}).get("demand")
     d_entry = demand.get(key) if isinstance(demand, dict) else None
-    demanded = _num(d_entry.get("value")) if isinstance(d_entry, dict) else None
+    demanded = num(d_entry.get("value")) if isinstance(d_entry, dict) else None
 
     supply_value, evidence, source_rung = _best_supply_from(cap, rungs, key, sense)
 
