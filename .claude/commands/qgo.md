@@ -9,7 +9,7 @@ let a later pass find what broke. This inverts `/go` deliberately.
 
 **Why this exists.** The full local gate is ~1h15m and the deploy is ~10-20
 min. On a day of nine in-flight sessions that made the gate ~85% of cycle
-time, and GitHub CI — which runs per-commit, unfiltered, in ~12 min, for free
+time, and GitHub CI — which runs per-commit, unfiltered, in ~90 min, for free
 — caught every red the local gate caught, sooner. On a dev cluster the cost of
 shipping a bad worker for twenty minutes is smaller than the cost of not
 seeing prod for an hour. So: deploy now, repair from evidence.

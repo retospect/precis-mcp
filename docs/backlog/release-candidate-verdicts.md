@@ -16,7 +16,7 @@ independent critique of the first (release-branch) plan. Review item:
 
 `check.yml` keys its concurrency group on the ref with `cancel-in-progress`
 for every non-schedule event, so each qland to `main` (~7.7/h on
-2026-10-02/03, ~12 min per run) cancels the previous run: `main` had no
+2026-10-02/03, 12-minute runs then) cancels the previous run: `main` had no
 completed verdict for most of 2026-10-03 and a red `type: ignore` ratchet
 hid for 12 h behind cancelled runs. Two things depend on those verdicts
 and are silently broken today: `scripts/last-gated-main-sha` walks only 25

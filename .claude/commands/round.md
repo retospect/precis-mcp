@@ -47,7 +47,7 @@ Note from the user: `$ARGUMENTS`
    `origin/gated` / `origin/prod`, and how many docs-only and code commits
    main is ahead of it. No local suite runs and no ship lock is taken, so
    peers' qlands never queue behind the round. A peer's sha that is not yet
-   under the candidate rides the next round, or wait for its CI run (~12 min).
+   under the candidate rides the next round, or wait for its CI run (`docs/conventions/testing.md` §CI shapes).
 
    **Release branch.** To freeze what the round ships, run
    `scripts/round cut` once the marks are in (`--dry-run` first; `--sha S`

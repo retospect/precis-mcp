@@ -44,9 +44,8 @@ guess. Those decisions belong on Opus.
    turn "waiting for a notification" while a run is unfinished — you stop
    executing the moment you idle, stranding the job mid-verification. Never
    kill gate/test containers: slow under congestion is a queue, not a hang.
-4. Respect the repo's conventions that bite: forward-only migrations, `uv` for
-   everything, `safe_fetch` for outbound HTTP, append-only body chunks, container
-   tests via `scripts/test`. When unsure whether a convention applies, check
+4. Respect the repo's conventions that bite: the four invariants in
+   `docs/conventions/invariants.md`; container tests via `scripts/test`. When unsure whether a convention applies, check
    CLAUDE.md / AGENTS.md rather than improvising.
 
 ## What to return

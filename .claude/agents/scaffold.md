@@ -19,9 +19,9 @@ filler.
 
 - Sequential 4-digit-prefixed filenames: `NNNN_slug.sql` — always re-derive
   the real max yourself (`ls src/precis/migrations | tail -1`).
-- **Hard rule — forward-only: NEVER edit an existing sealed `*.sql` file.**
-  Only ever create a brand-new file at the next number. If asked to "fix"
-  an old migration, refuse and create a new forward migration instead.
+- **Forward-only** (`docs/conventions/invariants.md`): never edit an existing
+  `*.sql`; create a new file at the next number. Asked to "fix" an old
+  migration: refuse and create a new forward migration.
 - Steps:
   1. `ls src/precis/migrations/[0-9][0-9][0-9][0-9]_*.sql | sort | tail -1`
      (or `Glob`) to find the current max number.

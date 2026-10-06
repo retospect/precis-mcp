@@ -16,9 +16,9 @@ Work always happens on a task branch in a separate worktree (`claude -w <name>`)
 Never edit or commit in the primary `main` checkout; integrate branches in
 a dedicated integration worktree. **`/land`** = ship with the
 gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
-`ci/<branch>` → wait for the check.yml gate (lint + 6 Linux shards, ~12 min;
-docs-only diffs get a ~5 min docs lane; 3.12/macOS/Windows run nightly — run
-ship in background, output to a log) → atomic CAS squash-merge to `main` —
+`ci/<branch>` → wait for the check.yml gate (shape and duration:
+`docs/conventions/testing.md` §CI shapes; run ship in background, output to a
+log) → atomic CAS squash-merge to `main` —
 a full-gate ship lands an exactly-tested tree, or says it did not and pins
 nothing. The repo-wide ship lock is narrow: held only for the seconds of
 fetch → squash → CAS push → local-main ff, never across sync, lint, a gate
@@ -92,22 +92,17 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
 
 ## Conventions that bite (irreversible, or reddens the ship)
 
-- **Forward-only migrations.** Never edit a sealed
-  `src/precis/migrations/*.sql` — ship a new one. Baseline regen via
-  `scripts/bump` / `precis db dump-schema`, never by hand.
-- **Don't mutate body chunks.** `chunks` is append-only for corpus body rows
-  (`ord >= 0`); "update" = DELETE + INSERT so the embedding/summary cascade
-  re-runs — in-place UPDATE strands `chunk_embeddings`/`chunk_summaries`.
-  Only `ord < 0` card variants DELETE/re-INSERT, via a registered synthesis
-  pass. Exception: *draft* chunks edit in place by design, via the draft-edit
-  store ops only (they log `chunk_events`, which drives the cascade).
+- **Forward-only migrations.** Never edit a sealed migration; ship a new one.
+  → `docs/conventions/invariants.md`
+- **Don't mutate body chunks.** Body `chunks` rows are append-only: DELETE +
+  INSERT, never UPDATE. → `docs/conventions/invariants.md`
 - **Session `precis` MCP targets PROD** (write-capable `agent_rw`). Writes
   land in production and need no ask unless destructive, outward-facing or
   over $25 (`docs/conventions/thresholds.md`, Reto 2026-10-01); do
   write-path *testing* on the dev DB (`scripts/dev`) — never this MCP. Ad-hoc SQL: `scripts/prod-psql "SELECT …"` (prefer
   read-only); `scripts/db` is local-only.
-- **Agent-supplied-URL fetches → `safe_get`/`safe_stream`**
-  (`utils/safe_fetch.py`); raw follow-redirects httpx is an SSRF.
+- **Agent-supplied-URL fetches → `safe_get`/`safe_stream`.**
+  → `docs/conventions/invariants.md`
 - **No cluster addresses anywhere — the repo is PUBLIC.** Tailnet/LAN IPs and
   vault blobs are gated across the *whole* tree
   (`tests/test_deploy_tree_no_secrets.py`); real node hostnames are gated under
@@ -117,9 +112,8 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `secret-gate: allow — <reason>` marker.
 - **Embeddings come from the worker, not ingest** — ingest stores chunks
   `embedding IS NULL`; never call `fill_embeddings` from ingest.
-- **`uv` for everything; tests via `scripts/test`** (container-mounted;
-  `--impacted` narrows) — never bare pytest/pip/mypy. mypy scope is
-  `src tests`.
+- **`uv` for everything; tests via `scripts/test`** — never bare
+  pytest/pip/mypy. → `docs/conventions/invariants.md`
 - **Commit messages: one-line subject, no body** + the required
   Co-Authored-By/session footer.
 

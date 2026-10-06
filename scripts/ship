@@ -104,7 +104,7 @@
 #                                        # atomic CAS squash-push. If main moves
 #                                        # during the CI wait, the race is lost:
 #                                        # re-sync and run a FRESH CI cycle on the
-#                                        # integrated tree (~12 min) once, and
+#                                        # integrated tree (~90 min) once, and
 #                                        # only for a tree that adds a migration
 #                                        # or touches safe_fetch.py; otherwise,
 #                                        # or after that, the in-lock
@@ -184,7 +184,7 @@ REMOTE="${PRECIS_SHIP_REMOTE:-0}"
 # GREEN remote gate loses the CAS race (main moved during the CI wait),
 # re-sync (the ship lock is not held at that point) and run a fresh CI cycle
 # on the integrated tree — up to PRECIS_REMOTE_CI_RETRIES (default 2) times.
-# A CI retry costs ~12 min of free public-repo minutes and touches no local
+# A CI retry costs ~90 min of free public-repo minutes and touches no local
 # Docker, so siblings are never starved behind it. Only when the retries
 # are exhausted (a burst where main moves every few minutes) does the
 # 2026-09-13 HYBRID fallback engage: re-sync and validate the integrated tree
@@ -1265,7 +1265,7 @@ remote_gate_wait() {
     sha="$(git rev-parse HEAD)"
     t0="$(date +%s)"
     deadline=$(( t0 + 60 * ${PRECIS_REMOTE_CI_TIMEOUT_MIN:-150} ))
-    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 6 shards, ~12 min green; docs-only diffs ~5 min)"
+    say "remote gate — pushing ci/${BRANCH}, waiting for check.yml on ${sha:0:8} (gate shape: lint + 6 shards, ~90 min green; docs-only diffs ~5 min)"
     git push -q -f origin "HEAD:refs/heads/ci/${BRANCH}" \
         || { echo "✖ could not push ci/${BRANCH}" >&2; return 1; }
     while :; do

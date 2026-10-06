@@ -53,7 +53,7 @@ Optional ship message from the user: `$ARGUMENTS`
 
 4. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly. **Run it in the background with output redirected to a log**
-   (the remote gate takes ~12 min green, longer when queued; a foreground
+   (the remote gate takes ~90 min green, longer when queued; a foreground
    run would block the session and raw output would flood context):
    ```
    scripts/ship --remote "<message>" > /tmp/ship.log 2>&1
@@ -68,7 +68,7 @@ Optional ship message from the user: `$ARGUMENTS`
    an exactly-tested tree, or says it did not and pins nothing. If main
    moves during the wait (siblings keep landing meanwhile), the race budget
    decides: a tree that adds a migration or touches `safe_fetch.py` re-syncs
-   and re-runs CI on the integrated tree once (~12 min), because an
+   and re-runs CI on the integrated tree once (~90 min), because an
    exactly-tested land is worth a second gate there; any other tree gets one
    CI run. When the budget is spent, ship lands by an in-lock forward merge of
    main, prints "not a deploy warrant", writes no `.ship-sha`, and trails

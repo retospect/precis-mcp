@@ -19,9 +19,8 @@ issues that don't need Opus to spot.
      complexity, a pattern the surrounding code already solves differently.
    - **Efficiency**: obvious N+1 / redundant work — only when clear, not
      speculative micro-optimization.
-3. Respect the repo's conventions when judging (forward-only migrations,
-   `safe_fetch` for outbound HTTP, append-only body chunks, embeddings via the
-   worker) — a violation of one of those IS a finding.
+3. Respect the repo's conventions when judging (the four invariants in
+   `docs/conventions/invariants.md`; embeddings via the worker) — a violation of one of those IS a finding.
 
 ## What to return
 - Findings ranked most-severe first, each as `file:line — one-line defect` plus a

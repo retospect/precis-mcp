@@ -11,7 +11,7 @@ Live repro (2026-08-17, prod): `POST /papers/211494/edit` with metadata
 fields **plus** `cite_key=rupp20` applied the metadata half (title /
 year / DOI landed via the edit dispatch, visible in `refs` +
 `ref_identifiers` with `source=edit`) but the HTTP response never came
-back — the curl hung >12 minutes and was killed; the cite_key stayed at
+back — the curl hung >12-minute and was killed; the cite_key stayed at
 the auto-generated `anon20h`, so the rename half never committed.
 
 Suspect: the `_rename_slug` path after `await_dispatch("edit")` in

@@ -78,7 +78,11 @@ exactly; check.yml runs the Linux legs as 6 parallel shard jobs so the gate's
 wall-clock is one shard, not the suite. Locally it is only for reproducing a
 red CI shard — run the same `K/N` the failing job name shows.
 
-**CI shapes (check.yml, decided by its `plan` job).** The ship gate
+**CI shapes (check.yml, decided by its `plan` job).** The single source for
+gate shape and duration: a full-gate run (`/land`, `/go`) takes ~90 min
+wall-clock under fleet load (2026-10-06); a docs-only diff takes ~5 min;
+`scripts/ship --quick` lint takes ~3 min. Other docs link here instead of quoting
+numbers. The ship gate
 (`ci/**` and `main` pushes, PRs) is lint + mypy + 6 shards of Linux+db on
 3.13 — 8 jobs, so two ships fan out fully under the 20-runner cap. A diff
 that touches only `docs/` and root `*.md` gets the **docs lane** instead of

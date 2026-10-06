@@ -41,7 +41,7 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
   append-only and safe_fetch without pointing at `docs/conventions/`.
   The gate shape is hand-copied into CLAUDE.md (×2),
   `docs/conventions/testing.md`, `scripts/ship` (×2), `.claude/commands/
-  {land,qgo,round}.md` — and all say "~12 min"; the gate takes ~90 min
+  {land,qgo,round}.md` — and all carried a stale duration; the gate takes ~90 min
   today (Reto, 2026-10-06). The sealed-migration rule lives in
   `docs/codebase.md` prose and is restated in four `.claude/agents/*.md`
   files; there is no `docs/conventions/` page for it. `conventions/time.md`
@@ -73,17 +73,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 
 ## In scope — the lanes (each one coder/documenter dispatch, disjoint files)
 
-1. **docs-invariants** (documenter). New `docs/conventions/invariants.md`:
-   one paragraph each for forward-only migrations, chunks append-only,
-   safe_fetch SSRF, uv-for-everything, each naming its enforcing
-   hook/guard. CLAUDE.md, AGENTS.md and `.claude/agents/{coder,ready,
-   reviewer,scaffold}.md` replace restatements with one-line pointers.
-   AGENTS.md becomes the Codex-facing shim (~300 words): tool-specific
-   notes only, ship workflow and invariants by pointer to CLAUDE.md /
-   `docs/README.md`; the stale bump-version checklist goes. Gate shape
-   and duration single-sourced in `docs/conventions/testing.md`; every
-   "~12 min" becomes a pointer or "~90 min" where a number must stay
-   (`scripts/ship` `say` lines, `.claude/commands/*.md`).
 2. **value-entity-base** (coder). A shared base for component/material
    value handling (`_put_value`, `_route_value`, `_resolve_source`,
    `_check_unit`, `_validate_type_args`) and the store-mixin row helpers;
@@ -133,11 +122,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 
 ## Acceptance criteria
 
-- `grep -rn "12 min" CLAUDE.md AGENTS.md docs .claude scripts/ship` is
-  empty; the gate duration is stated in exactly one prose place.
-- AGENTS.md ≤ 400 words and contains no ship-step list of its own.
-- `docs/conventions/invariants.md` exists; CLAUDE.md, AGENTS.md and the
-  four agent files point to it and do not restate its four rules.
 - `handlers/material.py` no longer defines `_put_value`,
   `_route_value`, `_resolve_source`; component/material tests green.
 - Zero `def _esc(`, `def _slugify(`, `def _as_float(` under `src/`

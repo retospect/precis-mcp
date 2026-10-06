@@ -73,8 +73,7 @@ describing. Before passing anything, check:
   --git-common-dir` → its parent; the index is shared and keyed to MAIN, a
   worktree path silently returns zero hits), Grep, or `scripts/coderef
   callers|deps <file.py::Sym>` for exact call/dependency claims.
-- A referenced convention (forward-only migrations, `safe_fetch`, append-only
-  chunks, `uv`-only, etc.) is stated accurately, not misremembered.
+- A referenced convention (the four invariants in `docs/conventions/invariants.md`, etc.) is stated accurately, not misremembered.
 - The "Target + blast radius" section actually matches what "In scope"
   describes — a mismatch here means the post-deploy check will look in the
   wrong place.
