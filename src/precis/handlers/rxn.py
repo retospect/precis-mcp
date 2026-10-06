@@ -22,8 +22,12 @@ with its conditions and citation), ``view='properties'`` the registry.
 ``search(property=..., min=, max=, reaction_class=)`` is the precedent read
 this kind exists for: *"what yields do amide couplings actually give?"*
 
-``view='energetics'`` is stateless thermochemistry (:mod:`precis.thermo`),
-not stored rows. NOT in this slice: scoring, route integration, bulk import. See the ship order
+``view='energetics'`` computes thermochemistry (:mod:`precis.thermo`) from
+``q=`` or kept ``meta.energetics`` inputs. Kept equation sets are rxn refs,
+not catpath pathway runs: no SMILES identity or measured property is invented.
+Their archival text snapshot preserves the write-time result; reads recompute
+from pinned fits so the snapshot cannot silently become the current view.
+NOT in this slice: scoring, route integration, bulk import. See the ship order
 in the design doc.
 
 Duplication note: the registry/value machinery is deliberately the ``material``
@@ -138,7 +142,10 @@ class RxnHandler(Handler):
             "is the reaction page grouped by property; view='properties' "
             "lists the registry; get(view='energetics', q='NO + 5/2 H2 -> "
             "NH3 + H2O', args={'T': 298.15, 'n_electrons': 5}) returns "
-            "tabulated reaction dH/dG/E0 (stateless, no id). search(property=, min=, max=, "
+            "tabulated reaction dH/dG/E0. put(id=<slug>, "
+            "meta={'energetics': {'q': <equations>, 'T': 298.15}}) keeps "
+            "validated inputs and an archival ledger; get(id=...) recomputes "
+            "the derived view. search(property=, min=, max=, "
             "reaction_class=) is the precedent read; plain q= matches "
             "title/SMILES/class. See precis-rxn-help."
         ),
@@ -234,6 +241,51 @@ class RxnHandler(Handler):
                 next="put(kind='rxn', id=..., meta={'notes': '...'})",
             )
         existing = self.store.get_ref(kind="rxn", id=slug)
+        if (
+            rxn_smiles is not None
+            and existing is not None
+            and (existing.meta or {}).get("energetics")
+        ):
+            raise BadInput("keep an equation set separately from a SMILES reaction")
+        if meta is not None and "energetics" in meta:
+            if rxn_smiles is not None or (
+                existing is not None
+                and (
+                    (existing.meta or {}).get("rxn_smiles_raw")
+                    or (existing.meta or {}).get("rxn_smiles")
+                )
+            ):
+                raise BadInput("keep an equation set separately from a SMILES reaction")
+            inputs = meta["energetics"]
+            if not isinstance(inputs, dict) or set(inputs) - {"q", "T", "n_electrons"}:
+                raise BadInput("meta.energetics accepts only q, T and n_electrons")
+            if not isinstance(inputs.get("q"), str):
+                raise BadInput("meta.energetics needs q='<equation set>'")
+            result = render_energetics(**inputs)
+            normalized = {
+                "q": inputs["q"].strip(),
+                "T": float(inputs.get("T") if inputs.get("T") is not None else 298.15),
+                "n_electrons": (
+                    float(inputs["n_electrons"])
+                    if inputs.get("n_electrons") is not None
+                    else None
+                ),
+            }
+            ref, created = self.store.rxn_entity_upsert(
+                slug=slug,
+                title=title or (existing.title if existing is not None else slug),
+                meta_patch={
+                    **meta,
+                    "energetics": normalized,
+                    "energetics_snapshot": result.body,
+                },
+            )
+            return Response(
+                body=f"{'created' if created else 'updated'} rxn {slug}\n"
+                f"kept equation inputs and archival NASA-7 ledger; reader: /refs/rxn/{ref.id}",
+                ref_id=ref.id,
+                reused=not created,
+            )
         if existing is None and rxn_smiles is None:
             raise BadInput(
                 f"creating rxn {slug!r} requires rxn_smiles=",
@@ -602,7 +654,22 @@ class RxnHandler(Handler):
     ) -> Response:
         v = (view or "").strip().lower()
         if v == "energetics":
-            # Stateless: tabulated thermochemistry of the equation(s) in q=.
+            if q is None and id is not None:
+                ref = self.store.get_ref(kind="rxn", id=str(id).strip())
+                if ref is None:
+                    raise NotFound(f"rxn {id!r} not found")
+                inputs = (ref.meta or {}).get("energetics")
+                if not isinstance(inputs, dict):
+                    raise BadInput("this rxn has no kept equation inputs; supply q=")
+                return render_energetics(
+                    inputs["q"],
+                    T=T if T is not None else inputs["T"],
+                    n_electrons=(
+                        n_electrons
+                        if n_electrons is not None
+                        else inputs.get("n_electrons")
+                    ),
+                )
             return render_energetics(q, T=T, n_electrons=n_electrons)
         if v in ("properties", "registry"):
             return self._render_registry()
@@ -674,6 +741,14 @@ class RxnHandler(Handler):
         finding, and collapsing it would be the lie this schema prevents."""
         meta = ref.meta or {}
         head = [f"# rxn {ref.slug or ref.id} — {ref.title}"]
+        kept = isinstance(meta.get("energetics"), dict)
+        if kept:
+            derived = render_energetics(**meta["energetics"])
+            head.append(
+                "Derived ledger recomputed from pinned NASA-7 fits; "
+                "the kept snapshot is archival. No barriers or electrode reference.\n"
+                + derived.body
+            )
         if meta.get("rxn_smiles") or meta.get("rxn_smiles_raw"):
             head.append(
                 f"smiles: {fmt_smiles(meta.get('rxn_smiles') or meta['rxn_smiles_raw'])}"
@@ -685,7 +760,7 @@ class RxnHandler(Handler):
                 f"uid: transform={meta['uid_transform']} "
                 f"strict={meta.get('uid_strict', '?')}"
             )
-        if not meta.get("uid_transform"):
+        if not kept and not meta.get("uid_transform"):
             head.append(
                 "⚠ no identity keys — rdkit was unavailable at write time; "
                 "this reaction will not be found by transformation lookup"
@@ -693,6 +768,8 @@ class RxnHandler(Handler):
 
         values = self.store.rxn_values_for_ref(ref.id)
         if not values:
+            if kept:
+                return Response(body="\n".join(head), ref_id=ref.id)
             return Response(
                 body="\n".join(head) + "\n\n(no values yet)\n\nNext: put(kind='rxn', "
                 f"id={ref.slug or ref.id!r}, property='yield', value=83, "

@@ -1191,7 +1191,8 @@ def put(
     method: str | None = None,
     # rxn: the reaction SMILES ('reactants>>products' or
     # 'reactants>agents>products'). Canonicalised on write; both identity keys
-    # are derived from it. Required when creating a reaction entity.
+    # are derived from it. Required when creating a SMILES reaction entity;
+    # tabulated equation sets instead use meta={'energetics': {'q': ..., 'T': ...}}.
     rxn_smiles: str | None = None,
     # rxn: an RXNO id (CC BY 4.0 reaction ontology) naming the transformation
     # class. This is the axis precedent transfers on — an exact-reaction key

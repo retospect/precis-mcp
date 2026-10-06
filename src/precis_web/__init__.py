@@ -7,6 +7,13 @@ error handlers, and a lifespan building the single
 :class:`precis.runtime.PrecisRuntime`. Optional install extra
 (``precis-mcp[web]``); ``precis web`` CLI subcommand imports it lazily.
 
+**Reaction ledger (`/rxn`).** Stateless equation inputs go through the rxn
+handler; the shared TOON renderer displays its tables and source/licence
+notes unchanged. Explicit keep stores validated inputs and an archival
+ledger in an rxn ref; `/refs/rxn/<id>` recomputes through the same handler.
+These tabulated equation sets stay distinct from catpath pathway runs,
+without inventing barriers, electrode references or measured property rows.
+
 **Claim approval.** The open-disputes panel reads stored support verdicts
 and reasoning alongside pinned passages, including typed paper, patent
 and finding handles from ``conflict_search``. Pins must name the counterpart

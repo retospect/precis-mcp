@@ -1,0 +1,24 @@
+{% extends "base.html.j2" %}
+{% block title %}Reaction ledger · precis{% endblock %}
+{% block content %}
+<h1 class="text-xl font-semibold mb-3">Reaction ledger</h1>
+<p class="text-sm text-slate-600 mb-4">Gas-phase NASA-7 fits at 1 bar by default; explicit liquid inputs retain their phase labels. No barriers and no electrode reference. Source-specific ranges, licence limits and reference-pressure uncertainty appear in the ledger below.</p>
+<form method="get" action="/rxn" class="space-y-3 mb-5">
+  <label class="block text-sm">Equation set (separate steps with semicolons or newlines)
+    <textarea name="q" rows="4" class="block w-full border rounded p-2 font-mono" placeholder="NO + 1/2 H2 -> HNO; HNO + 1/2 H2 -> H2NO; H2NO + 1/2 H2 -> NH2OH; NH2OH + H2 -> NH3 + H2O">{{ q }}</textarea>
+  </label>
+  <div class="flex flex-wrap gap-3 items-end">
+    <label class="text-sm">Temperature (K)<input name="T" value="{{ T }}" class="block border rounded p-2" required /></label>
+    <label class="text-sm">Electron count (single reaction only, optional)<input name="n_electrons" value="{{ n_electrons }}" class="block border rounded p-2" /></label>
+    <button class="rounded bg-sky-700 text-white px-4 py-2">Compute ledger</button>
+    {% if body and not is_error %}
+    <button formmethod="post" formaction="/rxn/keep" class="rounded bg-emerald-700 text-white px-4 py-2">Keep reaction record</button>
+    {% endif %}
+  </div>
+</form>
+{% if is_error %}
+<div role="alert" class="border border-rose-200 bg-rose-50 rounded p-4 text-sm whitespace-pre-wrap">{{ body }}</div>
+{% elif body %}
+<div class="border rounded bg-white p-4 overflow-x-auto space-y-2">{{ body | linkify_toon }}</div>
+{% endif %}
+{% endblock %}
