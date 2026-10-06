@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: web graph navigation — neighbourhood panel, graph focus page, paths, trail
 pillar: memory-graph
 prio: normal
@@ -7,7 +7,7 @@ prio: normal
 
 # Web graph navigation — how a human walks the graph
 
-Orchestrator proposal, from Reto 2026-10-06: "can we make a web plan for graph navigation", said when graph memory was unparked so file memory can migrate into the graph. Nothing here is decided; the open questions are Reto's.
+Orchestrator proposal, from Reto 2026-10-06: "can we make a web plan for graph navigation", said when graph memory was unparked so file memory can migrate into the graph. Rulings of 2026-10-06 are logged under the decisions; all four open questions are decided.
 
 ## Motivation / why
 
@@ -20,11 +20,15 @@ Reuse, do not rebuild: the agent link read is `store/_links_ops.py::Store.links_
 Slice order; each slice ships alone.
 
 1. **Neighbourhood JSON.** One store-level function (one query over `links` joined to `refs`) returning `{focus, nodes:[{kind,id,label,state}], edges:[{src,dst,rel,dir}], counts:{rel:{kind:n}}}`, with `depth` (1|2), `rels`, `kinds`, `since`/`until`, `trust` and a node cap. Exposed as `GET /graph/<kind>/<id>.json`. Panel, focus page and agent tooling read this one shape. Cost: inverse rows are not all stored (`links_for` rewrites `cited-by`), so the query must apply the same inverse rule; reuse it, do not re-derive.
-2. **Neighbourhood panel** on the ref page: inbound and outbound links grouped by rel then kind, counts, per-group "expand" (HTMX fragment from slice 1 with a group filter). Browser form of fisheye level 1; headings follow `ring_group`, "Other" for rels in no group. Lives in the shared detail template, not per-kind readers.
-3. **Focus page** `GET /graph/<kind>/<id>`: 2-hop neighbourhood as **server-rendered SVG**, kinds as node shapes, rels as edge labels, node click = plain link to that node's `/graph/...` (re-focus, no JS). Layout is radial rings (focus centre, hop 1, hop 2) computed in Python. Precedent is server-side SVG (`precis_web/blocktree_svg.py`; `routes/mermaid.py` inlines SVG sanitised by `precis.figure.svg.sanitize_svg`), so no JS graph library and no force layout. Cost: no drag/zoom; acceptable under the node cap; optional pan/zoom script deferred. Fisheye distortion: `fisheye-level2.md` defines none for the browser (it is the `focus` verb and render loop), so this page shows rings by hop and collapses far nodes to count chips. `fisheye-everywhere.md` in-scope 4 (`/eye/<handle>`, the text ladder) owns the handle page; this page is the picture and the two cross-link.
+2. **Neighbourhood panel** on the ref page: inbound and outbound links grouped by rel then kind, counts, per-group "expand" (HTMX fragment from slice 1 with a group filter). Browser form of fisheye level 1; headings follow `ring_group`, "Other" for rels in no group. Lives in the shared detail template, not per-kind readers. "Show memories" toggle; default per the memories decision.
+3. **Focus page** `GET /graph/<kind>/<id>`, beside the ref reader (not a replacement): 2-hop neighbourhood as **server-rendered SVG**, kinds as node shapes, rels as edge labels, node click = plain link to that node's `/graph/...` (re-focus, no JS). Layout is radial rings (focus centre, hop 1, hop 2) computed in Python. Precedent is server-side SVG (`precis_web/blocktree_svg.py`; `routes/mermaid.py` inlines SVG sanitised by `precis.figure.svg.sanitize_svg`), so no JS graph library and no force layout. Cost: no drag/zoom; acceptable under the node cap; optional pan/zoom script deferred. Fisheye distortion: `fisheye-level2.md` defines none for the browser (it is the `focus` verb and render loop), so this page shows rings by hop and collapses far nodes to count chips. `fisheye-everywhere.md` in-scope 4 (`/eye/<handle>`, the text ladder) owns the handle page; this page is the picture and the two cross-link.
 4. **Filters** as query params on panel and page: `kind`, `rel`, `since`/`until` (parsed as `/drive` does, `routes/drive.py::index`), `trust` for findings (`verified|signed|disputed|any`, as in search). The URL is the state; chips reflect it.
 5. **Path finding** `GET /graph/path?from=<kind>/<id>&to=<kind>/<id>&depth=4&rels=`: bounded BFS over typed links, shortest first, rendered as a chain of ref cards with the rel on each arrow. "No path within depth N" is an answer, not an error.
-6. **Focus trail.** Breadcrumb of recent focus pages, first as a cookie-held list (no storage). Later option: persist the trail as a memory ref `derived-from` the visited refs, where this meets the file-memory migration; a design call, see questions.
+6. **Focus trail.** Breadcrumb of recent focus pages as a cookie-held list (no storage). Later slice, not this one's acceptance: persist the trail as a memory ref `derived-from` the visited refs, where this meets the file-memory migration; deferred; the cookie is the slice-6 deliverable (see decisions).
+
+## Cross-links
+
+- Figma mockup: https://www.figma.com/design/2Gd9t9hUkvY7ndMElQJ01u, page "Web graph navigation", frames A/B/C.
 
 ## Explicitly NOT in scope
 
@@ -41,7 +45,7 @@ Slice order; each slice ships alone.
 3. Slice 3: `/graph/<kind>/<id>` for the fixture renders SVG with exactly N nodes (hop ≤2, under cap) and one labelled edge per row; a node past the cap shows a count chip and the response stays under the frame budget.
 4. Slice 4: each filter narrows nodes and edges identically on JSON, panel and page; a `since` after every link's creation gives the empty state.
 5. Slice 5: between two fixture refs 3 hops apart the path is found at depth 4 and not at depth 2; cycles terminate.
-6. Slice 6: after visiting three focus pages the trail lists them in order and each crumb re-focuses.
+6. Slice 6: after visiting three focus pages the cookie-held trail lists them in order and each crumb re-focuses. Persisting the trail as a memory ref is out of this slice.
 
 ## Target + blast radius
 
@@ -49,7 +53,7 @@ New `src/precis_web/routes/graph.py` (registered like the other routers), a neig
 
 ## Open questions / decisions log
 
-- **[open, Reto]** Does the focus page replace the ref reader as the default landing for a handle, or sit beside it? Proposal: beside; the reader stays the content view and the panel links in.
-- **[open, Reto]** Caps. Proposal: depth ≤2 (path ≤4), 60 nodes per page, 25 per group before "expand".
-- **[open, Reto]** Memory refs: shown by default or behind a `kind=memory` filter? Proposal: default-on once migrated, since walking memory is the point; hubs with >200 edges collapse to count chips.
-- **[open]** Trail as a memory ref (persisted, cross-session) vs cookie only; depends on the `memory-native-authoring.md` shape.
+- **[decided 2026-10-06, Reto]** Focus page sits beside the ref reader; the reader stays the content view and the panel links in.
+- **[decided 2026-10-06, Reto]** Caps "as proposed": focus page depth 2, path depth 4, 60 nodes per page, 25 per group before "expand"; hubs with >200 edges collapse to count chips.
+- **[decided 2026-10-06, Reto]** Memory refs: "Show memories" toggle stays. Reto: "if mesh is intended to be mainly made from memory memory on, otherwise off." Orchestrator's interpretation (not Reto's wording): default ON when the focused neighbourhood is mainly memory refs (centre node is a memory, or memory is the majority kind among its direct links), otherwise OFF. Hubs with >200 edges still collapse to count chips.
+- **[decided 2026-10-06, Reto]** Trail: "cookie is adequate for now". Trail as a persisted memory ref (cross-session; depends on the `memory-native-authoring.md` shape) is a later slice.
