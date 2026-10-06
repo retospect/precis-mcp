@@ -391,8 +391,8 @@ POOL_MAX="${PRECIS_DB_POOL_MAX_SIZE:-16}"
 ENVS=(
     -e PRECIS_SECRETS_FILE_DIR=/run/precis-secrets
     -e PRECIS_ROOT=/data/notes
-    -e PRECIS_PYTHON_ROOTS=precis:/app
-    -e PRECIS_MD_ROOTS=repo:/app
+    -e PRECIS_PYTHON_ROOTS=precis:/app,main:/main
+    -e PRECIS_MD_ROOTS=repo:/app,main:/main
     -e PRECIS_EMBEDDER=remote
     -e PRECIS_EMBEDDER_URL=http://host.docker.internal:8181
     -e PRECIS_MCP_TOOL_CONCURRENCY="${TOOL_CONCURRENCY}"
@@ -506,6 +506,9 @@ RUN_ARGS=(
     -v "${HOME}/work/corpus:/data/corpus:ro"
     -v "${HOME}/work:/data/notes:ro"
     -v "${SRC_REPO}:/src:ro"
+    # Live main checkout (read-only) so a qland is visible via the python/md
+    # kinds before a deploy; roots main:/main in ENVS above.
+    -v "${PRECIS_MCP_MAIN:-$REPO}:/main:ro"
     -v "${SECRETS_OUT}:/run/precis-secrets:ro"
     -v "${CACHE_DIR}:/home/precis/.cache/precis"
     -v "${UV_CACHE_VOLUME}:/home/precis/.cache/uv"

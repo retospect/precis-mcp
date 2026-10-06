@@ -93,11 +93,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
    `CallEdge` / `imports` data; `view='imports'` per module; `search(
    kind='python', mode='pattern', q=...)` for decorator / async / regex
    predicates. Update `precis-python-help` skill in the same commit.
-6. **mcp-http-main-root** (coder, deploy-tree only). Add a second python
-   root `main:<main checkout>` and md root to the local HTTP container so
-   a qland is visible through the python kind before a deploy; mount
-   `${PRECIS_MCP_MAIN:-$REPO}` read-only alongside `/src`. Restart via
-   the ensure script after the merge to verify.
 7. **docstring-layer** (documenter). Audit result: 95 package docstrings,
    31.6k words, duplication low (2/5) — 8-word-window search found only
    scattered single-sentence twins (precis_se ↔ `precis-se-help` /
@@ -130,9 +125,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 - `get(kind='python', view='callers', id='precis::precis.handlers.python.PythonHandler.search')`
   returns the dispatch call site; `view='importers'` on a module lists
   its importers; both covered by tests under `tests/`.
-- The local MCP container lists two python roots after restart and
-  `get(kind='python', id='main::precis.handlers.python', view='outline')`
-  resolves.
 
 ## Target + blast radius
 
