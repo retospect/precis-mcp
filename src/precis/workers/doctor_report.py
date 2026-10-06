@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from precis.handlers.todo import _BODY_KIND
+from precis.store.types import TODO_BODY_KIND as _BODY_KIND
 from precis.store.types import ChunkInsert, Tag
 
 if TYPE_CHECKING:

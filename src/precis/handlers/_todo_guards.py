@@ -43,6 +43,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
+from precis.store._todo_sql import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_ALIASES
 
@@ -505,26 +506,6 @@ def is_owner(source: str | None = None) -> bool:
 
 
 # ── parent / cycle / depth ─────────────────────────────────────────
-
-
-def todo_root_sql(alias: str) -> str:
-    """SQL predicate: the ``alias`` row is a todo-tree *root*.
-
-    A root's parent is not a todo: either ``parent_id IS NULL`` (the
-    classic shape) or the parent is a ``kind='folder'`` container —
-    placement is *where*, never part of the scheduling tree, so a
-    strategic sitting in a folder stays a root for rotation / doable /
-    picks / review purposes. One shared fragment so the predicate
-    cannot drift across the many root-detection queries.
-
-    ``alias`` is a trusted table alias supplied by the caller — never
-    user input.
-    """
-    return (
-        f"({alias}.parent_id IS NULL OR EXISTS ("
-        f"SELECT 1 FROM refs _pf WHERE _pf.ref_id = {alias}.parent_id "
-        f"AND _pf.kind = 'folder'))"
-    )
 
 
 def check_parent_exists(store: Store, parent_id: int) -> int:

@@ -11,9 +11,8 @@ shim for the same pattern.
 
 from __future__ import annotations
 
-from precis.handlers._todo_guards import todo_root_sql
-from precis.handlers._todo_views import _doable_exclusion_clause
 from precis.store import Store
+from precis.store._todo_sql import _doable_exclusion_clause, todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module

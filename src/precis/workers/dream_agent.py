@@ -70,8 +70,8 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY
 from precis.store import Store
+from precis.store.types import FAMILY_STUB_META_KEY
 from precis.utils import handle_registry
 from precis.utils.dream_seed import load_lenses, render_lens_block
 from precis.utils.env import env_flag

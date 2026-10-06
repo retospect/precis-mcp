@@ -69,7 +69,7 @@ from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
-from precis.store.types import ChunkInsert
+from precis.store.types import TODO_BODY_KIND, ChunkInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -81,7 +81,7 @@ if TYPE_CHECKING:
 #: ``memory_body``, migration 0050). The title stays in ``refs.title``
 #: (a good header already); the body is extra prose read on ``get`` and
 #: embedded + keyworded for free. Additive — most todos never set one.
-_BODY_KIND = "todo_body"
+_BODY_KIND = TODO_BODY_KIND
 
 
 class TodoView(StrEnum):

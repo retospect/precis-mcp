@@ -247,7 +247,6 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
-from precis.handlers._link_tag_ops import validate_relation
 from precis.nanopub import method_gap
 from precis.nanopub.demote import DemotionRequest, run_demotions
 from precis.nanopub.term_coverage import paper_chunks
@@ -288,6 +287,7 @@ from precis.taproot.verify_edges import (
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import (
     ABSTRACT_CHARS,
     NEIGHBOUR_CHARS,

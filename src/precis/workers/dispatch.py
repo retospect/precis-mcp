@@ -53,11 +53,11 @@ import logging
 from typing import Any
 
 from precis.handlers._todo_views import (
-    _doable_exclusion_clause,
     _hard_block_clause,
     _replan_bypass_clause,
 )
 from precis.store import Store
+from precis.store._todo_sql import _doable_exclusion_clause
 from precis.store.types import Tag
 from precis.utils.ref_tree import deleted_in_ancestry
 from precis.workers import planner_guardrails

@@ -923,3 +923,39 @@ exclude_also = [
     "raise NotImplementedError",
     "@overload",
 ]
+
+[[tool.importlinter.contracts]]
+name = "workers import store and utils, never handlers"
+type = "forbidden"
+source_modules = ["precis.workers"]
+forbidden_modules = ["precis.handlers"]
+allow_indirect_imports = true
+# Ratchet: the remaining edges are legacy; migrate them to store/utils
+# helpers and delete the line — never add one.
+ignore_imports = [
+    "precis.workers.auto_check -> precis.handlers._job_bubble",
+    "precis.workers.briefing -> precis.handlers._link_tag_ops",
+    "precis.workers.briefing -> precis.handlers.news",
+    "precis.workers.dispatch -> precis.handlers._todo_views",
+    "precis.workers.executors._common -> precis.handlers._job_bubble",
+    "precis.workers.executors._common -> precis.handlers.skill",
+    "precis.workers.executors._context -> precis.handlers.job",
+    "precis.workers.executors._sandbox_harvest -> precis.handlers.plaintext",
+    "precis.workers.executors.claude_docker -> precis.handlers._job_bubble",
+    "precis.workers.executors.claude_inproc -> precis.handlers._job_bubble",
+    "precis.workers.executors.ssh_node -> precis.handlers._job_bubble",
+    "precis.workers.fetch_google_patents -> precis.handlers._patent_ingest",
+    "precis.workers.job_types.draft_export -> precis.handlers._draft_lint",
+    "precis.workers.job_types.draft_export -> precis.handlers.draft",
+    "precis.workers.job_types.draft_refresh -> precis.handlers.draft",
+    "precis.workers.job_types.reground_claim -> precis.handlers.draft",
+    "precis.workers.job_types.struct_search -> precis.handlers.structure",
+    "precis.workers.job_types.taproot_backfill -> precis.handlers.draft",
+    "precis.workers.news_poll -> precis.handlers._link_tag_ops",
+    "precis.workers.news_poll -> precis.handlers.news",
+    "precis.workers.orcid_enrich -> precis.handlers.orcid",
+    "precis.workers.planner_prompt -> precis.handlers._skill_common",
+    "precis.workers.planner_prompt -> precis.handlers._todo_views",
+    "precis.workers.planner_prompt -> precis.handlers.skill",
+    "precis.workers.sweeper -> precis.handlers._job_bubble",
+]

@@ -13,8 +13,8 @@ prompt template live here.
 
 from __future__ import annotations
 
-from precis.handlers._todo_guards import todo_root_sql
 from precis.store import Store
+from precis.store._todo_sql import todo_root_sql
 from precis.utils import handle_registry
 from precis.utils.llm.router import Tier, resolve_model
 from precis.utils.prompt import AssemblyContext, Layer, Module

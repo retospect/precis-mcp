@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
-from precis.handlers._slug_ref_shared import resolve_live_slug_ref
+from precis.utils.slug_ref import resolve_live_slug_ref
 
 if TYPE_CHECKING:
     from precis.store import Store

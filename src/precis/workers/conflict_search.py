@@ -84,7 +84,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from precis.errors import NotFound
-from precis.handlers._link_tag_ops import validate_relation
 from precis.store import Store
 from precis.taproot.canon import (
     CLAIM_HUB_PREDICATE_PARAMS,
@@ -96,6 +95,7 @@ from precis.taproot.hub import HUB_ROLES
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.llm.router import LlmRequest, Tier, route
+from precis.utils.relations import validate_relation
 from precis.workers._chase_llm import _verify_support_with_caveats
 
 log = logging.getLogger(__name__)

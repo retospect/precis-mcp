@@ -226,8 +226,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (``handlers/finding.py::_SIGNED_STATES`` — signed/anchored/
     # published), read off the same batched ``hub_rows`` the hygiene view
     # uses for posture.
-    from precis.handlers.finding import _SIGNED_STATES
     from precis.nanopub.overview import draft_cited_hub_ids, hub_rows
+    from precis.store.types import SIGNED_FINDING_STATES as _SIGNED_STATES
 
     cited_hub_ids = draft_cited_hub_ids(ctx.store, ref.id)
     if cited_hub_ids:

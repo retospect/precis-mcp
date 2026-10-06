@@ -79,6 +79,7 @@ from precis.handlers._patent_slug import DocDbId, parse_docdb_id
 from precis.handlers._patent_xml import ParsedPatent, parse_patent
 from precis.ingest.blocks import ParsedBlock, classify_density
 from precis.store import Ref, Store, Tag
+from precis.store.types import FAMILY_STUB_META_KEY as _FAMILY_STUB_META_KEY
 from precis.store.types import ChunkInsert
 
 log = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ SAME_FAMILY_AS_RELATION = "same-family-as"
 #: Ref meta flag marking a stub ingest (docstring above) — biblio only, no
 #: description/claim blocks. Absent (never ``False``) on a normal full
 #: ingest, matching the "absent means no" convention ``family_id`` uses.
-FAMILY_STUB_META_KEY = "family_stub"
+FAMILY_STUB_META_KEY = _FAMILY_STUB_META_KEY
 
 
 # ---------------------------------------------------------------------------
