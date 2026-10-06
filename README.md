@@ -365,6 +365,11 @@ Routed EasyEDA Pro intake: `uv run precis pcb import-epro LOCAL.epro2 --slug PRE
 preserves straight/arc tracks and through vias as fixed source copper. Use
 `--dry-run` to inspect first or `--copper none` for measurement-only intake.
 
+`precis memory mirror import DIR --namespace NAME` imports a flat YAML/Markdown
+memory snapshot with conflict checks. `precis memory mirror export DEST
+--namespace NAME` preserves original filenames and formatting in a new directory;
+it never overwrites an existing destination or retires missing memories.
+
 ```text
 # Serving
 precis serve                       # Start the MCP stdio server.

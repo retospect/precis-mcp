@@ -25,8 +25,11 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
-argparse layer is a thin shell. Nothing here writes to the harness memory
-directory — import only reads it.
+argparse layer is a thin shell. The legacy import only reads its source.
+Explicit ``mirror import`` / ``mirror export`` in :mod:`precis.cli.memory_mirror`
+preserve filenames and YAML for coexistence; export requires a fresh directory,
+while conflict baselines prevent implicit file-over-graph updates. Neither
+operation is a cutover.
 """
 
 from __future__ import annotations
@@ -739,6 +742,26 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    mirror = msub.add_parser(
+        "mirror", help="Explicit faithful file/graph snapshot exchange."
+    )
+    modes = mirror.add_subparsers(dest="mirror_cmd", required=True)
+    for mode in ("import", "export"):
+        parser = modes.add_parser(
+            mode,
+            help=(
+                "Import a flat YAML/Markdown snapshot; refuse graph conflicts."
+                if mode == "import"
+                else "Export original filenames to a NEW directory."
+            ),
+        )
+        parser.add_argument("dir", help="Source directory / fresh export destination.")
+        parser.add_argument(
+            "--namespace", required=True, help="Stable identity for this file set."
+        )
+        parser.add_argument(
+            "--database-url", default=None, help="Postgres DSN override."
+        )
     return mp
 
 
@@ -750,7 +773,25 @@ def run(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        if args.memory_cmd == "import":
+        if args.memory_cmd == "mirror":
+            import json
+            from dataclasses import asdict
+
+            from precis.cli.memory_mirror import export_mirror, import_mirror
+
+            try:
+                if args.mirror_cmd == "import":
+                    report_mirror = import_mirror(
+                        store, Path(args.dir), namespace=args.namespace
+                    )
+                    print(json.dumps(asdict(report_mirror), sort_keys=True))
+                else:
+                    print(
+                        f"exported {export_mirror(store, Path(args.dir), namespace=args.namespace)} files"
+                    )
+            except (ImportRefused, OSError) as exc:
+                raise SystemExit(f"precis memory mirror: refused: {exc}") from exc
+        elif args.memory_cmd == "import":
             try:
                 report = import_memory_dir(
                     store,

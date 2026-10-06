@@ -14,6 +14,13 @@ Everything else lives in submodules under :mod:`precis.cli`; nothing
 consumed externally by ``from precis.cli import X`` should break.
 ``_parse_interval`` resolves on first access, so importing the console
 script does not import :mod:`precis.cli.patent`.
+
+Memory file coexistence has an explicit ``memory mirror`` namespace. Import
+locks refs and compares saved body/metadata/link state; old cutover sync cannot
+offer that contract because it retires absent files and drops YAML. Export
+creates a fresh directory, preserving header bytes rather than normalizing
+user formatting. Files and graph remain snapshots with explicit conflicts,
+not a background bidirectional synchronizer.
 """
 
 from __future__ import annotations

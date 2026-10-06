@@ -141,7 +141,12 @@ graph-health-metrics, five parked gripes, and the seam with
    the pillar review). Right after 8 because it builds on the same taxon
    identity; consumed by `se-machine-design.md` (pocket specs) and
    `materials-molecular-substitution-db.md`.
-10. **backlog/file-mirror.md** — status draft, no blocker. Skills and the
+10. **backlog/memory-file-mirror.md** — R17 bounded memory consumer slice:
+   explicit namespace import/export preserving filenames, YAML and body;
+   conflict detection, no automatic retirement. Synthetic files/test DB only;
+   real source import/cutover held. Explicit export supersedes the earlier
+   no-export decision for this slice. Graph-memory owns implementation/review.
+   **backlog/file-mirror.md** retains the broader skill/root mirror. Skills and the
    Claude Code memory files as read-only `markdown` roots with links from
    `[[slug]]` and frontmatter; replaces the unfiled "memory/skills mesh
    pilot". Mirror first, ruled 2026-09-30; native authoring is judged
