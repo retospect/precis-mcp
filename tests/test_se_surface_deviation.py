@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -297,6 +299,35 @@ def test_public_get_missing_design_rejects_deviation_only(
     assert fn(kind="se", id=selector, view="tree").startswith(
         "DEFAULT-DESIGN-LIST-SENTINEL"
     )
+
+
+def test_public_get_exact_ball12_call_scores_aC343_against_sphere(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/surface_deviation_ball12.json").read_text()
+    )
+    fn, store = public_get
+    store.design.slug = "hexfold-dogfood-r4"
+    tree = SeTree()
+    tree.blocks["ball12"] = SeBlock(
+        name="ball12",
+        uid=207,
+        bound_kind="structure",
+        bound="hexfold-dogfood-r4-ball12",
+    )
+    monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
+    point = np.array(fixture["atom"]["xyz_A"])
+    store.scene.atoms = {"aC343": SimpleNamespace(frac=point / 10)}
+    body = fn(**fixture["call"])
+    row = next(line.split("\t") for line in body.splitlines() if line.startswith("q\t"))
+    assert row[:2] == ["q", "1"]
+    sphere = fixture["sphere"]
+    expected = abs(np.linalg.norm(point - sphere["centre_A"]) - sphere["radius_A"])
+    assert [float(v) for v in row[2:]] == pytest.approx([expected] * 3, abs=1e-12)
+    assert "sheet\t" not in body
+    assert "source: se:hexfold-dogfood-r4; block UID=#207" in body
+    assert "original generation target provenance unverified" in body
 
 
 def test_public_get_stable_version_and_design_uid_provenance(public_get: Any) -> None:

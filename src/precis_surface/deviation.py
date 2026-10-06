@@ -5,7 +5,8 @@ A scene is a flat sheet, the plane ``z = 0`` of the caller's frame, carrying
 axisymmetric features. Each feature is an authored meridian
 (:func:`precis_surface.revolution.authored_meridian`) revolved about a
 ``+z`` axis through its in-plane ``centre``, and owns the points within its
-meridian's start radius of that axis. A point no feature owns is measured
+full authored radial extent about that axis, including a sphere wider than
+the meridian's initial radius. A point no feature owns is measured
 against the sheet, as ``|z|``. Feature discs must not overlap: one point,
 one surface.
 
@@ -36,7 +37,22 @@ class Feature:
 
     @property
     def reach(self) -> float:
-        return self.meridian.segments[0].start[0]
+        """Full target extent, not the initial sheet-to-feature radius.
+
+        Lines and convex cosh catenoids attain their maximum at an endpoint;
+        circular arcs may also attain it at angle zero within their sweep.
+        Use analytic extrema so an overhanging sphere is never clipped by
+        its foot, and ownership/overlap checks do not depend on a sample grid.
+        """
+        reach = 0.0
+        for segment in self.meridian.segments:
+            reach = max(reach, segment.start[0], segment.end[0])
+            if segment.arc is not None:
+                cr, _cz, radius, phi0, phi1 = segment.arc
+                lo, hi = sorted((phi0, phi1))
+                if math.ceil(lo / math.tau) * math.tau <= hi:
+                    reach = max(reach, cr + radius)
+        return reach
 
 
 _Foot = tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
