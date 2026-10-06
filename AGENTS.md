@@ -33,8 +33,9 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   changed.
 - Schema change: a new numbered migration, old ones untouched.
 - No secrets and no cluster addresses in the tree (the repo is public).
-- Commit message: one-line conventional subject, no body. No CHANGELOG;
-  `git log` is the record.
+- Commit message: `type(scope): what changed`, ≤72 chars, optional short why
+  as body (rules in `CLAUDE.md` §Conventions that bite; `scripts/ship` enforces
+  them). No CHANGELOG; `git log` is the record.
 
 ## Agent sizing
 

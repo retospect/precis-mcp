@@ -49,7 +49,9 @@ Optional ship message from the user: `$ARGUMENTS`
    merge contains a migration, the whole merge takes the slow path.
 
 2. **Decide the message.** Use `$ARGUMENTS` if non-empty; otherwise write a
-   concise conventional-commit one-liner for what this branch changes.
+   concise conventional-commit one-liner for what this branch changes. The
+   message is required (`-m`, or derived from the branch's own commit); ship
+   refuses `ship(...)`/`wip(...)`/unprefixed subjects before linting.
 
 3. **Merge, untested.**
    ```

@@ -114,8 +114,11 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   `embedding IS NULL`; never call `fill_embeddings` from ingest.
 - **`uv` for everything; tests via `scripts/test`** — never bare
   pytest/pip/mypy. → `docs/conventions/invariants.md`
-- **Commit messages: one-line subject, no body** + the required
-  Co-Authored-By/session footer.
+- **Commit messages: `type(scope): what changed`** (≤72 chars;
+  feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
+  short why as body, then the required Co-Authored-By/session footer.
+  `scripts/ship` reuses your branch's single commit message or takes `-m`; it
+  refuses `ship(...)`/`wip(...)` placeholders and unprefixed subjects.
 
 ## Hook/gate-enforced — one-liners, detail on demand
 

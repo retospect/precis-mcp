@@ -194,7 +194,7 @@ class Rig:
         }
         fh = log.open("w", encoding="utf-8")
         proc = subprocess.Popen(
-            [_BASH, "scripts/ship", *flags, "-m", f"ship {wt.name}"],
+            [_BASH, "scripts/ship", *flags, "-m", f"chore(test): ship {wt.name}"],
             cwd=wt,
             env=full_env,
             stdout=fh,
@@ -554,7 +554,7 @@ def test_lost_cas_in_lock_retries_merge_and_push_without_regating(rig: Rig) -> N
     assert "could not ship after" not in out
     assert _runs(rig, wt) == 1, "the gate must not re-run on an in-lock retry"
     assert {"retry.txt", "hook_1.txt", "hook_2.txt"} <= _tree_files(rig)
-    msg = _landed_message(rig, "ship retry")
+    msg = _landed_message(rig, "chore(test): ship retry")
     # try 1 pushed the exact tree and lost; tries 2 and 3 merged one commit each
     assert f"Gate: forward-merged over 2 commits; tested base {base}" in msg, msg
     assert not (wt / ".ship-sha").exists()
@@ -610,7 +610,7 @@ def test_termination_under_continuous_arrivals(rig: Rig, mode: str) -> None:
     assert n_pushed >= 3, f"the arrivals loop barely ran ({n_pushed} pushes)"
     assert _runs(rig, wt) == 1, "budget 1 means at most one gate run"
     assert f"cont_{mode}.txt" in _tree_files(rig)
-    msg = _landed_message(rig, f"ship cont{mode}")
+    msg = _landed_message(rig, f"chore(test): ship cont{mode}")
     if mode == "full":
         assert "not a deploy warrant" in out
         assert re.search(
