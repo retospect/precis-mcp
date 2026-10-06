@@ -175,8 +175,10 @@ always the bare canonical string.
 
 ## How much energy does a reaction release?
 
-Stateless, no id, no stored rows: source-backed standard-state thermochemistry
-for the equation in `q=`.
+Source-backed standard-state thermochemistry for the equation in `q=`;
+this read is stateless. The web form is `/rxn` (temperature defaults to
+298.15 K). It renders the same ledger and source/licence notes, with an
+explicit **Keep reaction record** action opening `/refs/rxn/<id>`.
 
 ```python
 get(kind='rxn', view='energetics', q='NO + 5/2 H2 -> NH3 + H2O',
@@ -213,6 +215,28 @@ Unknown formulas (including ambiguous C2H6O)
 cannot silently select an isomer. No group-contribution, xTB or extrapolation
 fills a gap. An explicit liquid fit may extend into metastability; phase
 equilibrium is not inferred. Full sources and permissions: `precis.thermo/NOTICE`.
+
+## Keep a tabulated equation set
+
+Keep validated inputs and an archival computed ledger without inventing
+reaction SMILES, measured values or a catalyst run:
+
+```python
+put(kind='rxn', id='no-nh3-ledger-300k', title='NO → NH3 ledger at 300 K',
+    meta={'energetics': {'q': 'NO + 1/2 H2 -> HNO; HNO + 1/2 H2 -> H2NO; H2NO + 1/2 H2 -> NH2OH; NH2OH + H2 -> NH3 + H2O', 'T': 300}})
+get(kind='rxn', id='no-nh3-ledger-300k')
+get(kind='rxn', id='no-nh3-ledger-300k', view='energetics', args={'T': 400})
+```
+
+The reader recomputes from pinned sources; `meta.energetics_snapshot` is
+archival text, not a current measured result. Optional `n_electrons` belongs
+inside `meta.energetics` for a single equation only. Invalid inputs are
+refused before storage. The web keep action reuses identical submitted
+inputs. Use a separate record for a SMILES reaction. This is `rxn`, whereas
+`pathway` stores catpath runs to which future station records attach.
+Gas-phase NASA-7 fits at 1 bar are the default; the existing phase/range,
+licence and original-pressure caveats above remain. No barriers or electrode
+reference are supplied by this ledger.
 
 ## Not in this slice
 

@@ -94,7 +94,7 @@
              through the retired route. Their workbenches
              (``/structure/{slug}`` etc.) are unaffected. Clusters is
              a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('nanopub','Nanopubs','/nanopub')] %}
+          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/drive?k=structure&folder=*&sort=recency'), ('cad','CAD','/drive?k=cad&folder=*&sort=recency'), ('pcb','PCB','/drive?k=pcb&folder=*&sort=recency'), ('figure','Figures','/drive?k=figure&folder=*&sort=recency'), ('mermaid','Mermaid','/drive?k=mermaid&folder=*&sort=recency'), ('rxn','Reaction ledger','/rxn'), ('nanopub','Nanopubs','/nanopub')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"

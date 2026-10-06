@@ -106,6 +106,11 @@ stream, reply off the aggregated `LlmResult`), while a concrete claude id
 driving the live Discord progress indicator). Slack's is one blocking
 `dispatch()` call.
 
+The `/rxn` web form dispatches the rxn energetics handler and renders its
+tables through the shared reader. Explicit keep stores equation inputs and
+an archival ledger in an `rxn` ref; `/refs/rxn/<id>` derives the live ledger
+from pinned sources. Catalyst `pathway` run records remain a separate kind.
+
 ## Package map
 
 Subsystem architecture lives in each package's `__init__.py` module

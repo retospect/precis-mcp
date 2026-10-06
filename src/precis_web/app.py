@@ -155,6 +155,7 @@ def create_app(
         pres,
         preview,
         refs,
+        rxn,
         se_print,
         secrets,
         settings,
@@ -182,6 +183,7 @@ def create_app(
     app.include_router(drive.router)
     app.include_router(drive.downloads_router)
     app.include_router(refs.router)
+    app.include_router(rxn.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)
     app.include_router(structure.router)
