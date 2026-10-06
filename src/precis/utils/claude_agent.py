@@ -198,6 +198,7 @@ def call_claude_agent(
     disallowed_tools: tuple[str, ...] = (),
     envelope: Any | None = None,
     extra_args: tuple[str, ...] = (),
+    settings_extra: Mapping[str, Any] | None = None,
     log_event: tuple[Store, int, str] | None = None,
     env_overlay: dict[str, str] | None = None,
     cwd: str | Path | None = None,
@@ -238,6 +239,9 @@ def call_claude_agent(
             back to the executor-scoped active envelope
             (:func:`~precis.workers.envelope.active_envelope`).
         extra_args: Pass-through for niche flags. Use sparingly.
+        settings_extra: Extra top-level keys merged into the ``--settings``
+            JSON (e.g. ``autoMemoryEnabled``); ``permissions.deny`` is owned
+            by ``disallowed_tools`` and wins on conflict.
         log_event: Optional ``(store, ref_id, source)`` triple. On success,
             writes a ``ref_events`` row on ``ref_id`` (event ``agent:done``,
             payload carrying cost/model/duration_s).
@@ -319,6 +323,7 @@ def call_claude_agent(
         disallowed_tools=disallowed_tools,
         envelope=envelope,
         extra_args=extra_args,
+        settings_extra=settings_extra,
         gated=gated,
     )
     proc_env = _prepare_agent_env(
@@ -532,6 +537,7 @@ async def call_claude_agent_async(
     disallowed_tools: tuple[str, ...] = (),
     envelope: Any | None = None,
     extra_args: tuple[str, ...] = (),
+    settings_extra: Mapping[str, Any] | None = None,
     log_event: tuple[Store, int, str] | None = None,
     env_overlay: dict[str, str] | None = None,
     cwd: str | Path | None = None,
@@ -577,6 +583,7 @@ async def call_claude_agent_async(
         disallowed_tools=disallowed_tools,
         envelope=envelope,
         extra_args=extra_args,
+        settings_extra=settings_extra,
     )
     proc_env = _prepare_agent_env(
         active_env=active_env, bare=bare, env_overlay=env_overlay
@@ -635,6 +642,7 @@ def _resolve_agent_args(
     disallowed_tools: tuple[str, ...],
     envelope: Any | None,
     extra_args: tuple[str, ...],
+    settings_extra: Mapping[str, Any] | None = None,
     gated: bool = False,
 ) -> tuple[str, list[str], str, float, float, Any]:
     """Resolve model/timeout/budget and build the full ``claude -p`` argv.
@@ -743,7 +751,7 @@ def _resolve_agent_args(
 
     _check_deny_list_profile_safety(effective_deny)
 
-    if effective_deny:
+    if effective_deny or settings_extra:
         # ``claude -p`` declares ``--disallowed-tools <tools...>`` as a
         # Commander.js *variadic* — it greedily consumes every subsequent
         # positional as another tool name, including the prompt itself
@@ -753,9 +761,9 @@ def _resolve_agent_args(
         # taking a single JSON string with no variadic to fight.
         import json as _json
 
-        settings_payload = {
-            "permissions": {"deny": effective_deny},
-        }
+        settings_payload: dict[str, Any] = dict(settings_extra or {})
+        if effective_deny:
+            settings_payload["permissions"] = {"deny": effective_deny}
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
     if not gated:

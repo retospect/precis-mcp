@@ -345,6 +345,14 @@ def test_invoke_denies_bash_and_write_tools_in_real_settings_json(
     settings_json = captured_argv[settings_idx + 1]
     settings_payload = json.loads(settings_json)
     deny = settings_payload["permissions"]["deny"]
+    assert settings_payload["autoMemoryEnabled"] is False
+    assert settings_payload["disableBundledSkills"] is True
+
+    # Advertised built-in tool set: exactly the four pre-approved tools.
+    assert captured_argv.count("--tools") == 1
+    tools_idx = captured_argv.index("--tools")
+    assert captured_argv[tools_idx + 1] == "Read,Glob,Grep,Agent"
+    assert captured_argv.index("--") > tools_idx
 
     for tool in ("Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch"):
         assert tool in deny, f"{tool} missing from real --settings deny list: {deny}"
