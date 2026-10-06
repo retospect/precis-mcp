@@ -39,8 +39,9 @@ network. The current install-wide default cannot adapt per viewer.
 
 - Changing what the DOI link does or how it resolves.
 - Per-draft overrides at the document level.
-- MCP-agent-triggered exports (no web auth identity); these fall back to
-  install default.
+- MCP-agent-triggered exports until the session carries an identity
+  (2026-10-06 ruling: per-user token minted at /account, see
+  mcp-session-user-identity.md); until then they fall back to install default.
 
 ## Acceptance criteria
 

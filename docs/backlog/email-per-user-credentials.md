@@ -78,6 +78,7 @@ secret `email.<account>.imap_password`; the code uses `.password`.
   reads them. Keyed on `id` for rename stability. Migration 0164 keys
   `refs.owner_login` on `web_users(login)`; that is the existing exception, to
   move to an id column only when something touches it.
-- Open: MCP agent calls carry no requesting-user identity today (same gap as
-  per-user-library-link.md), so the handler needs a requesting-user source for
-  MCP sessions before the scope can be enforced there.
+- 2026-10-06 (Reto): MCP sessions carry no requesting-user identity today; the
+  binding is a per-user token minted at /account, never a hardcoded user. Filed
+  as mcp-session-user-identity.md; the handler reads the requesting user from
+  that item's session context.
