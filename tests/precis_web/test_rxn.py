@@ -60,7 +60,7 @@ def test_keep_round_trip_reuses_ref_and_reader_recomputes(
     assert first.status_code == 303
     url = first.headers["location"]
     assert url.startswith("/refs/rxn/")
-    ref = runtime_with_store.store.get_ref_by_id(int(url.rsplit("/", 1)[1]))
+    ref = runtime_with_store.store.get_ref(kind="rxn", id=int(url.rsplit("/", 1)[1]))
     assert ref is not None
     assert ref.kind == "rxn"
     assert ref.meta["energetics"] == {

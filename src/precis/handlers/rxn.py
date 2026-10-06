@@ -267,9 +267,10 @@ class RxnHandler(Handler):
             if not isinstance(inputs.get("q"), str):
                 raise BadInput("meta.energetics needs q='<equation set>'")
             result = render_energetics(**inputs)
+            temperature = inputs.get("T")
             normalized = {
                 "q": inputs["q"].strip(),
-                "T": float(inputs.get("T") if inputs.get("T") is not None else 298.15),
+                "T": float(temperature if temperature is not None else 298.15),
                 "n_electrons": (
                     float(inputs["n_electrons"])
                     if inputs.get("n_electrons") is not None

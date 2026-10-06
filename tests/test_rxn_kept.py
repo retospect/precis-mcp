@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 
 from precis.errors import BadInput
 from precis.handlers.rxn import RxnHandler
@@ -17,6 +18,14 @@ IDENTITY_METADATA = [
     ("uid_strict", "unsupported-strict"),
     ("desired_product", "[H][H]"),
 ]
+
+
+def _error_text(result: Any) -> str:
+    assert isinstance(result, CallToolResult)
+    assert result.isError is True
+    return "\n".join(
+        block.text for block in result.content if isinstance(block, TextContent)
+    )
 
 
 def _stored_row(store: Any, ref_id: int) -> Any:
@@ -104,8 +113,9 @@ def test_public_keep_rejects_incoming_identity_before_create(
         id="mixed-ledger",
         meta={"energetics": {"q": EQUATION}, key: value},
     )
-    assert "[error:BadInput]" in response
-    assert "separately from a SMILES reaction" in response
+    error = _error_text(response)
+    assert "[error:BadInput]" in error
+    assert "separately from a SMILES reaction" in error
     assert runtime_with_store.store.get_ref(kind="rxn", id="mixed-ledger") is None
 
 
@@ -142,8 +152,9 @@ def test_public_identity_update_refused_without_row_mutation(
         reaction_class="RXNO:0000001",
         meta=meta,
     )
-    assert "[error:BadInput]" in refused
-    assert "separately from a SMILES reaction" in refused
+    error = _error_text(refused)
+    assert "[error:BadInput]" in error
+    assert "separately from a SMILES reaction" in error
     assert _stored_row(store, ref.id) == before
 
 
@@ -170,7 +181,7 @@ def test_existing_mixed_metadata_refuses_metadata_only_update(
         title="Must not replace title",
         meta={"notes": "new"},
     )
-    assert "[error:BadInput]" in refused
+    assert "[error:BadInput]" in _error_text(refused)
     assert _stored_row(store, ref.id) == before
 
 
