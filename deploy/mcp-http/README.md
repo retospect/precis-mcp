@@ -115,6 +115,15 @@ orchestrator the minute before, so the fleet reconnect check runs after. If
 The auto-mode classifier denies a session writing the live script: Reto copies
 the file.
 
+`scripts/mcp-http-install` makes that drift visible: with no arguments it
+compares sha256 of the installed script (`PRECIS_MCP_ENSURE`, default the
+path the SessionStart hook runs) with this repo copy and prints one line, in
+sync or differs; the SessionStart hook runs it right after the ensure script.
+`--apply` shows the diff, backs the installed file up to
+`<installed>.bak-<UTC stamp>` and copies the repo file over it (mode 755). It
+never runs the ensure script: run `--recreate` (or `--migrate` if `--status`
+says LEGACY) yourself afterwards.
+
 ## Install / prerequisites
 
 - Image `precis-mcp:dev` built as in the script's error text (unchanged).

@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "E=\"$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh\"; [ -x \"$E\" ] && bash \"$E\" || true"
+            "command": "E=\"$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh\"; [ -x \"$E\" ] && bash \"$E\"; bash \"$CLAUDE_PROJECT_DIR/scripts/mcp-http-install\" || true"
           },
           {
             "type": "command",
@@ -150,6 +150,10 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-git-stash.py\""
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-bare-python-tools.py\""
           },
           {
             "type": "command",

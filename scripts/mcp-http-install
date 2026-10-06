@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Compare (or --apply) the installed mcp-http ensure script against the repo copy.
+#   scripts/mcp-http-install           check only; one line; exit 0 either way
+#   scripts/mcp-http-install --apply   show the diff, back up the installed copy
+#                                      to <installed>.bak-<UTC stamp>, copy the
+#                                      repo file over it (mode 755)
+# Never runs the ensure script. Path override: PRECIS_MCP_ENSURE (as scripts/fleet).
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$root/deploy/mcp-http/precis-mcp-http-ensure.sh"
+installed="${PRECIS_MCP_ENSURE:-$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh}"
+
+sha() { shasum -a 256 "$1" 2>/dev/null | cut -c1-64; }
+
+repo_sha="$(sha "$repo")"
+inst_sha="$(sha "$installed")"
+
+if [ "${1:-}" = "--apply" ]; then
+  if [ -z "$repo_sha" ]; then echo "repo copy missing: $repo" >&2; exit 1; fi
+  if [ "$repo_sha" = "$inst_sha" ]; then echo "mcp-http ensure script: in sync"; exit 0; fi
+  if [ -n "$inst_sha" ]; then
+    diff -u "$installed" "$repo" || true
+    cp -p "$installed" "$installed.bak-$(date -u +%Y%m%dT%H%M%SZ)" || exit 1
+  else
+    mkdir -p "$(dirname "$installed")" || exit 1
+  fi
+  cp "$repo" "$installed" && chmod 755 "$installed" || exit 1
+  echo "mcp-http ensure script installed (repo $(echo "$repo_sha" | cut -c1-8)): now run $installed --recreate (or --migrate if --status says LEGACY)"
+  exit 0
+fi
+
+if [ -n "$repo_sha" ] && [ "$repo_sha" = "$inst_sha" ]; then
+  echo "mcp-http ensure script: in sync"
+else
+  echo "mcp-http ensure script DIFFERS from repo (installed ${inst_sha:0:8}, repo ${repo_sha:0:8}): run scripts/mcp-http-install --apply, then $installed --recreate (or --migrate if --status says LEGACY)"
+fi
+exit 0

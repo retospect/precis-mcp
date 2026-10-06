@@ -45,6 +45,7 @@ is no static ban on raw `httpx.Client` in new code; reviewers check for it.
 phantom failures (the torch-free host lacks `marker`, `sympy`, ...). Tests
 run through `scripts/test` (dev container, test DB wired; `--impacted`
 narrows, `--typecheck` runs mypy over `src tests`); other tools through `uv
-run`. Not hard-blocked by a hook: the convention is carried by `scripts/test`
-being the only wired path and by the gate, which runs the same container
-commands.
+run`. Hard-blocked in Bash by `scripts/hooks/guard-bare-python-tools.py` (bare
+`pytest`/`pip`/`mypy`, `python -m pytest|pip`; `uv run`, `uvx`, `scripts/test`
+and `ssh` remotes pass; any parse doubt allows), and the gate runs the same
+container commands.
