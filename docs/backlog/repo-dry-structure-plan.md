@@ -73,10 +73,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 
 ## In scope — the lanes (each one coder/documenter dispatch, disjoint files)
 
-2. **value-entity-base** (coder). A shared base for component/material
-   value handling (`_put_value`, `_route_value`, `_resolve_source`,
-   `_check_unit`, `_validate_type_args`) and the store-mixin row helpers;
-   behaviour-preserving, existing tests green.
 4. **layering-contract** (coder). import-linter contract "workers import
    store and utils, never handlers", with the 29 current imports listed
    under `ignore_imports` as a ratchet (no new violations); migrate the
@@ -105,8 +101,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 
 ## Acceptance criteria
 
-- `handlers/material.py` no longer defines `_put_value`,
-  `_route_value`, `_resolve_source`; component/material tests green.
 - `uv run lint-imports` passes with the new workers→handlers contract.
 
 ## Target + blast radius
