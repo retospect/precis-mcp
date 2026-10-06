@@ -77,16 +77,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
    store and utils, never handlers", with the 29 current imports listed
    under `ignore_imports` as a ratchet (no new violations); migrate the
    cheapest third of them to store methods in the same lane.
-7. **docstring-layer** (documenter). Audit result: 95 package docstrings,
-   31.6k words, duplication low (2/5) — 8-word-window search found only
-   scattered single-sentence twins (precis_se ↔ `precis-se-help` /
-   `precis-se-print-help` skills; taproot ↔ nanopub ↔ `cli/nanopub.py`).
-   The real defects: `src/precis_se/__init__.py` is 5.8k words (18% of
-   all docstring text) — split by subpackage and make the two se skills
-   point at it; `precis/utils`, `asa_bot` and top-level `precis` have
-   9–18-word docstrings — write real ones; nothing lints
-   docstring↔doc restatement — add an 8-word-window check and a
-   ~1500-word ceiling to `scripts/docs-index` or `backlog-lint`.
 
 ## Explicitly NOT in scope
 
@@ -118,5 +108,3 @@ CLAUDE.md, AGENTS.md, `.claude/agents/`, `docs/conventions/`,
 
 - Decided 2026-10-06: `PRECIS_ROOT` and `PRECIS_PYTHON_ROOTS` stay
   separate settings (writable sandbox vs aliased read-only repo roots).
-- Decided 2026-10-06: the docstring layer is not a duplication problem
-  (lane 7 audit); it is a bloat-and-gaps problem, handled in lane 7.

@@ -1,688 +1,132 @@
 """precis-se — the ``se`` (structural envelope) kind.
 
-A first-party **plugin** on the precis substrate (Route B: entry points,
-own migration namespace), so core dispatch stays untouched.
+A first-party **plugin** on the precis substrate (Route B: entry points, own
+migration namespace ``src/precis_se/migrations/``), so core dispatch stays
+untouched. Always on wherever the plugin is installed — no per-kind flag
+(pinned by ``tests/test_se_plugin.py::test_kind_is_available_without_any_flag``);
+``PRECIS_KINDS_DISABLED`` is the one general off-switch. Design:
+``docs/backlog/se-kind.md``; agent-facing docs: the ``precis-se-*-help`` skills
+(``precis-se-help`` is the entry).
 
-``se`` is the one scale-agnostic design kind, with a mode split standing
-in for what used to be a kind split: **se : cad :: atomic mode :
-structure** (docs/backlog/se-kind.md; the ``nm`` kind used to be the
-right-hand side of that symmetry as a sibling kind — the nm→se merge,
-docs/backlog/nm-se-merge.md, folded it in as ``se``'s **atomic mode**
-rather than promoting the symmetry across two kinds). Atomic mode is
-intent-over-atoms renting the cad kernel as Å; non-atomic ``se`` is
-intent-over-solids renting the same kernel as **metres** (float64
-everywhere — see se-kind.md "Decisions": within ±10⁶ m of origin
-float64 metres resolves below 10⁻⁴ Å, atoms-to-buildings in one unit;
-the single declared *unit* conversion anywhere is the Å↔m multiply
-where an atomic-mode block binds a ``structure`` design). ``structure``
-itself stays the permanent Å-native crystallography enclave regardless
-(docs/backlog/structure-unit-enclave.md) — the merge changed which kind
-crosses into it, never the enclave rule itself. One caveat the metres
-decision earned before the units-policy-cutover relative-tolerance
-audit: the cad kernel's
-tolerances used to be absolute in whatever numbers it was handed
-(``LINEAR_EPS = 1e-6``, fine for Å and mm callers, fatal for a
-nanometre-scale box whose every face it culled). Its tolerances are now
-scale-relative (``precis.cad.vec.LINEAR_REL_EPS``, each primitive's own
-governing length), so this no longer bites directly — but geometry
-queries still pass through :func:`precis_se.validate.kernel_scale`,
-which normalizes out-of-band designs into O(100) kernel units and
-converts results back to metres, both as belt-and-suspenders and because
-``_CROSS_SCALE_RATIO`` still refuses to combine wildly different-scale
-blocks in one SDF query — a numerical-conditioning problem the kernel fix
-doesn't solve. In-band designs go through unscaled, bit-identical. A
-design is a deliberately *suggestive* space plan
-("a fork about this size, connected to a hub that goes through a wheel so
-the wheel can rotate") that hardens monotonically as answers arrive —
-every field beyond a block's name is optional; validation reports absence
-(filled-fraction honesty) but never fails on it.
+**One scale-agnostic design kind** (the ``nm`` kind merged in as its atomic
+mode, docs/backlog/nm-se-merge.md): **se : cad :: atomic mode : structure**.
+Non-atomic ``se`` is intent-over-solids renting the cad kernel as **metres**
+(float64: within ±10⁶ m of origin it resolves below 10⁻⁴ Å, atoms-to-buildings
+in one unit); atomic mode is intent-over-atoms binding ``structure`` designs.
+``structure`` stays the permanent Å-native crystallography enclave
+(docs/backlog/structure-unit-enclave.md); the one declared unit conversion is
+the Å↔m multiply where an atomic block binds a ``structure`` design. A design is
+a deliberately *suggestive* space plan ("a fork about this size, connected to a
+hub that goes through a wheel so the wheel can rotate") that hardens
+monotonically as answers arrive — every field beyond a block's name is
+optional; validation reports absence (filled-fraction honesty) but never fails
+on it.
 
-**The IR — six levels** (same invariant as ``pcb`` and the merged ``nm``
-kind before it: dropping everything above level *k* leaves a valid
-level-*k* object):
+**The IR — six levels** (same invariant as ``pcb``: dropping everything above
+level *k* leaves a valid level-*k* object):
 
 - **L0 — block graph.** Blocks + ports + intent connections, hierarchical
   (module trees, template refs, array nodes). No geometry.
-- **L1 — envelopes + pose.** Per-block analytic envelope (the cad
-  mini-DSL, reused verbatim, metres) + rough pose.
+- **L1 — envelopes + pose.** Per-block analytic envelope (the cad mini-DSL,
+  reused verbatim, metres) + rough pose.
 - **L2 — declared invariants.** Joints (kinematic class × mechanism),
-  tolerances as relations between named measures, loads as objective
-  vectors — stored explicitly, never derived from L3 geometry.
-- **L3 — realized solids.** Per block: cad node sets, instanced
-  templates, ``component``/``part`` bindings (``set_binding``), or
-  (atomic mode) a bound ``structure`` design — real atoms, via
-  ``bind_structure``/``generate``.
+  tolerances as relations between named measures, loads as objective vectors
+  — stored explicitly, never derived from L3 geometry.
+- **L3 — realized solids.** Per block: cad node sets, instanced templates,
+  ``component``/``part`` bindings (``set_binding``), or (atomic mode) a bound
+  ``structure`` design via ``bind_structure``/``generate``.
 - **L4 — metrics/agreement.** ``envelope_fit``, interface fit, stack-up,
-  design DRC — the realized solid checked against the spec, never stored
-  twice.
-- **L5 — fabrication plan.** Manufacturing mode, build frame, process
-  DRC, export.
+  design DRC — the realized solid checked against the spec, never stored twice.
+- **L5 — fabrication plan.** Manufacturing mode, build frame, process DRC,
+  export.
 
-**Apply policy by op class** (the web workbench's chat turn,
-:mod:`precis_web.design_turn`, the design-workbench build (2026-09-18): the
-non-destructive pure ops in :func:`precis_se.ops.known_ops` (L0–L2 — cheap
-to redo, claim nothing physical) auto-apply after a dry run as one
-revision; the destructive slice of that same roster
-(:data:`precis_web.design_turn.DESTRUCTIVE_SE_OPS` — ``remove_block``,
-``remove_port``, ``remove_measure``, ``remove_bom``, ``remove_note``,
-``remove_threading``, ``disconnect``, by prefix rule off the live
-roster) and the store-aware ops in
-:data:`precis_se.atomic.apply.HANDLER_LEVEL_OPS`
-(``bind_structure``/``unbind_structure``/``generate``/``realize``/``join``/
-``relax_chain`` — L3, they spend compute, read the store or assert
-chemistry) are proposals until a human applies them — undoing a decision, not just redoing one, earns the same
-human-Apply gate as spending compute. ``SeHandler.edit(turn=)`` stamps the
-originating chat turn onto the revision row.
+**Shape — each module owns its own design notes** in its docstring; this one
+only maps them.
 
-This package (slices 1–3, se-kind.md "Ship order") covers the scaffold,
-the L0/L1 core, and the L2 invariant tier: :mod:`precis_se.handler`
-(``SeHandler``, the ``se`` kind — tree CRUD; tree/block/ports/measures/
-datums/validate/clearance/drc views, clearance renting the cad kernel's
-exact-sign SDF at metres), :mod:`precis_se.ops` (pure typed-op
-application over an in-memory tree — no store access: ``add_block``/
-``instance_block``/``array_block``/``set_pose``/``set_envelope``/
-``remove_block``/``add_port``/``remove_port``/``connect``/
-``disconnect``/``set_joint``/``set_load``/``add_measure``/
-``set_measure``/``remove_measure``, with instancing cycle guards (the
-shared :mod:`precis.blocktree` spine) and se's first-class **arrays**:
-an array node carries template name +
-``linear`` (count/pitch/axis) or ``polar`` (count/radius/axis), members
-derived at read time — realization never flattens the tree),
-:mod:`precis_se.joints` (the joint vocabulary: kinematic class ×
-mechanism registry with implied demands, + the registered loads/
-objectives keys), :mod:`precis_se.measures` (named measures, tolerance
-relations, worst-case stack-up evaluation), :mod:`precis_se.datums`
-(the datum a measure is declared against — see below),
-:mod:`precis_se.validate`
-(read-time L0/L1 feasibility findings incl. the
-undeclared-interpenetration geometry check; rendered under the
-filled-fraction honesty header), :mod:`precis_se.drc` (graph-tier DRC:
-joint contradictions, mechanism-implied demands, unresolvable relations,
-the declared-vs-derived axis-travel probe renting
-``relate.translational_dof``, and :mod:`precis_se.geometry_plausibility`'s
-connect geometric plausibility pass — a declared connect between
-geometrically disjoint envelopes, and mechanism/kinematic-class implied
-envelope shape: press/snap interference, captive containment,
-bearing/revolute/cylindrical coaxiality + radial nesting, screw-class
-axial overlap), :mod:`precis_se.persist`
-(retire-all/reinsert-all store write-back, name-keyed identity, ports in
-lockstep with fresh block ids), and migrations ``0001_se_kind.sql`` +
-``0002_se_l2.sql`` (…+ ``0012_se_measure_datum.sql`` for ``datum``).
+*Spine.* :mod:`precis_se.handler` (``SeHandler``: tree CRUD; the
+tree/block/ports/measures/datums/pockets/validate/clearance/sweep/drc/bom/
+order/fab/print/fret/chain/kinematics/stability/freedom/interview views;
+``search`` by intent, ``wants=`` library search, ``compose=`` proposer),
+:mod:`precis_se.ops` (pure typed-op application over an in-memory tree — no
+store access; instancing cycle guards from the shared :mod:`precis.blocktree`
+spine; first-class **arrays**, members derived at read time),
+:mod:`precis_se.persist` (retire-all/reinsert-all write-back, uid identity,
+``tree_mutation`` lock), :mod:`precis_se.state_arg`, :mod:`precis_se.handles`,
+:mod:`precis_se.identity`.
 
-**Datums + measured-from-geometry** (the se plumbing
-multiscale-optimisation §4's preferred-number wells attach through;
-history in multiscaledesign.README.md): a measure may declare
-``datum:`` — ``frame`` (the default; prismatic → the three pose-frame
-faces through the frame origin, rotational → axis + base face),
-``port:<name>``, ``face:<block>.<tag>``, ``axis:<block>`` — resolved
-through the block's cad primitive by :mod:`precis_se.datums`
-(``parse_selector``/``resolve``/``rank_datums``/``evaluate_measure``/
-``d_measure``). Three settled decisions: the datum is a **column, not
-relation JSON**, because every reader must understand it — evaluator,
-stack-up, migration — and nothing may silently skip it; the
-``measure`` predicate *declares the name and pins the feature* (the
-method doc's predicate shape); and the datum is **never an optimiser
-DOF** — if it could slide, the well term would round a dimension by
-moving the datum instead of the geometry. ``rank_datums`` is
-deterministic (largest flat face, port faces free, process-setup
-candidates, accessible); ``evaluate_measure`` reads the number from
-geometry (ray exits for plain extents, the param for envelope
-dimensions, ``feature`` relations for sub-envelope anchors), stamps
-``source: derived``, and reports ``datum_resolved`` plus a
-``datum moved`` note when the caller passes the previous resolution.
-Its ``mismatch`` note is band-first: a declared ``[min,max]`` flags the
-derived value falling outside it, else ``relation.tol`` around the
-declared value, else exact. ``d_measure`` central-differences over the
-envelope params.
+*L2 invariants.* :mod:`precis_se.joints` (kinematic class × mechanism
+registry, loads/objectives keys), :mod:`precis_se.measures` (named measures,
+tolerance relations, stack-up), :mod:`precis_se.datums` (the datum a measure is
+declared against; measured-from-geometry; region selectors),
+:mod:`precis_se.pockets`, :mod:`precis_se.properties` (measurands + the
+computer registry), :mod:`precis_se.freedom` / :mod:`precis_se.notes`
+(design-freedom vocabulary, interrogation ledger).
 
-**Region properties** (docs/backlog/se-region-property-layer.md, slice A;
-skill ``precis-se-regions-help``): a measure may name a ``measurand`` — a
-``taxon`` node under the ``measurand`` start node, seeded by core
-migration ``0182_se_measurand_seed.sql`` — resolved at write through
-:attr:`~precis_se.ops.SeTree.measurands`
-(:mod:`precis_se.properties.measurand`) and snapshotted onto the row
-(slug + taxon ref id in ``se_measures.measurand``/``measurand_ref_id``,
-the se unit in ``unit``; migration ``0018_se_regions.sql``). The datum
-grammar gains region selectors (``patch:``, ``ring:`` resolved on the cad
-envelope; ``sites:``, ``atoms:`` parsed, resolution deferred to the bound
-structure). :mod:`precis_se.pockets` names a set of regions plus a shape
-on a block (``add_pocket``/``set_pocket``/``remove_pocket``, table
-``se_pockets``, ``view='pockets'``); a region's measures are derived from
-their ``datum``. :data:`precis_se.properties.COMPUTERS` is the empty
-registry slice B fills; until then DRC's ``measurand_unchecked`` names
-every measure nothing computes.
+*Checks (L4).* :mod:`precis_se.validate` (read-time L0/L1 findings, including
+undeclared interpenetration), :mod:`precis_se.drc` (graph-tier DRC, store-free
+by contract), :mod:`precis_se.geometry_plausibility`,
+:mod:`precis_se.kinematics` / :mod:`precis_se.kinematics_drc`,
+:mod:`precis_se.stability` (Maxwell/Calladine counting over the axial
+subgraph; the ``axial`` class and ``cable`` mechanism) with
+:mod:`precis_se.formfind` as its generator, :mod:`precis_se.precedent`
+(joining-chemistry evidence against ``rxn`` yield rows).
 
-Review-fix rules on top of that (all in :mod:`precis_se.datums` unless
-noted): a measure's taxon ref id is its identity, its slug a name —
-``MeasureSpec.measurand_live`` is refreshed by id on load while the
-``measurand`` snapshot keys the registries; ``atoms:``/``sites:`` indices
-are **pinned** to the bound structure's version
-(``MeasureSpec.datum_pin``, ``se_measures.datum_pin``, stamped by
-:func:`~precis_se.datums.stamp_region_pins` after the op walk in
-:func:`precis_se.atomic.apply.apply_ops_with_atomic`; a stale pin replaces
-the "not loaded" note and the handler adds ``region_pin_stale``); the
-store-free DRC adds ``datum_unresolved`` and ``patch_exceeds_face``; patch
-``u`` falls back to block ``+y`` within :data:`~precis_se.datums.U_FALLBACK_DEG`
-of ±x; a non-rectangular face says "bounds approximate"; block names may
-not contain ``/ @ [ ]`` (:data:`~precis_se.ops.BLOCK_NAME_RESERVED`).
+*Bought parts, fastening, fabrication (L3/L5).* :mod:`precis_se.bom` /
+:mod:`precis_se.order` / :mod:`precis_se.modes` (the manufacturing-mode
+families; ``purchase`` is the one with an implementer for bought items),
+:mod:`precis_se.catalog` (component spec → envelope + ports), :mod:`precis_se.fasten`
++ :mod:`precis_se.toolaccess` + :mod:`precis_se.capabilities` (screws, tool
+access, process figures), :mod:`precis_se.realize` / :mod:`precis_se.simp_bridge`
+/ :mod:`precis_se.simp_job` (analytic and SIMP realization),
+:mod:`precis_se.printing` / :mod:`precis_se.printsolid` /
+:mod:`precis_se.printgroup` / :mod:`precis_se.manufacture` /
+:mod:`precis_se.manufacture_job` (the print implementer: per-block, ``model``
+groups, ``manufacture`` print-in-place), :mod:`precis_se.ops_export`.
 
-**Off-the-shelf rung 1** (docs/backlog/se-off-the-shelf-fabrication.md,
-migration ``0003_se_bom.sql``) adds the layer for things you *don't*
-make: :mod:`precis_se.bom` (a bought ``component``/``part`` hung off a
-block or a connect, and the multiplicity rollup that turns one authored
-line into the number you actually order — arrays and instances multiply
-through) and :mod:`precis_se.modes` (the manufacturing-mode families;
-``purchase`` is the one with an implementer, the rest are recordable
-intent until theirs ship). Surfaced as ``view='bom'`` — priced and massed
-through the ``component`` kind's own spec values, never a second copy of
-them — with ``set_mode``/``set_binding``/``add_bom``/``remove_bom`` ops
-and the DRC demands they make checkable (a ``bearing``/``screw`` joint
-with nothing on the BOM; a ``purchase`` block that names nothing to buy).
+*Search.* :mod:`precis_se.library` (``wants=``), :mod:`precis_se.compose`
+(``compose=``).
 
-**Rungs 2–3** turn a bought part from a line item into geometry, and a
-joint from a diagram into a change to the parts it joins:
-:mod:`precis_se.catalog` (rung 2b — pure ``component`` spec values →
-envelope + port templates per category, in metres; reached at load time
-by ``persist.attach_catalog`` and **derived, never stored**, so
-re-dimensioning a component reaches every design bound to it) and
-:mod:`precis_se.fasten` (rung 3 — a `screw` joint's clearance and tapped
-holes, the grip stack-up walked along the fastener's own axis with
-``cad.probe.probe_ray``, the length/engagement checks, and the thread
-read as a **lead with limits**: metres per turn from the catalog pitch,
-bounded by the engagement the stack leaves, cross-checked against a
-declared ``params.lead``). Surfaced as ``view='fasten'``, with the
-findings folded into ``view='drc'``. The clearance-hole table itself is
-core data, not se's — :mod:`precis.fit_classes` (ISO 273 fine/medium/
-coarse plus the house ``d + 0.2`` rule), the same file-not-a-table
-posture as :mod:`precis.component_series` (whose ISO fastener tables the
-cad catalog also reads since 2026-09-06 — one transcription, not three).
+*Domains.* :mod:`precis_se.atomic` (chemistry-bound blocks — the merged ``nm``
+kind), :mod:`precis_se.chain` (DNA/RNA over the chemistry-free
+:mod:`precis_chain` kernel), :mod:`precis_se.fret` (optical FRET links),
+:mod:`precis_se.properties` (region properties).
 
-**Rungs 3b + 3c** (2026-09-15) finish what a screw has to answer for.
-*3c, fastening a printed part*: rung 3 stamped ``d − P`` into whatever
-the stack ended in, which is right in aluminium and wrong in an FDM boss,
-so the terminal member's **mode** now decides. Metal keeps the cut
-thread; a printed member takes the ``joint.params.thread_strategy`` it
-declares — ``nut`` · ``nut-trap`` · ``insert`` · ``thread-forming`` —
-and, undeclared, gets **nothing stamped** plus a finding naming the four
-(:mod:`precis.thread_forming` holds the numbers: core-hole factors,
-engagement multiples, insert pockets, nut-trap fits, each marked as
-transcribed or as a shop rule). Head form finally stamps a feature too, which
-migration 0163's ``head_form`` made expressible — and splits the same way:
-a countersunk head's 90° cone is stamped because the screw does not seat
-without it, while burying a cap head is a choice
-(``params.counterbore``) and is reported rather than done. *3b, tool access*: :mod:`precis_se.toolaccess` stands
-each candidate driver's swept envelope on the drive face and asks whether
-it clears the assembly, answering **which** tool rather than whether
-(ISO 2936 key geometry + bench tools, in
-``precis/data/driver_envelopes.json``). Both need a *process* number the
-tree had nowhere to keep — a printed hole comes out undersize — so
-:mod:`precis_se.capabilities` seeds se-kind.md's
-``se_capabilities.json`` with exactly the three fields this consumes and
-leaves the rest to slice 5.
+**Lifecycle.** ``put``/``edit`` build a tree through the ops table — the
+store-aware ops (``bind_structure``/``unbind_structure``/``generate``/
+``realize``/``join``/``relax_chain``) are intercepted first by
+:func:`precis_se.atomic.apply.apply_ops_with_atomic` — and save through
+``persist.save_tree`` under ``tree_mutation``; reads load a tree, derive
+(catalog envelopes, array members, ``realized-by`` links) and render under the
+filled-fraction honesty header. Heavy work (SIMP solves, print-in-place
+fusion past ``SYNC_CELL_CAP``, ``se_propose_atomic``) is a job enqueued after
+the tree saves; the op only validates and enqueues. **Apply policy by op
+class** is the web chat turn's (:mod:`precis_web.design_turn`): non-destructive
+pure ops auto-apply after a dry run; destructive ops
+(``DESTRUCTIVE_SE_OPS``) and the store-aware ops
+(:data:`precis_se.atomic.apply.HANDLER_LEVEL_OPS`) are proposals until a human
+applies them.
 
-**Tension rungs 1+4** (docs/backlog/structural-solution-space.md, its
-build-order slice 1) add the unilateral
-member and the whole-structure verdict: kinematic class ``axial`` — ONE
-pin-ended member whose params capacity pair
-(``tension_capacity``/``compression_capacity``, + ``free_length``/
-``rate``/``preload``) decides tie/strut/rod, no declared axis (its line
-of action is derived from the endpoint poses) — the ``cable`` mechanism
-(demands a BOM line), the ``fixed`` support objective on blocks, and
-:mod:`precis_se.stability` (``view='stability'``): Maxwell/Calladine
-``m − s`` counting off one SVD of the equilibrium matrix, self-stress
-sign-feasibility against the capacity pairs, and the Pellegrino–Calladine
-second-order test → rigid / mechanism / **prestress-stabilized**, over
-the axial subgraph only (pin nodes at block poses — the honesty header
-says so). The DOF probe reports ``axial`` as an honest skip; capacity
-findings fold into ``view='drc'``. This satisfies the two-party mobility
-tripwire contract by construction (the fallback line is
-``stability.TRIPWIRE_LINE``, verbatim). Structural-solution-space
-slice 2 adds the generator to that checker: the ``formfind`` op
-(:mod:`precis_se.formfind` bridging the pure
-:func:`precis.structsolve.form_find` force-density solver) solves the
-axial subgraph's equilibrium geometry — anchors from
-``objectives.fixed``, role-derived tension-positive force densities —
-and writes solved poses back stamped ``origin: 'proposed'``; a
-user-origin pose is contract and moves only under an explicit
-``move=`` authorization. Slice 3 (rung 5's null-space DRC,
-:func:`precis_se.stability.prestress_report`) checks declared member
-``preload``s against the self-stress space — undeclared members are
-completed by least squares, implied forces vetted against role sign and
-capacity pair — as a prestress section in ``view='stability'`` and the
-warn-tier ``prestress_state`` DRC rule.
+**Seams.**
 
-**Atomic mode** (docs/backlog/nm-se-merge.md) is the merged ``nm`` kind:
-a block whose realization is *chemistry* rather than solids, carried by
-the :mod:`precis_se.atomic` subpackage (migration ``0007_se_atomic.sql``).
-Its L2 is stated explicitly, never derived from coordinates
-(:mod:`precis_se.atomic.vocab` — declared dof, threading, and the
-``kind='bond'`` capability gate, applied by the ops in
-:mod:`precis_se.ops`); its L3 is a bound ``structure`` design, reached by
-the three store-aware ops :mod:`precis_se.atomic.bind` and
-:mod:`precis_se.atomic.generate` implement (``bind_structure``,
-``unbind_structure``, and ``generate``, which runs a parametric block
-factory from :mod:`precis_se.atomic.generators` and mints the structure
-design itself — deterministic geometry, no LLM guessing);
-:mod:`precis_se.atomic.apply` intercepts those three before the pure op
-table. A bind also *measures*: each mapped port takes the block-local
-position of the atom it resolves to as its own pose
-(``pose_source='bound'``, the measured half of the port pose slot) — into
-an empty slot or over an earlier bind's reading, never over a
-``'declared'`` target, which is the requirement that realization is
-checked against. Mapped with ``axis_atom``/``phase_atom`` (the object form of
-``bind_structure``'s ``ports=``: axle bond ``atom → axis_atom`` is the
-frame's z, ``atom → phase_atom`` projected off it fixes the roll), the
-same bind independently measures the port's ``rot`` off that atom triple
-(``rot_source='bound'`` — its OWN provenance, never coupled to
-``pose_source``; se-plugin migration 0014 mirrors both as CHECKs). There
-is no direction-only measurement: ``direction`` stays declared, and a
-measured frame's z is checked against it under the same
-``PORT_ROT_MISMATCH_RAD`` (10°) as a declared ``rot``. Its L4 is :mod:`precis_se.atomic.validate` (the bond
-capability re-check, the binding checks, bond-geometry sanity, the
-``port_pose_mismatch``/``port_rot_mismatch`` declared-vs-measured checks,
-and ``envelope_fit`` — the design(m)↔atomistic(Å) agreement check, whose
-conversion is the one permanent unit crossing, test-pinned) plus
-:mod:`precis_se.atomic.mechanics`'s advisory ceilings, rendered as
-``view='mechanics'``/``view='literature'``
-(:mod:`precis_se.atomic.render`). A mode and a binding that contradict
-each other are a ``view='drc'`` finding (``mode_binding_mismatch``),
-never a rejected write. Its one job type is
-``se_propose_atomic`` (:mod:`precis_se.atomic.propose`, nm's
-``nm_propose`` renamed with the merge): a tool-less LLM call proposing —
-never applying — one block's chemistry, dry-run validated. The retired
-kind's storage is dropped by migration ``0008_se_drop_nm_tables.sql``;
-``nm`` itself now answers with a retired-kind pointer at this one
-(``precis.runtime.dispatch``'s ``_RETIRED_KINDS``).
+- Geometry is rented from ``precis.cad`` (``clearance``, ``probe``,
+  ``printability``, ``fieldops``); numbers that are core data live in core
+  (:mod:`precis.fit_classes`, :mod:`precis.component_series`,
+  :mod:`precis.thread_forming`, :mod:`precis.design.states`), never in se.
+- Bought things are ``component``/``part`` links with a quantity, never blocks;
+  price and mass come from the ``component`` kind's own spec values, never a
+  second copy.
+- Identity is the block ``uid`` (names are display labels); dangling
+  references are read-time DRC findings, never write-time rejections.
+- A finding that needs the store is appended by the handler's ``_render_drc``
+  after the store-free :func:`precis_se.drc.drc`.
 
-**Discrete block states + stimulus-labelled transitions** rent the shared
-design core (:mod:`precis.design.states`, not an se-local table — the
-same mechanism serves macro bistables and photoswitches/conformers alike,
-per that module's A9 hysteresis warning: a state-carrying block's state
-is not a function of its parameter vector, so nothing here memoizes by
-configuration alone). ``declare_states``/``declare_transitions`` write a
-block's `{name, envelope?, port_pose_overrides?}` states (an override is
-`{port: {'direction'?, 'pose'?, 'rot'?}}` — direction outright, pose/rot
-a rigid delta in the block frame, applied only to a port carrying a pose
-of its own) and directed,
-`driver_kind`-labelled edges between them, materialized once
-``persist.save_tree`` has minted every block's uid
-(:func:`precis_se.handler._materialize_states`); ``set_current_state``
-persists a pose. ``get(..., args={'state': {block: state_name}})`` poses
-transiently, for one read, on ``view='tree'|'block'|'clearance'``
-(:func:`precis_se.handler._apply_state_arg`) — a block with no declared
-states is unchanged in shape or render. ``view='sweep'`` answers "does
-anything collide in ANY declared state" over the cross product of every
-state-carrying block's states (:func:`precis.design.states.
-state_carrying_uids` decides which blocks enter the product at all),
-reusing :func:`precis_se.validate.envelope_overlaps` per combination
-rather than a second geometry engine, with a hard combination-count
-budget it names rather than silently truncates.
-
-**The optical domain** (:mod:`precis_se.fret`, migration
-``0010_se_fret.sql``) is se's first non-mechanical one: FRET links, where
-a donor chromophore hands its excitation to a nearby acceptor by
-near-field dipole-dipole coupling. It earns a place in a *space planner*
-because the coupling has no waveguide — the channel IS the geometry, and
-the rate runs as ``r⁻⁶`` times an orientation factor ``κ²`` computed from
-the two transition dipoles and the vector between them. Both inputs are
-things a space plan already decides, so the same six levels carry it with
-no new tier: L0 is a port↔port connect like any other; L1's per-block
-pose, with the dipole stored in the **block** frame, is what rotates each
-card into world space; L2 is the declared ``optical`` invariant on the
-connect (``min_efficiency`` — what the design *needs*, stored, never
-derived); L4 is ``view='fret'``, the realized geometry checked against
-that declaration. Ops: ``set_chromophore`` (the per-block property card,
-block-owned beside ``dof``/``objectives`` — label, dipole, quantum yield,
-lifetime, emission and absorption spectra), ``set_optical_link``, and
-``set_optics`` (the design's medium index and pump wavelength — se's one
-tree-level scalar record, earned by being a fact about the *space*: every
-Förster radius in a design divides by the same ``n⁴`` under a sixth
-root).
-
-Two decisions there are worth not re-deriving. The ``optical`` slot is
-deliberately **compatible** with ``joint`` and ``kind`` on the same
-connect, unlike those two with each other: a kinematic joint and a
-covalent bond are competing claims about one physics, while an optical
-link is a different physics on the same pair. And a donor is a
-**broadcast, not a wire** — every acceptor in range competes for one
-excitation, so the branching ratios share a denominator
-(:func:`precis_se.fret.solve_donor`) and a per-pair efficiency quoted in a
-dense network overstates every link. That is why the view is an all-pairs
-budget rather than a list. The module declines to quote a number outside
-Förster's range of validity (below ~1 nm, Dexter exchange competes and
-the point-dipole approximation fails; ``κ²`` near zero is a dead link at
-any distance, and the actionable fix is rotating a block, not moving it).
-
-A `component` binding additionally **projects onto a ``realized-by``
-link** on every save (``persist.sync_realized_by``, migration 0156's
-realization edge, the same one cad writes for its ``part`` lines). The
-plugin table stays authoritative and the link is derived and rebuilt, so
-one `links` query answers "what does this artifact resolve to" — and its
-inverse "who calls for this component" — across both tracks instead of
-requiring a consumer to know two spellings.
-
-**Always on wherever the plugin is installed** — the original
-``se.enabled`` ``requires_setting`` gate was removed (Reto, 2026-09-11; pinned by
-``tests/test_se_plugin.py::test_kind_is_available_without_any_flag``);
-``PRECIS_KINDS_DISABLED`` is the one general off-switch. See
-``docs/backlog/se-kind.md`` for the full design (annotations superset
-registry, manufacturing modes, the propose/interrogate loop); the
-agent-facing skill lands last (ship order step 8). Slice 4 round 1
-(:mod:`precis_se.notes` interrogation ledger + :mod:`precis_se.freedom`
-design-freedom vocabulary — interval measures, ``origin``,
-``view='freedom'``; migration ``0005``) shipped 2026-09-08. Unshipped
-past this round: the rotational DOF probe (translational_dof's missing
-twin), ``se_propose``, couplings
-(gear/rack/belt ratios — ship-order step 6), process DRC + the
-capability rows behind it, compliance advisories (ship-order step 6),
-the profile tier, and the rest of mechanism→geometry: tool access
-(a swept driver envelope per drive type × size), assembly-order
-existence, edge distance, and the sheet/tube instances of the stamping
-engine (finger joints, cope/fishmouth, press seats). Also still open:
-ranking a composition search by human-set rubric weights through
-``quest``'s selection machinery (``meta.rubric_objectives``/
-``meta.rubric_composite``) rather than today's match-count order, and
-running DRC over a composition's instanced tree once realised, rather
-than per-library-row.
-
-**se-print-implementer.md rung 1** (2026-09-16) widens every ``fdm``
-``se_capabilities.json`` row with the full process-figure set (layer
-height, line width, overhang, bridge, bed contact, min feature/hole,
-strength-vs-layer ratio, build volume) plus a family-level
-``orientation`` weights block for the build-frame search (rung 4, below),
-and builds the one resolver se-kind.md's L5 promised:
-:func:`precis_se.capabilities.resolve` chains a block's own
-``process_overrides`` (migration ``0011_se_process_overrides.sql``, ops
-``set_process_override``/``clear_process_override``) over the
-unimplemented load-derived slot over :func:`precis_se.capabilities.
-capability`'s house tier, always clamped to the physical floor. Process
-DRC, the printed solid, the orientation search itself and ``view='print'``
-are the rungs after this one.
-
-**se-print-implementer.md rung 4** (2026-09-17) lands the implementer:
-:mod:`precis_se.printing` composes Engine 1's printed solid
-(:mod:`precis_se.printsolid`) with Engine 2's cad-level orientation search
-(:mod:`precis.cad.printability`) into one report per fdm-family block,
-adding the se-only rules a mesh alone can't know (``unrealized``,
-``abstract_joint``, ``hole_undersize``/``hole_shrink_absorbed``,
-``min_feature``, ``layer_vs_load``). ``view='print'`` renders it — no args
-for one section per fdm block, ``args={'block': ...}`` for the full
-candidate table, ``+{'fmt': 'stl'|'3mf'}`` to write the file in the build
-frame; ``set_build_frame``/``clear_build_frame`` pin/unpin the direction
-(``se_blocks.build_frame``, dark since migration ``0001``, first written
-here). ``view='fab'`` is the new top-level index — one row per
-implementation-bearing block, any source (purchase/fdm/atomic/
-unimplemented), pointing at each row's own handle; it never exports
-itself. ``MODE_FAMILIES['fdm'].implemented`` flips to ``True``.
-
-**``realize(strategy='simp')``** (docs/backlog/structural-solution-space.md
-"Slice 4 bridge", round A, 2026-09-18) is the second realize strategy:
-instead of seeding the cad design from the envelope,
-:mod:`precis_se.simp_bridge` voxelises the block's effective envelope in
-its local frame at ``pitch=`` (metres — demanded while the house
-``simp_pitch`` capability is null), turns ``objectives.force``/``fixed``
-into nodal loads/supports at ``load_at=``/``fixed_at=`` (an envelope
-face ``x+..z-`` or a posed port; the elements under them are passive
-solid), runs :func:`precis.structsolve.simp.simp_optimize` at
-``volfrac=`` with the AM filter for ``build_dir=`` (default: the
-envelope box's largest face down, echoed), and binds the block to a NEW
-cad design rooted at the density's ``field:<sha>`` leaf (optional
-``round=``/``open=``/``close=`` morphology on the grid first). The op
-only validates and enqueues an ``se_simp`` job (:mod:`precis_se.
-simp_job`, ``job_inproc``) — the solve is minutes; the block reads
-unrealized until it lands. The job pins ``build_frame`` with
-``origin='simp'``, so ``view='print'`` verifies that frame (the 45°
-voxel rule on the stored field) and skips the orientation search,
-saying so. The run summary sits on the se ref's ``meta.simp``
-(``last`` + ``runs``); a re-realize mints a sibling cad design and
-switches the one binding a block holds — the previous design stays,
-named in ``runs`` and linked ``derived-from`` the se design. Advisory
-tier: the compliance is a voxel estimate, never a DRC verdict.
-
-**Print groups — ``intent='model'``** (the same spec's print ``intent``
-table, round B1, 2026-09-19): :mod:`precis_se.printgroup`. A print group
-is an ancestor block in an fdm mode carrying an intent — ``set_mode(block,
-mode='fdm/<m>', intent='model')``, stored as the ``intent`` key of the
-block's ``build_frame`` record beside a pin (``ops.print_intent``/
-``ops.pinned_down`` are the two reads; an intent-only record is not a pin)
-— and its members are the blocks below it by ``parent`` edges, derived at
-read time, no schema; **a group ends where the next group root begins**
-(a nested root owns its own subtree, the outer group lists it as one
-``nested group … printed separately`` line, and every block maps to its
-nearest root). ``model`` prints every fdm member's solid and every
-purchase member as a **stand-in**: the cad catalog's analytic solid
-(:func:`precis.cad.catalog.family_for_series` maps the component's minted
-series to ``part <family>:<size>``, threads dropped) or a solid from its
-spec dims, else a ``no_stand_in`` finding naming what it needs. One build
-frame per group, the orientation search run on the union of the member
-meshes in world pose; a SIMP member pins it to its baked ``build_dir``
-(search skipped, said so; two disagreeing → ``simp_frame_conflict``);
-members' frame findings are judged at that frame. ``view='print'`` on the
-root renders frame + per-member findings, ``fmt='3mf'`` writes one 3MF
-with an object per member in world pose (one shared bed offset,
-:func:`precis.cad.printability.rotate_all_to_frame`), ``view='fab'``
-collapses the group to one row. A root with no intent is not a group.
-
-**Print groups — ``intent='manufacture'``** (round B2, 2026-09-19):
-:mod:`precis_se.manufacture`, the real part, print-in-place.
-``realize(block=<group root>, strategy='manufacture', gap=, fit=,
-blend=, pitch=)`` builds ONE cad design per group in the root's frame
-whose root is a **mixed analytic+field expression** (the mixed root of
-2026-09-19): every printed member's own node tree placed at its pose
-(:func:`precis.cad.scene.placed_nodes` — analytic, holes and their
-printed-hole compensation intact), a ``field:`` leaf ONLY where a field
-op is required, CSG/field ops only — no mesh is ever operated on. Every
-connect between two members is classified *rigid* (no DOF — ``rigid``/
-``captive``/``axial``, or an undeclared joint, said so) or *DOF*
-(:data:`precis_se.drc._MOVING_CLASSES`); rigid pairs of printed members
-**fuse** — ``blend=0`` (default) keeps each member its own component
-and the whole is their hard min-union, cuts included; ``blend>0``
-(:func:`precis.cad.fold.smooth_min_np`, the DSL's ``blend:``) chains
-the members of a fused component into one cad component ``<a>+<b>``
-with the blend on each later member's base node (the chain fold means a
-later member's cuts also cut earlier members where they overlap — a
-``blend_chain`` info says so); a DOF pair gets its gap **seam-locally by
-construction** — ``A' = A \\ dilate(B, gap/2)``, ``B' = B \\ dilate(A,
-gap/2)`` — each eroded member ONE ``field:`` leaf on its own AABB-sized
-grid at the group pitch (origin snapped to the export lattice), the
-dilation :func:`precis.cad.fieldops.offset` on the PARTNER's
-re-distanced sample, so a rigid seam elsewhere on ``A`` stays exact
-(face-to-face and pin-in-bore come out at ``gap``; a re-entrant corner's
-worst case is ``gap/2``), plus half a pitch because the kernel's
-re-distance binarises, so ``gap`` and ``fit`` are floors and the report
-quotes the **measured** separation per joint (the other side's
-re-distanced eroded leaf over this side's mesh vertices); a DOF pair a
-rigid path joins anyway is ``dof_bridged`` (error, export refused); a
-bought member is a **cavity** cut from every component its box meets —
-``fit == 0`` on an add-only stand-in is the analytic stand-in cut
-directly; ``fit > 0`` (or a stand-in with cuts of its own) is one
-``field:`` leaf, the stand-in re-distanced and dilated by ``fit`` (+
-half a pitch) on its own grid (a box/cyl grown by ``fit`` is not its
-Minkowski dilation, so that is never done) — with its top layer in the
-chosen frame, read off the cavity's own leaf or the analytic stand-in
-sampled on the export lattice (exact to the grid in any frame),
-reported as the mid-print **pause** (no insertion-path search; the
-``bambuuzle`` rung); an elided
-fastener's holes are excluded from the fused members
-(``printed_solid(exclude=)`` → ``fasten.features_for(exclude=)``, this
-path only); a bought fastener
-whose grip stack (:func:`precis_se.fasten.fasten`) is two or more printed
-members of one fused component is **elided** (``joint fused, <block> not
-needed``; the ``screw`` mechanism demand in
-:func:`precis_se.fasten.abstract_joints` is satisfied by fusion for this
-intent only — ``model`` still prints it). ``gap`` is required unless the
-house ``min_clearance`` capability resolves (new, null in every fdm row;
-a ``set_process_override`` on the root supplies it) — below the floor is
-an ``in_place_clearance`` error, a null floor an info finding saying
-"uncalibrated, taken as declared"; ``fit`` is required whenever a cavity
-is to be cut; ``pitch`` defaults to the house ``layer_height``. Cells =
-the export grid + every per-member/per-cavity field grid (analytic
-members cost export cells only). The op fuses inline when the group has
-no SIMP member and that total is under ``SYNC_CELL_CAP`` (500k), else
-enqueues ``se_manufacture`` (:mod:`precis_se.manufacture_job`, its own
-job type — ``se_simp``'s schema is closed and SIMP-shaped); an export
-grid above ``MAX_CELLS`` (8M) is refused with the pitch that would fit.
-The result is a new cad design ``<design>-<root>-mfg[-N]``, bound to
-the ROOT (which must hold no solid of its own) the way ``realize_simp``
-binds — per-ref lock, inputs hash re-checked, ``meta.manufacture``
-``last``/``runs``, the summary also on the cad ref's
-``meta.se_manufacture``, ``derived-from`` link; a re-run mints a
-sibling. Every render lists each member/cavity as ``analytic`` |
-``field (gap)`` | ``field (cavity fit)`` | ``field (cavity shape)``.
-``view='print'`` on the root reports the frame (root pin > SIMP member >
-search on the fused mesh), one object per **connected component** — the
-one group-wide grid left is the EXPORT lattice (:func:`precis.cad.
-fieldmesh.field_grid` over the printed members' box at the group
-pitch), the root's exact SDF sampled at its vertices once at realize
-time and labelled (:func:`precis.cad.fieldops.label_components`); each
-object is then meshed as the exact fold of its OWN components on that
-lattice (:func:`precis.cad.export.object_meshes` — no masking of a
-shared grid, no invented vertex value; a DOF pair is two objects, a
-fused pair one), and the split is a property of the design
-(``meta.export_objects`` + ``meta.export_lattice``), so cad's own 3MF
-export of the ``-mfg`` design writes the same objects and its STL export
-refuses more than one — the measured gaps, the cavities with pause
-heights, the elisions, and the **teardrop rule**: a DOF axis-class joint
-whose axis lies within 45° of the build plate is an ``overhang`` finding
-naming the bore (no new primitive; an undeclared axis says the check
-could not run). ``fmt='3mf'`` writes one object per component;
-``view='fab'`` says ``intent manufacture, N objects, K cavities, E
-elided``. ``realize(strategy='simp')`` on a manufacture root solves the
-**fused group as one body**: :func:`precis_se.simp_bridge.solve_simp`'s
-new ``domain_builder`` hook takes :func:`precis_se.manufacture.
-simp_domain` — the union of the member envelopes in the root frame minus
-the stand-in cavities (the simp op's optional ``fit=``) — with the ROOT's
-loads/supports at ``load_at``/``fixed_at``; a DOF joint between printed
-members is refused there (one solve is one body).
-
-**Blocktree slice 4 — ranked library search** lands
-``search(kind='se', wants={...})``:
-:mod:`precis_se.library` walks every non-instance block in the whole
-library, scores it against a per-attribute wishlist (three built-in
-structural keys read off the block/tree — ``stimulus``/``bistable``/
-``joining`` — plus any ``component``/``material`` star-schema key
-reached through a binding or a ``made-of`` link), and ranks with
-:mod:`precis.quest.frontier`'s Pareto tie-break rather than a second
-dominance rule. Never a strict filter: every row shows its per-attribute
-match/miss with the actual value, and the result set is empty only when
-the library itself is.
-
-**Joining-precedent DRC** (:mod:`precis_se.precedent`) checks a connect's
-declared joining chemistry against reaction evidence rather than trusting
-the label: a ``driver_kind='reaction'`` transition on either endpoint's
-template must resolve its ``driver_ref`` to an existing ``rxn`` slug at
-write time (``SeHandler``'s pending-transitions flush; an unresolvable
-slug fails the whole edit, rolled back like any op error). At read time,
-appended to ``view='drc'`` after ``se_drc.drc()`` (which stays store-free
-by contract): a declared joining with no reaction transition naming an
-rxn is ``joining_unnamed`` (info); a named rxn with no ``reaction_class``
-is ``joining_class_unknown`` (warn); a resolved class with zero yield
-rows (``store.rxn_precedent_count``, one SQL COUNT over the same join
-``rxn_search_values`` uses) is ``joining_unprecedented`` (warn,
-"unprecedented step"); rows present is ``joining_precedent`` (info, the
-count). One finding per rxn per connect, deduped by slug.
-
-**``view='order'``** (:mod:`precis_se.order`) answers "what do I order":
-``rollup`` walks the instanced tree to its leaf templates — skipping
-instance/array nodes, reading ``bound_kind``/``bound``/``mode`` off each
-template, and multiplying by ``bom.design_occurrences`` (array/instance
-counts already folded in, including across a foreign template) — into a
-**purchasable** table for ``component``/``part``-bound leaves
-(``component_current_spec_value`` for cost/mass, the canonical store
-value, never copied) and a **to make** table for everything else;
-explicit ``tree.bom`` lines merge into the same rows rather than double
-counting. A non-leaf template itself bound to a component is purchasable
-whole — its subtree is not walked. Mirrors ``bom``'s honesty-line shape
-(``purchasable: P of L leaf template(s) · to make: M``, then
-``priced``/``massed``, a partial total when not every line is priced).
-
-**Composition proposer** lands ``search(kind='se', compose={...})``:
-:mod:`precis_se.compose` enumerates n switches + m spacers over the same
-library rows against a requirement box (``delta`` Å / ``span`` nm
-intervals), scores each composition like a slice 4 row (per-unit facts
-are the star-schema properties ``delta_length``/``unit_length``/
-``pss_short_fraction``/``thermal_half_life``/``persistence_length``)
-and ranks with the same order — a deterministic enumerator on the read
-path, not the LLM ``se_propose_atomic`` job. Every row surfaces the
-PSS-scaled stroke, the T-type verdict with τ½, a ``floppy``/``stiffness
-unknown`` mark against the persistence length, and the switch↔spacer
-port complementarity; the Next line is the ops script that realises it.
-
-**Kinematics and levers** (the port-rotation item, shipped whole
-2026-09-19). Nothing declares an angle: a transition's swing on a port is
-*derived*, ``R_to · R_fromᵀ`` of the port frame composed through each
-state's ``port_pose_overrides`` (:mod:`precis_se.kinematics`, one
-``compose_port_rot`` shared with the display path; axis-angle via
-``precis.cad.vec.axis_angle_from_matrix``, both degenerate cases
-handled). ``view='kinematics'`` tabulates axis (block frame), angle,
-``arm (envelope)`` — the port-origin-to-envelope extent in the plane
-normal to the axis, a geometric UPPER BOUND on the block's own lever arm,
-labelled so — and the tip displacement ``2·arm·sin(angle/2)``; sourced
-``step_angle``/``rotation_rate``/``rotation_barrier`` rows sit beside the
-derived angle and a >10 % disagreement is flagged, never averaged.
-Precondition, surfaced twice: an override on a pose-less port is a no-op
-(``_apply_port_delta``), so validate raises ``port_override_unapplied``
-and the kinematics row says ``no pose`` rather than reading as
-"no change". Frames: a joint names its axis in the WORLD frame
-(:mod:`precis_se.joints`), a port carries its rotation in the BLOCK
-frame — :mod:`precis_se.kinematics_drc` transforms through the block's
-own placement before comparing, and ``revolute_axis_mismatch`` (warn) is
-the disagreement; the joint owns the axis and class, the port owns the
-rotation, never a second slot on joints. A revolute/prismatic joint's
-``params.range`` is swept continuously about/along that world axis through
-``envelope_overlaps`` (``joint_sweep_interference``, view='drc' — the
-continuous counterpart of ``view='sweep'``'s discrete states). The proposer's second family:
-a **rotary unit** (a block with a derived swing, else a sourced
-``step_angle`` with arm₀ = half the envelope diagonal) plus k arm units
-is a lever whose tip stroke ``2·(arm₀ + k·unit_length)·sin(angle/2)``
-ranks beside linear chains under ``delta``; a ``swing`` box key (degrees,
-exclusive with ``delta`` — one stroke measure) ranks rotary series by
-summed angle; a lever's ``span`` is its arm reach, scored as such; a
-rotating port with no role complementary to the arm's says ``joining:
-none`` and emits no connect, never a placeholder.
-
-**The nucleic-acid domain** (:mod:`precis_se.chain`, migration
-``0015_se_chain.sql``) is se's
-second non-mechanical one, and the binding of the chemistry-free
-:mod:`precis_chain` geometry kernel onto this ladder. The decomposition is
-scadnano's: a **helix** block carries the GEOMETRY (``se_blocks.chain``
-``role='helix'`` — motif, centre line or lattice site, unit count,
-``phase0``, register), a **strand** block carries the route's chemistry
-(``role='strand'`` — sequence, DNA/RNA), and the route itself is an ordered
-list of **domains** (``se_topology`` ``kind='domain'``, one row per stretch
-``[start, end)`` of one helix, identified by ``(strand, ord)`` because a
-strand crosses the same helix twice in any real origami). **Pairing is
-derived, never declared** (:func:`precis_se.chain.pairing.derive_pairing`,
-O(total domain length)): two antiparallel occupants of one helix offset ARE
-a base pair, one is single-stranded, and anything else is a
-``chain_occupancy`` finding — so a crossover is just a 0/1-nt loop between
-adjacent helices, a toehold a single-occupancy domain, a hairpin two
-antiparallel domains on one helix. L1 is ``layout_chain``, which
-materialises a helix's swept tube as child blocks ``<helix>.s<k>`` (one
-lattice repeat each by default, ``cyl`` envelopes from the kernel's capsule
-pose) whose ``[start, end]`` unit ranges **tile the helix exactly** — the
-seam a realizer needs. L4 is the pure ``chain_*`` DRC pass
-(:func:`precis_se.chain.drc.findings`, folded into ``view='drc'``): bend,
-twist register, capsule clash, loop reach — where ``chain_loop_short`` at
-``n=0`` IS the crossover register check, since the kernel's
-``(n+1)``-bond contour convention gives a zero-nt crossover exactly one
-bond of reach — plus slack, floppy single-stranded spans, dangling
-domains, occupancy and declared Leontis–Westhof pair geometry — and, for
-``chain_floppy``, a handler-side pass that **replaces** the pure rows when
-the design carries a ``material`` persistence-length row
-(:mod:`precis_se.chain.findings`, the first superseding finding in se).
-``relax_chain`` (:mod:`precis_se.chain.relax`) is the one handler-level
-chain op so far: a mechanical settle over the ``layout_chain`` segments —
-hinges at the worm-like-chain stiffness, one-sided loop springs between the
-backbone exits, excluded volume at ``min_gap`` — writing poses back
-``origin='proposed'`` and each placed loop's sampled curve onto its domain
-row's ``meta.loop_curve``.
-Segment↔segment pairs are excluded from :func:`precis_se.validate.
-envelope_overlaps` wholesale, because the kernel's capsule pass answers
-that question for a whole origami at once while the SDF scan would spend
-its entire budget on it. ``view='chain'`` is the readout. Every number
-(and its source) is in :mod:`precis_se.chain.nucleic`, the one place in
-the repo that states them.
+**Open past what shipped** (docs/backlog/se-kind.md): the rotational DOF probe
+(``translational_dof``'s missing twin), ``se_propose``, couplings
+(gear/rack/belt ratios), process DRC and the capability rows behind it,
+compliance advisories, the profile tier, assembly-order existence, edge
+distance, sheet/tube stamping instances (finger joints, cope/fishmouth, press
+seats), ranking a composition search by ``quest`` rubric weights, and running
+DRC over a composition's instanced tree once realised.
 """
 
 from __future__ import annotations

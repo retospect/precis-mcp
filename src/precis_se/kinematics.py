@@ -32,6 +32,19 @@ resolve through the star schema exactly the way
 :class:`~precis_se.library._Candidate`, the same "material/component
 property, unknown key mints proposed-tier on first write" path, no new
 machinery needed here.
+
+**Lever arm and frames.** The view's columns are the skill
+``precis-se-help``'s. ``arm (envelope)`` is a geometric UPPER BOUND on the
+block's own lever arm, labelled so; a >10 % disagreement with a sourced
+``step_angle``/``rotation_rate``/``rotation_barrier`` row is flagged, never
+averaged. An override on a pose-less port is a no-op (``_apply_port_delta``),
+so validate raises ``port_override_unapplied`` and the row says ``no pose``
+rather than reading as "no change". A joint names its axis in
+the WORLD frame (:mod:`precis_se.joints`) and a port carries its rotation
+in the BLOCK frame; :mod:`precis_se.kinematics_drc` transforms before
+comparing, and the joint owns the axis and class while the port owns the
+rotation (never a second slot on joints). The composition proposer's rotary
+family is documented in :mod:`precis_se.compose`.
 """
 
 from __future__ import annotations

@@ -23,6 +23,20 @@ A measurand that is one of the legacy enum's four nodes
 angle) counts as checked: it is exactly the legacy ``unit=`` form, which
 was never flagged, and ``length`` is computed by the datum evaluator
 (:func:`precis_se.datums.evaluate_measure`).
+
+**Where measurands attach** (migration ``0018_se_regions.sql``; skill
+``precis-se-regions-help``). The measurand is snapshotted onto
+``se_measures.measurand``/``measurand_ref_id`` with the se unit in ``unit``,
+resolved at write through :attr:`~precis_se.ops.SeTree.measurands`. The datum
+grammar gains region selectors (``patch:``, ``ring:`` resolved on the cad
+envelope; ``sites:``, ``atoms:`` parsed, resolution deferred to the bound
+structure — :mod:`precis_se.datums`). :mod:`precis_se.pockets` names a set of
+regions plus a shape on a block (``add_pocket``/``set_pocket``/
+``remove_pocket``, table ``se_pockets``, ``view='pockets'``); a region's
+measures are derived from their ``datum``. Until slice B fills
+:data:`COMPUTERS`, DRC's ``measurand_unchecked`` names every measure nothing
+computes. Block names may not contain ``/ @ [ ]``
+(:data:`precis_se.ops.BLOCK_NAME_RESERVED`).
 """
 
 from __future__ import annotations

@@ -72,6 +72,21 @@ unaffected by the flag; it only gates the registry.
 See ``docs/backlog/se-kind.md`` for the full design. The agent-facing
 skill lands last, after behavior exists (ship order step 7 — a skill
 describing target state misdirects agents).
+
+**Discrete block states** rent the shared design core
+(:mod:`precis.design.states`, not an se-local table — the same mechanism
+serves macro bistables and photoswitches/conformers, per that module's A9
+hysteresis warning: a state-carrying block's state is not a function of its
+parameter vector, so nothing here memoizes by configuration alone).
+The op grammar and the transient ``args={'state': ...}`` read are skill
+``precis-se-help``'s; the code seams are :func:`_materialize_states` (state
+and transition rows are written once ``persist.save_tree`` has minted every
+block's uid) and :func:`_apply_state_arg`. A port override applies only to a
+port carrying a pose of its own. ``view='sweep'`` budget-bounds the cross
+product of states, and :func:`precis.design.states.state_carrying_uids`
+decides which blocks enter it. ``SeHandler.edit(turn=)`` stamps the
+originating web chat turn onto the revision row; the apply policy by op class
+is :mod:`precis_web.design_turn`'s.
 """
 
 from __future__ import annotations

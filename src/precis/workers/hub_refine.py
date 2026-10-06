@@ -194,6 +194,43 @@ anything, so reaching this pass already implies paying for it. The one
 hard dependency is the embedder (discovery needs a query vector); absent
 one, the pass logs a warning and no-ops the whole cycle (mirrors the
 forward bridge's own embedder-unavailable degrade).
+
+**Taproot producers and enablement** (relocated from ``precis.taproot``).
+Dark by default; no-op with no embedder. **Enablement, two
+mechanisms — one looks like the other and isn't.** A pass that is its own
+**service**
+(``hub_refine``, ``chase_trigger``, the axis classifier) flips live via a
+``service_config`` prio row (``precis service prio <host> <service> 1``, no
+redeploy) — since the §L cutover a ``ServiceSpec``'s ``enable_env`` is
+**never read**, so ``PRECIS_TAPROOT_REFINE_ENABLED`` in a plist does
+nothing; the per-cycle ``pass_gate`` is the one decision point. A
+**sub-feature of another pass** has no ``ServiceSpec``, so it keeps a
+genuine in-pass env flag: the forward chase bridge
+(``PRECIS_TAPROOT_CHASE_ENABLED``) and the inbound chase/citer sidecar
+(``PRECIS_INBOUND_CHASE_ENABLED``) are live env vars — do not "modernize"
+them into ``service prio``. Enable a service producer on **one host** —
+``hub_refine``'s rejection memo is a read-modify-write on ``meta``
+(``docs/runbooks/taproot-chase-enablement.md``).
+
+- **Forward chase bridge** (``workers/chase.py::_taproot_bridge``) — on a
+  finding's established-terminal hop, builds the claim from the finding's
+  own title and runs block->judge->place->``apply_placement`` in the same
+  transaction as the ``STATUS:established`` flip (savepoint-isolated).
+- **hub_refine** (``workers/hub_refine.py``, stage 5 *Widen*) — revisits
+  existing hubs off a due-set (``TAPROOT_DUE`` tag / sha-reopen / 90d
+  backstop); excludes composite hubs (evidence attaches to atoms only);
+  discovers via corpus semantic ANN + citation-following; re-verifies each
+  hub's own unverified edges per pass. Grown into **reground**
+  (``docs/backlog/taproot-reground.md``) — a strict per-edge KEEP/PRUNE/
+  CONTRADICTS audit, deeper same-paper re-discovery, and removal through
+  :func:`.hub.remove_evidence` — behind ``PRECIS_TAPROOT_REGROUND*``; the
+  prune sub-stage additionally gates on :mod:`.slice_refine_eval` passing.
+- **chase_trigger** (``workers/chase_trigger.py``) — the incremental
+  due-set watermark: reverse ANN from newly-embedded paper/patent chunks
+  marks near hubs ``TAPROOT_DUE``.
+- **TAPROOT axis classifier** (``data/axes/taproot.yaml`` via
+  ``workers/axis_pass.py``) — tags ``finding`` rows ``TAPROOT:claim`` vs
+  ``TAPROOT:review``; fail-open (ambiguous stays re-claimable).
 """
 
 from __future__ import annotations

@@ -36,6 +36,12 @@ report ``"first-order mobile; may be prestress-stabilized — not checked"``
 rather than a bare "mechanism" verdict. :func:`classify` satisfies the
 contract by construction and falls back to that exact line whenever the
 second-order test cannot be run.
+
+The warn-tier ``prestress_state`` DRC rule (:mod:`precis_se.drc`) is
+:func:`prestress_report`'s DRC face. The generator for this checker is
+:mod:`precis_se.formfind`; the DOF probe in the DRC reports ``axial`` as an
+honest skip, and capacity findings fold into ``view='drc'``. The checker's
+pin nodes sit at block poses and the honesty header says so.
 """
 
 from __future__ import annotations

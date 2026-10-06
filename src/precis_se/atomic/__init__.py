@@ -66,6 +66,29 @@ Everything here is pure except :mod:`~precis_se.atomic.bind`,
 last one via its job ``ctx``) — the ``ops.py`` discipline holds for the
 op table itself, and the three ops that genuinely need the store are
 intercepted before it.
+
+**Storage and lifecycle.** Migration ``0007_se_atomic.sql`` adds the atomic
+tables; the retired ``nm`` kind's storage is dropped by
+``0008_se_drop_nm_tables.sql``, and ``nm`` answers with a retired-kind
+pointer here (``precis.runtime.dispatch``'s ``_RETIRED_KINDS``). A bind also
+*measures*: each mapped port takes the block-local position of the atom it
+resolves to as its own pose (``pose_source='bound'`` — into an empty slot or
+over an earlier bind's reading, never over a ``'declared'`` target, which is
+what realization is checked against). Mapped with ``axis_atom``/
+``phase_atom`` (the object form of ``bind_structure``'s ``ports=``: axle bond
+``atom → axis_atom`` is the frame's z, ``atom → phase_atom`` projected off it
+fixes the roll), the same bind independently measures the port's ``rot``
+(``rot_source='bound'`` — its own provenance, never coupled to
+``pose_source``; se migration 0014 mirrors both as CHECKs). There is no
+direction-only measurement: ``direction`` stays declared, and a measured
+frame's z is checked against it under the same ``PORT_ROT_MISMATCH_RAD``
+(10°) as a declared ``rot``. Validation adds ``port_pose_mismatch`` /
+``port_rot_mismatch`` declared-vs-measured checks, and ``envelope_fit`` — the
+design(m)↔atomistic(Å) agreement check, whose conversion is the one permanent
+unit crossing, test-pinned. A mode and a binding that contradict each other
+are a ``view='drc'`` finding (``mode_binding_mismatch``), never a rejected
+write. ``se_propose_atomic`` is the one job type: a tool-less LLM call
+proposing — never applying — one block's chemistry, dry-run validated.
 """
 
 from __future__ import annotations

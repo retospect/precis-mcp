@@ -19,6 +19,14 @@ in the store, and a foreign template's transitions live under that
 template's OWN design ref id. :func:`findings` is appended by the
 handler's ``_render_drc`` AFTER ``se_drc.drc(tree)`` — ``drc()`` itself
 stays store-free by contract.
+
+**Findings** (tiers and wording: skill ``precis-se-help``, joining-precedent
+DRC), appended to ``view='drc'``, one per rxn per connect, deduped by slug. A
+``driver_kind='reaction'`` transition's ``driver_ref`` must resolve to an
+existing ``rxn`` slug at write time (``SeHandler``'s pending-transitions
+flush); an unresolvable slug fails the whole edit, rolled back like any op
+error. The precedent count is ``store.rxn_precedent_count``, one SQL COUNT
+over the same join ``rxn_search_values`` uses.
 """
 
 from __future__ import annotations

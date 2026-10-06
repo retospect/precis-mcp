@@ -18,13 +18,25 @@ line and the index agree on what is missing. The package map walks src/*/**/__in
 docstring's first line (PEP 257) — a package without a docstring is listed
 as such, which is the nudge to write one.
 
+`scripts/docs-index --lint` writes nothing; it checks the docstring layer
+(exit 1 on any finding, one `docs-index: ...` line each on stderr):
+  - ceiling: a package docstring over DOCSTRING_WORD_CEILING words — split it
+    by subpackage/module; the narrowest package owns each fact;
+  - restatement: a package docstring that copies a run of >= RESTATE_MIN_WORDS
+    consecutive words from a doc under docs/ or a skill (the match unit is an
+    8-word window; a copied sentence is a run of windows). One owner per fact:
+    the docstring owns subsystem truth and docs/skills point at it, or the
+    reverse for agent-facing contract — never both. docs/backlog/ and
+    generated files are exempt.
+
 Stdlib-only on purpose: hooks and inline commands run it with a bare
 `python3`, no uv/container. Idempotent; exits non-zero only on I/O
-errors or invalid thread navigation.
+errors, invalid thread navigation or (with --lint) a docstring finding.
 """
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -141,6 +153,80 @@ def package_map() -> list[str]:
     return sorted(rows)
 
 
+DOCSTRING_WORD_CEILING = 1500
+RESTATE_WINDOW = 8  # words per match window
+RESTATE_MIN_WORDS = 16  # shortest copied run reported (a full sentence)
+_LINT_SKIP_DOCS = ("docs/backlog/", "docs/codebase-map.md", "docs/reference/schema.md")
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9_]+", text.lower())
+
+
+def package_docstrings() -> dict[str, str]:
+    """Package `__init__.py` docstring text (same package set as the map)."""
+    out: dict[str, str] = {}
+    for init in sorted((ROOT / "src").glob("**/__init__.py")):
+        rel = init.relative_to(ROOT / "src").parent
+        if any(p.startswith((".", "_")) or p == "__pycache__" for p in rel.parts):
+            continue
+        if "data" in rel.parts[:-1]:
+            continue
+        try:
+            tree = ast.parse(init.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        doc = ast.get_docstring(tree)
+        if doc:
+            out[init.relative_to(ROOT).as_posix()] = doc
+    return out
+
+
+def lint_docstrings() -> list[str]:
+    """Findings for the docstring layer: size ceiling + doc/skill restatement."""
+    docs = package_docstrings()
+    findings = [
+        f"{path}: package docstring is {len(doc.split())} words "
+        f"(ceiling {DOCSTRING_WORD_CEILING}) — split it by subpackage/module"
+        for path, doc in docs.items()
+        if len(doc.split()) > DOCSTRING_WORD_CEILING
+    ]
+    win = RESTATE_WINDOW
+    index: dict[tuple[str, ...], set[str]] = {}
+    sources = [
+        *sorted((ROOT / "docs").glob("**/*.md")),
+        *sorted((ROOT / "src/precis/data/skills").glob("**/*.md")),
+    ]
+    for f in sources:
+        rel = f.relative_to(ROOT).as_posix()
+        if rel.startswith(_LINT_SKIP_DOCS):
+            continue
+        text = f.read_text(encoding="utf-8")
+        if HEADER[:24] in text[:200]:  # generated file
+            continue
+        ws = _words(text)
+        for i in range(len(ws) - win + 1):
+            index.setdefault(tuple(ws[i : i + win]), set()).add(rel)
+    need = RESTATE_MIN_WORDS - win + 1  # consecutive matching windows
+    for path, doc in docs.items():
+        ws = _words(doc)
+        runs: dict[str, list[int]] = {}  # file -> [current run, best run]
+        last: dict[str, int] = {}
+        for i in range(len(ws) - win + 1):
+            for rel in index.get(tuple(ws[i : i + win]), ()):
+                cur = runs.setdefault(rel, [0, 0])
+                cur[0] = cur[0] + 1 if last.get(rel) == i - 1 else 1
+                cur[1] = max(cur[1], cur[0])
+                last[rel] = i
+        for rel, (_, best) in sorted(runs.items()):
+            if best >= need:
+                findings.append(
+                    f"{path} <-> {rel}: {best + win - 1} consecutive words "
+                    "restated — one owner: keep it in one place, point from the other"
+                )
+    return findings
+
+
 def write_generated(target: Path, title: str, rows: list[str]) -> bool:
     new = "\n".join([f"# {title}", "", HEADER, "", *rows, ""])
     if target.exists() and target.read_text(encoding="utf-8") == new:
@@ -243,6 +329,11 @@ def thread_priorities(root: Path) -> list[str]:
 
 
 def main() -> int:
+    if "--lint" in sys.argv[1:]:
+        problems = lint_docstrings()
+        for line in problems:
+            print(f"docs-index: {line}", file=sys.stderr)
+        return 1 if problems else 0
     changed = []
     try:
         priorities = thread_priorities(ROOT)

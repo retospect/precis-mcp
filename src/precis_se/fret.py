@@ -89,6 +89,15 @@ for the same excitation, so a per-pair efficiency is meaningless in
 isolation: the branching ratios share one denominator
 (:func:`solve_donor`). This is the whole reason the L4 view is an all-pairs
 matrix and not a list of links.
+
+**Seams.** Op grammar: skill ``precis-se-help``. ``set_optics`` is se's one
+tree-level scalar record, earned by being a fact about the *space*. The
+``optical`` connect slot is deliberately **compatible** with ``joint`` and
+``kind`` on the same connect (a different physics on the same pair, unlike a
+kinematic joint vs a covalent bond, which compete). The six levels carry it
+with no new tier: L0 a port↔port connect, L1 pose with the dipole in the
+**block** frame, L2 the declared ``min_efficiency`` (what the design needs,
+stored, never derived), L4 ``view='fret'``. Migration ``0010_se_fret.sql``.
 """
 
 from __future__ import annotations

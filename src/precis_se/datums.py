@@ -73,6 +73,20 @@ points come from an exact ray exit (convex primitives); face *areas*
 are exact for :class:`~precis.cad.primitives.PolyFrustum` envelopes
 (its face polygons) and a planform estimate off the AABB otherwise —
 a ranking heuristic, never a measurement.
+
+**Ranking and evaluation.** :func:`rank_datums` is deterministic:
+largest flat face, port faces free, process-setup candidates, accessible.
+:func:`evaluate_measure` reads the number from geometry (ray exits for plain
+extents, the param for envelope dimensions, ``feature`` relations for
+sub-envelope anchors) and stamps ``source: derived``. Its ``mismatch`` note
+is band-first: a declared ``[min,max]`` flags the derived value falling
+outside it, else ``relation.tol`` around the declared value, else exact.
+:func:`d_measure` central-differences over the envelope params. A measure's
+taxon ref id is its identity and its slug a name —
+``MeasureSpec.measurand_live`` is refreshed by id on load while the
+``measurand`` snapshot keys the registries; the store-free DRC adds
+``datum_unresolved`` and ``patch_exceeds_face``, and the handler adds
+``region_pin_stale`` when a stale pin replaces the "not loaded" note.
 """
 
 from __future__ import annotations
