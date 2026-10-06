@@ -1045,6 +1045,26 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
   group.name = "bt3d-atomic-overlay";
   scene.add(group);
 
+  //: Clip only traverses the vendored CAD tree; our overlays live outside
+  //: it (gr459593). Sync at draw time so plane replacements/intersection
+  //: changes and meshes built after async yields all use the same controls.
+  //: Plane objects stay live; disabling uses the renderer's existing flag.
+  function followClipping(mesh) {
+    let planeCount = -1;
+    mesh.onBeforeRender = () => {
+      const planes = viewer._rendered.clipping.clipPlanes;
+      const intersection = viewer.getClipIntersection();
+      const material = mesh.material;
+      if (planeCount !== planes.length || material.clipIntersection !== intersection) {
+        material.needsUpdate = true;
+        planeCount = planes.length;
+      }
+      material.clippingPlanes = planes;
+      material.clipIntersection = intersection;
+    };
+    return mesh;
+  }
+
   // Atoms and bonds are instanced: one InstancedMesh and one material per
   // block per kind, not one Mesh per atom/bond. A drum is ~15,000 of them,
   // and that many meshes and materials slowed the build (gr462703) and made
@@ -1164,7 +1184,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         atomsDone++;
         if (atomsDone % _BUILD_SLICE_ATOMS === 0) await reportBuild();
       }
-      group.add(atomMesh);
+      group.add(followClipping(atomMesh));
       const bondList = b.bonds || [];
       const bondMesh = new THREE.InstancedMesh(
         cylGeo,
@@ -1180,7 +1200,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         bondsDone++;
         if (bondEntries.length % bondSlice === 0) await reportBuild();
       }
-      group.add(bondMesh);
+      group.add(followClipping(bondMesh));
 
       // The smoothed surface — fan-triangulated rings, coloured per vertex
       // by aberration (gr450675's own "colour by deviation" ask).
@@ -1212,7 +1232,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
         })
       );
       surfMesh.visible = false;
-      group.add(surfMesh);
+      group.add(followClipping(surfMesh));
 
       blocks.push({
         src: b,
@@ -1384,7 +1404,7 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
           depthWrite: false,
         })
       );
-      targetGroup.add(mesh);
+      targetGroup.add(followClipping(mesh));
     }
     targetBuilt = true;
   }
