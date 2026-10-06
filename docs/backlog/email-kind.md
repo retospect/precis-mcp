@@ -85,7 +85,7 @@ split that already exists.
 **Secret → vault (ADR 0055).** The IMAP/SMTP password (or a future OAuth
 refresh token) is a `vault.secrets` row, read with `get_secret(name)`
 (`src/precis/secrets.py:136`). Names are flat strings, so encode the account:
-`email.rs@retostamm.com.imap_password`. `rs@retostamm.com` is a **plain
+`email.rs@retostamm.com.password`. `rs@retostamm.com` is a **plain
 password IMAP/SMTP** provider — no OAuth path needed for v1 (unlike Gmail/O365,
 which would force XOAUTH2; noted for when a second account lands). The
 `email_account` row holds only the *name* of the secret, never the secret.
