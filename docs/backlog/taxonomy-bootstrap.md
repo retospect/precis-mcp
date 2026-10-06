@@ -591,8 +591,8 @@ independent. `discovery.discover` now keeps one pending pack per half
 discarded; its per-hub rows stay usable for test-retest.
 
 **Corrected packed re-run (packs per half, 300 rows, 14:45 UTC):** 50
-calls, 0 failed, $5.90, 44 min; 576 rows over 191 hubs, 222 nodes, 14
-systematic; printed 0.53 of the ceiling 0.704, FAIL. Read per the review
+calls for 195 hubs, 0 terminal call failures, $5.90, 44 min; 576 rows over
+191 output hubs, 222 nodes, 14 systematic; printed 0.53 of the ceiling 0.704, FAIL. Read per the review
 verdict (`reviews/knowledge-mesh.md` §1-2; `probe_read.py`: ratio
 averaged over 200 A/B splits, call as the unit, plus a hub bootstrap):
 **split mean 0.568, bootstrap p10 0.489**. The unpacked 100-row baseline
@@ -610,6 +610,25 @@ A replacement gate is put to the orchestrator in `reviews/knowledge-mesh.md`
 §2 (recommended: cross-run folded-key agreement on shared mentions,
 0.71-0.77 measured, which does not move with n).
 
+## R17 retained-probe verification
+
+The next packing implementation and corrected 300-row probe are already
+shipped/completed. R17 verifies those retained artifacts; it does not repeat
+paid discovery or substitute the separate local 100-row qualification. Native
+`td470289` carries the exact cohort/half/pack/prompt/source/config hashes,
+replay results, missing-row accounting, cost/token definitions and provenance
+limits, with native readback. The source baseline is R16
+`bb816b232fa9d4de324b5bfaa763c9bb604cb5a2`, not a runtime attestation.
+
+Read the accepted folded cross-run criterion below, not the legacy
+unit-key-ceiling PASS/FAIL still printed by
+`src/precis/cli/taxonomy.py::probe_verdict`. No freeze semantics or criterion
+changes are made here. Historical placement and retry-attempt counts were
+not captured; unknown is not zero. Reproducible user prompts do not prove a
+historical system prompt, model weights or current serving access. Any
+future full-cohort retest needs its own pinned, accessible placement and
+attempt ledger; it is not a reason to rebuild already accepted packing.
+
 ## Resume (2026-10-02, after the fourth probe)
 
 State: four probes; packing measured neutral; the probe bar shown not to
@@ -625,8 +644,10 @@ baseline, $5.90 corrected packed). Zero-cost readers in the scratch dir:
    hubs): **0.794 folded, p10 0.739, raw 0.76 — passes**. Packed vs
    unpacked reads 0.68-0.73: packing names differently but as
    consistently, so a list built from one configuration does not see it.
-   Caveat: the two packed runs grouped the shared hubs into identical
-   packs; the full run forms packs the same deterministic way. Spend on
+   Caveat: the retained ledgers share 15 exact prompt hashes covering 60
+   called hubs; the packed100 singleton ref348740 has different pack context
+   in packed300. Agreement is on 59 shared output hubs, not two complete
+   300-row runs or evidence of arbitrary regrouping invariance. Spend on
    probes so far: $23.74.
 2. **Full run** (1231 hubs, ~310 packed calls) ⇒ `list.v1.yaml` ⇒ compare against the seven-entry baseline
    in `norr-her-meta.md` step 2 ⇒ 20 papers (~12 expt / ~8 DFT, paired by

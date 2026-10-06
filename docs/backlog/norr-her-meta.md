@@ -22,6 +22,44 @@ names two things so they stop being confused:
   of `corpus-quantitative-extraction.md` §"Source-bound quantitative
   extraction" are quantbind fixes; this item consumes quantbind as is.
 
+## R17 packing evidence reconciliation
+
+Owner: knowledge-mesh; durable task/evidence: `td470289` (native get),
+related historical decision `td458388`. R16 source baseline is
+`bb816b232fa9d4de324b5bfaa763c9bb604cb5a2`, not a deployment claim.
+
+Packing is shipped, including the mixed-half correction. The bounded R17
+slice is to verify and reuse the retained corrected 300-row probe before
+buying another run. Native `td470289` records the retained audit, review
+and exact branch disposition. This slice does not start steps 3–5 or local-model qualification,
+the full corpus, list freeze or gold adjudication. The old thread's Castor
+wait describes a separate placement qualification, not unfinished packing.
+
+Acceptance for this reconciliation:
+
+1. Verify the frozen snapshot and ordered first 300 rows; bind the saved
+   response ledger to exact ref, mention anchor, half, pack and prompt hashes.
+   Rebuild prompts from the pinned source/config where possible; mark missing
+   historical execution identity and retries unknown rather than inferred.
+2. Preserve all 300 input rows, including rows without value mentions, failed
+   or unaddressed hubs and missing/declined mentions. Report calls, reported
+   token/cost totals, missing metering and elapsed-time definitions.
+3. Reuse `compare_runs.py` on retained independent packed runs with the fixed
+   alias rules: raw/folded agreement on shared anchors, mention-weighted and
+   per-hub, plus the seeded hub bootstrap. The accepted folded bar is 0.711;
+   the superseded unit-key-ceiling ratio is diagnostic. Shared coverage and
+   identical pack grouping limit inference; a shared 100-row subset does
+   not establish two independent complete 300-row runs.
+4. Publish the manifest/results and limits through native Precis with
+   readback, correct stale owner pointers, obtain independent Codex review,
+   and hand off the exact pushed branch. No duplicate packing code or paid
+   run when retained evidence answers the assignment. Any newly necessary
+   run must pin the supported accessible placement/model, identical cohort,
+   salt/config/source/prompts and the bounded cost before execution.
+
+See [taxonomy-bootstrap](taxonomy-bootstrap.md#fourth-probe--2026-10-02-1305-utc-300-rows-packed-4-per-call)
+for the historical experiment and later adopted agreement criterion.
+
 ## Motivation / why
 
 The survey answers "what do the papers say". The integrated 50-page review

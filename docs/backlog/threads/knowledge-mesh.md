@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** After the next deploy, run [taxon-facet-navigation](../taxon-facet-navigation.md) slice 0 exact-deploy skill readback and AC 0 (cold agent + ten seeded AFM items); review and land slices 1–3 from the Sonnet coder's worktree branch (dispatched 2026-10-05, not yet reported). Once 0188 is live, verify converted legacy rows; then address the six measures-pilot gaps (FE grouped by product and review-aware best_measure first), then upkeep slice 1b.
-- **Blocked by:** 0188 deployment for conversion dogfood. Taxonomy bootstrap and upkeep slice 0 separately wait on [local-compute](local-compute.md#resume)’s Castor serving.
+- **Next:** R17 [norr-her-meta packing reconciliation](../norr-her-meta.md#r17-packing-evidence-reconciliation), native task `td470289`: hand off the verified retained corrected packed 300-row receipts and exact reproducibility manifest with independent review before any duplicate implementation or spend. Packing and per-half grouping already shipped. Trust slice 1 remains a contract.
+- **Blocked by:** No blocker to retained-artifact verification. The separate local 100-row qualification still needs supported placement access; old Castor/0188 status below is historical, not a current runtime claim. Canonical focused tests/types wait for root's R16 queue release if code changes are necessary.
 - **Unblocks:** A qualified taxonomy substrate for graph memory.
-- **Acceptance:** Use [the latest handoff](#thread-context): legacy views return legacy numbers, measures stores SI and measure_unit_compat contains its seed rows; follow [ranked work](#do-next) for pilot gaps.
-- **Worktree:** `knowledge-mesh`
+- **Acceptance:** The bounded R17 criteria in [norr-her-meta](../norr-her-meta.md#r17-packing-evidence-reconciliation), with durable native receipts and explicit unavailable evidence; no full corpus, freeze, gold adjudication or quest tick.
+- **Worktree:** `codex-knowledge-mesh-r17-packing` (`work/knowledge-mesh/norr-her-packing`)
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
