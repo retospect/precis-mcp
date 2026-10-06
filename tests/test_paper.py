@@ -999,9 +999,10 @@ class TestSearch:
         no-op, and the salient-term hint is moot when the caller
         already has a tight match.
 
-        New shape: a single ``page_size=10`` widen hint replaces both
-        lines. ``scope=`` with the hit's own slug must NOT appear,
-        and the long-form salient-term suggestion must be gone too.
+        A single larger-page hint replaces both lines. It explicitly
+        restarts at ``page=1`` with ``page_size=10`` (gr469183), rather
+        than silently changing pagination. ``scope=`` with the hit's own
+        slug and the long-form salient-term suggestion must stay absent.
         """
         # Seed multiple papers all matching the same word so a
         # ``page_size=1`` query has many more matches than it returned.
@@ -1016,9 +1017,12 @@ class TestSearch:
         # Header still announces "1 of N" so the caller knows there
         # are more matches.
         assert " of " in resp.body
-        # New: a page_size=10 widen hint is present.
-        assert "page_size=10" in resp.body
-        assert "see more of the" in resp.body
+        # The larger-page action advertises and requests a page-1 restart.
+        assert "restart at page 1 with up to 10 of 4 matches" in resp.body
+        assert (
+            "search(kind='paper', q='photocatalytic', page_size=10, page=1)"
+            in resp.body
+        )
         # Old: scope=<self> is no longer suggested.
         # ``scope='paper-a'`` would only appear in the legacy two-
         # line trailer; pin its absence.
