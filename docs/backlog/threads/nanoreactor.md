@@ -61,6 +61,13 @@ it. Update `precis-rxn-help` with `/rxn` and the keep call. Acceptance:
 the four explicit NO→HNO→H2NO→NH2OH→NH3+H2O steps render at 300 K;
 keep creates/reuses a ref and its reader shows the derived ledger;
 bad temperature and impossible balance show the handler's refusal.
+Independent source review at `2151f008` requests two narrow corrections:
+validate effective merged metadata before entity writes, including incoming
+SMILES/derived identity keys and metadata-only updates, with unchanged-row
+refusal regressions; normalize `reaction_class` before either write branch,
+with public-core create/update regressions. Optional malformed stored-input
+and kept-id FastMCP cases remain follow-ups. Canonical checks await root's
+R16 test queue; source review is not runtime or deployment acceptance.
 No coefficients, source ranges/licences, barriers, jobs or models change.
 Root owns release/full gate; target the cycle after R16. After deployment,
 keep the first NO→NH3 ledger at 300 K and link its melchior `/refs` URL

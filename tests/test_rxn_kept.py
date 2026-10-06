@@ -10,6 +10,20 @@ from precis.errors import BadInput
 from precis.handlers.rxn import RxnHandler
 
 EQUATION = "NO + H2 -> NH3 + H2O"
+IDENTITY_METADATA = [
+    ("rxn_smiles_raw", "[H][H]>>[H][H]"),
+    ("rxn_smiles", "[H][H]>>[H][H]"),
+    ("uid_transform", "unsupported-transform"),
+    ("uid_strict", "unsupported-strict"),
+    ("desired_product", "[H][H]"),
+]
+
+
+def _stored_row(store: Any, ref_id: int) -> Any:
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT * FROM refs WHERE ref_id = %s", (ref_id,)).fetchone()
+    assert row is not None
+    return row
 
 
 def test_public_put_and_derived_get_retain_inputs_and_temperature_override(
@@ -76,3 +90,121 @@ def test_sourced_values_on_kept_ref_remain_visible(hub: Any) -> None:
     assert "Derived ledger recomputed" in body
     assert "83" in body
     assert "yield" in body
+
+
+@pytest.mark.parametrize(("key", "value"), IDENTITY_METADATA)
+def test_public_keep_rejects_incoming_identity_before_create(
+    monkeypatch: Any, runtime_with_store: Any, key: str, value: str
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    response = core.put(
+        kind="rxn",
+        id="mixed-ledger",
+        meta={"energetics": {"q": EQUATION}, key: value},
+    )
+    assert "[error:BadInput]" in response
+    assert "separately from a SMILES reaction" in response
+    assert runtime_with_store.store.get_ref(kind="rxn", id="mixed-ledger") is None
+
+
+@pytest.mark.parametrize(("key", "value"), IDENTITY_METADATA)
+@pytest.mark.parametrize("include_equations", [False, True])
+def test_public_identity_update_refused_without_row_mutation(
+    monkeypatch: Any,
+    runtime_with_store: Any,
+    key: str,
+    value: str,
+    include_equations: bool,
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    core.put(
+        kind="rxn",
+        id="unchanged-ledger",
+        title="Original ledger",
+        reaction_class="RXNO:0000024",
+        meta={"energetics": {"q": EQUATION, "T": 300}},
+    )
+    store = runtime_with_store.store
+    ref = store.get_ref(kind="rxn", id="unchanged-ledger")
+    assert ref is not None
+    before = _stored_row(store, ref.id)
+    meta: dict[str, Any] = {key: value}
+    if include_equations:
+        meta["energetics"] = {"q": EQUATION, "T": 400}
+    refused = core.put(
+        kind="rxn",
+        id="unchanged-ledger",
+        title="Must not replace title",
+        reaction_class="RXNO:0000001",
+        meta=meta,
+    )
+    assert "[error:BadInput]" in refused
+    assert "separately from a SMILES reaction" in refused
+    assert _stored_row(store, ref.id) == before
+
+
+def test_existing_mixed_metadata_refuses_metadata_only_update(
+    monkeypatch: Any, runtime_with_store: Any
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    store = runtime_with_store.store
+    # Simulate an externally authored pre-fix row; public put cannot create it.
+    ref, _ = store.rxn_entity_upsert(
+        slug="legacy-mixed",
+        title="Original mixed row",
+        meta_patch={
+            "energetics": {"q": EQUATION, "T": 300},
+            "uid_transform": "unsupported-transform",
+        },
+    )
+    before = _stored_row(store, ref.id)
+    refused = core.put(
+        kind="rxn",
+        id="legacy-mixed",
+        title="Must not replace title",
+        meta={"notes": "new"},
+    )
+    assert "[error:BadInput]" in refused
+    assert _stored_row(store, ref.id) == before
+
+
+def test_public_kept_class_normalization_on_create_and_update(
+    monkeypatch: Any, runtime_with_store: Any
+) -> None:
+    from precis.tools import core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+    created = core.put(
+        kind="rxn",
+        id="classified-ledger",
+        reaction_class="  RXNO:0000024  ",
+        meta={
+            "energetics": {"q": EQUATION, "T": 300},
+            "reaction_class": "meta-fallback",
+        },
+    )
+    assert "created rxn classified-ledger" in created
+    ref = runtime_with_store.store.get_ref(kind="rxn", id="classified-ledger")
+    assert ref is not None
+    assert ref.meta["reaction_class"] == "RXNO:0000024"
+    updated = core.put(
+        kind="rxn",
+        id="classified-ledger",
+        reaction_class="  RXNO:0000001  ",
+        meta={
+            "energetics": {"q": EQUATION, "T": 400},
+            "reaction_class": "meta-fallback",
+        },
+    )
+    assert "updated rxn classified-ledger" in updated
+    after = runtime_with_store.store.get_ref(kind="rxn", id="classified-ledger")
+    assert after is not None
+    assert after.meta["reaction_class"] == "RXNO:0000001"
+    assert after.meta["energetics"]["T"] == 400.0
+    assert "class: RXNO:0000001" in core.get(kind="rxn", id="classified-ledger")

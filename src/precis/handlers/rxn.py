@@ -27,6 +27,8 @@ this kind exists for: *"what yields do amide couplings actually give?"*
 not catpath pathway runs: no SMILES identity or measured property is invented.
 Their archival text snapshot preserves the write-time result; reads recompute
 from pinned fits so the snapshot cannot silently become the current view.
+Entity writes check merged metadata, including metadata-only updates: kept
+equations cannot acquire SMILES or derived transformation identity fields.
 NOT in this slice: scoring, route integration, bulk import. See the ship order
 in the design doc.
 
@@ -75,6 +77,13 @@ _SOURCE_KINDS: tuple[str, ...] = ("paper", "patent", "datasheet")
 
 _VIEWS: tuple[str, ...] = ("table", "properties", "energetics")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
+_SMILES_IDENTITY_KEYS = (
+    "rxn_smiles_raw",
+    "rxn_smiles",
+    "uid_transform",
+    "uid_strict",
+    "desired_product",
+)
 
 
 def _display_value(v: dict[str, Any]) -> str:
@@ -241,21 +250,17 @@ class RxnHandler(Handler):
                 next="put(kind='rxn', id=..., meta={'notes': '...'})",
             )
         existing = self.store.get_ref(kind="rxn", id=slug)
-        if (
+        patch: dict[str, Any] = dict(meta or {})
+        if reaction_class is not None:
+            patch["reaction_class"] = str(reaction_class).strip()
+        existing_meta = (existing.meta or {}) if existing is not None else {}
+        effective = {**existing_meta, **patch}
+        if "energetics" in effective and (
             rxn_smiles is not None
-            and existing is not None
-            and (existing.meta or {}).get("energetics")
+            or any(key in effective for key in _SMILES_IDENTITY_KEYS)
         ):
             raise BadInput("keep an equation set separately from a SMILES reaction")
         if meta is not None and "energetics" in meta:
-            if rxn_smiles is not None or (
-                existing is not None
-                and (
-                    (existing.meta or {}).get("rxn_smiles_raw")
-                    or (existing.meta or {}).get("rxn_smiles")
-                )
-            ):
-                raise BadInput("keep an equation set separately from a SMILES reaction")
             inputs = meta["energetics"]
             if not isinstance(inputs, dict) or set(inputs) - {"q", "T", "n_electrons"}:
                 raise BadInput("meta.energetics accepts only q, T and n_electrons")
@@ -275,7 +280,7 @@ class RxnHandler(Handler):
                 slug=slug,
                 title=title or (existing.title if existing is not None else slug),
                 meta_patch={
-                    **meta,
+                    **patch,
                     "energetics": normalized,
                     "energetics_snapshot": result.body,
                 },
@@ -295,9 +300,6 @@ class RxnHandler(Handler):
                 ),
             )
 
-        patch: dict[str, Any] = dict(meta or {})
-        if reaction_class is not None:
-            patch["reaction_class"] = str(reaction_class).strip()
         notes: list[str] = []
 
         if rxn_smiles is not None:
