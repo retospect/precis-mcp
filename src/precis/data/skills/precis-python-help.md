@@ -107,6 +107,9 @@ many edges traversable.
 | `entries` | console scripts + `__main__` guards |
 | `callgraph` | entry-rooted static call tree (needs `args={'entry': ...}`) |
 | `runtrace` | dynamic trace; gated by `PRECIS_PYTHON_ALLOW_EXEC=1` |
+| `callers` | call sites that reference a symbol (`<alias>::<qualname>`) |
+| `importers` | modules that import a module (`<alias>::<module>`) |
+| `imports` | what a module imports, in-repo vs external |
 
 ## Map a stack trace to a symbol
 ## I have a line number — what symbol is it in?
@@ -159,7 +162,35 @@ Don't put reserved kwargs (`kind` / `id` / `view` / `q`) inside
 ```python
 get(kind="python", id="precis::precis.service.Hub.register_ability")
 # Default symbol view includes Called by: and Calls: sections.
+
+get(kind="python", id="precis::precis.service.Hub.register_ability", view="callers")
+# One row per call site: r::<caller-qualname>  file:line.
 ```
+
+`callers` lists resolved edges first, then unresolved call sites with
+the same method name (`handler.search(...)` where the receiver's type
+isn't tracked) as a labelled lead. No type inference, no MRO walk;
+`getattr` dispatch is invisible.
+
+## Who imports this module, and what does it import?
+
+```python
+get(kind="python", id="precis::precis.handlers.python", view="importers")
+get(kind="python", id="precis::precis.handlers.python", view="imports")
+```
+
+`importers` rows are `r::<module>  file  [bound names]`. Only
+module-scope imports are indexed; function-local imports don't show.
+
+## Find symbols by decorator, async, or regex
+
+```python
+search(kind="python", mode="pattern", q="async @router\\.get")
+```
+
+`mode='pattern'` ANDs whitespace-separated terms: `async`, `@regex`
+(matches a decorator), or a regex on qualname / signature. Same
+`scope=` and `page_size=` as the lexical search.
 
 ## Edit a symbol by qualname
 ## Replace a function body — preferred edit form

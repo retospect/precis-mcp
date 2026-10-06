@@ -88,11 +88,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
    store and utils, never handlers", with the 29 current imports listed
    under `ignore_imports` as a ratchet (no new violations); migrate the
    cheapest third of them to store methods in the same lane.
-5. **python-kind-reverse** (coder). `get(kind='python', view='callers',
-   id='<repo>::<qualname>')` and `view='importers'` from the existing
-   `CallEdge` / `imports` data; `view='imports'` per module; `search(
-   kind='python', mode='pattern', q=...)` for decorator / async / regex
-   predicates. Update `precis-python-help` skill in the same commit.
 7. **docstring-layer** (documenter). Audit result: 95 package docstrings,
    31.6k words, duplication low (2/5) — 8-word-window search found only
    scattered single-sentence twins (precis_se ↔ `precis-se-help` /
@@ -122,9 +117,6 @@ Audit facts (verified by spot-check, cite as anchors not line numbers):
 - Zero `def _esc(`, `def _slugify(`, `def _as_float(` under `src/`
   outside `utils/`; zero `httpx.Client(` outside `utils/http.py`.
 - `uv run lint-imports` passes with the new workers→handlers contract.
-- `get(kind='python', view='callers', id='precis::precis.handlers.python.PythonHandler.search')`
-  returns the dispatch call site; `view='importers'` on a module lists
-  its importers; both covered by tests under `tests/`.
 
 ## Target + blast radius
 

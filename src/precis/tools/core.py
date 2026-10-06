@@ -761,6 +761,9 @@ def search(
     _allowed_modes = {"hybrid", "lexical", "semantic", "verbatim"}
     if (kind or "").strip().lower() == "draft":
         _allowed_modes.add("regex")
+    # ``pattern`` is python-only (structural predicates over the AST index).
+    if (kind or "").strip().lower() == "python":
+        _allowed_modes.add("pattern")
     if mode is not None and mode.strip().lower() not in _allowed_modes:
         runtime = _get_runtime()
         return _validation_error(

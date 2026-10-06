@@ -32,6 +32,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers import _python_callgraph as cgraph
 from precis.handlers import _python_entries as entries_mod
 from precis.handlers import _python_render as render
+from precis.handlers import _python_reverse as reverse
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
 from precis.handlers._mode_help import require_mode
@@ -57,7 +58,19 @@ from precis.utils.search_header import format_search_headline
 log = logging.getLogger(__name__)
 
 
-_SUPPORTED_VIEWS = ("toc", "outline", "source", "callgraph", "entries", "runtrace")
+_SUPPORTED_VIEWS = (
+    "toc",
+    "outline",
+    "source",
+    "callgraph",
+    "entries",
+    "runtrace",
+    "callers",
+    "importers",
+    "imports",
+)
+_REVERSE_VIEWS = ("callers", "importers", "imports")
+_SEARCH_MODES = ("pattern",)
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
 # Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
@@ -329,6 +342,10 @@ class PythonHandler(Handler):
             report = entries_mod.find_entries(idx)
             return Response(body=entries_mod.render_entries(parsed.alias, report))
 
+        # Reverse lookups — `<alias>::<qualname>` id only.
+        if view in _REVERSE_VIEWS:
+            return self._render_reverse(parsed, idx, view)
+
         # Symbol address.
         if parsed.qualname is not None:
             return self._render_symbol(parsed.alias, parsed.qualname, idx, view)
@@ -361,9 +378,14 @@ class PythonHandler(Handler):
         q: str | None = None,
         scope: str | None = None,
         page_size: int = 10,
+        mode: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Lexical search across symbols.
+
+        ``mode='pattern'`` switches ``q`` to AND-ed structural predicates
+        over indexed fields: ``async``, ``@decorator-regex``, or a regex
+        on qualname / signature (see ``_python_reverse.compile_pattern``).
 
         Scores each symbol by where the query matched:
         qualname > signature > docstring. Returns up to `page_size` hits,
@@ -389,6 +411,13 @@ class PythonHandler(Handler):
                 next="search(kind='python', q='...') to search all repos",
             )
 
+        if mode not in (None, "hybrid", *_SEARCH_MODES):
+            raise BadInput(
+                f"unknown python search mode {mode!r}",
+                options=list(_SEARCH_MODES),
+                next="search(kind='python', mode='pattern', q='async @property')",
+            )
+        preds = reverse.compile_pattern(q) if mode == "pattern" else None
         needle = q.lower()
         scope_qn_prefix, scope_file = _split_scope(scope)
 
@@ -404,7 +433,10 @@ class PythonHandler(Handler):
                         or sym.qualname.startswith(scope_qn_prefix + ".")
                     ):
                         continue
-                    score = _score_symbol(sym, needle)
+                    if preds is not None:
+                        score = 1.0 if reverse.matches_pattern(sym, preds) else 0.0
+                    else:
+                        score = _score_symbol(sym, needle)
                     if score > 0:
                         hits.append((score, alias, sym))
 
@@ -1250,6 +1282,36 @@ class PythonHandler(Handler):
             )
         # Default and view='outline'.
         return Response(body=render.render_symbol(alias, sym, idx))
+
+    def _render_reverse(
+        self, parsed: _ParsedId, idx: RepoIndex, view: str | None
+    ) -> Response:
+        """`callers` / `importers` / `imports` — `<alias>::<qualname>` ids."""
+        if parsed.qualname is None:
+            raise BadInput(
+                f"view={view!r} takes an '<alias>::<qualname>' id",
+                next=f"get(kind='python', id='{parsed.alias}::pkg.mod', view={view!r})",
+            )
+        qn = parsed.qualname
+        if view == "callers":
+            sym = idx.symbol(qn)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {qn!r} not found in repo {parsed.alias!r}",
+                    next=f"search(kind='python', q='{qn.split('.')[-1]}', "
+                    f"scope={parsed.alias!r})",
+                )
+            return Response(body=reverse.render_callers(parsed.alias, sym, idx))
+        mod = idx.module(qn)
+        if mod is None:
+            raise NotFound(
+                f"module {qn!r} not found in repo {parsed.alias!r} "
+                f"(view={view!r} takes a module qualname)",
+                next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+            )
+        if view == "importers":
+            return Response(body=reverse.render_importers(parsed.alias, qn, idx))
+        return Response(body=reverse.render_imports(parsed.alias, mod, idx))
 
     def _render_callgraph(
         self,
