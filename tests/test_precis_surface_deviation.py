@@ -118,6 +118,28 @@ def test_catenoid_reach_includes_the_outward_endpoint() -> None:
     assert distance[0] == pytest.approx(0, abs=1e-12)
 
 
+def test_empty_meridian_refuses_surface_distance() -> None:
+    feature = Feature("empty", (0, 0), rv.authored_meridian(5.0, []))
+    with pytest.raises(ValueError, match="empty meridian"):
+        surface_distance(np.array([[1, 0, 0], [0, 0, 1]]), [feature], ds=1)
+
+
+def test_empty_meridian_refuses_surface_foot() -> None:
+    feature = Feature("empty", (0, 0), rv.authored_meridian(5.0, []))
+    with pytest.raises(ValueError, match="empty meridian"):
+        surface_foot(np.array([[1, 0, 0], [0, 0, 1]]), [feature], ds=1)
+
+
+def test_empty_feature_list_remains_an_authored_sheet() -> None:
+    points = np.array([[1, 0, 0], [0, 0, 1]])
+    distances, owners = surface_distance(points, [], ds=1)
+    assert distances.tolist() == [0, 1]
+    assert owners.tolist() == [-1, -1]
+    feet, normals = surface_foot(points, [], ds=1)
+    assert feet.tolist() == [[1, 0, 0], [0, 0, 0]]
+    assert normals.tolist() == [[0, 0, 1], [0, 0, 1]]
+
+
 @pytest.mark.parametrize(
     "pieces",
     [[("line", 0.0)], [("arc", -1.0, 90.0)], [("line", 20.0)], [("bend", 1.0)]],

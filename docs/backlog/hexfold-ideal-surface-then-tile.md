@@ -195,6 +195,11 @@ their radial maximum when that angle is within the authored sweep. No grid,
 atom fitting, threshold, new target field or schema. Sheet ownership is the
 complement; expanded feature discs retain the existing overlap refusal.
 `surface_foot` and `surface_distance` share this same rule.
+An existing feature with an empty meridian explicitly refuses evaluation
+with ValueError in both judge paths; absent target geometry must not become
+zero reach, false sheet matches, infinite distances or zero normals. An
+empty feature list remains a valid sheet. This is direct-kernel validation;
+the public parser already refuses empty pieces and is unchanged.
 
 Pinned replay is the exact native ball12 request in
 fleet-state/inbox/hexfold-dogfood-curved-ready.json: sphere radius

@@ -44,6 +44,8 @@ class Feature:
         Use analytic extrema so an overhanging sphere is never clipped by
         its foot, and ownership/overlap checks do not depend on a sample grid.
         """
+        if not self.meridian.segments:
+            raise ValueError(f"feature {self.name!r} has an empty meridian")
         reach = 0.0
         for segment in self.meridian.segments:
             reach = max(reach, segment.start[0], segment.end[0])
