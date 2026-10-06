@@ -73,6 +73,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "pcb_ref_id": {"type": "integer"},
         "iters": {"type": "integer", "minimum": 1},
         "seed": {"type": "integer"},
+        # Handler already validates the bounded per-call opt-in. Keep it
+        # in the shared job contract too: otherwise enqueue refuses before
+        # the existing RealizeConfig plumbing can ever see the value.
+        "negotiate": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": pcb_realize.MAX_NEGOTIATE_ITERATIONS,
+        },
     },
     "required": ["pcb_ref_id"],
     "additionalProperties": False,
@@ -263,6 +271,17 @@ def _resolve_pin_swap_groups(
 
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
+    negotiate = int(params.get("negotiate") or 0)
+    # Direct job puts share this spec but the v1 params validator only
+    # checks types, not numeric schema bounds. Enforce the same cap here
+    # before reading or writing a board, not only in PcbHandler.
+    if not 0 <= negotiate <= pcb_realize.MAX_NEGOTIATE_ITERATIONS:
+        ctx.record_failure(
+            f"pcb_route: negotiate={negotiate} is out of range; give 0 (off) "
+            f"to {pcb_realize.MAX_NEGOTIATE_ITERATIONS} iterations",
+            failure_class="input",
+        )
+        return
     pcb_ref_id = int(params["pcb_ref_id"])
     iters = int(params.get("iters") or _DEFAULT_ITERS)
     seed = int(params.get("seed") or 0)
@@ -505,7 +524,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     realize_config = pcb_realize.RealizeConfig(
         fab_caps=fab_caps,
         class_rules=graph.get("net_classes"),
-        negotiate_iterations=int(params.get("negotiate") or 0),
+        negotiate_iterations=negotiate,
     )
     # `footprints` (the same refdes-keyed pad geometry PIN_SWAP's feed
     # above also used) was resolved earlier, before the anneal — see that

@@ -938,3 +938,70 @@ and advances route epoch3→4 so old fine-grid jobs cannot be reused. No new opt
 API, fixture-specific selection, best-of retry or extra search budget is proposed.
 Default EWOD count returns22: the unshipped global gain is honestly withdrawn,
 not repaired through a special case. Root review must assess this tradeoff.
+
+
+## R15 dogfood ABC experiment contract (2026-10-06)
+
+Owner pcb/ewod-pcb; isolated work/pcb/r15-dogfood-abc from deployed
+110f6dd4b464565a6b5503f4c48451872b5a6089 (8.35.13). Reto authorizes
+only ewod-dogfood-6, pcb458868, for this slice. Other boards' defaults
+remain unchanged. Baseline job469182: 22 realized / 33 failed / 3 dangling,
+seed0, iters3000, epoch4/coarse default. New arms in order B,A,C,ABC,
+each seed0/iters3000; do not mislabel sequential accumulated changes as
+independent arms. Retain per-job raw state and source/config manifests.
+
+B: existing native put(kind=pcb,id=ewod-dogfood-6,args={op:route,seed:0,
+iters:3000,negotiate:10}); ten PathFinder iterations, existing 60s budget,
+only keep a proposal if it routes more. Default negotiate=0 unchanged.
+Capture baseline before B, actual terminal job metadata and after-state.
+
+A: gr469871 records confirmed crossing-only cost defect. Opt-in Manhattan
+length from the actual route terminal at the far end to each candidate
+physical pad plus 2mm per crossing, same Hungarian permutation and existing
+canonical swap/writeback constraints. Use Hungarian for this arm's warm
+start instead of radial angular ordering. Unselected route jobs retain
+existing assignment behavior until measurements/review. Fixed copper's
+escape via terminal must be resolved honestly; pad-centre IR endpoints
+are not silently called vias. No new schema/provider/global router default.
+
+C premise checkpoint: generators.py version3 intentionally fixes ARR1
+because authored electrode/plaza copper is its design in an absolute
+frame; ARR1_SINK_0 already has fixed=NULL on the actual board. Array stays
+fixed. Existing anneal translates this free sink, but ROTATE is explicitly
+cost-neutral and SIDE_FLIP changes a segment's obstacle-side choice, not
+the component's physical top/bottom side. A fixed=NULL edit alone does
+not create the requested rotation/side search. Prove a supported pose
+search or report the missing seam before claiming an unfix gain.
+
+Metrics: terminal realized/failed/dangling; full exposed DRC error/warning
+counts (separate from job's pre-route and stripping checks); routed length
+and arithmetic mean per-routed-net detour (length / Manhattan distance).
+Define copper inclusion and endpoints explicitly before calculating;
+dangling/zero-distance nets have no ratio, never silently divide by zero.
+Retain original baseline snapshot before any write. Read-only runtime
+Store capture uses REPEATABLE READ READ ONLY SELECTs for fields omitted
+by native views. No public snapshot/clone claim: loader is dev/test only.
+
+Focused canonical regressions, scoped container types and Ruff; independent
+source review and normal root land precede production use of new code.
+Ready origin/work/pcb/r15-dogfood-abc must match exact full candidate SHA.
+No fullsuite/CI/deploy/service/provider/non-dogfood changes; scientific,
+Catpath0.22 and EasyEDA holds remain. No prune or shared /tmp scripts.
+
+### B prerequisite: native refusal reproduced, gr469872
+
+The deployed B request above returns typed BadInput before enqueue:
+job_type=pcb_route unknown params [negotiate]; allowed iters/pcb_ref_id/seed.
+No route job or board mutation. The focused canonical handler regression
+fails identically. Minimal prerequisite adds only the existing knob to
+PARAMS_SCHEMA; no epoch/version/default/algorithm change. Tests retain
+0/10/100 through actual job metadata and dedup, omitted remains absent/off,
+existing -1/101 refusal stays, and worker config reaches the realizer.
+Normal independent review/root land/deploy is required before native B
+can run. A/C/ABC have not run; do not supply invented job ids or results.
+
+Direct job puts also become reachable through this registration. The v1
+shared params validator checks type, not numeric min/max, so the worker
+enforces the existing 0..100 cap before its first board read. Focused
+-1/101 direct-job controls assert refusal without reaching pcb_graph.
+No validator rewrite, no default or budget change.

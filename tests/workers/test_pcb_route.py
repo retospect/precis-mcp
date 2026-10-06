@@ -123,6 +123,44 @@ def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     return int(ref.id)
 
 
+@pytest.mark.parametrize("negotiate", [-1, 101])
+def test_pcb_route_direct_job_refuses_out_of_range_before_board_read(
+    store: Store, monkeypatch, negotiate
+):
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("invalid negotiation must refuse before reading the board")
+
+    monkeypatch.setattr(store, "pcb_graph", unexpected_read)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": -1, "negotiate": negotiate})
+    _route(ctx)
+    assert len(ctx.failures) == 1
+    assert "negotiate=" in str(ctx.failures[0])
+    assert not ctx.summaries
+
+
+@pytest.mark.parametrize("negotiate", [None, 0, 10, 100])
+def test_pcb_route_threads_negotiation_to_realizer(
+    store: Store, monkeypatch, negotiate
+):
+    ref_id = _seed(store, "route-negotiate-config", _DESIGN)
+    params = {"pcb_ref_id": ref_id, "iters": 50, "seed": 0}
+    if negotiate is not None:
+        params["negotiate"] = negotiate
+    seen = []
+    real = pcb_route.pcb_realize.realize
+
+    def record(*args, **kwargs):
+        seen.append(kwargs["config"].negotiate_iterations)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", record)
+    ctx = _FakeCtx(store, params=params)
+    _route(ctx)
+    assert seen == [0 if negotiate is None else negotiate]
+    assert not ctx.failures
+    assert store.pcb_route_status(ref_id)[0]["status"] == "realized"
+
+
 def test_pcb_route_writes_realized_route_and_copper(store: Store) -> None:
     ref_id = _seed(store, "route-x", _DESIGN)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 500, "seed": 1})

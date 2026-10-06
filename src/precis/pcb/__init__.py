@@ -10,6 +10,12 @@ is the one rented kernel, and it is no longer the critical path: the
 in-house realizer + maze router produce the copper the gerbers are cut
 from.
 
+Negotiated congestion remains a per-route opt-in, never a global default.
+Its handler and realizer supported the knob before the job params contract
+registered it; that omission refused every advertised request at enqueue
+(gr469872). Registering the existing parameter fixes reachability without
+changing copper policy, the 60-second cap, or off-by-default routing.
+
 Map, in pipeline order (design doc:
 ``docs/backlog/pcb-guided-place-route.md``):
 

@@ -1097,6 +1097,39 @@ def test_op_place_rejects_non_4_layer_stackup(pcb, store):
         pcb.put(id="op-2layer", args={"op": "place"})
 
 
+@pytest.mark.parametrize("negotiate", [0, 10, 100])
+def test_op_route_negotiate_enqueues_and_dedupes_exact_params(pcb, store, negotiate):
+    pcb.put(id="op-negotiate-valid", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="op-negotiate-valid")
+    assert ref is not None
+    args = {"op": "route", "seed": 0, "iters": 3000, "negotiate": negotiate}
+    first = pcb.put(id="op-negotiate-valid", args=args)
+    assert "enqueued" in first.body
+    pcb.put(id="op-negotiate-valid", args=args)
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
+            (ref.id,),
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == {
+        "pcb_ref_id": ref.id,
+        "seed": 0,
+        "iters": 3000,
+        "negotiate": negotiate,
+    }
+    # An omitted knob remains the existing off-by-default contract, and
+    # must not dedupe to an enabled negotiation job.
+    pcb.put(id="op-negotiate-valid", args={"op": "route", "seed": 0, "iters": 3000})
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta->'params' FROM refs WHERE kind='job' AND parent_id=%s",
+            (ref.id,),
+        ).fetchall()
+    assert len(rows) == 2
+    assert any("negotiate" not in r[0] for r in rows)
+
+
 @pytest.mark.parametrize("negotiate", [-1, 101])
 def test_op_route_negotiate_out_of_range_is_bad_input_not_a_long_job(pcb, negotiate):
     pcb.put(id="op-negotiate", args=_CROSSED)
