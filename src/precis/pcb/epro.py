@@ -429,9 +429,10 @@ def copper_layers(pcb: EproDocument) -> dict[int, str]:
 @dataclass
 class Extraction:
     """Copper rows (``{"ctype", "layer", "net", "geom"}``), plus every
-    judgement call the reader made on the way. A MEASUREMENT of the source
-    board, never geometry precis keeps (Reto, 2026-09-30) — see
-    :func:`measured_copper` and :mod:`precis.pcb.copper_report`."""
+    judgement call the reader made on the way. The measurement workflow
+    (Reto, 2026-09-30) still uses :func:`measured_copper` and
+    :mod:`precis.pcb.copper_report`. Fresh intake also preserves this as
+    fixed geometry (gr470192, 2026-10-06), not an inferred routing sketch."""
 
     tracks: list[dict[str, Any]] = field(default_factory=list)
     vias: list[dict[str, Any]] = field(default_factory=list)

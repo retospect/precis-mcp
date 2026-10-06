@@ -42,6 +42,19 @@ expands a whole EWOD electrode-array footprint from a few params instead of
 hand-authored pads), and the pattern playbooks [[precis-decoupling-help]],
 [[precis-i2c-help]], [[precis-spi-help]], [[precis-datasheet-help]].
 
+## Local routed-board intake
+
+`uv run precis pcb import-epro LOCAL.epro2 --slug PREVIEW` preserves each
+accepted source LINE/ARC track and ordinary through via as authored fixed
+copper by default. Arc centres, handedness, nets and layers survive;
+`view='svg'` shows the source routing. This does not infer a route sketch
+or certify the source DRC. Real files stay local; no native file-import op.
+`--dry-run` writes nothing. `--copper none` retains measurement-only intake;
+partial `--update` defaults to none and refuses fixed (changed copper may
+not match the deliberately retained netlist/outline). Use a fresh preview
+slug for a faithful routed copy. Pinout-preview is an unsaved pin proposal
+on an existing board, not a source-board importer; it never adds copper.
+
 ## Author a design — `put(id=<slug>, args={…})`
 
 **Batch, re-runnable.** One `put` lays down components (with pins), nets, and

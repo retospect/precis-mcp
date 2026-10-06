@@ -54,6 +54,13 @@ Map, in pipeline order (design doc:
   (the text/dict exporters), :mod:`~precis.pcb.route` (Freerouting via
   Specctra, optional).
 
+Fresh local EasyEDA Pro intake retains accepted LINE/ARC records and ordinary
+through vias as fixed source copper, so preview does not erase existing routing
+(gr470192). This supersedes the older regenerate-only default, still available
+as copper="none". Partial updates retain that older behavior: their intentionally
+unchanged nets/outline cannot safely receive changed copper. Import and source
+copper share one transaction; neither the reader nor preview invents routing.
+
 Internal :mod:`~precis.pcb.snapshot` captures raw relational routing inputs and
 checkpoints for dev/test replay. Public graph/hash projections omit geometry and
 copper intentionally; generator re-expansion and authoring inference were refused
