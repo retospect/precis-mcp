@@ -1,0 +1,112 @@
+% Generic poster scaffold. Content slots are deliberately empty; no assets required.
+% A0 portrait: 84.1 x 118.9 cm. Font scale is 1.13; use sans-serif Latin Modern.
+% Build standalone: tectonic -X compile poster.tex
+% Alternatively: latexmk -lualatex -interaction=nonstopmode -halt-on-error poster.tex
+% Product draft compilation continues to use its existing LuaLaTeX sandbox.
+% Larger print variant: replace the beamerposter options below with
+%   size=custom,orientation=portrait,width=92,height=130,scale=1.13
+% Width/height are centimetres; size=custom is REQUIRED or A0 wins silently.
+% Verify the output: pdfinfo poster.pdf | grep 'Page size'
+% Fit check: tectonic -X compile poster.tex 2>&1 | grep 'Overfull .vbox'
+% A successful compile alone does not prove fit: inspect the log and rendered page.
+% Re-check after changing size, font, header/footer or content. colheight is a
+% measured vertical budget, not an automatic page calculation; tune it to fit.
+% Minipage alignment [s] distributes vfill BETWEEN blocks; [t] does not.
+% The 0.95 inset and 0.330/0.315/0.330 columns preserve the supplied geometry.
+% Branding is separate data: these neutral roles are product defaults only.
+% No institution palettes, logo paths, funder marks or private files belong here.
+\documentclass[final]{beamer}
+\usepackage[size=a0,orientation=portrait,scale=1.13]{beamerposter}
+\usepackage{lmodern}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\hypersetup{hidelinks,pdfborder={0 0 0},pdftitle={},pdfauthor={}}
+\usetheme{default}
+\usecolortheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{headline}{}
+\setbeamertemplate{footline}{}
+
+% Declared colour roles; a future validated branding profile supplies values.
+\colorlet{accent}{black!75}
+\colorlet{heading}{black!85}
+\colorlet{band}{black!85}
+\colorlet{bodytint}{black!4}
+\colorlet{citation}{black!70}
+\colorlet{measured}{black!80}
+\colorlet{computed}{black!65}
+\colorlet{bandtext}{white}
+\colorlet{bodytext}{black}
+\setbeamercolor{normal text}{fg=bodytext,bg=white}
+\setbeamercolor{block title}{fg=bandtext,bg=heading}
+\setbeamercolor{banner}{fg=bandtext,bg=band}
+\setbeamercolor{block body}{fg=bodytext,bg=bodytint}
+\setbeamerfont{block title}{size=\Large,series=\bfseries}
+\setbeamertemplate{block begin}{%
+  \vskip0.3ex
+  \begin{beamercolorbox}[leftskip=1.2em,rightskip=1.2em,vmode]{block title}%
+    % A cap and descender give every title band the same glyph-based height.
+    \vskip1.0ex\usebeamerfont{block title}%
+    \hyphenpenalty=10000\exhyphenpenalty=10000
+    \vphantom{Ay}\insertblocktitle\vskip0.45ex
+  \end{beamercolorbox}%
+  \begin{beamercolorbox}[leftskip=1.2em,rightskip=1.2em,vmode]{block body}%
+    \vskip0.6ex
+}
+\setbeamertemplate{block end}{\vskip0.8ex\end{beamercolorbox}\vskip0.8ex}
+
+\newlength{\colheight}\setlength{\colheight}{2650pt}
+% Empty slots for future export assembly. No title, author, logo or body content.
+\newcommand{\PosterTitle}{}
+\newcommand{\PosterSubtitle}{}
+\newcommand{\PosterAuthors}{}
+\newcommand{\PosterAffiliations}{}
+\newcommand{\PosterColumnOne}{}
+\newcommand{\PosterColumnTwo}{}
+\newcommand{\PosterColumnThree}{}
+\newcommand{\PosterFooter}{}
+
+\begin{document}
+\begin{frame}[t]
+\vspace*{1.05cm}
+\vspace*{-\topsep}\begin{center}\begin{minipage}{0.95\textwidth}%
+\begin{beamercolorbox}[wd=\linewidth,leftskip=1.2em,rightskip=1.2em,center,vmode]{banner}
+  \vskip1.45ex
+  {\Huge\bfseries\linespread{0.82}\selectfont\PosterTitle\par}
+  \vskip0.7ex
+  {\LARGE\PosterSubtitle\par}
+  \vskip0.6ex
+  {\Large\PosterAuthors\par}
+  \vskip0.4ex
+  {\normalsize\PosterAffiliations\par}
+  \vskip0.35ex
+\end{beamercolorbox}%
+\end{minipage}\end{center}%
+\vspace*{-\topsep}
+\vskip1.6ex
+\begin{center}\begin{minipage}{0.95\textwidth}
+\begin{columns}[t,totalwidth=\textwidth]
+\begin{column}{0.330\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnOne
+\end{minipage}
+\end{column}
+\begin{column}{0.315\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnTwo
+\end{minipage}
+\end{column}
+\begin{column}{0.330\textwidth}
+\begin{minipage}[t][\colheight][s]{\linewidth}
+\PosterColumnThree
+\end{minipage}
+\end{column}
+\end{columns}
+\end{minipage}\end{center}
+\vskip0.4ex
+\begin{center}\begin{minipage}{0.95\textwidth}
+\PosterFooter
+\end{minipage}\end{center}
+\end{frame}
+\end{document}

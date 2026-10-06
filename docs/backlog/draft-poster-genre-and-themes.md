@@ -40,6 +40,15 @@ same path that already produces docx/pdf.
 
 ## In scope
 
+First slice (Reto, 2026-10-06): strip the supplied private poster source into
+`precis/data/templates/draft/poster.tex`, a standalone, empty generic scaffold.
+Retain A0 portrait, scale, inset three-column stretch layout, block chrome and
+documented custom-print/overflow knobs. Remove manuscript, metadata, images,
+bibliography, institutional palette and all logo references. Compile the empty
+scaffold and a synthetic populated layout at A0; check dimensions and vertical
+overflow. This slice adds a packaged asset, not poster export dispatch or user
+branding resolution. The remaining acceptance criteria below stay open.
+
 - Add `poster` and `slides` to `DOC_TYPES`. A poster remains `kind='draft'`,
   with `meta.workspace.doc_type='poster'` and column hints on its blocks.
 - One product-owned generic `beamerposter` template, supplied by Reto, owns
@@ -334,8 +343,9 @@ stricter, because poster prose is read in glances:
 
 ## Open questions / decisions log
 
-- **Path to Reto's generic template:** where is the generic beamer poster
-  template the product should adopt?
+Resolved 2026-10-06: Reto supplied `fleet-state/scratch/poster-template-src/poster.tex`
+and `README.md`. Only the stripped generic scaffold enters the public package;
+the supplied manuscript and branding stay private.
 
 Reto, 2026-10-05: per-user branding profiles are data. This settles the
 branding part of “theme as kind or data”; a future template catalogue remains
