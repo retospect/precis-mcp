@@ -199,19 +199,3 @@ data notes and metadata must repeat adopted 1 bar interpretation, original
 reference pressure unverified, entropy constants unadjusted. Add focused
 metadata/result-note regressions. No coefficient or entropy conversion,
 scientific jobs, extreme-n repair, R13 or dependency changes.
-
-## Existing gr468592: rejected-temperature diagnostic precision
-
-R13/R14 native calls just outside a fit range correctly raise BadInput, but
-the rejected T is rounded to a valid endpoint: NH2 -> NH2 at 3000.001 K
-prints T=3000, and NO + 5/2 H2 -> NH3 + H2O at 6000.001 K (n=5) prints
-T=6000. Preserve the rejected float's shortest round-trip representation in
-that diagnostic, keeping the species, published range and choose-T hint.
-
-Acceptance: both exact native inputs show their rejected 3000.001/6000.001
-values through the public get/FastMCP path; the corresponding 3000/6000 K
-endpoints still return numeric energetics. No data, coefficients, ranges,
-thermodynamics, pressure, permissions, dependencies, version or pins change.
-Focused canonical tests, scoped container types/Ruff/diff and independent
-Codex review precede root-owned integration/release. Gr468592 remains open
-until the same cases pass on the deployed candidate.
