@@ -265,6 +265,20 @@ other, 2 and 3 are independent of everything above.
   tag inside `search_chunks_semantic` (which already had `tags=`, so no
   store change); `precis-fisheye-help` lists memory as live. Remaining:
   1a, 2, 3.
+- **[built 2026-10-07, slice 1a]** `Store.neighbourhood` in
+  `store/_links_ops.py` beside `links_for`: one SQL statement per hop
+  (counts + capped rows), inverse rule from the `relations.inverse_slug`
+  cache, handles from `handle_registry.try_format` (fallback
+  `<kind>:<id>`), `state` = `STATUS:` tag else `live`, hop-2 as `counts2`
+  (rows only under `cap`, tagged `hop: 2`), `truncated` always present.
+  `rels=` matches the *presented* slug (inbound `cites` is `cited-by`).
+  Two follow-ups filed here, not built: (i) the `trust` tier predicate is
+  duplicated from `handlers/finding.py::_passes_trust` because the store
+  may not import handlers; single-source it by moving the predicate into
+  `nanopub` when `web-graph-navigation.md` slice 4 needs `trust` in the
+  browser; (ii) rewire `eye_render._first_hop` onto `neighbourhood` (every
+  link kind's render; `tests/test_eye_render.py`, `tests/test_finding.py`).
+  Remaining: 2, 3.
 - **[readiness vet 2026-10-07 → folded]** Verdict was needs-work (4
   blockers, 7 advisories, split suggested); every finding is resolved in
   the text above: the mirror meta key is `filename` not `name`; AC 1

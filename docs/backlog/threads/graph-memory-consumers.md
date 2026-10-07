@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Build [memory-recall-walk-keep](../memory-recall-walk-keep.md) slice 1a (`Store.neighbourhood`, also web-graph-navigation slice 1), then slice 2 (recall as an index-line render). Slice 1b (the memory walk: `view='fisheye…'` and `+recall` on memory) landed 2026-10-07. The anchored-edit dogfood is done (td470292, R15); the file mirror is on main (R17, aa669f59f + c06e338fc) and not yet deployed (prod is R16 bd3956d7b on 2026-10-07).
+- **Next:** Build [memory-recall-walk-keep](../memory-recall-walk-keep.md) slice 2 (recall as an index-line render: `search(view='index')`, `memory index --q --k`, the recall fixture). Slices 1b (the memory walk) and 1a (`Store.neighbourhood`, which [web-graph-navigation](../web-graph-navigation.md) slice 1 now wraps as a route) landed 2026-10-07. The anchored-edit dogfood is done (td470292, R15); the file mirror is on main (R17, aa669f59f + c06e338fc) and not yet deployed (prod is R16 bd3956d7b on 2026-10-07).
 - **Blocked by:** Nothing for slices 1–2. Slice 3 and the real import wait on Reto's go and the legacy-node decision (td471883, `waiting-for:reto`, filed 2026-10-07 from this thread). The 2026-10-03 cutover was found reverted on 2026-10-07 (MEMORY.md is a file index again, no record of who reverted it); consistent with the R17 coexistence ruling, so do not re-cut.
 - **Unblocks:** An agent that recalls, walks and keeps graph memory without leaving the graph; the web neighbourhood panel (web-graph-navigation slice 1 is built here).
 - **Acceptance:** [memory-recall-walk-keep](../memory-recall-walk-keep.md) AC 1–6; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.

@@ -897,3 +897,165 @@ class TestGr250037FixesRelation:
         a = _seed_paper(store, slug="gr250037-src2")
         with pytest.raises(BadInput, match="does not exist"):
             store.add_link(src_ref_id=a, dst_ref_id=999999999, relation="related-to")
+
+
+# ── Store.neighbourhood: the shared graph-neighbourhood shape ──────────
+
+
+def _h(kind: str, ref_id: int) -> str:
+    return handle_registry.format_handle(kind, ref_id)
+
+
+class TestNeighbourhood:
+    def test_matches_links_for_union_with_inverse_rule(self, store: Store) -> None:
+        focus = _seed_paper(store, "focus2020")
+        cited = _seed_paper(store, "cited2019")
+        citer = _seed_paper(store, "citer2021")
+        mem_out = _seed_memory(store, "out note")
+        mem_in = _seed_memory(store, "in note")
+        store.add_link(src_ref_id=focus, dst_ref_id=cited, relation="cites")
+        store.add_link(src_ref_id=citer, dst_ref_id=focus, relation="cites")
+        store.add_link(src_ref_id=focus, dst_ref_id=mem_out, relation="related-to")
+        store.add_link(src_ref_id=mem_in, dst_ref_id=focus, relation="related-to")
+        # a literally stored inverse-slug row (``cited-by``) is kept as-is
+        # on the out side, same as ``links_for`` returns it.
+        store.add_link(src_ref_id=focus, dst_ref_id=mem_in, relation="cited-by")
+
+        nb = store.neighbourhood("paper", focus)
+
+        # expected: union of links_for out + in, "in" rows presented with
+        # the inverse slug when one exists (the links_for rewrite).
+        exp_edges: set[tuple[str, str, str, str]] = set()
+        exp_nodes: set[tuple[str, int]] = set()
+        kind_of = {
+            focus: "paper",
+            cited: "paper",
+            citer: "paper",
+            mem_out: "memory",
+            mem_in: "memory",
+        }
+        for direction in ("out", "in"):
+            for ln in store.links_for(focus, direction=direction):
+                rel = ln.relation
+                if direction == "in":
+                    rel = store.inverse_relation(rel) or rel
+                far = ln.dst_ref_id if direction == "out" else ln.src_ref_id
+                exp_nodes.add((kind_of[far], far))
+                exp_edges.add(
+                    (
+                        _h(kind_of[ln.src_ref_id], ln.src_ref_id),
+                        _h(kind_of[ln.dst_ref_id], ln.dst_ref_id),
+                        rel,
+                        direction,
+                    )
+                )
+        assert {(n["kind"], n["id"]) for n in nb["nodes"]} == exp_nodes
+        assert {(e["src"], e["dst"], e["rel"], e["dir"]) for e in nb["edges"]} == (
+            exp_edges
+        )
+        # the inverse rule visibly fired: citer -cites-> focus reads cited-by
+        assert (_h("paper", citer), _h("paper", focus), "cited-by", "in") in exp_edges
+        assert nb["focus"] == {
+            "kind": "paper",
+            "id": focus,
+            "label": "Test paper focus2020",
+        }
+        assert nb["truncated"] is False
+        assert nb["counts"]["cites"] == {"paper": 1}
+        assert nb["counts"]["cited-by"] == {"paper": 1, "memory": 1}
+        assert all(n["state"] == "live" for n in nb["nodes"])
+
+    def test_missing_focus_not_found(self, store: Store) -> None:
+        with pytest.raises(NotFound):
+            store.neighbourhood("paper", 999_999_999)
+
+    def test_retired_neighbour_excluded(self, store: Store) -> None:
+        a, b = _seed_memory(store), _seed_memory(store)
+        store.add_link(src_ref_id=a, dst_ref_id=b, relation="related-to")
+        store.retire_ref(b)
+        nb = store.neighbourhood("memory", a)
+        assert nb["nodes"] == [] and nb["edges"] == [] and nb["counts"] == {}
+
+    def test_depth2_over_cap_returns_counts_not_rows(self, store: Store) -> None:
+        hub = _seed_memory(store, "hub")
+        mid = _seed_memory(store, "mid")
+        store.add_link(src_ref_id=hub, dst_ref_id=mid, relation="related-to")
+        leaves = [_seed_memory(store, f"leaf {i}") for i in range(210)]
+        for leaf in leaves:
+            store.add_link(src_ref_id=mid, dst_ref_id=leaf, relation="related-to")
+
+        nb = store.neighbourhood("memory", hub, depth=2, cap=200)
+        assert [n["id"] for n in nb["nodes"]] == [mid]
+        assert nb["counts2"] == {"related-to": {"memory": 210}}
+        assert not any(e.get("hop") == 2 for e in nb["edges"])
+        assert not any(n.get("hop") == 2 for n in nb["nodes"])
+        assert len(nb["edges"]) == 1 and nb["truncated"] is False
+
+    def test_depth2_under_cap_includes_rows(self, store: Store) -> None:
+        hub = _seed_memory(store, "hub")
+        mid = _seed_memory(store, "mid")
+        leaf = _seed_memory(store, "leaf")
+        store.add_link(src_ref_id=hub, dst_ref_id=mid, relation="related-to")
+        store.add_link(src_ref_id=mid, dst_ref_id=leaf, relation="related-to")
+        nb = store.neighbourhood("memory", hub, depth=2)
+        assert nb["counts2"] == {"related-to": {"memory": 1}}
+        hop2 = [e for e in nb["edges"] if e.get("hop") == 2]
+        assert hop2 == [
+            {
+                "src": _h("memory", mid),
+                "dst": _h("memory", leaf),
+                "rel": "related-to",
+                "dir": "out",
+                "hop": 2,
+            }
+        ]
+        assert [n["id"] for n in nb["nodes"] if n.get("hop") == 2] == [leaf]
+
+    def test_rels_and_kinds_filters(self, store: Store) -> None:
+        focus = _seed_memory(store, "focus")
+        paper = _seed_paper(store, "p2020")
+        mem = _seed_memory(store, "other")
+        citer = _seed_paper(store, "q2021")
+        store.add_link(src_ref_id=focus, dst_ref_id=paper, relation="cites")
+        store.add_link(src_ref_id=focus, dst_ref_id=mem, relation="related-to")
+        store.add_link(src_ref_id=citer, dst_ref_id=focus, relation="cites")
+
+        by_rel = store.neighbourhood("memory", focus, rels=["related-to"])
+        assert {n["id"] for n in by_rel["nodes"]} == {mem}
+        assert set(by_rel["counts"]) == {"related-to"}
+
+        # filters speak the presented slug: the inbound ``cites`` is cited-by
+        by_inv = store.neighbourhood("memory", focus, rels=["cited-by"])
+        assert {n["id"] for n in by_inv["nodes"]} == {citer}
+
+        by_kind = store.neighbourhood("memory", focus, kinds=["memory"])
+        assert {n["id"] for n in by_kind["nodes"]} == {mem}
+        assert by_kind["counts"] == {"related-to": {"memory": 1}}
+
+    def test_cap_truncates_with_full_counts(self, store: Store) -> None:
+        focus = _seed_memory(store, "focus")
+        for i in range(7):
+            n = _seed_memory(store, f"n{i}")
+            store.add_link(src_ref_id=focus, dst_ref_id=n, relation="related-to")
+        nb = store.neighbourhood("memory", focus, cap=3)
+        assert len(nb["nodes"]) == 3 and len(nb["edges"]) == 3
+        assert nb["truncated"] is True
+        assert nb["counts"] == {"related-to": {"memory": 7}}
+        assert store.neighbourhood("memory", focus, cap=7)["truncated"] is False
+
+    def test_bad_args(self, store: Store) -> None:
+        m = _seed_memory(store)
+        with pytest.raises(BadInput):
+            store.neighbourhood("memory", m, depth=3)
+        with pytest.raises(BadInput):
+            store.neighbourhood("memory", m, trust="bogus")
+
+    def test_since_until_bound_linked_created_at(self, store: Store) -> None:
+        from datetime import UTC, datetime
+
+        focus = _seed_memory(store, "focus")
+        n = _seed_memory(store, "n")
+        store.add_link(src_ref_id=focus, dst_ref_id=n, relation="related-to")
+        future = datetime(2999, 1, 1, tzinfo=UTC)
+        assert store.neighbourhood("memory", focus, since=future)["nodes"] == []
+        assert len(store.neighbourhood("memory", focus, until=future)["nodes"]) == 1

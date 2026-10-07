@@ -32,14 +32,16 @@ Mixin assumes the concrete Store provides ``self.pool``.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from collections.abc import Callable
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from psycopg import Connection
 from psycopg.errors import ForeignKeyViolation
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.store._argument_ops import retracted_endpoint
 from precis.store._mappers import (
     _REFS_COLS_ALIASED,
@@ -50,6 +52,7 @@ from precis.store._mappers import (
     _row_to_s2_neighbor,
 )
 from precis.store.types import (
+    SIGNED_FINDING_STATES,
     ActorSlug,
     BibEntry,
     Link,
@@ -59,6 +62,10 @@ from precis.store.types import (
     S2Direction,
     S2Neighbor,
 )
+from precis.utils import handle_registry
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 #: Walk cap for :meth:`LinksMixin.ancestors` — deeper than any real DAG the
 #: acyclic relations carry (assembly trees, quest ladders, prerequisite
@@ -209,6 +216,67 @@ def _linked_refs_where(
         dir_params = [ref_id, ref_id]
     clauses = ["r.retired_at IS NULL", "r.kind = %s", exists]
     return clauses, [kind, *dir_params]
+
+
+_NBH_TRUST_VALUES = ("verified", "signed", "disputed", "any")
+
+# One statement serves both hops. ``x`` = every link touching an anchor, once
+# per side; ``e`` = the live far end joined in with the presented relation
+# (stored rel for ``out``; the relation's inverse slug for ``in`` — the same
+# rewrite ``links_for`` applies) and the request's filters. Output: one 'c'
+# row per (rel, far kind) with the full edge count, then up to ``lim`` edge
+# rows ('r'), newest first. Layout: (tag, anchor, far, dir, rel, kind, title,
+# state, n).
+_NBH_SQL = """
+WITH inv(slug, inv) AS (
+  SELECT * FROM unnest(%(slugs)s::text[], %(invs)s::text[])
+),
+x AS (
+  SELECT l.link_id, l.created_at AS lat, l.src_ref_id AS anchor,
+         l.dst_ref_id AS far, 'out'::text AS dir, l.relation AS rel
+    FROM links l WHERE l.src_ref_id = ANY(%(anchors)s::bigint[])
+  UNION ALL
+  SELECT l.link_id, l.created_at, l.dst_ref_id, l.src_ref_id, 'in',
+         COALESCE(inv.inv, l.relation)
+    FROM links l LEFT JOIN inv ON inv.slug = l.relation
+   WHERE l.dst_ref_id = ANY(%(anchors)s::bigint[])
+),
+e AS (
+  SELECT x.*, r.kind AS fkind, r.title AS ftitle,
+         COALESCE((SELECT t.value FROM ref_tags rt
+                     JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                    ORDER BY t.value LIMIT 1), 'live') AS fstate
+    FROM x JOIN refs r ON r.ref_id = x.far
+   WHERE r.retired_at IS NULL
+     AND NOT (x.far = ANY(%(excl)s::bigint[]))
+     AND (%(rels)s::text[] IS NULL OR x.rel = ANY(%(rels)s::text[]))
+     AND (%(kinds)s::text[] IS NULL OR r.kind = ANY(%(kinds)s::text[]))
+     AND (%(since)s::timestamptz IS NULL OR r.created_at >= %(since)s::timestamptz)
+     AND (%(until)s::timestamptz IS NULL OR r.created_at < %(until)s::timestamptz)
+)
+SELECT 'c'::text, NULL::bigint, NULL::bigint, NULL::text, rel, fkind,
+       NULL::text, NULL::text, count(*)::bigint
+  FROM e GROUP BY rel, fkind
+UNION ALL
+SELECT * FROM (
+  SELECT 'r'::text, anchor, far, dir, rel, fkind, ftitle, fstate, 0::bigint
+    FROM e ORDER BY lat DESC, link_id DESC
+   LIMIT %(lim)s::int
+) rr
+"""
+
+
+def _nbh_edge(
+    anchor_id: int,
+    anchor_kind: str,
+    r: tuple[Any, ...],
+    h: Callable[[str, int], str],
+) -> dict[str, Any]:
+    """One edge dict from a ``_NBH_SQL`` row, stored direction preserved."""
+    a, f = h(anchor_kind, anchor_id), h(r[5], int(r[2]))
+    src, dst = (a, f) if r[3] == "out" else (f, a)
+    return {"src": src, "dst": dst, "rel": r[4], "dir": r[3]}
 
 
 class LinksMixin:
@@ -667,6 +735,220 @@ class LinksMixin:
                 continue
             seen.add(link_id)
             out.append(_row_to_link(r))
+        return out
+
+    def neighbourhood(
+        self,
+        kind: str,
+        ref_id: int,
+        *,
+        depth: int = 1,
+        rels: list[str] | None = None,
+        kinds: list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        trust: str | None = None,
+        cap: int = 200,
+    ) -> dict[str, Any]:
+        """The ref-level link neighbourhood of one ref, as plain data.
+
+        Shape (shared by the web graph route and the agent walk)::
+
+            {"focus": {kind, id, label},
+             "nodes": [{kind, id, label, state}],
+             "edges": [{src, dst, rel, dir}],
+             "counts": {rel: {kind: n}}, "truncated": bool,
+             # depth=2 only:
+             "counts2": {rel: {kind: n}}}
+
+        Conventions:
+
+        - ``src`` / ``dst`` are the computed handles
+          (:func:`~precis.utils.handle_registry.try_format`, e.g. ``me4641``)
+          — the form every agent-facing render already uses — falling back
+          to ``"<kind>:<id>"`` for a kind with no handle code. Edge
+          ``src``/``dst`` keep the *stored* direction; ``dir`` is that
+          direction from the anchor's side (``out`` = anchor is ``src``).
+        - ``rel`` is the stored relation for ``out`` edges and, for ``in``
+          edges whose relation has an inverse slug, the inverse — exactly
+          the rewrite :meth:`links_for` applies for ``relation='cited-by'``
+          (``inverse_relation``, the ``relations.inverse_slug`` column), so
+          "X cites focus" reads ``cited-by`` from the focus's side.
+          ``rels=`` filters on that presented slug.
+        - ``label`` = ref title (handle when blank). ``state`` = the ref's
+          ``STATUS:`` tag value, else ``"live"``. Retired refs are never
+          returned.
+        - ``since`` / ``until`` bound the *linked* ref's ``created_at``
+          (inclusive / exclusive); ``kinds`` filters the linked ref's kind.
+        - ``trust`` (``verified|signed|disputed|any``) applies to
+          ``finding`` neighbours at hop 1 only, via the claim-hub posture
+          read (``nanopub.overview.hub_rows``). The predicate mirrors
+          ``handlers.finding._passes_trust`` — duplicated because the store
+          layer may not import handlers. A finding with no publish posture
+          fails every tier but ``any``. Costs one extra round trip; hop 2
+          (counts) ignores it.
+        - ``cap`` bounds hop-1 nodes: when more exist the first ``cap``
+          (newest links first) come back with ``truncated: True`` and
+          ``counts`` still covering every matching edge.
+        - ``depth=2`` adds the second hop over the (kept) hop-1 node set,
+          excluding the focus and hop-1 nodes. If it has more than ``cap``
+          edges it is reported as ``counts2`` only; otherwise its
+          edges/nodes are also returned, tagged ``hop: 2``.
+
+        Round trips: one for the focus, one (hop 1), one (hop 2) [+ one for
+        ``trust``] [+ one on first call per process for the inverse map].
+        """
+        if depth not in (1, 2):
+            raise BadInput(f"depth must be 1 or 2, got {depth!r}")
+        trust_v = (trust or "").strip().lower() or None
+        if trust_v is not None and trust_v not in _NBH_TRUST_VALUES:
+            raise BadInput(f"unknown trust={trust!r}", options=list(_NBH_TRUST_VALUES))
+        if cap < 1:
+            raise BadInput("cap must be >= 1")
+
+        self.inverse_relation("cites")  # warm the cache
+        inv_map: dict[str, str] = {
+            s: i
+            for s, i in getattr(self, "_inverse_relations_cache", {}).items()
+            if i is not None
+        }
+
+        def _h(k: str, i: int) -> str:
+            return handle_registry.try_format(k, i) or f"{k}:{i}"
+
+        def _run(
+            conn: Connection,
+            anchors: list[int],
+            excl: list[int],
+            limit: int | None,
+        ) -> tuple[list[tuple[Any, ...]], dict[str, dict[str, int]]]:
+            params = {
+                "anchors": anchors,
+                "excl": excl,
+                "slugs": list(inv_map),
+                "invs": list(inv_map.values()),
+                "rels": list(rels) if rels is not None else None,
+                "kinds": list(kinds) if kinds is not None else None,
+                "since": since,
+                "until": until,
+                "lim": limit,
+            }
+            data: list[tuple[Any, ...]] = []
+            counts: dict[str, dict[str, int]] = {}
+            # Row layout: (tag, anchor, far, dir, rel, kind, title, state, n)
+            for r in conn.execute(_NBH_SQL, params).fetchall():
+                if r[0] == "c":
+                    counts.setdefault(r[4], {})[r[5]] = int(r[8])
+                else:
+                    data.append(r)
+            return data, counts
+
+        with self.pool.connection() as conn:
+            frow = conn.execute(
+                "SELECT title FROM refs WHERE ref_id = %s AND kind = %s",
+                (ref_id, kind),
+            ).fetchone()
+            if frow is None:
+                raise NotFound(f"no {kind} ref with id {ref_id}")
+            filter_trust = trust_v is not None and trust_v != "any"
+            data1, counts1 = _run(
+                conn, [ref_id], [ref_id], None if filter_trust else cap + 1
+            )
+
+            if filter_trust:
+                assert trust_v is not None
+                data1 = self._nbh_trust_filter(data1, trust_v)
+                counts1 = {}
+                for r in data1:
+                    bucket = counts1.setdefault(r[4], {})
+                    bucket[r[5]] = bucket.get(r[5], 0) + 1
+
+            total1 = sum(n for kk in counts1.values() for n in kk.values())
+            nodes: list[dict[str, Any]] = []
+            seen: dict[int, str] = {}
+            edges: list[dict[str, Any]] = []
+            for r in data1:
+                far = int(r[2])
+                if far not in seen:
+                    if len(seen) >= cap:
+                        continue
+                    seen[far] = r[5]
+                    nodes.append(
+                        {
+                            "kind": r[5],
+                            "id": far,
+                            "label": r[6] or _h(r[5], far),
+                            "state": r[7],
+                        }
+                    )
+                edges.append(_nbh_edge(ref_id, kind, r, _h))
+            result: dict[str, Any] = {
+                "focus": {
+                    "kind": kind,
+                    "id": ref_id,
+                    "label": frow[0] or _h(kind, ref_id),
+                },
+                "nodes": nodes,
+                "edges": edges,
+                "counts": counts1,
+                "truncated": total1 > len(edges),
+            }
+            if depth == 2 and seen:
+                hop1_ids = sorted(seen)
+                data2, counts2 = _run(conn, hop1_ids, [ref_id, *hop1_ids], cap + 1)
+                result["counts2"] = counts2
+                total2 = sum(n for kk in counts2.values() for n in kk.values())
+                if total2 <= cap:
+                    seen2: set[int] = set()
+                    for r in data2:
+                        far = int(r[2])
+                        if far not in seen2:
+                            seen2.add(far)
+                            nodes.append(
+                                {
+                                    "kind": r[5],
+                                    "id": far,
+                                    "label": r[6] or _h(r[5], far),
+                                    "state": r[7],
+                                    "hop": 2,
+                                }
+                            )
+                        e = _nbh_edge(int(r[1]), seen[int(r[1])], r, _h)
+                        e["hop"] = 2
+                        edges.append(e)
+            elif depth == 2:
+                result["counts2"] = {}
+        return result
+
+    def _nbh_trust_filter(
+        self, rows: list[tuple[Any, ...]], trust: str
+    ) -> list[tuple[Any, ...]]:
+        """Drop ``finding`` neighbours failing the ``trust`` tier (see
+        :meth:`neighbourhood`); other kinds pass untouched."""
+        from precis.nanopub.overview import hub_rows
+
+        fids = sorted({int(r[2]) for r in rows if r[5] == "finding"})
+        postures = (
+            {h.ref_id: h for h in hub_rows(cast("Store", self), ref_ids=fids)}
+            if fids
+            else {}
+        )
+        out: list[tuple[Any, ...]] = []
+        for r in rows:
+            if r[5] != "finding":
+                out.append(r)
+                continue
+            p = postures.get(int(r[2]))
+            if p is None:
+                continue
+            if trust == "signed":
+                ok = p.state in SIGNED_FINDING_STATES
+            elif trust == "verified":
+                ok = (p.supported_count > 0 or p.atoms_all_supported) and not p.disputed
+            else:  # disputed
+                ok = bool(p.disputed)
+            if ok:
+                out.append(r)
         return out
 
     def linked_refs_page(
