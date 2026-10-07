@@ -118,8 +118,15 @@ computed-pathway evidence edge the claim page drops) · `draft-authoring.md`
 (created 2026-10-01 — ranked by what the month's preprint hits).
 Seams: substrate vs consumers, pipeline vs the layer that consumes it, and
 the taproot umbrella vs its defect cluster, recorded in `threads/INDEX.md`.
-Top priority (Reto, 2026-10-01): `backlog/memory-native-authoring.md`, the
-write half of file-mirror — without it no text-memory class can retire.
+Top priority (Reto, 2026-10-07, "cut over soon"; supersedes the 10-01 line
+and the coexistence reading of R17): the cutover sequence —
+`backlog/memory-recall-walk-keep.md` slices 1a+2 → deploy the mirror
+(`backlog/memory-file-mirror.md`) → refresh the 146 stale `SPACE:repo-dev`
+nodes in place + the real import → hook on, `MEMORY.md` becomes a pointer
+to the mesh root memory node (plus how to bring the server back up) →
+`backlog/memory-native-authoring.md` as the primary write path → skills
+into the mesh. One write path (the graph); files are derived. Before the
+re-cut, record why the 10-03 cutover reverted.
 
 **Surfaces.** Agent: an agent never leaves the graph for SQL or a temp
 file to do its work. Human: a curated view — from a node Reto reaches its

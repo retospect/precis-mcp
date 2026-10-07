@@ -1,14 +1,16 @@
 ---
-status: idea
+status: ready
 title: a surface-Pourbaix validity map and linked reaction staircase drive slab search by where and why each candidate's operating window is lost
 pillar: 3d-design
-prio: medium
+prio: high
+owner: catalysis session
 ---
 
 # Surface-Pourbaix validity map + reaction staircase as a catalyst optimizer
 
-**Filed only, not built** (Reto, 2026-10-02T20:23Z: "don't do it now, but
-convert into a backlog item"). The full design is Reto's transfer prompt,
+**Lifted 2026-10-07** (Reto, via chat-interface): ready for slices 1–2,
+owner = the catalysis session, after the catpath 0.23.0 lock; see
+§Rulings below. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
 re-litigated here; its **OPEN** points are this item's open questions.
@@ -151,6 +153,25 @@ The organizer adds it to the paper/conference list. What is novel is the
 synthesis: the validity map, the pessimistic reset contour, and the
 Shapley field.
 
-## Explicitly NOT in scope (until Reto lifts "file only")
+## Rulings 2026-10-07 (Reto, via chat-interface)
 
-- Any build. Slices are ordered, not scheduled.
+- "File only" LIFTED. Slices 1–2 are `ready`; owner = the catalysis
+  session; start after `uv lock -P autocatpath` takes catpath 0.23.0.
+- Sequencing: first build = anchor inventory + inner CHE sweep with error
+  bands (slice 1). The hydride pilot (catalysis-selectivity item 23, still
+  HELD) hangs off slice 2.
+- v1: q6 = discrete slabs (settled); q7 = (111) only.
+- Slice 6 needs a quest-side representation of "which slab model to
+  trust" — add it to that slice's scope.
+- Open task for the owner before slice 1: do O, OH and H coverage anchors
+  on Pd(111) and β-PdH already exist from the qu164903 runs, or must they
+  be computed? Report the answer to Reto.
+- `PRECIS_MP_API_KEY` is in the overlay; the map must not block on the
+  Materials Project import either way.
+- q2/q3 (reference consistency, oxide corrections): still being explained
+  to Reto; no ruling yet.
+
+## Explicitly NOT in scope
+
+- Slices 3–8: ordered, not scheduled; each needs its own `ready`.
+- The hydride pilot itself (item 23) and any re-run under item 25.
