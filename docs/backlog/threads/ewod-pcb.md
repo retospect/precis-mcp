@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Reto's 2026-10-07 brief (via chat-interface: "ewod-dogfood-6 looks cool but far from optimal. Discuss and investigate improved routing/placement/pinswap mechanisms"), ahead of EasyEDA: five measured steps on the replay fixture only (pin-swap effect, analytic channel capacity, routing-aware pin assignment prototype, structured escape planning, placement), delivered as a specced backlog item with numbered results for Reto to rule on, pointer at its rank here. [pcb-easyeda-round-trip](pcb-easyeda-round-trip.md) is reopened and its slice 2c (copper export) landed 2026-10-07; it resumes at 2d after the note. The layer lever is dogfooded on prod (Reto 2026-10-07: "two-layer escape is acceptable", EWOD has vias on every layer): ewod-dogfood-6 now carries stackup F.Cu signal / In1.Cu plane / In2.Cu signal / B.Cu signal and `ewod_ARR1_escape` rules `{"layers":["In2.Cu","B.Cu"],"clearance_mm":0.099}`; route job 472109 (`negotiate=10`) = 43/55 and job 472111 (`negotiate=100`, seed 0) = 45/55 with 29 vias, the replay numbers reproduced (Do next 4, dogfooded). The 10 residual failures sit in rows 5–7 and plateau at ~24 nets in conflict regardless of iterations, so the next router question is a third routable layer or escape-order/placement, not more negotiation. Job 472103 before the stackup fix was a silent no-op (In2.Cu was a plane; gripe 472108). Negotiated congestion on the B.Cu lock stays measured dead; arm B (job 470129) stays not-repeated. R14–R16 have shipped (prod 8.35.15), no renewed gate is pending; R13 preview native dogfood PASS is complete.
+- **Next:** Reto's ruling on [pcb-dogfood-6-routing-levers](../pcb-dogfood-6-routing-levers.md) (Do next 0, measured 2026-10-07 on the replay fixture: distance-cost channel assignment before routing = 51/55 with In2.Cu open, against 42 shipped; the recommendation is to ship that assignment as the route job's warm start, then plan the top/bottom plaza rows' exits in the template). Until he rules, [pcb-easyeda-round-trip](pcb-easyeda-round-trip.md) resumes at slice 2d (its 2c copper export landed 2026-10-07, 660a2eccf). The layer lever is dogfooded on prod (Reto 2026-10-07: "two-layer escape is acceptable", EWOD has vias on every layer): ewod-dogfood-6 now carries stackup F.Cu signal / In1.Cu plane / In2.Cu signal / B.Cu signal and `ewod_ARR1_escape` rules `{"layers":["In2.Cu","B.Cu"],"clearance_mm":0.099}`; route job 472109 (`negotiate=10`) = 43/55 and job 472111 (`negotiate=100`, seed 0) = 45/55 with 29 vias, the replay numbers reproduced (Do next 4, dogfooded). The 10 residual failures sit in rows 5–7 and plateau at ~24 nets in conflict regardless of iterations, so the next router question is a third routable layer or escape-order/placement, not more negotiation. Job 472103 before the stackup fix was a silent no-op (In2.Cu was a plane; gripe 472108). Negotiated congestion on the B.Cu lock stays measured dead; arm B (job 470129) stays not-repeated. R14–R16 have shipped (prod 8.35.15), no renewed gate is pending; R13 preview native dogfood PASS is complete.
 - **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -90,7 +90,17 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Do next
 
-0. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
+0. **backlog/pcb-dogfood-6-routing-levers.md** — Reto's 2026-10-07 brief
+   ("far from optimal: investigate improved routing/placement/pinswap
+   mechanisms"), measured on the replay fixture: a distance-cost
+   (Manhattan via→pin) Hungarian channel assignment before routing takes
+   dogfood-6 from 42 to **51/55** with In2.Cu open and from 22 to 31 on
+   the B.Cu lock, where the shipped crossing-only swap gains 0–3; lane
+   capacity is not the wall (60 vertical / 36 horizontal lanes per layer
+   for 55 nets), the 0.15 mm jam between the top/bottom plaza rows and the
+   HV507's pad rows is. Five numbered results and a recommendation for
+   Reto to rule on are in the item; build nothing until he does.
+0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
    identical parts shares one spot. What is left is small: a courtyard
