@@ -69,6 +69,7 @@ from precis.structure import (
     apply_ops,
     evaluate_measure,
     export,
+    geometry_stats,
     probe,
     validate,
     vsepr,
@@ -119,7 +120,7 @@ def _atom_arg(args: dict[str, Any], *, alias: str | None = None) -> str:
     )
 
 
-_PROBE_VIEWS = ("atom", "neighborhood", "bonds", "find", "validate")
+_PROBE_VIEWS = ("atom", "neighborhood", "bonds", "find", "validate", "stats")
 _NAV_VIEWS = (
     "line",
     "plane",
@@ -2161,6 +2162,14 @@ class StructureHandler(Handler):
             + render_agent_table(rows, schema=["design", "title"])
         )
 
+    @staticmethod
+    def _geometry_tier(ref: Any, relax_summary: dict[str, Any] | None = None) -> str:
+        """Tier of the stored coordinates, from the recorded last relax; never invented."""
+        lr = relax_summary or (ref.meta or {}).get("last_relax")
+        if lr and lr.get("rung") is not None:
+            return f"relax[{lr['rung']}]"
+        return "unknown"
+
     def _toc_response(
         self,
         scene: Scene,
@@ -2197,6 +2206,10 @@ class StructureHandler(Handler):
             head += "\n# bbox Å: " + " · ".join(
                 f"{ax} {a:.2f}..{b:.2f}" for ax, a, b in zip("xyz", lo, hi, strict=True)
             )
+        gstats = geometry_stats.compute(scene)
+        gline = geometry_stats.head_line(gstats)
+        if gline:
+            head += f"\n# geometry: {gline} · tier: {self._geometry_tier(ref, relax_summary)}"
         findings = validate(scene) + vsepr.advisories(scene)
         n_err = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
@@ -2367,6 +2380,12 @@ class StructureHandler(Handler):
     def _render_probe(
         self, view: str, scene: Scene, args: dict[str, Any], *, ref: Any
     ) -> Response:
+        if view == "stats":
+            return Response(
+                body=geometry_stats.render(
+                    geometry_stats.compute(scene), tier=self._geometry_tier(ref)
+                )
+            )
         if view == "atom":
             label = _atom_arg(args)
             if label not in scene.atoms:

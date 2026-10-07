@@ -1218,6 +1218,7 @@ def _ensure_component_seed(dsn: str) -> None:
         MIGRATIONS_DIR / "0093_component_kind.sql",
         MIGRATIONS_DIR / "0152_component_geometry_specs.sql",
         MIGRATIONS_DIR / "0163_component_head_form_specs.sql",
+        MIGRATIONS_DIR / "0190_thread_size_st.sql",
     ]
     seed_files = [f for f in seed_files if f.exists()]
     if not seed_files:

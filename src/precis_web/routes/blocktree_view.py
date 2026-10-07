@@ -127,6 +127,8 @@ from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
+from precis_se.handler import validate_digest as se_validate_digest
+from precis_se.handler import validate_findings as se_validate_findings
 from precis_se.ops import effective_envelope as se_effective_envelope
 from precis_se.pick import atom_hover_names
 from precis_surface.relax import angle_dev_by_atom, theta_p_by_atom
@@ -311,6 +313,25 @@ def _se_finding_blocks(subject: str, names: set[str]) -> list[str]:
 #: :func:`_se_finding_blocks` drops it cleanly rather than mis-bucketing
 #: it — it is not a silent loss, it just isn't a per-block badge.
 _FINDINGS_BUDGET_S = 3.0
+
+
+def _se_validate_panel(store: Store, tree: Any, ref_id: int) -> dict[str, Any]:
+    """The ``/se/<slug>`` page's validate digest line + findings rows —
+    :func:`precis_se.handler.validate_findings`/``validate_digest``, the
+    very functions behind the put/edit reply and ``view='validate'``."""
+    findings = se_validate_findings(store, tree, ref_id)
+    digest, _qualifier = se_validate_digest(findings)
+    rows = [
+        {
+            "severity": f.severity,
+            "rule": f.rule,
+            "subject": f.subject,
+            "detail": f.detail,
+        }
+        for f in findings
+        if f.severity in ("error", "warn")
+    ]
+    return {"digest": digest, "rows": rows}
 
 
 def _se_block_findings(tree: Any) -> dict[str, list[dict[str, Any]]]:
@@ -957,6 +978,17 @@ async def _view3d_page(
         if kind == "se" and not axis.read_only
         else []
     )
+    # gr470909 — the same digest + findings table as the put/edit reply and
+    # view='validate' (one function), live design only. Degrade to no
+    # panel on a validator failure, never a 500'd page.
+    validate_panel: dict[str, Any] | None = None
+    if kind == "se" and not axis.read_only:
+        try:
+            validate_panel = await asyncio.to_thread(
+                _se_validate_panel, store, tree, ref.id
+            )
+        except Exception:
+            log.exception("validate panel failed for %s %s", kind, slug)
     return templates.TemplateResponse(
         request,
         "blocktree/detail3d.html.j2",
@@ -989,6 +1021,7 @@ async def _view3d_page(
             "revision": revision,
             "chat": chat,
             "print_files": printable,
+            "validate_panel": validate_panel,
         },
     )
 

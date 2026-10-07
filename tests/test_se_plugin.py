@@ -1654,6 +1654,22 @@ def test_joint_zero_axis_rejected() -> None:
         )
 
 
+def test_joint_clamp_mechanism_validates_and_is_not_a_press_fit() -> None:
+    """gr450524 #3: an adjustable friction clamp is its own mechanism —
+    stored as declared, and exempt from the press/snap interference rule
+    (no capacity model: advisory only)."""
+    tree = _l2_tree()
+    clamp = {"class": "rigid", "mechanism": "clamp"}
+    apply_ops(
+        tree,
+        [{"op": "set_joint", "a": "wheel.bore", "b": "hub.shaft", "joint": clamp}],
+    )
+    assert tree.connects[0].joint == clamp
+    report = se_drc.drc(tree)
+    assert not [f for f in report.findings if f.rule == "mechanism_demand"]
+    assert not [f for f in report.findings if f.rule == "mechanism_no_interference"]
+
+
 def test_joint_unknown_mechanism_rejected() -> None:
     tree = _l2_tree()
     with pytest.raises(OpError, match="mechanism.*must be one of.*press"):

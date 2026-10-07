@@ -102,6 +102,18 @@ counts, first finding, or `validate: clean`), and a DRC-clean design with
 validate warnings reads `no DRC findings; validate has N warning(s)` — a
 clean DRC never implies a clean design.
 
+**Every `put`/`edit` reply ends with that same digest line** (`validate: clean`,
+or `validate: N error(s), M warning(s) — first: <rule> <detail>; see
+view='validate'`), and the `/se/<slug>` page shows it above a collapsible
+findings table — a write never refuses, but it no longer stays silent
+about what it left behind. For bound structures, `atom_clash` fires per
+block pair when posed atoms of two blocks come within 2 Å (error under
+1 Å, warn in [1, 2) Å; count, minimum distance and the closest atom pair
+are in the text). A `connect` between the pair does not excuse it:
+coincident atoms are never intended chemistry — re-pose a block
+(`set_pose`). Blocks generated at the default pose `[0,0,0]` pile up on
+each other and trip it.
+
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design and is the usual way to say which block you
 mean. A block also carries a stable **uid** — shown as `(uid #41)` in
@@ -160,7 +172,7 @@ the last four delimit region selectors, `precis-se-regions-help`.)
 - `set_joint` — `a`, `b`, `joint` (req). Joint dict:
   `{"class": rigid|revolute|prismatic|cylindrical|screw|planar|ball|
   compliant|captive|axial, "axis"?: [x,y,z], "mechanism"?: snap|screw|
-  press|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
+  press|clamp|key|magnet|bearing|bond|integral|cable, "params"?: {…}}` —
   nested, never flat.
 
 ## Ops — loads, prose, measures

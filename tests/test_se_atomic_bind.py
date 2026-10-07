@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import math
+from typing import Any
 
 import numpy as np
 import pytest
@@ -2715,3 +2716,108 @@ def test_rot_source_persists_across_a_second_save(
     assert ref is not None
     port = persist.load_tree(store, ref.id).blocks["hub"].ports["p1"]
     assert port.rot_source == "bound"
+
+
+# ── gr470909 — cross-block atom clash ────────────────────────────────────
+
+
+def _two_posed_blocks(
+    handler: SeHandler,
+    structure: StructureHandler,
+    slug: str,
+    *,
+    b_cart: list[float],
+    b_pose: list[float],
+    connect: bool = False,
+) -> str:
+    """Block ``a`` binds a two-atom C structure at the origin; block ``b``
+    binds a single-atom structure at ``b_cart``, posed at ``b_pose``
+    (metres). Returns the put reply."""
+    _make_structure(structure, f"{slug}-sa")
+    _make_structure(structure, f"{slug}-sb", carts=[b_cart])
+    ops: list[dict[str, object]] = [
+        {"op": "add_block", "name": "a", "envelope": "sphere:r5e-10"},
+        {"op": "add_block", "name": "b", "envelope": "sphere:r5e-10", "pose": b_pose},
+        {"op": "bind_structure", "block": "a", "design": f"{slug}-sa"},
+        {"op": "bind_structure", "block": "b", "design": f"{slug}-sb"},
+    ]
+    if connect:
+        ops[2:2] = [
+            {"op": "add_port", "block": "a", "name": "p"},
+            {"op": "add_port", "block": "b", "name": "p"},
+        ]
+        ops.append({"op": "connect", "a": "a.p", "b": "b.p"})
+    return handler.put(id=slug, text=json.dumps({"ops": ops})).body
+
+
+def _clash_findings(handler: SeHandler, slug: str) -> list[Any]:
+    ref = handler.store.get_ref(kind="se", id=slug)
+    assert ref is not None
+    tree = persist.load_tree(handler.store, ref.id)
+    return [
+        f for f in handler._validate_findings(tree, ref.id) if f.rule == "atom_clash"
+    ]
+
+
+def test_atom_clash_error_for_overlapping_posed_atoms(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    reply = _two_posed_blocks(
+        handler, structure, "clash1", b_cart=[0.5, 0.0, 0.0], b_pose=[0, 0, 0]
+    )
+    (f,) = _clash_findings(handler, "clash1")
+    assert f.severity == "error"
+    assert f.subject == "a—b"
+    assert "2 cross-block atom pair(s)" in f.detail
+    assert "aC1—aC1 at 0.50 Å" in f.detail
+    # gr470909: the put reply itself ends with the digest.
+    last = reply.rstrip().splitlines()[-1]
+    assert last.startswith("validate: ")
+    assert "1 error(s)" in last
+
+
+def test_atom_clash_uses_the_block_pose(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    # b's lone atom sits at x=1.3 A locally; posing it -1.3 A lands it on
+    # a's first atom (distance 0), +5 A lands it clear of both.
+    _two_posed_blocks(
+        handler, structure, "clash2", b_cart=[1.3, 0.0, 0.0], b_pose=[-1.3e-10, 0, 0]
+    )
+    (f,) = _clash_findings(handler, "clash2")
+    assert f.severity == "error"
+    assert "at 0.00 Å" in f.detail
+    reply = handler.edit(
+        id="clash2",
+        ops=[{"op": "set_pose", "block": "b", "pose": [5e-10, 0, 0]}],
+    ).body
+    assert _clash_findings(handler, "clash2") == []
+    assert "atom_clash" not in reply.rstrip().splitlines()[-1]
+
+
+def test_atom_clash_warn_between_one_and_two_angstrom(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    _two_posed_blocks(
+        handler, structure, "clash3", b_cart=[1.3, 1.7, 0.0], b_pose=[0, 0, 0]
+    )
+    (f,) = _clash_findings(handler, "clash3")
+    assert f.severity == "warn"
+    assert "1 cross-block atom pair(s)" in f.detail
+    assert "at 1.70 Å" in f.detail
+
+
+def test_atom_clash_still_reported_for_a_connected_pair(
+    handler: SeHandler, structure: StructureHandler
+) -> None:
+    _two_posed_blocks(
+        handler,
+        structure,
+        "clash4",
+        b_cart=[0.5, 0.0, 0.0],
+        b_pose=[0, 0, 0],
+        connect=True,
+    )
+    (f,) = _clash_findings(handler, "clash4")
+    assert f.severity == "error"
+    assert "joined by a connect" in f.detail

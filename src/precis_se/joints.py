@@ -106,6 +106,10 @@ MECHANISMS: dict[str, dict[str, Any]] = {
     "press": {
         "demands_relation": "an interference tolerance relation",
     },
+    # adjustable friction clamp (seatpost, collar): held by normal force,
+    # releasable — not an interference fit, so no tolerance relation and
+    # no press/snap interference rule (no capacity model: advisory only).
+    "clamp": {"demands_relation": None},
     "key": {"demands_relation": None},
     "magnet": {"demands_relation": None, "demands_bom": "the magnet(s)"},
     "bearing": {

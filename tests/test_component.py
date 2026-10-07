@@ -278,6 +278,19 @@ class TestExplicitTypeMint:
         with pytest.raises(BadInput):
             h.put(id="m6-a2-bolt", spec="coating_color_b", value="purple")
 
+    def test_thread_size_admits_the_iso_14585_st_designations(self, store: Any) -> None:
+        """gr450524 #2: the iso-14585 series serves ST2.9-ST6.3 rows, so
+        the thread_size spec must accept them; unknown ones still fail
+        and the message lists the allowed set."""
+        h = _handler(store)
+        h.put(id="tapscrew-a", title="ST4.2 Torx tapping", category="fastener")
+        for size in ("ST2.9", "ST3.5", "ST4.2", "ST4.8", "ST5.5", "ST6.3"):
+            h.put(id="tapscrew-a", spec="thread_size", value=size)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(id="tapscrew-a", spec="thread_size", value="ST9.9")
+        assert "ST4.2" in str(excinfo.value)
+        assert "M6" in str(excinfo.value)
+
     def test_categorical_mint_with_unit_is_rejected(self, store: Any) -> None:
         h = _handler(store)
         h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")

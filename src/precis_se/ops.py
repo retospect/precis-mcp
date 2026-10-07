@@ -1543,7 +1543,7 @@ def _op_set_joint(tree: SeTree, op: dict[str, Any]) -> None:
     """Set/replace (or clear, with ``joint=null``) an existing connect's
     joint — the slice-3 schema: ``{'class': rigid|revolute|prismatic|
     cylindrical|planar|ball|compliant|captive, 'axis'?: [x,y,z],
-    'mechanism'?: snap|screw|press|key|magnet|bearing|bond|integral,
+    'mechanism'?: snap|screw|press|clamp|key|magnet|bearing|bond|integral,
     'params'?: {...}}``."""
     c = _find_connect(tree, op, opname="set_joint")
     if "joint" not in op:

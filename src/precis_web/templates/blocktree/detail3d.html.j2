@@ -23,6 +23,22 @@
   <a href="{{ detail_2d_url }}" class="text-xs text-blue-600 hover:underline ml-auto">Envelope projections →</a>
 </div>
 
+{% if validate_panel %}
+<details id="bt3d-validate" class="mb-4 text-sm">
+  <summary class="cursor-pointer {{ 'text-red-700' if validate_panel.rows else 'text-slate-600' }}">{{ validate_panel.digest }}</summary>
+  {% if validate_panel.rows %}
+  <table class="mt-2 text-xs border border-slate-200">
+    <thead><tr class="bg-slate-50 text-left"><th class="px-2 py-1">severity</th><th class="px-2 py-1">rule</th><th class="px-2 py-1">subject</th><th class="px-2 py-1">detail</th></tr></thead>
+    <tbody>
+    {% for r in validate_panel.rows %}
+      <tr class="border-t border-slate-200"><td class="px-2 py-1">{{ r.severity }}</td><td class="px-2 py-1">{{ r.rule }}</td><td class="px-2 py-1">{{ r.subject }}</td><td class="px-2 py-1">{{ r.detail }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</details>
+{% endif %}
+
 {# The three scene-shaping controls are NOT a form any more: changing one
    swaps the scene in place (blocktree-3d.js's live-scene seam) instead of
    reloading the page and resetting the camera. They keep their `name`

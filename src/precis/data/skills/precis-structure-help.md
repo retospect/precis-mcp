@@ -189,6 +189,17 @@ coordination · fixed) are inlined only for ≤40 atoms; above that use
 `view='atoms'`. `put`/`edit` echo the same head. A symmetry-
 reduced (Wyckoff-orbit) collapse is a later increment.
 
+`view='stats'` is the geometry digest: bond lengths per element pair
+(count · mean ± std · min..max Å, with the atom labels of the extremes so
+they can be probed), bond angles per centre element split by ring size,
+and POAV1 pyramidalization θp per three-coordinated atom (mean / p95 /
+max, counts above the C60 value 11.6° and above 15°), each beside its
+reference (sp2 C–C 1.42 Å, 120°; θp graphene 0, C60 11.6, sp3 19.47) and
+stamped with the geometry tier the coordinates were measured on (`relax[…]`
+or `unknown` — stick-preview numbers are 1.42 Å by construction). The TOC
+head carries a one-line digest of the same numbers, so a relax reads as
+before/after figures rather than as warning rows.
+
 ## Probe it — `get(view=…, args={…})`
 
 All probes are exact, in-memory reads over the graph + geometry. Distances

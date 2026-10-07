@@ -1481,6 +1481,7 @@ def test_sweep_reports_wall_clock_budget_exceeded_honestly(
             }
         ),
     )
+    calls.clear()  # the put reply's validate digest also hits the patched check
     body = handler.get(id="sweepwallclock1", view="sweep").body
 
     # Only the one combination the fake clock let through actually called

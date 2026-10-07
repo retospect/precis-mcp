@@ -1303,6 +1303,133 @@ def _composite_parts_findings(
     return findings
 
 
+#: :func:`_atom_clash_findings` — cross-block atom pairs closer than this
+#: are a ``warn``; closer than ``ATOM_CLASH_ERROR_A`` an ``error``. Å.
+ATOM_CLASH_WARN_A = 2.0
+ATOM_CLASH_ERROR_A = 1.0
+
+
+def _posed_atom_cloud(
+    node: SeBlock, scene: StructScene
+) -> tuple[list[str], NDArray[np.float64]]:
+    """``(labels, (N, 3) world positions in Å)`` of a bound scene under its
+    block's own world placement (``pose``/``rot`` ARE the world placement —
+    :mod:`precis_se.kinematics_drc`'s v1 convention). Atoms are Å, the
+    placement metres, so the transform runs in metres and converts back."""
+    placement = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
+    labels = list(scene.atoms)
+    pts = np.empty((len(labels), 3), dtype=float)
+    for i, label in enumerate(labels):
+        cart_A = scene.cell.frac_to_cart(scene.atoms[label].frac)
+        local_m = cad_as_vec3([c * _A_TO_M for c in cart_A])
+        pts[i] = np.asarray(placement.apply(local_m), dtype=float) * _M_TO_A
+    return labels, pts
+
+
+def _cross_pairs_within(
+    pa: NDArray[np.float64], pb: NDArray[np.float64], cutoff: float
+) -> tuple[int, float, int, int] | None:
+    """``(count, min distance, index in pa, index in pb)`` over cross pairs
+    closer than ``cutoff``, or ``None`` when there are none.
+
+    numpy only (this repo keeps scipy out of the core deps): each cloud is
+    first cut to the other's ``cutoff``-padded bounding box, then the
+    surviving pairs are measured in chunks, so two 3000-atom blocks that
+    merely touch cost a few hundred distances, not 9M.
+    """
+    if not len(pa) or not len(pb):
+        return None
+    lo = np.maximum(pa.min(axis=0), pb.min(axis=0)) - cutoff
+    hi = np.minimum(pa.max(axis=0), pb.max(axis=0)) + cutoff
+    ia = np.flatnonzero(np.all((pa >= lo) & (pa <= hi), axis=1))
+    ib = np.flatnonzero(np.all((pb >= lo) & (pb <= hi), axis=1))
+    if not len(ia) or not len(ib):
+        return None
+    sub_b = pb[ib]
+    count = 0
+    best = (math.inf, -1, -1)
+    chunk = max(1, 2_000_000 // max(1, len(ib)))  # ≤ ~16 MB of distances
+    for start in range(0, len(ia), chunk):
+        rows = ia[start : start + chunk]
+        d = np.linalg.norm(pa[rows][:, None, :] - sub_b[None, :, :], axis=2)
+        close = d < cutoff
+        n = int(close.sum())
+        if not n:
+            continue
+        count += n
+        k = int(np.argmin(np.where(close, d, np.inf)))
+        r, c = divmod(k, len(ib))
+        if d[r, c] < best[0]:
+            best = (float(d[r, c]), int(rows[r]), int(ib[c]))
+    if not count:
+        return None
+    return count, best[0], best[1], best[2]
+
+
+def _atom_clash_findings(
+    tree: SeTree, scenes: Mapping[str, StructScene]
+) -> list[ValidationIssue]:
+    """One finding per pair of structure-bound blocks whose *posed* atoms
+    come within :data:`ATOM_CLASH_WARN_A` of each other (gr470909: three
+    blocks generated at pose [0,0,0] sat inside each other, atoms
+    coincident, and nothing flagged it — each structure alone validates
+    clean, and the envelope check is blind to atoms). ``error`` when any
+    pair is under :data:`ATOM_CLASH_ERROR_A`, else ``warn``. A connect
+    between the pair does NOT exempt it: coincident atoms are never
+    intended chemistry. Pairs whose posed bounding boxes (padded by the
+    warn radius) do not overlap are skipped before any tree is built."""
+    clouds: dict[str, tuple[list[str], NDArray[np.float64]]] = {}
+    for name, node in tree.blocks.items():
+        if node.bound_kind != "structure" or not node.bound:
+            continue
+        scene = scenes.get(node.bound)
+        if scene is None or not scene.atoms:
+            continue
+        clouds[name] = _posed_atom_cloud(node, scene)
+    connected = {frozenset({c.a_block, c.b_block}) for c in tree.connects}
+    names = sorted(clouds)
+    boxes = {
+        n: (
+            clouds[n][1].min(axis=0) - ATOM_CLASH_WARN_A,
+            clouds[n][1].max(axis=0) + ATOM_CLASH_WARN_A,
+        )
+        for n in names
+    }
+    findings: list[ValidationIssue] = []
+    for ia, a in enumerate(names):
+        for b in names[ia + 1 :]:
+            lo = np.maximum(boxes[a][0], boxes[b][0])
+            hi = np.minimum(boxes[a][1], boxes[b][1])
+            if np.any(lo > hi):
+                continue
+            hit = _cross_pairs_within(clouds[a][1], clouds[b][1], ATOM_CLASH_WARN_A)
+            if hit is None:
+                continue
+            count, dmin, ia_atom, ib_atom = hit
+            severe = dmin < ATOM_CLASH_ERROR_A
+            note = (
+                " (the two blocks are joined by a connect — a connect "
+                "does not excuse coincident atoms)"
+                if frozenset({a, b}) in connected
+                else ""
+            )
+            findings.append(
+                ValidationIssue(
+                    rule="atom_clash",
+                    subject=f"{a}—{b}",
+                    detail=(
+                        f"{count} cross-block atom pair(s) closer than "
+                        f"{ATOM_CLASH_WARN_A:g} Å; closest "
+                        f"{clouds[a][0][ia_atom]}—{clouds[b][0][ib_atom]} "
+                        f"at {dmin:.2f} Å{note} — re-pose one block "
+                        "(set_pose) so the atoms no longer overlap"
+                    ),
+                    severity="error" if severe else "warn",
+                )
+            )
+    return findings
+
+
 def validate_atomic(
     tree: SeTree,
     *,
@@ -1347,4 +1474,5 @@ def validate_atomic(
     findings.extend(_bond_length_findings(tree))
     findings.extend(_bond_vector_findings(tree))
     findings.extend(_composite_parts_findings(tree, generated_records or {}))
+    findings.extend(_atom_clash_findings(tree, bound_full_scenes or {}))
     return findings

@@ -193,10 +193,10 @@ get(kind="draft")  # list ALL drafts
 get(kind="draft", project="<project-todo-id>")  # → that project's draft outline
 ```
 
-Rebind or unbind the owner with `link(kind='draft', id='<slug>',
-target='todo:N', rel='draft-of', mode='remove')`; `mode='add'` refuses while
-a live owner exists (remove first). A retired owner is skipped by readers
-and counted by `precis draft audit-owners`.
+Unbind or rebind the owner with `link(kind='draft', id='<slug>',
+target='todo:N', rel='draft-of', mode='remove'|'add')`; add refuses while a
+live owner exists. Readers skip a retired owner; `precis draft
+audit-owners` counts them.
 
 A draft is born with a title heading (never empty), bound 1:1 to its
 project todo. The brief lives on the project's `meta.workspace.brief`;
@@ -647,18 +647,16 @@ put(kind='todo', parent_id='<project>', text='tighten this paragraph',
 link(src='dc12', rel='derived-from', dst='memory:7x2')  # provenance
 ```
 
-To propose a rewrite for someone else to accept, put the replacement in
-`meta.proposed_text` on that anchored todo; `get(id='dc12',
-view='proposals')` shows each open one as a diff. Nothing applies it
-automatically: the reviewer runs an ordinary `edit`, then closes the todo.
+To propose a rewrite for someone else, put it in `meta.proposed_text` on
+that anchored todo; `get(id='dc12', view='proposals')` diffs each open
+one. Nothing applies it: the reviewer runs an ordinary `edit`, then
+closes the todo.
 
-A change-request `todo` anchored to a handle flows through the normal
-todo tree → dispatch → jobs; the executor decides one job vs fan-out per
-section. **Can't complete a request? Ask clearly**, referencing chunks
-by their `dc<id>` — never a numeric "chunk 0" (drafts have no numeric
-addresses). Bad: `ask-user:see-chunk-0`. Good: `ask-user: '"remove this
-para" is anchored at dc5 (the intro); did you mean dc5 or the sibling
-dc12?'`. The ask surfaces on the draft block as a 🔔, linking to your run.
+An anchored change-request `todo` flows through the normal todo tree →
+dispatch → jobs. **Can't complete one? Ask clearly**, naming chunks by
+`dc<id>` (drafts have no numeric "chunk 0"): `ask-user: '"remove this
+para" is anchored at dc5; did you mean dc5 or dc12?'`. The ask shows on
+the draft block as a 🔔.
 
 ## Export the draft
 
@@ -670,7 +668,7 @@ See [[precis-draft-export-help]].
 - [[precis-paper-help]] — read, cite, search held papers.
 - [[precis-stubs-help]] — request a paper we don't have (acquisition backlog).
 - [[precis-finding-help]] — flag a claim / chase an un-ingested DOI.
-- [[precis-fisheye-help]] — `view='fisheye'`/`'fisheye+1hop'` — a chunk + its neighborhood/reference ring.
+- [[precis-fisheye-help]] — a chunk + its neighbourhood/reference ring.
 - [[precis-auto-todo-help]] — wait-on-ingest (`paper_ingested`) leaf pattern.
 - [[precis-taproot-help]] — cite a claim hub (living `[fi<id>]`).
 - [[precis-taproot-mint-help]] — mint a claim hub.

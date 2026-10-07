@@ -1216,3 +1216,15 @@ def test_payload_cache_charges_a_payload_at_its_heap_size() -> None:
 
     cache.put(("body", "e"), (b"x", b"y"), size=2)
     assert cache.get(("body", "e")) is not None
+
+
+def test_se_view3d_page_shows_the_validate_digest(
+    blocktree_client, runtime_with_store
+) -> None:
+    """gr470909 — the page carries the same one-line validate digest as the
+    put/edit reply, with the findings table behind it."""
+    _seed_se(runtime_with_store)
+    r = blocktree_client.get("/se/unicycle_web")
+    assert r.status_code == 200
+    assert 'id="bt3d-validate"' in r.text
+    assert "validate: " in r.text

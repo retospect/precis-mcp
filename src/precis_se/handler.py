@@ -102,7 +102,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -191,7 +191,55 @@ from precis_se.pockets import region_measures as se_region_measures
 from precis_se.properties import is_checked
 from precis_se.state_arg import merged_occupancy, resolve_state_arg
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from precis.store import Store
+
 log = logging.getLogger(__name__)
+
+
+def validate_findings(store: Store, tree: SeTree, ref_id: int) -> list[Any]:
+    """Every ``view='validate'`` finding (pure + store-aware + atomic),
+    shared with ``view='drc'``'s validate digest, the put/edit reply digest
+    and the ``/se/<slug>`` page so none disagree about what validate found."""
+    findings = list(se_validate.validate(tree))
+    findings.extend(se_validate.port_override_unapplied_findings(store, tree, ref_id))
+    bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(store, tree)
+    generated_records = se_atomic_render.bound_generated_records(store, tree)
+    chain_records = se_atomic_render.bound_chain_records(store, tree)
+    findings.extend(
+        se_atomic_validate.validate_atomic(
+            tree,
+            bound_scenes=bound_scenes,
+            bound_full_scenes=bound_full_scenes,
+            generated_bound=frozenset(generated_records),
+            generated_records=generated_records,
+            chain_records=chain_records,
+        )
+    )
+    return findings
+
+
+def validate_digest(findings: list[Any]) -> tuple[str, str]:
+    """(one-line digest, headline qualifier) — ``view='drc'``, the put/edit
+    reply and the ``/se/<slug>`` page."""
+    bad = [f for f in findings if f.severity in ("error", "warn")]
+    if not bad:
+        return "validate: clean", ""
+    n_error = sum(1 for f in bad if f.severity == "error")
+    n_warn = len(bad) - n_error
+    # an error leads the digest even when a warning came first in findings
+    # order (gr470909: the atom clash must not hide behind an envelope warn)
+    first = next((f for f in bad if f.severity == "error"), bad[0])
+    digest = (
+        f"validate: {n_error} error(s), {n_warn} warning(s) — "
+        f"first: {first.rule} {first.detail}; see view='validate'"
+    )
+    parts = []
+    if n_error:
+        parts.append(f"{n_error} error(s)")
+    if n_warn:
+        parts.append(f"{n_warn} warning(s)")
+    return digest, "; validate has " + " and ".join(parts)
 
 
 class SeHandler(Handler):
@@ -274,7 +322,7 @@ class SeHandler(Handler):
             "filtering). connect wires two 'block.port' endpoints; a "
             "joint= is {'class': rigid|revolute|prismatic|cylindrical|"
             "planar|ball|compliant|captive|axial, 'axis'?, 'mechanism'?: "
-            "snap|screw|press|key|magnet|bearing|bond|integral|cable, "
+            "snap|screw|press|clamp|key|magnet|bearing|bond|integral|cable, "
             "'params'?}. 'axial' is a pin-ended member whose params "
             "capacity pair decides tie/strut/rod (tension_capacity/"
             "compression_capacity N, free_length m, rate N/m, preload N "
@@ -717,6 +765,7 @@ class SeHandler(Handler):
             body += f"\n\n{echo}"
         if pending_jobs:
             body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
+        body += "\n\n" + self._reply_digest(tree, ref.id)
         return Response(body=body)
 
     # ── edit ─────────────────────────────────────────────────────────
@@ -788,6 +837,7 @@ class SeHandler(Handler):
             body += f"\n\n{echo}"
         if pending_jobs:
             body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
+        body += "\n\n" + self._reply_digest(tree, ref.id)
         return Response(body=body)
 
     def _restore_revision(
@@ -1095,49 +1145,28 @@ class SeHandler(Handler):
         )
 
     def _validate_findings(self, tree: SeTree, ref_id: int) -> list[Any]:
-        """Every ``view='validate'`` finding (pure + store-aware + atomic),
-        shared with ``view='drc'``'s validate digest so the two never
-        disagree about what validate found."""
-        findings = list(se_validate.validate(tree))
-        findings.extend(
-            se_validate.port_override_unapplied_findings(self.store, tree, ref_id)
-        )
-        bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
-            self.store, tree
-        )
-        generated_records = se_atomic_render.bound_generated_records(self.store, tree)
-        chain_records = se_atomic_render.bound_chain_records(self.store, tree)
-        findings.extend(
-            se_atomic_validate.validate_atomic(
-                tree,
-                bound_scenes=bound_scenes,
-                bound_full_scenes=bound_full_scenes,
-                generated_bound=frozenset(generated_records),
-                generated_records=generated_records,
-                chain_records=chain_records,
+        """Method seam over :func:`validate_findings` (``view='drc'``)."""
+        return validate_findings(self.store, tree, ref_id)
+
+    def _reply_digest(self, tree: SeTree, ref_id: int) -> str:
+        """The one-line validate digest a put/edit reply ends with
+        (gr470909 — a silent pile-up stayed silent because nothing on the
+        write path said "validate has findings"). Findings, never a
+        refusal: the edit is already saved, and a validate crash must not
+        turn it into a raised call."""
+        try:
+            digest, _qualifier = self._validate_digest(
+                self._validate_findings(tree, ref_id)
             )
-        )
-        return findings
+        except Exception as exc:
+            log.warning("se: reply validate digest failed for %s: %s", ref_id, exc)
+            return "validate: unavailable — see view='validate'"
+        return digest
 
     @staticmethod
     def _validate_digest(findings: list[Any]) -> tuple[str, str]:
-        """(one-line digest, headline qualifier) for ``view='drc'``."""
-        bad = [f for f in findings if f.severity in ("error", "warn")]
-        if not bad:
-            return "validate: clean", ""
-        n_error = sum(1 for f in bad if f.severity == "error")
-        n_warn = len(bad) - n_error
-        first = bad[0]
-        digest = (
-            f"validate: {n_error} error(s), {n_warn} warning(s) — "
-            f"first: {first.rule} {first.detail}; see view='validate'"
-        )
-        parts = []
-        if n_error:
-            parts.append(f"{n_error} error(s)")
-        if n_warn:
-            parts.append(f"{n_warn} warning(s)")
-        return digest, "; validate has " + " and ".join(parts)
+        """Method seam over :func:`validate_digest` (``view='drc'``)."""
+        return validate_digest(findings)
 
     def _render_validate(self, tree: SeTree, ref_id: int) -> str:
         """``view='validate'`` — :mod:`precis_se.validate`'s findings plus
