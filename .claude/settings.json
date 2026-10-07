@@ -22,6 +22,7 @@
       "Bash(scripts/inflight:*)",
       "Bash(scripts/memory-lint:*)",
       "Bash(scripts/backlog-lint:*)",
+      "Bash(scripts/ship:*)",
       "Bash(rtk grep:*)",
       "Bash(rtk tail:*)",
       "Bash(rtk head:*)",
