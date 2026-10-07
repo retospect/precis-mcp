@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Dogfood the LAYER lever on ewod-dogfood-6 after the next deploy: `op='class_rules'` opening In2.Cu to `ewod_ARR1_escape`, then `op='route'` with `negotiate=10`. The 2026-10-07 replay routed 40/55 hard and 43/55 negotiated with In2.Cu open, against 22/55 on the B.Cu lock (Do next 4, measured). Negotiated congestion on the B.Cu lock is measured dead — it never converges — and the route job now prints the loop's report (`NegotiationReport`, this session) so a no-gain run says why; arm B (job 470129) stays not-repeated. The R14 route-gate repair is on main (81f3dfaf1, 4820bb66d, 110f6dd4b) and R14–R16 have shipped (prod 8.35.15), so no renewed gate is pending — status review 2026-10-07. R13 preview native dogfood PASS is complete. EasyEDA remains parked; it no longer names the negotiation build (ownership line added 2026-10-07).
+- **Next:** EasyEDA import/export integration, per Reto's 2026-10-07 order (route/place first, then EasyEDA): reopen [pcb-easyeda-round-trip](pcb-easyeda-round-trip.md) with the coordinator (parked at tier 3); this thread's Do-next 0 residuals (courtyard break re-check, designator-pose import) ride with it. The layer lever is dogfooded on prod (Reto 2026-10-07: "two-layer escape is acceptable", EWOD has vias on every layer): ewod-dogfood-6 now carries stackup F.Cu signal / In1.Cu plane / In2.Cu signal / B.Cu signal and `ewod_ARR1_escape` rules `{"layers":["In2.Cu","B.Cu"],"clearance_mm":0.099}`; route job 472109 (`negotiate=10`) = 43/55 and job 472111 (`negotiate=100`, seed 0) = 45/55 with 29 vias, the replay numbers reproduced (Do next 4, dogfooded). The 10 residual failures sit in rows 5–7 and plateau at ~24 nets in conflict regardless of iterations, so the next router question is a third routable layer or escape-order/placement, not more negotiation. Job 472103 before the stackup fix was a silent no-op (In2.Cu was a plane; gripe 472108). Negotiated congestion on the B.Cu lock stays measured dead; arm B (job 470129) stays not-repeated. R14–R16 have shipped (prod 8.35.15), no renewed gate is pending; R13 preview native dogfood PASS is complete.
 - **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -198,8 +198,26 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
      negotiation reaches far past 22 on B.Cu alone.
    - *Opening In2.Cu is the lever:* same placement, escape class layers
      `[In2.Cu, B.Cu]`: hard 40/55 (21 vias), negotiate=10 43/55 (26
-     vias). This is the Resume's Next; the class/layer policy itself is
-     item 6's question.
+     vias). The class/layer policy itself is item 6's question.
+   **Dogfooded on prod 2026-10-07** (Reto: two-layer escape acceptable,
+   EWOD has vias on every layer):
+   - *The first class_rules route (job 472103) gained nothing.* In2.Cu
+     was role `plane` in dogfood-6's stackup, so `_net_class_layers`
+     narrowed the class back to B.Cu without a word (gripe 472108). Fixed
+     by re-authoring the stackup (`op='stackup'`: In1.Cu plane without a
+     `plane_net`, the board has no GND net; In2.Cu signal).
+   - *Then the replay reproduced:* job 472109 `negotiate=10` → 43/55, 26
+     vias; job 472111 `negotiate=100`, seed 0 → 45/55, 29 vias, 23 s,
+     "46→24 net(s) in conflict, did not converge; 55 proposal(s), 25
+     committed verbatim, result taken". Ninety more iterations bought two
+     nets; the loop plateaus near 24 in conflict.
+   - *What is left:* 10 nets — R2C4, R3C3, R3C5, R5C4, R5C7, R6C1, R6C4,
+     R6C6, R6C7, R7C6 — mostly rows 5–7, the far side from the driver.
+     Past In2.Cu the lever is a third routable layer, or the escape
+     order/placement, not iterations. Every route put still warns that
+     generator ARR1 is stored at version 3 against code version 4; not
+     re-expanded, to keep the runs comparable (re-putting the generators
+     entry redoes placement and routing).
 5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 4: both are
@@ -373,10 +391,17 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
   DRC run 55023e04: 51 errors = the 25 unrouted nets twice (unrouted +
   connectivity) + 1 `silk_missing` (ARR1_SINK_0's bottom refdes has no
   spot clear of the 55 plaza vias: a real board finding). **Zero geometric
-  errors.** 160 warnings, all copper at JLC minimums. Its 25 failures are
-  Do-next 4's fixture. Earlier history (the 116-error placement; jobs
-  460181/460302 accepting 0 of 3000 moves for lack of an outline) is in
-  git log.
+  errors.** 160 warnings, all copper at JLC minimums. Earlier history
+  (the 116-error placement; jobs 460181/460302 accepting 0 of 3000 moves
+  for lack of an outline) is in git log.
+  **2026-10-07:** stackup re-authored to F.Cu signal / In1.Cu plane /
+  In2.Cu signal / B.Cu signal and `ewod_ARR1_escape` opened to
+  `[In2.Cu, B.Cu]` (clearance 0.099 mm). Latest route job 472111
+  (`negotiate=100`, seed 0): 45 realized, 10 failed, 3 dangling, 29 vias,
+  53 pin swaps, 0 pre-route DRC errors; STATUS failed = incomplete. Its
+  10 failures are Do-next 4's fixture. Generator ARR1 is stored at
+  version 3 against code version 4 (warned on every put, deliberately not
+  re-expanded).
 
 ## No action needed
 
