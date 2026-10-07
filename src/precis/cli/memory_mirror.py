@@ -57,6 +57,10 @@ class MirrorReport:
     missing: list[str] = field(default_factory=list)
     unresolved: list[tuple[str, str]] = field(default_factory=list)
     refs: dict[str, int] = field(default_factory=dict)
+    #: Export: live SPACE:repo-dev handles with no mirror key here; none written.
+    unexported: list[str] = field(default_factory=list)
+    #: Import: legacy one-shot nodes soft-deleted by ``legacy='retire'``.
+    retired: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -239,6 +243,33 @@ def _state(
     )
 
 
+def _legacy_nodes(conn: Connection, titles: set[str]) -> list[tuple[int, str]]:
+    """Live repo-dev memories with no ``file_mirror`` key titled like a topic."""
+    rows = conn.execute(
+        "SELECT r.ref_id, r.title FROM refs r WHERE r.kind='memory' "
+        "AND r.retired_at IS NULL AND NOT (r.meta ? %s) AND r.title = ANY(%s) "
+        "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id=rt.tag_id "
+        "WHERE rt.ref_id=r.ref_id AND t.namespace='SPACE' AND t.value='repo-dev' "
+        "AND (rt.expires_at IS NULL OR rt.expires_at > now())) "
+        "ORDER BY r.ref_id FOR NO KEY UPDATE OF r",
+        (_KEY, sorted(titles)),
+    ).fetchall()
+    return [(int(rid), str(title)) for rid, title in rows]
+
+
+def _unexported(conn: Connection, namespace: str) -> list[str]:
+    """Handles of live repo-dev memories this namespace's export leaves out."""
+    rows = conn.execute(
+        "SELECT r.ref_id FROM refs r WHERE r.kind='memory' AND r.retired_at IS NULL "
+        "AND COALESCE(r.meta->'file_mirror'->>'namespace', '') <> %s "
+        "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id=rt.tag_id "
+        "WHERE rt.ref_id=r.ref_id AND t.namespace='SPACE' AND t.value='repo-dev' "
+        "AND (rt.expires_at IS NULL OR rt.expires_at > now())) ORDER BY r.ref_id",
+        (namespace,),
+    ).fetchall()
+    return [f"me{row[0]}" for row in rows]
+
+
 def _guard_chunk_links(conn: Connection, rid: int) -> None:
     # Replacing a chunk must not cascade-delete another author's anchors.
     # Lock chunks before a fresh link read, so concurrent FK inserts cannot
@@ -259,9 +290,19 @@ def _guard_chunk_links(conn: Connection, rid: int) -> None:
         )
 
 
-def import_mirror(store: Store, source: Path, *, namespace: str) -> MirrorReport:
-    """Atomically import a file snapshot; refuse conflicting graph changes."""
+def import_mirror(
+    store: Store, source: Path, *, namespace: str, legacy: str = "refuse"
+) -> MirrorReport:
+    """Atomically import a file snapshot; refuse conflicting graph changes.
+
+    ``legacy`` decides what happens to live repo-dev nodes made by the one-shot
+    importer (no ``file_mirror`` key, title equal to a topic's ``name:``):
+    ``refuse`` (default) raises, ``retire`` soft-deletes them in this
+    transaction, ``keep`` imports beside them. Never adopted by title.
+    """
     _namespace(namespace)
+    if legacy not in ("refuse", "retire", "keep"):
+        raise ImportRefused("legacy must be refuse, retire or keep")
     report = MirrorReport()
     with store.tx() as conn:
         _lock(conn, namespace)
@@ -269,6 +310,21 @@ def import_mirror(store: Store, source: Path, *, namespace: str) -> MirrorReport
         files = {name: _parse(name, data) for name, data in raw.items()}
         targets = {name: _targets(f.body) for name, f in files.items()}
         nodes = _nodes(conn, namespace)
+        if legacy != "keep":
+            found = _legacy_nodes(
+                conn,
+                {f.title for n, f in files.items() if n != "MEMORY.md"},
+            )
+            if found and legacy == "refuse":
+                listing = "; ".join(f"me{rid} {title!r}" for rid, title in found)
+                raise ImportRefused(
+                    f"legacy nodes without file_mirror share topic titles: {listing}; "
+                    "re-run with legacy='retire' (or --legacy retire) to soft-delete "
+                    "them, or 'keep' to import beside them"
+                )
+            for rid, _title in found:
+                store.retire_ref(rid, conn=conn)
+                report.retired.append(f"me{rid}")
         folded = {name.casefold(): name for name in nodes}
         for name in files:
             if name.casefold() in folded and folded[name.casefold()] != name:
@@ -376,9 +432,14 @@ def import_mirror(store: Store, source: Path, *, namespace: str) -> MirrorReport
     return report
 
 
-def export_mirror(store: Store, dest: Path, *, namespace: str) -> int:
-    """Export a locked snapshot to an exclusively new directory; never overwrite."""
+def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
+    """Export a locked snapshot to an exclusively new directory; never overwrite.
+
+    ``created`` counts files written; ``unexported`` lists live repo-dev nodes
+    with no (or another namespace's) ``file_mirror`` key, which get no file.
+    """
     _namespace(namespace)
+    report = MirrorReport()
     output: dict[str, bytes] = {}
     with store.tx() as conn:
         _lock(conn, namespace)
@@ -398,6 +459,7 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> int:
                     f"{name}: graph metadata differs from YAML; explicit reconciliation required"
                 )
             output[name] = raw
+        report.unexported = _unexported(conn, namespace)
     # mkdir and exclusive file creation refuse races without trusting advisory file locks.
     try:
         dest.mkdir()
@@ -418,4 +480,5 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> int:
                 stream.write(raw)
     finally:
         os.close(dest_fd)
-    return len(output)
+    report.created = len(output)
+    return report

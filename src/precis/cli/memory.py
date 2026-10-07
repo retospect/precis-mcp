@@ -814,6 +814,17 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         parser.add_argument(
             "--namespace", required=True, help="Stable identity for this file set."
         )
+        if mode == "import":
+            parser.add_argument(
+                "--legacy",
+                choices=("refuse", "retire", "keep"),
+                default="refuse",
+                help=(
+                    "Live repo-dev nodes from the one-shot importer (no "
+                    "file_mirror, title = a topic's name:): refuse (default), "
+                    "retire (soft-delete in the import), or keep (import beside)."
+                ),
+            )
         parser.add_argument(
             "--database-url", default=None, help="Postgres DSN override."
         )
@@ -837,13 +848,22 @@ def run(args: argparse.Namespace) -> None:
             try:
                 if args.mirror_cmd == "import":
                     report_mirror = import_mirror(
-                        store, Path(args.dir), namespace=args.namespace
+                        store,
+                        Path(args.dir),
+                        namespace=args.namespace,
+                        legacy=args.legacy,
                     )
                     print(json.dumps(asdict(report_mirror), sort_keys=True))
                 else:
-                    print(
-                        f"exported {export_mirror(store, Path(args.dir), namespace=args.namespace)} files"
+                    exported = export_mirror(
+                        store, Path(args.dir), namespace=args.namespace
                     )
+                    print(f"exported {exported.created} files")
+                    if exported.unexported:
+                        print(
+                            f"unexported: {' '.join(exported.unexported)}",
+                            file=sys.stderr,
+                        )
             except (ImportRefused, OSError) as exc:
                 raise SystemExit(f"precis memory mirror: refused: {exc}") from exc
         elif args.memory_cmd == "import":

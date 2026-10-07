@@ -37,10 +37,9 @@ q='<topic>')` first, then use the integer id from the hit.
 **Space.** Every memory carries one `SPACE:` tag. `put` stamps
 `SPACE:research` unless you pass your own (`tags=['SPACE:repo-dev']`
 replaces it); `repo-dev` is dev-harness memory, `personal` is reserved.
-`precis memory import <dir>` seeds `SPACE:repo-dev` nodes from a harness
-`MEMORY.md` and its topic files (one node per `##` section and per bullet,
-`related-to` links from cross-references; safe to re-run, never overwrites
-a node edited in the graph); `precis memory index` prints them back as the
+`precis memory mirror import|export` is how harness `MEMORY.md` and its topic files
+become `SPACE:repo-dev` nodes (the one-shot `precis memory import` is the cutover
+tool, not a seeding path); `precis memory index` prints them back as the
 session-start index, one `- <Title> (me<id>) — <hook>` line per node.
 A `SPACE:repo-dev` memory's index text is `meta={'hook': 'one line'}`, on
 `put` or alone on `edit(kind='memory', id=N, mode='replace',
@@ -55,6 +54,16 @@ Reruns update the same imported handles and resolve `[[…]]` links (a topic
 filename stem inside double brackets). Missing files stay live; graph edits cause an import conflict. Export preserves graph
 body edits but refuses changed file-authored metadata. These are CLI operations,
 not native MCP modes; they do not authorize migration of a real harness directory.
+`mirror import` refuses when live nodes from the one-shot importer share a topic's
+`name:` (`--legacy retire` soft-deletes them in the import, `--legacy keep` imports
+beside them); `mirror export` reports every live `SPACE:repo-dev` node it left out
+as `unexported`.
+
+**Where to edit.** A memory that has a file is edited in the graph with the anchored
+`edit` once the real mirror import has run for its namespace, and in the file before
+that; the mirror export is how the file catches up. A memory with no file is created
+with `put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'], meta={'hook': '…'})`
+and stays graph-only (reported as `unexported`) until an export policy exists.
 
 ## Save a thought
 ## Capture a note

@@ -12,7 +12,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from precis.cli import _build_parser
-from precis.cli.memory import ImportRefused
+from precis.cli.memory import ImportRefused, _created_id
 from precis.cli.memory_mirror import export_mirror, import_mirror
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
@@ -76,7 +76,7 @@ def test_unchanged_ids_chunks_events_and_exact_roundtrip(
     assert (again.created, again.updated, again.unchanged) == (0, 0, 3)
     assert _snapshot(store) == before
     dest = tmp_path / "export"
-    assert export_mirror(store, dest, namespace="fixture") == 3
+    assert export_mirror(store, dest, namespace="fixture").created == 3
     assert {p.name: p.read_bytes() for p in dest.iterdir()} == {
         p.name: p.read_bytes() for p in source.iterdir()
     }
@@ -325,7 +325,7 @@ def test_large_byte_faithful_roundtrip(store: Store, tmp_path: Path) -> None:
     first = import_mirror(store, source, namespace="large")
     assert first.created == 121 and not first.unresolved
     dest = tmp_path / "copy"
-    assert export_mirror(store, dest, namespace="large") == 121
+    assert export_mirror(store, dest, namespace="large").created == 121
     assert {p.name: p.read_bytes() for p in dest.iterdir()} == {
         p.name: p.read_bytes() for p in source.iterdir()
     }
@@ -359,3 +359,144 @@ def test_cli_dispatch_and_refusal(
     assert "exported 3 files" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="destination exists"):
         run(args)
+
+
+def _live_title_ids(store: Store, title: str) -> list[int]:
+    with psycopg.connect(_dsn(store)) as conn:
+        return [
+            r[0]
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE kind='memory' AND title=%s "
+                "AND retired_at IS NULL AND NOT (meta ? 'file_mirror') ORDER BY ref_id",
+                (title,),
+            ).fetchall()
+        ]
+
+
+def _plant_legacy(hub: Hub, title: str) -> int:
+    resp = MemoryHandler(hub=hub).put(
+        text="Legacy one-shot body.\n", title=title, tags=["SPACE:repo-dev"]
+    )
+    return _created_id(resp)
+
+
+def _unplant(store: Store, *ids: int) -> None:
+    """Retire planted nodes before the test ends. Per-test TRUNCATE runs at the
+    *next* DB-fixture test's start, and the acceptance test takes no DB fixture,
+    so a live planted title would otherwise leak into its import and trip the
+    legacy refusal (CI shard 6, 2026-10-07)."""
+    for rid in ids:
+        store.retire_ref(rid)
+
+
+def test_export_reports_unexported_native_and_other_namespace(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    first = import_mirror(store, source, namespace="fixture")
+    native = _plant_legacy(hub, "Native note")
+    dest = tmp_path / "out"
+    report = export_mirror(store, dest, namespace="fixture")
+    assert report.unexported == [f"me{native}"]
+    assert report.created == 3 and sorted(p.name for p in dest.iterdir()) == [
+        "MEMORY.md",
+        "alpha.md",
+        "beta.md",
+    ]
+    assert import_mirror(store, source, namespace="fixture").unexported == []
+    other = import_mirror(store, source, namespace="other")
+    again = export_mirror(store, tmp_path / "out2", namespace="other")
+    assert again.unexported == sorted(
+        [f"me{native}", *(f"me{r}" for r in first.refs.values())],
+        key=lambda h: int(h[2:]),
+    )
+    assert set(other.refs.values()).isdisjoint(first.refs.values())
+    _unplant(store, native)
+
+
+def test_legacy_refuse_retire_keep(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    legacy = _plant_legacy(hub, "Alpha")  # same as alpha.md's name:
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused, match=rf"me{legacy} 'Alpha'"):
+        import_mirror(store, source, namespace="fixture")
+    assert _snapshot(store) == before  # refused: nothing written
+    with pytest.raises(ImportRefused, match="legacy must be"):
+        import_mirror(store, source, namespace="fixture", legacy="bogus")
+
+    report = import_mirror(store, source, namespace="fixture", legacy="retire")
+    assert report.retired == [f"me{legacy}"] and report.created == 3
+    with psycopg.connect(_dsn(store)) as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id=%s", (legacy,)
+        ).fetchone()
+    assert row is not None and row[0] is not None  # soft-deleted, still present
+    assert _live_title_ids(store, "Alpha") == []
+    assert import_mirror(store, source, namespace="fixture").retired == []
+
+    kept = _plant_legacy(hub, "Beta")
+    report = import_mirror(store, source, namespace="second", legacy="keep")
+    assert report.created == 3 and report.retired == []
+    assert _live_title_ids(store, "Beta") == [kept]
+    _unplant(store, kept)
+
+
+def test_legacy_modes_leave_121_file_export_byte_identical(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    from tests.test_memory_mirror_acceptance import _fixture
+
+    src = tmp_path / "synthetic"
+    files, _meta, _edges = _fixture(src)
+    title = "Synthetic project topic 002"
+    legacy = _plant_legacy(hub, title)
+    with pytest.raises(ImportRefused, match="legacy nodes"):
+        import_mirror(store, src, namespace="a")
+    kept: list[int] = []
+    for ns, mode in (("b", "retire"), ("c", "keep")):
+        if mode == "keep":
+            kept.append(_plant_legacy(hub, title))
+        report = import_mirror(store, src, namespace=ns, legacy=mode)
+        assert report.created == 121
+        assert report.retired == ([f"me{legacy}"] if mode == "retire" else [])
+        dest = tmp_path / f"export-{ns}"
+        export_mirror(store, dest, namespace=ns)
+        assert {p.name: p.read_bytes() for p in dest.iterdir()} == files
+    _unplant(store, *kept)
+
+
+def test_cli_legacy_arg_and_unexported_stderr(
+    store: Store,
+    hub: Hub,
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from precis.cli.memory import run
+
+    parse = _build_parser().parse_args
+    base = ["memory", "mirror", "import", str(source), "--namespace", "n"]
+    assert parse(base).legacy == "refuse"
+    assert parse([*base, "--legacy", "retire"]).legacy == "retire"
+    with pytest.raises(SystemExit):
+        parse([*base, "--legacy", "bogus"])
+    monkeypatch.setattr(Store, "connect", lambda _: store)
+    monkeypatch.setattr(store, "close", lambda: None)
+    legacy = _plant_legacy(hub, "Alpha")
+    with pytest.raises(SystemExit, match="legacy nodes"):
+        run(parse([*base, "--database-url", _dsn(store)]))
+    run(parse([*base, "--legacy", "retire", "--database-url", _dsn(store)]))
+    assert f"me{legacy}" in capsys.readouterr().out  # retired list in the JSON report
+    native = _plant_legacy(hub, "Native note")
+    out = tmp_path / "out"
+    run(
+        parse(
+            ["memory", "mirror", "export", str(out), "--namespace", "n"]
+            + ["--database-url", _dsn(store)]
+        )
+    )
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "exported 3 files"
+    assert f"me{native}" in captured.err
+    _unplant(store, native)

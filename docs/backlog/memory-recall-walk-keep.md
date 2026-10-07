@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 title: memory recall / walk / keep — the three agent affordances over graph memory, one neighbourhood shape shared with the web
 pillar: memory-graph
 prio: high
@@ -225,13 +225,31 @@ other, 2 and 3 are independent of everything above.
 
 ## Open questions / decisions log
 
-- **[open, non-blocking for this item — Reto, td471883]** Metadata policy
-  for exporting a native node to a new file: proposed `name:` =
-  slugified title, `description:` = `meta.hook`, `metadata.type` =
-  `project` unless the author sets a new writable meta key `type` ∈
-  {user, feedback, project, reference}. Until decided, native nodes are
-  reported, not exported, and new memories with a harness home are still
-  written as files (the coexistence rule). No slice here waits on it.
+- **[ruled 2026-10-07, Reto via the coordinator — supersedes the
+  coexistence reading of R17]** "Cut over soon." Harness memory retires
+  dual storage: `MEMORY.md` becomes a pointer to the mesh root memory
+  node plus a note on bringing the server back up; no re-export of
+  `MEMORY.md`. The 146 stale nodes are **refreshed gently in place
+  (edit)**, not duplicated and not retired-and-recreated (td471883:
+  "retire or rewrite, fine", refresh preferred). The export metadata
+  policy below is **approved** (name = slug of title, description =
+  `meta.hook`, type = project unless set). The "keep" rule collapses to
+  one write path, the graph; files are derived. Before the re-cut, find
+  why the 2026-10-03 cutover reverted and record it. Cutover sequence:
+  recall/walk/keep 1a+2 → deploy mirror → refresh the 146 nodes + real
+  import → hook on, `MEMORY.md` = pointer → native authoring primary →
+  skills into the mesh. Consequences for this item: slice 3's `--legacy
+  retire` is the fallback, not the plan; a **slice 4 `--legacy refresh`**
+  (adopt a title-matching legacy node: stamp `file_mirror`, rewrite body
+  and links in place, keep the id and inbound links) and the **export of
+  native nodes under the approved policy** are the next two slices, filed
+  below as decisions, built after the round-5 deploy.
+- **[decided, policy approved by Reto 2026-10-07]** Export of a native node
+  to a new file: `name:` = slugified title, `description:` = `meta.hook`,
+  `metadata.type` = `project` unless the author set the (new writable)
+  meta key `type` ∈ {user, feedback, project, reference}. Replaces the
+  `unexported` report once built; the report stays for nodes that still
+  cannot be rendered (no title).
 - **[open, non-blocking]** Whether `view='index'` should also exist on
   `get(kind='memory', id='/recent')`; start without.
 - **[decision 3, recommendation — needs Reto's go, destructive on prod; td471883]**
@@ -294,6 +312,22 @@ other, 2 and 3 are independent of everything above.
   `timestamps_utc`). `tests/test_memory_mirror_acceptance.py` pins the
   git blob sha of `cli/memory.py`; the pin moved with this edit and moves
   again on any further edit. Remaining: 3.
+- **[built 2026-10-07, slice 3]** `export_mirror` returns a `MirrorReport`
+  (`created` = files written; new `unexported` = handles of live
+  `SPACE:repo-dev` nodes with no `file_mirror` key or another namespace;
+  CLI prints them on **stderr**, stdout stays `exported N files` because
+  the acceptance test pins it). `import_mirror(legacy='refuse'|'retire'|'keep')`
+  + `--legacy`: `refuse` (default) raises `ImportRefused` listing legacy
+  nodes whose title equals a topic's `name:`; `retire` soft-deletes them
+  via `store.retire_ref` in the import transaction and lists them under
+  `report.retired`; `keep` imports beside them. All three leave the
+  121-file export byte-identical (test). `precis-memory-help` carries the
+  coexistence write rule ("Where to edit") and names the mirror as the
+  import path. Hygiene follow-up, not built: the acceptance test rewrites
+  the tracked `.scratch/memory-mirror-acceptance.json` on every run (it
+  shows as modified after a local run; revert it before committing).
+  **All four slices are built; the item stays until the prod dogfood
+  after the next deploy and the docstring fold-in.**
 - **[readiness vet 2026-10-07 → folded]** Verdict was needs-work (4
   blockers, 7 advisories, split suggested); every finding is resolved in
   the text above: the mirror meta key is `filename` not `name`; AC 1

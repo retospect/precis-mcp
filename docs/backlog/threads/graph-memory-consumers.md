@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Build [memory-recall-walk-keep](../memory-recall-walk-keep.md) slice 3 (keep: mirror `unexported` report, `import_mirror(legacy=…)` + `--legacy` on fixtures, the coexistence write rule in `precis-memory-help`); then dogfood 1a/1b/2 on prod once the coordinator deploys. Slices 1b (walk), 1a (`Store.neighbourhood`, which [web-graph-navigation](../web-graph-navigation.md) slice 1 now wraps as a route) and 2 (recall, 9/10 on the fixture) landed 2026-10-07. The anchored-edit dogfood is done (td470292, R15); the file mirror is on main (R17, aa669f59f + c06e338fc) and not yet deployed (prod is R16 bd3956d7b on 2026-10-07).
-- **Blocked by:** Nothing for slices 1–2. Slice 3 and the real import wait on Reto's go and the legacy-node decision (td471883, `waiting-for:reto`, filed 2026-10-07 from this thread). The 2026-10-03 cutover was found reverted on 2026-10-07 (MEMORY.md is a file index again, no record of who reverted it); consistent with the R17 coexistence ruling, so do not re-cut.
+- **Next:** Dogfood [memory-recall-walk-keep](../memory-recall-walk-keep.md) on prod once a deploy carries it (all four slices landed 2026-10-07: 1b walk, 1a `Store.neighbourhood` which [web-graph-navigation](../web-graph-navigation.md) slice 1 now wraps as a route, 2 recall at 9/10 on the fixture, 3 keep): `search(kind='memory', tags=['SPACE:repo-dev'], q=…, view='index')` then `get(view='fisheye+1hop+recall')` on a hit; `precis memory mirror export` dry-run style check of `unexported` on the test DB only. Then fold the surviving truth into the owning docstrings and delete the item. The anchored-edit dogfood is done (td470292, R15); the file mirror is on main (R17, aa669f59f + c06e338fc) and not yet deployed (prod is R16 bd3956d7b on 2026-10-07).
+- **Blocked by:** The round-5 deploy (Reto runs it; candidate fc8ad08f7) for the prod dogfood. **Reto's 2026-10-07 ruling (via the coordinator) supersedes the coexistence reading:** "cut over soon", `MEMORY.md` becomes a pointer, the 146 stale nodes are refreshed in place (not retired), the export metadata policy is approved, keep collapses to one write path (the graph). Sequence: recall/walk/keep 1a+2 → deploy mirror → refresh the 146 + real import → hook on, pointer → native authoring primary → skills into the mesh. Before the re-cut: find why the 2026-10-03 cutover reverted and record it (open; no transcript on the machine records it — see memory-native-authoring.md's 2026-10-07 entry).
 - **Unblocks:** An agent that recalls, walks and keeps graph memory without leaving the graph; the web neighbourhood panel (web-graph-navigation slice 1 is built here).
 - **Acceptance:** [memory-recall-walk-keep](../memory-recall-walk-keep.md) AC 1–6; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
 - **Worktree:** `memory-graph`
@@ -68,10 +68,12 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    the coexistence write rule and the mirror's legacy/unexported reports.
    Ready 2026-10-07 after the readiness vet (split 1a/1b/2/3; 1a is
    also web-graph-navigation slice 1).
-2. **backlog/memory-file-mirror.md** — on main (R17), not deployed. The
-   real import is Reto's go plus the legacy-node decision (recall/walk/keep
-   decision 3; td471883, `waiting-for:reto`). Nothing to build
-   here until then.
+2. **backlog/memory-file-mirror.md** — on main, deploys with round 5.
+   Per Reto's 2026-10-07 ruling the real import follows a `--legacy
+   refresh` slice (recall-walk-keep slice 4: adopt title-matching legacy
+   nodes in place) and the approved native-export policy; then the
+   cutover sequence in the Resume. The revert-cause question is the one
+   open precondition.
 3. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
    ahead of td458720's sequencing. **State 2026-10-07:** the cutover it
    records was reverted; `MEMORY.md` is a file index again, memory-lint
