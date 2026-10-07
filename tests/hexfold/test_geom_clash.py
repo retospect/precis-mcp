@@ -668,3 +668,59 @@ def test_relaxed_coordinates_are_judged_as_given_not_re_relaxed() -> None:
     assert clash and clash[0].severity == Severity.ERROR
     assert summary(found)["relax"] == "tethered"
     assert not [f for f in plain if f.code == "geom.clash"]
+
+
+#: a terminated armchair bay: its two H sit 1.87-1.89 A apart (gr459567 W3)
+ARMCHAIR_H = """hexfold 0.2
+t: tube(8,8, len=4)
+terminate: t.* = H
+"""
+
+
+def test_profile_clash_bar_reads_the_pair_table_either_way_round() -> None:
+    p = Profile(clash_A=2.0, clash_pair_A=(("C", "H", 1.2), ("H", "H", 1.5)))
+    assert p.clash_bar("H", "H") == 1.5
+    assert p.clash_bar("C", "H") == 1.2
+    assert p.clash_bar("H", "C") == 1.2
+    assert p.clash_bar("C", "C") == 2.0
+    assert p.clash_reach_A == 2.0
+    assert Profile(clash_A=1.0, clash_pair_A=(("N", "N", 2.5),)).clash_reach_A == 2.5
+    assert Profile.DEFAULT.clash_bar("H", "H") == 1.5
+    assert Profile.DEFAULT.clash_bar("C", "C") == Profile.DEFAULT.clash_A
+
+
+def test_armchair_bay_h_h_answers_to_its_own_bar_not_the_carbon_one() -> None:
+    # tightening the carbon bar past the bay's 1.87 A must not report the
+    # H-H pair: it has its own bar
+    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.0))
+    assert not [f for f in r.findings if f.code == "geom.clash"]
+    summary = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    assert summary["clash_count"] == 0 and summary["clash_min"] is None
+    # without the pair table the same profile reports it, naming the
+    # elements and the bar it answered to
+    r = check(ARMCHAIR_H, geometry=True, profile=Profile(clash_A=2.0, clash_pair_A=()))
+    found = [f for f in r.findings if f.code == "geom.clash"]
+    assert found and {f.severity for f in found} == {Severity.WARN}
+    data = [dict(f.data) for f in found]
+    assert all(d["elements"] == ["H", "H"] and d["bar"] == 2.0 for d in data)
+    assert all(1.85 < d["distance"] < 1.9 for d in data)
+    assert "H-H bar 2.00 A" in found[0].message
+    # the pair bar above the bay reports it under the default carbon bar
+    r = check(
+        ARMCHAIR_H, geometry=True, profile=Profile(clash_pair_A=(("H", "H", 1.9),))
+    )
+    found = [f for f in r.findings if f.code == "geom.clash"]
+    assert found and all(dict(f.data)["bar"] == 1.9 for f in found)
+    # the default profile: nothing on the bay, as before
+    assert not _clash(ARMCHAIR_H)[0]
+
+
+def test_pair_bar_leaves_carbon_clashes_alone() -> None:
+    spec = (_EX / "nanobud_96.hx").read_text(encoding="utf-8")
+    before, s_before = _clash(spec)
+    r = check(spec, geometry=True, profile=Profile(clash_pair_A=()))
+    after = [dict(f.data) for f in r.findings if f.code == "geom.clash"]
+    s_after = next(dict(f.data) for f in r.findings if f.code == "geom.summary")
+    assert [c["distance"] for c in before] == [c["distance"] for c in after]
+    assert s_before["clash_count"] == s_after["clash_count"]
+    assert all(c["elements"] == ["C", "C"] and c["bar"] == 1.8 for c in before)

@@ -135,6 +135,13 @@ class Profile:
     #: it and ``clash_A`` it is a WARN: a strained stick junction (a
     #: [9-6]/[8-7] bud neck relaxes to 1.2-1.5 A, gr459567).
     clash_error_A: float = 1.0
+    #: per-element-pair ``geom.clash`` bars, ``(element, element, bar_A)``,
+    #: overriding ``clash_A`` for that pair (order-free).  H-H alone by
+    #: default: a terminated armchair bay puts its two H 1.87-1.89 A apart
+    #: (``tube(8,8)``, ``tube(10,5)``), a legitimate geometry 0.07 A inside
+    #: the carbon bar; zigzag and sheet edges give H-H >= 2.46 A and C-H
+    #: >= 2.52 A (gr459567, W3).  Pairs not listed take ``clash_A``.
+    clash_pair_A: tuple[tuple[str, str, float], ...] = (("H", "H", 1.5),)
     #: ``geom.seed_overlap`` (ERROR): two non-bonded atoms this close in the
     #: placed seed, before stick runs -- coincident atoms, a placement bug,
     #: reported whatever the relaxer does with them afterwards
@@ -146,6 +153,19 @@ class Profile:
 
     DEFAULT: ClassVar[Profile]
     STRICT: ClassVar[Profile]
+
+    def clash_bar(self, element_a: str, element_b: str) -> float:
+        """The ``geom.clash`` bar for one atom pair: its ``clash_pair_A``
+        entry if listed (either order), else ``clash_A``."""
+        for a, b, bar in self.clash_pair_A:
+            if {a, b} == {element_a, element_b}:
+                return bar
+        return self.clash_A
+
+    @property
+    def clash_reach_A(self) -> float:
+        """The widest clash bar in force: the pair search's cell size."""
+        return max((self.clash_A, *(bar for _, _, bar in self.clash_pair_A)))
 
     def apply(self, f: Finding) -> Finding | None:
         if f.code in self.ignore or any(

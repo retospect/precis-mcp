@@ -360,11 +360,13 @@ waited on happened 09-29 — note at the bottom)
      prod structures before it lands. Until then
      `test_nanobud_menu_seed_has_no_stick_clash` holds [9-6]/[8-7] to
      1.0 Å, not 1.8 (W2, partial).
-   - **A per-element-pair clash bar (W3).** Armchair-bay H–H measures
-     1.87 Å on `tube(8,8)` and 1.88 Å on `tube(10,5)` stick builds, 0.07
-     Å above the 1.8 bar. Zigzag and sheet edges give H–H of at least
-     2.46 Å and C–H of at least 2.52 Å. An H–H bar of about 1.5 Å would
-     keep a legitimate bay from tripping.
+   - **Per-element-pair clash bar (W3): shipped 2026-10-07.**
+     `Profile.clash_pair_A` (default H–H 1.5 Å) overrides `clash_A` for
+     a listed pair; `geom.clash` names the elements and the bar it
+     answered to. Re-measured before the change: armchair-bay H–H 1.872 Å
+     on `tube(8,8)`, 1.888 Å on `tube(10,5)`, 2.59 Å on `tube(10,0)`,
+     2.46 Å on `sheet(6,6)`; C–H at least 2.52 Å; no carbon clash count
+     changes on the examples.
    - **Which face a bond seeds on, on a flat sheet.**
      `build._surface_normal` cannot get a sign from the instance centroid
      on a flat instance, so it falls back to largest-component-positive.

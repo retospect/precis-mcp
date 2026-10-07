@@ -132,8 +132,10 @@ the stored report text of plain `hexfold` builds carries the count; geometry
 reports from before hexfold 0.3.1 list at most 10 entries per code and carry no
 `n_over` totals) ·
 `geom.clash` ERROR under 1.0 Å (overlapping atoms), WARN from 1.0 to
-1.8 Å (two non-bonded atoms in the stick geometry, both instances named;
-a clean check without it is not a clean geometry). Nanobud menus
+1.8 Å (two non-bonded atoms in the stick geometry, both instances and
+elements named with the pair's bar; H–H has its own 1.5 Å bar because a
+terminated armchair bay holds its two H at 1.87–1.89 Å; a clean check
+without it is not a clean geometry). Nanobud menus
 (`[9-6]`, `[8-7]`, `[2+2]`) seed the C60 outside its host. `[9-6]` and
 `[8-7]` keep WARN clashes of 1.2–1.5 Å at the junction neck. These
 shipped specs still overlap, are known, and are not yet fixed:

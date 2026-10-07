@@ -363,18 +363,28 @@ def _geometry_findings(
         )
 
     inst = {a.ord: a.instance for a in net.atoms}
-    clashes = _clash_pairs(coords, net.bonds, profile.clash_A)
+    elem = {a.ord: a.element for a in net.atoms}
+
+    def _under_bar(found: list[tuple[float, int, int]]) -> list[tuple[float, int, int]]:
+        # the pair search runs at the widest bar; each pair then answers to
+        # its own (an H-H bay sits legitimately inside the carbon bar)
+        return [
+            (d, i, j) for d, i, j in found if d < profile.clash_bar(elem[i], elem[j])
+        ]
+
+    clashes = _under_bar(_clash_pairs(coords, net.bonds, profile.clash_reach_A))
     for d, i, j in clashes[:10]:
         # two bands: under clash_error_A no reading of the pair is a
-        # geometry (overlapping atoms), between it and clash_A a squeezed
-        # but possible one (a strained stick junction)
+        # geometry (overlapping atoms), between it and the pair's bar a
+        # squeezed but possible one (a strained stick junction)
         overlap = d < profile.clash_error_A
+        bar = profile.clash_bar(elem[i], elem[j])
         out.append(
             Finding(
                 "geom.clash",
                 Severity.ERROR if overlap else Severity.WARN,
                 f"atoms {i} ({inst[i]}) and {j} ({inst[j]}) are {d:.2f} A apart "
-                f"and not bonded (bar {profile.clash_A:.2f} A"
+                f"and not bonded ({elem[i]}-{elem[j]} bar {bar:.2f} A"
                 + (
                     f", overlap under {profile.clash_error_A:.2f} A)"
                     if overlap
@@ -384,7 +394,9 @@ def _geometry_findings(
                 data=(
                     ("atoms", [i, j]),
                     ("instances", [inst[i], inst[j]]),
+                    ("elements", [elem[i], elem[j]]),
                     ("distance", round(d, 3)),
+                    ("bar", bar),
                 ),
             )
         )
@@ -396,7 +408,9 @@ def _geometry_findings(
     # get worse), so it is reported on its own and never cleared by the
     # relaxed numbers.
     seed_clashes = (
-        _clash_pairs(np.asarray(net.seed3), net.bonds, profile.clash_A)
+        _under_bar(
+            _clash_pairs(np.asarray(net.seed3), net.bonds, profile.clash_reach_A)
+        )
         if net.seed3 is not None
         else []
     )
