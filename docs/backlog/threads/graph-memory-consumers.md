@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** After the paired authoring/G1 correction passes the combined gate and its SHA is verified deployed, dogfood anchored memory edits, rollback and reciprocal mentions.
-- **Blocked by:** Coordinator combined gate and verified deployed SHA; source integration does not establish live behavior.
-- **Unblocks:** Graph-native authoring that replaces file-memory workarounds.
-- **Acceptance:** Use [memory-native-authoring](../memory-native-authoring.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** `graph-memory-consumers`
+- **Next:** Vet and build [memory-recall-walk-keep](../memory-recall-walk-keep.md) slice 1 (the memory walk on one store-level neighbourhood function shared with the web), then slice 2 (recall as an index-line render). The anchored-edit dogfood is done (td470292, R15); the file mirror is on main (R17, aa669f59f + c06e338fc) and not yet deployed (prod is R16 bd3956d7b on 2026-10-07).
+- **Blocked by:** Nothing for slices 1–2. Slice 3 and the real import wait on Reto's go and the legacy-node decision (td471883, `waiting-for:reto`, filed 2026-10-07 from this thread). The 2026-10-03 cutover was found reverted on 2026-10-07 (MEMORY.md is a file index again, no record of who reverted it); consistent with the R17 coexistence ruling, so do not re-cut.
+- **Unblocks:** An agent that recalls, walks and keeps graph memory without leaving the graph; the web neighbourhood panel (web-graph-navigation slice 1 is built here).
+- **Acceptance:** [memory-recall-walk-keep](../memory-recall-walk-keep.md) AC 1–6; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
+- **Worktree:** `memory-graph`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
@@ -28,15 +28,15 @@ half (file-mirror, context hierarchy, session history) and the surfaces
 (fisheye-everywhere, draft-linearization) are ranked in `knowledge-mesh.md`
 since 2026-09-30; this thread ranks the agent-side affordances only, by
 what a live consumer is already going without.
-**Last reviewed:** 2026-10-04
-**Worktree:** `graph-memory-consumers`
-**Allocation decision (historical):** yes — Reto 2026-10-01: "graph memory we want soon".
+**Last reviewed:** 2026-10-07
+**Worktree:** `memory-graph`
+**Allocation decision (historical):** yes — Reto 2026-10-01: "graph memory we want soon". Fleet wind-down 2026-10-07: recall/walk/keep moved from the Codex fleet to local agents.
 
 ## Detailed handoff (2026-10-04 08:58Z)
 
-Historical handoff: the authoring WIP and G1 correction are now together in
-the reviewed ready integration candidate. Do not redo or adopt that old branch;
-check the combined gate and deployed SHA before live verification.
+Historical, superseded 2026-10-07: the anchored edit landed and passed its
+live dogfood (td470292); the one-shot cutover it describes was reverted
+and the R17 ruling keeps files and graph coexisting. Kept for the record.
 
 - **Landed, all live on prod 727728cc:**
   - memory slice 2, the cutover and memory-lint graph mode (31fc2a3c, fef5f1d5);
@@ -61,8 +61,23 @@ check the combined gate and deployed SHA before live verification.
 
 ## Do next
 
-1. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
-   ahead of td458720's sequencing. First slice built 2026-10-02 (`SPACE:`
+1. **backlog/memory-recall-walk-keep.md** — the agent side of coexisting
+   file and graph memory (td470555's named next step; local since the
+   2026-10-07 wind-down): walk on one neighbourhood function shared with
+   `web-graph-navigation.md` slice 1, recall as the index-line render,
+   the coexistence write rule and the mirror's legacy/unexported reports.
+   Ready 2026-10-07 after the readiness vet (split 1a/1b/2/3; 1a is
+   also web-graph-navigation slice 1).
+2. **backlog/memory-file-mirror.md** — on main (R17), not deployed. The
+   real import is Reto's go plus the legacy-node decision (recall/walk/keep
+   decision 3; td471883, `waiting-for:reto`). Nothing to build
+   here until then.
+3. **backlog/memory-native-authoring.md** — Reto 2026-10-01: top priority,
+   ahead of td458720's sequencing. **State 2026-10-07:** the cutover it
+   records was reverted; `MEMORY.md` is a file index again, memory-lint
+   runs in file mode, and the 146 nodes its importer created are stale.
+   The SPACE axis, `meta.hook`, the hook script and memory-lint graph
+   mode stay built; the cutover sequence is held behind item 2. First slice built 2026-10-02 (`SPACE:`
    axis, `precis memory import`/`index`, the hook script, test 4a).
    - **Dogfooded on prod 2026-10-03:** the import ran, and the graph render
      matched `MEMORY.md`.
@@ -93,7 +108,7 @@ check the combined gate and deployed SHA before live verification.
      log, 2026-10-03).
    - **Blocked:** tests 4b/4c, which need `backlog/file-mirror.md`
      (knowledge-mesh Do-next 7).
-2. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
+4. **backlog/vocab-align-to-literature.md** — ruled 2026-10-01 (both
    tiers, throughout code and comments, no compatibility path); gates the
    January paper (td459587), so it lands before January even though
    item 1 outranks it on value. Tier 1 glosses shipped 2026-10-02. The
@@ -108,13 +123,13 @@ check the combined gate and deployed SHA before live verification.
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
-3. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
+5. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
    the render side (every kind, the browser focus page) is
    `fisheye-everywhere.md`, knowledge-mesh Do-next 4.
-4. **backlog/server-side-session-context.md** — precondition td458385
+6. **backlog/server-side-session-context.md** — precondition td458385
    (sessions move to the shared MCP server); the SPACE-axis segregation
    `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
-5. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
+7. **backlog/unify-backlog-gripes-discoverable.md** — repo guidance and
    gripes as one searchable surface; consumes the mirror once it lands.
 
 ## Horizon

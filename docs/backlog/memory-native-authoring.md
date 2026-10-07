@@ -355,3 +355,20 @@ scripts only — nothing reads the graph at that moment.
 - **[open, non-blocking]** Whether `scripts/memory-lint`'s hysteresis
   (20 KB/15 KB) maps to a node count or is dropped once the index is
   graph-side; decide after the first month of native writes.
+- **[found 2026-10-07: the cutover is reverted, by whom is unrecorded]**
+  On Reto's machine `MEMORY.md` is a file index again (14.8 KB, no graph
+  marker), `MEMORY.md.pre-cutover` is gone, the hook's cache dir does not
+  exist, and `scripts/memory-lint` runs in file mode; the consolidation
+  log's 2026-10-06 pass was a file-mode pass. No session transcript on the
+  machine records the revert. It is consistent with Reto's R17 ruling
+  (`memory-file-mirror.md` §Boundary, 2026-10-06): files and graph
+  coexist, real import and cutover held. The 146 live `SPACE:repo-dev`
+  nodes this importer created on 2026-10-03 remain and are stale against
+  the files; they carry no `file_mirror` key, so the mirror would import
+  beside them. Their fate (retire or keep) is decision 3 of
+  `memory-recall-walk-keep.md` and td471883 (`waiting-for:reto`). The
+  cutover sequence above stays valid but is held behind that go; do not
+  re-run `--sync` or re-cut on a hunch. What this item built and keeps:
+  the `SPACE:` axis, `meta.hook`, `memory index`, the hook script and
+  memory-lint graph mode. The import path for the real content is now the
+  mirror (`memory mirror import`), not `precis memory import`.
