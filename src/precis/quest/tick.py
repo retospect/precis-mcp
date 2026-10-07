@@ -1879,6 +1879,28 @@ def _payload_type_error(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _nested_payload_key(payload: dict[str, Any]) -> str | None:
+    """First :data:`_PAYLOAD_KEYS` key found below the top level, else None."""
+
+    def walk(node: Any) -> str | None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in _PAYLOAD_KEYS:
+                    return str(k)
+                if (found := walk(v)) is not None:
+                    return found
+        elif isinstance(node, list):
+            for v in node:
+                if (found := walk(v)) is not None:
+                    return found
+        return None
+
+    for value in payload.values():
+        if (found := walk(value)) is not None:
+            return found
+    return None
+
+
 def _payload_from_result(res: Any) -> dict[str, Any] | None:
     """Prefer the router's parsed ``.data``; fall back to parsing ``.text``.
 
@@ -1893,9 +1915,18 @@ def _payload_from_result(res: Any) -> dict[str, Any] | None:
     else:
         # Opt-in stray-closer repair (gr345366 cause B): the tick's model
         # sometimes writes a stray ``]`` after ``dossier_text``.
-        payload = extract_json_object(
-            getattr(res, "text", "") or "", repair_stray_closers=True
-        )
+        text = getattr(res, "text", "") or ""
+        payload = extract_json_object(text)
+        if payload is None:
+            payload = extract_json_object(text, repair_stray_closers=True)
+            if payload is not None and (key := _nested_payload_key(payload)):
+                # A deleted closer can swallow later top-level keys into an
+                # earlier array's entry (gr462090): valid JSON, wrong shape.
+                log.warning(
+                    "quest tick: repaired payload rejected, %r nested below top level",
+                    key,
+                )
+                return None
     if payload is not None and (err := _payload_type_error(payload)) is not None:
         log.warning("quest tick: payload rejected, %s", err)
         return None

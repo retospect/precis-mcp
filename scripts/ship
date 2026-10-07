@@ -274,23 +274,36 @@ rm -f "$SHIP_SHA_FILE"
 #     default 1. A future PRECIS_AUTODEPLOY_STALE=1 could opt into actually
 #     invoking scripts/deploy past this threshold — not implemented here.
 _deploy_lag_stats() {
-    # prints "<undeployed-commit-count> <oldest-undeployed-epoch>", or nothing
-    # if the shared marker is missing/unreadable/stale-referencing a gone sha.
-    local state_file deployed_sha count oldest
-    # Shared marker (git common dir) so a sibling worktree's deploy counts.
-    # No legacy per-worktree fallback (gr332009). See lib/deploy-state.sh.
-    [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
-    . "${WORKTREE}/scripts/lib/deploy-state.sh"
-    state_file="$(deploy_state_read_path "${WORKTREE}")"
-    [[ -n "$state_file" && -f "$state_file" ]] || return 0
-    deployed_sha="$(awk '{print $1}' "$state_file" 2>/dev/null || true)"
+    # prints "<undeployed-commit-count> <oldest-undeployed-epoch> <source>", or
+    # nothing if there is nothing countable. <source> is `origin/prod` (the
+    # script-moved ref every deploy path advances — canonical and shared across
+    # hosts; gr471806) or `marker` (the per-machine .deploy-state, used ONLY
+    # when origin/prod is absent: scripts/round deploy on another host never
+    # writes it, so it can read hundreds of commits stale).
+    local state_file deployed_sha count oldest src
+    # Refresh best-effort first (offline/no-remote is fine: a stale local ref
+    # still beats the marker).
+    git fetch -q origin prod:refs/remotes/origin/prod >/dev/null 2>&1 || true
+    if git rev-parse --verify -q "refs/remotes/origin/prod^{commit}" >/dev/null 2>&1; then
+        deployed_sha="$(git rev-parse "refs/remotes/origin/prod^{commit}" 2>/dev/null || true)"
+        src="origin/prod"
+    else
+        # Shared marker (git common dir) so a sibling worktree's deploy counts.
+        # No legacy per-worktree fallback (gr332009). See lib/deploy-state.sh.
+        [[ -f "${WORKTREE}/scripts/lib/deploy-state.sh" ]] || return 0
+        . "${WORKTREE}/scripts/lib/deploy-state.sh"
+        state_file="$(deploy_state_read_path "${WORKTREE}")"
+        [[ -n "$state_file" && -f "$state_file" ]] || return 0
+        deployed_sha="$(awk '{print $1}' "$state_file" 2>/dev/null || true)"
+        src="marker"
+    fi
     [[ -n "$deployed_sha" ]] || return 0
     git cat-file -e "${deployed_sha}^{commit}" 2>/dev/null || return 0
     count="$(git rev-list --count "${deployed_sha}..main" 2>/dev/null || true)"
     [[ -n "$count" && "$count" != 0 ]] || return 0
     oldest="$(git log "${deployed_sha}..main" --format=%ct 2>/dev/null | tail -1 || true)"
     [[ -n "$oldest" ]] || return 0
-    printf '%s %s\n' "$count" "$oldest"
+    printf '%s %s %s\n' "$count" "$oldest" "$src"
 }
 
 _deploy_attempt_pending() {
@@ -392,7 +405,7 @@ if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
         printf '\n\033[33m⚠ deploy state uncertain: a deploy of %.8s started %sh ago and never recorded success (died red or still running) — scripts/deploy to retry.\033[0m\n' "$_att_sha" "$_att_age_h"
     fi
 elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
-    read -r _lag_n _lag_oldest <<< "$stats"
+    read -r _lag_n _lag_oldest _lag_src <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
     _stale_h="${PRECIS_DEPLOY_STALE_HOURS:-1}"
     if (( _lag_age_h > _stale_h )); then
@@ -1880,9 +1893,14 @@ if pending="$(_deploy_attempt_pending)" 2>/dev/null && [[ -n "$pending" ]]; then
         printf '📦 deploy state uncertain — deploy of %.8s started %sh ago, no success recorded (died red or still running); scripts/deploy to retry.\n' "$_att_sha" "$_att_age_h"
     fi
 elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
-    read -r _lag_n _lag_oldest <<< "$stats"
+    read -r _lag_n _lag_oldest _lag_src <<< "$stats"
     _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
-    printf '📦 %s commit(s) on main not yet deployed (oldest %sh ago) — scripts/deploy to flush.\n' "$_lag_n" "$_lag_age_h"
+    if [[ "$_lag_src" == "origin/prod" ]]; then
+        _lag_src_txt="vs origin/prod"
+    else
+        _lag_src_txt="vs local deploy marker (origin/prod absent)"
+    fi
+    printf '📦 %s commit(s) on main not yet deployed (oldest %sh ago) %s — scripts/deploy to flush.\n' "$_lag_n" "$_lag_age_h" "$_lag_src_txt"
 elif _deploy_marker_missing; then
     printf '📦 no successful deploy on record (marker absent) — lag unknown; the next green scripts/deploy sets it.\n'
 fi

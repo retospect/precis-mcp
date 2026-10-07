@@ -213,6 +213,22 @@ class TestDomainCaveats:
         straddle = [c for c in pf._domain_checks(scene) if c.code == "domain_straddle"]
         assert straddle and "Pd" in straddle[0].message
 
+    @pytest.mark.parametrize(
+        ("elems", "fires"),
+        [
+            (["Pd", "H"], False),
+            (["Pd", "N", "O"], False),
+            (["Zn", "C", "H", "O"], True),
+            (["C", "H", "O"], False),
+        ],
+    )
+    def test_straddle_requires_carbon_plus_non_organic(
+        self, elems: list[str], fires: bool
+    ) -> None:
+        scene = self._molecule([(e, None) for e in elems])
+        got = any(c.code == "domain_straddle" for c in pf._domain_checks(scene))
+        assert got is fires
+
     def test_net_charge_is_an_advisory_caveat(self) -> None:
         scene = self._molecule([("N", 1), ("H", None), ("H", None)])
         charged = [c for c in pf._domain_checks(scene) if c.code == "domain_charged"]

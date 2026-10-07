@@ -578,6 +578,44 @@ def test_deploy_lag_footer_reports_ordinary_count_when_marker_is_current(
     assert "no successful deploy on record" not in result.stdout, result.stdout
 
 
+def test_deploy_lag_footer_counts_against_origin_prod_over_stale_marker(
+    ship_repo: Path,
+) -> None:
+    """gr471806: origin/prod is the shared truth; a stale per-machine marker
+    (deploy ran on another host) must not inflate the count."""
+    repo = ship_repo
+    root_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _commit(repo, "a.txt")
+    prod_sha = _commit(repo, "b.txt")
+    _commit(repo, "c.txt")
+    _commit(repo, "d.txt")
+    _git(repo, "update-ref", "refs/remotes/origin/prod", prod_sha)
+    # Stale marker at the root: marker alone would count 4.
+    _marker_path(repo).write_text(f"{root_sha} {int(time.time())}\n", encoding="utf-8")
+
+    result = _run_ship_probe(repo, _footer_block())
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "2 commit(s) on main not yet deployed" in result.stdout, result.stdout
+    assert "vs origin/prod" in result.stdout, result.stdout
+    assert "marker" not in result.stdout, result.stdout
+
+
+def test_deploy_lag_footer_falls_back_to_marker_when_origin_prod_absent(
+    ship_repo: Path,
+) -> None:
+    repo = ship_repo
+    deployed_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _commit(repo, "file.txt")
+    _marker_path(repo).write_text(
+        f"{deployed_sha} {int(time.time())}\n", encoding="utf-8"
+    )
+
+    result = _run_ship_probe(repo, _footer_block())
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "1 commit(s) on main not yet deployed" in result.stdout, result.stdout
+    assert "vs local deploy marker (origin/prod absent)" in result.stdout, result.stdout
+
+
 def test_deploy_lag_footer_distinguishes_refused_attempt_from_a_crash(
     ship_repo: Path,
 ) -> None:

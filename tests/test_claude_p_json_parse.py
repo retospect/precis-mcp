@@ -127,6 +127,26 @@ class TestPayloadFromResult:
             res = SimpleNamespace(data=None, text=text)
             assert tick_mod._payload_from_result(res) is None, text
 
+    def test_repair_nesting_top_level_key_is_rejected(self) -> None:
+        """gr462090: a stray closer mid-array makes the repair fold
+        ``dossier_text`` into a logbook entry; reject instead of dropping it."""
+        text = '{"logbook": [{"text": "a"], "dossier_text": "d"}]}'
+        res = SimpleNamespace(data=None, text=text)
+        assert tick_mod._payload_from_result(res) is None
+
+    def test_gr345366_shape_still_repairs_top_level(self) -> None:
+        text = '{"logbook": [{"text": "a"}], "dossier_text": "d"]}'
+        res = SimpleNamespace(data=None, text=text)
+        assert tick_mod._payload_from_result(res) == {
+            "logbook": [{"text": "a"}],
+            "dossier_text": "d",
+        }
+
+    def test_plain_valid_text_payload_untouched(self) -> None:
+        text = '{"logbook": [{"text": "a"}], "dossier_text": "d"}'
+        res = SimpleNamespace(data=None, text=text)
+        assert tick_mod._payload_from_result(res) == json.loads(text)
+
     def test_wrongly_typed_data_is_rejected(self) -> None:
         res = SimpleNamespace(data={"dossier_text": ["a", "b"]}, text="")
         assert tick_mod._payload_from_result(res) is None

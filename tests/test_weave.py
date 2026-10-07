@@ -279,6 +279,7 @@ class TestDispositions:
         store.add_tag(dossier_id, Tag.open("topic:mof"), set_by="agent")
 
         paper_id = _paper(store, "wv4-p1", "Off Topic Paper")
+        seed_chunk(store, ref_id=paper_id, text="Some held body text.", ord=0)
         store.add_tag(paper_id, Tag.open("topic:mof"), set_by="agent")
         store.add_tag(paper_id, Tag.open("topic:unrelated"), set_by="agent")
         claims_client = _FakeClient("[]")  # no ROLE3:own chunks -> no claims anyway
@@ -570,11 +571,9 @@ class TestCrossPaperAttribution:
             ).fetchone()[0]
         assert n == 0
 
-        # The cited-in link for paper zero is still recorded (the
-        # disposition itself is trusted even though its one claim was
-        # dropped) — but with no citation behind it.
+        # No citation minted -> no cited-in edge for paper zero (gr462606).
         links = store.links_for(dossier_id, direction="in", relation="cited-in")
-        assert any(link.src_ref_id == paper0 for link in links)
+        assert not any(link.src_ref_id == paper0 for link in links)
 
 
 class TestReweaveConflict:
@@ -753,3 +752,95 @@ class TestPerPaperResilience:
         body_chunk = store.drafts.get_draft_chunk(result["body_handle"], kind="draft")
         assert body_chunk is not None
         assert body_chunk.text == "Composed prose citing both papers."
+
+
+class TestNoTextPaperGuard:
+    """gr462606 — a paper holding no text must not reach the prompt, and a
+    citing disposition edge needs at least one minted citation."""
+
+    def test_textless_paper_dropped_from_prompt(self, store: Any) -> None:
+        dossier_id, section_handle = _dossier_with_section(store, "wv-nt1")
+        empty_id = _paper(store, "wv-nt1-empty", "Zero Chunk Paper")
+        claim_text = "Held claim text."
+        held_id, _ = _seed_own_paper(store, "wv-nt1-held", "Held Paper", claim_text)
+        weave_client = _FakeClient(_weave_payload("Prose.", 0, "cited-in"))
+
+        result = weave_section(
+            store,
+            weave_client,
+            dossier_id,
+            section_handle,
+            [empty_id, held_id],
+            claims_client=_claims_client(claim_text),
+        )
+
+        prompt = weave_client.calls[0][1]["content"]
+        assert "Zero Chunk Paper" not in prompt
+        assert "Held Paper" in prompt
+        assert [p["ref_id"] for p in result["papers"]] == [held_id]
+
+    def test_all_textless_batch_skips_model_call(self, store: Any) -> None:
+        dossier_id, section_handle = _dossier_with_section(store, "wv-nt4")
+        empty_id = _paper(store, "wv-nt4-empty", "Zero Chunk Paper")
+        weave_client = _FakeClient(_weave_payload("Prose.", 0, "cited-in"))
+
+        result = weave_section(
+            store,
+            weave_client,
+            dossier_id,
+            section_handle,
+            [empty_id],
+            claims_client=_FakeClient("[]"),
+        )
+
+        assert result == {
+            "ok": False,
+            "error": "no_text_held",
+            "applied": False,
+            "dropped": [empty_id],
+        }
+        assert weave_client.calls == []
+
+    def test_abstract_fallback_kept(self, store: Any) -> None:
+        dossier_id, section_handle = _dossier_with_section(store, "wv-nt2")
+        pid = _paper(store, "wv-nt2-abs", "Abstract Paper")
+        seed_chunk(
+            store,
+            ref_id=pid,
+            text="The held abstract sentence.",
+            ord=-1,
+            chunk_kind="card_abstract",
+        )
+        weave_client = _FakeClient(_weave_payload("Prose.", 0, "superseded-in"))
+
+        weave_section(
+            store,
+            weave_client,
+            dossier_id,
+            section_handle,
+            [pid],
+            claims_client=_FakeClient("[]"),
+        )
+
+        prompt = weave_client.calls[0][1]["content"]
+        assert "The held abstract sentence." in prompt
+
+    def test_no_citing_edge_without_minted_citation(self, store: Any) -> None:
+        dossier_id, section_handle = _dossier_with_section(store, "wv-nt3")
+        claim_text = "A real claim."
+        pid, _ = _seed_own_paper(store, "wv-nt3-p", "Paper NT3", claim_text)
+        # cited-in, but claims_used cites no verifiable own-chunk ordinal.
+        weave_client = _FakeClient(_weave_payload("Prose.", 0, "cited-in", []))
+
+        result = weave_section(
+            store,
+            weave_client,
+            dossier_id,
+            section_handle,
+            [pid],
+            claims_client=_claims_client(claim_text),
+        )
+
+        assert result["citation_ids"] == []
+        assert store.links_for(dossier_id, direction="in", relation="cited-in") == []
+        assert result["papers"][0]["disposition"] is None

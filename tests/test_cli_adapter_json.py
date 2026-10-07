@@ -153,9 +153,10 @@ def test_get_args_param_is_registered_and_no_longer_skipped() -> None:
     assert str(args_param["annotation"]) == "dict[str, Any] | None"
 
 
-@pytest.mark.parametrize("tool_name", ["get", "put", "edit"])
+@pytest.mark.parametrize("tool_name", ["get", "put", "edit", "search"])
 def test_tools_get_put_edit_parsers_expose_an_args_flag(tool_name: str) -> None:
-    """`--args` is a real flag on get/put/edit — it was silently dropped before."""
+    """`--args` is a real flag on get/put/edit/search — it was silently dropped
+    before (search gained ``args=`` for view='doable' under-scoping, gr461375)."""
     top = argparse.ArgumentParser()
     subparsers = top.add_subparsers(dest="tool")
 
@@ -163,14 +164,6 @@ def test_tools_get_put_edit_parsers_expose_an_args_flag(tool_name: str) -> None:
 
     dests = {action.dest for action in parser._actions}
     assert "args" in dests
-
-
-def test_search_has_no_args_param_to_expose() -> None:
-    """`search` takes structured extras as dedicated kwargs, not an args= dict —
-    nothing for the CLI adapter to unlock there."""
-    info = get_tool_info("search")
-
-    assert "args" not in info["parameters"]
 
 
 def test_cli_args_flag_reaches_the_tool_call_as_a_dict(monkeypatch) -> None:

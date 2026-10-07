@@ -169,7 +169,11 @@ def validate_taxon_meta(meta: dict[str, Any]) -> dict[str, Any]:
         ):
             raise BadInput(
                 f"{key} must be a list of non-empty strings",
-                next=f"{key}=['a boundary example', 'a near-miss → tn<id>']",
+                next=(
+                    "includes=['a boundary example that belongs']"
+                    if key == "includes"
+                    else "excludes=['a near-miss that does not belong → tn<id>']"
+                ),
             )
 
     display = out.get("display_unit")

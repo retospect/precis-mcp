@@ -182,6 +182,18 @@ class TestTaxonRead:
         with pytest.raises(BadInput, match="includes must be a list"):
             validate_taxon_meta({"includes": ["ok", " "]})
 
+    def test_boundary_recovery_hint_puts_near_miss_under_excludes(self) -> None:
+        with pytest.raises(BadInput) as ei:
+            validate_taxon_meta({"includes": "scalar"})
+        hint = ei.value.next or ""
+        assert "includes=[" in hint
+        assert "near-miss" not in hint
+        with pytest.raises(BadInput) as ei:
+            validate_taxon_meta({"excludes": "scalar"})
+        hint = ei.value.next or ""
+        assert "excludes=[" in hint
+        assert "near-miss" in hint
+
     def test_definition_is_in_the_searchable_card_and_name_search_hits(
         self, store: Any
     ) -> None:

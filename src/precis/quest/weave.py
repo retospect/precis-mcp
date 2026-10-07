@@ -69,17 +69,29 @@ _VALID_DISPOSITIONS: frozenset[str] = frozenset(
 _CITING_DISPOSITIONS: frozenset[str] = frozenset({"cited-in", "corroborates"})
 
 
-def _fallback_text(store: Store, paper_ref_id: int, ref: Any | None) -> str:
+def _fallback_text(store: Store, paper_ref_id: int, ref: Any | None) -> str | None:
     """A paper's ``card_abstract`` chunk text, else its ``refs.title`` —
-    the composition input for a paper that yielded no claims."""
+    the composition input for a paper that yielded no claims.
+
+    ``None`` when the paper holds no text at all (no live chunk of any
+    kind, so no abstract and no body): the caller drops it from the batch
+    rather than hand the model a bare title to elaborate on (gr462606 —
+    the model invented specifics for a 0-chunk paper)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s "
-            "AND chunk_kind = 'card_abstract' ORDER BY ord LIMIT 1",
+            "AND chunk_kind = 'card_abstract' AND retired_at IS NULL "
+            "ORDER BY ord LIMIT 1",
             (paper_ref_id,),
         ).fetchone()
-    if row is not None and row[0]:
-        return str(row[0])
+        if row is not None and row[0]:
+            return str(row[0])
+        any_chunk = conn.execute(
+            "SELECT 1 FROM chunks WHERE ref_id = %s AND retired_at IS NULL LIMIT 1",
+            (paper_ref_id,),
+        ).fetchone()
+    if any_chunk is None:
+        return None
     title = getattr(ref, "title", None) if ref is not None else None
     if isinstance(title, str) and title.strip():
         return title.strip()
@@ -254,7 +266,9 @@ def weave_section(
        paper ``--<disposition>--> dossier`` at the section heading.
 
     Returns ``{"ok": False, "error": "unparseable", "applied": False}`` on
-    unparseable model output (no writes). Otherwise ``{"ok": True,
+    unparseable model output (no writes), and ``{"ok": False, "error":
+    "no_text_held", "dropped": [...]}`` when every paper in the batch holds
+    no text at all (gr462606; no model call). Otherwise ``{"ok": True,
     "applied": bool, "section_handle", "section_text"/"body_handle",
     "papers": [...], "citation_ids": [...], "section_text_len"}`` —
     ``dry_run=True`` omits ``body_handle``/``citation_ids`` (nothing was
@@ -288,7 +302,8 @@ def weave_section(
     # them — rung 6d-2 review fix).
     excerpts: dict[int, dict[int, dict[str, str]]] = {}
     papers_ctx: list[dict[str, Any]] = []
-    for i, pid in enumerate(paper_ref_ids):
+    dropped: list[int] = []
+    for pid in paper_ref_ids:
         ref = refs_map.get(pid)
         title = getattr(ref, "title", None) if ref is not None else None
         title = (
@@ -302,15 +317,31 @@ def weave_section(
             for c in own_chunks(store, pid)
         }
         fallback_text = None if claims else _fallback_text(store, pid, ref)
+        if not claims and fallback_text is None:
+            # No claims, no abstract, no chunks: nothing readable to weave.
+            # Drop it (no prompt line, no disposition edge) so it stays
+            # pending until text arrives (gr462606).
+            dropped.append(pid)
+            continue
         papers_ctx.append(
             {
-                "index": i,
+                "index": len(papers_ctx),
                 "ref_id": pid,
                 "title": title,
                 "claims": claims,
                 "fallback_text": fallback_text,
             }
         )
+
+    if dropped and not papers_ctx:
+        # Every paper in the batch is text-less: recomposing the section
+        # from nothing would overwrite a woven body with unsourced prose.
+        return {
+            "ok": False,
+            "error": "no_text_held",
+            "applied": False,
+            "dropped": dropped,
+        }
 
     section_context = render_eye(store, section_handle, "fisheye+1hop")
     prompt = _build_prompt(heading.text, section_context, papers_ctx)
@@ -345,6 +376,7 @@ def weave_section(
             "section_handle": section_handle,
             "section_text": section_text,
             "papers": papers_out,
+            "dropped": dropped,
         }
 
     # ── apply ──────────────────────────────────────────────────────────
@@ -426,6 +458,13 @@ def weave_section(
                         set_by="weave",
                     )
                     citation_ids.append(cid)
+                if not citation_ids:
+                    # A citing edge asserts the paper was cited; with zero
+                    # minted citations it was not (gr462606) — no edge.
+                    result_papers.append(
+                        {"ref_id": pid, "disposition": None, "citation_ids": []}
+                    )
+                    continue
                 with store.tx() as conn:
                     store.add_link(
                         src_ref_id=pid,
@@ -485,6 +524,7 @@ def weave_section(
         "papers": result_papers,
         "citation_ids": all_citation_ids,
         "section_text_len": len(section_text),
+        "dropped": dropped,
     }
 
 

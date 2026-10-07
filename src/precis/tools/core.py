@@ -667,6 +667,12 @@ def search(
     under: str | int | None = None,
     axis: str | None = None,
     depth: int | None = None,
+    # Typed extras, mirroring ``get``'s ``args=``: rides ``__extras__`` so a
+    # handler declaring ``args`` (todo's view='doable' reads ``args['under']``)
+    # gets the dict, others get the keys flattened and whitelist-checked.
+    # Previously undeclared → ``args={'under': N}`` was silently dropped
+    # (gr461375).
+    args: dict[str, Any] | None = None,
     # See ``get`` — FastMCP injects the live per-request ``Context``
     # here (excluded from the wire schema); used only to key the skill
     # serve ledger off the real MCP session for this call.
@@ -977,6 +983,11 @@ def search(
         payload["axis"] = axis
     if depth is not None:
         payload["depth"] = depth
+    if args:
+        err = _check_reserved_args(args, reserved=("kind", "q", "view"))
+        if err is not None:
+            return err
+        payload["__extras__"] = dict(args)
 
     # See ``get`` for the ``str | CallToolResult`` return contract, and
     # for why the serve-ledger session binds only around the dispatch

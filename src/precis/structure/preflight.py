@@ -333,11 +333,14 @@ def _check_elements(
 def _domain_checks(scene: Scene) -> list[PreflightReason]:
     """Two cheap, ASE-free composition/charge signals (no settle needed):
 
-    * a metal-organic straddle — the scene mixes :data:`relax.ORGANIC_ELEMENTS`
-      with anything outside that set (a MOF cage, a catalyst-bound organic
-      cassette) — neither registered MLIP's training distribution (mace_mp
-      is materials, mace_off is small organic molecules) covers that
-      combination.
+    * a metal-organic straddle — the scene contains carbon *and* anything
+      outside :data:`relax.ORGANIC_ELEMENTS` (a MOF cage, a catalyst-bound
+      organic cassette). "Organic" means "contains C" (element-level, not
+      bond-based): H/N/O alone with metals (hydrides, oxides, nitrides,
+      NO*/H* on a slab) are in mace_mp's Materials Project distribution and
+      do not trip it (gr462730). Neither registered MLIP's training
+      distribution (mace_mp is materials, mace_off is small organic
+      molecules) covers that combination.
     * a nonzero declared net charge — the sum of every atom's ``oxidation``
       (``None`` treated as 0, i.e. "no charge declared") — MLIPs of this
       class assume neutral systems; their short receptive field can't see
@@ -349,7 +352,7 @@ def _domain_checks(scene: Scene) -> list[PreflightReason]:
 
     elements_present = {a.element for a in scene.atoms.values()}
     non_organic = elements_present - ORGANIC_ELEMENTS
-    if elements_present & ORGANIC_ELEMENTS and non_organic:
+    if "C" in elements_present and non_organic:
         reasons.append(
             PreflightReason(
                 code="domain_straddle",

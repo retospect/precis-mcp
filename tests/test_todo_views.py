@@ -200,6 +200,30 @@ def test_doable_under_subtree_filter(handler: TodoHandler) -> None:
     assert "B leaf." not in out.body
 
 
+@pytest.mark.parametrize("spelling", ["args", "kwarg"])
+def test_doable_under_via_search_verb(
+    runtime_with_store: Any, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """gr461375: the ``search`` verb itself must forward ``args={'under': N}``
+    (it used to drop it, returning unrelated leaves); ``under=N`` too."""
+    from precis.tools import core
+
+    rt = runtime_with_store
+    monkeypatch.setattr(core, "_get_runtime", lambda: rt)
+    h = rt.hub.handler_for("todo")
+    root_a_id = _id_of(h.put(text="Strategic A.", meta={"rotation_root": True}).body)
+    h.put(text="A1 leaf.", parent_id=root_a_id)
+    root_b_id = _id_of(h.put(text="Strategic B.", meta={"rotation_root": True}).body)
+    h.put(text="B1 leaf.", parent_id=root_b_id)
+    extra: dict[str, Any] = (
+        {"args": {"under": root_a_id}} if spelling == "args" else {"under": root_a_id}
+    )
+    out = core.search(kind="todo", view="doable", **extra)
+    body = out if isinstance(out, str) else str(out)
+    assert "A1 leaf." in body
+    assert "B1 leaf." not in body
+
+
 # ── view='waiting' ────────────────────────────────────────────────
 
 
