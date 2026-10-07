@@ -905,3 +905,56 @@ class TestRepairMojibake:
         assert not _EM_DASH_LOST_RE.search(f"1 {_REPLACEMENT_CHAR} 2")
         assert not _EM_DASH_LOST_RE.search(f"a{_REPLACEMENT_CHAR}b")
         assert not _EM_DASH_LOST_RE.search(f"a {_REPLACEMENT_CHAR} ,")
+
+
+class TestCfpKind:
+    """A cfp is not a bibliographic record: no online lookup, title kept."""
+
+    def _run(self, tmp_path: Path, meta: PdfMetadata, blocks: list[dict]):
+        pdf = tmp_path / "call.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n% cfp\n")
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=meta,
+            ) as m,
+            patch("precis.ingest.pipeline.extract_blocks_marker", return_value=blocks),
+        ):
+            paper = extract_paper(pdf, kind="cfp")
+        return paper, m
+
+    def test_offline_and_title_from_first_line_block(self, tmp_path: Path):
+        blocks = [
+            {
+                "type": "title",
+                "text": "Call for Quantum   Sensing Proposals",
+                "page": 1,
+            },
+            {"type": "paragraph", "text": "Deadline 1 March.", "page": 1},
+        ]
+        paper, m = self._run(tmp_path, PdfMetadata(pdf_path=tmp_path), blocks)
+        assert m.call_args.kwargs["online"] is False
+        assert paper.kind == "cfp"
+        assert paper.title == "Call for Quantum Sensing Proposals"
+        assert paper.cite_key_prefix == "callforquantum00"
+        assert [c.text for c in paper.chunks if c.ord >= 0] == ["Deadline 1 March."]
+
+    def test_pdf_title_wins_over_first_line(self, tmp_path: Path):
+        blocks = [{"type": "title", "text": "Other", "page": 1}]
+        meta = PdfMetadata(pdf_path=tmp_path, title="Horizon Call 7", year=2026)
+        paper, _ = self._run(tmp_path, meta, blocks)
+        assert paper.title == "Horizon Call 7"
+        assert paper.cite_key_prefix == "horizoncall726"
+
+    def test_paper_kind_still_looks_up(self, tmp_path: Path):
+        pdf = tmp_path / "p.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        with (
+            patch(
+                "precis.ingest.pipeline.extract_metadata_from_sources",
+                return_value=PdfMetadata(pdf_path=pdf, title="T"),
+            ) as m,
+            patch("precis.ingest.pipeline.extract_blocks_marker", return_value=[]),
+        ):
+            extract_paper(pdf)
+        assert "online" not in m.call_args.kwargs

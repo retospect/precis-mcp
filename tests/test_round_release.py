@@ -711,19 +711,49 @@ def test_release_head_race_during_ci_lookup_stops_before_rollout(rig: Rig) -> No
     assert "deployment" not in _round_json(rig)["release"]
 
 
+def test_failed_deploy_hook_cannot_be_falsely_runtime_confirmed(rig: Rig) -> None:
+    head = _cut(rig)
+    out = _deploy(
+        rig,
+        DEPLOY_STUB_VERIFY="1",
+        DEPLOY_STUB_HOOK="printf 'HOOK_FAILURE_SENTINEL\\n'; exit 9",
+        **_verdict(head),
+    )
+    assert out.returncode == 9, f"stdout={out.stdout!r} stderr={out.stderr!r}"
+    assert "HOOK_FAILURE_SENTINEL" in out.stdout
+    assert "release/r1 deployed" not in out.stdout
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("prod") == ""
+    assert rig.origin_ref("main") == rig.shas["c3"]
+    assert _git(rig.origin, "tag", "--list", "deployed/r1") == ""
+    journal = _round_json(rig)["release"]["deployment"]
+    assert journal["sha"] == head
+    assert "rollout_at" not in journal
+    assert "runtime_confirmed_at" not in journal
+    assert len(rig.deploy_log()) == 1
+
+
 def test_release_head_race_during_rollout_retains_pin_without_tag(rig: Rig) -> None:
     head = _cut(rig)
     newer = _child(rig, head, "external release arrival")
-    out = _deploy(
-        rig,
+    out = rig.round(
+        "deploy",
         DEPLOY_STUB_VERIFY="1",
         DEPLOY_STUB_HOOK=f"git push -q origin {newer}:refs/heads/release/r1",
         **_verdict(head),
     )
+    assert rig.origin_ref("release/r1") == newer, (
+        "race injection did not move isolated origin; "
+        f"rc={out.returncode} stdout={out.stdout!r} stderr={out.stderr!r}"
+    )
     assert out.returncode == 1
     assert "changed during rollout" in out.stderr
-    assert rig.origin_ref("release/r1") == newer
     assert _round_json(rig)["release"]["deployment"]["sha"] == head
+    assert "rollout_at" not in _round_json(rig)["release"]["deployment"]
+    assert rig.origin_ref("prod") == head
+    assert rig.origin_ref("gated") == head
+    assert _git(rig.origin, "tag", "--list", "deployed/r1") == ""
+    assert "deployed" not in _round_json(rig)
     retry = _deploy(rig, **_verdict(newer))
     assert "partial deployment pins" in retry.stderr
     assert len(rig.deploy_log()) == 1

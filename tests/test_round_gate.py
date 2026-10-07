@@ -64,7 +64,9 @@ exit "${LGM_RC:-0}"
 
 _DEPLOY_STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$(dirname "$0")/../deploy.log"
-[ -n "${DEPLOY_STUB_HOOK:-}" ] && bash -c "$DEPLOY_STUB_HOOK"
+if [ -n "${DEPLOY_STUB_HOOK:-}" ]; then
+  bash -c "$DEPLOY_STUB_HOOK" || exit $?
+fi
 if [ "${DEPLOY_STUB_VERIFY:-}" = 1 ]; then
   common=$(git rev-parse --path-format=absolute --git-common-dir)
   printf '%s %s success\\n' "$1" "$(date +%s)" > "$common/precis-deploy-state"

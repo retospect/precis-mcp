@@ -57,6 +57,7 @@ from precis.ingest.lookup import (
     lookup_doi,
 )
 from precis.ingest.pdf_sidecar import (
+    candidate_title_from_text,
     extract_doi_from_filename,
     extract_pdf_meta,
     is_garbage_title,
@@ -307,6 +308,8 @@ def _select_best_doi(
     candidates: list[DoiCandidate],
     use_pdf2doi: bool = False,
     pdf_path: Path | None = None,
+    *,
+    online: bool = True,
 ) -> DoiCandidate | None:
     """Select the best DOI from candidates.
 
@@ -336,7 +339,7 @@ def _select_best_doi(
         if c.provenance in by_provenance:
             by_provenance[c.provenance].append(c)
 
-    for prov in provenance_order:
+    for prov in provenance_order if online else ():
         for c in by_provenance[prov]:
             validated, metadata = _validate_doi(c.doi)
             if validated:
@@ -345,7 +348,7 @@ def _select_best_doi(
                 return c
 
     # Try pdf2doi as final fallback
-    if use_pdf2doi and pdf_path:
+    if online and use_pdf2doi and pdf_path:
         pdf2doi_candidate = _try_pdf2doi(pdf_path)
         if pdf2doi_candidate:
             validated, metadata = _validate_doi(pdf2doi_candidate.doi)
@@ -374,7 +377,7 @@ def _read_sidecar_meta(pdf_path: Path) -> dict[str, Any]:
 
 
 def extract_metadata_from_sources(
-    pdf_path: Path, use_pdf2doi: bool = False
+    pdf_path: Path, use_pdf2doi: bool = False, *, online: bool = True
 ) -> PdfMetadata:
     """Build complete metadata from all available sources.
 
@@ -392,6 +395,12 @@ def extract_metadata_from_sources(
     :func:`precis.ingest.db_writer.probe_existing` query against
     ``ref_identifiers``, which the caller (``precis_add()``)
     invokes upstream of this function.
+
+    ``online=False`` skips every network step (Crossref DOI validation,
+    the Semantic Scholar title cascade, pdf2doi): a call-for-proposal is
+    not a bibliographic record, so the lookups only burn 429 backoff.
+    The title then comes from the sidecar / embedded PDF info dict, else
+    the first-page text.
     """
     pdf_path = Path(pdf_path).resolve()
 
@@ -429,7 +438,9 @@ def extract_metadata_from_sources(
     candidates.extend(pdf_candidates)
 
     # Select best DOI
-    best_doi = _select_best_doi(candidates, use_pdf2doi=use_pdf2doi, pdf_path=pdf_path)
+    best_doi = _select_best_doi(
+        candidates, use_pdf2doi=use_pdf2doi, pdf_path=pdf_path, online=online
+    )
     if best_doi:
         metadata.doi = best_doi.doi
         metadata.doi_provenance = best_doi.provenance
@@ -449,7 +460,7 @@ def extract_metadata_from_sources(
                 metadata.journal = best_doi.metadata["journal"]
 
     # 3. If still no title, try full lookup cascade
-    if not metadata.title:
+    if online and not metadata.title:
         try:
             lookup_result = lookup(str(pdf_path))
             if lookup_result.get("title"):
@@ -476,6 +487,10 @@ def extract_metadata_from_sources(
         raw_title = info.get("title", "")
         if raw_title and not is_pii(raw_title) and not is_garbage_title(raw_title):
             metadata.title = raw_title
+    if not online and not metadata.title:
+        metadata.title = candidate_title_from_text(
+            pdf_meta.get("first_pages_text", "") or ""
+        )
     if not metadata.authors:
         info = pdf_meta.get("info", {})
         author_str = info.get("author", "")

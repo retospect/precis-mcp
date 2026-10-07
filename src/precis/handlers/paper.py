@@ -1240,8 +1240,11 @@ class PaperHandler(Handler):
             and not arxiv_clear
         ):
             raise BadInput(
-                "edit(kind='paper') needs at least one field to change",
-                next="edit(kind='paper', id=<slug|id>, authors=[...], year=2024)",
+                f"edit(kind='{self.spec.kind}') needs at least one field to change",
+                next=(
+                    f"edit(kind='{self.spec.kind}', id=<slug|id>, "
+                    "authors=[...], year=2024)"
+                ),
             )
         if dry_mode:
             return self._render_paper_dry_run(
@@ -1326,7 +1329,7 @@ class PaperHandler(Handler):
             changed.append(f"authors({len(new_authors)})")
         changed.extend(meta_patch.keys())
         changed_str = ", ".join(changed) if changed else "no change"
-        body = f"updated paper id={ref_id}: {changed_str}."
+        body = f"updated {self.spec.kind} id={ref_id}: {changed_str}."
         if doi_edit_check is not None:
             # Runs after the tx above has committed — see
             # _doi_edit_warning's docstring for why.
@@ -1731,18 +1734,20 @@ class PaperHandler(Handler):
             slug = ref.slug or "???"
             title = _clean_inline_text(ref.title)
             body = f"# {slug} - abstract\n_{title}_\n\n{cleaned}"
-            body += render_next_section(
-                [
-                    (
-                        f"get(id='{_pa(ref)}', view='toc')",
-                        "see the TOC",
-                    ),
+            abstract_next = [
+                (
+                    f"get(id='{_pa(ref)}', view='toc')",
+                    "see the TOC",
+                ),
+            ]
+            if self.spec.corpus_role == "evidence":
+                abstract_next.append(
                     (
                         f"get(id='{_pa(ref)}', view='bibtex')",
                         "get the BibTeX entry",
-                    ),
-                ]
-            )
+                    )
+                )
+            body += render_next_section(abstract_next)
             return Response(body=body)
 
         if view == "toc":
@@ -2352,12 +2357,13 @@ class PaperHandler(Handler):
                     "see the full TOC",
                 )
             )
-        nav.append(
-            (
-                f"get(id='{_pa(ref)}', view='bibtex')",
-                "get the BibTeX entry",
+        if self.spec.corpus_role == "evidence":
+            nav.append(
+                (
+                    f"get(id='{_pa(ref)}', view='bibtex')",
+                    "get the BibTeX entry",
+                )
             )
-        )
         body = "\n".join(lines).rstrip() + render_next_section(nav)
         return Response(body=body)
 

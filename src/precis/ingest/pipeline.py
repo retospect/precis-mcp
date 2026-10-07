@@ -192,6 +192,29 @@ def _retag_references(chunks: list[ChunkToWrite]) -> list[ChunkToWrite]:
     return out
 
 
+#: Kinds that are not bibliographic records: no Crossref / S2 lookup.
+_NO_BIB_LOOKUP_KINDS: frozenset[str] = frozenset({"cfp"})
+
+
+def _first_title_block(blocks: list[dict[str, Any]]) -> str:
+    """Text of the first ``title`` block (the first-line title Marker
+    consumes and ``_blocks_to_chunks`` drops), else ``""``."""
+    for block in blocks:
+        if block.get("type") == "title":
+            text = " ".join(str(block.get("text") or "").split())
+            if text:
+                return text
+    return ""
+
+
+def _title_cite_key(title: str, year: int | None) -> str:
+    """Author-less cite key: first words of the title + 2-digit year."""
+    words = re.findall(r"[a-z0-9]+", title.lower())[:3]
+    base = "".join(words)[:24] or "untitled"
+    yy = f"{year % 100:02d}" if year is not None else "00"
+    return f"{base}{yy}"
+
+
 def _blocks_to_chunks(blocks: list[dict[str, Any]]) -> list[ChunkToWrite]:
     """Map Marker blocks → :class:`ChunkToWrite` body chunks.
 
@@ -322,6 +345,7 @@ def extract_paper(
     use_pdf2doi: bool = False,
     printable_only: bool = False,
     marker_timeout_s: float | None = None,
+    kind: str = "paper",
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from a local PDF.
 
@@ -349,6 +373,11 @@ def extract_paper(
     (P2-3 hang guard) — see its docstring. ``None`` (the default)
     preserves the original in-process, unguarded Marker call.
 
+    ``kind`` is the stored kind. A non-bibliographic kind (``cfp``) skips
+    the Crossref / Semantic Scholar lookups (``online=False``) and, when no
+    title was found, takes the title Marker consumed as the first-line
+    ``title`` block; the cite key then derives from the title (no authors).
+
     Raises :class:`FileNotFoundError` if ``pdf_path`` doesn't exist.
     """
     pdf_path = Path(pdf_path).resolve()
@@ -358,7 +387,13 @@ def extract_paper(
     pdf_bytes = pdf_path.read_bytes()
     pdf_sha256 = make_pdf_sha256(pdf_bytes)
 
-    metadata = extract_metadata_from_sources(pdf_path, use_pdf2doi=use_pdf2doi)
+    online = kind not in _NO_BIB_LOOKUP_KINDS
+    if online:
+        metadata = extract_metadata_from_sources(pdf_path, use_pdf2doi=use_pdf2doi)
+    else:
+        metadata = extract_metadata_from_sources(
+            pdf_path, use_pdf2doi=use_pdf2doi, online=False
+        )
     doi = metadata.doi or None
     arxiv_id: str | None = None  # extract_metadata_from_sources doesn't surface arxiv
 
@@ -371,6 +406,9 @@ def extract_paper(
         authors=authors_dict,
         year=metadata.year,
     )
+
+    if not online and not authors_dict and metadata.title:
+        cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
 
     # gr236139 — mutated by extract_blocks_marker iff it took the fitz
     # fallback branch; that's the only signal that survives a fallback
@@ -399,6 +437,10 @@ def extract_paper(
             glyph_health=glyph_health_info,
         )
         blocks = _repair_mojibake(blocks)
+        if not metadata.title and not online:
+            metadata.title = _first_title_block(blocks)
+            if metadata.title and not authors_dict:
+                cite_key_prefix = _title_cite_key(metadata.title, metadata.year)
         body_chunks = _blocks_to_chunks(blocks)
         body_chunks = _retag_references(body_chunks)
         cards = _build_cards(
@@ -456,7 +498,7 @@ def extract_paper(
         title=metadata.title,
         authors=authors_dict,
         year=metadata.year,
-        kind="paper",
+        kind=kind,
         provider=provider,
         set_by="system",
         paper_id=paper_id,

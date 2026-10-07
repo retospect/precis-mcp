@@ -1562,6 +1562,7 @@ def _build_paper(
             use_pdf2doi=use_pdf2doi,
             printable_only=input.printable_only,
             marker_timeout_s=marker_timeout_s,
+            kind=input.as_kind,
         )
         # DRY: the identical pipeline lands the doc under whichever kind
         # the caller asked for (``paper`` default, ``cfp`` for the

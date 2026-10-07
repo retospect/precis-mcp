@@ -169,3 +169,40 @@ class TestStripNulBytes:
         assert meta.title == "A paper"
         assert meta.authors == ["Smith, J."]
         assert meta.doi == "10.1000/abc"
+
+
+class TestOfflineExtraction:
+    """``online=False`` (cfp): no Crossref / Semantic Scholar traffic."""
+
+    def test_no_network_and_pdf_info_title_used(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from precis.ingest.pdf_metadata import extract_metadata_from_sources
+
+        pdf = tmp_path / "call.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        fake = {
+            "pdf_hash": "h",
+            "info": {"title": "Horizon Call 7 Quantum Sensing"},
+            "first_pages_text": "",
+        }
+        cand = DoiCandidate(
+            doi="10.1000/x", provenance=DoiProvenance.INTERNAL_EXTRACTOR
+        )
+
+        def boom(*_a, **_k):
+            raise AssertionError("network lookup attempted")
+
+        with (
+            patch("precis.ingest.pdf_metadata.extract_pdf_meta", return_value=fake),
+            patch(
+                "precis.ingest.pdf_metadata._extract_doi_candidates",
+                return_value=[cand],
+            ),
+            patch("precis.ingest.pdf_metadata.lookup_doi", side_effect=boom),
+            patch("precis.ingest.pdf_metadata.lookup", side_effect=boom),
+        ):
+            md = extract_metadata_from_sources(pdf, online=False)
+
+        assert md.title == "Horizon Call 7 Quantum Sensing"
+        assert md.doi == "10.1000/x"

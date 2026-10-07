@@ -193,6 +193,12 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
         ref_id_or_slug = identifier
 
     ref = store.get_ref(kind=kind, id=ref_id_or_slug)
+    if ref is None and not is_numeric and identifier.isdigit():
+        # ``get`` footers advertise "cite as `web:462078`" (the numeric ref
+        # id) for slug kinds too; accept it when no slug matched. The kind
+        # check is the SQL ``kind = %s`` — a numeric id of another kind
+        # still misses and falls to the NotFound below.
+        ref = store.get_ref(kind=kind, id=int(identifier))
     redirected_from: str | None = None
     if ref is None:
         # The live lookup missed. Two recoverable cases before we give up:
@@ -239,8 +245,13 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
                 next_hint = f"check it exists: get(kind={kind!r}, id={identifier})"
             else:
                 next_hint = f"check it exists: get(kind={kind!r}, id={identifier!r})"
+            forms = (
+                ""
+                if is_numeric or kind == "part"
+                else f" (a {kind} is '{kind}:<slug>' or '{kind}:<numeric ref id>')"
+            )
             raise NotFound(
-                f"link target {target!r} resolves to no live {kind} ref",
+                f"link target {target!r} resolves to no live {kind} ref{forms}",
                 next=next_hint,
             )
 

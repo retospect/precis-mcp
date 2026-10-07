@@ -10,7 +10,7 @@ from __future__ import annotations
 from precis.dispatch import Hub
 from precis.handlers.cfp import CfpHandler
 from precis.handlers.paper import PaperHandler
-from precis.store import Store
+from precis.store import ChunkInsert, Store
 from precis.utils import handle_registry
 
 
@@ -79,3 +79,20 @@ def test_cfp_empty_list_names_cfp_not_paper(store: Store) -> None:
     paper_resp = PaperHandler(hub=Hub(store=store)).get()
     assert "no papers ingested yet" in paper_resp.body
     assert "ingest-bundles" in paper_resp.body
+
+
+def test_cfp_edit_ack_names_cfp_and_get_offers_no_bibtex(store: Store) -> None:
+    """gr462088 #5: the edit ack said "updated paper"; the abstract and
+    chunk-nav hints offered a BibTeX entry a cfp does not have."""
+    ref = store.insert_ref(kind="cfp", slug="callfor00", title="Call for X")
+    store.chunks.insert_chunks(ref.id, [ChunkInsert(ord=0, text="Body text.")])
+    h = CfpHandler(hub=Hub(store=store))
+    ack = h.edit(id="callfor00", year=2026)
+    assert ack.body.startswith("updated cfp id=")
+    assert "paper" not in ack.body
+    got = store.get_ref(kind="cfp", id="callfor00")
+    assert got is not None and got.year == 2026
+    for view in ("abstract", None):
+        body = h.get(id="callfor00" if view else "callfor00~0", view=view).body
+        assert "BibTeX" not in body
+        assert "bibtex" not in body

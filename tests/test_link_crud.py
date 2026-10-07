@@ -76,6 +76,18 @@ class TestParseLinkTarget:
             ref_id=ref_id, pos=None, kind="paper", raw="paper:wang2020state"
         )
 
+    def test_slug_kind_accepts_numeric_ref_id(self, store: Store) -> None:
+        """``get`` footers say "cite as `web:462078`" (numeric ref id) for
+        slug kinds too; both forms resolve, a wrong-kind id does not."""
+        ref = store.insert_ref(kind="web", slug="webpage01", title="A page")
+        by_slug = parse_link_target("web:webpage01", store=store)
+        by_id = parse_link_target(f"web:{ref.id}", store=store)
+        assert by_slug.ref_id == by_id.ref_id == ref.id
+        assert by_id.kind == "web"
+        paper_id = _seed_paper(store)
+        with pytest.raises(NotFound, match="numeric ref id"):
+            parse_link_target(f"web:{paper_id}", store=store)
+
     def test_numeric_kind_ref_level(self, store: Store) -> None:
         mem_id = _seed_memory(store)
         target = parse_link_target(f"memory:{mem_id}", store=store)
