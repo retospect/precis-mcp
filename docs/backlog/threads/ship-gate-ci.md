@@ -106,30 +106,33 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
 
 ## Horizon
 
-1. **backlog/test-db-seed-xdist-isolation.md** — shared test-DB seeds vanish
+1. **backlog/session-prefix-and-fleet-context-cost.md** — a 105-137k
+   turn-one prefix is half of all cache reads; fleet windows run at 250k.
+2. **backlog/test-db-seed-xdist-isolation.md** — shared test-DB seeds vanish
    on gate clones; isolation fixes remove a flake class.
-2. **backlog/gate-concurrency.md** — serialised template clones add
+3. **backlog/gate-concurrency.md** — serialised template clones add
    suite-setup tax; speed, not correctness.
-3. **backlog/idle-test-dbs-hold-vm-ram.md** — live worktree test DBs hold VM
+4. **backlog/idle-test-dbs-hold-vm-ram.md** — live worktree test DBs hold VM
    RAM; Tier 2 reaping deferred.
-4. **backlog/per-agent-green-is-not-integrated-green.md** — six subagents
+5. **backlog/per-agent-green-is-not-integrated-green.md** — six subagents
    each green, the integrated run red; a workflow gap, not a defect.
-5. **backlog/pathway-plugin-ci-image.md** — the pathway plugin is untested
+6. **backlog/pathway-plugin-ci-image.md** — the pathway plugin is untested
    until the dev image carries autocatpath; couples to plugin-split.
-6. **backlog/ops-gate-hygiene.md** — service_config rollback gates need
+7. **backlog/ops-gate-hygiene.md** — service_config rollback gates need
    expiry and review; a housekeeping grab-bag.
-7. **backlog/worktree-path-guard-false-positives.md** — the brief tells
+8. **backlog/worktree-path-guard-false-positives.md** — the brief tells
    agents to read other worktrees; the harness refuses.
-8. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
+9. **backlog/ruff-is-unpinned-across-worktrees.md** — a `ruff>=0.11` floor
    lets trees format differently, so qland lint drifts.
-9. **backlog/windows-ci-residuals.md** — Windows timing-flake watch after
-   the skipif pass.
-10. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
+10. **backlog/windows-ci-residuals.md** — Windows timing-flake watch after
+    the skipif pass.
+11. **backlog/piped-exit-guard-tuning.md** — guard-piped-exit-code
     false-positive rate vs value; a decision, not a defect.
-11. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
+12. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
     real traffic; compact-thrash re-reads.
-12. **backlog/session-prefix-and-fleet-context-cost.md** — a 105-137k
-    turn-one prefix is half of all cache reads; fleet windows run at 250k.
+13. **backlog/fleet-coordination-via-precis.md** — peer messages and
+    wakeups cost a full ~250k-context turn each; consider moving the
+    status relay into precis.
 
 ## Parked
 

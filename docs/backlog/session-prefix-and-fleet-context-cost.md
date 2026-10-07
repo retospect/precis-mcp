@@ -30,7 +30,11 @@ about 2M output tokens. The cost is context re-sent on every turn, not output.
 - (c) **Coordination chatter.** Each peer message or wakeup is a full turn at
   ~250k context regardless of content. Coordinator ~180 message turns
   (72 in, 112 `SendMessage` out) plus the gripe loop's 41 `ScheduleWakeup`
-  ticks ≈ 55M tokens (~10%). Batch status relays; lengthen idle wakeups.
+  ticks ≈ 55M tokens (~10%). Acceptable for now (Reto 2026-10-07); the
+  longer-term option is `fleet-coordination-via-precis`.
+- (a) status 2026-10-07: Reto disabled the Figma, Claude Docs and
+  claude-context MCP servers for this project. Next pass: confirm the
+  turn-one prefix dropped.
 - (d) **Compact thrash** recurred: `b753bd9a` auto-compacted 11 times in 24h
   (see `token-review-hook-gaps` (c)).
 
