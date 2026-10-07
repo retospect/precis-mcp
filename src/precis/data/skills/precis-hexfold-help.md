@@ -340,6 +340,33 @@ angles and pyramidalisation first** — deviation is small by construction
 missed bar mints with WARN `scene.bar` naming the feature; ERROR
 `geom.clash`/`geom.seed_overlap` stay ERROR.
 
+## Straight Y: equal-120 sp2 seam
+
+An exclusive scene entry joins three open sheets along a straight zigzag
+seam. It is separate from foot scenes; no `extra` or mixed features.
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"y",
+ "params":{"sheet":[30,30],"k_tether":1.0,
+ "features":[{"name":"y","type":"k3-sp2-120-z",
+              "dihedrals_deg":[120,120,120]}]}}
+```
+
+`sheet` is `[seam_periods,honeycomb_row_pairs]`, integers in [2,30].
+Two guard columns close segment endpoints. At 30 by 30 this makes 5,790
+atoms, 30 trivalent seam atoms and 87 eight-cycle seam faces. `k_tether`
+must be finite and positive; analytic seed, minimally relaxed: seam and
+neighbours pinned, outer sheet atoms tethered to their sheet plane. The central seam atoms and immediate neighbours stay
+pinned at their authored registration; remaining sheet atoms relax.
+`seam.rings`, `seam.geometry`
+and `geom.summary` are retained in the block report. Read the actual bond
+and ring-angle findings; regular-polygon eight-cycle warnings are not
+hidden. This is preview geometry, not strength or stability evidence.
+Replay `generated.scene` params; this entry does not generate hx text.
+Three planes are unsupported by the revolution target format, so stored
+`surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
+`fit.unsolvable`; tube internal rails and variant B remain unimplemented.
+
 ## Round tops — `top: "sphere"` and a rounded `top: "lid"`
 
 The tube's

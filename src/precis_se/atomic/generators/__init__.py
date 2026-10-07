@@ -66,6 +66,15 @@ necessary physical bound: omitted room-capped defaults and lids stay unchanged.
 The dedicated theta-p diagnostic reads recorded tethered scene measurements
 in block views, so old provenance is inspectable without regenerating or
 confusing trial/grid placeholders with scene evidence; saved reports survive.
+The exclusive ``k3-sp2-120-z`` scene feature exposes a straight equal-120 Y
+of three open sheets, reusing hexfold's private segment joiner and one
+tethered stick pass. Public scene params are its replay input; no hx grammar
+is invented. Its analytic seam and immediate neighbours are explicitly
+pinned because plane-only tethers permit axial slip of the authored motif;
+the remaining sheets relax under the existing forces. No spring threshold
+changes or general rail topology are added. Its three fixed planes cannot
+become a revolution-target receipt, so stored surface_deviation stays unavailable
+while seam-ring, bond, angle and tether residual findings remain inspectable.
 """
 
 from __future__ import annotations

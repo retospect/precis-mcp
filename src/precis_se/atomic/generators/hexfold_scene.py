@@ -17,6 +17,12 @@ refused by name, so a typo never silently drops a feature option. The
 planner's refusals (a seam-phase hole cell, overlapping features, a top the
 build cannot seat) arrive as :class:`GeneratorError`.
 
+**Y feature contract.** A feature with ``"type": "k3-sp2-120-z"`` routes the
+whole call to :func:`~precis_se.atomic.generators.y_junction.build_y_junction`;
+it must be the only feature, with exactly ``name``, ``type`` and
+``dihedrals_deg``. For it ``sheet`` means ``[seam_periods, row_pairs]``, not
+the honeycomb ``[w, h]`` of the foot contract above.
+
 **Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
 ``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
 most the tube radius) hold the top to an authored surface, planned by
@@ -462,7 +468,18 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     """``{"sheet": [w, h], "features": [{"name", "at", "n", "radius",
     "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
     "k_tether"?: float}`` — plan the
-    scene, relax it under the tether and mint it (module docstring)."""
+    scene, relax it under the tether and mint it (module docstring).
+    An exclusive feature ``type='k3-sp2-120-z'`` instead builds the finite
+    straight Y; see :mod:`.y_junction` for its strict contract.
+    """
+    features_arg = params.get("features")
+    if isinstance(features_arg, list) and any(
+        isinstance(f, dict) and "type" in f for f in features_arg
+    ):
+        from precis_se.atomic.generators.y_junction import build_y_junction
+
+        return build_y_junction(params)
+
     from precis_se.atomic.generators.authored_foot import _FLIP
     from precis_se.atomic.surface_target import capture_target
 

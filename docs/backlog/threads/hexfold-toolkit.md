@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** gr470905 exact future-generated receipts are implemented; finish exact-pin validation and independent source review before root integration. Spec premise/acceptance: [stored authored-target read](../hexfold-ideal-surface-then-tile.md#r17-stored-authored-target-read--gr470905). Contract ACCEPTED dfa52780 is not source PASS. Legacy r5 remains unavailable. gr469873 original reach is DONE after exact R16 native acceptance; private k3 remains local-only.
-- **Blocked by:** Final remote validation, independent source review and root integration/deployed acceptance. Owning package rationale was refreshed after actual DRY END. Legacy scene/plan lacks the stored frame; no automatic r5 metrics. Human Reto/orchestrator reports r5 ball12, ball12r11 and cyl12open look decent after spacing16 nm; attributed human workflow only, no owner fold/browser execution. Larger-pillar budget and scientific/hero/model holds unchanged.
+- **Next:** Source review/root integration of public straight equal-120 Y variant A, then orchestrator runs the exact Do-next 7 op on prod. Dev-DB public put/get has built the 30 by 30 case: 5,790 atoms, 87 seam eight-cycles, no clashes, retained ring-angle warnings. Contract/evidence: [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07). This is the owner's last fleet slice; generate-as-job transfers to a local agent. gr470905 source PASS is integrated on work/hexfold/y-junction-a with scoped validation PASS; root full gate/deploy/native acceptance remain separate.
+- **Blocked by:** Variant A source review/integration before prod execution. Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** window9 thread01a108d5-fdb3-7b91-a50b-c3bc5532aa56; work/hexfold/stored-surface-target from staged R17 7265b9ac0502cd007affdae26f61256877b547d9, in codex-hexfold/.scratch/stored-surface-target. Dirty pillar-sweep docs and scratch remain untouched in the original r15-reach-fix tree.
+- **Worktree:** window9 thread01a108d5-fdb3-7b91-a50b-c3bc5532aa56; work/hexfold/y-junction-a, codex-hexfold/.scratch/y-junction-a. The source branch, dirty pillar notes and all earlier scratch/branches remain untouched.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
@@ -583,10 +583,17 @@ waited on happened 09-29 — note at the bottom)
 6. **backlog/hexfold-t-handle-bearing.md** — the third test piece (Reto,
    2026-09-30), alongside the box and the valve.
 7. **backlog/hexfold-seam-type-catalogue.md** — the seam-motif rows the
-   catalogue's third row type exists for. R13 selects ONLY equal120 k=3
-   zigzag sp² geometry, spec-first, without a measured-extent campaign;
-   the current straight/open-rim fixture hold is in its selected contract.
-   Other rows retain their earlier Do-next 8 measurement prerequisite.
+   catalogue's third row type exists for. R17 variant A exposes the private
+   equal120 joiner through an exclusive scene feature. Replay after source
+   review/integration: `{"op":"generate","generator":"hexfold_scene",
+   "name":"y","params":{"sheet":[30,30],"k_tether":1.0,"features":[
+   {"name":"y","type":"k3-sp2-120-z","dihedrals_deg":[120,120,120]}]}}`.
+   Three open sheets, authored joint pinned, remaining sheets tethered;
+   no three-plane surface receipt. Prod run/viewer belongs to orchestrator.
+   Other rows retain their earlier measurement prerequisite. Generate-as-job
+   transfers to a local agent; this fleet owner does not start it.
+   Variant B (tube wall plus sheet, unequal 180/90/90 seam) still needs the
+   seam-row measurement before it is buildable.
 8. **`spec.md` §28.8 valve tool set** (checklist in
    backlog/precis-surface-kernel.md) — clearance field → pocket extractor
    → attachment-site enumerator → complementarity scorer → bond-energy

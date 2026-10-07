@@ -87,6 +87,13 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   (`params.sheet`, `params.features` — `precis-hexfold-help`); misses and
   caveats come back as `scene.bar` / `scene.top.joint` WARNs, also in the
   returned provenance. Unknown keys are refused.
+  Its exclusive `features:[{name:'y',type:'k3-sp2-120-z',
+  dihedrals_deg:[120,120,120]}]` entry makes three open sheets on one
+  straight equal-120 seam; `sheet:[periods,row_pairs]` has integer counts
+  in [2,30]. Analytic seed, minimally relaxed: seam and neighbours pinned, outer sheet
+  atoms tethered to their sheet plane; no mixed feet or `extra`. See
+  `precis-hexfold-help` for the exact op and retained seam/bond/angle report.
+  Three-plane stored surface deviation is unavailable, not zero.
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →

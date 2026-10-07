@@ -18,6 +18,9 @@ integers and faces simple closed input bond walks, so offsets cannot hide
 corrupt topology as cross-block faces. It performs no relaxation, public grammar
 or SE mutation. Closed internal tube rails/curved placement for nanoreactor
 T2 remain separate; a straight deterministic fixture is not that capability.
+``y_junction.straight_y`` constructs finite honeycomb sectors for the SE
+scene adapter using that same private admission/placement seam. Two guard
+columns close its endpoints; no cyclic Port or unequal solver is invented.
 
 Vendored into precis as its own package: MIT (``LICENSE`` here), never
 imports ``precis*`` (``tests/test_hexfold_import_boundary.py``), exported

@@ -8,6 +8,63 @@ model: opus
 
 # hexfold: seam-type catalogue
 
+## R17 variant A public scene contract — 2026-10-07
+
+Orchestrator authorizes the equal-120 straight Y only. On branch
+`work/hexfold/y-junction-a`, `compose_k3` already owns
+placement and copied-graph admission; no public generation route exists.
+Expose it through `hexfold_scene` with `sheet: [30,30]` and exactly one
+feature `{name: "y", type: "k3-sp2-120-z", dihedrals_deg: [120,120,120]}`.
+No ordinary foot features or `extra` may be mixed into this entry. Invalid
+selector/unequal angles refuse with `fit.unsolvable` before build or relax.
+Counts must be integers at least two; this bounded entry accepts at most
+30 periods and 30 honeycomb row pairs. This is an explicit operational
+scope limit, not a physical bound or a replacement for the later cost gate.
+
+Each sheet has two sites per row pair and two guard columns to close the
+finite zigzag seam's endpoints: `2*(periods+2)*row_pairs` atoms per sheet.
+The 30 by 30 case has 5,790 atoms including 30 central seam atoms, three
+open sheet sectors and 87 actual eight-cycle seam faces. Local segments
+remain private; whole-cyclic-walk Port grammar and the hx compiler remain
+unchanged. Public params, rather than fabricated hx regeneration text,
+are the replay input and are retained in the generated scene record.
+
+Use the existing deterministic stick pass: analytic seed, minimally
+relaxed, with seam and neighbours pinned and outer sheet atoms tethered to
+their sheet plane (seam atoms tethered to their original seam line). Report
+the authored constraint explicitly: pin the central seam atoms and their
+three immediate sheet neighbours at their analytic registration, while
+remaining sheet atoms relax. Plane-only tethers permit axial sliding and
+noncoplanar bond vectors; pinning the local joint preserves the selected
+equal-120 motif without changing the spring judge or its thresholds. Report
+the actual pass/force, seam face inventory, degree-three sp2 seam atoms,
+bond and coplanarity/120-angle residuals, and existing geometry findings.
+Keep regular-polygon eight-cycle angle warnings visible. This is preview
+geometry, not scientific stability or printable-strength evidence.
+The current stored target format accepts surfaces of revolution, not a
+three-plane Y; omitted-target surface_deviation must remain unavailable,
+with an honest corrective hint, rather than fitted/substituted metrics.
+
+Acceptance: deterministic analytic assembly and strict pre-build refusals;
+one small real tethered public scene fixture persisted through the public
+SE put/get path; one dev-DB 30 by 30 construction with saved report;
+open rims, no geom.clash, degree-three seam, bond/angle findings reported;
+scoped canonical tests/types/Ruff/import/docs lint. Prod execution belongs
+to orchestrator after source review and integration. No unequal solver,
+public segment grammar, T2 extension, job implementation or hero work.
+
+**Owner dev-DB evidence:** public SE put/get at 30 by 30 built and bound
+5,790 atoms and 8,544 bonds; 2,697 hexagons and 87 seam eight-cycles.
+One tethered pass with 120 authored joint atoms pinned: bonds
+1.3779778850–1.4784376158 Å, no bonds over the existing 0.10 Å tolerance,
+no geom.clash. Seam angle deviation max 4.27e-14 degrees and normalized
+triple product max 1.31e-14. Existing ring-angle comparison retains 696
+corners over tolerance, max 22.3 degrees; no clean-all-angles claim.
+Plane tether distance max 1.59e-14 Å is constrained construction evidence,
+not independent surface fidelity. Public stored surface_deviation returns
+unavailable. Canonical fixture data roll back; raw generated report/op
+are preserved in task scratch, not a prod tree or visited viewer URL.
+
 ## R13 selected contract — Horizon 7, spec review before implementation
 
 Only the entry **(3, (120°,120°,120°), zigzag SD rim pattern,
