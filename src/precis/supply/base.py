@@ -8,9 +8,55 @@ land as one file.
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+from precis.supply.catalog import FilterUnavailable
+
+log = logging.getLogger(__name__)
+
+
+class SupplierError(RuntimeError):
+    """Safe adapter diagnostic; never includes request or credential data."""
+
+    def __init__(self, stage: str, status: int) -> None:
+        self.stage = stage
+        self.status = status
+        super().__init__(f"HTTP {status} at {stage}")
+
+
+@dataclass(frozen=True)
+class SupplierOutcome:
+    """One supplier's successful quote count or safe error, for a keyword."""
+
+    supplier: str
+    keyword: str
+    count: int | None = None
+    error: str | None = None
+    category_id: int | None = None
+    parameters: dict[str, list[str]] | None = None
+
+    def line(self) -> str:
+        if self.error is not None:
+            return f"{self.supplier}: {self.error} for keyword {self.keyword!r}"
+        count = (
+            "0 products with stock data" if self.count == 0 else f"{self.count} quotes"
+        )
+        filters = (
+            f" · category {self.category_id}, parameters={self.parameters or {}}"
+            if self.category_id
+            else ""
+        )
+        return f"{self.supplier}: {count} for keyword {self.keyword!r}{filters}"
+
+
+@dataclass(frozen=True)
+class QuoteResult:
+    quotes: list[StockQuote]
+    outcomes: list[SupplierOutcome]
 
 
 @dataclass(frozen=True)
@@ -38,6 +84,10 @@ class StockQuote:
     url: str | None
     retrieved: datetime
     match_confidence: str = "keyword"
+    region: str | None = None
+    warehouse: str | None = None
+    ships_from: str | None = None
+    ships_to: str | None = None
 
     @property
     def in_stock(self) -> bool:
@@ -51,8 +101,15 @@ class StockQuote:
             if self.unit_price is not None
             else "no price"
         )
+        location = self.region or "origin unknown"
+        if self.warehouse:
+            location += f", warehouse {self.warehouse}"
+        if self.ships_from and self.ships_from != self.region:
+            location += f", ships from {self.ships_from}"
+        if self.ships_to:
+            location += f", destination {self.ships_to}"
         return (
-            f"{self.supplier} {self.sku}: {self.quantity} in stock · {price} · "
+            f"{self.supplier} ({location}) {self.sku}: {self.quantity} in stock · {price} · "
             f"{self.description} (matched by {self.match_confidence}, "
             f"{self.retrieved:%Y-%m-%d %H:%M} UTC)"
         )
@@ -72,8 +129,8 @@ class Adapter(Protocol):
 
     def search(self, designation: str, *, limit: int = 5) -> list[StockQuote]:
         """Quotes for a designation like ``'ISO 4762 M4x12'``, best first.
-        Network errors raise; an empty list means *asked and nobody has
-        one*, which is itself the answer."""
+        Network errors raise; an empty list means this keyword returned no
+        products with stock data, never that nobody stocks the part."""
 
 
 def adapters() -> list[Adapter]:
@@ -83,8 +140,10 @@ def adapters() -> list[Adapter]:
     out: list[Adapter] = []
     try:
         from precis.supply.digikey import DigiKeyAdapter
+        from precis.supply.farnell import FarnellAdapter
+        from precis.supply.mouser import MouserAdapter
 
-        out.append(DigiKeyAdapter())
+        out.extend([DigiKeyAdapter(), FarnellAdapter(), MouserAdapter()])
     except ImportError:  # pragma: no cover — httpx is a core dep today
         pass
     return out
@@ -104,24 +163,94 @@ def unavailable_reason() -> str | None:
     return "; ".join(reasons)
 
 
-def quote(designation: str, *, limit: int = 5) -> list[StockQuote]:
+def quote(
+    designation: str,
+    *,
+    limit: int = 5,
+    category_id: int | None = None,
+    parameters: dict[str, list[str]] | None = None,
+    criteria: dict[str, Any] | None = None,
+) -> QuoteResult:
     """Ask every configured supplier, best-stocked first.
 
-    A supplier that errors is skipped rather than allowed to sink the
-    whole answer — one distributor being down is not a reason to refuse to
-    report the others. An empty result with no
-    :func:`unavailable_reason` means the part really is unlisted.
+    Preserve each supplier's outcome beside successful quotes: an outage
+    cannot establish catalogue absence, and must not hide other suppliers.
+    Exception messages may contain request credentials; only typed adapter
+    errors or exception class names are returned/logged.
     """
     out: list[StockQuote] = []
+    outcomes: list[SupplierOutcome] = []
     for adapter in adapters():
-        if adapter.configured() is not None:
+        why = adapter.configured()
+        if why is not None:
+            outcomes.append(SupplierOutcome(adapter.name, designation, error=why))
             continue
         try:
-            out.extend(adapter.search(designation, limit=limit))
-        except Exception:  # one supplier's outage is not the caller's
-            continue
-    out.sort(key=lambda q: (-q.quantity, q.unit_price or float("inf")))
-    return out[:limit]
+            selected = parameters
+            if category_id is not None:
+                from precis.supply.digikey import DigiKeyAdapter
+
+                if not isinstance(adapter, DigiKeyAdapter) and not criteria:
+                    outcomes.append(
+                        SupplierOutcome(
+                            adapter.name,
+                            designation,
+                            error="Digi-Key filters unsupported by this supplier",
+                        )
+                    )
+                    continue
+                if not isinstance(adapter, DigiKeyAdapter):
+                    # Curated automatic Digi-Key criteria do not exclude other
+                    # suppliers; these quotes remain explicitly keyword matches.
+                    found = adapter.search(designation, limit=limit)
+                    out.extend(found)
+                    outcomes.append(
+                        SupplierOutcome(adapter.name, designation, count=len(found))
+                    )
+                    continue
+                if selected is None and criteria:
+                    selected = adapter.fastener_parameters(category_id, **criteria)
+                found = adapter.search(
+                    designation,
+                    limit=limit,
+                    category_id=category_id,
+                    parameters=selected,
+                )
+            else:
+                found = adapter.search(designation, limit=limit)
+            out.extend(found)
+            outcomes.append(
+                SupplierOutcome(
+                    adapter.name,
+                    designation,
+                    count=len(found),
+                    category_id=category_id,
+                    parameters=selected,
+                )
+            )
+        except Exception as exc:  # retain partial success, without raw errors
+            error = (
+                str(exc)
+                if isinstance(exc, (SupplierError, FilterUnavailable))
+                else type(exc).__name__
+            )
+            outcomes.append(SupplierOutcome(adapter.name, designation, error=error))
+            log.warning("supplier %s: %s", adapter.name, error)
+    preference = [
+        part.strip().upper().replace("UK", "GB")
+        for part in os.environ.get(
+            "PRECIS_SUPPLY_REGION_PREFERENCE", "IE,GB,DE,EU"
+        ).split(",")
+        if part.strip()
+    ]
+
+    def rank(item: StockQuote) -> tuple[bool, int, int]:
+        region = (item.region or "").upper().replace("UK", "GB")
+        home = preference.index(region) if region in preference else len(preference)
+        return not item.in_stock, home, -item.quantity
+
+    out.sort(key=rank)
+    return QuoteResult(out[:limit], outcomes)
 
 
 def now() -> datetime:

@@ -22,10 +22,12 @@ Writes one open tag ``topic:<slug>`` per confirmed topic, plus a closed marker
 tag ``TOPICCASCADE:<version>-<hash(sorted enabled slugs)>``
 (:func:`topic_marker_value`; written regardless of outcome, including zero
 matches) so a processed paper is not re-claimed. Bumping
-``CLASSIFY_TOPICS_VERSION`` *or* changing the enabled-topic set changes the
-marker value, lazily re-claiming the corpus — this is also how a *newly
-added* topic backfills retroactively over papers already in the corpus
-(topic dossiers: "and retroactively, for all the others").
+``CLASSIFY_TOPICS_VERSION`` or changing a worker's enabled-topic set changes
+its marker and lazily re-claims subset-marked papers. The current version's
+full-taxonomy marker covers every enabled subset, so the worker leaves refs
+classified by the full-sweep CLI alone. A newly added topic still backfills
+refs carrying an older subset marker (topic dossiers: "and retroactively,
+for all the others").
 
 The top-level topic list is **closed** — new ``data/topics/*.yaml`` entries
 are added by the operator, never auto-minted (controlled chunk tagging's measured
@@ -228,13 +230,19 @@ def _classify_one(
 
 
 def _claim(
-    conn: Any, *, limit: int, marker_value: str, ref_ids: list[int] | None = None
+    conn: Any,
+    *,
+    limit: int,
+    marker_values: list[str],
+    ref_ids: list[int] | None = None,
 ) -> list[tuple[int, str]]:
     """Papers or patents with body content lacking a current-marker tag.
-    Existence of a fresh ``TOPICCASCADE`` ref tag carrying ``marker_value`` is
-    the 'done' marker (no separate lease table, mirroring
-    ``paper_glossary``); idempotent + re-claimable by changing the marker
-    (a version bump, or — per-topic classify gating — a change to the enabled-topic set).
+    A fresh ``TOPICCASCADE`` tag matching either the enabled-set marker or
+    the current full-taxonomy marker means done. The latter covers every
+    enabled subset because the full sweep has already classified against all
+    topics. Other marker changes (version bumps or subset growth) re-claim
+    subset-marked refs lazily; the shared claim helper retains lease and
+    filter behavior.
     Also excludes a ref currently under an unexpired claim-time attempt
     lease (:mod:`precis.workers.ref_lease`, gr172740/173317 — a
     persistently-failing ref must not be re-fetched and re-LLM'd every
@@ -247,10 +255,10 @@ def _claim(
             NOT EXISTS (
               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
               WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s
-                AND t.value = %(marker_value)s
+                AND t.value = ANY(%(marker_values)s)
             )
         """,
-        params={"ns": MARKER_NAMESPACE, "marker_value": marker_value},
+        params={"ns": MARKER_NAMESPACE, "marker_values": marker_values},
         limit=limit,
         ref_ids=ref_ids,
         lease_ns=ref_lease.attempt_ns(MARKER_NAMESPACE),
@@ -312,10 +320,12 @@ def run_classify_topics_pass(
         return {"claimed": 0, "ok": 0, "failed": 0}
     effective_slugs = [str(t["slug"]) for t in effective]
     marker_value = topic_marker_value(effective_slugs)
+    full_marker_value = topic_marker_value(str(t["slug"]) for t in topics)
+    marker_values = list(dict.fromkeys((marker_value, full_marker_value)))
 
     with store.pool.connection() as conn:
         rows = _claim(
-            conn, limit=batch_size, marker_value=marker_value, ref_ids=ref_ids
+            conn, limit=batch_size, marker_values=marker_values, ref_ids=ref_ids
         )
         conn.commit()
     if not rows:

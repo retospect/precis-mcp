@@ -9,17 +9,13 @@ prio: high
 
 ## Motivation / why
 
-A join reports. Nothing shows the report.
+`view='report'` exposes stored generate/join findings by direct design block,
+optionally selected by label or uid with `args={'block': ...}`. It reuses the
+block view's findings renderer without geometry loading or recomputation.
+Missing records or malformed findings are unavailable, never a clean bill of
+health. State overrides are rejected; template occurrences are not expanded.
 
-The findings a join produces survive only inside the minted structure
-ref's `meta['generated']['report']['findings']`; the op echo carries
-counts, not codes. There are seventeen `se` views and none of them shows
-what an op *reported*. In tests this means hand-written helpers to dig the
-codes out of meta; against prod it means SQL archaeology. During the
-2026-09-30 dogfood, answering "did the catalogue get consulted, and which
-row won?" took six queries and a container exec, and the question that
-actually mattered — "is this composite intact?" — was not asked at all,
-because asking it was expensive.
+Catalogue resolution and write-free dry-run remain the next slices.
 
 SPEC §25.3 specifies `view='catalogue'`. It does not exist. So the one
 number a join looks up — the seam radius, and the leak threshold that
@@ -34,15 +30,12 @@ it.
 
 ## In scope
 
-Three surfaces, probably three slices:
+Stored reports are implemented. Two surfaces remain:
 
-1. **`view='report'` on a design or block** — the findings a generate or
-   join recorded, by code and severity, from the bound structure's meta.
-   Read-only over stored records; no recomputation.
-2. **`view='catalogue'`** (SPEC §25.3) — the rows the design's joins can
+1. **`view='catalogue'`** (SPEC §25.3) — the rows the design's joins can
    see, and per join side, which row was consulted, its label, and
    whether it was preferred or withheld by the measured-row gate.
-3. **A dry-run for `join`** — the equivalent of `generate`'s
+2. **A dry-run for `join`** — the equivalent of `generate`'s
    `fidelity="check"`: resolve, compose, report, mint nothing. Today every
    probe mints a composite, which is how the dogfood permanently
    corrupted a design in order to ask a question about it.

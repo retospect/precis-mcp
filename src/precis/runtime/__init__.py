@@ -6,6 +6,9 @@ plus ``core`` for the ``PrecisRuntime`` class itself and ``factory`` for
 ``build_runtime``). This module re-exports the same names every existing
 ``from precis.runtime import X`` call site (in this repo and any caller
 outside it) already relies on — the split is invisible from here down.
+
+Licensed live responses opt out of pagination caching while retaining the
+frame limit. The tool ledger already stores only call metadata, not content.
 """
 
 from __future__ import annotations

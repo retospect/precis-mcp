@@ -1,0 +1,43 @@
+{
+  "supplier": "digikey",
+  "retrieved": "2026-10-05",
+  "note": "Category mapping only; no claim of ISO grade/finish or availability. Parameter value IDs come from current API filter options. Heat-set inserts have no verified category mapping.",
+  "categories": [
+    {
+      "category_id": 572,
+      "name": "Screws, Bolts",
+      "source": "https://www.digikey.com/en/products/filter/screws-bolts/572",
+      "series": [
+        "iso-4762",
+        "iso-4017",
+        "iso-10642",
+        "iso-7380",
+        "iso-14579",
+        "iso-14581",
+        "iso-14583",
+        "iso-14585",
+        "iso-14586",
+        "iso-4026"
+      ]
+    },
+    {
+      "category_id": 573,
+      "name": "Nuts",
+      "source": "https://www.digikey.com/en/products/filter/nuts/573",
+      "series": [
+        "iso-4032",
+        "iso-7040",
+        "iso-4035"
+      ]
+    },
+    {
+      "category_id": 571,
+      "name": "Standard Washers",
+      "source": "https://www.digikey.com/en/products/filter/washers/standard-washers/571",
+      "series": [
+        "iso-7089",
+        "iso-7090"
+      ]
+    }
+  ]
+}

@@ -27,6 +27,11 @@ raise for the executor's normal handling.
 Runs under ``job_inproc`` (bounded in-process work, one job per pass tick —
 the same lane as ``pcb_place``/``embed_batch``): one HTTP fetch of at most
 50 MB plus one ingest, no detached compute, no claude.
+
+A supplier-linked component may queue this same worker with its stored
+manufacturer URL and component ref id. Reuse the SSRF-pinned bounded download
+and datasheet ingest; no API parameter/price/stock is imported. The datasheet
+becomes independent sourced evidence via a datasheet-of link.
 """
 
 from __future__ import annotations
@@ -55,8 +60,20 @@ log = logging.getLogger(__name__)
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"lcsc": {"type": "string", "minLength": 2}},
-    "required": ["lcsc"],
+    "properties": {
+        "lcsc": {"type": "string", "minLength": 2},
+        "component_ref_id": {"type": "integer", "minimum": 1},
+        "url": {"type": "string", "minLength": 8},
+    },
+    "oneOf": [
+        {
+            "required": ["lcsc"],
+            "not": {
+                "anyOf": [{"required": ["component_ref_id"]}, {"required": ["url"]}]
+            },
+        },
+        {"required": ["component_ref_id", "url"], "not": {"required": ["lcsc"]}},
+    ],
     "additionalProperties": False,
 }
 
@@ -278,8 +295,57 @@ def pull(store: Store, lcsc: str) -> dict[str, Any]:
     return record
 
 
+def pull_component(store: Store, ref_id: int, url: str) -> dict[str, Any]:
+    """Acquire independent manufacturer evidence; no API parameters are used."""
+    ref = store.get_ref(kind="component", id=ref_id)
+    if ref is None or ref.kind != "component":
+        raise ValueError("datasheet target must be a live component")
+    links = (ref.meta or {}).get("supplier_links") or []
+    if not any(item.get("datasheet_url") == url for item in links):
+        raise ValueError("datasheet URL must match stored supplier identity link")
+    try:
+        with tempfile.TemporaryDirectory(prefix="component-datasheet-") as tmp:
+            path = Path(tmp) / "datasheet.pdf"
+            final_url, sha = _download(url, path)
+            ds_id = _existing_by_sha(store, sha)
+            if ds_id is None:
+                named = path.with_name(f"datasheet-{sha[:12]}.pdf")
+                path.rename(named)
+                ds_id, inserted = _ingest(store, named)
+                if _kind_of(store, ds_id) != "datasheet":
+                    raise _Failed("ingest_failed:wrong_kind")
+                if inserted:
+                    store.update_paper_fields(
+                        ds_id,
+                        meta_patch={"source_url": final_url},
+                        source="datasheet_pull",
+                    )
+        store.add_link(src_ref_id=ds_id, dst_ref_id=ref_id, relation="datasheet-of")
+        return {
+            "status": "ok" if _body_chunks(store, ds_id) > 0 else "failed",
+            "datasheet_ref_id": ds_id,
+            "at": now_iso(),
+        }
+    except _Failed as exc:
+        return {"status": "failed", "reason": exc.reason, "at": now_iso()}
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
-    lcsc = str((ctx.meta.get("params") or {}).get("lcsc") or "").strip().upper()
+    params = ctx.meta.get("params") or {}
+    if params.get("component_ref_id") is not None:
+        record = pull_component(
+            ctx.store, int(params["component_ref_id"]), str(params["url"])
+        )
+        ctx.append_chunk(
+            "job_summary", f"component manufacturer datasheet: {record['status']}"
+        )
+        ctx.set_meta(
+            pull_status=record["status"],
+            datasheet_ref_id=record.get("datasheet_ref_id"),
+            pull_reason=record.get("reason"),
+        )
+        return
+    lcsc = str(params.get("lcsc") or "").strip().upper()
     if not re.fullmatch(r"C\d+", lcsc):
         ctx.record_failure(
             f"datasheet_pull: {lcsc!r} is not an LCSC C-number", failure_class="infra"

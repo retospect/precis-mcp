@@ -74,22 +74,13 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "conv",
 )
 
-#: Design/artifact kinds that predate ``KindSpec.placement`` and so are
-#: declared ``placement='stream'`` by default (component/material/pcb —
-#: see ``KindSpec.placement`` in ``protocol.py``), even though in every
-#: sense that matters to a human browsing Drive they're an authored
-#: design the operator made, not a collected source. ``se``/``structure``/
-#: ``figure`` already carry ``placement='artifact'`` and reach Drive
-#: through the live-hub ``artifact_kinds()`` facet (``item_view.py``) —
-#: this is the small hand-curated remainder placement introspection
-#: alone won't catch. Deliberately *not* folded into
-#: ``_DEFAULT_SOURCE_KINDS`` above, which stays the literal "Source"
-#: facet row (collected/ingested docs) — ``routes/drive.py`` unions this
-#: list into the *default search scope* instead, keeping the Source row
-#: semantically honest. The coupled taxonomy audit (see that constant's
-#: own docstring) will want a real placement bucket for this; noting the
-#: gap here rather than solving it structurally.
-_DESIGN_KINDS: tuple[str, ...] = ("pcb", "component", "material")
+#: Design browsing choices. pcb/component/material predate artifact
+#: placement; se declares artifact but belongs in this bucket by Reto's
+#: ruling. Drive partitions categories before rendering so se has one home.
+#: Do not fold these into Sources: designs are operator-authored work, not
+#: collected/ingested documents. This is a UI grouping, not a new placement
+#: value or inferred provenance.
+_DESIGN_KINDS: tuple[str, ...] = ("pcb", "component", "material", "se")
 
 #: Results per page — shared by the /drive + /items browse and search
 #: lists. Large by design: this is a self-hosted daily-use tool where

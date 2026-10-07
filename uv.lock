@@ -3876,7 +3876,7 @@ wheels = [
 
 [[package]]
 name = "precis-mcp"
-version = "8.35.16"
+version = "8.35.18"
 source = { editable = "." }
 dependencies = [
     { name = "ase" },

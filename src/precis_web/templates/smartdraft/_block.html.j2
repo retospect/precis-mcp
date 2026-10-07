@@ -107,6 +107,18 @@
    single <div data-dc>, and a test (and the delegated click handler) assumes
    exactly one <div> per rendered block; a nested <div> here would break that
    "find the block's closing </div>" assumption. -#}
+{# Reuse the ledger matrix so inherited section checks and stale watermarks
+   agree with the aggregate dot; these flags never start a review. #}
+{% if n.is_prose or n.is_heading %}
+<span class="sd-review sd-checker-strip inline-block text-xs" @click.stop>
+  {%- set labels = {'flow': 'F', 'cites': 'C', 'structure': 'S', 'adversarial': 'A'} -%}
+  {%- set symbols = {'current': '✓', 'stale': '~', 'never': '–'} -%}
+  {%- for row in review.matrix if row.checker in labels -%}
+  <span data-review-checker="{{ row.checker }}" data-review-status="{{ row.status }}"
+        title="{{ row.line }}" aria-label="{{ row.checker }}{% if row.via_section %} (via section){% endif %}: {{ 'unreviewed' if row.status == 'never' else row.status }}">{{ labels[row.checker] }}{{ symbols[row.status] }}</span>{{ ' ' if not loop.last else '' }}
+  {%- endfor -%}
+</span>
+{% endif %}
 <span class="relative inline-block" x-data="{ open: false }" @click.outside="open = false">
   <button type="button" @click="open = !open"
           title="{{ review.tooltip }}{% if not review.integrity_ok %}

@@ -18,7 +18,14 @@ sharing one lead-in family:
   pay-as-you-go wording (gr345336).
 
 One module owns the wording so a fourth variant is one edit here, not a
-hunt across every consumer. Imported by :mod:`precis.utils.llm.router`
+hunt across every consumer. Reset parsing lives here as well so live
+router results and executor parking agree on the next UTC instant.
+Missing or malformed clock clauses keep the existing six-hour backoff;
+legacy usage-limit notices keep the executor's two-hour backoff. Account
+API notices use their absolute reset date, clamped to now when expired. Clock
+notices take precedence over a bare 429: parking for fifteen minutes
+would exhaust bounded unpark retries before the quota actually resets.
+Imported by :mod:`precis.utils.llm.router`
 (pauses a live dispatch whose CLEAN final text turns out to just BE a
 quota notice) and :mod:`precis.workers.executors._common` (classifies a
 captured failure *reason* string for retry backoff, gr344988).
@@ -27,6 +34,8 @@ captured failure *reason* string for retry backoff, gr344988).
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 #: Lead-ins that share a "resets <clock> (<tz>)" clause — the shape
 #: :data:`QUOTA_RESET_PATTERN` extracts a wall-clock reset instant from.
@@ -50,7 +59,7 @@ QUOTA_LEAD_IN = rf"usage limit|{_QUOTA_CLOCK_LEAD_IN}"
 
 #: Reset-clause-parseable subset (weekly/session + pay-as-you-go), with
 #: the ``hour``/``minute``/``meridiem``/``tz`` capture groups
-#: :func:`precis.workers.executors._common._parse_quota_reset_at` reads.
+#: :func:`parse_quota_reset_at` reads.
 #: The optional trailing group means a match with the lead-in but no
 #: (or an unparseable) reset clause still matches — the caller falls
 #: back to a fixed conservative backoff rather than treating it as a
@@ -78,6 +87,79 @@ QUOTA_MESSAGE_PATTERN = re.compile(QUOTA_LEAD_IN, re.IGNORECASE)
 _MAX_QUOTA_TEXT_CHARS = 160
 
 
+def parse_quota_reset_at(match: re.Match[str], now: datetime) -> datetime | None:
+    """Absolute UTC instant named by a matched :data:`QUOTA_RESET_PATTERN`
+    "resets <clock> (<tz>)" clause, or ``None`` when that clause is absent
+    or unparseable.
+
+    The message gives a bare wall-clock time with no date — it always
+    means "the next occurrence of this clock time" in the named zone (UTC
+    when the ``(<tz>)`` suffix is omitted), which for a reset notice is
+    always within the next 24h of ``now``.
+    """
+    hour_s, meridiem = match.group("hour"), match.group("meridiem")
+    if hour_s is None or meridiem is None:
+        return None
+    hour, minute = int(hour_s), int(match.group("minute") or 0)
+    if not (1 <= hour <= 12) or not (0 <= minute <= 59):
+        return None
+    hour24 = hour % 12
+    if meridiem.lower() == "pm":
+        hour24 += 12
+    tz_name = (match.group("tz") or "UTC").strip()
+    try:
+        tz = UTC if tz_name.upper() == "UTC" else ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    local_now = now.astimezone(tz)
+    candidate = local_now.replace(hour=hour24, minute=minute, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
+
+
+#: Absolute account-level reset dates can be days away (gr456240).
+#: Falling back to two hours would burn unpark retries before access returns.
+_API_USAGE_LIMIT_PATTERN = re.compile(
+    r"regain access on\s+"
+    r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\s+"
+    r"at\s+(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?:UTC)?",
+    re.IGNORECASE,
+)
+
+
+def parse_api_usage_reset_at(reason: str) -> datetime | None:
+    """UTC account reset date, or None for a missing/malformed clause."""
+    match = _API_USAGE_LIMIT_PATTERN.search(reason)
+    if match is None:
+        return None
+    try:
+        return datetime(
+            int(match.group("year")),
+            int(match.group("month")),
+            int(match.group("day")),
+            int(match.group("hour")),
+            int(match.group("minute")),
+            tzinfo=UTC,
+        )
+    except ValueError:
+        return None
+
+
+def quota_retry_at(reason: str, *, now: datetime | None = None) -> datetime | None:
+    """Router-owned retry horizon; unknown wording has no quota horizon."""
+    now = now if now is not None else datetime.now(UTC)
+    match = QUOTA_RESET_PATTERN.search(reason)
+    if match is not None:
+        return parse_quota_reset_at(match, now) or now + timedelta(hours=6)
+    reset_at = parse_api_usage_reset_at(reason)
+    if reset_at is not None:
+        return max(reset_at, now)
+    if QUOTA_MESSAGE_PATTERN.search(reason) is not None:
+        return now + timedelta(hours=2)
+    return None
+
+
 def is_quota_exhaustion_text(text: str) -> bool:
     """True when ``text`` (an agent's clean final answer) reads as
     ENTIRELY an account-quota-exhaustion notice, not a legitimate answer
@@ -103,4 +185,6 @@ __all__ = [
     "QUOTA_MESSAGE_PATTERN",
     "QUOTA_RESET_PATTERN",
     "is_quota_exhaustion_text",
+    "parse_api_usage_reset_at",
+    "quota_retry_at",
 ]

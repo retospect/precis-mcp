@@ -291,7 +291,7 @@ class SeHandler(Handler):
             "reaction|redox|ph|thermal|mechanical); set_current_state "
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
-            "get lists designs or renders one (view='tree'|'block'|'surface_deviation'|"
+            "get lists designs or renders one (view='tree'|'block'|'report'|'surface_deviation'|"
             "'ports'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
@@ -491,6 +491,7 @@ class SeHandler(Handler):
         views=(
             "tree",
             "block",
+            "report",
             "ports",
             "topology",
             "chain",
@@ -989,6 +990,8 @@ class SeHandler(Handler):
                     )
                 )
             return Response(body=_render_block(tree, node, self.store, ref.id))
+        if v == "report":
+            return Response(body=_render_report(self.store, tree, args))
         if v == "ports":
             return Response(body=_render_ports(tree))
         if v == "topology":
@@ -1090,7 +1093,8 @@ class SeHandler(Handler):
         raise BadInput(
             f"unknown se view {view!r}",
             next="view='tree' (default, nested TOC) | view='block' "
-            "(args={'name':...}) | view='ports' "
+            "(args={'name':...}) | view='report' (stored build findings, "
+            "optional args={'block':...}) | view='ports' "
             "| view='surface_deviation' (args={'name':...}; matching exact generated target receipt, legacy unavailable; explicit target.features override permits rigid z_offset_A; stored local Å atoms, no fitting/generation) "
             "| view='topology' (L2: threading, declared dof, strand domains) | "
             "view='chain' (nucleic acids: helices with motif/turns/segments/"
@@ -2735,6 +2739,45 @@ def _render_tree(tree: SeTree, title: str, description: str) -> str:
     return "\n".join(lines)
 
 
+def _render_report(store: Any, tree: SeTree, args: dict[str, Any] | None) -> str:
+    """Read stored reports for direct blocks, without loading geometry."""
+    selector = (args or {}).get("block")
+    if selector is not None:
+        if not isinstance(selector, str) or not selector.strip():
+            raise BadInput("report block must be a non-empty label or uid")
+        try:
+            node = resolve_block(tree, selector.strip())
+        except AmbiguousLabel as exc:
+            raise BadInput(str(exc)) from exc
+        if node is None:
+            raise NotFound(_block_not_found(tree, selector))
+        nodes = [node]
+    else:
+        nodes = [tree.blocks[name] for name in sorted(tree.blocks)]
+    lines = [
+        "# Stored build reports",
+        "Recorded at build time; not current validation.",
+    ]
+    if not nodes:
+        lines.append("No blocks in this design.")
+    for node in nodes:
+        lines.extend(["", f"## block '{node.name}'"])
+        if node.bound_kind != "structure" or not node.bound:
+            lines.append("Stored report unavailable: no bound structure.")
+            continue
+        lines.append(f"structure: {node.bound}")
+        ref = store.get_ref(kind="structure", id=node.bound)
+        rec = (getattr(ref, "meta", None) or {}).get("generated") if ref else None
+        if not isinstance(rec, dict) or not isinstance(rec.get("report"), dict):
+            lines.append(
+                "Stored report unavailable: structure or build report missing."
+            )
+            continue
+        lines.append(f"generator: {rec.get('generator', '?')}")
+        lines.extend(_stored_report_lines(rec))
+    return "\n".join(lines)
+
+
 def _generated_section(store: Any, node: SeBlock) -> list[str]:
     """``## generated`` — the generator's build record a ``generate`` op
     persisted on the bound structure ref (``meta["generated"]``,
@@ -2815,6 +2858,13 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
         lines.append("```")
         lines.append(spec.rstrip("\n"))
         lines.append("```")
+    lines.extend(_stored_report_lines(rec))
+    return lines
+
+
+def _stored_report_lines(rec: dict[str, Any]) -> list[str]:
+    """Shared table for stored build reports; never recomputes findings."""
+    lines: list[str] = []
     report = rec.get("report") if isinstance(rec.get("report"), dict) else None
     findings = report.get("findings") if report is not None else None
     if report is not None and isinstance(findings, list) and findings:
@@ -2844,9 +2894,11 @@ def _generated_section(store: Any, node: SeBlock) -> list[str]:
                 rows, schema=["severity", "code", "where", "message", "span"]
             )
         )
-    elif report is not None:
+    elif report is not None and isinstance(findings, list):
         lines.append("")
-        lines.append("report: ok — no findings")
+        lines.append(f"report: {'ok' if report.get('ok') else 'NOT ok'} — no findings")
+    else:
+        lines.append("Stored findings unavailable: missing or malformed findings list.")
     return lines
 
 
@@ -5180,6 +5232,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "": frozenset({"state"}),
     "tree": frozenset({"state"}),
     "block": frozenset({"name", "state"}),
+    "report": frozenset({"block"}),
     "surface_deviation": frozenset({"name", "target", "z_offset_A"}),
     "ports": frozenset(),
     "topology": frozenset(),

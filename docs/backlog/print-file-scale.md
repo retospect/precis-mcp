@@ -11,7 +11,7 @@ prio: normal
 
 ## Motivation / why
 
-Every 3MF writer converts metres to millimetres 1:1, so a nanometre or micrometre se block exports as sub-micron geometry. Reto wants scaled print files: atomistic blocks scaled (e.g. 1e7), 1 µm–1 mm blocks fit to ~100 mm, above 1 mm 1:1. se-3d-viewer owns the dialog that suggests the factor; this item owns the writer, file name, metadata, route parameters and the print check at printed size.
+Public checked 3MF exports convert metres to millimetres 1:1, so a nanometre or micrometre se block exports as sub-micron geometry. Reto wants scaled print files: atomistic blocks scaled (e.g. 1e7), 1 µm–1 mm blocks fit to ~100 mm, above 1 mm 1:1. se-3d-viewer owns the dialog that suggests the factor; this item owns the writer, file name, metadata, route parameters and the print check at printed size.
 
 ## In scope
 
@@ -44,11 +44,28 @@ Every 3MF writer converts metres to millimetres 1:1, so a nanometre or micrometr
 - Print check integration: `precis_se/printing.py::export_block_mesh`, `write_mesh(built=, source_pitch=, title=)` (lands with the print-check branch).
 - Depends on: the print-check + download-button branch, which provides the above interfaces.
 
+### R14 delivered slice: private 3MF writer
+
+The private `_write_3mf` writer accepts `scale=1.0` for input vertices
+already in millimetres. It scales without mutating caller arrays, records
+non-default scale as `precis:scale_factor`, and rejects nonfinite or
+nonpositive factors before opening the output. Tests cover package geometry,
+metadata, invalid factors and input immutability. Default output is unchanged.
+
+Still open: checked print integration. A caller must prepare and judge the
+mesh at printed size before export; scaling after those checks would make the
+findings describe a different artifact. Public CAD/PCB exports, route and
+handler, filename, suggestions, models and floors remain unchanged until
+that integration is designed. Keep this spec for the public checked-print
+work.
+
 ## Verified prerequisites (se-print contract review, 2026-10-04)
 
 Reviewed HEAD `11f05f30a358d3882cad91ec9344b6e78b467071`;
 implementation history `30a4a2bb9` supplies the checked-download seam.
-This review adds no implementation or deployment claim.
+This historical review adds no implementation or deployment claim. The
+private writer slice above was delivered separately; the table reconciles
+that addition while retaining the reviewed public checked-print contract.
 
 | Surface | Present implementation | Remaining work |
 |---|---|---|
@@ -56,13 +73,14 @@ This review adds no implementation or deployment claim.
 | Download | `se_print_download` supports `.3mf`/`.stl`; query parameters are unread; `.json` returns 404 | JSON descriptor, validated scale/model, shared handler/export semantics |
 | Models | `printsolid.py::printed_solid` rejects `bound_kind='structure'`; `printing.py::report_for` rejects non-FDM | `vdw`/`ballstick` are prospective until printable-atomic-models supplies actual geometry and selected-model floors |
 | Mesh | `report_for` → `build_print_mesh` → `export_block_mesh` shares the judged mesh with `write_mesh` | Scaling only `_write_3mf` would invalidate the report; prepare/check the scaled mesh once and ship it unchanged |
-| Package | `_write_3mf` declares millimetres and Title/Application/CreationDate; `package_findings` is called by tests only | Add scale metadata; explicitly decide runtime package-validation policy |
+| Package | `_write_3mf` declares millimetres and Title/Application/CreationDate; its private scale option records non-default `precis:scale_factor`; `package_findings` is called by tests only | Thread metadata through checked scaled exports; explicitly decide runtime package-validation policy |
 | Errors/name | 404/409 are `text/plain`; attachment is `<design>-<block>-print.3mf` | Resolve the scaled suffix placement while retaining the scale-1 name; define new parameter errors and 409/422 ordering |
 
-Read-only inspection of all 37 registered worktrees found no dirty changes
-or unique branch commits for the route, printing module, writer, or either
-owning print spec. Divergent legacy snapshots predate these changes; preserve
-them. Backend owner: se-machine-design/se-print; dialog owner: se-3d-viewer.
+At the reviewed HEAD, read-only inspection of all 37 registered worktrees
+found no dirty changes or unique branch commits for the route, printing
+module, writer, or either owning print spec. That historical scope predates
+the delivered private writer slice above. Divergent legacy snapshots remain
+separate. Backend owner: se-machine-design/se-print; dialog owner: se-3d-viewer.
 
 ## Consumer contract decisions awaiting coordinator review
 
@@ -119,8 +137,8 @@ behavior or new physical decisions.
    selected-model adapter boundary, backend suggestion, unavailable reasons.
    Atomic geometry stays in printable-atomic-models.
 2. Thread scale through `report_for`/mesh preparation, `export_block_mesh`,
-   `write_mesh`, and handler single-block export; optional `_write_3mf` scale
-   metadata preserves default callers. Scale before cleanup/lift/slicing;
+   `write_mesh`, and handler single-block export; reuse the delivered private
+   writer scale metadata while preserving default callers. Scale before cleanup/lift/slicing;
    printer layer/line-width rules remain physical, source field pitch follows
    geometry. Reconcile primitive/process findings and `mode_scale_mismatch`
    with printed size; no source geometry mutation or second writer multiply.
@@ -129,6 +147,9 @@ behavior or new physical decisions.
    SE-viewer consumes this contract without editing the route.
 
 ## Additional acceptance for that slice (not executed in this review)
+
+Private writer geometry/metadata checks are covered by the delivered slice.
+The full checked-export and consumer cases below remain integration work.
 
 - Parse ZIP/XML for the 1-mm cube at ×100: all extents 100 mm, unit
   `millimeter`, one scale-factor metadata entry, valid core package, existing

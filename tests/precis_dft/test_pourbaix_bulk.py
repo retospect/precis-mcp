@@ -452,6 +452,7 @@ def test_module_imports_nothing_from_precis() -> None:
         "typing",
         "pymatgen",
         "mp_api",
+        "httpx",  # MPContribs REST avoids the optional client's Pint conflict.
     }
 
 

@@ -683,18 +683,19 @@ class MemoryHandler(NumericRefHandler):
         conn: Connection,
         replace: bool = False,
     ) -> int:
-        """Keep best-effort resolution, but never acknowledge an aborted write.
+        """Keep best-effort resolution, but require a healthy caller transaction.
 
         The shared helper catches SQL errors as well as resolution failures.
-        PostgreSQL turns COMMIT of an aborted transaction into ROLLBACK;
-        raise before leaving the caller's transaction so put/edit cannot
-        claim success after losing the body and its audit event.
+        PostgreSQL rolls back an aborted transaction; psycopg may silently
+        discard a closed connection (UNKNOWN). Both callers own an explicit
+        transaction, so only INTRANS may reach their commit boundary. This
+        check does not guarantee success if the connection fails later.
         """
         added = super()._sync_mention_links(ref_id, text, conn=conn, replace=replace)
-        if conn.info.transaction_status == TransactionStatus.INERROR:
+        if conn.info.transaction_status != TransactionStatus.INTRANS:
             raise Internal(
-                "memory mention synchronization aborted the write transaction; "
-                "nothing written",
+                "memory mention synchronization left an unhealthy write transaction; "
+                "write not acknowledged",
                 next="get the current memory, then retry the write",
             )
         return added

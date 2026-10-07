@@ -27,6 +27,12 @@ swappable behind the same node-list. The kernel is unit-agnostic
 tolerance is scale-relative (:data:`~precis.cad.vec.LINEAR_REL_EPS`), not
 tuned for one magnitude.
 
+The private 3MF writer accepts an opt-in factor on already-millimetre
+vertices and records it as namespaced model metadata. Public export APIs
+keep their default size: checked SE exports must first prepare and judge
+the mesh at printed size before using this prerequisite, since rescaling
+after a print check would make its findings describe a different artifact.
+
 That boundary is why sub-assembly instancing (``use <slug> as <name>``)
 takes an *injected* ``resolve`` callable rather than reaching for the
 store: :func:`~precis.cad.scene.expand_instances` inlines the referenced

@@ -120,9 +120,8 @@ _WORK_KINDS: tuple[str, ...] = ("quest", "todo")
 #: hand-curated list, not a placement-derived one (discovered while
 #: building this toggle; the coupled taxonomy audit should grow
 #: ``placement`` a real bucket for this rather than leaving it here by
-#: hand). ``citation`` is deliberately excluded: it's an agent-drafted,
-#: verifier-confirmed claim→source record (curated evidentiary content,
-#: closer to "Mine" than a machine-emitted log), not bookkeeping.
+#: hand). Curated generated content (anki/citation) has its own Derived
+#: bucket; grouping is a browsing convenience, not author provenance.
 _MACHINE_KINDS: tuple[str, ...] = (
     "orcid",
     "job",
@@ -130,7 +129,11 @@ _MACHINE_KINDS: tuple[str, ...] = (
     "alert",
     "llm",
     "provenance",
+    "message",
 )
+
+_AUTHOR_KINDS: tuple[str, ...] = ("finding", "tex")
+_DERIVED_KINDS: tuple[str, ...] = ("anki", "citation")
 
 #: ``folder=*`` — the "anywhere" sentinel for the folder facet: no folder
 #: scope *and* no top-level filing filter, so filed artifacts list beside
@@ -162,6 +165,44 @@ def _kind_roster(hub: Any, fallback: list[str]) -> list[str]:
     except Exception:
         loaded = []
     return sorted(set(loaded).union(fallback))
+
+
+def _kind_buckets(hub: Any) -> dict[str, list[str]]:
+    """Partition the live/compatibility roster without retiring any kind.
+
+    Curated categories override placement (se is Design, todo is Work).
+    New artifact kinds join Author; every remaining kind has visible Other.
+    The artifact helper supplies plugin kinds when hub introspection fails.
+    """
+    candidates = {
+        "sources": list(_DEFAULT_SOURCE_KINDS),
+        "design": list(_DESIGN_KINDS),
+        "work": list(_WORK_KINDS),
+        "derived": list(_DERIVED_KINDS),
+        "machine": list(_MACHINE_KINDS),
+        "author": [*artifact_kinds(hub), *_AUTHOR_KINDS],
+    }
+    roster = _kind_roster(
+        hub, [kk for kinds in candidates.values() for kk in kinds] + ["concept"]
+    )
+    buckets = {}
+    assigned: set[str] = set()
+    for name, kinds in candidates.items():
+        buckets[name] = sorted(set(kinds) - assigned)
+        assigned.update(buckets[name])
+    buckets["other"] = sorted(set(roster) - assigned)
+    return {
+        name: buckets[name]
+        for name in (
+            "sources",
+            "author",
+            "design",
+            "work",
+            "derived",
+            "machine",
+            "other",
+        )
+    }
 
 
 def _doctypes() -> list[dict[str, Any]]:
@@ -376,7 +417,8 @@ async def index(
     Discover (``task=discover``, also a cookie-free bare landing) defaults
     to created order across folders and content/work kinds including findings.
     ``sort=created|modified`` keeps timestamp meaning consistent with and
-    without a query; legacy ``recency`` is untouched. A searchable native
+    without a query; legacy ``recency`` maps to created in search and modified
+    in browse, preserving its original order. A searchable native
     details picker keeps every selected kind serializable while collapsed.
 
     Kind selection persists in an ``items_kinds`` cookie (unchanged
@@ -419,35 +461,10 @@ async def index(
 
     runtime = get_runtime(request)
     hub = getattr(runtime, "hub", None)
-    artifact_kind_defs = artifact_kinds(hub)
-    # Third chip row: keep the Work kinds out of the Author facet so a
-    # placement='artifact' work kind (``todo``) lists once, under "Work".
-    work_kind_defs = list(_WORK_KINDS)
-    artifact_kind_defs = [kk for kk in artifact_kind_defs if kk not in _WORK_KINDS]
-    # Fourth chip row ("Design") — placement-less design kinds (see
-    # _DESIGN_KINDS's docstring); gated on live hub membership same as
-    # artifact_kind_defs, but hub=None (no runtime wired, e.g. a bare
-    # test double) — or a hub whose ``.kinds`` raises — falls back to the
-    # static list rather than hiding the facet entirely or 500ing the
-    # page (mirrors item_view.artifact_kinds()'s own try/except).
-    if hub is None:
-        design_kind_defs = [kk for kk in _DESIGN_KINDS if kk not in artifact_kind_defs]
-    else:
-        try:
-            hub_kinds = hub.kinds
-            design_kind_defs = [
-                kk
-                for kk in _DESIGN_KINDS
-                if kk not in artifact_kind_defs and kk in hub_kinds
-            ]
-        except Exception:
-            log.debug(
-                "drive: hub kind introspection failed for the Design facet",
-                exc_info=True,
-            )
-            design_kind_defs = [
-                kk for kk in _DESIGN_KINDS if kk not in artifact_kind_defs
-            ]
+    kind_buckets = _kind_buckets(hub)
+    artifact_kind_defs = kind_buckets["author"]
+    design_kind_defs = kind_buckets["design"]
+    work_kind_defs = kind_buckets["work"]
 
     url_kinds = [x.strip() for x in k if x.strip()]
     scope = (scope or "").strip().lower()
@@ -458,27 +475,20 @@ async def index(
     # visible alternative. Old scoped URLs retain their previous defaults.
     if not request.query_params and cookie is None:
         task = "discover"
-    all_kind_defs = _kind_roster(
-        hub,
-        [
-            *_DEFAULT_SOURCE_KINDS,
-            *artifact_kind_defs,
-            *design_kind_defs,
-            *work_kind_defs,
-            *_MACHINE_KINDS,
-            "finding",
-            "citation",
-            "concept",
-        ],
-    )
+    all_kind_defs = sorted(kk for kinds in kind_buckets.values() for kk in kinds)
     discover_kinds = [kk for kk in all_kind_defs if kk not in _DISCOVER_EXCLUDED]
     # A stale/custom saved kind remains selectable without becoming part of
     # Discover's default roster merely because one browser named it.
     all_kind_defs = sorted(set(all_kind_defs).union(saved_kinds, url_kinds))
+    classified = {kk for kinds in kind_buckets.values() for kk in kinds}
+    kind_buckets["other"] = sorted(
+        set(kind_buckets["other"]).union(set(all_kind_defs) - classified)
+    )
     _scope_kinds = {
-        "sources": list(_DEFAULT_SOURCE_KINDS),
+        "sources": kind_buckets["sources"],
         "mine": [*artifact_kind_defs, *design_kind_defs, *work_kind_defs],
-        "machine": list(_MACHINE_KINDS),
+        "machine": kind_buckets["machine"],
+        "derived": kind_buckets["derived"],
     }
     if submitted or url_kinds:
         selected_kinds = url_kinds
@@ -501,8 +511,7 @@ async def index(
                 *_DEFAULT_SOURCE_KINDS,
                 *artifact_kind_defs,
                 *design_kind_defs,
-                "finding",
-                "citation",
+                *kind_buckets["derived"],
                 "concept",
             ]
         )
@@ -545,6 +554,13 @@ async def index(
     # pick still wins.
     if sort == "relevance" and (state == "stub" or pc == "without"):
         sort = "untried"
+    # Keep legacy ordering while presenting only named timestamp choices.
+    # Normalize after the acquisition default so an old queue link still
+    # selects untried rather than the ordinary browse modification order.
+    if sort == "recency":
+        sort = "created" if q else "modified"
+    elif sort == "relevance" and not q:
+        sort = "modified"
     # ``state=stub`` → only PDF-less papers (the "to get" queue);
     # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
     # Both shape only the recent/browse view, not search (a search hit
@@ -760,6 +776,19 @@ async def index(
         ]
         return "/drive?" + urlencode([*params, (name, value)])
 
+    # Resolve the selected folder from the tree already needed by the sidebar.
+    # Its title is presentation only; filters and links retain the raw id.
+    roots = _folder_tree(store)
+    flat = _flatten_tree(roots)
+    current = (
+        next((f for f in flat if f["ref_id"] == folder_id), None)
+        if folder_id is not None
+        else None
+    )
+    folder_label = "All folders" if folder_any else f"Folder {folder_raw}"
+    if current is not None:
+        folder_label = f'Folder: "{current["title"]}"'
+
     # Chips describe the effective URL, including restrictions inactive during
     # chunk search. Removing one never drops unrelated kinds/tags/task scope.
     active_facets = []
@@ -771,7 +800,7 @@ async def index(
                 sort, sort
             ),
         ),
-        ("folder", folder_raw, "All folders" if folder_any else f"Folder {folder_raw}"),
+        ("folder", folder_raw, folder_label),
         ("state", state, f"Show: {state}"),
         ("paper_chunks", pc, f"Body: {pc}"),
         ("since", since, f"Created since {since}"),
@@ -808,14 +837,7 @@ async def index(
         _page_url(last_page) if last_page is not None and page < last_page else None
     )
 
-    # The folder-tree sidebar + (when one is selected) its breadcrumb.
-    roots = _folder_tree(store)
-    flat = _flatten_tree(roots)
-    current = (
-        next((f for f in flat if f["ref_id"] == folder_id), None)
-        if folder_id is not None
-        else None
-    )
+    # The selected folder's breadcrumb uses the same resolved tree node.
     crumbs = _breadcrumb(store, folder_id) if current and folder_id else []
     # A stale bookmark to a deleted folder shouldn't dead-end the operator
     # — fall back to the unfiltered landing with a soft notice. The
@@ -864,7 +886,9 @@ async def index(
             "artifact_kind_defs": artifact_kind_defs,
             "work_kind_defs": work_kind_defs,
             "design_kind_defs": design_kind_defs,
-            "machine_kind_defs": list(_MACHINE_KINDS),
+            "machine_kind_defs": kind_buckets["machine"],
+            "derived_kind_defs": kind_buckets["derived"],
+            "kind_buckets": kind_buckets,
             "other_kind_defs": other_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,

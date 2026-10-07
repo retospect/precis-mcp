@@ -53,3 +53,17 @@ kind** — the row can vanish underneath an in-progress paging session. Today
 the skill implies the cache is stable once written.
 
 Related: auto-memory `perplexity-block-handle-clobbers-row`.
+
+## R14 delivered slice — status and remaining scope
+
+The search-block-handle guard is implemented for all Sonar tiers through
+`get(id=...)` and `get(q=...)`, before fetch or cache writes. Handle-shaped
+queries are rejected; ordinary tilde queries remain valid. `literal=True`
+and `put(mode='import')` remain explicit escapes. The hint directs readers
+to cache-only retrieval by the report slug before `~`, or to the original
+query. Offline handler tests cover zero provider calls, unchanged imported
+reports, and both escapes; the module rationale and help are updated.
+
+Still open: collision protection for distinct natural-language queries
+that truncate to the same slug, and paging guidance. Keep this spec for those
+follow-ups; no schema or production-write work is implied.

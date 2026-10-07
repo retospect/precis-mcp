@@ -77,6 +77,7 @@ artifact: derived, idempotent, content-addressed). This is "the factory."
 |---|---|---|
 | **Ingest** | `src/precis/ingest/` | input → refs + chunks |
 | **Storage / model** | `Store`, handlers, `migrations/` | refs + chunks + derived cascade |
+| **Supplier stock / sources** | `src/precis/supply/`, `component` handler | identity-only supplier links; single-component MCP reads live, bulk/stored reads offline; manufacturer datasheet evidence acquired by guarded worker |
 | **Workers** | `src/precis/workers/` | derived-queue passes; `system` profile (every node) + `agent` profile (melchior only, `claude_inproc`) |
 | **Discovery / search** | search verbs, F20 layer | keywords, `toc`, hybrid retrieval |
 | **Todo tree / factory** | `todo` handler, planner, jobs | intent vs compute lanes, dispatch |

@@ -15,6 +15,7 @@ reads (``smartdraft.py`` ~lines 218-250): ``dc``, ``handle``, ``chunk_id``,
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -1857,3 +1858,91 @@ def test_smartdraft_reader_popover_is_teleported_to_body(
     # obsolete smartdraft-only mitigations, superseded by the shared fix
     assert "data-sd-portaled" not in body
     assert "pop.style.position = 'fixed'" not in body
+
+
+@pytest.mark.parametrize("lazy", [False, True])
+@pytest.mark.parametrize("stale", [False, True])
+def test_smartdraft_visible_checker_strip_uses_ledger_scope(
+    review_matrix_client: TestClient,
+    review_matrix_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+    lazy: bool,
+    stale: bool,
+) -> None:
+    """Both render paths show live own/inherited checks and missing checks."""
+    store = review_matrix_runtime.store
+    rows = store.review_status_for_draft(700)
+    if stale:
+        rows = [
+            replace(row, dirty=True)
+            if (row.chunk_id, row.checker) in {(2, "cites"), (1, "structure")}
+            else row
+            for row in rows
+        ]
+    monkeypatch.setattr(store, "review_status_for_draft", lambda ref_id: rows)
+    for chunk_id in (2, 3):
+        dc = handle_registry.format_handle("draft", chunk_id, chunk=True)
+        url = (
+            f"/smartdraft/sdt/blocks?dcs={dc}"
+            if lazy
+            else f"/smartdraft/sdt?focus={dc}"
+        )
+        response = review_matrix_client.get(url)
+        assert response.status_code == 200
+        body = response.text if lazy else response.text.split('id="mid-focus"', 1)[1]
+        strip = re.search(
+            r'class="sd-review sd-checker-strip[^>]*>(.*?)</span>\s*</span>', body, re.S
+        )
+        assert strip is not None
+        flags = re.findall(
+            r'data-review-checker="([^"]+)" data-review-status="([^"]+)".*?'
+            r'aria-label="([^"]+)">([^<]+)</span>',
+            strip.group(1) + "</span>",
+            re.S,
+        )
+        own_status = "current" if chunk_id == 2 else "never"
+        assert flags == [
+            (
+                "flow",
+                own_status,
+                f"flow: {'current' if chunk_id == 2 else 'unreviewed'}",
+                "F✓" if chunk_id == 2 else "F–",
+            ),
+            (
+                "cites",
+                "stale" if stale and chunk_id == 2 else own_status,
+                f"cites: {'stale' if stale and chunk_id == 2 else ('current' if chunk_id == 2 else 'unreviewed')}",
+                "C~" if stale and chunk_id == 2 else ("C✓" if chunk_id == 2 else "C–"),
+            ),
+            (
+                "structure",
+                "stale" if stale else "current",
+                f"structure (via section): {'stale' if stale else 'current'}",
+                "S~" if stale else "S✓",
+            ),
+            ("adversarial", "current", "adversarial (via section): current", "A✓"),
+        ]
+        assert "<button" not in strip.group(1)
+        assert "<a " not in strip.group(1)
+
+
+def test_smartdraft_checker_strip_heading_and_nonprose_scope(
+    review_matrix_client: TestClient,
+) -> None:
+    """Headings carry S/A directly; tables retain only their existing widget."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    response = review_matrix_client.get(f"/smartdraft/sdt?focus={dc1}")
+    assert response.status_code == 200
+    focus = response.text.split('id="mid-focus"', 1)[1]
+    strip = focus.split("sd-checker-strip", 1)[1].split('x-data="{ open: false }"', 1)[
+        0
+    ]
+    assert 'aria-label="structure: current">S✓' in strip
+    assert 'aria-label="adversarial: current">A✓' in strip
+    assert 'data-review-checker="flow"' not in strip
+    assert 'data-review-checker="cites"' not in strip
+    dc4 = handle_registry.format_handle("draft", 4, chunk=True)
+    response = review_matrix_client.get(f"/smartdraft/sdt/blocks?dcs={dc4}")
+    assert response.status_code == 200
+    assert "sd-review-dot" in response.text
+    assert "sd-checker-strip" not in response.text

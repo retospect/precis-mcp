@@ -696,3 +696,36 @@ def test_draft_export_parses() -> None:
     args = parser.parse_args(["draft", "export", "nt", "--out", "/tmp/x"])
     assert args.cmd == "draft" and args.draft_cmd == "export"
     assert args.slug == "nt" and args.out == "/tmp/x"
+
+
+def test_draft_export_hint_uses_packaged_preamble_engine(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A manual export gives the same Unicode-capable engine as PDF export."""
+    from types import SimpleNamespace
+
+    from precis.cli import draft
+    from precis.export.latex import ExportResult
+
+    store = SimpleNamespace(
+        get_ref=lambda **kwargs: SimpleNamespace(id=1, slug="nt"),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(draft, "resolve_dsn", lambda database_url: "unused")
+    monkeypatch.setattr(draft.Store, "connect", lambda dsn: store)
+    main_tex = tmp_path / "main.tex"
+    result = ExportResult(
+        main_tex=main_tex,
+        bib=tmp_path / "refs.bib",
+        preamble=tmp_path / "preamble.tex",
+        latexmkrc=tmp_path / ".latexmkrc",
+        cited_slugs=[],
+        acronyms={},
+        warnings=[],
+    )
+    monkeypatch.setattr(draft, "export_draft", lambda *args, **kwargs: result)
+    args = cli._build_parser().parse_args(
+        ["draft", "export", "nt", "--out", str(tmp_path)]
+    )
+    draft._run_export(args)
+    assert f"latexmk -lualatex -cd {main_tex}" in capsys.readouterr().err

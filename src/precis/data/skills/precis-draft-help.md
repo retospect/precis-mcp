@@ -14,17 +14,16 @@ kinds: [draft]
 
 # precis-draft-help — author a living document
 
-A `draft` is an **editable, chunk-native document** — the living source of
-a project's write-up. Postgres is canonical; it exports to LaTeX/PDF/Word.
-Unlike a `paper` (frozen), a draft's chunks are mutable in structure
-(reorder/reparent) and in text. **One draft per project.**
+A `draft` is a project's **editable, chunk-native write-up**. Postgres is
+canonical; export supports LaTeX/PDF/Word. Unlike frozen `paper`s, draft
+chunks can be reordered, reparented and rewritten. **One draft per project.**
 
 Five verbs, no new ones: `put` (create / add a chunk), `edit` (change text
 **or** structure), `get` (outline / verbatim), `delete` (soft-retire),
 `search` (lexical / semantic over prose). `tag`/`link` on `kind='draft'`
 raise `Unsupported` — a draft is not taggable/linkable as a whole;
 cross-references are markdown refs embedded in prose (see *References in
-prose*), and the per-chunk autolinker materialises a backlink for each —
+prose*); the per-chunk autolinker adds a backlink —
 `cites` for a citable source (paper/patent/finding), `related-to`
 otherwise. The edge is grounded on both ends: the source `dc<id>` (which
 paragraph cites it) and the target. On export only a `cites` edge to a
@@ -466,9 +465,8 @@ intact: that deletes the document, not the project.
 
 ## References in prose — handles route by what they name
 
-Prose is **markdown**. Reference anything by copying its `[<handle>]`
-from search/get output (never guess); `[text](<handle>)` adds display
-words. Two routes:
+Prose is **markdown**. Copy `[<handle>]` from search/get (never guess);
+`[text](<handle>)` adds display words. References route by target:
 
 | write | route | means | renders / exports |
 |---|---|---|---|
@@ -476,27 +474,22 @@ words. Two routes:
 | `[dc<id>]` draft chunk, `[me<id>]` memory, any other kind | **link** | provenance / cross-ref | `related-to` backlink; never in the bibliography |
 | `[text](<handle>)` / `[text](https://…)` | (either) / web | display text / web link | hyperlink |
 
-Cite the **finding hub** (`[fi41]`), never the paper or chunk directly
-— the hub is grounded on the exact chunks (`source_handle='pc234'`), and
-several hubs backing one sentence sit side by side: `[fi41][fi92]`.
-Export resolves each hub → its originator paper(s), renders `\cite{}` +
-one bibliography entry per paper; you never type `\cite{}` yourself. A
-bare `[pc<id>]`/`[pa<id>]` is a legacy cite — convert it (backfill
-below, or by hand per `precis-citation-help`). A **link** (`[me<id>]`, cross-draft `[dc<id>]`) is never a
-citation — provenance only, dropped on removal; intra-draft `[dc<id>]`
-cross-refs stay document-internal (TOC/`\ref`), not a graph edge.
+Cite the **finding hub** (`[fi41]`), never its paper/chunk: it names exact
+grounding chunks (`source_handle='pc234'`). Multiple hubs can support one
+sentence (`[fi41][fi92]`). Export resolves hubs to originator papers and
+creates `\cite{}` plus one bibliography entry per paper; never type `\cite{}`.
+Convert legacy `[pc<id>]`/`[pa<id>]` cites via backfill or
+`precis-citation-help`. Links (`[me<id>]`, cross-draft `[dc<id>]`) are
+provenance, not citations; intra-draft refs stay document-internal (TOC/`\ref`).
 
-**Rigor.** Must **directly support the specific claim** — read the
-hub's evidence first (`get(id='fi<id>', view='evidence')`), then the
-grounding chunk (`get(id='pc<id>')`). Too weak? **Soften** ("suggests")
-or **find a better source** (prefer the primary); never cite
-topically-related-but-non-supporting work, or a stronger claim than the
-source makes. Match strength to evidence: single study → tentative;
-replicated/review/meta-analysis → strong (the cite popover shows the
-cited chunk verbatim, so a mismatch is visible). A bare paper mention
-(no chunk) only surfaces keyword labels to a later pass; missing the
-right `pc<id>`? `get(kind='paper', id='<slug>~lo..hi', view='toc')`
-re-clusters the range into finer groups — narrow and repeat.
+**Rigor.** Read hub evidence (`get(id='fi<id>', view='evidence')`) and its
+grounding chunk (`get(id='pc<id>')`); both must directly support the claim.
+If weak, soften it or find a better source, preferably primary. Never cite
+related-but-non-supporting work or overstate evidence: one study calls for a
+tentative claim; replication, reviews or meta-analyses can support stronger
+ones. The cite popover shows the chunk verbatim. A bare paper mention exposes
+only keywords; find a missing chunk with
+`get(kind='paper', id='<slug>~lo..hi', view='toc')`, then narrow the range.
 
 **Backfill raw cites to a living hub cite** via a todo:
 `put(kind='todo', text='taproot backfill <slug>',
@@ -505,14 +498,12 @@ meta={'executor': 'claude_inproc', 'job_type': 'taproot_backfill',
 cites to `[fi<id>]` claim-hub cites on the cluster worker; poll
 `get(kind='job', id='jo<id>')`. See `precis-taproot-backfill-help`.
 
-**Never fabricate a handle** — a `put`/`edit` that *introduces* a
-handle-shaped `[…]` reference resolving to nothing (a numeric id like
-`[45650]`, a typo'd `[dc…]`) is **refused** (`BadInput`, nothing
-written): copy the handle from search/get output and retry. A
-deliberate forward reference uses a `finding #<slug>` marker instead —
-that lands, but is flagged **⚠ unresolved** on a verbatim read (never
-autolinks, never exports). Mean a finding? Use its real `[fi<id>]`;
-doesn't exist yet? `put(kind='finding', …)` it first.
+**Never fabricate handles.** A `put`/`edit` introducing an unresolved
+handle-shaped ref (e.g. numeric `[45650]` or typo `[dc…]`) is refused with
+`BadInput` and writes nothing. Copy handles from search/get. Deliberate
+forward refs use `finding #<slug>`; verbatim reads flag them **⚠ unresolved**
+and they never autolink or export. Use `[fi<id>]`, creating the finding first
+with `put(kind='finding', …)` if needed.
 
 **Formatting.** `` `code` ``, `$…$`/`$$…$$` math (KaTeX), `<sub>`/`<sup>`
 for chemistry/units (`NH<sub>2</sub>`, `g<sup>-1</sup>`); no emphasis
@@ -589,23 +580,15 @@ hub is grounded on it. See
 
 ## Audit the draft — hygiene checks & the gap-finder
 
-Things the runtime flags before export: an undefined abbreviation (see
-*Define an abbreviation*, above), a citation that resolves to nothing
-(see *References in prose*, above — cite a `[fi<id>]` hub grounded on the
-exact chunk, never the paper), and a **drifted cite** — the hub was
-reworded after this passage was written, so the prose paraphrases a
-sentence that no longer exists. The cite still resolves (the old
-`pub_id` is kept as an alias), which is exactly why it needs flagging:
-nothing else makes it visible. The line quotes both statements — `was
-"<old>", now "<new>"` — so the fix is one edit. **Rewriting the citing
-chunk re-pins it**; a write elsewhere in the draft does not, and does not
-clear the flag. A drifted cite **blocks export**; cites written before
-version pinning existed are reported as unknown, never as drift. Neither needs a hand-maintained
-bibliography footer — citation handles resolve to one entry per paper at
-export. Skim the **outline** (`get(kind='draft', id=…)`) first — cheapest
-place to catch both; its hygiene footer truncates each list to 8 entries.
-For the full, un-elided lists, use `get(kind='draft', id=…,
-view='hygiene')` — same two checks, no outline body, no truncation.
+Before export, runtime flags undefined abbreviations, unresolved citations
+(cite grounded `[fi<id>]` hubs, not papers), and **drifted cites**: a hub's
+claim changed after the passage was written. Its old `pub_id` remains an
+alias, so the warning quotes old/new text. Rewrite the citing chunk to re-pin;
+other edits do not clear it. Drift blocks export; pre-version-pin cites are
+unknown, not drift. No bibliography footer is needed. Start with the outline
+(`get(kind='draft', id=…)`); its hygiene footer shows up to 8 items per list.
+For complete lists without the body, use
+`get(kind='draft', id=…, view='hygiene')`.
 
 **Missed a source?** `get(kind='draft', id=<scope>, view='backfill')`
 sweeps the corpus for relevant-but-**uncited** papers and assembles an

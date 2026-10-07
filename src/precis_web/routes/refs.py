@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Request, Response
+from fastapi import APIRouter, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
@@ -2768,6 +2768,27 @@ def _orcid_meta(store: Store, ref: Any) -> dict[str, Any]:
     }
 
 
+@router.get("/component/{ref_id}/supplier-live", response_class=HTMLResponse)
+async def component_supplier_live(request: Request, ref_id: int) -> HTMLResponse:
+    """Explicit lazy live read; never persist/cache the supplier response."""
+    store = get_store(request)
+    ref = store.get_ref(kind="component", id=ref_id)
+    if ref is None or ref.kind != "component":
+        raise HTTPException(status_code=404, detail="component not found")
+    body, is_error = await await_dispatch(
+        request,
+        "get",
+        {"kind": "component", "id": ref.slug or ref.id, "view": "supplier-live"},
+    )
+    response = templates.TemplateResponse(
+        request,
+        "refs/component_supplier_live.html.j2",
+        {"body": body, "is_error": is_error},
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @router.get("/{kind}/{ref_id}", response_class=HTMLResponse, response_model=None)
 async def detail(
     request: Request, kind: str, ref_id: int
@@ -2867,6 +2888,8 @@ async def detail(
     # kinds (memory/gripe) by id. Prefer the slug when present.
     handle: str | int = ref.slug if ref.slug else ref.id
     get_args: dict[str, Any] = {"kind": kind, "id": handle}
+    if kind == "component":
+        get_args["view"] = "stored"
     # This detail page is a read-only view. For cache-backed kinds a plain
     # get() re-fetches on a cache miss — and addressing by slug reliably
     # misses for query-keyed kinds (perplexity/websearch), so a page view
@@ -2987,6 +3010,8 @@ async def detail(
             "chunks": chunks,
             "tags": tags,
             "body_disabled_notice": body_disabled_notice,
+            "component_supplier_linked": kind == "component"
+            and bool((ref.meta or {}).get("supplier_links")),
             "references": references,
             "job_actions": job_actions,
             "youtube_meta": youtube_meta,

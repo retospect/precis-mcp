@@ -312,6 +312,77 @@ def test_import_of_numeric_query_not_blocked(
     assert "one seven one" in resp.body
 
 
+# ── search block handle guard ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "handler_cls", [WebsearchHandler, ThinkHandler, ResearchHandler]
+)
+@pytest.mark.parametrize("query_arg", ["id", "q"])
+@pytest.mark.parametrize("mode", [None, "refresh"])
+def test_block_handle_rejected_without_fetch_or_report_mutation(
+    store: Store, handler_cls: Any, query_arg: str, mode: str | None
+) -> None:
+    h = handler_cls(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    original_query = "catalysis report"
+    h.put(id=original_query, text="# Original\n\nkeep this report", mode="import")
+    request_hash = h._hash(h._canonical_key(original_query))
+    before = store.get_cache_entry(provider="perplexity", request_hash=request_hash)
+    assert before is not None
+    handle = f"{before[0].slug}~mechanism-a1B2c3"
+
+    with pytest.raises(BadInput, match="search block handle") as err:
+        h.get(**{query_arg: f"  {handle}  "}, mode=mode)
+
+    assert _StubClient.call_count == 0
+    assert (
+        store.get_cache_entry(provider="perplexity", request_hash=request_hash)
+        == before
+    )
+    assert (
+        store.get_cache_entry(
+            provider="perplexity",
+            request_hash=h._hash(h._canonical_key(handle, literal=True)),
+        )
+        is None
+    )
+
+    def replay_hint(verb: str, kwargs: dict[str, Any]) -> Any:
+        extras = kwargs.pop("args", {})
+        return getattr(h, verb)(**kwargs, **extras)
+
+    hints = assert_hints_round_trip(str(err.value.next), replay_hint, whole_body=True)
+    assert len(hints) == 1
+    assert "no_fetch" in hints[0]
+    assert _StubClient.call_count == 0
+    assert "keep this report" in h.get(id=original_query).body
+
+
+def test_block_handle_literal_escape(websearch: WebsearchHandler) -> None:
+    websearch.get(q="report~section-deadbeef", literal=True)
+    assert _StubClient.call_count == 1
+    assert _StubClient.last_payload is not None
+    assert (
+        _StubClient.last_payload["messages"][-1]["content"] == "report~section-deadbeef"
+    )
+
+
+def test_block_handle_import_exempt(research_with_embedder: ResearchHandler) -> None:
+    h = research_with_embedder
+    query = "report~section-deadbeef"
+    h.put(id=query, text="# Imported\n\nexplicit report", mode="import")
+    assert "explicit report" in h.get(q=query, literal=True).body
+    assert _StubClient.call_count == 0
+
+
+@pytest.mark.parametrize("query", ["approximately ~10 items", "report~section-nothex"])
+def test_non_handle_tilde_query_unaffected(
+    websearch: WebsearchHandler, query: str
+) -> None:
+    websearch.get(q=query)
+    assert _StubClient.call_count == 1
+
+
 # ── env / availability ───────────────────────────────────────────────
 
 

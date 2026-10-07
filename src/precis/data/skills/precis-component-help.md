@@ -238,10 +238,22 @@ do speak to availability, and they are different kinds of fact:
   M14×55 offline, and that `q=` weighs *after* fit;
 - `get(kind='component', id=<slug>, view='stock')` shows that tier **and**
   asks a supplier for a live in-stock number, when one is configured
-  (`precis.supply`; Digi-Key today — the operator pastes the free
-  developer-app pair on the web `/secrets` page). With no credentials it
+  (fasteners use descriptive thread/length/family keywords; hand-entered
+  rows use their MPN when no designation is recorded)
+  (`precis.supply`; Digi-Key, Farnell and Mouser — configure supplier
+  credentials on the web `/secrets` page). With no credentials it
   says which one is missing rather than showing the tier alone — a
   missing key and a part nobody stocks must not read alike.
+
+Supplier navigation: `get(kind='component', view='supplier-categories')`
+lists dated Digi-Key roots; `id=<category id>` walks children/counts and
+leaf parameter IDs; `q='M4'` narrows names/value labels. This is separate
+from the local `categories` registry. Filter a stock read with
+`args={'category_id':572,'parameters':{'<parameter id>':['<value id>']}}`;
+copy IDs from the returned options. Known fastener series apply their
+mapped category and metric thread/length filters automatically; missing
+filter values are explicit errors. Quote descriptions/confidence remain
+visible; filters do not establish grade/finish equivalence.
 
 The dimension specs a mint writes (`outer_diameter`, `inner_diameter`,
 `wall_thickness`, `thickness`, `width`, `height`, `across_flats`,
@@ -427,3 +439,7 @@ components in that category (useful when a spec_id collision is
 theoretically possible across categories, or just to keep results
 on-topic). A plain `q=` search matches the component entity's name,
 aliases, mpn, manufacturer, and category.
+
+Supplier link: `put(kind="component", id="<existing slug>", mode="supplier-link", source="digikey"|"farnell"|"mouser", args={"supplier_part_number":"<confirmed SKU>"})`. Without a SKU, recorded MPN must match exactly. Only supplier identity/URLs/confidence/first-linked UTC persist; manufacturer datasheet URL queues guarded datasheet-kind ingest/link. Component values cite that datasheet, never supplier API parameters.
+
+Default single-component MCP get includes uncached attributed live supplier data. `view="stored"` opts out; list/search/table/BOM remain offline. Web pages load live supplier data on demand. Failures say supplier unreachable; data is not stored. Digi-Key defaults IE/EUR (PRECIS_DIGIKEY_SITE/CURRENCY), Farnell ie.farnell.com (PRECIS_FARNELL_STORE, uk/de supported). PRECIS_SUPPLY_REGION_PREFERENCE defaults IE,GB,DE,EU; origin remains unknown unless returned. Farnell/Mouser API credentials are named on /secrets. TME, RS, Nexar surveyed and declined 2026-10-05.

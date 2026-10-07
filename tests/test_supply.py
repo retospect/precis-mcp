@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 
 from precis import secrets as vault
@@ -154,14 +155,83 @@ class TestAggregation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(base, "adapters", lambda: [_Boom(), _Fine()])
-        quotes = base.quote("ISO 4762 M4x12")
-        assert [q.quantity for q in quotes] == [99, 7]  # best stocked first
+        result = base.quote("ISO 4762 M4x12")
+        assert [q.quantity for q in result.quotes] == [99, 7]
+        assert result.outcomes[0].error == "RuntimeError"
+        assert result.outcomes[1].count == 2
 
-    def test_nothing_listed_is_an_empty_list_not_an_error(
+    def test_outage_retains_an_error_with_no_catalogue_claim(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(base, "adapters", lambda: [_Boom()])
-        assert base.quote("ISO 4762 M99x900") == []
+        result = base.quote("ISO 4762 M99x900")
+        assert result.quotes == []
+        assert result.outcomes[0].error == "RuntimeError"
+        assert result.outcomes[0].count is None
+
+
+@pytest.mark.parametrize(
+    ("token_status", "search_status", "products", "expected_error"),
+    [
+        (401, 200, [], "HTTP 401 at token"),
+        (200, 403, [], "HTTP 403 at search"),
+        (200, 200, [], None),
+        (
+            200,
+            200,
+            [
+                {
+                    "QuantityAvailable": 42,
+                    "Description": {"ProductDescription": "SCREW M4 X 12"},
+                    "ManufacturerProductNumber": "SCREW-1",
+                }
+            ],
+            None,
+        ),
+    ],
+)
+def test_transport_outcomes(
+    monkeypatch, caplog, token_status, search_status, products, expected_error
+) -> None:
+    monkeypatch.setenv("PRECIS_DIGIKEY_CLIENT_ID", "private-client")
+    monkeypatch.setenv("PRECIS_DIGIKEY_CLIENT_SECRET", "private-secret")
+    calls = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        stage = "token" if "oauth2" in str(request.url) else "search"
+        calls.append(stage)
+        status = token_status if stage == "token" else search_status
+        payload = (
+            {"access_token": "private-token", "expires_in": 600}
+            if stage == "token"
+            else {"Products": products}
+        )
+        if status >= 400:
+            payload = {"error": "private-client private-secret private-token"}
+        return httpx.Response(status, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        monkeypatch.setattr("precis.supply.digikey.httpx.post", client.post)
+        monkeypatch.setattr(base, "adapters", lambda: [DigiKeyAdapter()])
+        result = base.quote("M4 x 12mm socket head cap screw")
+    outcome = result.outcomes[0]
+    assert outcome.supplier == "digikey"
+    assert outcome.error == expected_error
+    if expected_error:
+        assert result.quotes == [] and outcome.count is None
+        assert expected_error in caplog.text
+        assert "0 products" not in outcome.line()
+    else:
+        assert outcome.count == len(products)
+        if products:
+            assert result.quotes[0].description == "SCREW M4 X 12"
+            assert result.quotes[0].match_confidence == "keyword"
+        else:
+            assert "0 products" in outcome.line()
+    assert calls == (["token"] if token_status == 401 else ["token", "search"])
+    shown = caplog.text + repr(result)
+    for private in ("private-client", "private-secret", "private-token"):
+        assert private not in shown
 
 
 class _Response:

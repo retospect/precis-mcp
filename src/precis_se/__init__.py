@@ -22,6 +22,13 @@ monotonically as answers arrive — every field beyond a block's name is
 optional; validation reports absence (filled-fraction honesty) but never fails
 on it.
 
+**Stored build reports**: `view='report'` lists generated/join findings from
+bound structure metadata for direct design blocks, optionally addressed by
+label or uid (`args={'block': ...}`). It shares the block view's finding
+renderer: a build record is historical evidence, not recomputed validation.
+Missing records remain explicitly unavailable rather than implying a pass;
+template occurrences and catalogue/dry-run surfaces are separate work.
+
 **The IR — six levels** (same invariant as ``pcb``: dropping everything above
 level *k* leaves a valid level-*k* object):
 

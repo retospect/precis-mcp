@@ -1436,3 +1436,90 @@ def test_search_default_view_is_unchanged(handler: MemoryHandler, store: Store) 
     assert default == handler.search(q="zebra", tags=["SPACE:repo-dev"], view=None).body
     assert "zebra hook" not in default
     assert "Zebra title" in default
+
+
+@pytest.mark.parametrize("mode", ["put", "replace", "find-replace", "insert"])
+@pytest.mark.parametrize("driver_error", [False, True])
+def test_mention_connection_loss_cannot_return_success(
+    handler: MemoryHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    driver_error: bool,
+) -> None:
+    from psycopg import Connection, connect
+    from psycopg.pq import TransactionStatus
+
+    old_target, new_target = _make(handler, "old target"), _make(handler, "new target")
+    manual = _make(handler, "manual target")
+    old_body = f"original memory:{old_target}"
+    mid = id_of(
+        handler.put(
+            text=old_body, title="original title", meta={"hook": "original hook"}
+        ).body
+    )
+    store.add_link(src_ref_id=mid, dst_ref_id=manual, relation="related-to")
+    dsn = store.dsn
+    assert dsn is not None
+
+    def persisted_state() -> list[Any]:
+        # Open a fresh physical connection each time, never the lost caller
+        # connection or a cached object. Include identities and metadata so
+        # both removal of old mentions and insertion of new ones must undo.
+        with connect(dsn) as fresh:
+            return [
+                fresh.execute(
+                    "SELECT ref_id, title, meta FROM refs ORDER BY ref_id"
+                ).fetchall(),
+                fresh.execute(
+                    "SELECT chunk_id, ref_id, text FROM chunks ORDER BY chunk_id"
+                ).fetchall(),
+                fresh.execute(
+                    "SELECT event_id, ref_id, event, payload FROM ref_events ORDER BY event_id"
+                ).fetchall(),
+                fresh.execute(
+                    "SELECT link_id, src_ref_id, dst_ref_id, relation, meta FROM links ORDER BY link_id"
+                ).fetchall(),
+            ]
+
+    before = persisted_state()
+    add_link = store.add_link
+    closed: list[Connection] = []
+
+    def insert_then_disconnect(**kwargs: Any) -> Any:
+        result = add_link(**kwargs)
+        if kwargs["dst_ref_id"] == new_target:
+            conn = kwargs["conn"]
+            assert conn.info.transaction_status == TransactionStatus.INTRANS
+            conn.close()
+            closed.append(conn)
+            if driver_error:
+                conn.execute("SELECT 1")  # real driver error caught by shared helper
+        return result
+
+    monkeypatch.setattr(store, "add_link", insert_then_disconnect)
+    text = f"replacement memory:{new_target}"
+    failure = None
+    try:
+        if mode == "put":
+            handler.put(text=text, title="new title", meta={"hook": "new hook"})
+        else:
+            kwargs: dict[str, Any] = {}
+            if mode == "replace":
+                kwargs["title"] = "changed title"
+            elif mode == "find-replace":
+                kwargs["find"] = old_body
+            else:
+                kwargs.update(find=old_body, where="after")
+                text = " " + text
+            handler.edit(
+                id=mid, mode=mode, text=text, meta={"hook": "changed hook"}, **kwargs
+            )
+    except Internal as exc:
+        failure = exc
+
+    assert len(closed) == 1
+    assert closed[0].info.transaction_status == TransactionStatus.UNKNOWN
+    assert persisted_state() == before
+    assert failure is not None, "closed mention connection returned false success"
+    assert "transaction" in str(failure)

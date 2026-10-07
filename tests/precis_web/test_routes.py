@@ -525,7 +525,7 @@ def test_drive_stub_explicit_recency_overrides_untried_default(runtime, client) 
     assert resp.status_code == 200
     assert runtime.store.recent_untried is False
     assert runtime.store.recent_oldest is False
-    assert 'value="recency" selected' in resp.text
+    assert 'value="modified" selected' in resp.text
 
 
 def test_drive_stub_state_shows_fetch_next_n_button(client) -> None:
@@ -1083,7 +1083,7 @@ def test_drive_has_next_shows_next_link_with_filters_preserved(runtime, client) 
     resp = client.get("/drive?q=query&submitted=1&k=paper&sort=recency")
     assert resp.status_code == 200
     assert (
-        'href="/drive?submitted=1&amp;q=query&amp;sort=recency&amp;k=paper&amp;page=2"'
+        'href="/drive?submitted=1&amp;q=query&amp;sort=created&amp;k=paper&amp;page=2"'
         in resp.text
     )
 

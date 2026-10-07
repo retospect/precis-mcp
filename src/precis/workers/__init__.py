@@ -16,15 +16,13 @@ the work-tracking surface. Ingest writes rows and returns; it never
 enqueues or blocks on derived work (a worker outage delays embeddings,
 never loses them — the missing row IS the queue entry).
 
-Each :class:`WorkerHandler` owns one ``(output_table, model)`` pair:
-:meth:`claim_batch` (``LEFT JOIN`` chunks against the output table, lock
-rows ``FOR UPDATE OF c SKIP LOCKED``), :meth:`process` (pure — no DB, no
-I/O), :meth:`write_ok`/:meth:`write_failed` (a failure marker means a
-poison-pill chunk isn't re-claimed forever), :meth:`status` (``(total,
-ok, failed, pending)`` for ``precis worker --status``/``precis health``).
-:func:`run_handler_once` threads a batch through those four in one
-transaction; :func:`run_loop` round-robins all registered handlers until
-they claim zero rows, then sleeps and re-polls.
+Each :class:`WorkerHandler` owns one ``(output_table, model)`` pair.
+:meth:`claim_batch` locks missing-output chunks with ``FOR UPDATE OF c SKIP
+LOCKED``; :meth:`process` is pure, and :meth:`write_ok`/:meth:`write_failed`
+persist results or poison-pill failures. :meth:`status` reports
+``(total, ok, failed, pending)`` for the CLI/health view. One transaction in
+:func:`run_handler_once` handles a batch; :func:`run_loop` rotates registered
+handlers until idle, then sleeps and polls again.
 
 Pass taxonomy
 -------------
@@ -41,24 +39,18 @@ Three pass shapes share ``run_loop``'s rotation (``runner.py``):
   ``briefing``, … —
   roster: ``registry.py``; ``news_poll``/``briefing`` dedup, backoff and
   delivery detail: ``docs/runbooks/news-ops.md``).
-* **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`). The
-  ``dispatch`` pass is the intent→compute bridge: walks open todos with
-  ``meta.executor`` and mints one child ``kind='job'`` per, stamping
-  ``prio`` from the parent so urgency flows down the DAG (rejection log
-  lines + the executor/job_type capability registry:
-  ``docs/runbooks/minter-ops.md``).
+* **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
+  ``dispatch`` bridges intent to compute: each open todo with
+  ``meta.executor`` mints a child job inheriting parent ``prio`` so urgency
+  flows down the DAG. Rejections and capabilities: ``docs/runbooks/minter-ops.md``.
 
-``run_loop`` is strictly serial round-robin — one slow handler starves
-every other pass. That drives the scheduler-lease cadences (below), the
-dedicated GPU compute lane (``deploy/README.md``), and the heartbeat's own
-daemon thread (``cli/worker.py`` starts ``start_heartbeat_thread`` so a
-wedged rotation can't flap a false host-dark alert; the in-rotation
-``heartbeat`` pass stays an idempotent, non-lease backstop — it's the
-liveness signal the lease machinery is judged by). ``run_loop`` also
-stamps :mod:`.activity` around each ref-pass call (``set_pass``/``clear``)
-so a long, log-silent pass doesn't look like a dead worker; the snapshot
-publishes into ``host_heartbeat.meta.activity``, rendered by the web
-Status page's **Now** sub-tab.
+``run_loop`` is serial round-robin, so one slow handler starves other passes.
+This motivates scheduler leases, the separate GPU lane (``deploy/README.md``),
+and the heartbeat daemon thread: a wedged rotation must not trigger a false
+host-dark alert. The in-rotation heartbeat remains an idempotent non-lease
+backstop, the liveness signal leases are judged by. :mod:`.activity` stamps
+each ref pass so silent work is not mistaken for a dead worker; snapshots
+appear in ``host_heartbeat.meta.activity`` and Status **Now**.
 
 Profiles + service registry
 ---------------------------
@@ -75,25 +67,16 @@ AST-parses ``cli/worker.py`` and fails CI on wiring/spec drift.
 
 Run control — ``service_config`` is live, env is deploy-time only
 -----------------------------------------------------------------
-``service_config(host, service, prio, …)`` (``service_config.py``) is the
-ONE live control surface: ``prio 0`` = off, ``1..10`` = claim weight.
-Registration is structural only (``cli/worker.py::_should_register``:
-profile membership, ``ServiceSpec.enable_env``, ``axis:`` prefix, or an
-unknown plugin pass); the resolver reads live, per-cycle
-(``run_loop``'s ``pass_gate``), never at registration — a prio flip
-always has a registered pass to gate, no restart needed.
-``PRECIS_*_ENABLED`` is retired as a live default: ``enable_env`` only
-seeds the deploy-time row (``precis service seed``, INSERT-if-absent so
-console overrides survive redeploys); a formerly dark-switched pass with no
-row defaults OFF, and the no-row baseline also ANDs
-``ServiceSpec.capability_env`` (all set non-empty on this host) — so
-``--profile all`` can't default-on e.g. ``job_claude_inproc`` where
-``PRECIS_MCP_CONFIG`` is absent. Per-item env seeds remain for
-``axis:<id>``/``topic:<slug>``. Two more knobs on the same table:
-``concurrency`` (in-pass thread-pool width, e.g. ``classify``'s per-row
-cascade, hard-capped by ``PRECIS_CLASSIFY_MAX_CONCURRENCY``) and reserve
-mode (a ``service='reserve'`` pseudo-row with ``expires_at``, checked
-live inside heavy-executor claim transactions).
+``service_config(host, service, prio, …)`` is the sole live control
+(``prio 0`` off, ``1..10`` claim weight). Registration is structural;
+``run_loop`` resolves priority each cycle, so flips need no restart.
+``PRECIS_*_ENABLED`` now seeds deploy-time rows only; INSERT-if-absent keeps
+console overrides across redeploys. Missing rows default formerly gated
+passes OFF, and also check ``ServiceSpec.capability_env`` so ``--profile all``
+cannot enable ``job_claude_inproc`` without ``PRECIS_MCP_CONFIG``. Per-item
+seeds remain for ``axis:<id>``/``topic:<slug>``. Same table controls in-pass
+``concurrency`` (hard-capped for ``classify``) and expiring reserve mode,
+checked inside heavy-executor claims.
 
 Scheduler cadences
 ------------------
@@ -208,7 +191,11 @@ extracts inline ``[N]`` usage into ``chunk_citations``, and ``bib_retag``
 is the manual, corpus-mutating remediation for mis-typed bibliography
 chunks — each module's docstring is the record. The chunk-tag cascade
 lives in ``classify.py``; the generic axis runner in ``axis_pass.py``; the
-paper→topic cascade in ``classify_topics.py``.
+paper→topic cascade in ``classify_topics.py``. Its current full-taxonomy
+marker covers every enabled worker subset: the admin CLI intentionally keeps
+full traversal, and a following worker pass must not churn the same papers.
+Subset-only markers stay sensitive to enabled-set changes so newly enabled
+topics backfill those papers.
 
 Agentic dispatch
 ----------------

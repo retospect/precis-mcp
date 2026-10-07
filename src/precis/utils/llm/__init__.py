@@ -110,7 +110,13 @@ retry and failover walk — ``local`` whenever a ``served_by`` slot exists.
 (``llm.model.small`` → ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → default
 ``z-ai/glm-4.7-flash``) whenever a call lands on a hosted OSS transport.
 
-Failure semantics: a transport exception is classified
+Failure semantics: Claude quota-notice adapters stamp ``reason_class='quota'``
+and UTC ``retry_at`` alongside the existing pause flags. Reset parsing lives
+in ``quota`` so executor parking uses the same horizon; other failure classes
+are not yet populated. This additive slice does not retry or update quota
+snapshots.
+
+A transport exception is classified
 (``router._is_unavailability``) — timeout / connection / 5xx / 429 →
 ``paused`` (skip-not-fail: the caller retries next cycle, never parks);
 other 4xx stays ``error``. A claude wall-clock timeout counts as

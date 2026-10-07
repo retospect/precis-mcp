@@ -7,6 +7,10 @@ unfiled / breadcrumb queries are exercised here against the live
 
 from __future__ import annotations
 
+from html import unescape
+from html.parser import HTMLParser
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -65,6 +69,85 @@ def test_folder_tree_nests(store, seeded):
     # child counts: Projects holds Hardware; Hardware holds the cad ref
     assert flat[0]["n_children"] == 1
     assert flat[1]["n_children"] == 1
+
+
+@pytest.mark.parametrize("query", ["", "&q=brief"])
+def test_folder_filter_chip_uses_stored_title(store, drive_client, monkeypatch, query):
+    from precis_web.routes import drive
+
+    folder = store.insert_ref(kind="folder", title="Morning brief", slug=None)
+    original_tree = drive._folder_tree
+    calls = []
+
+    def tree_once(store):
+        calls.append(store)
+        return original_tree(store)
+
+    monkeypatch.setattr(drive, "_folder_tree", tree_once)
+    response = drive_client.get(f"/drive?folder={folder.id}&sort=created{query}")
+    assert response.status_code == 200
+    text = unescape(response.text)
+    assert 'Folder: "Morning brief"' in text
+    assert f"Folder {folder.id}" not in text
+
+    class Links(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hrefs = []
+
+        def handle_starttag(self, tag, attrs):
+            href = dict(attrs).get("href")
+            if tag == "a" and href:
+                self.hrefs.append(href)
+
+    links = Links()
+    links.feed(response.text)
+    assert any(
+        parse_qs(urlsplit(href).query).get("folder") == [str(folder.id)]
+        for href in links.hrefs
+    )
+    assert f'value="{folder.id}" selected' in text
+    assert calls == [store]
+
+
+@pytest.mark.parametrize("target", ["missing", "non-folder", "invalid"])
+def test_folder_filter_chip_falls_back_to_raw_value(store, drive_client, target):
+    if target == "non-folder":
+        ref = store.insert_ref(kind="memory", title="Not a folder", slug=None)
+        value = str(ref.id)
+    elif target == "missing":
+        value = "999999999"
+    else:
+        value = "missing-folder"
+    response = drive_client.get(f"/drive?folder={value}")
+    assert response.status_code == 200
+    assert f"Folder {value}" in response.text
+    assert 'Folder: "Not a folder"' not in unescape(response.text)
+
+
+@pytest.mark.parametrize("url", ["/drive", "/drive?folder=", "/drive?folder=*"])
+def test_folder_chip_without_filter_does_not_add_lookup(
+    store, drive_client, monkeypatch, url
+):
+    from precis_web.routes import drive
+
+    calls = []
+    original_tree = drive._folder_tree
+
+    def tree_once(store):
+        calls.append(store)
+        return original_tree(store)
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail("an unset folder filter must not look up a folder ref")
+
+    monkeypatch.setattr(drive, "_folder_tree", tree_once)
+    monkeypatch.setattr(drive, "_breadcrumb", unexpected_lookup)
+    monkeypatch.setattr(store, "get_ref", unexpected_lookup)
+    response = drive_client.get(url)
+    assert response.status_code == 200
+    assert calls == [store]  # the existing sidebar read only
+    assert "Folder: " not in response.text
 
 
 def test_children_rows_carry_slug_and_reader_fields(store, seeded):

@@ -18,15 +18,15 @@ equivalent-tier fallback + free-tier scouting framework is worth building.
 
 Every production LLM call already goes through `route()` in
 `src/precis/utils/llm/router.py` (106 callers, zero bypasses outside
-tests), so one fix there covers every surface. Today the router folds a
-quota 429 into a bare `LlmResult.error` string with no class attached.
-Consequences, each observed on prod:
+tests), so one fix there covers every surface. The first slice adds optional `LlmResult.reason_class` and `retry_at`
+metadata for detected Claude quota notices. Shared `llm/quota.py` parsing
+keeps adapter results and executor parking on the same UTC reset instant,
+including absolute account resets. Ordinary failures remain unclassified.
 
-- The todo lane re-parses the CLI's "resets 9pm" text itself
-  (`executors/_common.py::classify_transient_backoff_hours`, gr344988);
-  no other lane benefits. Web follow-ups store the failure as content;
-  the taproot backfill degrades to no-claim silently
-  (`taproot-backfill-llm-outage-silent-noclaim.md`).
+Still pending: web follow-ups can store failures as content and taproot
+backfill can degrade to no-claim silently. The broader failure-class/retry
+work below remains open.
+
 - The claude-OAuth gate (`budget/quota.py`) pauses on the
   `claude_quota_snapshot`, but the snapshot only refreshes on the
   quota_check cadence. A live 429 never writes back, so every surface
@@ -43,9 +43,14 @@ on the current numbers, so the cheap router-side pieces ship; the
 free-tier zoo, new backends, and a FRONTIER fallback do NOT (see NOT in
 scope).
 
-## In scope
+## Remaining scope
 
-1. **Failure class on the result.** `LlmResult` gains `reason_class`
+Completed: detected Claude quota metadata and shared executor reset horizon.
+Reactive snapshot stamping, probes, in-process retry, deferred sync calls,
+non-quota classification and failover policy below remain unimplemented.
+
+
+1. **Extend failure classification.** `LlmResult` already carries `reason_class`
    (`quota | rate | budget | transport | content | None`) and
    `retry_at: datetime | None`. The quota-text parser and the transient
    pattern table move from `executors/_common.py` into the router (one

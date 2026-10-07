@@ -276,7 +276,7 @@ def test_late_claim_at_retry_cap_records_miss_and_event(store, tmp_path) -> None
     assert meta["si_found"] == 0 and meta["si_fetched"] == 0
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
+            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s ORDER BY event_id",
             (pid, si_fetch.SI_EVENT_SOURCE),
         ).fetchall()
     assert [r[0] for r in rows] == ["si_blocked"] * 4
@@ -300,7 +300,7 @@ def _flaky(exc_name: str):
 def _events(store, pid: int) -> list[Any]:
     with store.pool.connection() as conn:
         return conn.execute(
-            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s",
+            "SELECT event, payload FROM ref_events WHERE ref_id = %s AND source = %s ORDER BY event_id",
             (pid, si_fetch.SI_EVENT_SOURCE),
         ).fetchall()
 

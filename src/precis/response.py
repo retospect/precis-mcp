@@ -37,3 +37,6 @@ class Response:
     #: warning as the only guidance — right for kinds where a partial
     #: read is genuinely unsafe to act on (e.g. a youtube transcript).
     pagination_alt_hint: str | None = None
+
+    #: Live licensed data must never enter the pagination cache.
+    transient: bool = False

@@ -922,3 +922,50 @@ def test_recipe_cursor_drift_detected_not_silently_served(
     assert is_error is True
     assert "changed since" in body
     assert "[error:BadInput]" in body
+
+
+def test_transient_live_response_never_caches_tail(runtime, monkeypatch):
+    from precis.response import Response
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
+    monkeypatch.setattr(
+        runtime,
+        "_dispatch_inner",
+        lambda *a: Response(body="live supplier fact\n" * 500, transient=True),
+    )
+    runtime.long_lived = True
+    out, is_error = runtime.dispatch_with_status(
+        "get", {"kind": "component", "id": "dogfood"}
+    )
+    assert not is_error
+    assert "live supplier fact" in out
+    assert "NOT the complete result" in out
+    assert "not cached" in out
+    assert "more(cursor=" not in out
+    assert len(runtime.pagination) == 0
+    assert len(out.encode()) <= 1000
+
+
+def test_transient_live_response_refuses_matching_recipe_replay(runtime, monkeypatch):
+    from precis._pagination import RecipeSeed, encode_recipe_cursor, hash_body
+    from precis.response import Response
+
+    body = "dogfood live supplier fact\n" * 500
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
+    monkeypatch.setattr(
+        runtime, "_dispatch_inner", lambda *a: Response(body=body, transient=True)
+    )
+    cursor = encode_recipe_cursor(
+        RecipeSeed(
+            verb="get",
+            args={"kind": "component", "id": "dogfood"},
+            body_hash=hash_body(body),
+            page=2,
+        )
+    )
+    out, is_error = runtime.fetch_more(cursor)
+    assert is_error
+    assert "live supplier content cannot be continued" in out
+    assert "fresh get()" in out
+    assert len(runtime.pagination) == 0
+    assert "dogfood live supplier fact" not in out

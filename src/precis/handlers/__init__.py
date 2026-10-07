@@ -30,9 +30,12 @@ the previous body with the resolver's snapshot inside the transaction.
 The comparison alone would race between the store's read and delete;
 ``FOR NO KEY UPDATE`` serializes competing edits while allowing mention
 links' FK key-share locks (``FOR UPDATE`` deadlocked reciprocal mentions).
-Memory's mention wrapper raises if the shared best-effort helper leaves
-the transaction aborted: COMMIT can otherwise silently roll it back and
-produce a false success. Conflicts roll back the chunk
+Memory's mention wrapper requires healthy ``INTRANS`` after the shared
+best-effort helper: COMMIT can silently roll back an aborted transaction,
+and psycopg can discard a closed/``UNKNOWN`` connection without raising.
+Checking only ``INERROR`` missed that second false-success path. This
+pre-commit check does not certify later commit-time connection failures.
+Conflicts roll back the chunk
 replacement, derived-row cascade and audit event rather than losing a
 concurrent writer's prose. Whole-body replacement remains explicit.
 Creation fields (title, rule, warrant and hook) travel in a call-local

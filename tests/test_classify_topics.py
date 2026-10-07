@@ -568,3 +568,73 @@ class TestPerTopicGating:
             ref_ids=[ref_id],
         )
         assert third == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_full_cli_marker_covers_worker_subset(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The admin full-taxonomy sweep is complete work for every worker
+        subset. Bound the CLI's ``--all`` scope to this fixture, then verify
+        another CLI pass and a worker pass both avoid classification calls."""
+        import argparse
+
+        from precis.cli import classify as classify_cli
+        from precis.utils.llm import router
+
+        ref_id = _seed_paper(
+            store,
+            "Haber-Bosch catalyst with zeolitic imidazolate framework",
+            "We combine ammonia synthesis with a metal-organic framework.",
+        )
+        subset_client = _FakeClient('{"topics": ["nh3-synthesis"]}')
+        subset_result = run_classify_topics_pass(
+            store,
+            client=subset_client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+        subset_marker = topic_marker_value(["nh3-synthesis"])
+        assert subset_result["claimed"] == 1
+        assert _has_marker(store, ref_id, subset_marker)
+        clients: list[_FakeClient] = []
+
+        class _FakeDispatchClient(_FakeClient):
+            def __init__(self, **_kwargs: Any) -> None:
+                super().__init__('{"topics": ["mof", "nh3-synthesis"]}')
+                clients.append(self)
+
+        monkeypatch.setattr(router, "DispatchClient", _FakeDispatchClient)
+        # Keep a real ``--all`` CLI invocation bounded to the isolated fixture.
+        monkeypatch.setattr(
+            classify_cli, "_resolve_scope", lambda _store, _args: [ref_id]
+        )
+        args = argparse.Namespace(
+            all=True, cites_of=None, topic=None, ref_ids=None, batch_size=10
+        )
+
+        classify_cli._cmd_topics(store, args)
+        full_marker = topic_marker_value(all_topic_slugs())
+        assert len(clients) == 1
+        assert len(clients[0].calls) == 1
+        assert _has_marker(store, ref_id, full_marker)
+        assert not _has_marker(store, ref_id, subset_marker)
+
+        # The CLI recognizes its existing full marker, and so does a worker
+        # restricted to the currently enabled subset.
+        classify_cli._cmd_topics(store, args)
+        worker_client = _FakeClient('{"topics": ["mof"]}')
+        result = run_classify_topics_pass(
+            store,
+            client=worker_client,
+            batch_size=10,
+            enabled_slugs=["mof"],
+            ref_ids=[ref_id],
+        )
+
+        assert len(clients) == 2
+        assert clients[1].calls == []
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert worker_client.calls == []
+        assert len(subset_client.calls) == 1
+        assert _has_marker(store, ref_id, full_marker)
+        assert not _has_marker(store, ref_id, topic_marker_value(["mof"]))

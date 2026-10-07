@@ -107,3 +107,51 @@ def test_drive_kinds_stay_out_of_the_consolidated_browser() -> None:
     browse grid beside Drive's own kind facet."""
     for kind in ("pcb", "component", "material"):
         assert kind not in _CONSOLIDATED_KINDS
+
+
+def test_component_supplier_block_is_lazy_and_never_cached(
+    kind_client, runtime_with_store, monkeypatch
+):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from precis.supply.live import identity_link
+
+    store = runtime_with_store.hub.store
+    ComponentHandler(hub=runtime_with_store.hub).put(
+        id="dogfood-web-live", category="electronic"
+    )
+    ref = store.get_ref(kind="component", id="dogfood-web-live")
+    record = {
+        "supplier_part_number": "SKU1",
+        "mpn": "MPN1",
+        "manufacturer": "Maker",
+        "product_url": "https://www.digikey.com/part/SKU1",
+        "datasheet_url": None,
+        "match_confidence": "exact_mpn",
+        "description": "LIVE-MARKER <script>alert(1)</script>",
+    }
+    store.component_supplier_link(
+        ref.id, identity_link("digikey", record, datetime.now(UTC))
+    )
+    calls = []
+
+    def fetch(*args, **kwargs):
+        calls.append(kwargs)
+        return record
+
+    monkeypatch.setattr(
+        "precis.supply.live.supplier_adapter",
+        lambda name: SimpleNamespace(configured=lambda: None, record=fetch),
+    )
+    initial = kind_client.get(f"/refs/component/{ref.id}")
+    assert initial.status_code == 200 and calls == []
+    assert (
+        "Load live supplier data" in initial.text and "LIVE-MARKER" not in initial.text
+    )
+    live = kind_client.get(f"/refs/component/{ref.id}/supplier-live")
+    assert live.status_code == 200 and len(calls) == 1
+    assert live.headers["cache-control"] == "no-store"
+    assert "LIVE-MARKER" in live.text and "not stored" in live.text
+    assert "<script>alert(1)</script>" not in live.text
+    assert kind_client.get("/refs/component/999999999/supplier-live").status_code == 404

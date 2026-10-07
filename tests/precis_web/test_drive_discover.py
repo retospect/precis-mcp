@@ -62,7 +62,83 @@ def test_named_sorts_reach_browse_and_search(client, runtime, sort):
     client.get(f"/drive?k=finding&sort={sort}")
     assert runtime.store.recent_created == (sort == "created")
     client.get(f"/drive?q=graphene&k=finding&sort={sort}")
-    assert runtime.store.search_sort == sort
+    assert runtime.store.search_sort == ("created" if sort == "recency" else sort)
+
+
+class _SortMenu(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_sort = False
+        self.options: list[tuple[str, bool, str]] = []
+        self.option: tuple[str, bool, list[str]] | None = None
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "select":
+            self.in_sort = attributes.get("id") == "drive-sort"
+        elif tag == "option" and self.in_sort:
+            value = attributes["value"]
+            assert value is not None
+            self.option = (value, "selected" in attributes, [])
+
+    def handle_data(self, data):
+        if self.option is not None:
+            self.option[2].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "option" and self.option is not None:
+            value, selected, label = self.option
+            self.options.append((value, selected, "".join(label).strip()))
+            self.option = None
+        elif tag == "select":
+            self.in_sort = False
+
+
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize(
+    ("params", "selected"),
+    [
+        ("", "created"),
+        ("k=finding", "modified"),
+        ("sort=relevance", "modified"),
+        ("sort=recency", "modified"),
+        ("sort=modified", "modified"),
+        ("sort=relevance&q=graphene", "relevance"),
+        ("sort=recency&q=graphene", "created"),
+        ("sort=modified&q=graphene", "modified"),
+        ("state=stub&sort=relevance", "untried"),
+        ("paper_chunks=without", "untried"),
+        ("state=stub&sort=recency", "modified"),
+    ],
+)
+def test_one_modified_option_and_legacy_sort_resolution(
+    client, runtime, params, selected, saved
+):
+    if saved:
+        client.cookies.set("items_kinds", "finding,paper")
+        if not params:
+            selected = "modified"
+    response = client.get(f"/drive?{params}" if params else "/drive")
+    assert response.status_code == 200
+    menu = _SortMenu()
+    menu.feed(response.text)
+    assert [
+        (value, label)
+        for value, _, label in menu.options
+        if label.startswith("Recently modified")
+    ] == [("modified", "Recently modified")]
+    assert [value for value, chosen, _ in menu.options if chosen] == [selected]
+    assert all("legacy" not in label.lower() for _, _, label in menu.options)
+    assert all(value != "recency" for value, _, _ in menu.options)
+    assert ("relevance" in [value for value, _, _ in menu.options]) == ("q=" in params)
+    if "q=" in params:
+        assert runtime.store.search_sort == selected
+    else:
+        assert runtime.store.recent_created == (selected == "created")
+        assert runtime.store.recent_untried == (selected == "untried")
+    assert "items_kinds" not in response.cookies
+    if saved:
+        assert client.cookies.get("items_kinds") == "finding,paper"
 
 
 class _FormInventory(HTMLParser):
@@ -153,9 +229,17 @@ def pg_client(runtime_with_store, tmp_path):
     )
 
 
-@pytest.mark.parametrize("query", ["", "&q=graphene"])
 @pytest.mark.parametrize(
-    ("sort", "first"), [("created", "newer design"), ("modified", "older finding")]
+    ("query", "sort", "first"),
+    [
+        ("", "created", "newer design"),
+        ("&q=graphene", "created", "newer design"),
+        ("", "modified", "older finding"),
+        ("&q=graphene", "modified", "older finding"),
+        ("", "recency", "older finding"),
+        ("&q=graphene", "recency", "newer design"),
+        ("", "relevance", "older finding"),
+    ],
 )
 def test_created_modified_order_with_filed_design_and_finding(
     store, pg_client, query, sort, first

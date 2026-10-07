@@ -35,8 +35,11 @@ candidate is simply the newest main sha whose shards all went green
 (`scripts/last-gated-main-sha`). `gate` reports it and how much unverified
 main sits above it; `deploy` refuses unless it is still an ancestor of
 origin/main, fresh enough, and a fast-forward of `gated` AND `prod`, then deploys exactly
-that sha with `--pinned`. Neither verb takes the ship lock or runs a test, so
-qlands never stall behind a round. Peers do not deploy — the coordinator
+that sha with `--pinned`. An exact certified release may instead retain a
+descendant `gated` already contained in main: the newer gate remains valid,
+while the frozen payload keeps its own exact certificate and prod guards.
+Neither verb takes the ship lock or runs a test, so qlands never stall behind
+a round. Peers do not deploy — the coordinator
 runs `deploy`.
 
 `cut` freezes what the round ships: it pushes `release/r<N>` at the candidate
@@ -414,8 +417,11 @@ def cmd_pending(state: Path, _args: argparse.Namespace) -> int:
 def _root() -> Path:
     """The checkout whose scripts/ and refs the gate verbs use.
 
-    PRECIS_ROUND_ROOT overrides it (tests aim the verbs at a throwaway repo);
-    otherwise it is the checkout this script lives in.
+    PRECIS_ROUND_ROOT selects the payload checkout, including its CI helper,
+    pinned deploy subprocess/cwd, refs, ship pin and common-dir state. A
+    separately reviewed maintenance controller can target a frozen payload;
+    its strict state reader stays adjacent to this controller. Otherwise the
+    target is the checkout this script lives in.
     """
     override = os.environ.get("PRECIS_ROUND_ROOT", "").strip()
     return Path(override) if override else Path(__file__).resolve().parent.parent
@@ -611,6 +617,54 @@ def _candidate(root: Path) -> tuple[str, str]:
     return cand, state
 
 
+def _refresh_release_pointers(
+    root: Path, facts: dict[str, Any], observed_gated: list[str]
+) -> bool:
+    """Read actual refs, never stale tracking refs, around release publication.
+
+    Retention is release-only and uses full DAG ancestry. A descendant gate
+    certifies later main without changing the independently certified payload.
+    Normal publication still uses the existing non-forced fast-forward helper;
+    a rejected racing push is a refusal, never permission to install anyway.
+    Keep authoritative gated observations as a lower bound across refreshes
+    and unfinished install journals: deletion/regression must not authorize
+    recreating an older gate. Cached tracking refs never establish this bound.
+    """
+    cand = facts["candidate"]
+    for name in ("main", "gated", "prod"):
+        sha = _remote(root, f"refs/heads/{name}")
+        if sha is None:
+            return False
+        if sha and not _ref(root, f"{sha}^{{commit}}"):
+            if _rgit(root, "fetch", "-q", "origin", name) is None or not _ref(
+                root, f"{sha}^{{commit}}"
+            ):
+                return False
+        if name == "gated":
+            for prior in observed_gated:
+                if not isinstance(prior, str) or (
+                    prior and (len(prior) != 40 or not _SHA.fullmatch(prior))
+                ):
+                    return False
+                if prior and (not sha or not _ancestor(root, prior, sha)):
+                    return False
+            observed_gated[:] = [sha]
+        facts[f"origin_{name}"] = sha
+    if not facts["origin_main"]:
+        return False
+    gated, main, prod = (facts[f"origin_{name}"] for name in ("gated", "main", "prod"))
+    facts["candidate_in_main"] = bool(cand) and _ancestor(root, cand, main)
+    facts["gated_is_ancestor"] = not gated or _ancestor(root, gated, cand)
+    facts["gated_is_descendant_in_main"] = (
+        bool(facts.get("release_branch") and cand and gated)
+        and not facts["gated_is_ancestor"]
+        and _ancestor(root, cand, gated)
+        and _ancestor(root, gated, main)
+    )
+    facts["prod_is_ancestor"] = not prod or _ancestor(root, prod, cand)
+    return True
+
+
 def _gate_facts(root: Path) -> dict[str, Any]:
     cur = _read_round(_round_state(root))
     rel = cur.get("release")
@@ -639,6 +693,7 @@ def _gate_facts(root: Path) -> dict[str, Any]:
         "origin_prod": _ref(root, "refs/remotes/origin/prod"),
         "candidate_in_main": False,
         "gated_is_ancestor": True,
+        "gated_is_descendant_in_main": False,
         "prod_is_ancestor": True,
         "ahead_docs": 0,
         "ahead_code": 0,
@@ -652,16 +707,13 @@ def _gate_facts(root: Path) -> dict[str, Any]:
         if not cur.get("open") or rel.get("branch") != f"release/r{cur.get('n')}":
             facts.update(candidate="", candidate_state="unreadable")
             return facts
-        for name in ("main", "gated", "prod"):
-            sha = _remote(root, f"refs/heads/{name}")
-            if sha is None or (
-                sha
-                and not _ref(root, f"{sha}^{{commit}}")
-                and _rgit(root, "fetch", "-q", "origin", name) is None
-            ):
-                facts.update(candidate="", candidate_state="unreadable")
-                return facts
-            facts[f"origin_{name}"] = sha
+        journal = rel.get("deployment", {})
+        observed_gated = [
+            journal[k] for k in ("gated_before", "gated_after") if k in journal
+        ]
+        if not _refresh_release_pointers(root, facts, observed_gated):
+            facts.update(candidate="", candidate_state="unreadable")
+            return facts
     if not cand:
         return facts
     facts["candidate_in_main"] = _ancestor(root, cand, facts["origin_main"])
@@ -717,7 +769,11 @@ def cmd_gate(args: argparse.Namespace) -> int:
             f"main is ahead of the candidate by {f['ahead_docs']} docs-only"
             f" and {f['ahead_code']} code commit(s)"
         )
-        if not f["gated_is_ancestor"]:
+        if f.get("gated_is_descendant_in_main"):
+            print(
+                "origin/gated is a descendant contained in main (deploy will retain it)"
+            )
+        elif not f["gated_is_ancestor"]:
             print(
                 "origin/gated is not an ancestor of the candidate (deploy will refuse)"
             )
@@ -756,7 +812,9 @@ def _refusal(root: Path, f: dict[str, Any]) -> str:
             f"candidate {cand[:8]}'s verdict is {age:.1f}h old"
             f" (limit {max_h:g}h, PRECIS_ROUND_MAX_CANDIDATE_HOURS)"
         )
-    if not f["gated_is_ancestor"]:
+    if not f["gated_is_ancestor"] and not (
+        f.get("release_branch") and f.get("gated_is_descendant_in_main")
+    ):
         return (
             f"origin/gated {f['origin_gated'][:8]} is not an ancestor of candidate"
             f" {cand[:8]} (gated moves fast-forward only)"
@@ -1072,10 +1130,25 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             return _deploy_refuse("immutable deployed tag differs or is unreadable")
         if not _release_unchanged(root, rel["branch"], cand):
             return _deploy_refuse("release head moved during the CI lookup")
+    # Release facts above came from the first authoritative remote snapshot.
+    # Its bound persists even when a later snapshot still relates to candidate.
+    observed_gated = [f["origin_gated"]] if rel else []
+    if rel:
+        if not _refresh_release_pointers(root, f, observed_gated):
+            return _deploy_refuse(
+                "release environment refs became unreadable or regressed before publication"
+            )
+        reason = _refusal(root, f)
+        if reason:
+            return _deploy_refuse(reason)
+    retain_gated = bool(rel and f.get("gated_is_descendant_in_main"))
     if args.dry_run:
-        print(
-            f"dry-run: would move origin/gated to {cand[:8]} (env_pointer_move gated)"
-        )
+        if retain_gated:
+            print(f"dry-run: would retain origin/gated at {f['origin_gated'][:8]}")
+        else:
+            print(
+                f"dry-run: would move origin/gated to {cand[:8]} (env_pointer_move gated)"
+            )
         print(f"dry-run: would run scripts/deploy {cand} --pinned")
         if rel:
             print(
@@ -1087,38 +1160,61 @@ def cmd_deploy(args: argparse.Namespace, lock_fd: int) -> int:
             "sha": cand,
             "started_at": _now(),
             "ci": f.get("certificate"),
+            "gated_before": f["origin_gated"],
+            "gated_action": "retain" if retain_gated else "publish",
         }
         _write(state / "round.json", cur)
-    move = subprocess.run(
-        [
-            "bash",
-            "-c",
-            '. scripts/lib/env-pointers.sh && env_pointer_move "$1" gated "$2"',
-            "_",
-            str(root),
-            cand,
-        ],
-        cwd=root,
-        check=False,
-    )
-    if move.returncode != 0:
+    if retain_gated:
+        if os.environ.get("PRECIS_ENV_POINTERS", "1") == "0":
+            return _deploy_refuse(
+                "env_pointer_move gated disabled; cannot retain a release pointer"
+            )
         print(
-            f"scripts/round: deploy refused — env_pointer_move gated {cand[:8]} failed"
-            f" (exit {move.returncode}: push refused or pointers disabled)",
-            file=sys.stderr,
+            f"retain origin/gated {f['origin_gated'][:8]} (certified release descendant in main)"
         )
-        return 1
-    _fetch(root)
-    if _ref(root, "refs/remotes/origin/gated") != cand:
-        print(
-            f"scripts/round: deploy refused — origin/gated did not move to {cand[:8]}",
-            file=sys.stderr,
+    else:
+        move = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. scripts/lib/env-pointers.sh && env_pointer_move "$1" gated "$2"',
+                "_",
+                str(root),
+                cand,
+            ],
+            cwd=root,
+            check=False,
         )
-        return 1
+        if move.returncode != 0:
+            print(
+                f"scripts/round: deploy refused — env_pointer_move gated {cand[:8]} failed"
+                f" (exit {move.returncode}: push refused or pointers disabled)",
+                file=sys.stderr,
+            )
+            return 1
+    if rel:
+        if not _refresh_release_pointers(root, f, observed_gated):
+            return _deploy_refuse(
+                "release environment refs became unreadable or regressed after publication"
+            )
+        reason = _refusal(root, f)
+        if reason:
+            return _deploy_refuse(reason)
+        if f["origin_gated"] != cand and not f["gated_is_descendant_in_main"]:
+            return _deploy_refuse(f"origin/gated did not move to {cand[:8]}")
+    else:
+        _fetch(root)
+        if _ref(root, "refs/remotes/origin/gated") != cand:
+            print(
+                f"scripts/round: deploy refused — origin/gated did not move to {cand[:8]}",
+                file=sys.stderr,
+            )
+            return 1
     if rel and not _release_unchanged(root, rel["branch"], cand):
         return _deploy_refuse("release head changed before rollout")
     started = int(datetime.now(UTC).timestamp())
     if rel:
+        rel["deployment"]["gated_after"] = f["origin_gated"]
         rel["deployment"]["started_epoch"] = started
         _write(state / "round.json", cur)
     rc = subprocess.run(

@@ -10,6 +10,7 @@ contract that matters is what an agent can call.
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -618,7 +619,10 @@ class TestStockView:
             "precis.handlers.component.supply.unavailable_reason", lambda: None
         )
         monkeypatch.setattr(
-            "precis.handlers.component.supply.quote", lambda q, **kw: [quote]
+            "precis.handlers.component.supply.quote",
+            lambda q, **kw: supply.QuoteResult(
+                [quote], [supply.SupplierOutcome("digikey", q, count=1)]
+            ),
         )
         handler = _handler(store)
         handler.put(series="iso-4762", size="M4x12")
@@ -628,6 +632,82 @@ class TestStockView:
         # …and the tier is still there: the live number refines it, it
         # does not replace it.
         assert "universal" in body
+
+    @pytest.mark.parametrize(
+        ("series", "size", "expected"),
+        [
+            ("iso-4762", "M4x12", "M4 x 12mm socket head cap screw"),
+            ("iso-7380", "M3x8", "M3 x 8mm socket button head screw"),
+            ("iso-4032", "M4", "M4 hexagon nut"),
+        ],
+    )
+    def test_fastener_keyword_uses_series_dimensions_and_family(
+        self, monkeypatch, series, size, expected
+    ) -> None:
+        from precis import supply
+
+        asked = []
+
+        def quote(query, **kw):
+            asked.append(query)
+            return supply.QuoteResult(
+                [], [supply.SupplierOutcome("digikey", query, count=0)]
+            )
+
+        monkeypatch.setattr(supply, "unavailable_reason", lambda: None)
+        monkeypatch.setattr(supply, "quote", quote)
+        ref = SimpleNamespace(id="fixture", meta={"series": series, "size": size})
+        body = _handler(SimpleNamespace())._render_stock(ref).body
+        assert asked == [expected]
+        assert "digikey: 0 products" in body
+        assert "do not list it" not in body
+        assert "universal" in body
+
+    @pytest.mark.parametrize("error", ["HTTP 401 at token", "HTTP 403 at search"])
+    def test_stock_error_never_claims_unlisted(self, monkeypatch, error) -> None:
+        from precis import supply
+
+        monkeypatch.setattr(supply, "unavailable_reason", lambda: None)
+        monkeypatch.setattr(
+            supply,
+            "quote",
+            lambda q, **kw: supply.QuoteResult(
+                [], [supply.SupplierOutcome("digikey", q, error=error)]
+            ),
+        )
+        ref = SimpleNamespace(
+            id="fixture", meta={"series": "iso-4762", "size": "M4x12"}
+        )
+        body = _handler(SimpleNamespace())._render_stock(ref).body
+        assert f"digikey: {error}" in body
+        assert "do not list it" not in body and "0 products" not in body
+
+    @pytest.mark.parametrize(
+        ("meta", "expected"),
+        [
+            ({"mpn": "RC0402FR-0710KL", "size": "0402"}, "RC0402FR-0710KL"),
+            ({"designation": "explicit", "mpn": "ignored"}, "explicit"),
+            ({"designation": "", "mpn": "RC0402FR-0710KL"}, "RC0402FR-0710KL"),
+        ],
+    )
+    def test_hand_entered_mpn_fallback(self, monkeypatch, meta, expected) -> None:
+        from precis import supply
+
+        asked = []
+
+        def quote(query, **kw):
+            asked.append(query)
+            return supply.QuoteResult([], [])
+
+        monkeypatch.setattr(supply, "unavailable_reason", lambda: None)
+        monkeypatch.setattr(supply, "quote", quote)
+        body = (
+            _handler(SimpleNamespace())
+            ._render_stock(SimpleNamespace(id="fixture", meta=meta))
+            .body
+        )
+        assert asked == [expected]
+        assert "nothing to ask" not in body
 
     def test_the_series_table_shows_the_tier_as_a_column(self, store: Any) -> None:
         body = _handler(store).get(id="iso-14585", view="series").body

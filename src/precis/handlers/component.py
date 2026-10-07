@@ -58,11 +58,19 @@ does the range-filter read (``spec=/min=/max=/maturity=``, optionally
 narrowed by ``category=``).
 
 See ``precis-component-help``.
+
+Explicit ``mode=supplier-link`` persists only confirmed supplier identity and
+URLs. API-data import was refused under the licence; values come instead from
+independently ingested manufacturer datasheets. Single-component MCP pages
+fetch uncached supplier records live by default; ``view=stored`` and all bulk
+surfaces remain offline. The web item page requests live data lazily.
+
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, ClassVar
 
 from precis import component_series as cseries
@@ -95,6 +103,7 @@ from precis.store._component_ops import (
     ComponentSpecRow,
     ComponentValueRowWithSource,
 )
+from precis.supply.catalog import series_mapping, validate_filters
 from precis.utils import handle_registry
 
 #: ``component_spec_values.method`` (migration 0093's comment: "measured |
@@ -111,6 +120,9 @@ _VIEWS: tuple[str, ...] = (
     "bom",
     "series",
     "stock",
+    "supplier-categories",
+    "stored",
+    "supplier-live",
 )
 
 
@@ -159,6 +171,7 @@ class ComponentHandler(ValueEntityHandler):
         if hub.store is None:
             raise InitError("component: store required")
         self.store = hub.store
+        self.hub = hub
 
     def accepted_views(self, *, id: Any = None) -> list[str]:
         return list(_VIEWS)
@@ -192,8 +205,25 @@ class ComponentHandler(ValueEntityHandler):
         meta: dict[str, Any] | None = None,
         series: str | None = None,
         size: str | None = None,
+        mode: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if mode == "supplier-link":
+            if (
+                source not in {"digikey", "farnell", "mouser"}
+                or spec is not None
+                or series is not None
+                or size is not None
+            ):
+                raise BadInput(
+                    "supplier-link requires a supplier source and no spec/series/size"
+                )
+            return self._put_supplier_link(id=id, source=source, args=args)
+        if mode is not None:
+            raise BadInput(
+                "component mode must be omitted or 'supplier-link'; API data import is not supported"
+            )
         if series is not None or size is not None:
             return self._mint_from_series(
                 id=id,
@@ -247,6 +277,67 @@ class ComponentHandler(ValueEntityHandler):
                 base=resp,
             )
         return resp
+
+    def _put_supplier_link(
+        self, *, id: str | int | None, source: str, args: dict[str, Any] | None
+    ) -> Response:
+        import hashlib
+
+        from precis.supply.base import now
+        from precis.supply.live import identity_link, supplier_adapter
+
+        if id is None:
+            raise BadInput("supplier-link requires an existing component id")
+        if args is not None and (
+            not isinstance(args, dict) or set(args) - {"supplier_part_number"}
+        ):
+            raise BadInput("supplier-link args accept supplier_part_number only")
+        ref = self.store.get_ref(kind="component", id=str(id).strip())
+        if ref is None:
+            raise NotFound("supplier-link requires an existing component")
+        confirmed = (args or {}).get("supplier_part_number")
+        if confirmed is not None and (
+            not isinstance(confirmed, str) or not confirmed.strip()
+        ):
+            raise BadInput("supplier_part_number must be a nonempty string")
+        mpn = str(
+            (ref.meta or {}).get("mpn") or (ref.meta or {}).get("designation") or ""
+        ).strip()
+        if not mpn and not confirmed:
+            raise BadInput(
+                "supplier-link needs recorded MPN or confirmed supplier part number"
+            )
+        adapter = supplier_adapter(source)
+        try:
+            why = adapter.configured()
+            if why:
+                raise BadInput(why)
+            record = adapter.record(mpn, supplier_part_number=confirmed)
+            link = identity_link(source, record, now())
+        except Exception as exc:
+            from precis.supply.live import safe_error
+
+            raise BadInput(f"supplier link refused: {safe_error(exc)}") from None
+        changed = self.store.component_supplier_link(ref.id, link)
+        note = "no datasheet URL supplied"
+        if link["datasheet_url"]:
+            job = self.hub.sibling("job")
+            queued = job.put(
+                job_type="datasheet_pull",
+                executor="job_inproc",
+                parent_id=ref.id,
+                params={"component_ref_id": ref.id, "url": link["datasheet_url"]},
+                idem_key=f"datasheet_pull:component:{ref.id}:"
+                + hashlib.sha256(link["datasheet_url"].encode()).hexdigest()[:16],
+            )
+            note = "manufacturer datasheet queued" + (
+                " (existing job)" if queued.reused else ""
+            )
+        return Response(
+            body=f"{'linked' if changed else 'unchanged'} {source} {link['supplier_part_number']} · {note}",
+            ref_id=ref.id,
+            reused=not changed,
+        )
 
     def _put_entity(
         self,
@@ -889,8 +980,11 @@ class ComponentHandler(ValueEntityHandler):
         view: str | None = None,
         spec: str | None = None,
         q: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if view == "supplier-categories":
+            return self._render_supplier_categories(id=id, q=q)
         if view == "series":
             return self._render_series(
                 id=str(id).strip() if id is not None else None,
@@ -917,17 +1011,26 @@ class ComponentHandler(ValueEntityHandler):
         if view == "bom":
             return self._render_bom(ref, spec=str(spec).strip() if spec else None)
         if view == "stock":
-            return self._render_stock(ref)
+            return self._render_stock(ref, args=args)
         values = self.store.component_values_for_ref(ref.id)
         if view == "table":
             return self._render_table(ref, values)
-        if view is not None:
+        if view not in (None, "stored", "supplier-live"):
             raise BadInput(
-                f"unknown view={view!r} for kind='component'",
-                options=list(_VIEWS),
-                next="omit view= for the component page",
+                f"unknown view={view!r} for kind='component'", options=list(_VIEWS)
             )
-        return self._render_page(ref, values)
+        from precis.supply.live import live_lines
+
+        if view == "supplier-live":
+            return Response(body="\n".join(live_lines(ref.meta or {})), transient=True)
+        response = self._render_page(ref, values)
+        if view != "stored":
+            response = replace(
+                response,
+                body=response.body + "\n" + "\n".join(live_lines(ref.meta or {})),
+                transient=bool((ref.meta or {}).get("supplier_links")),
+            )
+        return response
 
     def _list_components(self) -> Response:
         refs = self.store.list_refs(kind="component", limit=50)
@@ -965,6 +1068,109 @@ class ComponentHandler(ValueEntityHandler):
             body=f"# {len(rows)} component {noun}\n"
             + render_agent_table(rows, schema=["category_id", "name", "status"])
         )
+
+    def _render_supplier_categories(
+        self, *, id: str | int | None, q: str | None
+    ) -> Response:
+        from precis.supply.base import SupplierError
+        from precis.supply.digikey import DigiKeyAdapter
+
+        category_id = None
+        if id is not None:
+            try:
+                category_id = int(str(id))
+                validate_filters(category_id, None)
+            except ValueError as exc:
+                raise BadInput(
+                    "supplier category id must be a positive integer"
+                ) from exc
+        adapter = DigiKeyAdapter()
+        why = adapter.configured()
+        if why:
+            return Response(body=f"Digi-Key categories unavailable: {why}")
+        try:
+            snapshot = adapter.categories(category_id)
+            rows = []
+
+            def visit(entries: list[dict[str, Any]], path: str = "") -> None:
+                for entry in entries:
+                    name = str(entry.get("Name") or "")
+                    full = f"{path} > {name}" if path else name
+                    if not q or q.casefold() in full.casefold():
+                        rows.append(
+                            {
+                                "id": entry["CategoryId"],
+                                "path": full,
+                                "products": entry.get("ProductCount", 0),
+                                "children": len(entry.get("Children") or []),
+                            }
+                        )
+                    if q:
+                        visit(entry.get("Children") or [], full)
+
+            if category_id is not None:
+                visit(snapshot.categories)
+                if not q:
+                    for entry in snapshot.categories:
+                        visit(entry.get("Children") or [], str(entry.get("Name") or ""))
+            else:
+                visit(snapshot.categories)
+            lines = [
+                f"# Digi-Key categories · retrieved {snapshot.retrieved.isoformat()} · live, uncached, not stored",
+                render_agent_table(
+                    rows[:50], schema=["id", "path", "products", "children"]
+                ),
+            ]
+            if len(rows) > 50:
+                lines.append(
+                    f"{len(rows) - 50} additional matches; narrow q= to a category path."
+                )
+            if category_id is not None:
+                leaf = snapshot.categories and not snapshot.categories[0].get(
+                    "Children"
+                )
+                if leaf:
+                    for option in adapter.parameter_options(category_id):
+                        name = str(option.get("ParameterName") or "")
+                        values = option.get("FilterValues") or []
+                        selected = [
+                            v
+                            for v in values
+                            if not q
+                            or q.casefold() in name.casefold()
+                            or q.casefold() in str(v.get("ValueName", "")).casefold()
+                        ]
+                        if selected:
+                            lines.append(
+                                f"## {name} · parameter {option['ParameterId']} · {len(selected)} matching values"
+                            )
+                            lines.append(
+                                render_agent_table(
+                                    [
+                                        {
+                                            "value_id": v.get("ValueId"),
+                                            "value": v.get("ValueName"),
+                                            "products": v.get("ProductCount"),
+                                        }
+                                        for v in selected[:30]
+                                    ],
+                                    schema=["value_id", "value", "products"],
+                                )
+                            )
+                            if len(selected) > 30:
+                                lines.append(
+                                    "More values omitted; narrow q= to a value label."
+                                )
+            lines.append(
+                "Next: get(kind='component', view='supplier-categories', id=<category id>, q=<optional name/value>)"
+            )
+            lines.append(
+                "Filter a part: get(kind='component', id=<component slug>, view='stock', args={'category_id': <id>, 'parameters': {'<parameter id>': ['<value id>']}})"
+            )
+            return Response(body="\n".join(lines), transient=True)
+        except Exception as exc:
+            error = str(exc) if isinstance(exc, SupplierError) else type(exc).__name__
+            return Response(body=f"Digi-Key categories: {error}")
 
     def _render_specs(self, *, category_id: str | None) -> Response:
         specs = self.store.component_specs_list(category_id=category_id)
@@ -1045,7 +1251,9 @@ class ComponentHandler(ValueEntityHandler):
             summed[leaf_id] = summed.get(leaf_id, 0) + qty
         return summed
 
-    def _render_stock(self, ref: Any) -> Response:
+    def _render_stock(
+        self, ref: Any, *, args: dict[str, Any] | None = None
+    ) -> Response:
         """``view='stock'`` — is this thing buyable, right now.
 
         Two answers, deliberately both shown (the owning backlog item's
@@ -1056,8 +1264,25 @@ class ComponentHandler(ValueEntityHandler):
         configured the view says which credential is missing rather than
         quietly showing the tier alone — a missing key and a part nobody
         stocks must not read the same.
+
+        Known fasteners use series-derived thread/length/head-form words:
+        distributors need descriptive keywords rather than ISO numbers.
+        Hand-entered rows fall back to MPN when designation is absent.
+        Each supplier reports success/empty/error separately; descriptions
+        remain visible because keyword matches can be the wrong hardware.
         """
         meta = ref.meta or {}
+        if args is not None and (
+            not isinstance(args, dict) or set(args) - {"category_id", "parameters"}
+        ):
+            raise BadInput("stock args accept only category_id and parameters")
+        filters = {
+            key: value for key, value in (args or {}).items() if value is not None
+        }
+        try:
+            validate_filters(filters.get("category_id"), filters.get("parameters"))
+        except ValueError as exc:
+            raise BadInput(str(exc)) from exc
         series_id = str(meta.get("series") or "")
         size = str(meta.get("size") or "")
         designation = str(meta.get("designation") or "")
@@ -1075,10 +1300,32 @@ class ComponentHandler(ValueEntityHandler):
                 "availability tier: none recorded (hand-entered row, or a "
                 "series without a judgement for this size)"
             )
-        query = " ".join(x for x in (designation or series_id, size) if x).strip()
+        if srs is not None and row is not None and srs.category == "fastener":
+            _, length = cseries.split_designation(size)
+            thread = str(row.specs.get("thread_size") or row.key)
+            family = srs.name.lower().split(",", 1)[0]
+            if family.startswith("hexagon socket "):
+                family = family.removeprefix("hexagon ")
+            dimension = f"{thread} x {length:g}mm" if length is not None else thread
+            query = f"{dimension} {family}"
+            mapping = series_mapping(srs.series_id)
+            if mapping and not filters:
+                filters["category_id"] = mapping["category_id"]
+                filters["criteria"] = {
+                    "thread": thread,
+                    "pitch": row.specs.get("thread_pitch"),
+                    "length": length,
+                    "length_parameter": "Length - Overall"
+                    if srs.specs.get("head_form") in {"countersunk", "none"}
+                    else "Length - Below Head",
+                }
+        elif not designation and meta.get("mpn"):
+            query = str(meta["mpn"]).strip()
+        else:
+            query = " ".join(x for x in (designation or series_id, size) if x).strip()
         if not query:
             lines.append(
-                "no standards designation on this row, so there is nothing to "
+                "no designation or MPN on this row, so there is nothing to "
                 "ask a supplier by — mint it from a series to get one."
             )
             return Response(body="\n".join(lines))
@@ -1086,18 +1333,11 @@ class ComponentHandler(ValueEntityHandler):
         if why is not None:
             lines.append(f"live stock: unavailable — {why}")
             return Response(body="\n".join(lines))
-        quotes = supply.quote(query)
-        if not quotes:
-            lines.append(
-                f"live stock: asked for {query!r} and got nothing back — the "
-                "suppliers reachable from here do not list it. That is a "
-                "statement about them, not about the world: the catalogue "
-                "with the real fastener depth (JLCMC) is application-gated."
-            )
-            return Response(body="\n".join(lines))
+        result = supply.quote(query, **filters)
         lines.append(f"live stock for {query!r}:")
-        lines.extend(f"- {q.line()}" for q in quotes)
-        return Response(body="\n".join(lines))
+        lines.extend(f"- {outcome.line()}" for outcome in result.outcomes)
+        lines.extend(f"- {q.line()}" for q in result.quotes)
+        return Response(body="\n".join(lines), transient=True)
 
     def _render_bom(self, ref: Any, *, spec: str | None) -> Response:
         spec_row: ComponentSpecRow | None = None
@@ -1220,6 +1460,9 @@ class ComponentHandler(ValueEntityHandler):
             lines.append("aka: " + ", ".join(meta["aliases"]))
         if meta.get("notes"):
             lines.append(f"notes: {meta['notes']}")
+        from precis.supply.live import sources_lines
+
+        lines.extend(sources_lines(meta))
 
         made_of_links = self.store.links_for(
             ref.id, direction="out", relation="made-of"

@@ -145,6 +145,25 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group="digikey",
     ),
     SecretSpec(
+        name="PRECIS_FARNELL_API_KEY",
+        purpose="component stock — Farnell/element14 warehouse inventory; live read only.",
+        get_url="https://partner.element14.com/",
+        get_blurb="Create a Partner Portal account and request a Product Search API key. "
+        "Ireland store is the default; no contract-pricing credentials needed.",
+        cost="free courtesy allowance — confirm ongoing quota",
+        # No auth-only endpoint: don't spend a search quota on page rendering.
+        probe_group=None,
+    ),
+    SecretSpec(
+        name="PRECIS_MOUSER_API_KEY",
+        purpose="component stock — Mouser Search API; live attributed read only.",
+        get_url="https://www.mouser.com/en/api-search/",
+        get_blurb="Create/verify MyMouser, request Search API access describing your "
+        "application, and paste the approved key emailed to you (not an Order API key).",
+        cost="free approved Search API — 1000 calls/day",
+        probe_group=None,
+    ),
+    SecretSpec(
         name="WOLFRAM_APP_ID",
         purpose="math kind — Wolfram|Alpha computation.",
         get_url="https://developer.wolframalpha.com",

@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import struct
 import zipfile
+from xml.etree import ElementTree as ET
 
 import numpy as np
 import pytest
@@ -30,6 +31,59 @@ from precis.cad.tessellate import (
     node_meshes,
 )
 from precis.cad.vec import vec3
+
+
+@pytest.mark.parametrize("scale", [1.0, 100.0, 0.125, 2e7, 1.23456789012345])
+def test_write_3mf_scaled_cube_package(tmp_path, scale: float) -> None:
+    from precis.cad.export import _MM_PER_M, _write_3mf
+    from precis.cad.mesh_check import package_findings
+
+    # The writer receives mm, after the existing SI export boundary.
+    vertices, triangles = mesh_config("box:w0.001d0.001h0.001")
+    vertices = vertices * _MM_PER_M
+    original_vertices, original_triangles = vertices.copy(), triangles.copy()
+    out = tmp_path / "cube.3mf"
+    _write_3mf(out, [("cube", vertices, triangles)], title="cube", scale=scale)
+    assert package_findings(out.read_bytes()) == []
+    with zipfile.ZipFile(out) as package:
+        assert not any(name.startswith("Metadata/") for name in package.namelist())
+        model = ET.fromstring(package.read("3D/3dmodel.model"))
+    ns = {"m": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
+    assert model.attrib["unit"] == "millimeter"
+    written = np.array(
+        [
+            [float(v.attrib[axis]) for axis in ("x", "y", "z")]
+            for v in model.findall(".//m:vertex", ns)
+        ]
+    )
+    np.testing.assert_allclose(np.ptp(written, axis=0), [scale] * 3)
+    metadata = model.findall("m:metadata", ns)
+    names = [entry.attrib["name"] for entry in metadata]
+    assert len(names) == len(set(names))
+    values = {entry.attrib["name"]: entry.text for entry in metadata}
+    assert values["Title"] == "cube" and values["Application"] == "precis"
+    assert values["CreationDate"]
+    if scale == 1:
+        assert set(values) == {"Title", "Application", "CreationDate"}
+        np.testing.assert_array_equal(written, vertices)
+    else:
+        factor = values["precis:scale_factor"]
+        assert factor is not None
+        assert float(factor) == scale
+    np.testing.assert_array_equal(vertices, original_vertices)
+    np.testing.assert_array_equal(triangles, original_triangles)
+
+
+@pytest.mark.parametrize("scale", [0, -1, math.nan, math.inf, -math.inf])
+def test_write_3mf_invalid_scale_preserves_output(tmp_path, scale: float) -> None:
+    from precis.cad.export import _write_3mf
+
+    out = tmp_path / "existing.3mf"
+    out.write_bytes(b"existing output")
+    with pytest.raises(ValueError, match="finite and positive"):
+        _write_3mf(out, [], scale=scale)
+    assert out.read_bytes() == b"existing output"
+
 
 _FLANGE = """
 component flange

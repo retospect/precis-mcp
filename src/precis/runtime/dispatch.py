@@ -383,13 +383,18 @@ class DispatchMixin(RuntimeShape):
                 # built too, so the cursor is self-describing (survives
                 # TTL expiry entirely) rather than just an opaque cache
                 # key; see :mod:`precis._pagination`'s module docstring.
-                recipe = self._build_recipe_seed(verb, args, response)
+                recipe = (
+                    None
+                    if response.transient
+                    else self._build_recipe_seed(verb, args, response)
+                )
                 body, _cursor = self.pagination.split(
                     self._render(response),
                     alt_hint=response.pagination_alt_hint,
                     cursor_capable=self.long_lived,
                     kind=args.get("kind"),
                     recipe=recipe,
+                    transient=response.transient,
                 )
                 self._record_tool_call(verb, args, body, False, started)
                 return body, False
@@ -689,6 +694,14 @@ class DispatchMixin(RuntimeShape):
                     f"{type(e).__name__} (see server log)"
                 )
                 return self.render_error(err), True
+
+            if response.transient:
+                return self.render_error(
+                    BadInput(
+                        "live supplier content cannot be continued from a recipe cursor",
+                        next="make a fresh get() request; narrow the query or increase PRECIS_MAX_BODY_BYTES.",
+                    )
+                ), True
 
             if hash_body(response.body) != decoded.body_hash:
                 err = BadInput(
@@ -1759,8 +1772,10 @@ class DispatchMixin(RuntimeShape):
         kind. Naming it explicitly lets the caller see and steer
         the choice on retry.
         """
+        from dataclasses import replace
+
         annotated = f"(searched kind={kind!r})\n{response.body}"
-        return Response(body=annotated, cost=response.cost)
+        return replace(response, body=annotated)
 
     def _kinds_for_verb(self, verb: str) -> list[str]:
         """Return the active kinds whose KindSpec supports ``verb``.

@@ -536,7 +536,7 @@ efficiency read in isolation overstates the link.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
+`tree · block · report · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links · export · ops`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
@@ -550,6 +550,12 @@ UTC time, op names, block count. `edit(kind='se', id=…,
 ops=[{'op':'restore_revision','rev':N}])` puts the design back to
 revision N (a sole op in its call); the restore is itself recorded as a
 new revision, so nothing is rewound. An unknown N names the available range.
+
+`view='report'` reads stored generate/join build findings (severity, code,
+where, message, span) without recomputation. Omit args for every direct block,
+or use `args={'block': '<label or #uid>'}`. Missing records are unavailable,
+not evidence of a successful build; this does not validate current geometry
+or expand template occurrences. State overrides are not accepted.
 
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be

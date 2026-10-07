@@ -343,6 +343,44 @@ class ComponentMixin:
             notes=notes,
         )
 
+    def component_supplier_link(self, ref_id: int, link: dict[str, Any]) -> bool:
+        """Persist only the supplier identity/link whitelist, never API facts.
+
+        Lock metadata before merging; identical links preserve first-linked UTC.
+        No supplier observations or sourced values enter this transaction.
+        """
+        from precis.supply.live import LINK_FIELDS
+
+        if set(link) != set(LINK_FIELDS):
+            raise ValueError("supplier link fields must exactly match the whitelist")
+        with self.tx() as conn:
+            row = _fetchone(
+                conn,
+                "SELECT meta FROM refs WHERE ref_id=%s AND kind='component' AND retired_at IS NULL FOR NO KEY UPDATE",
+                (ref_id,),
+            )
+            if row is None:
+                raise ValueError("component no longer available")
+            meta = dict(row["meta"] or {})
+            links = list(meta.get("supplier_links") or [])
+            for index, existing in enumerate(links):
+                if (existing["supplier"], existing["supplier_part_number"]) == (
+                    link["supplier"],
+                    link["supplier_part_number"],
+                ):
+                    link = {**link, "first_linked_at": existing["first_linked_at"]}
+                    if existing == link:
+                        return False
+                    links[index] = link
+                    break
+            else:
+                links.append(link)
+            meta["supplier_links"] = links
+            conn.execute(
+                "UPDATE refs SET meta=%s WHERE ref_id=%s", (Jsonb(meta), ref_id)
+            )
+            return True
+
     def component_values_for_ref(
         self, component_ref_id: int
     ) -> list[ComponentValueRowWithSource]:

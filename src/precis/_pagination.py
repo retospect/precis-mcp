@@ -506,6 +506,7 @@ class PaginationCache:
         cursor_capable: bool = True,
         kind: str | None = None,
         recipe: RecipeSeed | None = None,
+        transient: bool = False,
     ) -> tuple[str, str | None]:
         """Split ``body`` into a head + cached tail if oversized.
 
@@ -520,6 +521,9 @@ class PaginationCache:
         for the next page. A section too large to fill a page of its
         own falls through to a paragraph split, then a line split,
         then a hard byte split — see :func:`_ladder_split`.
+
+        ``transient=True`` discards overflow without caching a tail or
+        recipe and uses a fresh-request hint, regardless of process lifetime.
 
         ``alt_hint``, when given, is appended to the footer as a
         one-sentence pointer to a cheaper alternative to draining
@@ -551,6 +555,9 @@ class PaginationCache:
         page from scratch. Falls back to an opaque cursor if encoding
         ``recipe`` fails (e.g. non-JSON-safe args) rather than raising.
         """
+        # Licensed live responses retain frame limits but never retain a tail.
+        if transient:
+            cursor_capable, recipe, kind, alt_hint = False, None, None, None
         alt_hint = _clamp_alt_hint(alt_hint)
         kind = _clamp_kind(kind)
         cap = _max_body_bytes()
@@ -599,6 +606,14 @@ class PaginationCache:
             return body, None
 
         remaining = _human_bytes(len(tail.encode("utf-8")))
+
+        if transient:
+            return head + (
+                "\n\n---\nTruncated — NOT the complete result. "
+                f"About {remaining} omitted. Live supplier data is not cached; "
+                "no continuation cursor is available. Narrow the query or increase "
+                "PRECIS_MAX_BODY_BYTES and make a fresh live request.\n"
+            ), None
 
         if not cursor_capable:
             footer = _build_short_lived_footer(

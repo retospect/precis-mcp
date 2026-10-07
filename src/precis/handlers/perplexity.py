@@ -11,6 +11,11 @@ Cache key is ``<model>:<query>`` so the same query under different
 models never collides. The cache row provider is ``'perplexity'`` for
 all three (pre-existing in the providers table).
 
+Search block handles are rejected as queries before a paid fetch: their
+truncated report prefix can collide with an existing report's slug.
+The literal escape and explicit imports remain available; this guard
+does not solve slug collisions between distinct natural-language queries.
+
 Attribution policy (per Perplexity's Terms of Service): every public/
 shared output must disclose AI generation; Standard and Pro tiers are
 restricted to personal / non-commercial use. The footer also tells the
@@ -44,6 +49,7 @@ _SONAR_URL = "https://api.perplexity.ai/chat/completions"
 # A query that is nothing but digits reads as a ref-id an agent meant to
 # retrieve, not a web-search query — see ``_canonical_key``'s guard.
 _BARE_REFID_RE = re.compile(r"^\d+$")
+_BLOCK_HANDLE_RE = re.compile(r"~[^~]*-[0-9a-fA-F]+$")
 
 # Per https://www.perplexity.ai/hub/legal/terms-of-service: every
 # public / shared output must disclose AI use; Standard/Pro tiers are
@@ -175,6 +181,18 @@ class _PerplexityBase(CacheBackedHandler):
                     f"gripe:{q}, todo:{q}), or search(q='…') to find it",
                     "to REALLY web-search the literal number, pass "
                     "args={'literal': True}",
+                ),
+            )
+        if not literal and _BLOCK_HANDLE_RE.search(q):
+            report_slug = q.split("~", 1)[0]
+            raise BadInput(
+                f"{self.spec.kind}: {q!r} reads as a search block handle, "
+                "not a query. Refusing a fresh paid Sonar call.",
+                next=(
+                    f"get(kind={self.spec.kind!r}, id={report_slug!r}, "
+                    "args={'no_fetch': True}) to retrieve the cached report; "
+                    "if absent, find the original query",
+                    "to search this text literally, pass args={'literal': True}",
                 ),
             )
         # Cache key includes the model so same query under different

@@ -78,6 +78,13 @@ get(kind="websearch", q="171", args={"literal": True})
 `perplexity-research` search a bare number, and the `put(mode='import')`
 path is exempt (imports are explicit).
 
+Search block handles (`report-slug~section-<hex>`) are also rejected as
+`id=`/`q=` queries before a paid call. To read the cached report, use the
+slug before `~` with `get(kind="perplexity-research", id="report-slug",
+args={"no_fetch": True})`; a cache miss refuses to fetch. If absent, find
+the original query. `args={"literal": True}` and `put(mode='import')`
+remain explicit escapes for handle-shaped query text.
+
 ## Pick the right kind
 ## Which model do I want — websearch, perplexity-reasoning, or perplexity-research?
 ## When to use which tier

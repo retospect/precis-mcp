@@ -46,9 +46,10 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 
@@ -59,7 +60,7 @@ from precis.utils.claude_agent import (
     call_claude_agent_async,
 )
 from precis.utils.claude_p import ClaudePResult, call_claude_p
-from precis.utils.llm.quota import is_quota_exhaustion_text
+from precis.utils.llm.quota import is_quota_exhaustion_text, quota_retry_at
 
 if TYPE_CHECKING:
     from precis.utils.llm.local_serving import LocalSlot
@@ -975,6 +976,13 @@ class LlmResult:
     #: when nothing was logged (no store bound, ``log_call`` off, a lite row,
     #: or a failed write).
     request_hash: str | None = None
+    #: Structured failure metadata. This first slice stamps detected Claude
+    #: quota notices only; unclassified failures and successes stay unset.
+    reason_class: Literal["quota", "rate", "budget", "transport", "content"] | None = (
+        None
+    )
+    #: UTC reset instant or the existing conservative quota backoff horizon.
+    retry_at: datetime | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -1016,6 +1024,8 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
             result,
             paused=True,
             quota_exhausted=True,
+            reason_class="quota",
+            retry_at=quota_retry_at(result.text),
             error=f"account quota exhausted: {res.final_text.strip()}",
         )
     return result
@@ -1059,6 +1069,8 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
             result,
             paused=True,
             quota_exhausted=True,
+            reason_class="quota",
+            retry_at=quota_retry_at(result.text),
             error=f"account quota exhausted: {text.strip()}",
         )
     return result

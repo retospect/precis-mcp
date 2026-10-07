@@ -24,7 +24,8 @@ The design / probe loop needs none of this — meshing happens here and
 nowhere else.
 
 A written 3MF carries model-level ``Title`` / ``Application`` /
-``CreationDate`` metadata and nothing else (no ``Metadata/`` directory, no
+``CreationDate`` metadata, plus ``precis:scale_factor`` when the private
+writer is explicitly scaled (no ``Metadata/`` directory, no
 slicer project config — a partial project config is what trips Bambu
 Studio's config check); :func:`precis.cad.mesh_check.package_findings`
 validates such a package against the core-spec essentials.
@@ -32,6 +33,7 @@ validates such a package against the core-spec essentials.
 
 from __future__ import annotations
 
+import math
 import struct
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -653,15 +655,26 @@ def _write_3mf(
     parts: list[tuple[str, np.ndarray, np.ndarray]],
     *,
     title: str | None = None,
+    scale: float = 1.0,
 ) -> None:
     """Write a 3MF package. Each part is its **own** ``<object>`` referenced
     by the ``<build>`` — so a multi-component assembly stays separable in
     the slicer (3MF natively carries multiple objects). Model-level
     ``Title`` (``title``, else ``"precis export"``), ``Application`` and
     ``CreationDate`` (UTC) metadata ride in the core namespace; nothing is
-    written under ``Metadata/`` (module docstring)."""
+    written under ``Metadata/`` (module docstring).
+
+    Input vertices are already millimetres. ``scale`` multiplies those
+    coordinates without modifying the input arrays. This is a private
+    writer prerequisite, not a checked-print scale API: SE callers must
+    judge the scaled mesh before exposing it, rather than rescale a mesh
+    whose print findings describe a different size.
+    """
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("scale must be finite and positive")
     objects = "".join(
-        _3mf_object(i, name, v, t) for i, (name, v, t) in enumerate(parts, start=1)
+        _3mf_object(i, name, v if scale == 1 else v * scale, t)
+        for i, (name, v, t) in enumerate(parts, start=1)
     )
     items = "".join(f'<item objectid="{i}"/>' for i in range(1, len(parts) + 1))
     meta = (
@@ -670,10 +683,15 @@ def _write_3mf(
         f'<metadata name="CreationDate">{datetime.now(UTC).date().isoformat()}'
         "</metadata>"
     )
+    scale_namespace = ""
+    if scale != 1:
+        scale_namespace = ' xmlns:precis="urn:precis:metadata"'
+        meta += f'<metadata name="precis:scale_factor">{scale}</metadata>'
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US" '
-        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+        f"{scale_namespace}>"
         f"{meta}<resources>{objects}</resources>"
         f"<build>{items}</build></model>"
     )
