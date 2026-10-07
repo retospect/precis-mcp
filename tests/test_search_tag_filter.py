@@ -221,6 +221,27 @@ class TestSearchBlocksTagFilter:
         assert len(hits) == 1
         assert hits[0][1].id == a
 
+    def test_semantic_tags_and_across_every_listed_tag(self, store: Store) -> None:
+        """``tags=`` narrows to refs carrying *every* tag (a recall scoped by
+        SPACE: plus another tag must not widen to either one alone)."""
+        a, b = _seed_two_papers_with_blocks(store)
+        e = MockEmbedder(dim=1024)
+        q = e.embed_one("photocatalysis")
+        both = store.chunks.search_chunks_semantic(
+            query_vec=q,
+            kind="paper",
+            tags=["topic-co2-capture", "topic-nox-reduction"],
+        )
+        assert both == []
+        none = store.chunks.search_chunks_semantic(
+            query_vec=q, kind="paper", tags=["topic-no-such"]
+        )
+        assert none == []
+        one = store.chunks.search_chunks_semantic(
+            query_vec=q, kind="paper", tags=["topic-nox-reduction"]
+        )
+        assert [h[1].id for h in one] == [b]
+
     def test_fused_filtered_in_BOTH_CTEs(self, store: Store) -> None:
         """Critical correctness pin.
 

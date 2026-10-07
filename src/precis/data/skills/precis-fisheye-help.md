@@ -1,16 +1,17 @@
 ---
 id: precis-fisheye-help
 title: precis — the fisheye neighborhood render (focus + context)
-summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk, or a quest — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
+summary: view='fisheye'/'fisheye+1hop' on a draft or finding chunk, a memory, or a quest — the extent ladder, the spatial neighborhood, the reference ring. Partial rollout — see "which kinds actually support this today".
 answers:
   - how do I read a chunk along with the text around it, not just the chunk itself?
   - what's the difference between the fisheye neighborhood and fisheye+1hop?
   - how is fisheye different from view='toc'?
   - does the fisheye neighborhood shape change per kind?
-  - why does view='fisheye' on a paper or memory raise Unsupported?
-applies-to: get(kind='draft'|'finding'|'quest', view=)
+  - why does view='fisheye' on a paper raise Unsupported?
+  - how do I walk a memory's links and see its mirror filename?
+applies-to: get(kind='draft'|'finding'|'memory'|'quest', view=)
 tags: addressing, verbs
-kinds: draft, finding, quest
+kinds: draft, finding, memory, quest
 status: active
 ---
 
@@ -26,13 +27,13 @@ Classifying refs into taxon nodes and walking their concept hierarchy:
 `precis-classify-help`.
 
 **Partial rollout.** `view='fisheye'`/`'fisheye+1hop'` is live on
-`get(kind='draft', …)`, `get(kind='finding', …)` and
-`get(kind='quest', …)` today. On a quest, `fisheye+1hop` lists the quests
+`get(kind='draft', …)`, `get(kind='finding', …)`, `get(kind='memory', …)`
+and `get(kind='quest', …)` today. On a quest, `fisheye+1hop` lists the quests
 it serves (`serves`) and the ones serving it (`served-by`) under
 `Roadmap:`, along with the papers and structures linked to it by `serves`
 (also `served-by`); findings that `supports` it show as `supported-by`
 under `Notes & links:`. Each group is capped at 8 with a `… +N more` line.
-Every other kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp`, `memory` —
+Every other kind — `plan`, `paper`, `patent`, `web`, `datasheet`, `cfp` —
 raises `Unsupported`; the per-kind renderer described below
 (`precis.utils.eye_render`) exists in code but isn't wired into those
 handlers' `view=` dispatch yet, so it's reachable only internally (the
@@ -188,11 +189,12 @@ does not:
   with an overflow line naming what it withheld. A claim hub eye shows
   its evidence and its refines chain. A `finding` that is
   a claim hub additionally leads with its trust posture — see
-  `precis-finding-help`. **`finding` is the only live link-kind eye.**
-  `memory` is not wired (`MemoryHandler`'s base-view allowlist is
-  `links`/`log`/`raw` only) — `view='fisheye'` on a memory raises
-  `Unsupported`; read a memory's link neighborhood via
-  `view='links'` instead.
+  `precis-finding-help`. **`finding` and `memory` are the live link-kind
+  eyes.** On a memory, a handle with a mirrored file reads
+  `me4641 (worker_busy_vs_starved_diagnosis.md)`, a `part-of` section
+  lands under **Parts** and `related-to` siblings under **Notes &
+  links**, and `+recall` stays inside the focus's own `SPACE:` value
+  (a `repo-dev` memory never recalls a `research` one, and vice versa).
 - **Skill eyes** (`sk:<slug>`) — file-backed, no corpus position, so
   there's no neighborhood to have: `kwd`/`none` collapse to a bookmark,
   anything richer is the verbatim skill body. Not directly reachable
@@ -202,7 +204,8 @@ does not:
 
 ```python
 get(kind="finding", id="fi42", view="fisheye+1hop")  # hub + its claim graph — LIVE
-# paper/patent/web/datasheet/cfp/plan/memory: view='fisheye' raises
+get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # links + same-SPACE neighbours — LIVE
+# paper/patent/web/datasheet/cfp/plan: view='fisheye' raises
 # Unsupported today — see the availability note above.
 ```
 
@@ -227,7 +230,7 @@ list (`paper`, `skill`, `draft`, `markdown`, `tex`, `plan`, `python`,
 `PatentHandler` supports `biblio`/`abstract`/`description`/`claims`/
 `bibtex`/`links` only, so `view='toc'` there is `Unsupported`. `fisheye` is the
 opposite move: you've already picked one node, and want its immediate
-surroundings rendered around it — live on `draft` and `finding` only
+surroundings rendered around it — live on `draft`, `finding`, `memory` and `quest` only
 (see the availability note above).
 
 ## See also

@@ -258,6 +258,13 @@ other, 2 and 3 are independent of everything above.
 - **[decided 2026-10-07, this spec]** Recall is a render of search, not a
   new verb; walk is a view on `get`, not a new verb; keep is a rule plus
   two mirror-report additions. No new kind, verb, table or migration.
+- **[built 2026-10-07, slice 1b]** `MemoryHandler.get` carries the extent
+  ladder; the mirror filename renders beside the handle on the focus line
+  *and* on neighbour/recall lines (AC 1 needs it on siblings, so wider
+  than in-scope 1b's wording); `_recall` filters by the focus's `SPACE:`
+  tag inside `search_chunks_semantic` (which already had `tags=`, so no
+  store change); `precis-fisheye-help` lists memory as live. Remaining:
+  1a, 2, 3.
 - **[readiness vet 2026-10-07 → folded]** Verdict was needs-work (4
   blockers, 7 advisories, split suggested); every finding is resolved in
   the text above: the mirror meta key is `filename` not `name`; AC 1

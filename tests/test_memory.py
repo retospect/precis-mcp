@@ -1264,3 +1264,107 @@ def test_memory_dogfood_missing_anchor_hint_performs_insert(
     assert _body(handler, store, mid) == "Before exact text after.".replace(
         anchor, replacement
     )
+
+
+# ---------------------------------------------------------------------------
+# The memory walk: view='fisheye…' (extent ladder), memory-graph slice 1b
+# ---------------------------------------------------------------------------
+
+
+def _mirrored(store: Store, title: str, filename: str | None, *tags: str) -> int:
+    from precis.store import Tag
+
+    ref = store.insert_ref(kind="memory", slug=None, title=title)
+    if filename is not None:
+        store.stamp_ref_meta(ref.id, {"file_mirror": {"filename": filename}})
+    for t in tags:
+        store.add_tag(ref.id, Tag.parse_strict(t, kind="memory"), set_by="agent")
+    return int(ref.id)
+
+
+def _walk_fixture(hub: Hub) -> tuple[int, int, int, int]:
+    store = hub.live_store
+    focus = _mirrored(store, "Worker busy", "worker_busy.md", "SPACE:repo-dev")
+    section = _mirrored(store, "Worker section", "worker_section.md")
+    sib = _mirrored(store, "Sibling note", "sibling.md")
+    far = _mirrored(store, "Far note", None)
+    store.add_link(src_ref_id=focus, dst_ref_id=section, relation="part-of")
+    store.add_link(src_ref_id=focus, dst_ref_id=sib, relation="related-to")
+    store.add_link(src_ref_id=sib, dst_ref_id=far, relation="related-to")
+    return focus, section, sib, far
+
+
+def test_fisheye_1hop_renders_rings_with_filenames(
+    hub: Hub, handler: MemoryHandler
+) -> None:
+    focus, section, sib, _far = _walk_fixture(hub)
+    out = handler.get(id=focus, view="fisheye+1hop").body
+    assert out.startswith(f"me{focus} (worker_busy.md) [memory] Worker busy")
+    parts = out.split("Parts:")[1].split("Notes & links:")[0]
+    assert f"me{section} (worker_section.md) — Worker section" in parts
+    notes = out.split("Notes & links:")[1]
+    assert f"related-to: me{sib} (sibling.md) — Sibling note" in notes
+
+
+def test_fisheye_2hop_renders_counts(hub: Hub, handler: MemoryHandler) -> None:
+    focus, *_ = _walk_fixture(hub)
+    out = handler.get(id=focus, view="fisheye+2hop").body
+    assert "— second hop (2 neighbours out" in out
+    assert "  1 memory via related-to" in out
+
+
+def test_fisheye_plain_rung_still_dispatches(hub: Hub, handler: MemoryHandler) -> None:
+    focus, *_ = _walk_fixture(hub)
+    out = handler.get(id=focus, view="fisheye").body
+    assert "— linked (1 hop) —" not in out
+    assert f"me{focus} (worker_busy.md)" in out
+
+
+def test_memory_invalid_view_lists_the_rungs(hub: Hub, handler: MemoryHandler) -> None:
+    from precis.errors import Unsupported
+
+    focus, *_ = _walk_fixture(hub)
+    with pytest.raises(Unsupported) as ei:
+        handler.get(id=focus, view="fisheye+9hop")
+    msg = str(ei.value) + " " + str(getattr(ei.value, "next", ""))
+    for rung in (
+        "kwd",
+        "summary",
+        "verbatim",
+        "fisheye",
+        "fisheye+1hop",
+        "fisheye+2hop",
+    ):
+        assert rung in msg
+    with pytest.raises(BadInput):
+        handler.get(id=focus, view="fisheye+9hop+recall")
+
+
+def _embedded_memory(rt: PrecisRuntime, text: str, space: str) -> int:
+    out = rt.dispatch("put", {"kind": "memory", "text": text, "tags": [space]})
+    ref_id = id_of(out)
+    store = rt.hub.live_store
+    (cid,) = store.chunks.card_chunk_ids([ref_id])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, attempts) "
+            "VALUES (%s, 'bge-m3', %s, 'ok', 1) "
+            "ON CONFLICT (chunk_id, embedder) DO UPDATE "
+            "SET vector = EXCLUDED.vector, status = 'ok'",
+            (cid, rt.hub.embed_one(text)),
+        )
+    return ref_id
+
+
+def test_recall_stays_inside_the_focus_space(runtime_with_store: PrecisRuntime) -> None:
+    rt = runtime_with_store
+    text = "copper catalyses nitrate reduction near-identical body"
+    dev_a = _embedded_memory(rt, text, "SPACE:repo-dev")
+    dev_b = _embedded_memory(rt, text, "SPACE:repo-dev")
+    res = _embedded_memory(rt, text, "SPACE:research")
+    h = MemoryHandler(hub=rt.hub)
+    dev_out = h.get(id=dev_a, view="+recall").body.split("— recall")[1]
+    assert f"me{dev_b}" in dev_out
+    assert f"me{res}" not in dev_out
+    res_out = h.get(id=res, view="fisheye+1hop+recall").body.split("— recall")[1]
+    assert f"me{dev_a}" not in res_out and f"me{dev_b}" not in res_out

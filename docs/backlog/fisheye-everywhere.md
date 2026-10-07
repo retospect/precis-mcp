@@ -68,7 +68,7 @@ focus page here renders, it does not act.
    grouped under its family heading, as `quest` already does for `serves`
    (shipped: `handlers/quest.py::QuestHandler.get`,
    `tests/test_quest_fisheye.py`).
-3. `get(kind='memory', id=M, extent='+recall')` lists the k nearest
+3. `get(kind='memory', id=M, view='fisheye+1hop+recall')` lists the k nearest
    memory/finding chunks by embedding with their gist lines, k capped and
    documented.
 4. `fisheye+2hop` renders the second hop as counts per (kind, relation)

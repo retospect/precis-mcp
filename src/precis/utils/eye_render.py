@@ -186,8 +186,23 @@ def _resolve_ref(store: Store, handle: str) -> Any:
     return store.fetch_refs_by_ids([rid]).get(rid)
 
 
+def _mirror_name(ref: Any) -> str:
+    """``meta.file_mirror.filename`` of a mirrored repo-dev memory, else ''."""
+    mirror = (getattr(ref, "meta", None) or {}).get("file_mirror")
+    name = mirror.get("filename") if isinstance(mirror, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def _handle_with_file(kind: str, ref: Any, ref_id: int) -> str:
+    """The handle, with the mirror filename beside it when the ref has one:
+    ``me4641 (worker_busy_vs_starved_diagnosis.md)``."""
+    hid = handle_registry.format_handle(kind, ref_id)
+    name = _mirror_name(ref)
+    return f"{hid} ({name})" if name else hid
+
+
 def _head(ref: Any, kind: str) -> str:
-    hid = handle_registry.format_handle(kind, int(ref.id))
+    hid = _handle_with_file(kind, ref, int(ref.id))
     title = " ".join((getattr(ref, "title", None) or "").split())
     return f"{hid} [{kind}] {title}".rstrip()
 
@@ -513,7 +528,7 @@ def _render_first_hop(
 
 
 def _neighbor_label(ref: Any, ref_id: int) -> str:
-    oh = handle_registry.format_handle(getattr(ref, "kind", "?"), ref_id)
+    oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
     if len(title) > _NEIGHBOR_TITLE_CAP:
         title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
@@ -654,9 +669,13 @@ def _recall(store: Store, ref_id: int, kind: str) -> str:
     if vec is None:
         return "— recall: no embedded chunk on this ref yet —"
     kinds = sorted({kind, "finding"})
+    # A SPACE: tag is a partition (research / repo-dev / personal): recall
+    # stays inside the focus's own, filtered in the query so k fills from it.
+    space = [str(t) for t in store.tags_for(ref_id) if t.prefix == "SPACE"]
     hits = store.chunks.search_chunks_semantic(
         query_vec=vec,
         kinds=kinds,
+        tags=space or None,
         limit=_RECALL_K * 3,
         max_distance=_RECALL_MAX_DISTANCE,
         exclude_ref_ids=[ref_id],
