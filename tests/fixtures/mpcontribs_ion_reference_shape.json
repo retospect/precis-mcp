@@ -1,0 +1,29 @@
+{
+  "source": "https://contribs-api.materialsproject.org/contributions/",
+  "query": {
+    "project": "ion_ref_data",
+    "_fields": "identifier,formula,data"
+  },
+  "shape": {
+    "envelope": {
+      "data": "list",
+      "has_more": "bool",
+      "total_count": "int",
+      "total_pages": "int"
+    },
+    "record": {
+      "identifier": "str",
+      "formula": "str",
+      "data": "dict",
+      "data_fields": [
+        "MajElements",
+        "RefSolid",
+        "charge",
+        "reference",
+        "ΔGᶠ",
+        "ΔGᶠRefSolid"
+      ]
+    }
+  },
+  "shape_sha256": "52dee142c7641e2f52c65470d4577244cf8d36051c732bc3661c9d9ac9f56e7e"
+}

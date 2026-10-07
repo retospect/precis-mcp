@@ -12,6 +12,50 @@ built: `src/precis_dft/pourbaix_bulk.py` (engine, verdict vocabulary) and
 `src/precis/workers/job_types/pourbaix_bulk.py` (the `pourbaix_bulk` job).
 Design-reviewed 2026-10-02 (design note §13, S1–S5).
 
+## R14 first slice — operating point, dispatch, and harvest/stamp
+
+Checked against current frozen main `650232a82e911fcca4a18d9fd761bd3b303d38e1`:
+Part A is present; no quest operating-condition field or Pourbaix dispatch /
+harvest is wired into `precis.quest` yet.
+
+This slice adds a validated, human-set `quest.meta.operating_conditions`
+record; compute dispatch for live served structures only when that record is
+present; a geometry-and-input content key so unchanged inputs do not mint
+repeated jobs; and harvest of only a succeeded Pourbaix job whose candidate
+and point/window inputs still match. Harvest stamps the point verdict,
+worst-in-window verdict, ΔG, domain, and complete result basis onto the
+candidate. The numeric ΔG and the other Pourbaix stamps are excluded from
+Pareto measure discovery. Without operating conditions there is no job.
+
+This first slice does not rule candidates out, alter frontier/tick ranking,
+propose leached solids, or wake dormant quests. MP-version refresh, changing
+operating conditions while an older job is running, config-failure recovery,
+the necessary-not-sufficient tick prose, leaderboard presentation, and the
+full dissolved-everywhere/lift policy remain follow-up acceptance work.
+No migration or production quest metadata write is part of this implementation.
+
+**R15 production proof follow-up (2026-10-05):** job 468292 reached Materials
+Project ion-reference lookup but the deployed `mp-api` contribs client was
+`None`, causing an `AttributeError` before verdict evaluation. This was
+reproduced in the dev image. `mendeleev` 1.3.0 still requires Pint below
+0.25, so the `mp-api[contribs]` extra cannot resolve with `[estimate]`.
+Instead, the worker fetches `ion_ref_data` from the supported
+`https://contribs-api.materialsproject.org/contributions/` REST endpoint
+using existing httpx, with the same project/field selection as
+`MPRester.get_ion_reference_data`, then supplies those rows to mp-api's
+normal `get_pourbaix_entries` workflow. A live read-only request verified the
+endpoint and its paginated response shape; a hashed shape fixture and
+pagination/config-preflight tests cover the contract. `uv.lock` remains
+unchanged because httpx is already installed. R15 still requires an image
+rebuild/deploy; only after the coordinator announces the deployed SHA may
+exactly one production proof job run. Job 468292 is preserved; no retry has
+been started.
+
+**On main (2026-10-07):** the R14 first slice and the R15 REST fix landed
+from the Codex checkpoint via the catalysis session, with their unit tests
+green; nothing beyond unit tests has run. Status stays `draft` until the
+one production proof job succeeds on a deploy that carries this code.
+
 ## Motivation / why
 
 See the engine module docstring. This item puts its verdict onto quest candidates, so a

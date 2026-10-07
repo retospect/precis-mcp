@@ -9,6 +9,7 @@ hand-built entries. Formation free energies and their sources are in
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -264,6 +265,96 @@ def test_no_key_fails_config_without_verdict(monkeypatch: pytest.MonkeyPatch) ->
     assert not any(kind == "meta" for kind, _ in events)
 
 
+def test_ion_reference_response_shape_is_pinned_and_paginated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/mpcontribs_ion_reference_shape.json"
+        ).read_text(encoding="utf-8")
+    )
+    shape = fixture["shape"]
+    canonical = json.dumps(
+        shape, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert hashlib.sha256(canonical.encode()).hexdigest() == fixture["shape_sha256"]
+    assert fixture["source"] == engine.ION_REFERENCE_URL
+
+    class Response:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self.payload
+
+    calls: list[dict[str, Any]] = []
+    row = {
+        "identifier": "ion-1",
+        "formula": "Cu+",
+        "data": {key: None for key in shape["record"]["data_fields"]},
+    }
+
+    def fake_get(url: str, **kwargs: Any) -> Response:
+        calls.append({"url": url, **kwargs})
+        page = kwargs["params"]["page"]
+        return Response(
+            {
+                "data": [row],
+                "has_more": page == 1,
+                "total_count": 2,
+                "total_pages": 2,
+            }
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    rows = engine.fetch_ion_reference_data("dummy-key")
+    assert len(rows) == 2
+    assert [call["params"]["page"] for call in calls] == [1, 2]
+    assert all(call["params"]["project"] == "ion_ref_data" for call in calls)
+    assert all(call["params"]["_fields"] == "identifier,formula,data" for call in calls)
+    assert all(call["headers"] == {"x-api-key": "dummy-key"} for call in calls)
+
+
+def test_fetch_entries_supplies_rest_records_to_mp_api_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # mp-api is the [estimate] extra; the dev image and the host venv carry
+    # it only when that extra is installed (see host_pytest_paper_extra).
+    mp_client = pytest.importorskip("mp_api.client")
+
+    ion_records = [{"identifier": "ion-1", "formula": "Cu+", "data": {}}]
+    marker = object()
+
+    class FakeMPRester:
+        def __init__(self, api_key: str) -> None:
+            assert api_key == "dummy-key"
+
+        def __enter__(self) -> FakeMPRester:
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def get_ion_reference_data(self) -> list[dict[str, Any]]:
+            return []
+
+        def get_pourbaix_entries(self, chemsys_str: str) -> list[Any]:
+            assert chemsys_str == "Cu"
+            assert self.get_ion_reference_data() == ion_records
+            return [marker]
+
+    monkeypatch.setattr(engine, "fetch_ion_reference_data", lambda _key: ion_records)
+    monkeypatch.setattr(mp_client, "MPRester", FakeMPRester)
+    assert engine.fetch_entries("dummy-key", "Cu") == [marker]
+
+
 @pytest.fixture
 def structure(store: Any) -> StructureHandler:
     return StructureHandler(hub=Hub(store=store))
@@ -430,9 +521,12 @@ def test_malformed_params_fail_input() -> None:
 
 
 def test_missing_extra_fails_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(job, "find_spec", lambda name: None)
+    monkeypatch.setattr(
+        job, "find_spec", lambda name: None if name == "httpx" else object()
+    )
     ctx, events = _fake_ctx(None, _params(1))
     _run(ctx)
     (fail,) = events
     assert fail[1]["failure_class"] == "config"
+    assert "httpx" in fail[1]["reason"]
     assert "[pourbaix] extra" in fail[1]["reason"]

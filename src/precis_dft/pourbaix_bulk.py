@@ -87,7 +87,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 #: Verdict values, worst first — the order ``worst_in_window`` ranks by.
 VERDICT_ORDER: tuple[str, ...] = (
@@ -135,6 +135,59 @@ GAS_LIMIT = (
 )
 
 _OH = frozenset({"O", "H"})
+
+
+ION_REFERENCE_URL = "https://contribs-api.materialsproject.org/contributions/"
+ION_REFERENCE_FIELDS = "identifier,formula,data"
+
+
+def fetch_ion_reference_data(api_key: str) -> list[dict[str, Any]]:
+    """Fetch MP's ion_ref_data project over its supported Contribs REST API.
+
+    This is the exact endpoint and field selection used by mp-api's
+    ``MPRester.get_ion_reference_data``; using httpx avoids importing its
+    optional MPContribs client (whose transitive Pint bounds conflict with
+    the ``[estimate]`` extra). Results are paginated and schema-checked.
+    """
+    import httpx
+
+    records: list[dict[str, Any]] = []
+    total_pages: int | None = None
+    page = 1
+    while total_pages is None or page <= total_pages:
+        response = httpx.get(
+            ION_REFERENCE_URL,
+            params={
+                "project": "ion_ref_data",
+                "_fields": ION_REFERENCE_FIELDS,
+                "page": page,
+            },
+            headers={"x-api-key": api_key},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("MP ion-reference response has an invalid data envelope")
+        if not isinstance(payload.get("total_pages"), int):
+            raise ValueError("MP ion-reference response is missing integer total_pages")
+        if total_pages is None:
+            total_pages = payload["total_pages"]
+            if total_pages < 1:
+                raise ValueError("MP ion-reference response has no pages")
+        elif payload["total_pages"] != total_pages:
+            raise ValueError("MP ion-reference response changed total_pages mid-fetch")
+        for row in payload["data"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("identifier"), str)
+                or not isinstance(row.get("formula"), str)
+                or not isinstance(row.get("data"), dict)
+            ):
+                raise ValueError("MP ion-reference response contains an invalid record")
+            records.append(row)
+        page += 1
+    return records
 
 
 def prefac() -> float:
@@ -629,7 +682,23 @@ def fetch_entries(api_key: str, chemsys_str: str) -> list[Any]:
     ``get_pourbaix_entries`` call (MP adds O and H itself)."""
     from mp_api.client import MPRester
 
-    with MPRester(api_key) as mpr:
+    ion_reference_data = fetch_ion_reference_data(api_key)
+
+    class _MPResterWithIonReferenceData(MPRester):
+        """Use the supported REST-fetched references in the mp-api workflow."""
+
+    def _ion_reference_data(_self: Any) -> list[dict[Any, Any]]:
+        return ion_reference_data
+
+    # mp-api decorates the base method with functools.lru_cache; a typed
+    # override of that wrapper is an incompatible-override error for mypy
+    # (and an unused ignore where the [estimate] extra is absent and
+    # MPRester is Any), so the method is attached through an Any view.
+    cast(
+        Any, _MPResterWithIonReferenceData
+    ).get_ion_reference_data = _ion_reference_data
+
+    with _MPResterWithIonReferenceData(api_key) as mpr:
         return list(mpr.get_pourbaix_entries(chemsys_str))
 
 

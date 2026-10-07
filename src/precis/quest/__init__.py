@@ -82,6 +82,11 @@ Package-level invariants (detail lives on the named module):
   query reports local vs acquired.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite``,
   ``meta.fidelity_ladder`` (screening→neb→verify) — seed time only.
+- **Bulk Pourbaix is diagnostic until the gate lands.** Dispatch requires
+  human-set ``operating_conditions`` and content-addresses geometry + inputs;
+  a successful current-input verdict is stamped as evidence, while every
+  Pourbaix field (including numeric ΔG) stays outside Pareto ranking
+  (``pourbaix``/``compute``/``frontier``).
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token, so new results never dedupe onto stale jobs;
   ``compute.redispatch_candidates``/``reset_compute`` are the CLIs.

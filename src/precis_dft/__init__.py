@@ -27,7 +27,12 @@ the ``[pourbaix]`` extra) is the engine behind precis-mcp's ``pourbaix_bulk``
 job type, which imports it lazily: a recomputable bulk Pourbaix verdict
 (dissolved / leached / transformed / oxidised / unmatched / stable) for a
 candidate's host phase over a U/pH window; its module docstring holds the
-design, including a workaround for a pymatgen ``PourbaixDiagram`` bug. The
+design, including a workaround for a pymatgen ``PourbaixDiagram`` bug.
+Aqueous-ion reference records come from the supported MPContribs REST
+endpoint, fetched with existing httpx and supplied to mp-api's normal
+Pourbaix-entry builder. This avoids ``MPRester.contribs``'s optional extra,
+whose Pint lower bound conflicts with ``[estimate]``; no dependency override
+or new package is needed. The
 retired ``jobs/pourbaix.py`` (a simplified μ(U, pH) with no ion-activity
 corrections and no caller) is gone. ``handlers/`` and ``_test_store.py`` are
 inert: registered nowhere, kept because they type-check clean and keep the

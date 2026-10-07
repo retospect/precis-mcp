@@ -5,7 +5,9 @@ The job half of the bulk Pourbaix gate; the engine, verdict vocabulary and
 pymatgen workaround are documented in :mod:`precis_dft.pourbaix_bulk`. The
 quest gate (``docs/backlog/pourbaix-quest-gate.md``: dispatch, harvest,
 rule-out) reads the verdict from this job's ``meta.verdict``, the same
-pattern as the autocatpath harvest. Nothing dispatches the job until then.
+pattern as the autocatpath harvest. Its first quest slice dispatches only
+when human-set operating conditions exist and stamps successful results as
+diagnostic evidence.
 Deterministic in-process work registered with a plugin ``dispatch`` so
 ``claude_inproc`` runs it directly (no claude subprocess), like
 ``news_poll``.
@@ -43,6 +45,11 @@ first, ADR-0055) fails the job ``failure_class="config"`` with no verdict —
 never a silent "stable". A host chemsys over three non-O/H elements, a
 malformed ``point``/``window`` or an unknown candidate fails
 ``failure_class="input"``; an MP fetch error ``failure_class="infra"``.
+Ion-reference records use the supported MPContribs REST endpoint through
+httpx, then feed the normal mp-api Pourbaix-entry workflow. This avoids the
+optional contribs-client dependency conflict with the ``[estimate]`` Pint
+bounds. The job preflights httpx and classifies a missing client as
+``failure_class="config"``.
 """
 
 from __future__ import annotations
@@ -435,7 +442,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if bad is not None:
         ctx.record_failure(f"pourbaix_bulk: {bad}", failure_class="input")
         return
-    missing = [m for m in ("pymatgen", "mp_api") if find_spec(m) is None]
+    missing = [m for m in ("pymatgen", "mp_api", "httpx") if find_spec(m) is None]
     if missing:
         ctx.record_failure(
             f"pourbaix_bulk: {', '.join(missing)} not installed on this host "

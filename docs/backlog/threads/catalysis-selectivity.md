@@ -97,7 +97,18 @@ only; everything this thread built is on main and was live by round 4.
   (50→54 states, 34→37 steps, new `network_digest`), and 0.24.0 moves
   every level on top. Still open: fold `results.corrections` into the
   basis as item 24's "correction-set id", so a corrections flip inside
-  one engine version cannot pass as comparable.
+  one engine version cannot pass as comparable — spec and strict-xfail
+  tests in `backlog/pathway-correction-basis.md` (recovered from the Codex
+  `work/catalysis/bootstrap` branch, 2026-10-07).
+- **Codex catalysis branches folded in (2026-10-07, branch audit):** the
+  bulk-Pourbaix quest gate Part B first slice (R14: `quest.meta.
+  operating_conditions`, `pourbaix_bulk` dispatch/harvest/stamp,
+  `precis.quest.pourbaix`) and the R15 contribs REST fix landed from
+  `work/catalysis/pourbaix-quest-gate` with its unit tests (the mp-api
+  builder test skips where the `[estimate]` extra is absent); the
+  2026-10-05 Pourbaix rulings moved into the surface-Pourbaix item. Both
+  branches are now delete-list. The R15 production proof job still waits
+  on a deploy carrying this code and on `PRECIS_MP_API_KEY`.
 - **td470248 approved** (Reto via chat-interface, 2026-10-07): BEEF-vdW
   single points on the four existing PdH H-flight geometries (Ta-adjacent
   β-PdH midpoint + endpoint `B_Ta.extxyz`, undoped β-PdH midpoint +
@@ -173,8 +184,13 @@ only; everything this thread built is on main and was live by round 4.
      store himself (release-2-2); do not add or ask for it. After he says
      it is set, run one prod job through the Materials Project path and
      record it here as "MP key live: <call> → <result>".
-   - The gate (B) waits on the same key. qu202468's operating point is
-     set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10.
+   - The gate (B): its first slice (operating conditions, dispatch,
+     harvest/stamp; no rule-out yet) and the R15 contribs fix are on main
+     since 2026-10-07 (folded in from the Codex branch). The one
+     production proof job runs after a deploy carries them; job 468292
+     (died on the contribs client) stays as the before-record. Rule-out,
+     lift and the leached proposal are the next slice. qu202468's
+     operating point is set: −0.2 V, pH 7, window −0.4…0 V, pH 7–10.
 5. **backlog/pathway-selectivity-u-ph-window.md** — the objective Reto
    named; blocked by 1 and 2 because a window over an incomplete network
    or the wrong substrate is the wrong window. Post-processing only, so cheap once 1 lands. Also

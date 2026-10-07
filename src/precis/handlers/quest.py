@@ -37,6 +37,7 @@ queue.
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from typing import Any, ClassVar
 
@@ -90,7 +91,14 @@ _LIFECYCLE: frozenset[str] = frozenset({"active", "dormant", "abandoned"})
 #: this, nothing could set ``compute_lane`` on a live quest at all — the
 #: qu401863 incident's cause 2 (``quest-tick-incident-fix.md``).
 _META_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"compute_lane", "quest_body", "rubric_objectives", "demand", "supply"}
+    {
+        "compute_lane",
+        "quest_body",
+        "rubric_objectives",
+        "demand",
+        "supply",
+        "operating_conditions",
+    }
 )
 
 _DEMAND_ENTRY_KEYS: frozenset[str] = frozenset({"value", "source", "reason"})
@@ -100,6 +108,57 @@ _DEMAND_NEXT = (
     "'reason': 'why the part needs it'}}}"
 )
 _SUPPLY_NEXT = "meta={'supply': {'<axis key>': {'value': 6.0, 'evidence': ['fi<id>']}}}"
+
+
+def _check_operating_conditions(meta: dict[str, Any]) -> None:
+    """Validate the human-set bulk-Pourbaix point and optional window."""
+    if "operating_conditions" not in meta:
+        return
+    value = meta["operating_conditions"]
+    allowed = {"U_RHE", "pH", "ion_conc_M", "window"}
+    if (
+        not isinstance(value, dict)
+        or {"U_RHE", "pH"} - set(value)
+        or set(value) - allowed
+    ):
+        raise BadInput(
+            "meta.operating_conditions requires U_RHE and pH, and accepts only "
+            "ion_conc_M and window in addition",
+            next=(
+                "meta={'operating_conditions': {'U_RHE': -0.2, 'pH': 7, "
+                "'ion_conc_M': 1e-6, 'window': {'U_RHE': [-0.4, 0], 'pH': [7, 10]}}}"
+            ),
+        )
+
+    def number(x: Any) -> bool:
+        return (
+            isinstance(x, (int, float))
+            and not isinstance(x, bool)
+            and math.isfinite(float(x))
+        )
+
+    if not number(value["U_RHE"]) or not number(value["pH"]):
+        raise BadInput("meta.operating_conditions U_RHE and pH must be finite numbers")
+    if "ion_conc_M" in value and (
+        not number(value["ion_conc_M"]) or not 0 < value["ion_conc_M"] <= 10
+    ):
+        raise BadInput("meta.operating_conditions.ion_conc_M must be in (0, 10]")
+    if "window" in value:
+        window = value["window"]
+        if not isinstance(window, dict) or not window or set(window) - {"U_RHE", "pH"}:
+            raise BadInput(
+                "meta.operating_conditions.window must contain U_RHE and/or pH spans"
+            )
+        for axis, span in window.items():
+            if (
+                not isinstance(span, list)
+                or len(span) != 2
+                or not all(number(x) for x in span)
+                or span[0] > span[1]
+            ):
+                raise BadInput(
+                    f"meta.operating_conditions.window.{axis} must be a finite [lo, hi] span"
+                )
 
 
 def _check_axis_map(
@@ -675,12 +734,15 @@ class QuestHandler(NumericRefHandler):
 
         ``meta=`` is a **closed allowlist**
         (:data:`_META_ALLOWED_KEYS` — ``compute_lane``/``quest_body``/
-        ``rubric_objectives``/``demand``/``supply``), patch-merged via
+        ``rubric_objectives``/``demand``/``supply``/
+        ``operating_conditions``), patch-merged via
         ``store.stamp_ref_meta`` (existing keys outside the patch untouched —
         never a whole-dict clobber). An unknown key is refused naming the
         allowlist, mirroring ``todo.tag()``'s ``check_meta_keys_promotable``
         gate; ``demand``/``supply`` are shape-checked (a ``supply`` axis with
-        no ``evidence`` is refused — no number, no rung). May be combined
+        no ``evidence`` is refused — no number, no rung), and operating
+        conditions require finite point coordinates and valid optional spans.
+        May be combined
         with ``text=`` in one call, or passed alone (no ``text=`` required)
         — the incident-response path: ``edit(kind='quest', id=N,
         meta={'compute_lane': 'off'})`` needs no statement rewrite
@@ -721,6 +783,7 @@ class QuestHandler(NumericRefHandler):
                 )
             _check_demand_meta(meta)
             _check_supply_meta(meta)
+            _check_operating_conditions(meta)
             self.store.stamp_ref_meta(ref_id, meta)
             meta_changed = sorted(meta)
 
@@ -729,7 +792,7 @@ class QuestHandler(NumericRefHandler):
                 raise BadInput(
                     "edit(kind='quest', mode='replace') requires text= "
                     "(or meta= to patch compute_lane/quest_body/"
-                    "rubric_objectives/demand/supply)",
+                    "rubric_objectives/demand/supply/operating_conditions)",
                     next=(
                         "edit(kind='quest', id=N, mode='replace', "
                         "text='new striving statement') or "

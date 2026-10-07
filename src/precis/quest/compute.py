@@ -3184,6 +3184,15 @@ def harvest_measures(
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
+        try:
+            from precis.quest.pourbaix import harvest_pourbaix_candidate
+
+            pourbaix_note = harvest_pourbaix_candidate(store, quest_id, s)
+            if pourbaix_note:
+                notes.append(pourbaix_note)
+                harvested += 1
+        except Exception:
+            log.exception("harvest_measures: Pourbaix harvest failed for %s", s.id)
         if "atom_cost" not in (s.meta or {}):
             try:
                 scene, _handles = store.structure_load(s.id)
@@ -4244,6 +4253,19 @@ def run_compute_step(
                 notes.append(cnote)
                 if cnote.startswith("autocatpath["):
                     dispatched += 1
+
+    if dispatch:
+        try:
+            from precis.quest.pourbaix import dispatch_pourbaix
+
+            pb_notes = dispatch_pourbaix(store, quest_id, hub=hub)
+            notes.extend(pb_notes)
+            dispatched += sum(note.startswith("created job id=") for note in pb_notes)
+        except Exception:
+            log.exception(
+                "run_compute_step: Pourbaix dispatch failed for quest %s", quest_id
+            )
+            notes.append("pourbaix_bulk dispatch failed; see worker log")
 
     harvest = harvest_measures(store, quest_id, by=by, hub=hub, relax_cell=relax_cell)
     notes.extend(harvest.notes)

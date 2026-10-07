@@ -154,6 +154,50 @@ The organizer adds it to the paper/conference list. What is novel is the
 synthesis: the validity map, the pessimistic reset contour, and the
 Shapley field.
 
+## Rulings 2026-10-05 (Reto; recovered from the retired Codex task branch)
+
+Recorded here 2026-10-07 because the Codex catalysis window's checkpoint
+held them and main did not. They stand; the 2026-10-07 rulings below
+refine, not replace, them.
+
+- **Q10, demonstration system:** Pd(111) from qu164903. The
+  best-characterised stored anchor set is pristine slab `st203306`
+  (`Pd111-pristine-baseline`) with pathway `pa246095` (50 anchor-key
+  mappings to 48 structures `st246666`–`st246713`; aliases `*~n2o`/`N2O`
+  and `*~nh2oh`/`NH2OH` share handles). Selecting it authorises no run
+  and no production mutation.
+- **Q2, canonical footing (resolved):** use exactly the model, correction
+  set, CHE H-electrode and gas references the selected slab's stored
+  energies already carry; state each in the map's provenance; add no
+  corrections in slice 1. Mixed footings are reported and partitioned,
+  never blended into one map.
+- **Q8/Q9, uncertainty (resolved):** three named components, kept apart
+  and never collapsed into one number: run-to-run spread, within-method
+  correlated error across anchors, cross-functional (model-form) spread.
+  Joint draws over all anchors (shared seed and functional per draw),
+  per-(U, pH) phase probabilities, boundary coordinates at the 16th/50th/
+  84th percentiles; unknown covariance → show the independent and the
+  fully-correlated bound, both labelled; missing uncertainty inputs →
+  the layer is marked incomplete, no invented sigmas. One map per
+  functional; between-functional spread is a separate reliability layer,
+  never a pooled Gaussian. Preferred within-functional source = the
+  BEEF-vdW ensemble (none stored; td470248, approved 2026-10-07, is that
+  follow-up).
+- **Replicate inventory (read-only, 2026-10-05):** every one of
+  `pa246095`'s 50 node energies is `n=1`, seed 0, MACE `mace:medium`; no
+  DFT run, no BEEF ensemble, no per-node run handle (the only linked
+  `struct_runs` row is the MACE relax of `st203306`). The stored
+  energy-reference field names the gas ledger and `G(T,p)` tier but not
+  the exact H-electrode, gas-reference records or a correction-set id, so
+  that set is provenance-incomplete for a CHE map: report it as such,
+  never infer a footing.
+- **Consequence for the built slice 1:** anchors come from a fresh
+  `surface_coverage_scan` whose footing is recorded per anchor
+  (`anchor_key`, `engine_version`, `corrections`) instead of from
+  `pa246095`'s node energies; the θ→0 comparison to the pathway is the
+  bridge back to the stored set. Open prompt questions after these
+  rulings: Q1, Q3–Q7 (q6/q7 ruled 2026-10-07 below).
+
 ## Rulings 2026-10-07 (Reto, via chat-interface)
 
 - "File only" LIFTED. Slices 1–2 are `ready`; owner = the catalysis
@@ -222,9 +266,11 @@ So anchors are computed, not read.
   energy); wiring it to a live pathway ref is the next slice-1 step.
 
 **Not yet (slice-1 residue):** minting the first prod scan on clean
-Pd(111) with the qu164903 base config (needs the GPU node; mint via
-`put(kind='job', job_type='surface_coverage_scan', params={config:
-REACTION_CONFIG, target_node: <gpu node>, point_U_RHE: -0.3})`), the live
+Pd(111) with the qu164903 base config (mint via `put(kind='job',
+job_type='surface_coverage_scan', params={config: REACTION_CONFIG,
+point_U_RHE: -0.3})`; leave `target_node` unset — none of the 1061
+`autocatpath_seed` jobs on prod pins one, the `ssh_node` executor routes
+them, read-only check 2026-10-07), the live
 θ→0 comparison against pw455722's nodes, and the catpath brief (filed by
 the catpath session as its `docs/backlog/coverage-scan-prebuilt-slab-
 corrections.md`, draft, 2026-10-07): the coverage scan honours
