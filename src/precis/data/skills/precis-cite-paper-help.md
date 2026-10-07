@@ -29,6 +29,12 @@ routes you to the branch that matches what you have.
 ## I want to add a citation to my manuscript
 ## What's the right way to reference a source here?
 
+**The rule (Reto, 2026-10-07):** a citation is a link to a grounded
+finding; every other link is an aid and drops on export. That keeps drafts
+source-only and makes the fisheye walk useful during authoring. If the walk
+surfaces a claim that lives only in a memory or concept node, mint or find
+a finding before citing it — that curation pressure is intended.
+
 Three questions, in order:
 
 1. **Does a finding hub already assert this claim?**

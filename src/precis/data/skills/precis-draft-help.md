@@ -27,7 +27,12 @@ cross-references are markdown refs embedded in prose (see *References in
 prose*), and the per-chunk autolinker materialises a backlink for each —
 `cites` for a citable source (paper/patent/finding), `related-to`
 otherwise. The edge is grounded on both ends: the source `dc<id>` (which
-paragraph cites it) and the target.
+paragraph cites it) and the target. On export only a `cites` edge to a
+source-grounded finding hub (or a paper/patent/datasheet it grounds on)
+is a citation (Reto, 2026-10-07): links made while authoring — fisheye
+hops to memory, concept or note nodes — are authoring aids and drop. A
+claim that lives only in such a node needs a finding minted or found
+before it can be cited.
 
 ## Quick reference — verbs, views, edit params
 
