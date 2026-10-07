@@ -1,67 +1,73 @@
 ---
 status: ready
-title: "pcb: replay driver rotation, then plan jammed-row escapes"
+title: "pcb: template plaza-row exits for four failed replay nets"
 pillar: 3d-design
 prio: high
 ---
 
-# Routing levers remaining: driver rotation and jammed-row escapes
+# Plaza-row exits after distance assignment and rotation
 
-Reto authorized distance-assignment warm start, then driver rotation, then
-lane template on2026-10-07. Warm start is implemented: owning PCB docstring and
-`precis-pcb-route-help` carry its contract. **td472840** owns the remaining
-work; **mx456/mx457** record the fixed-pose replay's 51/55 versus 42/55
-on In2.Cu+B.Cu (31/55 versus22/55 on B.Cu). No real-board proof.
+Reto approved distance warm start → driver rotation → lane template.
+Distance landed3419720b6; fixture-only rotation completed with no accepted
+pose change. **td472840** owns the remaining row-exit work.
 
-## Slice 2 — driver rotation (after slice 1 lands)
+## Rotation result
 
-Use `tests/fixtures/pcb/ewod-dogfood-6-replay-v1.json.gz` via
-`tests/test_pcb_escape_replay._hydrate` in the test DB. Keep fixed
-copper, all non-driver poses, origin (0,0.75), bottom side, class
-clearance/width and route passes. Resolve the same distance assignment
-after each candidate rotation: current270°, 0° and180° (±90°). Use
-In2.Cu signal and escape layers `[In2.Cu,B.Cu]`; the B.Cu lock is a
-separate control. One hard `realize()` per arm; no negotiation sweep.
-Measure routed count, exact failed nets, vias, assignment distance and
-geometric DRC. Record results in precis linked to td472840; update
-`threads/ewod-pcb.md` at this rank. Only change routing behavior if a
-fixture-backed improvement supports a separately reviewed contract.
+Six replay arms at3419720b6, exact stored origin
+(-0.003060111454470882,0.7518640351003611), bottom side, unchanged other
+poses/fabric/rules/grid, distance assignment after pose, default12passes,
+negotiation off. **mx458–mx463** record the observations; invalid counts
+are diagnostic, not legal gains.
 
-The ring interior is21×15mm against a14.7×14.7mm plaza field; current
-270° jams the top/bottom rows against pad rows carrying39channels. A
-90° rotation jams the left/right columns carrying16/0channels instead.
-Translations and a wire-only side flip do not test that hypothesis.
+| Rotation | B.Cu routed/55 | In2.Cu+B.Cu routed/55 | Placement/routed errors | Distance mm | Vias B/inner |
+|---|---:|---:|---:|---:|---:|
+|270°|31|51|0/0|399.24755|0/25|
+|0°|21|30|30/30|444.53452|0/10|
+|180°|22|30|22/22|372.97075|0/12|
 
-## Slice 3 — lane template (after rotation)
+0° causes15 fixed-via/pad contacts;180° causes11. Each contact triggers
+clearance and via-pad keepout errors, including foreign or unused HVOUT
+pads. The shorter180° assignment is invalid. Preserve270° and the55
+existing channels; opening9unused channels needs a generator/IR contract.
+The brief's nominal(0,0.75) origin is rounded; use the exact fixture pose.
 
-Measure a per-via corridor plan for the13top and21bottom jammed-row vias:
-drop onto an aligned channel pad when possible; otherwise climb to
-In2.Cu and exit through a side corridor. Middle-row21vias can climb and
-reach the left column or nearest corridor. The ledger/template owns the
-plan; no new router or global grid/clearance changes. Lane estimates
-(60vertical/36horizontal per signal layer at0.249mm pitch) are capacity
-bounds, not proof of55/55. The legal dogfood-1 best remains50/54; the old
-54/54 arm routed across forbidden fabric/F.Cu and cannot be cited.
+## Next — connected lane-template probe
 
-## Boundaries and open decisions
+Legal inner baseline fails **ARR1_R1C5, ARR1_R6C5, ARR1_R7C2,
+ARR1_R7C6**. For these nets, draft short connected In2.Cu runouts from
+their existing fixed-island vias toward side corridors. Original through
+vias already span In2: a source climb needs no new via. The template owns
+actual copper; disconnected waypoint origins are invalid.
 
-- Never route or modify Reto's real.epro2 boards; replay fixtures never
-  become dogfood/look items. EasyEDA, gr467885 migration are excluded. Nano
-  readiness docs fold is separately authorized.
-- Existing55used HV507channels only. Exposing9unused channels needs a
-  generator/IR contract; not authorized by this slice.
-- Failed-net repair remains open: a local pair swap with reroute of two
-  nets, rather than a full re-solve that displaced23nets and lost yield.
-- Negotiation plateaued on the distance start (51/55 at10and50iterations)
-  and on B.Cu (31/55 at10); do not repeat those sweeps.
+Use tests/fixtures/pcb/ewod-dogfood-6-replay-v1.json.gz via the existing
+board-snapshot replay hydrate helper in the test DB. Retain original
+source fabric and all non-driver geometry,270° bottom pose, class
+clearance/width, grid and budgets. Add only explicitly planned connected
+copper to an ephemeral replay list. Validate placement/copper DRC before
+routing and full routed DRC afterward. Compare one default hard realize
+against51/55, retain exact failed nets/vias/track lengths, and link results
+to td472840. B.Cu31/55 remains an independent source control.
 
-## Probe method
+Existing EscapeGraph supplies pad shells/gap capacity, not a per-net
+planner. Island-terminal and maze extra-terminal APIs already accept
+connected track endpoints. Prior B.Cu breakout stubs were removed for
+congestion; preserve that refused alternative. No new router or global
+grid/clearance change. Lane capacity estimates are bounds, not55/55 proof.
 
-Hydrate the snapshot, apply route overrides as the existing replay does,
-set physical rotation with `ir.move_instance(driver, rot=angle)`, resolve groups
-with `pcb_route._resolve_pin_swap_groups`, and apply
-`pcb_route._apply_pin_swap_warm_start` after the pose. Open In2.Cu in
-`ir.stackup` and `class_rules["ewod_ARR1_escape"]["layers"]`, then
-`realize.realize(ir, config, footprints, fixed_copper)`. Use
-`session.routed_drc_findings` with actual footprints and fixed copper;
-count unique failed net names, not merely the number of segments.
+## Boundaries
+
+- Never route/modify real.epro2 boards or make fixtures dogfood/look items.
+  EasyEDA, gr467885 migration and deployment remain excluded.
+- Nano docs fold landed6657e92be separately; original branch deletion Reto.
+- No repeat of negotiation sweeps that plateaued at51/55 or B.Cu31/55.
+- Local failed-net pair swap remains a future repair; full re-solving
+  previously displaced23nets and lost yield.
+
+## Reproduce
+
+Fresh hydrate per arm. Physical rotation uses ir.move_instance; resolve
+pin-swap groups afterward, then apply distance warm start. Open In2.Cu
+role=signal and class escape layers=[In2.Cu,B.Cu]. Use placement_drc_findings
+and routed_drc_findings with actual footprints/fixed copper and voltage
+rules; reject placement errors. Rotation raw receipts live in owned
+driver-rotation .scratch/rotation.local with hashes in mx458–mx463.

@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Driver rotation on snapshot replay, recommendation 2 of [pcb-dogfood-6-routing-levers](../pcb-dogfood-6-routing-levers.md), after the distance-assignment slice lands. Reto authorized distance, rotation, then lane template on 2026-10-07. Route warm start now defaults to Hungarian Manhattan via→pad distance; `warm_start="radial"` retains the prior path, and groups without connected via terminals fall back to radial. Fixture-only hard routing reproduces **51/55 versus 42/55** on In2.Cu+B.Cu, **31/55 versus 22/55** on B.Cu. Durable measures **mx456/mx457** quantify todo **td472840**; no real-board or deployment claim. EasyEDA round trip stays parked; gr467885 migration scope excluded; Nano readiness docs fold separately authorized. Original Mac probes remain scratch; re-derive from the remaining routing-levers method. Historical R14–R16 handoffs below remain historical.
+- **Next:** Plaza-row exits/lane template in [pcb-dogfood-6-routing-levers](../pcb-dogfood-6-routing-levers.md). Distance warm start landed3419720b6 (fullCI37656421661GREEN); explicit radial path retained. Replay remains51/55 versus42/55 inner,31versus22 B.Cu (mx456/mx457). Rotation270/0/180 measured in six arms (mx458–mx463):270valid31/51;0invalid21/30 with30DRC errors;180invalid22/30 with22errors. Keep270° and exact stored origin/bottom side. Four legal-inner failures ARR1_R1C5, ARR1_R6C5, ARR1_R7C2, ARR1_R7C6 feed the connected In2 runout plan; td472840 owns it. No real-board/deployment claim. Nano two-doc fold landed6657e92be separately; EasyEDA parked and gr467885 migrations excluded. Historical handoffs below remain historical.
 - **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service work; coordinator owns deployment. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
-- **Worktree:** Codex slice `work/pcb/routing-warm-start`, base origin/main47530add0, in session `codex-pcb/.scratch/routing-warm-start`; original dirty bootstrap and all older branches/scratch preserved. Owner pcb, window6. Native /src is separate from the task tree; local source checks and dev-DB replay only.
+- **Worktree:** work/pcb/driver-rotation, fresh origin/main3419720b6 in codex-pcb/.scratch/driver-rotation; fixture-only measurements complete, docs checkpoint. Owner pcb/window6; original bootstrap/branches/scratch preserved. Native startup/src source is distinct; no real-board or provider work.
 - **Builds:** Not estimated here; use the owning slice estimate.
 - **Detail:** fleet-state `inbox/pcb-r14-route-gate-repair-ready.md/.json`, then `inbox/pcb-snapshot-ready.md/.json`, `inbox/pcb-escape-diagnosis.md/.json`, then `inbox/pcb-escape-ready.md`. [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
@@ -90,14 +90,14 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Do next
 
-0. **backlog/pcb-dogfood-6-routing-levers.md** — Driver rotation next
-   (Reto-authorized recommendation 2), replay only, after the distance warm
-   start lands. With the same distance assignment, compare current 270°
-   against 0°/180° at the same origin and bottom side; DRC each arm and
-   retain routed/failed nets, vias and channel distance. **td472840** owns
-   this follow-up; **mx456/mx457** record 51/55 versus 42 on In2.Cu+B.Cu.
-   Lane template follows rotation (Reto-authorized recommendation3)
-   at this rank. No real-board routing or fixtures as dogfood/look items.
+0. **backlog/pcb-dogfood-6-routing-levers.md** — Connected plaza-row exits
+   next (Reto-authorized lane template), replay only. Driver rotations0°/180°
+   both collide with fixed vias; retain legal270°/51of55 inner baseline.
+   Plan actual connected In2 runouts for ARR1_R1C5, ARR1_R6C5, ARR1_R7C2,
+   ARR1_R7C6; unchanged sourcefabric/classes/grid/budgets, DRC before/after.
+   **td472840** owns follow-up; **mx458–mx463** record rotation refusal;
+   **mx456/mx457** retain51vs42 warm-start evidence. No real-board routing
+   or fixtures as dogfood/look items.
 0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
