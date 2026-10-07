@@ -1,7 +1,7 @@
 ---
 status: draft
 title: The placer prices every edge of a net alike, so "this pin's bypass cap" and "a connector on the same rail" are the same constraint
-prio: high
+prio: normal
 pillar: 3d-design
 ---
 

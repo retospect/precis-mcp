@@ -1,7 +1,7 @@
 ---
 status: draft
 title: pcb — an authored or imported keepout region constrains nothing, silently
-prio: high
+prio: normal
 pillar: 3d-design
 ---
 

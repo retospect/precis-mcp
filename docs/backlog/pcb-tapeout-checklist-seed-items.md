@@ -1,7 +1,7 @@
 ---
 status: draft
 title: "pcb pre-tapeout checklist — curated seed items (companion to checklist-kind.md)"
-prio: high
+prio: normal
 pillar: 3d-design
 ---
 

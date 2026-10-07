@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Resolve whether qu164903’s 23-seed remint violates catalysis item 25 before triggering or continuing the compute dogfood.
-- **Blocked by:** The explicit re-run hold in [catalysis-selectivity](catalysis-selectivity.md#thread-context); an orchestrator ruling is required before the tick.
+- **Next:** Tick qu164903: Reto ruled 2026-10-07 (via chat-interface) that the re-mint of the 23 failed verify seeds is NOT a re-run, so chemistry may tick; then the timed MPI GPAW run.
+- **Blocked by:** Nothing for the tick. Catalysis items 25 (re-runs) and 23 (hydride pilot) stay held; the surface-Pourbaix optimizer that 23 waits on is under discussion with Reto, ruling to follow.
 - **Unblocks:** Healthy pathway engine output for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** After the hold question is resolved, follow [the latest handoff](#thread-context): verify wall 28800, cpuset, retry stamp and child taskset on castor/pollux; inspect the content-key change first.
 - **Worktree:** `chemistry`

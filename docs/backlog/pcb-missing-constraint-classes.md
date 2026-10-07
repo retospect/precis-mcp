@@ -1,7 +1,7 @@
 ---
 status: draft
 title: Constraint classes the place+route model is missing (survey)
-prio: high
+prio: normal
 model: opus
 pillar: 3d-design
 ---

@@ -1,7 +1,7 @@
 ---
 status: draft
 title: pcb → se binding — consume the 0041 mechanical bridge, one mm→m crossing
-prio: high
+prio: normal
 pillar: 3d-design
 model: opus
 ---

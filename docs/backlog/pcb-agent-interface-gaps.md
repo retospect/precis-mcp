@@ -1,7 +1,7 @@
 ---
 status: draft
 title: The pcb MCP surface — what the agent sees, what it ought to see
-prio: high
+prio: normal
 model: opus
 pillar: 3d-design
 ---

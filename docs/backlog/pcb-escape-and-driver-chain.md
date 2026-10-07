@@ -1,7 +1,7 @@
 ---
 status: draft
 title: Escape and driver-chain are general PCB primitives wearing EWOD names
-prio: high
+prio: normal
 pillar: 3d-design
 ---
 

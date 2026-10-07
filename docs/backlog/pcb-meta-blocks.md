@@ -1,7 +1,7 @@
 ---
 status: draft
 title: "pcb: meta-components — reusable schematic blocks and pre-routed layout bundles"
-prio: high
+prio: normal
 model: opus
 pillar: 3d-design
 ---

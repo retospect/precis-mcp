@@ -1,7 +1,7 @@
 ---
 status: draft
 title: Component model — Component / LandPattern / Instance, roles + capabilities, assumption ledger
-prio: high
+prio: normal
 model: opus
 pillar: 3d-design
 ---

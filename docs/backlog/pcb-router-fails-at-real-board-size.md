@@ -2,7 +2,7 @@
 pillar: 3d-design
 status: draft
 title: "pcb: the router realizes 65 of 89 nets on a real 140-component board (was 8, reported as success)"
-prio: high
+prio: normal
 ---
 
 # pcb: the router does not work at real board size
