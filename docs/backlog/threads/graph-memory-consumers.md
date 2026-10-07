@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Slices 1–5 are on main (slice 5 = afa814bd9). Cutover GO: td471883; owner: graph-memory, window 2. Resolve the directory provenance in fi472843 and the retirement/backup gaps in gr472845 before the real import. Then frontmatter on the explicitly supplied Mac copy → dev import/counts → coordinator-confirmed deploy carrying afa814bd9 → read-only prod snapshot/import/counts → hook/pointer. After acceptance, fold surviving truth into docstrings and delete the item.
-- **Blocked by:** Revert cause unresolved: the original pointer survives unchanged, while the Mac handoff names another checkout-keyed directory (fi472843). Source copy/path and relocation provenance requested through the review queue. `--legacy retire` only selects title matches; it cannot alone retire all 146 stale nodes when only 5 match. Mirror export mutates native-node identities and is unsuitable as a read-only pre-import backup (gr472845). Coordinator must confirm the deployed SHA. Reto's td471883 GO and approved export policy stand; native authoring follows the cutover, then skills into the mesh.
+- **Next:** Coordinator-confirmed deployment of the mirror and [literal YAML timestamp loader](../../../src/precis/cli/memory_mirror.py) (8.35.20; me472991/gr472974), followed by approved whole-cohort import preflight. Reto approved the 33 per-file classifications; a new scratch candidate with those and the two approved description quotes validates all 150 files, with exact matrix readback. Window 2 owns the memory cutover work. Slices 1–5 remain on main (slice 5 = afa814bd9); this loader slice performs no real-copy DB import.
+- **Blocked by:** Production requires exact deployed mirror/loader CI, validated whole-cohort import preflight and explicit coordinator confirmation. Source/provenance is resolved by Reto's acceptance (me472981); historical reconstruction is no longer a cutover gate, and no restore/move is technically proved. Approved scratch preparation preserves originals, bodies and index; it is not DB-import acceptance. Reto chose `--legacy retire`, dropping refresh; it remains title-match-only. Synthetic counts: 11 new, 1 matching retired, 1 unmatched live (fi472896), never a claim that all 146 retire. Mirror export changes native identities and cannot serve as a read-only backup (gr472845).
 - **Unblocks:** An agent that recalls, walks and keeps graph memory without leaving the graph; the web neighbourhood panel (web-graph-navigation slice 1 is built here).
 - **Acceptance:** [memory-recall-walk-keep](../memory-recall-walk-keep.md) AC 1–6; check `scripts/main-ci-status` and prod's sha (`get(kind='skill', id='precis-status')`) before any live step.
 - **Worktree:** `memory-graph`
@@ -13,15 +13,18 @@
 
 ## Handoff 2026-10-07 15:25Z
 
-Moved out of the Resume (word budget); every fact kept.
+Historical checkpoint; the Resume and linked loader spec govern current work.
+Reto's 2026-10-07T16:37:02Z ruling supersedes the historical cause gate:
+“memory came from other machine, it is fine.”
 
 **Window 2 correction, 2026-10-07:** fi472843 records the original
 pointer's byte equality with its October 3 transcript Write and the
 surviving backup. The reported file-mode directory has a different
 checkout key; a directory switch is an inference, not a proved cause.
 gr472845 records the title-only retirement selector and export's metadata
-writes. The earlier command recommendation below needs those gaps resolved;
-no frontmatter changes or dev/prod import have run.
+writes. Since that checkpoint, Reto supplied the 150-file copy and accepted
+its provenance; scratch preparation filled 32 names (me472973), and the
+synthetic dev rehearsal passed (fi472896). No real-copy import has run.
 
 - **Pre-flight 2026-10-07 (read-only on prod):** the 146 legacy nodes carry the 2026-10-03/04 index bullet titles and `meta.slug`, not file names; only 5 match a current file by title or slug, and a body-shingle comparison against the current topic files also pairs only 5 cleanly (the files were rewritten since). `--legacy refresh` therefore adopts almost nothing; the honest round-7 run is `--legacy retire` (Reto's stated fallback, "retire or rewrite, fine") unless Reto wants the 5 adopted first. Needs his confirmation via the coordinator before the run. Prod dogfood of slices 1-3 done 2026-10-07 on fc8ad08f7: index render, fisheye+1hop+recall with the SPACE filter, anchored-edit dry run all pass; recall is lexical-leaning (a paraphrase missed the target in the top 5), measure again after the real import. The anchored-edit dogfood is done (td470292, R15).
 - The revert-cause precondition is still open (Reto 2026-10-07): Mac-side forensics are exhausted (no version history in the memory dir, no consolidation-log entry between 2026-10-03 and 10-07, no transcript); places left to look are the melchior-side Codex transcripts and fleet inbox from 2026-10-03/04. The spec's decisions log proposes a self-recording, self-detecting re-cut as the fallback, which needs Reto's go. **Handoff 2026-10-07 15:25Z (session exited on Reto's order):** everything is on main (slice 5 = afa814bd9); the round-7 cutover owner is the melchior Codex graph-memory agent. The import reads Reto's harness memory dir on the Mac (`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp/memory/`), so it runs from the Mac or from a copy of that dir; 33 of its 147 files lack a `name:` or `description:` and the importer refuses them, so fix that frontmatter first (name = file stem, description = the index hook). Command shape: `precis memory mirror import <dir> --namespace <ns> --legacy retire` (or `refresh` first for the 5 matching nodes), against prod with the overlay DSN.

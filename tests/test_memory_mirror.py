@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
+import yaml
 from psycopg.types.json import Jsonb
 
 from precis.cli import _build_parser
 from precis.cli.memory import ImportRefused, _created_id
-from precis.cli.memory_mirror import export_mirror, import_mirror
+from precis.cli.memory_mirror import _parse, export_mirror, import_mirror
 from precis.dispatch import Hub
 from precis.handlers.memory import MemoryHandler
 from precis.store import Store
@@ -83,6 +85,94 @@ def test_unchanged_ids_chunks_events_and_exact_roundtrip(
     # A second namespace imports the same bytes without conflating identities.
     other = import_mirror(store, dest, namespace="other")
     assert set(other.refs.values()).isdisjoint(first.refs.values())
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    [
+        "2026-10-07",
+        "2026-10-07T16:37:02Z",
+        "2026-10-07 16:37:02.123400 +02:30",
+        "2026-10-07t16:37:02-05:00",
+    ],
+)
+def test_timestamp_values_keep_literal_spelling(scalar: str) -> None:
+    raw = _topic().replace(
+        b"  extra: [one, two]",
+        f"  nested:\n    date: {scalar}\n    dates: [{scalar}]".encode(),
+    )
+    parsed = _parse("alpha.md", raw)
+    assert parsed.frontmatter["metadata"]["nested"] == {
+        "date": scalar,
+        "dates": [scalar],
+    }
+    assert (parsed.header + parsed.body).encode() == raw
+    # Constructor registration on the mirror subclass must not change SafeLoader.
+    ordinary = yaml.safe_load(f"date: {scalar}")["date"]
+    assert type(ordinary) is (date if scalar == "2026-10-07" else datetime)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "  nested: {2026-10-07: value}",
+        "  nested: {2026-10-07T16:37:02Z: value}",
+        "  nested: {!!timestamp '2026-10-07': value}",
+        "  nested: {1: value}",
+        "  nested: {true: value}",
+        "  nested: {null: value}",
+        "  nested: {key: one, key: two}",
+        "  nested: {binary: !!binary YQ==}",
+        "  nested: {set: !!set {value: null}}",
+        "  nested: {float: .nan}",
+        "  nested: {float: .inf}",
+        "  nested: {float: -.inf}",
+        "  nested: {broken: [}",
+    ],
+)
+def test_timestamp_support_preserves_yaml_refusals(extra: str) -> None:
+    raw = _topic().replace(b"  extra: [one, two]", extra.encode())
+    with pytest.raises(ImportRefused):
+        _parse("alpha.md", raw)
+
+
+def test_quoted_timestamp_keys_remain_strings() -> None:
+    raw = _topic().replace(b"  extra: [one, two]", b"  nested: {'2026-10-07': value}")
+    assert _parse("alpha.md", raw).frontmatter["metadata"]["nested"] == {
+        "2026-10-07": "value"
+    }
+
+
+def test_timestamp_import_export_fidelity_and_idempotency(
+    store: Store, source: Path, tmp_path: Path
+) -> None:
+    raw = _topic("Body π  \r\n\r\n").replace(
+        b"  extra: [one, two]",
+        b"  created: 2026-10-07 # keep comment\n"
+        b"  nested:\n"
+        b"    times: [2026-10-07T16:37:02Z, 2026-10-07 16:37:02.123400 +02:30]",
+    )
+    (source / "alpha.md").write_bytes(raw)
+    (source / "MEMORY.md").write_bytes(b"# Index\r\n\r\n- [Alpha](alpha.md)  \r\n")
+    original = {p.name: p.read_bytes() for p in source.iterdir()}
+    first = import_mirror(store, source, namespace="timestamps")
+    assert first.created == 3
+    ref = store.get_ref(kind="memory", id=first.refs["alpha.md"])
+    assert ref is not None
+    metadata = ref.meta["frontmatter"]["metadata"]
+    assert metadata["created"] == "2026-10-07"
+    assert metadata["nested"]["times"] == [
+        "2026-10-07T16:37:02Z",
+        "2026-10-07 16:37:02.123400 +02:30",
+    ]
+    before = _snapshot(store)
+    dest = tmp_path / "export"
+    assert export_mirror(store, dest, namespace="timestamps").created == 3
+    assert {p.name: p.read_bytes() for p in dest.iterdir()} == original
+    again = import_mirror(store, dest, namespace="timestamps")
+    assert again.refs == first.refs
+    assert (again.created, again.updated, again.unchanged) == (0, 0, 3)
+    assert _snapshot(store) == before
 
 
 def test_changed_body_links_forward_resolution_and_missing_retained(

@@ -36,9 +36,17 @@ _KEY = "file_mirror"
 
 
 class _UniqueLoader(yaml.SafeLoader):
-    """Refuse YAML keys that safe_load would silently overwrite."""
+    """Keep timestamp values literal while refusing duplicate/non-string keys."""
+
+    def construct_timestamp(self, node: yaml.ScalarNode) -> str:
+        return self.construct_scalar(node)
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> Any:
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:timestamp":
+                raise ImportRefused(
+                    f"duplicate or non-string YAML key: {key_node.value!r}"
+                )
         pairs = self.construct_pairs(node, deep=deep)
         result: dict[str, Any] = {}
         for key, value in pairs:
@@ -46,6 +54,11 @@ class _UniqueLoader(yaml.SafeLoader):
                 raise ImportRefused(f"duplicate or non-string YAML key: {key!r}")
             result[key] = value
         return result
+
+
+_UniqueLoader.add_constructor(
+    "tag:yaml.org,2002:timestamp", _UniqueLoader.construct_timestamp
+)
 
 
 @dataclass

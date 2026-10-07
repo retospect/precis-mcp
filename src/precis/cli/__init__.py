@@ -21,6 +21,9 @@ offer that contract because it retires absent files and drops YAML. Export
 creates a fresh directory, preserving header bytes rather than normalizing
 user formatting. Files and graph remain snapshots with explicit conflicts,
 not a background bidirectional synchronizer.
+Mirror YAML keeps timestamp values as literal strings so JSON metadata retains
+their spelling; only its loader changes, leaving ordinary SafeLoader semantics
+and non-string key refusal intact. Raw headers remain the export authority.
 """
 
 from __future__ import annotations
