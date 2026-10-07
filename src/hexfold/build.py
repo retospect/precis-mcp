@@ -267,6 +267,7 @@ class Net:
                     for k, v in {
                         "dst": c.dst,
                         "expanded": c.expanded,
+                        "face": c.face,
                         "k": c.k,
                         "menu": c.menu,
                         "order": c.order,
@@ -3109,6 +3110,85 @@ def _flat_bud_sides(
     return out
 
 
+def _flat_up(pos: np.ndarray, idx: list[int]) -> np.ndarray:
+    """A flat instance's own "up": its plane normal, signed
+    largest-component-positive -- the same deterministic sign
+    :func:`_surface_normal` falls back to, so ``face=up`` names the face a
+    lone bud lands on today and ``face=down`` the other one."""
+    pts = pos[idx]
+    c = pts.mean(axis=0)
+    n = np.linalg.eigh((pts - c).T @ (pts - c))[1][:, 0]
+    return n if float(n[int(np.argmax(np.abs(n)))]) > 0.0 else -n
+
+
+def _inst_of_ref(ref: str) -> str:
+    """The instance an endpoint reference names (``h/(6,6,A):0``,
+    ``b.1``, ``neck.out``, ``h @ h/(1,1,A)``)."""
+    return ref.split()[0].split("/", 1)[0].split(".", 1)[0]
+
+
+def _authored_faces(
+    spec: Spec,
+    flat: set[str],
+    inst_ords: dict[str, list[int]],
+    pos: np.ndarray,
+    bud_side: dict[str, np.ndarray],
+    findings: list[Finding],
+) -> dict[tuple[str, str], np.ndarray]:
+    """``(host, bud) -> unit normal`` for every attachment that authors a
+    ``face=`` (SPEC 11.1): the flat host's :func:`_flat_up` or its
+    negative.  One pair per bud and host, so a design can put one bud on
+    each face of a sheet.  A face on an attachment whose neither endpoint
+    is flat is ignored with ``place.face_ignored`` (a tube's own surface
+    normal decides); an authored face that goes against the face the
+    host's fused rim implies is honoured and noted (``place.face_authored``
+    carries ``against_fuse``)."""
+    out: dict[tuple[str, str], np.ndarray] = {}
+    seen: set[tuple[str, str]] = set()
+    for c in spec.connects:
+        if c.face is None or c.verb == "fuse":
+            continue
+        src, dst = _inst_of_ref(c.src), _inst_of_ref(c.dst)
+        if c.verb == "menu" or dst in flat:
+            host, bud = dst, src
+        elif src in flat:
+            host, bud = src, dst
+        else:
+            host, bud = dst, src
+        if (host, bud) in seen:
+            continue
+        seen.add((host, bud))
+        if host not in flat or host not in inst_ords:
+            findings.append(
+                Finding(
+                    "place.face_ignored",
+                    Severity.WARN,
+                    f"face={c.face} on {bud} -> {host} is ignored: {host} is not "
+                    "flat, its own surface normal decides the side",
+                    where=host,
+                    span=c.span,
+                )
+            )
+            continue
+        up = _flat_up(pos, inst_ords[host])
+        side = up if c.face == "up" else -up
+        fused = bud_side.get(host)
+        against = fused is not None and float(side @ fused) < 0.0
+        findings.append(
+            Finding(
+                "place.face_authored",
+                Severity.INFO,
+                f"{bud} seeds on {host}'s authored {c.face} face"
+                + (", against the face its fused rim implies" if against else ""),
+                where=host,
+                span=c.span,
+                data=(("face", c.face), ("bud", bud), ("against_fuse", against)),
+            )
+        )
+        out[(host, bud)] = side
+    return out
+
+
 def _rot_min(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Minimal rotation taking unit vector a to unit vector b."""
     v = np.cross(a, b)
@@ -3440,6 +3520,12 @@ def _place_seeds(
     bud_side = _flat_bud_sides(
         pos, flat, inst_ords, inst_of, fuse_frames, net.ports, findings
     )
+    authored = _authored_faces(spec, flat, inst_ords, pos, bud_side, findings)
+
+    def side_of(host: str, bud: str) -> np.ndarray | None:
+        # an authored face=up|down on the attachment wins over the face the
+        # host's fused rim implies; a host without either has no side
+        return authored.get((host, bud), bud_side.get(host))
 
     # A menu attach whose fit would seat the bud inside its host reflects
     # the bud's local seed first (_kabsch_lands_inward), in x about its
@@ -3474,7 +3560,7 @@ def _place_seeds(
             sigma,
             inst_cent[host],
             inst_ords[bud],
-            bud_side.get(host),
+            side_of(host, bud),
         )
 
     decided: set[str] = set()
@@ -3559,11 +3645,11 @@ def _place_seeds(
         c_a, c_b = inst_cent[ia], inst_cent[ib]
         if kabsch:
             r, t = _fuse_transform_kabsch(
-                pos, p_dang, q_dang, k, sigma, c_a, bud_side.get(ia)
+                pos, p_dang, q_dang, k, sigma, c_a, side_of(ia, ib)
             )
             add(ia, ib, r, t, real)
             r2, t2 = _fuse_transform_kabsch(
-                pos, q_dang, p_dang, k, sigma, c_b, bud_side.get(ib)
+                pos, q_dang, p_dang, k, sigma, c_b, side_of(ib, ia)
             )
             add(ib, ia, r2, t2, real)
             continue
@@ -3597,7 +3683,7 @@ def _place_seeds(
             # so the normal sits square to the pair rather than tilted to a
             nb_a = sorted(({other[0], *nb_a, *same_nbrs.get(other[0], [])}) - {ai})
             nb_b = sorted(({other[1], *nb_b, *same_nbrs.get(other[1], [])}) - {bi})
-        s_a, s_b = bud_side.get(ia), bud_side.get(ib)
+        s_a, s_b = side_of(ia, ib), side_of(ib, ia)
         r, t = _bond_transform(
             pos, ai, bi, sigma, c_a, c_b, nb_a, nb_b, other, s_a, s_b
         )

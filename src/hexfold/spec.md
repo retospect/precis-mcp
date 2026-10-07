@@ -409,11 +409,28 @@ whole ring is in the JSON (`GeneratedPort.atoms`).
 #### 11.1 `bond` `[impl 0.1]`
 
     bond  A -- B [order=1]        add a covalent edge; both sides keep all atoms
+    A --bond [face=up|down]--> B  the flat host's face the attached part seeds on
 
 `bond` hosts that gain a fourth bond are recorded `hyb=sp3` in the JSON
 (derived, never authored); a fifth is `valence.over` (ERROR). Every
 authored `bond` emits `annot.sublattice` INFO (`data.parity = same|cross`)
 when both endpoints are lattice sites.
+
+**Authored face `[impl 0.2, 2026-10-07]`.** A flat host (a `sheet`, a
+`cap` lid) has no inside: its centroid lies in its own plane, so the face
+a bonded or menu-attached part seeds on is read from the host's fused rim
+(a part through a hole rises from the bud's face, a part on the outer rim
+hangs from the other; `place.face_conflict` when a washer's rims disagree)
+and, with no fuse, falls to the primitive's own `+z` in its local seed. A
+design that wants a bud on the other face, or one on each face, says so
+per attachment: `face=up` is that local `+z` face (the one a lone bud
+lands on today), `face=down` the other. It applies to `--bond-->` and to
+menu lines (`b @ h/(6,6,A):0 [2+2] face=down`, §16), is keyed by the (host,
+part) pair, travels into a menu's generated bonds, and is part of the
+canonical form. It overrides the fused-rim face and says so
+(`place.face_authored`, INFO, `data.against_fuse`); on a host that is not
+flat it is ignored with `place.face_ignored` (WARN): a tube's surface
+normal decides there.
 
 **Private fin graft**: `hexfold.fin.fin_tube` builds an armchair `(n,n)`
 tube with a finite zigzag strip bonded along one axial chain, one radial
@@ -661,6 +678,8 @@ no ERROR. No `__bool__`.
 | `place.mirror_refused` `[impl 0.2, 2026-10-02]` | WARN | the same case for a cage not known to be achiral (anything but C60): not reflected, left seeded inside its host |
 | `place.inward` `[impl 0.2, 2026-10-02]` | WARN | after placement a cage still seeds inside one of its hosts (a cage bridging two hosts, decided off the first) |
 | `place.face_conflict` `[impl 0.2, 2026-10-03]` | ERROR | a flat instance fused through two rims (a washer) whose windings put an attached bud on opposite faces |
+| `place.face_authored` `[impl 0.2, 2026-10-07]` | INFO | an attachment onto a flat host carries `face=up|down` (§11.1) and seeds there; `data.against_fuse` is true when that goes against the face the host's fused rim implies |
+| `place.face_ignored` `[impl 0.2, 2026-10-07]` | WARN | `face=` on an attachment whose host is not flat: ignored, the host's surface normal decides |
 | `geom.bond.long` / `geom.bond.short` | WARN | bond deviates from σ beyond threshold |
 | `geom.angle.dev` | WARN | vertex angle deviates from its ideal — ring ideal for sp², 109.47° for sp³ (0.2 fix; 0.1 used the ring ideal at sp³ atoms too) |
 | `geom.join.angle` | INFO | fuse join angle ψ (derived) |
@@ -771,7 +790,9 @@ tolerances (`bond_tol_A`, `angle_tol_deg`) are preview thresholds.
 ### 16. Menus (macros) `[impl 0.1]`
 
 Named junctions expand to `bond`/`fuse` lines with solved atom IDs. Each carries
-a citation and a synthesis-accessibility tag.
+a citation and a synthesis-accessibility tag. A menu line onto a flat
+host takes an optional trailing `face=up|down` (§11.1), which every
+generated line inherits.
 
 | menu | expands to | cite | accessibility |
 |---|---|---|---|

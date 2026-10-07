@@ -64,6 +64,9 @@ class Connect:
     expanded: dict[str, Any] | None = None  # menu/collar expansion record
     span: Span = (0, 0)
     source: str | None = None  # menu that generated this connect (None = authored)
+    # authored face of a flat host a bond/menu attachment seeds on: "up"
+    # (the flat primitive's own +z in its local seed) or "down" (SPEC 11.1)
+    face: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,12 +135,14 @@ _REF = rf"{_IDENT}(?:[./][\w(),\-]+)*"
 _CONN_RE = re.compile(
     rf"^(?P<src>{_REF})\s*--\s*(?P<verb>fuse|bond)"
     rf"(?:\{{(?P<menu>[^}}]*)\}})?\s*(?:k\s*=\s*(?P<k>\d+)\s*)?"
+    rf"(?:face\s*=\s*(?P<face>up|down)\s*)?"
     rf"-->\s*(?P<dst>{_REF}(?:\s*@\s*{_REF})?)"
     rf"(?:\s+order\s*=\s*(?P<order>\d+))?\s*$"
 )
 _MENU_RE = re.compile(
     rf"^(?P<src>{_IDENT})\s*@\s*(?P<dst>{_IDENT})/(?P<site>{_SITE})"
-    rf"(?:\s*:\s*d?(?P<dir>\d))?\s*\[(?P<menu>[^\]]+)\]\s*$"
+    rf"(?:\s*:\s*d?(?P<dir>\d))?\s*\[(?P<menu>[^\]]+)\]"
+    rf"(?:\s*face\s*=\s*(?P<face>up|down))?\s*$"
 )
 _REPEAT_RE = re.compile(r"[x×]\s*(\d+)\s*$")
 _SEAM_HEAD_RE = re.compile(rf"^seam\s+(?P<name>{_IDENT})\s*:\s*(?P<rest>.+)$")
@@ -277,6 +282,7 @@ def parse(text: str) -> Spec:
                     k=int(m["k"]) if m["k"] else None,
                     order=int(m["order"]) if m["order"] else None,
                     span=_span(lineno),
+                    face=m["face"],
                 )
             )
             continue
@@ -323,6 +329,7 @@ def parse(text: str) -> Spec:
                     verb="menu",
                     menu=mm["menu"].strip(),
                     span=_span(lineno),
+                    face=mm["face"],
                 )
             )
             continue
@@ -514,14 +521,15 @@ def to_text(spec: Spec) -> str:
     if authored:
         lines.append("")
         for c in authored:
+            face = f" face={c.face}" if c.face else ""
             if c.verb == "menu":
                 dst, site = c.dst.split("/", 1)
-                lines.append(f"{c.src} @ {dst}/{site} [{c.menu}]")
+                lines.append(f"{c.src} @ {dst}/{site} [{c.menu}]{face}")
                 continue
             menu = f"{{{c.menu}}}" if c.menu else ""
             k = f" k={c.k}" if c.k is not None else ""
             o = f" order={c.order}" if c.order is not None else ""
-            lines.append(f"{c.src} --{c.verb}{menu}{k}--> {c.dst}{o}")
+            lines.append(f"{c.src} --{c.verb}{menu}{k}{face}--> {c.dst}{o}")
     for s in spec.seams:
         line = f"seam {s.name}: {' == '.join(s.rims)}"
         if s.k:
@@ -584,6 +592,7 @@ def spec_from_dict(d: dict) -> Spec:
             order=c.get("order"),
             expanded=c.get("expanded"),
             source=c.get("source"),
+            face=c.get("face"),
         )
         for c in d.get("connects", [])
     )

@@ -217,5 +217,7 @@ def expand(spec: Spec) -> Spec:
         connects.append(replace(c, expanded=exp))
         # Generated connects carry the menu that made them, like the
         # holes/instances above — to_text emits the menu line only.
-        connects.extend(replace(g, source=menu) for g in gen)
+        # an authored face on the menu line travels to every bond/fuse it
+        # expands to, so placement reads it off the generated connects too
+        connects.extend(replace(g, source=menu, face=c.face) for g in gen)
     return replace(spec, instances=tuple(insts), connects=tuple(connects))

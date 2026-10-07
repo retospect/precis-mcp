@@ -136,7 +136,11 @@ reports from before hexfold 0.3.1 list at most 10 entries per code and carry no
 elements named with the pair's bar; H–H has its own 1.5 Å bar because a
 terminated armchair bay holds its two H at 1.87–1.89 Å; a clean check
 without it is not a clean geometry). Nanobud menus
-(`[9-6]`, `[8-7]`, `[2+2]`) seed the C60 outside its host. `[9-6]` and
+(`[9-6]`, `[8-7]`, `[2+2]`) seed the C60 outside its host; on a flat host
+(sheet, lid) a trailing `face=up|down` on the menu line (or inside a
+`--bond face=down-->` arrow) picks the face, per bud, so a sheet can
+carry one on each side (`place.face_authored` INFO; on a tube it is
+ignored with `place.face_ignored` WARN). `[9-6]` and
 `[8-7]` keep WARN clashes of 1.2–1.5 Å at the junction neck. These
 shipped specs still overlap, are known, and are not yet fixed:
 `capped_tube`, `capped_tube_da_neck`, `sheet_pill_bump` (0.90–0.92 Å,

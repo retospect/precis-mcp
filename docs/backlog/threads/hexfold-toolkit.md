@@ -267,6 +267,22 @@ waited on happened 09-29 — note at the bottom)
        R ≳ 12 Å. At least 2 dev cycles (the grammar, then the rows), not
        yet scoped.
 
+1a. **backlog/hexfold-scene-grammar-from-primitives.md — scene grammar
+   from primitives** (Reto ruled YES 2026-10-07, via chat-interface;
+   status draft, readiness vet owed). Ranked right behind the hero path
+   because it is the frame every further "next variant" lands in: tube,
+   sheet, seam/graft line, strip and top as primitives, each with its own
+   tether, one composition rule, one planner and one judgement; today's
+   foot features, the Y and the fin become parameter sets, stored scenes
+   render byte-identically. Slice 0 first: a tethered-relax op over `.hx`
+   text or a join plus a tether list, so a scene is askable the same day
+   without a deploy. Cross-cutting default: H-termination of every open
+   edge at the end of every build with the `terminated:H` tag
+   (`terminate: "none" | "ports-open"` opts out) — shipping first in
+   `_block_from_net` for the hexfold family. Acceptance: Y-A, both fin
+   scenes and the 120° seam tube regenerate from parameter sets within
+   the bars, plus one new scene with zero code change.
+
 2. **gr459567 family: overlaps the clash check now reports.** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
    and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
