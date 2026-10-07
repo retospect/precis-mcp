@@ -3,10 +3,28 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** (handoff 2026-10-07 14:40Z, session stopped on Reto's order) two prod ops, each one job, once the coordinator confirms the round-6 deploy (candidate bb244e093: catpath 0.24.0, Pourbaix slice 1, the Pourbaix gate Part B) is verified: (a) the first clean-Pd(111) `surface_coverage_scan` (`surface-pourbaix-staircase-optimizer.md` §Slice 1 contract "Not yet": `put(kind='job', job_type='surface_coverage_scan', params={config: REACTION_CONFIG, point_U_RHE: -0.3})`, no `target_node`), then the θ→0 comparison against pw455722; (b) the one R15 production proof job for `pourbaix-quest-gate.md` (job 468292 is the before-record). Then slice 2 (resting-state map), the rule-out/lift slice of the Pourbaix gate, item 24's correction-set id (`pathway-correction-basis.md`), the Pd-hydride precis-side fixes (item 2). Everything this thread built is on main; nothing sits on a branch.
-- **Blocked by:** Items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Chemistry's seed re-mint is ruled NOT a re-run (2026-10-07). td470248 (BEEF-vdW single points) is approved but launches only with a verified estimate under $25 per run or the exact command handed to Reto; the PBE basis is measured on the first point. Both prod ops above need the deployed sha confirmed first.
+- **Next:** after the production-operation holds clear, two single-job proofs:
+  clean-Pd(111) `surface_coverage_scan` with qu164903's config,
+  `point_U_RHE=-0.3`, no `target_node` (surface-Pourbaix item's slice-1
+  contract), followed by the θ→0 comparison against pw455722; then the
+  Pourbaix gate's R15 proof, preserving failed before-job 468292. Neither
+  proof has run. Afterward: resting-state map, gate rule-out/lift,
+  correction-set basis, and Pd-hydride precis-side fixes.
+- **Blocked by:** source-dependent production operations remain held. Items
+  23/25 retain the re-run/hydride holds; seed re-mint is not a re-run.
+  Record a verified **<$25** scan bound and verify its worker engine while
+  preserving the cluster's catpath 0.22 pin; a timeout is not a dollar bound.
+  **BEEF is estimate only**, `td470248` waiting-for:reto. `me470247` contains
+  conditional cost/time formulas; absolute PBE basis and dollars are unknown.
+  Native `estimate` rejects `put`, so the memory is an explicit fallback,
+  not an estimate-kind receipt. No BEEF command or run.
 - **Unblocks:** A ranking against a complete competing network.
-- **Acceptance:** Use [the latest handoff and item holds](#thread-context); engine-version checks must match the released engine. No re-run is authorized by this entry point.
+- **Acceptance:** Use [the latest handoff and item holds](#thread-context);
+  engine-version checks must match the released engine. No re-run is authorized.
+  `me472839` records expected/actual proof contracts under qu164903/qu202468.
+  Coordinator native status confirms `bb244e093` / 8.35.18, drift none;
+  startup `ae908c573a59` is superseded. HOST18=MAC7 is open; the release cut
+  does not establish deployment beyond `bb244e093`.
 - **Worktree:** `catalysis-selectivity`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
