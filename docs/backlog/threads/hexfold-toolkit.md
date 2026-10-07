@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** gr469873 R15 reach correction: full authored target extent, including the sphere radius beyond initial r0; exact ball12/aC343 kernel and public-get regressions. Independent review/root full gate/version/deploy precede native fraction remeasurement against 414/2406 (17.20698%). R14 S1 snapshot and private k3 corrections are source-reviewed and root-deployed; private k3 remains local-only.
-- **Blocked by:** Native fresh different-radius sphere plus cylinder/saddle is Melchior-only after the fix deploys, with stored dogfood tree/viewer link. Authenticated browser/access and bounded compute dispatch remain prerequisites; no workstation build. Existing ball12 reference is fitted/reconstructed, not recovered generation provenance. Native plan-only table/lid remains unavailable; scientific/hero/model holds unchanged.
+- **Next:** gr470905 exact future-generated receipts are implemented; finish exact-pin validation and independent source review before root integration. Spec premise/acceptance: [stored authored-target read](../hexfold-ideal-surface-then-tile.md#r17-stored-authored-target-read--gr470905). Contract ACCEPTED dfa52780 is not source PASS. Legacy r5 remains unavailable. gr469873 original reach is DONE after exact R16 native acceptance; private k3 remains local-only.
+- **Blocked by:** Final remote validation, independent source review and root integration/deployed acceptance. Owning package rationale was refreshed after actual DRY END. Legacy scene/plan lacks the stored frame; no automatic r5 metrics. Human Reto/orchestrator reports r5 ball12, ball12r11 and cyl12open look decent after spacing16 nm; attributed human workflow only, no owner fold/browser execution. Larger-pillar budget and scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
-- **Worktree:** Bounded fleet owner `hexfold`, `work/hexfold/r15-reach-fix` based on verified R14 `110f6dd4b464565a6b5503f4c48451872b5a6089`; S1/k3/H1 branches and scratch preserved. Earlier `hexa` work is historical.
+- **Worktree:** window9 thread01a108d5-fdb3-7b91-a50b-c3bc5532aa56; work/hexfold/stored-surface-target from staged R17 7265b9ac0502cd007affdae26f61256877b547d9, in codex-hexfold/.scratch/stored-surface-target. Dirty pillar-sweep docs and scratch remain untouched in the original r15-reach-fix tree.
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 

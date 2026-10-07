@@ -1,11 +1,15 @@
 """``se`` **atomic mode** — the molecular-machine domain layer.
 
 Read-only S1 surface deviation exposes the existing precis_surface judge over
-stored structure-local Å atoms and an explicit caller-authored meridian. The
-target is never inferred from a planner/derived mesh; absent target data is
-unknown. Only the supplied rigid z offset is subtracted, so SE poses and fitted
-rotation/scale cannot hide deviation or rewrite generation provenance.
-Structure identity/version, lattice and live positions come from one SQL
+stored structure-local Å atoms. Explicit caller targets retain rigid-z-only
+alignment. With target omitted, only an exact evaluated hexfold_scene receipt
+is used: analytic meridians and the applied canonicalization inverse including
+reflection, never requested radius, fitting or planner reconstruction. Receipt
+and geometry commit together; ref/version, cell and ordered atom-row identity
+bind the receipt, so even byte-identical row replacement makes it unavailable.
+Legacy, ambiguous or invalid receipts are unknown with explicit-target guidance.
+SE pose is display placement and does not alter the measured target frame.
+Structure identity/version, receipt, lattice and live positions come from one SQL
 statement snapshot. Version brackets were refused: import saves can rewrite
 at the same version, so equal labels do not prove coherent cell/atom reads.
 Missing snapshot/version is unknown; missing design IDs cannot substitute a list.

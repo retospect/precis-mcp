@@ -407,6 +407,7 @@ _GENERATED_RECORD_KEYS = (
     "chiral_index",
     "radius_A",
     "surface_meridian",
+    "surface_target",
     "fillet_radius_A",
     "theta_p_max_deg",
     "scene",
@@ -460,9 +461,9 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
 
     The one residual: a hard crash between this function's
     ``structure_save`` and the caller's ``persist.save_tree`` (two separate
-    transactions — ``store.tx()`` opens a fresh connection per call, so
-    ``structure_save`` can't join the tree's own transaction without
-    changing its signature) would leave a real, valid structure design that
+    transactions; receipt stamping joins ``structure_save(conn=...)``,
+    while the caller still saves the SE tree independently) would leave a
+    real, valid structure design that
     this call's tree edit never got to reference — not a dangling pointer
     (nothing points at it yet), just a design an operator would need to
     notice and clean up by hand. Skips entirely (no mint at all) if a
@@ -472,7 +473,7 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
     node = tree.blocks.get(pending.block_name)
     if node is None:
         return
-    store.structure_save(
+    save_args: dict[str, Any] = dict(
         slug=pending.struct_slug,
         title=pending.title,
         scene=pending.scene,
@@ -483,6 +484,23 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
             {"generated": pending.generated} if pending.generated is not None else None
         ),
     )
+    if pending.generated is not None and "surface_target" in pending.generated:
+        from precis_se.atomic.surface_target import bind_target
+
+        # Ref/cell/rows/receipt commit together. The separate SE-tree save
+        # still has its documented possible orphan boundary (above).
+        with store.tx() as conn:
+            ref, _created = store.structure_save(**save_args, conn=conn)
+            snapshot = store.structure_positions_snapshot(ref.id, conn=conn)
+            if snapshot is None:
+                raise ValueError("generated structure snapshot unavailable during save")
+            generated = dict(pending.generated)
+            generated["surface_target"] = bind_target(
+                generated["surface_target"], snapshot
+            )
+            store.stamp_ref_meta(ref.id, {"generated": generated}, conn=conn)
+    else:
+        store.structure_save(**save_args)
     node.bound_kind = "structure"
     node.bound = pending.struct_slug
     for port_name, atom_label in pending.ports_map.items():

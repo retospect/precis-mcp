@@ -13,11 +13,23 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.store import Store
 from precis.structure.cell import Cell
+from precis.structure.scene import Atom, Scene
 from precis_se import persist
+from precis_se.atomic.generate import PendingGenerate, finish_generate, generated_cell
+from precis_se.atomic.generators.authored_foot import _top_meridian
+from precis_se.atomic.generators.hexfold_spec import _canonical_frame
 from precis_se.atomic.surface_deviation import render_surface_deviation
+from precis_se.atomic.surface_target import (
+    bind_target,
+    capture_target,
+    geometry_binding,
+)
 from precis_se.handler import SeHandler, _vet_view_args
 from precis_se.ops import SeBlock, SeTree
+from precis_surface.deviation import Feature, summary, surface_distance
+from precis_surface.revolution import authored_meridian
 
 TARGET: dict[str, Any] = {
     "features": [
@@ -98,7 +110,7 @@ def test_metrics_in_angstrom_and_only_supplied_rigid_z_removed() -> None:
 
 
 def test_no_target_is_unknown_not_inferred_from_atoms() -> None:
-    assert "unknown: authored target absent" in render_surface_deviation(
+    assert "unknown: stored authored target unavailable" in render_surface_deviation(
         ReadStore([[0, 0, 0]]), node(), {}
     )
 
@@ -237,6 +249,527 @@ class VersionedReadStore(ReadStore):
         if self.change == "after_snapshot":
             self._rewrite()
         return snapshot
+
+
+def receipt_fixture(
+    kind: str = "sphere", *, actual_r: float = 10.0
+) -> tuple[dict[str, Any], list[Feature], np.ndarray]:
+    """Cheap evaluated analytic target + asymmetric stored-frame geometry."""
+    meridian = (
+        _top_meridian("sphere", 4.7, 3.0, 12.0, actual_r, 4.0)
+        if kind == "sphere"
+        else authored_meridian(9.2, [("line", 1.5), ("arc", 3.0, -90), ("line", 60)])
+    )
+    features = [Feature("q", (2.0, -3.0), meridian)]
+    points = np.array([[6.7, -3.0, 7], [6.8, -3.0, 8], [12, 1, 0.2], [-12, 2, -0.3]])
+    if kind == "sphere":
+        r, z = meridian.segments[-1].at(np.array([0.5]))[0]
+        # On/near the actual sphere bulge, so wrong requested R changes
+        # the numerical result, not merely a provenance label.
+        points[:2] = [[2 + r, -3, z], [2 + r + 0.2, -3, z + 0.1]]
+    # Actual applied PCA isometry; raw generation frame has z reversed.
+    raw = points * np.array([1.0, 1.0, -1.0])
+    inverse: dict[str, Any] = {}
+    framed, _ = _canonical_frame(raw, inverse=inverse)
+    f = np.diag([1.0, 1.0, -1.0])
+    target = capture_target(
+        tuple(features),
+        {"q": {"R_A": actual_r, "dome_start_A": 12.0}} if kind == "sphere" else {},
+    )
+    target["map"] = {
+        "convention": "row-vector y=x@Q+b",
+        "Q": (inverse["Q"] @ f).tolist(),
+        "b_A": (inverse["b"] @ f).tolist(),
+    }
+    cell = generated_cell(framed)
+    snapshot = {
+        "ref_id": 7,
+        "version": 4,
+        "lattice": cell.lattice.tolist(),
+        "pbc": [False] * 3,
+        "has_lattice": True,
+        "fractional": [cell.cart_to_frac(p).tolist() for p in framed],
+        "atom_ids": [11, 12, 13, 14],
+    }
+    snapshot["generated"] = {
+        "generator": "hexfold_scene",
+        "scene": {"features": [{"top_R": 11.0}]},
+        "surface_target": bind_target(target, snapshot),
+    }
+    return snapshot, features, points
+
+
+@pytest.mark.parametrize(
+    ("kind", "radius"), [("sphere", 10.0), ("sphere", 10.7), ("open", 0.0)]
+)
+def test_public_get_stored_target_actual_radius_and_reflected_map(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch, kind: str, radius: float
+) -> None:
+    fn, store = public_get
+    snapshot, features, points = receipt_fixture(kind, actual_r=radius)
+
+    def no_compute(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("stored target read attempted generation or canonicalization")
+
+    monkeypatch.setattr(
+        "precis_se.atomic.generators.hexfold_scene.plan_scene", no_compute
+    )
+    monkeypatch.setattr(
+        "precis_se.atomic.generators.hexfold_spec._canonical_frame", no_compute
+    )
+    monkeypatch.setattr(
+        store, "structure_positions_snapshot", lambda _id: copy.deepcopy(snapshot)
+    )
+    # Independent mutable ref metadata is deliberately wrong: the receipt is
+    # read only from the atom snapshot, never from this separately fetched ref.
+    store.ref.meta = {"version": 99, "generated": {"surface_target": None}}
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    distances, owners = surface_distance(points, features, ds=1)
+    expected = summary(distances, owners, features)
+    for name, row in expected.items():
+        actual = next(
+            line.split("\t")
+            for line in body.splitlines()
+            if line.startswith(name + "\t")
+        )
+        assert int(actual[1]) == row["atoms"]
+        assert [float(v) for v in actual[2:]] == pytest.approx(
+            [row[k] for k in ("mean", "p95", "max")], abs=1e-12
+        )
+    assert "generated-exact receipt format=1" in body and "version=4" in body
+    assert float(body.split("determinant=", 1)[1].split(";", 1)[0]) == pytest.approx(-1)
+    assert "SE pose/rotation/scale not applied" in body
+    assert snapshot["generated"]["scene"]["features"][0]["top_R"] == 11.0
+    if kind == "sphere":
+        assert (
+            snapshot["generated"]["surface_target"]["actual_tops"]["q"]["R_A"] == radius
+        )
+        requested = [
+            Feature(
+                "q", (2.0, -3.0), _top_meridian("sphere", 4.7, 3.0, 12.0, 11.0, 4.0)
+            )
+        ]
+        wrong_distances, _ = surface_distance(points, requested, ds=1)
+        assert not np.allclose(distances, wrong_distances, atol=1e-6)
+
+
+def test_binding_encoding_is_order_independent_exact_and_normalizes_zero() -> None:
+    snap, _, _ = receipt_fixture()
+    record = snap["generated"]["surface_target"]
+    expected = geometry_binding(record, snap)
+    reordered = dict(reversed(list(record.items())))
+    assert geometry_binding(reordered, snap) == expected
+    zero = copy.deepcopy(snap)
+    zero["fractional"][0][0] = 0.0
+    positive = geometry_binding(record, zero)
+    zero["fractional"][0][0] = -0.0
+    assert geometry_binding(record, zero) == positive
+    adjacent = copy.deepcopy(snap)
+    adjacent["fractional"][0][0] = float(
+        np.nextafter(adjacent["fractional"][0][0], np.inf)
+    )
+    assert geometry_binding(record, adjacent) != expected
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "row",
+        "coordinate",
+        "cell",
+        "version",
+        "ref",
+        "empty",
+        "missing",
+        "format",
+        "nan",
+        "nonorthogonal",
+        "primitive",
+        "target",
+        "frame",
+        "tops",
+        "binding_bool",
+        "binding_float",
+    ],
+)
+def test_public_get_invalid_stored_receipt_is_unavailable(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    fn, store = public_get
+    snap, _, _ = receipt_fixture()
+    receipt = snap["generated"]["surface_target"]
+    if change == "row":
+        snap["atom_ids"][0] = 1  # byte-identical same-version geometry
+    elif change == "coordinate":
+        snap["fractional"][0][0] += 0.01
+    elif change == "cell":
+        snap["lattice"][0][0] = 90.0
+    elif change == "version":
+        snap["version"] = 5
+    elif change == "ref":
+        receipt["binding"]["ref_id"] = 8
+    elif change == "empty":
+        snap["atom_ids"] = []
+        snap["fractional"] = []
+    elif change == "missing":
+        snap.pop("generated")
+    elif change == "format":
+        receipt["format"] = 2
+    elif change == "nan":
+        receipt["map"]["Q"][0][0] = float("nan")
+    elif change == "nonorthogonal":
+        receipt["map"]["Q"][0][0] = 3.0
+    elif change == "primitive":
+        receipt["features"][0]["segments"][0]["kind"] = "catenoid"
+    elif change == "target":
+        receipt["features"][0]["centre_A"][0] += 0.1
+    elif change == "frame":
+        receipt.pop("map")
+    elif change == "tops":
+        receipt.pop("actual_tops")
+    elif change == "binding_bool":
+        receipt["binding"]["format"] = True
+    elif change == "binding_float":
+        receipt["binding"]["ref_id"] = 7.0
+    monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snap)
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "unknown: stored authored target unavailable" in body
+    assert "target.features" in body and "legacy data is never fitted" in body
+    assert "{region" not in body and "generated-exact" not in body
+
+
+def test_public_get_stored_mode_null_offset_and_explicit_override(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fn, store = public_get
+    snap, _, _ = receipt_fixture()
+    snap["generated"]["surface_target"]["binding"]["sha256"] = "stale"
+    monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snap)
+    with pytest.raises(BadInput, match="target requires"):
+        fn(
+            kind="se",
+            id="source-design",
+            view="surface_deviation",
+            args={"name": "tube", "target": None},
+        )
+    with pytest.raises(BadInput, match="nonzero z_offset_A") as caught:
+        fn(
+            kind="se",
+            id="source-design",
+            view="surface_deviation",
+            args={"name": "tube", "z_offset_A": 1},
+        )
+    assert "explicit" in str(caught.value) and "target" in str(caught.value.next)
+    body = fn(
+        kind="se",
+        id="source-design",
+        view="surface_deviation",
+        args={"name": "tube", "target": {"features": []}, "z_offset_A": 1},
+    )
+    assert "caller-authored request" in body and "sheet\t4\t" in body
+
+
+@pytest.mark.parametrize("distance", [np.inf, 1e308])
+def test_public_get_nonfinite_stored_evaluation_is_unknown(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch, distance: float
+) -> None:
+    fn, store = public_get
+    snap, _, _ = receipt_fixture()
+    monkeypatch.setattr(store, "structure_positions_snapshot", lambda _id: snap)
+    monkeypatch.setattr(
+        "precis_se.atomic.surface_deviation.surface_distance",
+        lambda *_a, **_kw: (np.full(4, distance), np.zeros(4, dtype=int)),
+    )
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert (
+        "unknown: stored target evaluation is nonfinite" in body
+        and "{region" not in body
+    )
+
+
+def test_public_get_receipt_and_atoms_stay_on_same_snapshot(
+    public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fn, store = public_get
+    snap, _, _ = receipt_fixture()
+
+    def interleaved(_id: int) -> dict[str, Any]:
+        old = copy.deepcopy(snap)
+        # Commit after this snapshot: equal version and identical geometry,
+        # but replacement row IDs make the OLD receipt invalid for new rows.
+        snap["atom_ids"] = [i + 100 for i in snap["atom_ids"]]
+        store.ref.meta = {"version": 4, "generated": None}
+        return old
+
+    monkeypatch.setattr(store, "structure_positions_snapshot", interleaved)
+    first = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "generated-exact" in first and "{region" in first
+    second = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert "unknown: stored authored target unavailable" in second
+
+
+@pytest.mark.parametrize(
+    "points", [np.eye(3), np.zeros((4, 3)), np.vstack((np.eye(3), -np.eye(3)))]
+)
+def test_actual_canonical_inverse_handles_symmetric_and_degenerate_inputs(
+    points: np.ndarray,
+) -> None:
+    inverse: dict[str, Any] = {}
+    stored, _ = _canonical_frame(points, inverse=inverse)
+    # Inverse emitted by the applied transform, including translation.
+    np.testing.assert_allclose(stored @ inverse["Q"] + inverse["b"], points, atol=1e-14)
+
+
+def pending_target_fixture(
+    slug: str = "stored-target-fixture", actual_r: float = 10.0
+) -> tuple[SeTree, PendingGenerate]:
+    snap, _, _ = receipt_fixture(actual_r=actual_r)
+    scene = Scene(cell=Cell(np.array(snap["lattice"]), pbc=(False, False, False)))
+    for i, frac in enumerate(snap["fractional"]):
+        label = f"aC{i + 1}"
+        scene.atoms[label] = Atom(label=label, element="C", frac=np.array(frac))
+    generated = copy.deepcopy(snap["generated"])
+    generated["surface_target"].pop("binding")
+    tree = SeTree()
+    tree.blocks["tube"] = SeBlock(name="tube", uid=41)
+    return tree, PendingGenerate(
+        block_name="tube",
+        struct_slug=slug,
+        title="Fixture",
+        scene=scene,
+        card_text="deterministic fixture",
+        provenance="test only",
+        ports_map={},
+        generated=generated,
+    )
+
+
+@pytest.mark.parametrize("replacement", ["identical", "altered", "in_place"])
+def test_persisted_row_receipt_rejects_same_version_replacement(
+    store: Store, replacement: str, public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis_se.atomic.surface_target import stored_target
+
+    tree, pending = pending_target_fixture(actual_r=10.7)
+    finish_generate(store, tree, pending)
+    ref = store.get_ref(kind="structure", id=pending.struct_slug)
+    assert ref is not None
+    old = store.structure_positions_snapshot(ref.id)
+    assert old is not None
+    stored_target(old)
+    fn, reader = public_get
+    reader.ref = ref
+    monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
+    monkeypatch.setattr(
+        reader, "structure_positions_snapshot", store.structure_positions_snapshot
+    )
+    before_body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert (
+        "generated-exact receipt format=1" in before_body and "version=1" in before_body
+    )
+    _, features, points = receipt_fixture(actual_r=10.7)
+    distances, owners = surface_distance(points, features, ds=1)
+    for name, expected in summary(distances, owners, features).items():
+        row = next(
+            line.split("\t")
+            for line in before_body.splitlines()
+            if line.startswith(name + "\t")
+        )
+        assert [float(v) for v in row[2:]] == pytest.approx(
+            [expected[k] for k in ("mean", "p95", "max")], abs=1e-12
+        )
+    assert old["generated"]["surface_target"]["binding"]["ref_id"] == ref.id
+    if replacement == "in_place":
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE struct_atoms SET fa = fa + 0.001 WHERE id = %s",
+                (old["atom_ids"][0],),
+            )
+    else:
+        if replacement == "altered":
+            pending.scene.atoms["aC1"].frac[0] += 0.001
+        store.structure_save(
+            slug=pending.struct_slug,
+            title="Replaced",
+            scene=pending.scene,
+            version=1,
+            card_text="replacement",
+        )
+    new = store.structure_positions_snapshot(ref.id)
+    assert new is not None and old["version"] == new["version"] == 1
+    if replacement != "in_place":
+        assert old["atom_ids"] != new["atom_ids"]
+    if replacement == "identical":
+        assert old["fractional"] == new["fractional"]
+    with pytest.raises(ValueError, match="binding is stale"):
+        stored_target(new)
+    after_body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert (
+        "unknown: stored authored target unavailable" in after_body
+        and "{region" not in after_body
+    )
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_generated_target_stamping_rolls_back_structure_and_receipt(
+    store: Store, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    tree, pending = pending_target_fixture()
+    before = None
+    if existing:
+        finish_generate(store, tree, pending)
+        ref = store.get_ref(kind="structure", id=pending.struct_slug)
+        assert ref is not None
+        before = store.structure_positions_snapshot(ref.id)
+    captured = []
+
+    def fail(ref_id: int, _updates: Any, *, conn: Any) -> None:
+        assert conn is not None
+        captured.append(ref_id)
+        raise RuntimeError("receipt-stamp failure")
+
+    monkeypatch.setattr(store, "stamp_ref_meta", fail)
+    with pytest.raises(RuntimeError, match="receipt-stamp failure"):
+        finish_generate(store, tree, pending)
+    ref = store.get_ref(kind="structure", id=pending.struct_slug)
+    if existing:
+        assert ref is not None
+        assert store.structure_positions_snapshot(ref.id) == before
+    else:
+        assert ref is None and tree.blocks["tube"].bound is None
+        with store.pool.connection() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM struct_atoms WHERE ref_id = %s", (captured[0],)
+            ).fetchone() == (0,)
+
+
+def test_ambiguous_sheet_feature_preserves_generation_but_read_is_unknown(
+    store: Store, public_get: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree, pending = pending_target_fixture()
+    assert pending.generated is not None
+    receipt = pending.generated["surface_target"]
+    receipt["features"][0]["name"] = "sheet"
+    receipt["actual_tops"] = {"sheet": receipt["actual_tops"]["q"]}
+    finish_generate(store, tree, pending)
+    fn, reader = public_get
+    reader.ref = store.get_ref(kind="structure", id=pending.struct_slug)
+    monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
+    monkeypatch.setattr(
+        reader, "structure_positions_snapshot", store.structure_positions_snapshot
+    )
+    body = fn(
+        kind="se", id="source-design", view="surface_deviation", args={"name": "tube"}
+    )
+    assert tree.blocks["tube"].bound == pending.struct_slug
+    assert "unknown: stored authored target unavailable" in body
+    assert "ambiguous generated feature name" in body and "{region" not in body
+
+
+def test_scene_generator_captures_selected_target_not_requested_radius(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hexfold.report import Report
+    from precis_se.atomic.generators import hexfold_scene as gen
+
+    snap, features, points = receipt_fixture(actual_r=10.7)
+    plan = SimpleNamespace(
+        text="fixture",
+        positions=points,
+        ks={},
+        rows={},
+        tops={},
+        findings=(),
+        passes=1,
+        top_plans={"q": SimpleNamespace(R=10.7)},
+        top_rows={"q": None},
+        target_features=tuple(features),
+        dome_starts={"q": 12.0},
+    )
+    monkeypatch.setattr(gen, "plan_scene", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(
+        gen, "build", lambda *_a, **_kw: SimpleNamespace(report=Report())
+    )
+    monkeypatch.setattr(gen, "_scene_findings", lambda *_a: [])
+    monkeypatch.setattr(gen, "_top_record", lambda tp, _row: {"R": tp.R})
+    captured: dict[str, Any] = {}
+
+    def block(*_a: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(gen, "_block_from_net", block)
+    gen.build_hexfold_scene(
+        {
+            "sheet": [30, 30],
+            "features": [
+                {
+                    "name": "q",
+                    "at": [15, 15],
+                    "n": 12,
+                    "radius": 5,
+                    "tube_len": 3,
+                    "top": "sphere",
+                    "top_R": 11,
+                }
+            ],
+        }
+    )
+    assert (
+        captured["target"]["features"]
+        == snap["generated"]["surface_target"]["features"]
+    )
+    assert captured["target"]["actual_tops"] == {
+        "q": {"R_A": 10.7, "dome_start_A": 12.0}
+    }
+    assert captured["extra_topology"]["scene"]["features"][0]["top_R"] == 11.0
+    np.testing.assert_array_equal(captured["target_flip"], [1, 1, -1])
+
+
+def test_block_captures_inverse_from_same_canonicalization() -> None:
+    from hexfold.build import build
+    from precis_se.atomic.generators.hexfold_spec import _block_from_net
+
+    net = build("hexfold 0.2\norigin s\ns: sheet(4,4)\n", strict=False)
+    raw = np.asarray(net.seed3, dtype=float)
+    # Topology-only seed fixture; no stick or model relaxation.
+    _, features, _ = receipt_fixture("open")
+    target = capture_target(tuple(features), {})
+    result = _block_from_net(
+        net,
+        raw,
+        spec="fixture",
+        report=net.report,
+        fidelity="stick",
+        target=target,
+        target_flip=np.array([1, 1, -1]),
+    )
+    mapping = result.topology["surface_target"]["map"]
+    unchanged = _block_from_net(
+        net, raw, spec="fixture", report=net.report, fidelity="stick"
+    )
+    np.testing.assert_array_equal(result.coords, unchanged.coords)
+    assert result.envelope == unchanged.envelope
+    assert result.topology["canonical_json"] == unchanged.topology["canonical_json"]
+    np.testing.assert_allclose(
+        result.coords @ np.array(mapping["Q"]) + mapping["b_A"],
+        raw * [1, 1, -1],
+        atol=1e-12,
+    )
 
 
 @pytest.fixture

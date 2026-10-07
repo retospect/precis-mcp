@@ -447,6 +447,9 @@ class ScenePlan:
     # and its columns re-measured on this scene's coordinates
     top_plans: dict[str, TopPlan] = field(default_factory=dict)
     top_rows: dict[str, TopRow] = field(default_factory=dict)
+    # Evaluated once in the actual selected pass, before canonicalization.
+    target_features: tuple[Feature, ...] = ()
+    dome_starts: dict[str, float] = field(default_factory=dict)
 
     @property
     def errors(self) -> tuple[str, ...]:
@@ -1549,6 +1552,8 @@ def _relax_scene(
         passes=passes,
         top_plans=tplans,
         top_rows=top_rows,
+        target_features=tuple(feats),
+        dome_starts=z1s,
     )
 
 

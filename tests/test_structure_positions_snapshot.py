@@ -22,18 +22,19 @@ def scene(scale: float, frac_z: float) -> Scene:
     return sc
 
 
-def save(store: Store, sc: Scene) -> Any:
+def save(store: Store, sc: Scene, generated: dict[str, Any] | None = None) -> Any:
     return store.structure_save(
         slug="s1-snapshot",
         title="Snapshot fixture",
         scene=sc,
         version=4,
         card_text="local deterministic test",
+        meta_extra={"generated": generated} if generated is not None else None,
     )[0]
 
 
 def test_same_version_rewrite_after_query_before_fetch(store: Store) -> None:
-    ref = save(store, scene(10, 0.04))
+    ref = save(store, scene(10, 0.04), {"receipt": "old"})
     executions = []
 
     class Cursor:
@@ -45,7 +46,7 @@ def test_same_version_rewrite_after_query_before_fetch(store: Store) -> None:
             executions.append(sql)
             # SQL snapshot A has been evaluated; commit B at the SAME
             # caller version before the helper retrieves the result.
-            save(store, scene(20, 0.035))
+            save(store, scene(20, 0.035), {"receipt": "new"})
 
         def fetchone(self) -> Any:
             return self.cur.fetchone()
@@ -74,6 +75,9 @@ def test_same_version_rewrite_after_query_before_fetch(store: Store) -> None:
     assert old is not None and new is not None
     assert old["ref_id"] == new["ref_id"] == ref.id
     assert old["version"] == new["version"] == 4
+    assert old["generated"] == {"receipt": "old"}
+    assert new["generated"] == {"receipt": "new"}
+    assert old["atom_ids"] != new["atom_ids"]
     assert (np.asarray(old["fractional"]) @ np.asarray(old["lattice"]))[
         0, 2
     ] == pytest.approx(0.4)

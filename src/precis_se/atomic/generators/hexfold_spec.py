@@ -129,7 +129,9 @@ def _resolve_fidelity(params: dict[str, Any]) -> str:
     return fidelity
 
 
-def _canonical_frame(coords: np.ndarray) -> tuple[np.ndarray, str]:
+def _canonical_frame(
+    coords: np.ndarray, *, inverse: dict[str, Any] | None = None
+) -> tuple[np.ndarray, str]:
     """Move the stick coordinates into the frame the block's ``cyl:r<>h<>``
     envelope is read in, and return that envelope.
 
@@ -176,6 +178,10 @@ def _canonical_frame(coords: np.ndarray) -> tuple[np.ndarray, str]:
     rot = np.stack([e1, e2, e3])
     framed = centered @ rot.T
     framed[:, 2] += VDW_MARGIN_A - float(along.min())
+    if inverse is not None:
+        # Row-vector inverse of the SAME applied transform; never PCA on read.
+        shift = np.array([0.0, 0.0, VDW_MARGIN_A - float(along.min())])
+        inverse.update(Q=rot, b=centroid - shift @ rot)
     return framed, f"cyl:r{fmt_length_A(radius)}h{fmt_length_A(height)}"
 
 
@@ -273,6 +279,8 @@ def _block_from_net(
     report: Report,
     fidelity: str,
     extra_topology: dict[str, Any] | None = None,
+    target: dict[str, Any] | None = None,
+    target_flip: np.ndarray | None = None,
     provenance_tail: str = "",
 ) -> GeneratedBlock:
     """Mint the block from a built ``net`` and its coordinates: the
@@ -283,7 +291,11 @@ def _block_from_net(
     ``report`` is the caller's merged findings, ``extra_topology`` extra
     topology keys, and ``provenance_tail`` is appended to the provenance
     line."""
-    coords, envelope = _canonical_frame(np.asarray(raw_coords, dtype=float))
+    inverse: dict[str, Any] = {}
+    coords, envelope = _canonical_frame(
+        np.asarray(raw_coords, dtype=float),
+        inverse=inverse if target is not None else None,
+    )
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
@@ -365,6 +377,17 @@ def _block_from_net(
     }
     if extra_topology:
         topology.update(extra_topology)
+    if target is not None:
+        if target_flip is None:
+            raise GeneratorError("evaluated target requires its build-to-judge map")
+        topology["surface_target"] = {
+            **target,
+            "map": {
+                "convention": "row-vector y=x@Q+b",
+                "Q": (inverse["Q"] @ np.diag(target_flip)).tolist(),
+                "b_A": (inverse["b"] @ np.diag(target_flip)).tolist(),
+            },
+        }
     provenance = (
         f"hexfold {hexfold.__version__} spec ({len(net.atoms)} atoms, "
         f"{len(net.bonds)} bonds; rings {rings}); fidelity={fidelity} "

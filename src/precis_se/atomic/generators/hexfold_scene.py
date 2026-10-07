@@ -463,6 +463,9 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
     "k_tether"?: float}`` — plan the
     scene, relax it under the tether and mint it (module docstring)."""
+    from precis_se.atomic.generators.authored_foot import _FLIP
+    from precis_se.atomic.surface_target import capture_target
+
     sheet, features, extra, k_tether = _normalize(params)
     try:
         plan = plan_scene(sheet, features, extra=extra, k_tether=k_tether)
@@ -517,6 +520,14 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         report=report,
         fidelity="stick",
         extra_topology={"scene": normalized, "plan": plan_record},
+        target=capture_target(
+            plan.target_features,
+            {
+                name: {"R_A": tp.R, "dome_start_A": plan.dome_starts[name]}
+                for name, tp in plan.top_plans.items()
+            },
+        ),
+        target_flip=_FLIP,
         provenance_tail=tail,
     )
 

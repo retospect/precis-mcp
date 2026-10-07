@@ -302,3 +302,119 @@ the separately held k3 work, in the existing isolated task worktree.
   tiling. S1 reports the smallest radius each row pitch can follow.
 
 test: tests/hexfold/test_ideal_surface.py (new); tests/test_precis_surface_*.py
+## R17 stored authored-target read — gr470905
+
+Assignment: window9, isolated `work/hexfold/stored-surface-target` from
+`7265b9ac0502cd007affdae26f61256877b547d9`. Coordinator accepted the future-generation prerequisite after independent
+contract review at docs pin dfa52780. This is authorized implementation,
+not source PASS or a deployed feature. Existing kernel,
+explicit-target semantics and n18/n24 sphere budget refusal stay unchanged.
+
+Requested API: `get(kind='se', id='<design>', view='surface_deviation',
+args={'name': '<block>'})` may use the matching persisted **actual** generated
+target when `target` is omitted. An explicit caller `target.features`,
+including an empty sheet-only list, remains the override. Never substitute
+requested `top_R` for selected `plan.top_plans[name].R`, fit coordinates,
+rebuild, relax or infer a successful target from old trial measurements.
+
+### Checked premise: persisted frame is missing
+
+Native gr470905 and a real public read of `se:hexfold-dogfood-r5`,
+`cyl12open` UID211, reproduce the missing-target boundary. The r5 cylinder
+binds `st470904`; the sphere ball12 is UID209. Native served source is the
+R16 deployment, while this task is based on staged R17; exact local source
+is used after native Python search/symbol discovery, not assumed identical.
+
+`authored_foot._relax_scene` builds its target using seed-derived feature
+centres and, for authored tops, a seed-junction-derived dome start `z1`.
+`hexfold_scene.build_hexfold_scene` persists scene inputs and plan rows,
+including actual selected R/fillet/drop, but neither those centres/z1 nor
+the complete evaluated target and its coordinate frame.
+
+`hexfold_spec._block_from_net` then invokes `_canonical_frame`: a PCA-based
+rotation, centroid translation and z shift determined by the relaxed
+coordinates. Only transformed coordinates/envelope are returned; that
+transform is not persisted. `generate.generated_record` has no frame key.
+The existing web `surface_meridian` seam is emitted by smooth_drum, not
+hexfold_scene, and is a display polyline, not an exact scene target.
+
+Therefore scene/plan alone does **not** identify the target in the stored
+structure-local frame. Existing r5 blocks cannot honestly supply positive
+matching metrics through the requested read-only/no-fit/no-rebuild path.
+This was the premise blocker; the approved future-generation receipt
+contract below resolves it without repairing legacy data. Missing frame stays explicitly
+unavailable with a corrective hint; it must not yield misleading numbers.
+
+### Approved future-generation prerequisite
+
+At generation time persist the exact evaluated feature meridians/centres
+and a rigid stored-to-target frame map, using the transform already applied
+by canonicalization, plus generated structure identity/version and an
+unambiguous geometry binding. No schema change or second generation run.
+Reading must retrieve target provenance with atoms/cell/version from the
+existing one-statement snapshot, not an independent current-meta read.
+Revisions, same-version reimports, identity changes or unproven provenance
+must become unavailable. Default derivation is allowed only when that
+binding and frame are complete. Numeric judge remains unchanged: evaluate
+in the recorded target frame and label stored/target units, SE pose and
+alignment precisely. Do not claim a caller-authored or world-frame target.
+
+Chosen contract: capture exact evaluated Features and the actual
+canonicalization inverse once, with row-vector `y = x @ Q + b`,
+`Q = R @ F`, `b = (c - t @ R) @ F`, `F = diag(1,1,-1)`. Reflection is
+required, not fitted or recomputed. A versioned analytic line/arc codec
+retains feature order, centres, dome-start effect and actual selected R.
+Finite orthogonality/isometry checking uses only a documented 1e-12
+serialization-roundoff bound; no physical threshold changes.
+
+Persist receipt and geometry in one outer `finish_generate` transaction
+using `structure_save(conn=...)`. Bind ref/version, cell/PBC, ordered live
+atom row ids/fractions and receipt contents with SHA256 of canonical UTF-8
+JSON: sorted keys, compact separators, exact finite `float.hex()` strings,
+integers unrounded, signed zero normalized to positive zero. No per-atom
+metadata copy. Byte-identical row replacement invalidates by row identity.
+Return binding inputs/provenance from the existing one-statement snapshot;
+never read current generated metadata independently. Controlled stamping
+failure rolls back structure and receipt. The separate SE-tree-save orphan
+boundary remains documented and unchanged.
+
+Only absent `target` chooses stored receipt; explicit null is BadInput.
+Explicit target, including features=[], retains the caller local-frame
+semantics. Stored mode uses only its recorded map: nonzero z_offset_A
+requires an explicit target with a typed correction. Legacy r5 or any
+missing/malformed/nonfinite/unsupported/stale receipt is unavailable with
+explicit-target/new-generation guidance, never numeric zero or PASS. No
+legacy fitting, PCA on read, rebuild, backfill or relaxation.
+
+Independent reviewer /root/review_temperature_precision CONTRACT ACCEPTED
+dfa52780 (not source PASS); immutable review.md SHA256
+ed44a8013ba22ee4c9aedb7e48882e8078ec4b80f6f48e3e75e960e293cbc6d4
+and review.json 018c75ceb7509bc22a9a36e5656c611adab767a3c2dec31f1a0993aefe38e94d.
+After actual DRY END at 20:58Z, the owning atomic package rationale is refreshed
+in this slice. The package map and atomic lifecycle text are reconciled with
+the split docstrings at main 1c412f327584a2e81df0c81d4a5bd9f07022dc07,
+keeping the stored-target rationale only in atomic. Executable ASTs are unchanged.
+Root integration must retain the split module-owned notes and revalidate at
+its returned post-DRY pin; earlier staged-base checks do not prove that gate.
+
+### Acceptance and replay after the prerequisite
+
+Use deterministic persisted fixtures through the registered public get
+path: sphere, other requested-radius sphere with distinct actual selected
+R, open cylinder, explicit caller override, missing/ambiguous target,
+identity/revision mismatch and same-version interleaving. Assert correct
+actual R, frame, atom counts, units, provenance and no writes/jobs. Existing
+caller z-only semantics stay unchanged. Kernel-only tests are insufficient.
+Canonical scoped tests/types/Ruff or exact permitted remote check verdict
+must be recorded; never retry the known 9 GB container preflight refusal.
+
+Postdeploy native checklist: r5 ball12, ball12r11 and cyl12open default reads,
+explicit override, honest unavailable legacy provenance and mismatch
+boundaries; exact runtime, UID/structure/version and metrics/context captured
+durably on gr470905 with full native readback. Human Reto/orchestrator report
+that these blocks look decent and were spaced 16 nm after an initial
+pose-zero overlap is attributed human workflow evidence only. This owner
+did not execute the folds/browser. gr469873 reach remains DONE; viewer
+gr459593 and larger-pillar budget changes are separate. No live folds,
+covered DRY paths or main landing here. Source implementation and focused
+deterministic checks are authorized under the six reviewed clauses above.

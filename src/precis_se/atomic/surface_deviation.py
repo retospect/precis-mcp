@@ -1,8 +1,9 @@
 """Expose the built S1 judge over stored atoms and an explicit authored target.
 
-Target provenance is caller authoring, not an inferred generation surface.
-Structure-local Å coordinates stay unchanged except the supplied rigid z shift;
-no fitted rotation/scale, geometry construction, persistence or relaxation.
+Explicit targets retain caller authoring and rigid-z semantics. Omitted
+targets use only a generated-exact row-bound receipt from the same SQL
+snapshot as the atoms; legacy scene/plan is not enough. The recorded affine
+isometry includes reflection, never fitting/PCA/reconstruction on read.
 """
 
 from __future__ import annotations
@@ -101,12 +102,13 @@ def render_surface_deviation(
         f"block UID={'#' + str(node.uid) if node.uid is not None else 'unknown'}"
     )
     offset = _number(args.get("z_offset_A", 0), "z_offset_A")
-    if args.get("target") is None:
-        return (
-            header
-            + "\n\nunknown: authored target absent; supply target.features explicitly. No target inferred from stored geometry/planner."
+    explicit = "target" in args
+    features = _features(args["target"]) if explicit else []
+    if not explicit and offset != 0:
+        raise BadInput(
+            "nonzero z_offset_A requires an explicit caller target; stored target uses only its recorded map",
+            next="supply target={'features': [...]} with z_offset_A, or omit both for the stored target",
         )
-    features = _features(args["target"])
     if node.template is not None or node.array is not None:
         return (
             header + "\n\nunknown: template/array instance frame is not authored here"
@@ -131,6 +133,23 @@ def render_surface_deviation(
             header
             + "\n\nunknown: structure version identity unavailable; retry this read"
         )
+    target_label = "target: caller-authored request; original generation target provenance unverified"
+    alignment = f"alignment: subtract rigid z_offset_A={offset!r} Å only; no fitted rotation/scale or target substitution"
+    mapping = None
+    if not explicit:
+        from precis_se.atomic.surface_target import stored_target
+
+        try:
+            features, q, b = stored_target(snapshot)
+            mapping = (q, b)
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            return (
+                header + f"\n\nunknown: stored authored target unavailable: {exc}. "
+                "Supply target.features explicitly in structure-local Å, or use a future generation with an exact target receipt; "
+                "legacy data is never fitted, rebuilt or relaxed automatically."
+            )
+        target_label = f"target: generated-exact receipt format=1, bound ref_id={ref_id}, version={version}; actual evaluated target, not requested top_R"
+        alignment = f"alignment: recorded row-vector y=x@Q+b in Å; Q={q.tolist()!r}, b={b.tolist()!r}; determinant={float(np.linalg.det(q))!r}; no fitted map"
     try:
         cell = Cell(np.asarray(snapshot["lattice"], dtype=np.float64))
         points = np.asarray(
@@ -147,19 +166,46 @@ def render_surface_deviation(
         return (
             header + "\n\nunknown: stored coordinates are empty/nonfinite or malformed"
         )
+    if mapping is not None:
+        points = points @ mapping[0] + mapping[1]
+        if not np.isfinite(points).all():
+            return (
+                header
+                + "\n\nunknown: generated target map overflow; supply an explicit target"
+            )
     try:
         # All authored pieces here are lines/arcs; S1's analytic path is exact,
         # and ds affects only catenoids (not accepted by authored_meridian).
         distances, owners = surface_distance(points, features, ds=1.0, z_offset=offset)
+        if not explicit and not np.isfinite(distances).all():
+            return (
+                header
+                + "\n\nunknown: stored target evaluation is nonfinite; supply an explicit target"
+            )
         rows = summary(distances, owners, features)
+        if not explicit and any(
+            not np.isfinite([row[k] for k in ("mean", "p95", "max")]).all()
+            for row in rows.values()
+        ):
+            return (
+                header
+                + "\n\nunknown: stored target evaluation is nonfinite; supply an explicit target"
+            )
     except ValueError as exc:
+        if not explicit:
+            return (
+                header
+                + f"\n\nunknown: stored target evaluation unavailable: {exc}; supply an explicit target"
+            )
         raise BadInput(f"authored target: {exc}") from exc
     table = [{"region": name, **values} for name, values in rows.items()]
     return (
         header
         + f"\n\ncoordinates: structure:{node.bound}, version={version}; structure-local Å; SE pose/rotation/scale not applied"
-        + "\ntarget: caller-authored request; original generation target provenance unverified"
-        + f"\nalignment: subtract rigid z_offset_A={offset!r} Å only; no fitted rotation/scale or target substitution"
+        + "\n"
+        + target_label
+        + "\n"
+        + alignment
         + "\njudge: precis_surface.deviation.surface_distance + summary (existing S1); distances in Å; no bar/stability verdict\n\n"
         + render_agent_table(table, schema=["region", "atoms", "mean", "p95", "max"])
     )

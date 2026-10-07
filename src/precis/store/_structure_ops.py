@@ -47,6 +47,10 @@ class StructurePositionsSnapshot(TypedDict):
     version: Any
     lattice: Any
     fractional: list[list[float]]
+    atom_ids: list[int]
+    pbc: Any
+    has_lattice: bool
+    generated: Any
 
 
 class StructRunRow(TypedDict):
@@ -468,7 +472,7 @@ class StructureMixin:
 
     # -- read ------------------------------------------------------------
     def structure_positions_snapshot(
-        self, ref_id: int
+        self, ref_id: int, *, conn: Connection | None = None
     ) -> StructurePositionsSnapshot | None:
         """Read S1's inputs from one PostgreSQL statement snapshot, no writes.
 
@@ -477,10 +481,13 @@ class StructureMixin:
         regardless of the caller-assigned version. This intentionally omits
         bonds/measures and does not change structure_load or pool isolation.
         """
-        with self.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        with (
+            nullcontext(conn) if conn is not None else self.pool.connection() as c,
+            c.cursor(row_factory=dict_row) as cur,
+        ):
             cur.execute(
                 "SELECT r.ref_id, r.meta, "
-                "COALESCE(jsonb_agg(jsonb_build_array(a.fa, a.fb, a.fc) "
+                "COALESCE(jsonb_agg(jsonb_build_array(a.id, a.fa, a.fb, a.fc) "
                 "ORDER BY a.id) FILTER (WHERE a.id IS NOT NULL), '[]'::jsonb) "
                 "AS fractional FROM refs r "
                 "LEFT JOIN struct_atoms a ON a.ref_id = r.ref_id "
@@ -497,7 +504,11 @@ class StructureMixin:
             "ref_id": int(row["ref_id"]),
             "version": meta.get("version"),
             "lattice": meta.get("lattice", (np.eye(3) * 10).tolist()),
-            "fractional": row["fractional"],
+            "fractional": [a[1:] for a in row["fractional"]],
+            "atom_ids": [int(a[0]) for a in row["fractional"]],
+            "pbc": meta.get("pbc"),
+            "has_lattice": "lattice" in meta,
+            "generated": meta.get("generated"),
         }
 
     def structure_load(

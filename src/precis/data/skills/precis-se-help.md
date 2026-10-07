@@ -27,13 +27,19 @@ S1 authored-surface read: `get(kind='se', id=..., view='surface_deviation',
 args={'name':<bound block>, 'target':{'features':[{'name':'tube',
 'centre_A':[0,0], 'r0_A':5, 'pieces':[['arc',1,-90],['line',3]]}]},
 'z_offset_A':0})`. Reports region atom count/mean/p95/max in Å over stored
-structure-local atoms using the existing S1 judge. The target is caller-authored,
-not proof of the original generation target; no inference from geometry/plans.
-Only the supplied rigid z shift is removed, no fitted rotation/scale or SE pose.
-Missing target/binding/coordinates reports unknown. Explicit `features:[]` means
+structure-local atoms using the existing S1 judge. Explicit target is caller-authored,
+not proof of the original generation target; only its supplied rigid z shift is
+removed. Omit target to use a matching exact generated target receipt, including
+the recorded row-vector affine isometry (possibly reflected), actual selected R
+and evaluated meridians. No fitted map, requested-radius substitution or planner
+reconstruction. Legacy, missing, malformed or stale receipt returns unavailable
+with explicit-target/new-generation guidance; old data is never rebuilt. Stored
+mode allows only its recorded map: nonzero z_offset_A requires an explicit
+target. Explicit null is invalid. SE pose is not applied. Explicit `features:[]` means
 a sheet-only target; feature discs must be disjoint. A specific design id is
-required. Identity/version/cell/live atoms use one SQL statement snapshot, so
-even a same-version re-import cannot mix geometry. Missing snapshot or
+required. Receipt/identity/version/cell/live atom positions and row IDs use one
+SQL statement snapshot; replacement rows invalidate the receipt even at the
+same version with byte-identical positions. Missing snapshot or
 unverifiable version returns unknown/retry without automatic retries.
 Source SE slug/block UID and stable bound structure version are separate
 provenance. No build/relax/write/job.
