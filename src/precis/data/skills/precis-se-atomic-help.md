@@ -94,6 +94,11 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   atoms tethered to their sheet plane; no mixed feet or `extra`. See
   `precis-hexfold-help` for the exact op and retained seam/bond/angle report.
   Three-plane stored surface deviation is unavailable, not zero.
+  The sibling exclusive entry `features:[{name,type:'fin-sp3-z',
+  side:'out'|'in', rows?}]` with `tube:[n,periods]` grafts a graphene
+  strip along an axial zigzag chain of an `(n,n)` tube by one radial sp3
+  bond per period (the §11.1 `bond` attachment; `graft.rings`,
+  `graft.geometry` retained; surface deviation unavailable).
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →

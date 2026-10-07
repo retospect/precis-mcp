@@ -415,6 +415,14 @@ whole ring is in the JSON (`GeneratedPort.atoms`).
 authored `bond` emits `annot.sublattice` INFO (`data.parity = same|cross`)
 when both endpoints are lattice sites.
 
+**Private fin graft**: `hexfold.fin.fin_tube` builds an armchair `(n,n)`
+tube with a finite zigzag strip bonded along one axial chain, one radial
+`bond` per lattice period onto the wall atoms that lie on a generatrix
+(open end rims excluded), standing outward or inward. The hosts are the
+derived `sp3` of this section; consecutive grafts close one six-cycle each.
+It is a deterministic analytic seed without relaxation and changes no
+public grammar; the unequal-dihedral k=3 seam stays refused (§11.3).
+
 #### 11.2 `fuse` — a seam of multiplicity two `[impl 0.1]`
 
     P --fuse k=<phase>--> Q       delete nothing further; glue two rims rim-to-rim

@@ -369,6 +369,36 @@ Three planes are unsupported by the revolution target format, so stored
 `surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
 `fit.unsolvable`; tube internal rails and variant B remain unimplemented.
 
+## Fin on a tube: sp3 graft along an axial zigzag chain
+
+The other exclusive scene entry grafts a single-layer graphene strip to
+an armchair tube wall along the tube axis. It is the §11.1 `bond`
+attachment, not a k3 seam: each grafted wall atom takes a fourth, radial
+C–C bond (recorded sp3) to one dangling atom of the strip's zigzag edge,
+one per lattice period (2.46 Å), so the strip stands perpendicular to
+the wall, outward or inward. The unequal 180/90/90 sp2 seam stays refused.
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"f",
+ "params":{"tube":[10,20],"k_tether":1.0,
+ "features":[{"name":"f","type":"fin-sp3-z","side":"out","rows":4}]}}
+```
+
+`tube` is `[n, periods]`: an `(n,n)` tube, n in [4,40], axial periods in
+[2,60]; `side` is `out` or `in`; `rows` (row pairs, default 4, about three
+hexagon rows, 7.1 Å) in [2,12]. The two open end rims are not grafted, so
+`periods` axial periods carry `periods − 1` grafts and `periods − 2`
+six-cycles with two sp3 vertices each (`graft.rings`). An inward fin that
+would come within 2 Å of the axis is refused naming the smallest tube
+that seats it (rows 4 needs (16,16)). Analytic seed, one tethered stick
+pass: wall atoms toward the cylinder, strip atoms toward its half-plane,
+the grafted pairs pinned at their authored registration. `graft.geometry`
+reports the measured bond angles at the sp3 hosts against 109.47°; at
+the pinned registration they stay near 90–124°, which is the honest
+residual of a radial graft on an unpuckered wall, not a relaxed
+structure. A cylinder with a half-plane is no surface of revolution, so
+stored `surface_deviation` is unavailable. Preview geometry only.
+
 ## Round tops — `top: "sphere"` and a rounded `top: "lid"`
 
 The tube's

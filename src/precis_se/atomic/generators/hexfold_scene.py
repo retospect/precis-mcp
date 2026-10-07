@@ -23,6 +23,14 @@ it must be the only feature, with exactly ``name``, ``type`` and
 ``dihedrals_deg``. For it ``sheet`` means ``[seam_periods, row_pairs]``, not
 the honeycomb ``[w, h]`` of the foot contract above.
 
+**Fin feature contract.** A feature with ``"type": "fin-sp3-z"`` routes the
+whole call to :func:`~precis_se.atomic.generators.fin.build_fin`: an
+armchair ``(n, n)`` tube (``tube: [n, periods]`` replaces ``sheet``) with a
+``rows``-row-pair graphene strip grafted ``side`` (``"out"``/``"in"``) along
+one axial zigzag chain by one radial sp3 C-C bond per period. It must be
+the only feature, with ``name``, ``type``, ``side`` and optional ``rows``
+(default 4, about three hexagon rows).
+
 **Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
 ``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
 most the tube radius) hold the top to an authored surface, planned by
@@ -470,12 +478,23 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
     "k_tether"?: float}`` — plan the
     scene, relax it under the tether and mint it (module docstring).
     An exclusive feature ``type='k3-sp2-120-z'`` instead builds the finite
-    straight Y; see :mod:`.y_junction` for its strict contract.
+    straight Y; see :mod:`.y_junction` for its strict contract. An exclusive
+    ``type='fin-sp3-z'`` builds the sp3-grafted fin on an armchair tube;
+    see :mod:`.fin`.
     """
     features_arg = params.get("features")
-    if isinstance(features_arg, list) and any(
-        isinstance(f, dict) and "type" in f for f in features_arg
-    ):
+    typed = (
+        [f.get("type") for f in features_arg if isinstance(f, dict) and "type" in f]
+        if isinstance(features_arg, list)
+        else []
+    )
+    if typed:
+        if typed == ["fin-sp3-z"]:
+            from precis_se.atomic.generators.fin import build_fin
+
+            return build_fin(params)
+        # the Y adapter owns every other typed declaration, including the
+        # refusals (unequal dihedrals, k >= 5, unknown types)
         from precis_se.atomic.generators.y_junction import build_y_junction
 
         return build_y_junction(params)
