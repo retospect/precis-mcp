@@ -3,10 +3,10 @@
 ## Resume
 
 - **Pillar:** platform
-- **Next:** Implement release-round slice (c): gate/deploy release head, deployed tag and merge-back.
-- **Blocked by:** Check slices (a) and (b) are landed before building on them.
+- **Next:** Reap idle gate/test-db pairs (docker-vm-disk-fills-silently, Do next 2); slices (a)–(c) of the release-branch-rounds item are all on main (item deleted 2026-10-07) (`scripts/round` tags `deployed/r<N>` and merges back; tags r6–r16 exist on origin).
+- **Blocked by:** Nothing; verify the prod-as-second-parent test exists before retiring Do next 1.
 - **Unblocks:** Verified release deployments for every thread.
-- **Acceptance:** Use [release-branch-rounds](../release-branch-rounds.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
+- **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `ship-gate-ci`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -42,16 +42,12 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
 
 ## Do next
 
-1. **backlog/release-branch-rounds.md**: Reto 2026-10-03, ship-gate-ci-1.
-   Each round cuts `release/r<N>`, fixes land on it and merge forward into
-   main, and the deploy tags `deployed/r<N>` and merges back. Design note 3
-   and its verdict (build it) are in `reviews/ship-gate-ci*.md`. Slice (a)
-   (`round cut`, `release/**` CI) shipped 06247b684. Slice (b) `ship --release`
-   (forward merge in the same command, stop on conflict; design note 5 +
-   verdict) shipped 2026-10-04. Next is (c): `round gate`/`deploy` on the
-   release head, the `deployed/r<N>` tag and merge-back, with the
-   prod-as-second-parent test; the first round cut after it lands
-   dogfoods it.
+1. **Release rounds (was backlog/release-branch-rounds.md, deleted 2026-10-07 as
+   shipped)**: slice (a) `round cut` + `release/**` CI (06247b684), slice (b)
+   `ship --release` (2026-10-04), slice (c) `round gate`/`deploy` on the
+   release head with the `deployed/r<N>` tag and merge-back (`scripts/round`;
+   tags `deployed/r6`–`r16` on origin). Left here: confirm the
+   prod-as-second-parent test exists under `tests/`; if not, add it.
 2. **backlog/docker-vm-disk-fills-silently.md** — a 90 GB build cache filled
    the VM disk on 2026-10-03, and every gate died on a raw ENOSPC.
    The `scripts/test` and `scripts/ship` refusals below 10 GB and the
@@ -139,17 +135,12 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
 
 ## No action needed
 
-- **backlog/main-stays-gated.md** — all three parts shipped 2026-09-30;
-  Reto ruled (review-queue `organizer-housekeeping-1`): delete it plus its
-  seam mentions (threads/INDEX.md, this file's Seam) in one commit on or
-  after 2026-10-07; git history is the backup.
-
 ## Seam
 
 `plugin-split` owns the plugin-boundary and image work that
 `pathway-plugin-ci-image` waits on. `monitors-that-go-quiet` owns signals
-that lie; this thread owns the gate and reaper, and `main-stays-gated`
-feeds that thread's "is main green" answer. `deploy-fleet-ops` owns the
+that lie; this thread owns the gate, the reaper and the qland drift guard
+that feeds that thread's "is main green" answer. `deploy-fleet-ops` owns the
 rest of `deploy-async-task-controller-filenotfounderror.md` (whether a
 vanished play file should abort a running play; the apt stall).
 

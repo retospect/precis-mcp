@@ -684,21 +684,6 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   against the code, not the prose, is meant to stop.
 - **gr456202** — not a bug; `rim_word` takes `abs(turn)` by design.
   Closed on prod 2026-09-30, same as above.
-- **backlog/se-composite-integrity.md** — SHIPPED 2026-09-30 as
-  `composite_part_stolen` (error) on `view='validate'`. The prod sweep it
-  called for found **1 violating row in all of prod**, the deliberately
-  corrupt `hexfold-catalogue-dogfood` (ref 457890); result recorded on
-  gr458061. Kept here one review cycle because the sweep's first run
-  returned a confident 0 — it joined `refs.handle` instead of
-  `ref_identifiers` where `id_kind='cite_key'`, and matched nothing.
-  Re-verified against the deployed code after the 2026-09-30 gate: the
-  SQL oracle still returns that one row, and `view='validate'` on
-  `hexfold-catalogue-dogfood` reports `1 error(s)` — the
-  `composite_part_stolen` finding, naming both composites. The write path
-  that once caused it is already closed — `join.part_addressed` refuses a
-  part addressed directly (gr456213, below) — so ref 457890 is historical
-  damage from the stale-process window and the detector is a backstop,
-  not the only defence.
 - **gr456203** — CLOSED 2026-10-01 after verifying, not on its label:
   `_leak_finding` names the breached measure(s) and prints each value
   against its own threshold, and
@@ -776,16 +761,6 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   stale-process window, not evidence of a live write path, and current
   code cannot reproduce it. Also: the refuse-vs-reconcile question I was
   about to put to Reto was already answered by him on 09-29 — refuse.
-- **gr458713** — SHIPPED 2026-09-30 in the 22:30Z dogfood round as
-  `net.components` (INFO at one piece, WARN above) on the hexfold check
-  report, documented in `spec.md` §13. The obvious implementation is
-  wrong and the test file says why: a "sheet" breaks at every bond-verb
-  attachment per §6.3, so `len(net.sheet_atoms)` calls the library's own
-  `sheet_bud_22` nanobud disconnected. Connectivity follows `net.bonds`,
-  which carries the attach edges. That bonded-bud case is the
-  load-bearing test, not the disconnected one. Verified on prod against
-  the exact spec behind Reto's report: `net is 2 disconnected pieces
-  (240, 110 atoms)`, and 240 + 110 = 350, the design's atom count.
 - **gr454563** — REFUTED 2026-09-30 by the same round: the parser now
   raises `5:13: unknown parameter 'length' for tube — known: hand, len,
   m, n`, which is the remedy the gripe asked for. Closed. Whoever fixed

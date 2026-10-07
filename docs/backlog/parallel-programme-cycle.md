@@ -22,7 +22,7 @@ Then start the next useful release as capacity becomes available. No fixed
 asynchronously against named deployed SHAs. A blocking dogfood regression
 becomes a release repair; ordinary findings feed the owning thread's next build.
 
-The existing release-branch-rounds spec owns implementation and live acceptance.
+Release-branch rounds are implemented (`scripts/round`, `scripts/ship --release`; runbook release-cycle); live end-to-end acceptance is owned here.
 Cut, release-fix forwarding and exact-release gate/deploy are implemented;
 runtime observation and end-to-end live dogfood remain required. Existing migration
 and safe-fetch gates still apply. The coordinator owns deployment; workers

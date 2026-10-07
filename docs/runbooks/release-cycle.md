@@ -40,7 +40,7 @@ tag. The coordinator reports what is live, what failed and who owns the fix.
 ## Tooling boundary
 
 Commands and recovery procedures: [round](../../.claude/commands/round.md).
-Implementation: [release-branch-rounds](../backlog/release-branch-rounds.md).
+Implementation: `scripts/round` (gate/deploy the release head, `deployed/r<N>` tag, merge-back) and `scripts/ship --release`.
 With a recorded release, `round gate` and `round deploy` select its exact
 remote head and one fresh complete CI certificate. Deployment journals retain
 partial attempts; successful rollout awaits coordinator runtime observation

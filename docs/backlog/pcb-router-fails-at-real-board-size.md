@@ -32,7 +32,7 @@ downstream slice (the annotation pass, the §E-1 pairwise-clearance work,
 the export a colleague opens) assumes a routed board on the far side.
 
 Until now this was an explicitly open question rather than a known defect:
-`pcb-epro-import.md`'s decisions log recorded "no route has been attempted
+`pcb-epro-import` (shipped)'s decisions log recorded "no route has been attempted
 at this size, so whether the router is usable on it at all is unmeasured."
 Reto asked for the measurement directly ("it's routed already, but yea do
 the needful"). This is the answer.
@@ -354,7 +354,7 @@ for real congestion, PathFinder negotiated-congestion (McMurchie & Ebeling
   `no_path, same-layer-crossing` + 27 `no_path`; 0 job failures. Runtime
   varied 87–211 s across three runs on a loaded machine, so the wall clock
   here is indicative only — the realized COUNT was stable at 8.
-- **Open (Reto):** does this outrank `pcb-epro-import.md` slice 1c? He
+- **Open (Reto):** does this outrank `pcb-epro-import` (shipped) slice 1c? He
   chose 1c as next before this number existed. 1c (the copper measurement
   report) is what tells us which of the source board's widths and
   clearances precis' rules disagree with — arguably a prerequisite for

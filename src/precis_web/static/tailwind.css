@@ -1916,6 +1916,11 @@ video {
   background-color: rgb(5 150 105 / var(--tw-bg-opacity, 1));
 }
 
+.bg-emerald-700 {
+  --tw-bg-opacity: 1;
+  background-color: rgb(4 120 87 / var(--tw-bg-opacity, 1));
+}
+
 .bg-fuchsia-50 {
   --tw-bg-opacity: 1;
   background-color: rgb(253 244 255 / var(--tw-bg-opacity, 1));
@@ -2007,6 +2012,11 @@ video {
 .bg-sky-600 {
   --tw-bg-opacity: 1;
   background-color: rgb(2 132 199 / var(--tw-bg-opacity, 1));
+}
+
+.bg-sky-700 {
+  --tw-bg-opacity: 1;
+  background-color: rgb(3 105 161 / var(--tw-bg-opacity, 1));
 }
 
 .bg-slate-100 {

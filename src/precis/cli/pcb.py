@@ -3,7 +3,7 @@
 Subcommands:
 
 * ``import-epro`` — import an EasyEDA Pro ``.epro2`` board into the ``pcb``
-  kind (``docs/backlog/pcb-epro-import.md``). A CLI verb rather than the
+  kind (the shipped ``pcb-epro-import`` item). A CLI verb rather than the
   MCP ``put`` surface because a real board is hundreds of pads, and
   marshalling that through JSON arguments is the wrong pipe. ``--dry-run``
   reads, derives and refuses exactly as the real import would, then writes

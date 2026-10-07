@@ -1,5 +1,5 @@
 """Tests for ``scripts/last-gated-main-sha`` — the range start check.yml's lane
-picker uses on a main push (backlog/main-stays-gated.md).
+picker uses on a main push (the qland drift guard).
 
 The defect it closes: the concurrency group cancels superseded main runs, so a
 qland burst leaves pushes with no verdict; scoping the lane decision to

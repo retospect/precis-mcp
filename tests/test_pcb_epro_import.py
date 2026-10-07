@@ -1,6 +1,6 @@
 """pcb-epro-import slice 1b — the Store-facing half, against a real DB.
 
-Acceptance criterion 2 from ``docs/backlog/pcb-epro-import.md``: after an
+Acceptance criterion 2 from the ``pcb-epro-import`` item (shipped; git history): after an
 import the instance and connection counts equal the source's, the derived
 stackup lands, plane assignments resolve, ``view='drc'`` runs and
 ``op='route'`` enqueues without refusing. Criterion 3 (a named pin reaches

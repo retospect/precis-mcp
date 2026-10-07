@@ -4,7 +4,6 @@ title: the pathway engine finds each station's transition state off-slab — bar
 pillar: 3d-design
 prio: normal
 model: opus
-blocked-by: reaction-energetics-ledger
 ---
 
 # Station path finder (T1 of the nanoreactor chain)

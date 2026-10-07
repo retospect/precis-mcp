@@ -1,168 +1,44 @@
 ---
-status: in-progress
+status: idea
 pillar: platform
 ---
 
 # Reaper removed a live session's worktree after its lock was silently released
 
-**Severity: data-loss near-miss** (fully recovered — everything reachable
-from the shipped commit; only gitignored `.claude/purpose` was lost).
+Compacted 2026-10-07 (status review); the full incident record (2026-08-15
+`fluttering-spinning-blanket`, recurrences 08-15 and 08-25) is in git
+history of this file. Kept because `scripts/reap-worktrees`,
+`scripts/hooks/session-end-reap.sh`, `scripts/lib/session-lock.sh`,
+`scripts/ship` and `tests/test_worktree_lock_reap.py` cite the proposals
+by number.
 
-## What happened (2026-08-15, worktree `fluttering-spinning-blanket`)
+**What happened.** A live session's `git worktree lock` was released
+without the session ending; after its ship left the tree clean and
+merged, a sibling's SessionStart reaper bucketed it `safe_remove` and
+deleted 1,337 tracked files. Fully recovered from the shipped commit.
+Proven mechanism (08-25): a nested `claude` subprocess fires SessionEnd
+semantics for the parent session.
 
-1. A harness-side event killed three background tasks of a **live, continuing**
-   session at once (a ship run + two waiters). The session's `git worktree
-   lock` was **released** in the same event — the recorded pid (63458) stayed
-   alive throughout, so this was an unlock (SessionEnd semantics firing for a
-   session that was not actually ending), not a dead pid.
-2. The session re-ran `scripts/ship`, which landed `de0bcb65` and — by
-   design — left the worktree **clean** and reset to shipped main.
-3. Within minutes, 1,337 tracked files were deleted from the worktree
-   (`tests/` entirely gone), while gitignored content (`.venv/`,
-   `__pycache__/`) survived and the worktree stayed **registered** in
-   `git worktree list`. `scripts/inflight` at that point showed the tree
-   with **no lock** (`—`); a lockless + merged + clean tree buckets
-   `safe_remove`, which both `scripts/reap-worktrees` (sibling SessionStart)
-   and `scripts/hooks/session-end-reap.sh` treat as removable.
-4. Recovery: `git ls-files -d -z | xargs -0 git checkout --` restored all
-   tracked files; in-flight uncommitted work (one modified file) was
-   untouched; lock re-acquired via `scripts/hooks/session-start-lock.sh`
-   (re-locked to the same, still-alive pid — proving the pid never died).
+**Hardening proposals and their state.**
 
-## Open questions
+1. Grace period in `safe_remove` — SHIPPED 2026-09-05
+   (`PRECIS_REAP_GRACE_SECONDS`, re-bucket before remove).
+2. `.claude/purpose` as a tripwire — SHIPPED 2026-09-05
+   (`PRECIS_REAP_PURPOSE_FRESH_SECONDS`, checked before and after the sleep).
+3. Ship re-asserts the session lock — SHIPPED 2026-08-27
+   (`reassert_session_lock`, `scripts/lib/session-lock.sh`).
+   Root cause closed by `_NESTED_SESSION_ENV` stamping `PRECIS_NO_AUTOREAP=1`
+   in `utils/_claude_subprocess.py`; `session-end-reap.sh` only reaps a tree
+   whose lock the ending session provably held.
+4. Harness kill / SessionEnd coupling — OPEN. The 08-15 trigger (three
+   background tasks killed at once, lock dropped, tracked files partly
+   deleted while ignored files survived) was never reproduced; 1–3 make it
+   harmless, not understood.
 
-- **Partial deletion mechanism**: `git worktree remove` should either refuse
-  (untracked files present) or delete the whole directory (`.venv` included)
-  and deregister. Observed state matches neither cleanly — tracked files
-  gone, ignored files intact, worktree still registered. Something
-  interrupted mid-removal, or the remover was not `git worktree remove`.
-- **Why the lock released**: the session continued after the kill event, so
-  either the harness fired SessionEnd for a live session, or something else
-  ran `git worktree unlock`. The reaper itself unconditionally unlocks trees
-  it has already bucketed `safe_remove` — but bucketing happens *before*
-  that unlock, so the lock must have been gone (or its pid unreadable) at
-  bucketing time.
+**Still true.** A lockless + clean + merged tree is removable by any
+sibling's SessionStart; the lock is a liveness proof with one point of
+failure. Reopen as a spec only if a third event lands from a window
+proposals 1–3 do not cover.
 
-## Recurrence (same session, ~1 h later)
-
-The kill event **repeated**: another batch of live background tasks
-(including a mid-gate `scripts/ship` run) was killed at once, and the
-worktree lock was released again — re-verified gone via
-`git worktree list --porcelain`, re-acquired with the same still-alive pid
-via `scripts/hooks/session-start-lock.sh`. Two-for-two: every kill batch
-released the lock of a session that kept running. No reap followed this
-time only because the tree was dirty (mid-gate ruff amendments). This
-upgrades proposal 4 from "investigate" to "the root cause": whatever
-harness event kills background tasks (plausibly context compaction) also
-runs SessionEnd-like teardown including the lock release.
-
-## Hardening proposals
-
-1. **Grace period in `safe_remove`**: require the tree to have been
-   continuously lockless+clean for N minutes (e.g. re-check after a 60 s
-   sleep) before removal — a just-shipped tree whose session is mid-turn is
-   exactly the false positive observed.
-2. **`.claude/purpose` as a tripwire**: a fresh (< a few hours) purpose file
-   should demote `safe_remove` → `needs_judgment`; sessions write it at task
-   start, and it is deleted with a clean SessionEnd.
-3. **Re-lock after ship**: `scripts/ship` could re-assert the session lock as
-   its final step (it runs inside the live session), closing the
-   lockless+clean window it otherwise opens.
-4. Investigate the harness kill event → SessionEnd-hook coupling: killing
-   background tasks must not release the worktree lock of a continuing
-   session.
-
-## Recurrence 2026-08-25 (`zesty-painting-volcano`) — and a proven mechanism
-
-Same signature, larger blast: 1497 tracked files deleted out from under a
-live session; gitignored content (`.venv/`, `__pycache__/`) intact; the
-worktree still registered in `git worktree list`; `git restore .` recovered
-everything only because the branch was already merged. Filed as gripe 256469.
-
-This run had a trigger we could actually pin down, and it answers two of the
-open questions above.
-
-**"Why the lock released."** A nested `claude -p` — spawned by an ordinary
-big-tier LLM call (`taproot repair-evidence --tier big`) — inherits the
-caller's cwd and the project's hook wiring, so it runs the full
-SessionStart/SessionEnd lifecycle against the *caller's* worktree. Two
-compounding bugs then zero the lock:
-
-1. `session-start-lock.sh::find_session_pid` walks to the nearest `claude`
-   ancestor, which for the nested hook is the nested process itself — so it
-   unlock-then-relocks the tree to the nested pid, clobbering the real
-   session's.
-2. The nested one-shot exits immediately; `session-end-reap.sh` releases the
-   lock **unconditionally, before the bucket check**, with no test of whose
-   lock it is. The lock is now simply gone.
-
-`scripts/inflight::session_field` reads liveness *only* from that lock
-reason, so the tree reports `—` while its session is plainly still running,
-and a clean+merged tree then buckets `safe_remove`.
-
-Whether this is also what happened on 08-15 is unproven — that session
-attributed the release to a harness kill/compaction event. But the observed
-end states are identical down to the odd details, so proposal 4 above should
-be re-read with this mechanism in hand before assuming a second, distinct
-harness-side cause.
-
-**"Partial deletion mechanism."** Consistent with `git worktree remove`
-beginning removal and aborting when it reached the untracked/ignored files
-it refuses to delete — which leaves precisely tracked-gone / ignored-intact /
-still-registered. Not confirmed, but it no longer looks like "neither".
-
-### What has been fixed
-
-The primary cause is closed at the source: `_claude_subprocess.run_claude` /
-`run_claude_async` now stamp `PRECIS_NO_AUTOREAP=1` onto every nested
-subprocess env, at the same chokepoint the OAuth bootstrap uses. All three
-reapers honour that flag, so a nested model call can no longer reap at
-SessionEnd, reap via the SessionStart backstop, or release the real session's
-lock. Hardening of the two hook bugs themselves is tracked in gripe 256469.
-
-### Proposal 3 is now implemented — ship re-asserts the lock
-
-Reto picked proposal 3 on 2026-08-27. `scripts/ship` sources the shared lib
-and calls `reassert_session_lock` (`scripts/lib/session-lock.sh`) twice: once
-up front, so a lock already lost before the run doesn't leave the tree exposed
-across the whole gate, and once immediately after the step-5 branch reset —
-the moment the tree becomes clean + merged and therefore `safe_remove`. ship
-is the right place because it runs *inside* the live session, so it can prove
-the session is alive exactly when the window opens.
-
-It never steals: a lock naming a live pid is left alone (ours already, or
-someone else's and not ours to move), and only an absent, unparseable or
-dead-pid lock is claimed. Best-effort throughout — losing the lock costs a
-worktree, failing the ship costs the work.
-
-Note what this does *not* cover, and why it's still only a partial answer: it
-closes the window ship itself opens, but a lock dropped by anything else at
-any other time still leaves a clean+merged tree exposed until the next ship.
-
-### What is still open
-
-The exposure this document was opened for is narrowed, not closed: **any**
-worktree that is lockless + clean + merged is removable by the next
-`SessionStart` of **any** sibling session, with no check that a live session
-is sitting in it. The lock remains a single point of failure being used as a
-liveness proof, and 08-25 showed it can be dropped by something as ordinary as
-an LLM call. Proposals 1 and 2 (grace period / `.claude/purpose` tripwire)
-remain available if a third event lands from a window ship doesn't cover.
-
-### Hardened 2026-09-05 — proposals 1+2 implemented
-
-`scripts/reap-worktrees` now re-verifies a `safe_remove` candidate's bucket a
-second time after a shared grace-period sleep (`PRECIS_REAP_GRACE_SECONDS`,
-default 60s) immediately before `git worktree remove`, and separately treats
-a `.claude/purpose` file younger than `PRECIS_REAP_PURPOSE_FRESH_SECONDS`
-(default 6h) as a tripwire that skips the tree instead of removing it —
-checked both before and after the grace sleep, since a session can start its
-task (and write purpose) during the window. Either mismatch is skipped with a
-log line, never removed. `scripts/hooks/session-end-reap.sh` deliberately
-does NOT get the same two guards: it only ever reaps the ending session's own
-worktree, after its existing ownership check has already proven the ending
-session held the lock — there is no other session's liveness left to
-re-verify. Proposal 3 (ship re-asserting its own lock) was already
-implemented; proposal 4 (the harness kill/SessionEnd coupling) remains
-unresolved but is no longer the only thing standing between a race and a
-deletion.
+test: `scripts/test tests/test_worktree_lock_reap.py` stays green; a
+tree with a purpose file younger than 6 h is skipped by `scripts/reap-worktrees`.

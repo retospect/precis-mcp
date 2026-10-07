@@ -17,10 +17,12 @@ Ordered by how badly each bites.
 
 ## A. Board does not work, or cannot be assembled
 
-**Fiducials — absent entirely.** Pick-and-place needs them (typically 3 per
-populated side, unobstructed, with their own clearance and no silk/mask
-intrusion). JLC requires them for fine-pitch parts. This is a hard assembly
-blocker, not a refinement.
+**Fiducials — done** (status review 2026-10-07: fiducial placement, silk
+exclusion and DRC live in `pcb/optimize.py`, `silk.py`, `drc.py`,
+`realize.py`, `planes.py`, `epro_write.py`). Kept as the bar the other
+classes are measured against: pick-and-place needs 3 per populated side,
+unobstructed, own clearance, no silk/mask intrusion; JLC requires them for
+fine-pitch parts.
 
 **Thermal relief on plane connections.** A pad tied solidly into a pour
 wicks heat away and will not solder reliably — it needs spoked relief. The

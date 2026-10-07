@@ -65,7 +65,7 @@ graph-health-metrics, five parked gripes, and the seam with
 
 1. **backlog/taxon-facet-navigation.md slice 0 AC 0** — the
    `precis-classify-help` guide and `includes`/`excludes` validation/rendering
-   landed in source 2026-10-05 (04c13fd28, Opus-reviewed), not yet deployed.
+   landed in source 2026-10-05 (04c13fd28, Opus-reviewed), deployed in R16 (prod 8.35.15).
    Exact-deploy skill readback and the cold-agent check (10 seeded AFM items)
    remain pending. Later slices are separate; local tests do not establish
    their implementation or live acceptance.

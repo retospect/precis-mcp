@@ -30,7 +30,7 @@ The reader half is shipped and its module docstring in
 observed.
 
 Shares the (now resolved) spike table below with
-[`pcb-epro-import`](./pcb-epro-import.md).
+`pcb-epro-import` (shipped 2026-10-06, file deleted; git history).
 
 ## In scope
 
@@ -162,7 +162,7 @@ Reto exported a real 140-component 4-layer board (`heaterBaseTest.epro2`,
 EasyEDA Pro editorVersion 3.2.149). **It is `.epro2`, not the `.epro` KiCad's
 dev-docs describe** — same record-type vocabulary, different container and a
 different record encoding. See
-[`pcb-epro-import`](./pcb-epro-import.md)'s "Spike result" section for the
+the shipped `pcb-epro-import` item's (git history) "Spike result" section for the
 full table; the findings are in `src/precis/pcb/epro.py`'s module docstring in
 `easyeda.py`'s house style, and the reader is shipped.
 

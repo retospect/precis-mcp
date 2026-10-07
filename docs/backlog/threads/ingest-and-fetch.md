@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** After round-6 deploy, perform the recorded ref-202942/anon cleanup; then item 3’s still-bodiless policy pass and close td461154. Glyph precision run starts no earlier than 2026-10-04 14:00Z.
-- **Blocked by:** Round-6 deployment; safe_fetch fallback remains at the orchestrator’s gate. Item 1 retires only after walker and web SI triggers are seen on prod.
+- **Next:** Round 6 is deployed (prod R16): perform the recorded ref-202942/anon cleanup (anon 465241 still unmerged on 2026-10-07); then item 3’s still-bodiless policy pass and close td461154. Glyph precision run starts no earlier than 2026-10-04 14:00Z.
+- **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate. Item 1 retires only after walker and web SI triggers are seen on prod.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): read back the cleanup, account for the bodiless remainder, and observe both SI trigger paths before retiring the item.
 - **Worktree:** `ingest-and-fetch`

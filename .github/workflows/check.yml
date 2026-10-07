@@ -148,7 +148,7 @@ jobs:
                 # main runs were cancelled outright until 2026-10-03; scoping
                 # to `before` then lets
                 # a docs-only push take the docs lane while main carries
-                # ungated src (backlog/main-stays-gated.md). Falling back to
+                # ungated src (scripts/last-gated-main-sha closes that). Falling back to
                 # `before` would re-open that hole, so an unanswerable lookup
                 # gates fully instead (empty range = no docs lane).
                 # all-zeros `before` = ref creation, likewise keep the gate.

@@ -153,7 +153,7 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # sibling's suite. They run because their failures are not this ship's problem
 # but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
 # reddens every gate downstream of it, which is what actually cost hours on
-# 2026-09-25 (backlog/main-stays-gated.md). PRECIS_QLAND_LINT=0 is the
+# 2026-09-25 (the qland drift guard, scripts/last-gated-main-sha). PRECIS_QLAND_LINT=0 is the
 # deliberate escape. Everything else (sync/merge, the narrow ship lock around
 # the squash CAS push + local-main ff, branch reset) runs unchanged, so the
 # merge machinery stays race-safe. Use for burst-landing many in-flight worktrees, then run
@@ -1465,7 +1465,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # last is caught here, in ~3 min against the warm container, with no
         # pytest and no fleet gate slot. The cost of missing them is not this
         # ship: it is that the NEXT tree's gate is red for a reason its author
-        # did not write (backlog/main-stays-gated.md).
+        # did not write (the qland drift guard, scripts/last-gated-main-sha).
         #
         # Still deliberately deferred to the settle-up /go: anything only
         # pytest sees. That is what /qland is for.

@@ -1,4 +1,4 @@
-"""EasyEDA Pro ``.epro2`` reader — `docs/backlog/pcb-epro-import.md` 1a.
+"""EasyEDA Pro ``.epro2`` reader — pcb-epro-import slice 1a.
 
 The fixture is a plain-text directory (``tests/fixtures/pcb_epro_tiny/``)
 zipped in memory here, following the ``easyeda_c*_trimmed.json``

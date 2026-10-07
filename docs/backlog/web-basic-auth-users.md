@@ -12,8 +12,8 @@ pillar: platform
   `tailscale funnel` (not just the tailnet — see §8). Roster: `reto`/`rs`,
   `scrypt-pepper-v1`.
 - **Residuals**, each tracked separately:
-  - no failed-auth logging / rate limiting →
-    `web-auth-failed-login-observability.md`
+  - failed-auth warning + sliding-window lockout shipped (gr343746,
+    `precis_web/auth.py`); its backlog item is deleted
   - the non-atomic feed-token rotate race (§4, known-accepted)
   - a full CSP (`default-src`/`script-src`); only `frame-ancestors` ships
     today because the templates carry inline scripts and styles, and
@@ -253,8 +253,8 @@ Run against the deployed public endpoint. Everything below passed:
   attacker supplies preimages, not digest bytes); an invalid `?t=` is a
   dead end rather than a fallback to Basic.
 - **CSRF** enforced: cross-origin POST 403, same-origin 303 (control).
-- **Timing**: no usable enumeration oracle (numbers in
-  `web-auth-failed-login-observability.md`).
+- **Timing**: no usable enumeration oracle (numbers were in the
+  since-deleted `web-auth-failed-login-observability` item; git history).
 
 Two findings, both fixed in `4bfe8a99`:
 

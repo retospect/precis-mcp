@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** After follow-up deployment, verify the three recorded /drive redirects; build the print dialog when writer scale lands, otherwise take fastener_insertion_path.
-- **Blocked by:** Follow-up deploy for gr462129; [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
+- **Next:** Build gr462129 (/drive resolves a typed handle or DOI to its page) — status review 2026-10-07: prod is R16 and main has no handle/DOI resolution in `precis_web/routes/drive.py`, so the "verify three 302s" step has nothing to verify yet. Then the print dialog when writer scale lands, otherwise fastener_insertion_path.
+- **Blocked by:** Nothing for gr462129; [se-machine-design](se-machine-design.md#resume)’s writer scale for the print dialog.
 - **Unblocks:** A human inspection surface for machine designs.
 - **Acceptance:** Use [the latest handoff](#thread-context): all three /drive queries return 302 on prod; preserve the standing viewer rulings and use [ranked work](#do-next) for the next build.
 - **Worktree:** `se-3d-viewer`

@@ -75,8 +75,6 @@ flight, nothing to build until the waits below clear):**
      that no `_LOCK_KEY` lock is held outside a transaction. Backend 26719
      held a lock leaked by the old code. Also start the Stage B "before"
      day; it needs td458386 (pgbouncer admin-console access).
-  3. **gr462133:** close after Reto's proxy cutover (organizer-mcp-2)
-     brings the backend up on a sha at or after 7f006bf09.
 - **Waits on:** the follow-up deploy (orchestrator), Reto's cutover window,
   td458386.
 

@@ -115,7 +115,7 @@ What this says:
 
 | # | tool | item | input → output |
 |---|---|---|---|
-| T0 | reaction energetics ledger | [reaction-energetics-ledger](reaction-energetics-ledger.md) (draft) | balanced equation → ΔH/ΔG/E° per step, with the source per value |
+| T0 | reaction energetics ledger | shipped: `src/precis/thermo` (NASA-7 subset + Glarborg fits; item deleted 2026-10-07) | balanced equation → ΔH/ΔG/E° per step, with the source per value |
 | T1 | station path finder | [nanoreactor-station-path-finder](nanoreactor-station-path-finder.md) (draft) | intermediates → TS per step in four tiers, station records |
 | T2 | instrumentable tube generator | [hexfold-nanoreactor-tube](hexfold-nanoreactor-tube.md) (idea, blocked on k = 3 seams) | tube spec → carbon net, attachment sites (z, θ, normal), pores |
 | T3 | track designer | this file, below | T1 station records + T2 sites → target field stack in (z, θ), energy as one axis |

@@ -9,7 +9,7 @@ which is exactly the field an EasyEDA export has to write back out. So the
 two requirements were in direct conflict: name the pin, or keep the pad
 number, never both.
 
-This is the one store-layer change slice 1b of ``pcb-epro-import.md``
+This is the one store-layer change slice 1b of ``pcb-epro-import``
 needs, and its acceptance criterion 3 ("a named pin ``U1.SCL`` resolves to
 the right net, i.e. the ``pin_map`` join reaches real pads through
 ``padplace.board_pads``") is the second test below — asserting on placed

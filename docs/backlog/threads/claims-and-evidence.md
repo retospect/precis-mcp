@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** memory-graph
-- **Next:** Check the D1 watch, then dogfood the reword sweep after the round-6 deploy.
-- **Blocked by:** Deployment for the sweep; remaining human decisions are listed under Do next.
+- **Next:** Check the D1 watch, then run the reword sweep (dry run, then `--apply` in `--limit 800 --after-ref-id N` batches); round 6 is deployed (prod R16, status review 2026-10-07).
+- **Blocked by:** Nothing for the sweep; remaining human decisions are listed under Do next.
 - **Unblocks:** Grounded claims and evidence for both research tracks.
 - **Acceptance:** Follow the linked specs and verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
 - **Worktree:** `claims-and-evidence`

@@ -16,7 +16,7 @@ datasheet joins the mesh as extracted facts, not a PDF in storage:
 absolute-max and recommended ratings, key electrical specs, package and
 the pin table, each citing its datasheet page and linked to the part.
 The pull (fetch, ingest, `datasheet-of`) is ewod-pcb's
-`pcb-datasheet-autopull.md`. The pin table is the payoff: it can be
+the shipped `datasheet_pull` job (`src/precis/pcb/datasheets.py`, 2b3c62811). The pin table is the payoff: it can be
 checked against the footprint's pad map, which nothing checks today
 (gr458878).
 

@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Root source review of bounded R14 route-gate repair on `work/pcb/r14-route-gate-repair`, then root schedules a renewed gate. R14 frozen53e6cb255 failed; no deployment. R13 preview native dogfood PASS is complete. EasyEDA remains parked.
+- **Next:** Shared-occupancy negotiated congestion routing (Do next; 97f67beb8 registered the job parameter). The R14 route-gate repair is on main (81f3dfaf1, 4820bb66d, 110f6dd4b) and R14–R16 have shipped (prod 8.35.15), so no renewed gate is pending — status review 2026-10-07. R13 preview native dogfood PASS is complete. EasyEDA remains parked.
 - **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -152,7 +152,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    threads wait on it (claims-and-evidence citations, knowledge-mesh's
    datasheet nodes, gr458878 pin provenance) and nothing here blocks it.
    The mesh half is knowledge-mesh's; its shape is in review item
-   ewod-pcb-2. BUILT, UNDEPLOYED: the `datasheet_pull` job (job_inproc),
+   ewod-pcb-2. SHIPPED and deployed (2b3c62811, in R16); the backlog file was deleted 2026-10-07; still unchecked: the first prod pull's chunk quality. Built: the `datasheet_pull` job (job_inproc),
    the put/EasyEDA-import trigger, `get(kind='part')` reasons. First on
    deploy: put a board in prod and read `get(kind='part')` for a C-number;
    JLC's component API is erroring (gr464537), so expect `jlc_api_error:500`

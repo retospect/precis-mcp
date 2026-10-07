@@ -6,6 +6,8 @@ five Glarborg et al. (2018) nitrogen-mechanism fits for academic use. H(T),
 S(T), Cp(T) use the source intervals and a 1 bar convention; the mechanism
 does not explicitly encode reference pressure. See NOTICE and nasa7.json
 for original IDs, source notes, hashes and the distinct permission status.
+Deferred, not built: P3 extreme-n arithmetic (from the shipped
+reaction-energetics-ledger backlog item; git history has the spec).
 
 Modules:
 
