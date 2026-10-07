@@ -99,11 +99,16 @@ def decode_target(
         raise ValueError("generated target frame missing")
     q = _array(mapping.get("Q"), (3, 3))
     b = _array(mapping.get("b_A"), (3,))
+    det = float(np.linalg.det(q))
     if (
         not np.allclose(q.T @ q, np.eye(3), atol=MAP_ROUNDOFF, rtol=0)
-        or abs(abs(float(np.linalg.det(q))) - 1) > MAP_ROUNDOFF
+        or abs(abs(det) - 1) > MAP_ROUNDOFF
     ):
         raise ValueError("generated target map is not an isometry")
+    if det > 0:
+        # the build-to-judge map is rot @ diag(1, 1, -1): a reflection by
+        # contract; a proper rotation is a receipt no generator wrote
+        raise ValueError("generated target map is not the reflected frame")
     raw_features = record.get("features")
     if not isinstance(raw_features, list) or not raw_features:
         raise ValueError("generated target features missing")

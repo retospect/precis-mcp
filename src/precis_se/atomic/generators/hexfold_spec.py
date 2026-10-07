@@ -559,7 +559,7 @@ def _block_from_net(
     if target is not None:
         if target_flip is None:
             raise GeneratorError("evaluated target requires its build-to-judge map")
-        topology["surface_target"] = {
+        receipt = {
             **target,
             "map": {
                 "convention": "row-vector y=x@Q+b",
@@ -567,6 +567,17 @@ def _block_from_net(
                 "b_A": (inverse["b"] @ np.diag(target_flip)).tolist(),
             },
         }
+        # The strict read-side check runs here too, so a receipt the read
+        # would refuse (axis-crossing meridian, non-reflected map) fails
+        # the generation as a typed refusal before anything is persisted,
+        # not as a raw ValueError in finish_generate after the tree edit.
+        from precis_se.atomic.surface_target import decode_target
+
+        try:
+            decode_target(receipt, permit_sheet_name=True)
+        except ValueError as exc:
+            raise GeneratorError(f"evaluated target receipt: {exc}") from exc
+        topology["surface_target"] = receipt
     provenance = (
         f"hexfold {hexfold.__version__} spec ({len(net.atoms)} atoms, "
         f"{len(net.bonds)} bonds; rings {rings}); fidelity={fidelity} "

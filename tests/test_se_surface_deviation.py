@@ -386,6 +386,7 @@ def test_binding_encoding_is_order_independent_exact_and_normalizes_zero() -> No
         "format",
         "nan",
         "nonorthogonal",
+        "rotation",
         "primitive",
         "target",
         "frame",
@@ -421,6 +422,10 @@ def test_public_get_invalid_stored_receipt_is_unavailable(
         receipt["map"]["Q"][0][0] = float("nan")
     elif change == "nonorthogonal":
         receipt["map"]["Q"][0][0] = 3.0
+    elif change == "rotation":  # det +1: an isometry, but not the contract's
+        receipt["map"]["Q"] = (
+            np.array(receipt["map"]["Q"]) @ np.diag([1, 1, -1])
+        ).tolist()
     elif change == "primitive":
         receipt["features"][0]["segments"][0]["kind"] = "catenoid"
     elif change == "target":
@@ -774,6 +779,40 @@ def test_block_captures_inverse_from_same_canonicalization() -> None:
         raw * [1, 1, -1],
         atol=1e-12,
     )
+
+
+def test_block_refuses_a_receipt_the_read_side_would_reject() -> None:
+    """The strict decode runs at generation, as a typed GeneratorError."""
+    from hexfold.build import build
+    from precis_se.atomic.generators import GeneratorError
+    from precis_se.atomic.generators.hexfold_spec import _block_from_net
+
+    net = build("hexfold 0.2\norigin s\ns: sheet(4,4)\n", strict=False)
+    raw = np.asarray(net.seed3, dtype=float)
+    _, features, _ = receipt_fixture("sphere")
+    bad = capture_target(tuple(features), {"q": {"R_A": 0.0, "dome_start_A": 12.0}})
+    with pytest.raises(GeneratorError, match="evaluated target receipt: invalid"):
+        _block_from_net(
+            net,
+            raw,
+            spec="fixture",
+            report=net.report,
+            fidelity="stick",
+            target=bad,
+            target_flip=np.array([1, 1, -1]),
+        )
+    with pytest.raises(GeneratorError, match="not the reflected frame"):
+        _block_from_net(
+            net,
+            raw,
+            spec="fixture",
+            report=net.report,
+            fidelity="stick",
+            target=capture_target(
+                tuple(features), {"q": {"R_A": 10.0, "dome_start_A": 12.0}}
+            ),
+            target_flip=np.array([1, 1, 1]),
+        )
 
 
 def test_block_inverse_survives_the_h_cap_lift() -> None:
