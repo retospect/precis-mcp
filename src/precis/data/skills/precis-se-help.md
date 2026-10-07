@@ -80,9 +80,11 @@ export, `view='fab'`'s fabrication table — see `precis-se-print-help`.
 payload's only top-level keys are `description`, `ops` and `scenario`
 (anything else is rejected — an unrecognised shape used to silently empty
 the design). A put whose op list is empty is refused while the design
-has blocks — put has no `ops=` kwarg (the ops go in `text=`; an `ops=`
-kwarg is dropped before dispatch and the design would otherwise be wiped);
-to start over, `delete` the design first. Incremental changes go through
+has blocks — the ops go in `text=` or in `ops=` (both reach the handler);
+to start over, `delete` the design first. `delete` also retires the
+`structure` refs the design's blocks were bound to, except ones another
+live design still binds (named in the reply as "stay live") and promoted
+building blocks. Incremental changes go through
 `edit(kind='se', id=…, ops=[…])`. Op batches are **atomic**: one bad op
 rolls the whole batch back.
 
@@ -94,6 +96,11 @@ It decides which checks are meaningful, so `view='validate'` and
 `scenario: none chosen` rather than assume a default. An unknown name is
 rejected; an *absent* key keeps the earlier choice (design-level context,
 not part of the block tree `put` replaces).
+
+`view='drc'` always ends with a one-line `validate:` digest (error/warning
+counts, first finding, or `validate: clean`), and a DRC-clean design with
+validate warnings reads `no DRC findings; validate has N warning(s)` — a
+clean DRC never implies a clean design.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design and is the usual way to say which block you
@@ -324,7 +331,11 @@ order means nothing. `view='drc'` swings/slides that block and its
 `parent` subtree about its port's posed origin and checks envelope
 overlap at every sample against every unconnected block:
 `joint_sweep_interference` (warn) names both blocks and every colliding
-run of values. `joint_sweep_unchecked` (info) names joints past the
+run of values. `joint_sweep_clean` (info) counts joints swept without a
+hit; `joint_sweep_not_run` (info) says revolute/prismatic joints exist but
+none declares a `range`. A block rigidly connected to the moving end (a
+`rigid` connect, transitively) moves with it. `joint_sweep_unchecked` (info)
+names joints past the
 256-sample budget, or whose `moves` names neither end. Discrete states
 alone (`view='sweep'`) never see a collision between them.
 
@@ -513,7 +524,7 @@ efficiency read in isolation overstates the link.
 
 ## Views (`get(kind='se', id=…, view=…)`)
 
-`tree · block · ports · topology · chain · measures · datums · validate · clearance · sweep ·
+`tree · block · ports · topology · chain · measures · revisions · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
 literature · fret · links · export · ops`. There is **no `mass` view** (mass goes via
 `bom`). `interview`
@@ -521,6 +532,12 @@ elicits what's missing — lead with it. `mechanics`/`literature` are
 atomic-mode-only (below); `topology` renders atomic mode's threading
 pairs + declared dof together and is empty prose for a non-atomic
 design.
+
+`view='revisions'` lists every saved revision of the design — rev number,
+UTC time, op names, block count. `edit(kind='se', id=…,
+ops=[{'op':'restore_revision','rev':N}])` puts the design back to
+revision N (a sole op in its call); the restore is itself recorded as a
+new revision, so nothing is rewound. An unknown N names the available range.
 
 `view='ops'` is the only view that reads back into `put`: the design as a
 replayable ops list in a fenced `{"ops": [...]}` block, so a design can be

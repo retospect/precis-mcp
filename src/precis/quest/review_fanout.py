@@ -231,15 +231,15 @@ def _draft_project_parent(store: Store, draft_ref_id: int) -> int:
     Raises :class:`BadInput` when the draft has no such bind — the fanout
     has nowhere trusted to parent under (mirrors ``handlers/draft.py``'s
     ``_render_by_project`` "no draft bound to project" shape, inverted)."""
-    links = store.links_for(draft_ref_id, direction="out", relation="draft-of")
-    if not links:
+    owner = store.drafts.draft_owner(draft_ref_id)
+    if owner is None:
         raise BadInput(
-            f"draft {draft_ref_id} has no draft-of project link — cannot "
+            f"draft {draft_ref_id} has no live draft-of project link — cannot "
             "resolve an owning project todo to parent review-todos on",
             next="a draft created via put(kind='draft', ...) always binds "
             "draft-of at creation; this draft is missing that link",
         )
-    return int(links[0].dst_ref_id)
+    return owner
 
 
 def _scoped_chunks(

@@ -163,6 +163,25 @@ def testmon_selection_warning(log_text: str) -> str | None:
     )
 
 
+# gr471933: exit code the guard returns when testmon crashed and pytest never
+# printed a summary (result unknown). scripts/test keys its plain-mode
+# fallback on exactly this value (EX_TEMPFAIL).
+TESTMON_CRASH_RC = 75
+
+_EXCERPT_LINES = 30
+
+
+def internalerror_present(log_text: str) -> bool:
+    """Any pytest INTERNALERROR in the log, not just the get_file one."""
+    return "INTERNALERROR>" in log_text
+
+
+def internalerror_excerpt(log_text: str, n: int = _EXCERPT_LINES) -> str:
+    """The last ``n`` INTERNALERROR lines (the traceback tail)."""
+    lines = [ln for ln in log_text.splitlines() if "INTERNALERROR>" in ln]
+    return "\n".join(lines[-n:])
+
+
 def clear_testmon_datafiles(worktree: Path) -> list[str]:
     """Delete the (possibly now-inconsistent) testmon map so the next
     ``--impacted`` run rebuilds it from scratch, instead of layering new
@@ -195,7 +214,18 @@ def main(argv: list[str]) -> int:
     if selection_warning:
         print(selection_warning, file=sys.stderr)
 
-    if worktree is not None and testmon_signature_present(log_text):
+    crashed = internalerror_present(log_text)
+    if crashed:
+        print(
+            f"testmon INTERNALERROR — last {_EXCERPT_LINES} traceback lines "
+            f"(full log kept at {log_path}):",
+            file=sys.stderr,
+        )
+        print(internalerror_excerpt(log_text), file=sys.stderr)
+        if exit_code != 0 and not _SUMMARY_RE.search(log_text):
+            exit_code = TESTMON_CRASH_RC
+
+    if worktree is not None and crashed:
         removed = clear_testmon_datafiles(worktree)
         if removed:
             print(

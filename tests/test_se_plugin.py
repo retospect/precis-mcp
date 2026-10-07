@@ -2417,6 +2417,43 @@ def test_drc_view_clean_design_reads_unfilled_not_done(handler: SeHandler) -> No
     assert "no blocks declared yet (unfilled)" in resp.body
 
 
+def test_drc_view_qualifies_clean_headline_when_validate_warns(
+    handler: SeHandler,
+) -> None:
+    handler.put(
+        id="clash2",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "a", "envelope": "cyl:r0.01h0.02"},
+                    {"op": "add_block", "name": "b", "envelope": "cyl:r0.009h0.02"},
+                ]
+            }
+        ),
+    )
+    body = handler.get(id="clash2", view="drc").body
+    assert "✓ no DRC findings" not in body
+    assert "no DRC findings; validate has" in body
+    assert "warning(s)" in body
+    assert "validate: 0 error(s)" in body
+    assert "first: undeclared_interpenetration" in body
+    assert "see view='validate'" in body
+
+
+def test_drc_view_clean_design_says_validate_clean(handler: SeHandler) -> None:
+    handler.put(id="bare2", text=json.dumps({"ops": []}))
+    body = handler.get(id="bare2", view="drc").body
+    assert "✓ no DRC findings" in body
+    assert body.rstrip().endswith("validate: clean")
+
+
+def test_drc_view_rows_unchanged_with_validate_digest(handler: SeHandler) -> None:
+    _l2_design(handler)
+    body = handler.get(id="cart1", view="drc").body
+    assert "dof_disagreement" in body
+    assert "validate: " in body.splitlines()[-1]
+
+
 def test_block_view_shows_loads_and_measures(handler: SeHandler) -> None:
     _l2_design(handler)
     resp = handler.get(id="cart1", view="block", args={"name": "wheel"})

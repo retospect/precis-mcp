@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -99,6 +100,25 @@ from precis.utils.search_merge import SearchHit
 
 log = logging.getLogger(__name__)
 
+
+def _atom_arg(args: dict[str, Any], *, alias: str | None = None) -> str:
+    """The required atom label for ``view='atom'`` / ``'neighborhood'``.
+
+    ``atom`` is the one key; ``alias`` (``center`` on neighborhood) is also
+    accepted. Absent/empty raises BadInput naming the key(s); the caller
+    raises NotFound for a present-but-unknown label.
+    """
+    keys = ("atom", alias) if alias else ("atom",)
+    for k in keys:
+        v = args.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip().split("#")[-1]
+    named = " or ".join(f"{k}=" for k in keys)
+    raise BadInput(
+        f"missing required arg {named} (an atom label, e.g. args={{'atom': 'aPd2'}})"
+    )
+
+
 _PROBE_VIEWS = ("atom", "neighborhood", "bonds", "find", "validate")
 _NAV_VIEWS = (
     "line",
@@ -115,12 +135,17 @@ _EXPORT_VIEWS = ("poscar", "extxyz", "cif", "pdb")
 _VIEWS = (
     *_PROBE_VIEWS,
     *_NAV_VIEWS,
+    "atoms",
     "runs",
     "markers",
     "links",
     "literature",
     *_EXPORT_VIEWS,
 )
+
+#: At or below this many atoms the default TOC inlines the per-atom table
+#: after the summary head; above it the table is behind ``view='atoms'``.
+_TOC_INLINE_ATOMS = 40
 
 #: Host-metal candidates for the deterministic ``view='literature'`` query
 #: heuristic (gr161578) — mirrors the metal/support elements the catalysis-hub
@@ -999,6 +1024,8 @@ class StructureHandler(Handler):
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)
+        if view == "atoms":
+            return self._toc_response(scene, ref, handles, inline_atoms=True)
         if view == "runs":
             return self._render_runs(ref)
         if view == "markers":
@@ -2142,6 +2169,7 @@ class StructureHandler(Handler):
         *,
         head_verb: str | None = None,
         relax_summary: dict[str, Any] | None = None,
+        inline_atoms: bool = False,
     ) -> Response:
         t = probe.toc(scene)
         pbc = "".join("T" if p else "F" for p in scene.cell.pbc)
@@ -2158,31 +2186,50 @@ class StructureHandler(Handler):
                 f"\n# relax[{lr.get('rung')}]: {state} in {lr.get('n_steps')} steps "
                 f"(max move {lr.get('max_disp')} Å)"
             )
-        # gripe 161576: a compact |F| (eV/Å) column — a cheap DB read from a
-        # recorded run at the CURRENT design version only (FIX 2); never the
-        # live EMT estimate here (FIX 3 — that's view='atom'-only). '—' when
-        # no such run exists (never fabricated).
-        force_mags = self._force_magnitudes(scene, ref)
-        rows = []
-        coord_all = probe.coordination_all(scene)
-        for label, atom in scene.atoms.items():
-            rows.append(
-                {
-                    "atom": f"{handle}#{label}",
-                    "element": atom.element,
-                    "frac": ",".join(f"{x:.3f}" for x in atom.frac),
-                    "coord": coord_all[label],
-                    "fixed": "yes" if atom.fixed else "no",
-                    "|F|": force_mags.get(label, "—"),
-                }
+        if scene.atoms:
+            cart = np.array(
+                [
+                    scene.cell.frac_to_cart(np.asarray(at.frac))
+                    for at in scene.atoms.values()
+                ]
             )
-        body = (
-            head
-            + "\n"
-            + render_agent_table(
+            lo, hi = cart.min(axis=0), cart.max(axis=0)
+            head += "\n# bbox Å: " + " · ".join(
+                f"{ax} {a:.2f}..{b:.2f}" for ax, a, b in zip("xyz", lo, hi, strict=True)
+            )
+        findings = validate(scene) + vsepr.advisories(scene)
+        n_err = sum(1 for f in findings if f.severity == "error")
+        n_warn = sum(1 for f in findings if f.severity == "warn")
+        head += f"\n# validate: {n_err} error(s), {n_warn} warning(s)"
+        show_atoms = inline_atoms or len(scene.atoms) <= _TOC_INLINE_ATOMS
+        if not show_atoms:
+            head += (
+                f"\n# {t['natoms']} atoms not listed — "
+                "view='atoms' for the per-atom table; view='validate' for findings"
+            )
+        body = head
+        if show_atoms:
+            # gripe 161576: a compact |F| (eV/Å) column — a cheap DB read from
+            # a recorded run at the CURRENT design version only (FIX 2); never
+            # the live EMT estimate here (FIX 3 — that's view='atom'-only).
+            # '—' when no such run exists (never fabricated).
+            force_mags = self._force_magnitudes(scene, ref)
+            rows = []
+            coord_all = probe.coordination_all(scene)
+            for label, atom in scene.atoms.items():
+                rows.append(
+                    {
+                        "atom": f"{handle}#{label}",
+                        "element": atom.element,
+                        "frac": ",".join(f"{x:.3f}" for x in atom.frac),
+                        "coord": coord_all[label],
+                        "fixed": "yes" if atom.fixed else "no",
+                        "|F|": force_mags.get(label, "—"),
+                    }
+                )
+            body += "\n" + render_agent_table(
                 rows, schema=["atom", "element", "frac", "coord", "fixed", "|F|"]
             )
-        )
         prov_rows = paper_provenance_rows(self.store, ref.id)
         if prov_rows:
             body += "\n\nProvenance:\n" + render_agent_table(
@@ -2321,7 +2368,7 @@ class StructureHandler(Handler):
         self, view: str, scene: Scene, args: dict[str, Any], *, ref: Any
     ) -> Response:
         if view == "atom":
-            label = str(args.get("atom") or "").split("#")[-1]
+            label = _atom_arg(args)
             if label not in scene.atoms:
                 raise NotFound(f"no atom {label!r} in this structure")
             atom = scene.atoms[label]
@@ -2374,7 +2421,7 @@ class StructureHandler(Handler):
                 )
             )
         if view == "neighborhood":
-            center = str(args.get("center") or "").split("#")[-1]
+            center = _atom_arg(args, alias="center")
             if center not in scene.atoms:
                 raise NotFound(f"no atom {center!r} in this structure")
             radius = float(args.get("radius", 3.0))
@@ -2426,6 +2473,13 @@ class StructureHandler(Handler):
             return Response(body="✓ no validator findings")
         n_error = sum(1 for f in findings if f.severity == "error")
         n_warn = sum(1 for f in findings if f.severity == "warn")
+        tally = Counter((f.severity, f.rule) for f in findings)
+        tally_rows = [
+            {"severity": sev, "rule": rule, "count": n}
+            for (sev, rule), n in sorted(
+                tally.items(), key=lambda kv: (kv[0][0] != "error", -kv[1], kv[0][1])
+            )
+        ]
         rows = [
             {
                 "severity": f.severity,
@@ -2439,6 +2493,8 @@ class StructureHandler(Handler):
         ]
         return Response(
             body=f"# {n_error} error(s), {n_warn} warning(s)\n"
+            + render_agent_table(tally_rows, schema=["severity", "rule", "count"])
+            + "\n"
             + render_agent_table(
                 rows,
                 schema=["severity", "rule", "atoms", "measured", "expected", "fix"],

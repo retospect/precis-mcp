@@ -247,7 +247,7 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
             envelope="",
             ports=[],
             topology={},
-            provenance=report.render(verbose=True),
+            provenance=report.render(verbose=True, agent=True),
             elements=[],
             coords=np.zeros((0, 3), dtype=np.float64),
             bonds=[],

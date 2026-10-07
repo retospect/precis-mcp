@@ -912,6 +912,35 @@ def _pathway_job_tree_state(store: Store, pathway_id: int) -> tuple[str, str | N
     return "unknown", None
 
 
+_COMPUTING_SUFFIX = " (computing)"
+
+
+def _stamp_pathway_failed(
+    store: Store, pathway_id: int, reason: str, *, conn: Any = None
+) -> None:
+    """Stamp a pathway ``meta.status = 'failed'`` and swap the dispatch-time
+    trailing `` (computing)`` title suffix for `` (failed)`` (gr458944).
+    Titles not ending in the suffix are left alone."""
+    store.stamp_ref_meta(
+        pathway_id, {"status": "failed", "failed_reason": reason}, conn=conn
+    )
+
+    def _retitle(c: Any) -> None:
+        row = c.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (pathway_id,)
+        ).fetchone()
+        title = row[0] if row else None
+        if title and title.endswith(_COMPUTING_SUFFIX):
+            new = title[: -len(_COMPUTING_SUFFIX)] + " (failed)"
+            store.update_ref(pathway_id, title=new, conn=c)
+
+    if conn is not None:
+        _retitle(conn)
+    else:
+        with store.tx() as c:
+            _retitle(c)
+
+
 def _reconcile_orphaned_pathways(
     store: Store, quest_id: int, *, hub: Any
 ) -> tuple[int, int]:
@@ -969,12 +998,8 @@ def _reconcile_orphaned_pathways(
             state, reason = _pathway_job_tree_state(store, pathway_id)
             if state == "failed":
                 try:
-                    store.stamp_ref_meta(
-                        pathway_id,
-                        {
-                            "status": "failed",
-                            "failed_reason": reason or "seed jobs failed",
-                        },
+                    _stamp_pathway_failed(
+                        store, pathway_id, reason or "seed jobs failed"
                     )
                     failed += 1
                     log.info(
@@ -1067,13 +1092,8 @@ def _reconcile_stale_computing_pathways(store: Store) -> int:
             ).fetchall()
             n = 0
             for (raw_id,) in rows:
-                store.stamp_ref_meta(
-                    int(raw_id),
-                    {
-                        "status": "failed",
-                        "failed_reason": "orphaned (no live compute)",
-                    },
-                    conn=conn,
+                _stamp_pathway_failed(
+                    store, int(raw_id), "orphaned (no live compute)", conn=conn
                 )
                 n += 1
         if n:

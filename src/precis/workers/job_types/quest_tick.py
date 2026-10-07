@@ -554,10 +554,58 @@ def _register_dry_rest(store: Store, quest_id: int) -> int:
     return n
 
 
+#: Tick stages that run after ``apply`` — a checkpoint parked at one of these
+#: has already written its ledger chunks.
+_POST_APPLY_STAGES = frozenset({"search", "compute", "ladder", "finish"})
+
+
+def _finish_inflight_tick(ctx: Any, state: dict[str, Any]) -> bool:
+    """Run only the ``finish`` stage of a tick parked past ``apply``.
+
+    The quest is leaving the loop (inactive / cancelled), so the LLM-driven
+    search/compute/ladder stages are skipped — spend nothing — but the finish
+    bookkeeping (``tick_count``, stall clock, tick-spend deed, dossier,
+    frontier regen) must still land. The counter bump is not idempotent, and
+    this runs at most once: the caller returns ``Done`` right after. Returns
+    True when a finish ran. Never raises — a failure is logged and the rest
+    proceeds."""
+    raw = state.get("tick")
+    tick = raw if isinstance(raw, dict) else None
+    if not tick or str(tick.get("stage") or "") not in _POST_APPLY_STAGES:
+        return False
+    params = (ctx.meta or {}).get("params") or {}
+    quest_id = int(params["quest_id"])  # schema-required
+    from precis.quest.tick import run_quest_tick
+
+    try:
+        run_quest_tick(
+            ctx.store,
+            quest_id,
+            compute=_quest_compute_enabled(ctx.store, quest_id),
+            tier=params.get("tier") or "big",
+            job_ref_id=ctx.ref_id,
+            tick_state={**tick, "stage": "finish"},
+            quest_body=_quest_body(ctx.store, quest_id) or QUEST_BODY_MATERIALS,
+            sliced=False,
+        )
+    except Exception:
+        log.exception("quest_tick: finish-on-rest failed for quest %s", quest_id)
+        return False
+    ctx.append_chunk(
+        "job_event",
+        f"quest {quest_id} left the loop mid-tick — ran the finish stage "
+        "(skipped search/compute/ladder)",
+    )
+    return True
+
+
 def _dispatch(ctx: Any, spec: Any) -> Any:
     """Coordinator phase machine. Returns ``Done`` | ``Yield``."""
     state = (ctx.meta or {}).get("coordinator_state") or {}
     if ctx.is_cancel_requested():
+        # A cancel only skips the NEXT tick — a tick that already wrote
+        # ledger chunks still owes its finish bookkeeping (gr464538).
+        _finish_inflight_tick(ctx, state)
         return Done(
             summary="quest loop cancelled by request",
             success=False,
@@ -572,6 +620,9 @@ def _dispatch(ctx: Any, spec: Any) -> Any:
     # (:mod:`precis.quest.loop`) uses to decide "does this quest still get a
     # loop", so the two never disagree.
     if quest_id not in set(active_quest_ids(ctx.store)):
+        # A self-rest must only skip starting a NEW tick, never abandon one
+        # that already applied ledger chunks (gr464538).
+        _finish_inflight_tick(ctx, state)
         status = _quest_status(ctx.store, quest_id)
         # Not a dry rest — the quest going inactive is unrelated to whether it
         # was stuck on missing input (gr170252); clear the escalation counter

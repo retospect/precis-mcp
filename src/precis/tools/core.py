@@ -1246,6 +1246,11 @@ def put(
     contains: str | None = None,
     qty: int | None = None,
     ref_designator: str | None = None,
+    # se (see precis-se-help): put(kind='se', id=<slug>, ops=[...]) replaces
+    # the design with the op list, same as text={"ops": [...]}. Declared at
+    # the verb level (the gr262482 pattern) so strict-schema MCP clients
+    # don't strip it (gr458472).
+    ops: list[dict[str, Any]] | None = None,
     # component series mint (see precis-component-help): put(kind=
     # 'component', series='iso-4762', size='M6x30') materializes one size
     # of a standards series — entity plus its dimension values — instead of
@@ -1395,6 +1400,7 @@ def put(
             "series": series,
             "size": size,
             "items": items,
+            "ops": ops,
         },
     )
 

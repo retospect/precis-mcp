@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import re
 from collections.abc import Iterable
 from contextlib import AbstractContextManager
@@ -46,6 +47,8 @@ from precis.store.core import StoreCore
 from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -1752,9 +1755,11 @@ class DraftStore(_AbbrevMixin):
             rows = conn.execute(
                 """
                 WITH RECURSIVE proj AS (
-                    SELECT dst_ref_id AS pid FROM links
-                     WHERE src_ref_id = %(draft)s AND relation = 'draft-of'
-                     LIMIT 1
+                    SELECT l.dst_ref_id AS pid FROM links l
+                      JOIN refs o ON o.ref_id = l.dst_ref_id
+                                 AND o.retired_at IS NULL
+                     WHERE l.src_ref_id = %(draft)s AND l.relation = 'draft-of'
+                     ORDER BY l.dst_ref_id LIMIT 1
                 ),
                 subtree AS (
                     SELECT r.ref_id FROM refs r JOIN proj ON r.ref_id = proj.pid
@@ -1903,6 +1908,69 @@ class DraftStore(_AbbrevMixin):
             # block of raw subprocess output — the UI wants the message.
             text = raw.split("\n", 1)[0].strip()
         return text[:limit].rstrip() + ("…" if len(text) > limit else "")
+
+    def draft_owners(self, draft_ref_id: int) -> list[int]:
+        """Live (non-retired) project todos the draft is ``draft-of``-bound
+        to, ascending by ref id. A link whose target todo was retired is
+        dangling and never counts (gr461762)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT l.dst_ref_id FROM links l
+                  JOIN refs r ON r.ref_id = l.dst_ref_id
+                 WHERE l.src_ref_id = %s AND l.relation = 'draft-of'
+                   AND r.retired_at IS NULL
+                 ORDER BY l.dst_ref_id
+                """,
+                (draft_ref_id,),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def draft_owner(self, draft_ref_id: int) -> int | None:
+        """The draft's one live owner project, or ``None``. The single rule
+        every ``draft → project`` reader shares: retired owners are skipped;
+        when more than one live owner remains (a hygiene fault, counted by
+        :meth:`draft_owner_audit`) the lowest ref id wins, deterministically,
+        and a warning is logged."""
+        owners = self.draft_owners(draft_ref_id)
+        if len(owners) > 1:
+            _log.warning(
+                "draft %s has %d live draft-of owners %s; using %s",
+                draft_ref_id,
+                len(owners),
+                owners,
+                owners[0],
+            )
+        return owners[0] if owners else None
+
+    def draft_owner_audit(self) -> dict[str, list[int]]:
+        """Read-only ``draft-of`` hygiene scan over live drafts:
+        ``multi_owner`` = drafts with more than one live owner,
+        ``dangling`` = drafts with a draft-of link to a retired ref."""
+        with self.pool.connection() as conn:
+            multi = conn.execute(
+                """
+                SELECT l.src_ref_id FROM links l
+                  JOIN refs d ON d.ref_id = l.src_ref_id AND d.retired_at IS NULL
+                  JOIN refs o ON o.ref_id = l.dst_ref_id AND o.retired_at IS NULL
+                 WHERE l.relation = 'draft-of'
+                 GROUP BY l.src_ref_id HAVING count(*) > 1
+                 ORDER BY l.src_ref_id
+                """
+            ).fetchall()
+            dangling = conn.execute(
+                """
+                SELECT DISTINCT l.src_ref_id FROM links l
+                  JOIN refs d ON d.ref_id = l.src_ref_id AND d.retired_at IS NULL
+                  JOIN refs o ON o.ref_id = l.dst_ref_id AND o.retired_at IS NOT NULL
+                 WHERE l.relation = 'draft-of'
+                 ORDER BY l.src_ref_id
+                """
+            ).fetchall()
+        return {
+            "multi_owner": [int(r[0]) for r in multi],
+            "dangling": [int(r[0]) for r in dangling],
+        }
 
     def create_draft(
         self,

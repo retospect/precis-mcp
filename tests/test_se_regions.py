@@ -1645,3 +1645,21 @@ def test_the_same_selector_is_still_accepted_as_a_datum(selector: str) -> None:
         _add("a", selector), _add("b2", "frame", relation={"feature": "ring:b.top"})
     )
     assert tree.measures[0].datum == selector
+
+
+def test_unchecked_relation_without_datum_reads_plainly() -> None:
+    """gr465128 item 3: a relation-only measure said "declaration on frame"."""
+    tree = _tree(
+        _BOX,
+        {"op": "add_measure", "block": "b", "name": "q0", "value": 1.0},
+        {
+            "op": "add_measure",
+            "block": "b",
+            "name": "q",
+            "measurand": "surface charge density",
+            "relation": {"source": "b.q0", "tol": 1e-3},
+        },
+    )
+    (finding,) = [f for f in drc(tree).findings if f.rule == "measurand_unchecked"]
+    assert "on frame" not in finding.detail
+    assert "relation, with no datum set yet," in finding.detail

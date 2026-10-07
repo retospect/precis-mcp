@@ -86,9 +86,13 @@ search(kind='taxon', under='measurand', q='charge')
 - The shape is checked when you write, existence when you read. A
   malformed selector is refused and the error lists the whole grammar;
   a well-formed one naming a face that is not there yet is accepted.
-- `sites:`/`atoms:` are accepted on a block bound to a structure design.
-  Their coordinates are not loaded yet, so a read returns a note saying
-  so instead of a value. Both are pinned to a structure version (below).
+- `sites:`/`atoms:` are accepted on any existing block, bound or not.
+  On a block bound to a structure design the measure is pinned to that
+  structure version (below). On an unbound block it is accepted with
+  **no pin** and a read says "block binds no structure design" — bind
+  first (`bind_structure`, or generate), then declare the region, or the
+  indices are never version-checked. Their coordinates are not loaded
+  yet, so a read returns a note instead of a value.
 - `frame`, `port:<name>`, `face:<block>.<tag>`, `axis:<block>` and the
   `face:` predicates work too (`precis-se-help`).
 

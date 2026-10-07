@@ -49,7 +49,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from precis.taproot.canon import (
     ClaimExtraction,
@@ -102,7 +102,9 @@ def collapse_label(relation: str) -> Verdict3:
 class PairResult:
     pair_id: int
     expected: Verdict3
-    predicted: Verdict3
+    #: ``"error"`` = the judge dispatch failed on this pair (gr462136); it is
+    #: tallied separately and never counts as a merge decision.
+    predicted: Verdict3 | Literal["error"]
     confidence: float
     rationale: str
 
@@ -120,8 +122,16 @@ class Report:
 
     @property
     def confusion(self) -> Counter[tuple[Verdict3, Verdict3]]:
-        """``{(expected, predicted): count}`` — the 3x3 confusion matrix."""
-        return Counter((r.expected, r.predicted) for r in self.results)
+        """``{(expected, predicted): count}`` — the 3x3 confusion matrix
+        (errored pairs are excluded; see :attr:`errored`)."""
+        return Counter(
+            (r.expected, r.predicted) for r in self.results if r.predicted != "error"
+        )
+
+    @property
+    def errored(self) -> list[PairResult]:
+        """Pairs the judge could not grade (dispatch error) — not a verdict."""
+        return [r for r in self.results if r.predicted == "error"]
 
     @property
     def over_merges(self) -> list[PairResult]:
@@ -169,6 +179,8 @@ class Report:
                 f"({self.over_merge_rate:.1%}) — bar is 0",
                 f"under-merge (different where same): {len(self.under_merges)} "
                 f"({self.under_merge_rate:.1%}) — tolerated",
+                f"errored     (judge dispatch failed):   {len(self.errored)} "
+                "— not graded",
             ]
         )
         if self.over_merges:

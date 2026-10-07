@@ -790,3 +790,52 @@ def test_blocked_path_aliases_the_tree_aware_view(handler: TodoHandler) -> None:
     out = handler.get(id="/blocked")
     assert "stuck leaf" in out.body
     assert "view='blocked'" in out.body  # deprecation pointer
+
+
+# ── gr453861: executor todo with no minted child ──────────────────
+
+
+def _age_todo(store: Store, ref_id: int, minutes: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(mins => %s) "
+            "WHERE ref_id = %s",
+            (minutes, ref_id),
+        )
+
+
+_EXECUTOR_META = {"executor": "claude_inproc", "job_type": "diagnose_gripe"}
+
+
+def test_unminted_detector_flags_old_executor_todo_without_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.handlers._todo_views import _attention_unminted
+
+    rid = _id_of(handler.put(text="Diagnose it", meta=_EXECUTOR_META).body)
+    _age_todo(store, rid, 45)
+    hits = _attention_unminted(store)
+    assert [h["id"] for h in hits] == [rid]
+    assert hits[0]["age_min"] >= 45
+    assert f"td{rid}" in handler.search(view="attention").body
+
+
+def test_unminted_detector_ignores_young_childful_and_plain_todos(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.handlers._todo_views import _attention_unminted
+    from precis.store.types import Tag
+
+    young = _id_of(handler.put(text="young", meta=_EXECUTOR_META).body)
+    _age_todo(store, young, 5)
+    with_child = _id_of(handler.put(text="has child", meta=_EXECUTOR_META).body)
+    _age_todo(store, with_child, 45)
+    job = store.insert_ref(
+        kind="job", slug=None, title="j", meta={}, parent_id=with_child
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "queued"), set_by="system", replace_prefix=True
+    )
+    plain = _id_of(handler.put(text="no executor").body)
+    _age_todo(store, plain, 45)
+    assert _attention_unminted(store) == []

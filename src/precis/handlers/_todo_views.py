@@ -1434,7 +1434,8 @@ def render_attention(store: Store) -> Response:
     asks = _attention_ask_user(store)
     child_failed = _attention_child_failed(store)
     halted = _attention_halted(store)
-    total = len(asks) + len(child_failed) + len(halted)
+    unminted = _attention_unminted(store)
+    total = len(asks) + len(child_failed) + len(halted) + len(unminted)
     if total == 0:
         body = "no todos need attention"
         body += render_next_section(
@@ -1480,13 +1481,26 @@ def render_attention(store: Store) -> Response:
             lines.append(f"{_h(h['id']):<6} {first}")
             if h.get("budget_usd") is not None:
                 lines.append(f"      budget: ${h['budget_usd']:.2f} (granted)")
+    if unminted:
+        lines.append("")
+        lines.append(f"## Executor todo, no job minted ({len(unminted)})")
+        lines.append("")
+        for u in unminted:
+            first = (u["title"] or "").split("\n", 1)[0]
+            if len(first) > 60:
+                first = first[:60].rstrip() + "…"
+            lines.append(f"{_h(u['id']):<6} {first}  (open {u['age_min']} min)")
     body = "\n".join(lines)
     # Pick a concrete id from whichever signal actually surfaced above —
-    # ``total > 0`` guarantees at least one of the three lists is non-empty.
+    # ``total > 0`` guarantees at least one of the four lists is non-empty.
     first_id = (
         asks[0]["id"]
         if asks
-        else (child_failed[0]["id"] if child_failed else halted[0]["id"])
+        else (
+            child_failed[0]["id"]
+            if child_failed
+            else (halted[0]["id"] if halted else unminted[0]["id"])
+        )
     )
     nav: list[tuple[str, str]] = [
         (
@@ -1515,6 +1529,61 @@ def render_attention(store: Store) -> Response:
         )
     body += render_next_section(nav)
     return Response(body=body)
+
+
+#: Minutes an executor-bearing ``STATUS:open`` todo may sit with no live
+#: child job before it counts as a stalled mint (gr453861). The minter pass
+#: runs once per sequential SYS cycle, so 15-18 min of latency is normal on
+#: a busy cluster; 30 min separates "has not come round yet" from "dispatch
+#: is stalled".
+UNMINTED_ALERT_MIN = 30
+
+#: Job statuses that no longer count as a live child (mirrors
+#: ``handlers.job._TERMINAL_STATUSES``).
+_JOB_TERMINAL = ("succeeded", "failed", "cancelled")
+
+
+def _attention_unminted(
+    store: Store, *, threshold_min: int = UNMINTED_ALERT_MIN
+) -> list[dict[str, Any]]:
+    """Open todos with ``meta.executor`` and no non-terminal child job.
+
+    Read-only detector for gr453861: "the minter has not passed yet" and
+    "dispatch is stalled" look identical on the todo, so anything older
+    than ``threshold_min`` minutes is surfaced with its age. Returns
+    ``{id, title, age_min}`` dicts, oldest first.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title,
+                   (EXTRACT(EPOCH FROM (now() - r.created_at)) / 60)::int
+              FROM refs r
+             WHERE r.kind = 'todo' AND r.retired_at IS NULL
+               AND COALESCE(r.meta->>'executor', '') <> ''
+               AND COALESCE(
+                     (SELECT t2.value FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+                       WHERE rt2.ref_id = r.ref_id AND t2.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) = 'open'
+               AND r.created_at < now() - make_interval(mins => %s)
+               AND NOT EXISTS (
+                     SELECT 1 FROM refs c
+                      WHERE c.parent_id = r.ref_id AND c.kind = 'job'
+                        AND c.retired_at IS NULL
+                        AND COALESCE(
+                              (SELECT t3.value FROM ref_tags rt3
+                                 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+                                WHERE rt3.ref_id = c.ref_id AND t3.namespace = 'STATUS' LIMIT 1),
+                              'queued'
+                            ) <> ALL(%s)
+                   )
+             ORDER BY r.created_at
+             LIMIT 50
+            """,
+            (threshold_min, list(_JOB_TERMINAL)),
+        ).fetchall()
+    return [{"id": int(r[0]), "title": r[1], "age_min": int(r[2])} for r in rows]
 
 
 def _attention_ask_user(store: Store) -> list[dict[str, Any]]:

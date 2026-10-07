@@ -155,6 +155,28 @@ def _subtree(tree: SeTree, root: str) -> set[str]:
     return out
 
 
+def _moving_set(tree: SeTree, swept: ConnectSpec, mover: str, fixed: str) -> set[str]:
+    """What turns/slides with ``mover``: its ``parent`` subtree, grown by
+    closure over rigid connects (each block reached brings its own parent
+    subtree). The swept connect is never crossed, and ``fixed`` (its
+    other end) never joins — a rigid loop back to it would pin the
+    whole design."""
+    moving = _subtree(tree, mover)
+    grew = True
+    while grew:
+        grew = False
+        for c in tree.connects:
+            if c is swept or (c.joint or {}).get("class") != "rigid":
+                continue
+            for here, there in ((c.a_block, c.b_block), (c.b_block, c.a_block)):
+                if here in moving and there not in moving and there != fixed:
+                    if there in tree.blocks:
+                        moving |= _subtree(tree, there)
+                        grew = True
+    moving.discard(fixed)
+    return moving
+
+
 def _sample_transform(
     klass: str, axis: NDArray[np.float64], pivot: NDArray[np.float64], value: float
 ) -> Transform:
@@ -205,6 +227,9 @@ def sweep_findings(tree: SeTree) -> list[ValidationIssue]:
     connected = {frozenset({c.a_block, c.b_block}) for c in tree.connects}
     out: list[ValidationIssue] = []
     over_budget: list[str] = []
+    capable = 0  # revolute/prismatic joints, ranged or not
+    ranged = 0
+    swept = 0
     budget = SWEEP_EVAL_BUDGET
     deadline = time.monotonic() + SWEEP_WALL_BUDGET_S
     for c in tree.connects:
@@ -214,8 +239,11 @@ def sweep_findings(tree: SeTree) -> list[ValidationIssue]:
             continue  # stored-shape problems are drc.py's finding
         params = joint.get("params", {})
         klass = joint["class"]
+        if klass in se_joints.RANGE_CLASSES:
+            capable += 1
         if "range" not in params or klass not in se_joints.RANGE_CLASSES:
             continue
+        ranged += 1
         subject = _connect_subject(c)
         mover_block = params.get("moves")
         if mover_block == c.a_block:
@@ -256,9 +284,11 @@ def sweep_findings(tree: SeTree) -> list[ValidationIssue]:
             over_budget.append(subject)
             continue
         budget -= n
+        swept += 1
         m_xform = cad_pose(cad_as_vec3(node.pose), cad_as_vec3(node.rot))
         pivot = np.asarray(m_xform.apply(cad_as_vec3(port.pose)), dtype=np.float64)
-        moving = _subtree(tree, mover_block)
+        fixed_block = c.b_block if mover_block == c.a_block else c.a_block
+        moving = _moving_set(tree, c, mover_block, fixed_block)
         baseline = {
             m: (list(tree.blocks[m].pose), list(tree.blocks[m].rot)) for m in moving
         }
@@ -335,6 +365,32 @@ def sweep_findings(tree: SeTree) -> list[ValidationIssue]:
                     severity="info",
                 )
             )
+    if capable and not ranged:
+        out.append(
+            ValidationIssue(
+                rule="joint_sweep_not_run",
+                subject=f"{capable} joint(s)",
+                detail=(
+                    f"{capable} revolute/prismatic joints, 0 declare "
+                    "params.range — set_joint params.range/moves to sweep "
+                    "them; no joint sweep ran, so no collision along their "
+                    "travel was checked"
+                ),
+                severity="info",
+            )
+        )
+    elif swept and not out and not over_budget:
+        out.append(
+            ValidationIssue(
+                rule="joint_sweep_clean",
+                subject=f"{swept} joint(s)",
+                detail=(
+                    f"{swept} joint(s) swept over their declared "
+                    "params.range, no interference found"
+                ),
+                severity="info",
+            )
+        )
     if over_budget:
         shown = ", ".join(over_budget[:5])
         more = f" (+{len(over_budget) - 5} more)" if len(over_budget) > 5 else ""

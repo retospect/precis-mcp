@@ -1314,10 +1314,71 @@ def save_tree(
         _do(c)
 
 
-def retire_design(store: Any, ref_id: int) -> int:
+def _is_protected_structure(store: Any, ref_id: int) -> bool:
+    """True when a structure must survive a design-retire cascade.
+
+    Hook for the promoted "building block" structures (gr459058): Reto's
+    ruling is that they outlive the designs that minted them, but the
+    promotion mechanism (tag, folder placement, or component row) is still
+    undecided — see td458221.  Returns False until that lands; the later
+    decision is a change to this one function.
+    """
+    return False
+
+
+def _bound_structures(conn: Any, ref_id: int) -> dict[str, int]:
+    """``{slug: ref_id}`` of the live structure refs this design's blocks
+    and ports are bound to (``bound_kind='structure'``)."""
+    rows = conn.execute(
+        "SELECT DISTINCT i.id_value, r.ref_id FROM refs r "
+        "JOIN ref_identifiers i ON i.ref_id = r.ref_id AND i.id_kind = 'cite_key' "
+        "WHERE r.kind = 'structure' AND r.retired_at IS NULL AND i.id_value IN ("
+        " SELECT b.bound_design FROM se_blocks b WHERE b.ref_id = %s"
+        "  AND b.bound_kind = 'structure' AND b.retired_at IS NULL"
+        " UNION SELECT p.bound_design FROM se_ports p"
+        "  JOIN se_blocks b ON b.id = p.block_id WHERE b.ref_id = %s"
+        "  AND p.retired_at IS NULL)",
+        (ref_id, ref_id),
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def retire_design(store: Any, ref_id: int) -> tuple[int, list[str], dict[str, str]]:
     """Soft-retire the ref and every live block (+ ports/connects) under
-    it. Returns the number of blocks retired."""
+    it, then cascade to the ``structure`` refs its blocks/ports were bound
+    to (gr459058).
+
+    Returns ``(blocks_retired, retired_structure_slugs, kept)`` where
+    ``kept`` maps each structure left live to why (``"bound by <design>"``
+    or ``"protected"``).
+    """
     with store.tx() as conn:
+        bound = _bound_structures(conn, ref_id)
+        kept: dict[str, str] = {}
+        for slug, sid in sorted(bound.items()):
+            others = conn.execute(
+                "SELECT DISTINCT i.id_value FROM refs d JOIN se_blocks b "
+                "ON b.ref_id = d.ref_id JOIN ref_identifiers i ON "
+                "i.ref_id = d.ref_id AND i.id_kind = 'cite_key' WHERE d.kind = 'se' "
+                "AND d.retired_at IS NULL AND d.ref_id <> %s "
+                "AND b.retired_at IS NULL AND b.bound_kind = 'structure' "
+                "AND b.bound_design = %s "
+                "UNION SELECT DISTINCT i.id_value FROM refs d JOIN se_blocks b "
+                "ON b.ref_id = d.ref_id JOIN se_ports p ON p.block_id = b.id "
+                "JOIN ref_identifiers i ON i.ref_id = d.ref_id "
+                "AND i.id_kind = 'cite_key' "
+                "WHERE d.kind = 'se' AND d.retired_at IS NULL "
+                "AND d.ref_id <> %s AND b.retired_at IS NULL "
+                "AND p.retired_at IS NULL "
+                "AND p.bound_design = %s ORDER BY 1",
+                (ref_id, slug, ref_id, slug),
+            ).fetchall()
+            names = [o[0] for o in others]
+            if names:
+                kept[slug] = "bound by " + ", ".join(names)
+            elif _is_protected_structure(store, sid):
+                kept[slug] = "protected"
+        to_retire = {s: i for s, i in bound.items() if s not in kept}
         store.retire_ref(ref_id, conn=conn)
         conn.execute(
             "UPDATE se_ports SET retired_at = now() "
@@ -1367,4 +1428,6 @@ def retire_design(store: Any, ref_id: int) -> int:
             "RETURNING id",
             (ref_id,),
         ).fetchall()
-    return len(rows)
+    for sid in to_retire.values():
+        store.structure_delete(sid)
+    return len(rows), sorted(to_retire), kept

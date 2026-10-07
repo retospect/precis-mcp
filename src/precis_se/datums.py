@@ -1102,16 +1102,10 @@ def evaluate_measure(
         )
     if spec.unit != "m":
         # A feature measurement is a length off the cad envelope; a
-        # count/ratio/deg measure has no geometric number to compare.
+        # count/ratio/deg/categorical measure has no geometric number to
+        # compare, which is not a finding — only a datum problem is.
         return MeasureValue(
-            None,
-            spec.unit,
-            None,
-            notes=(
-                *region_datum_notes(tree, block, spec),
-                f"measure unit is {spec.unit!r}; a feature measurement is a "
-                "length in m — nothing to derive",
-            ),
+            None, spec.unit, None, notes=region_datum_notes(tree, block, spec)
         )
     if not is_geometric(spec):
         # A metre-valued measurand that is not a feature distance (an

@@ -1300,6 +1300,15 @@ class TodoHandler(NumericRefHandler):
         if self._pending_prio is not None:
             body += f", prio={self._pending_prio}"
         body += "."
+        executor = (self._pending_meta or {}).get("executor")
+        if executor:
+            # gr453861: the minter is one pass in a sequential SYS cycle, so
+            # the job child is not instant — say so in the write receipt.
+            body += (
+                f" executor={executor}: the minter picks this up on its next"
+                " pass (minutes, up to ~20 min on a busy cluster); a child"
+                " job appears under this todo with a `job-minted` event."
+            )
         if self._stamped_default_tier:
             # The parented-write default armed billed compute; a write
             # receipt must say so (silent side effects erode agent trust).

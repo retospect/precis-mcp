@@ -150,6 +150,14 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
 
+    ao = dsub.add_parser(
+        "audit-owners",
+        help="Read-only: drafts with several live draft-of owners or a retired one.",
+    )
+    ao.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
     rm = dsub.add_parser(
         "remarkable",
         help="Export in reMarkable mode and send the PDF to the tablet.",
@@ -203,11 +211,28 @@ def run(args: argparse.Namespace) -> None:
     if args.draft_cmd == "audio":
         _run_audio(args)
         return
+    if args.draft_cmd == "audit-owners":
+        _run_audit_owners(args)
+        return
     if args.draft_cmd == "remarkable":
         _run_remarkable(args)
         return
     print(f"draft: unknown subcommand {args.draft_cmd!r}", file=sys.stderr)
     sys.exit(2)
+
+
+def _run_audit_owners(args: argparse.Namespace) -> None:
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        found = store.drafts.draft_owner_audit()
+    finally:
+        store.close()
+    for key, label in (
+        ("multi_owner", "drafts with >1 live draft-of owner"),
+        ("dangling", "drafts whose draft-of owner is retired"),
+    ):
+        ids = found[key]
+        print(f"{label}: {len(ids)}" + (f" {ids}" if ids else ""))
 
 
 def _run_audio(args: argparse.Namespace) -> None:

@@ -563,6 +563,8 @@ def drc(tree: SeTree) -> DrcReport:
             else (
                 f"value {m.value:g} {m.unit}".rstrip()
                 if m.value is not None
+                else "relation"
+                if m.relation
                 else "declaration"
             )
         )
@@ -572,9 +574,9 @@ def drc(tree: SeTree) -> DrcReport:
                 subject=f"{m.block}.{m.name}",
                 detail=(
                     f"measurand {measurand_name(m)!r} (tn{m.measurand_ref}) has no "
-                    f"registered computer — its {declared} on "
-                    f"{m.datum or 'frame'} is stored but nothing computes a "
-                    "realised value to check it against"
+                    f"registered computer — its {declared}"
+                    f"{' on ' + m.datum if m.datum else ', with no datum set yet,'} "
+                    "is stored but nothing computes a realised value to check it against"
                 ),
                 severity="warn",
             )

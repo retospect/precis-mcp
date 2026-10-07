@@ -78,6 +78,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from precis.store import Store
 
+from precis.utils.hostname import CONTAINER_ID_RE
 from precis.workers import activity
 from precis.workers.runner import BatchResult
 
@@ -161,7 +162,7 @@ def resolve_host(override: str | None = None) -> str:
 #: ``host_heartbeat``/``worker_logs``, and once the container is torn down,
 #: nursery's host-dark detector would page critical forever for a "host" that
 #: never existed — nobody is going to retire an identity they never knew about.
-_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+_CONTAINER_ID_RE = CONTAINER_ID_RE
 
 
 def _resolve_host_ephemeral(override: str | None) -> tuple[str, bool]:

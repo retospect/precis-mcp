@@ -828,3 +828,17 @@ def test_put_job_requires_reaches_the_handler_over_the_mcp_door(
     ref = store.get_ref(kind="job", id=job_id)
     assert ref is not None
     assert ref.meta.get("requires") == {"gpu": 1}
+
+
+def test_put_se_ops_reach_the_handler_over_the_mcp_door(
+    mounted_runtime: PrecisRuntime,
+) -> None:
+    """``put(kind='se', ops=[...])`` through the real MCP callable builds the
+    design (gr458472): before ``put`` declared ``ops=`` a strict-schema
+    client's kwarg was dropped and the call raised the empty-ops refusal."""
+    out = tools_core.put(
+        kind="se",
+        id="ops-door-se",
+        ops=[{"op": "add_block", "name": "fork", "envelope": "box:w0.04d0.02h0.08"}],
+    )
+    assert "fork" in out, out

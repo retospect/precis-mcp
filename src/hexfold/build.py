@@ -4203,36 +4203,57 @@ def _apply_connects(
         o: v for (k, v), o in ords.items() if isinstance(v, Site) and k in lat_keys
     }
 
+    # per-bond annotations, rolled up to one INFO per (seam, kind) at the
+    # end of the function (gr459571): the agent-facing echo was drowned in
+    # one line per seam bond; the per-bond detail stays in ``data["bonds"]``
+    annot_rows: dict[tuple[str, str], list[tuple[int, int, str]]] = {}
+
     def annot(i: int, j: int, where: str) -> str | None:
         """Sublattice annotation: parity when both endpoints are lattice
         sites; the host-side sublattice when exactly one is (a fullerene
         atom is not a bipartite site)."""
         sa, sb = site_of_ord.get(i), site_of_ord.get(j)
         if sa is not None and sb is not None:
-            findings.append(
-                Finding(
-                    "annot.sublattice",
-                    Severity.INFO,
-                    f"bond {i}-{j} parity={'same' if sa.s == sb.s else 'cross'}",
-                    where=where,
-                    data=(("parity", "same" if sa.s == sb.s else "cross"),),
-                )
-            )
+            par = "same" if sa.s == sb.s else "cross"
+            annot_rows.setdefault((where, "parity"), []).append((i, j, par))
             return None
         host_site = sa if sa is not None else sb
         if host_site is None:
             return None
         sub = "A" if host_site.s == 0 else "B"
-        findings.append(
-            Finding(
-                "annot.sublattice",
-                Severity.INFO,
-                f"bond {i}-{j} host sublattice={sub}",
-                where=where,
-                data=(("host_sublattice", sub),),
-            )
-        )
+        annot_rows.setdefault((where, "host"), []).append((i, j, sub))
         return sub
+
+    def flush_annots() -> None:
+        for (where, kind), rows in annot_rows.items():
+            n = len(rows)
+            if kind == "parity":
+                same = sum(1 for _i, _j, v in rows if v == "same")
+                msg = f"{n} bonds, {same} same / {n - same} cross"
+                data: tuple[tuple[str, Any], ...] = (
+                    ("n_bonds", n),
+                    ("same", same),
+                    ("cross", n - same),
+                    ("bonds", [[i, j, v] for i, j, v in rows]),
+                )
+            else:
+                na = sum(1 for _i, _j, v in rows if v == "A")
+                msg = f"{n} bonds, host sublattice A={na} B={n - na}"
+                data = (
+                    ("n_bonds", n),
+                    ("A", na),
+                    ("B", n - na),
+                    ("bonds", [[i, j, v] for i, j, v in rows]),
+                )
+            findings.append(
+                Finding(
+                    "annot.sublattice",
+                    Severity.INFO,
+                    msg,
+                    where=where,
+                    data=data,
+                )
+            )
 
     for ci, c in enumerate(spec.connects):
         if c.verb == "menu":
@@ -4706,6 +4727,7 @@ def _apply_connects(
     # sheet partition (SPEC 6.3): needed both to scope the fused-rim B
     # remainder below (per sheet, not per net -- a k>=3 seam can leave
     # several disjoint sheets in one spec) and for the final Net.sheet_atoms.
+    flush_annots()
     sheet_atoms = _compute_sheets(atoms, bonds, set(attach_bonds), seam_atom_ords)
     if fused_edges:
         # consumed rims carried their hole_b away; recompute the

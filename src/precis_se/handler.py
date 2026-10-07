@@ -100,6 +100,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -243,7 +244,7 @@ class SeHandler(Handler):
             "block= state= PERSISTENTLY poses a block into one of its "
             "declared states. "
             "get lists designs or renders one (view='tree'|'block'|'surface_deviation'|"
-            "'ports'|'topology'|'chain'|'measures'|'datums'|'pockets'|'validate'|"
+            "'ports'|'topology'|'chain'|'measures'|'revisions'|'datums'|'pockets'|'validate'|"
             "'clearance'|'sweep'|'stations'|'pick'|"
             "'drc'|'bom'|'interview'|'freedom'|'stability'|'mechanics'|"
             "'literature'|'fret'|'print'|'fab'; block takes "
@@ -446,6 +447,7 @@ class SeHandler(Handler):
             "topology",
             "chain",
             "measures",
+            "revisions",
             "datums",
             "pockets",
             "validate",
@@ -630,6 +632,7 @@ class SeHandler(Handler):
         text: str | None = None,
         title: str | None = None,
         args: dict[str, Any] | None = None,
+        ops: list[dict[str, Any]] | None = None,
         **_kw: Any,
     ) -> Response:
         if id is None or not str(id).strip():
@@ -642,7 +645,8 @@ class SeHandler(Handler):
         slug = str(id).strip()
         payload = _payload(text, args)
         _vet_put_payload(payload)
-        ops = payload.get("ops") or []
+        if ops is None:
+            ops = payload.get("ops") or []
         if not isinstance(ops, list):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
         description = str(payload.get("description") or "").strip()
@@ -747,6 +751,10 @@ class SeHandler(Handler):
             )
         description = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
+        if any(
+            isinstance(o, dict) and o.get("op") == "restore_revision" for o in op_list
+        ):
+            return self._restore_revision(ref, op_list, turn=turn)
         pending_jobs: list[PendingJob] = []
         # load -> apply -> save under the design's per-ref lock
         # (persist.tree_mutation's invariant): the retire-all/reinsert-all
@@ -781,6 +789,96 @@ class SeHandler(Handler):
         if pending_jobs:
             body += "\n\n" + self._run_pending(ref, tree, pending_jobs)
         return Response(body=body)
+
+    def _restore_revision(
+        self, ref: Any, op_list: list[dict[str, Any]], *, turn: str | None
+    ) -> Response:
+        """``restore_revision`` — put the design back to checkpoint ``rev-N``
+        through the normal edit save path, so the restore is itself a new
+        revision (history stays append-only; nothing is rewound)."""
+        if len(op_list) != 1:
+            raise BadInput(
+                "restore_revision must be the only op in its edit call",
+                next="edit(kind='se', id="
+                f"{str(ref.slug)!r}, ops=[{{'op':'restore_revision','rev':N}}])",
+            )
+        rev_raw = op_list[0].get("rev")
+        if isinstance(rev_raw, bool) or not isinstance(rev_raw, int):
+            raise BadInput(
+                "restore_revision requires an integer 'rev'",
+                next=f"get(kind='se', id={str(ref.slug)!r}, view='revisions')",
+            )
+        description = str((ref.meta or {}).get("description") or "").strip()
+        ttl = ref.title or str(ref.slug)
+        with persist.tree_mutation(self.store, ref.id) as conn:
+            revs = design_history.list_revisions(self.store, ref.id, conn=conn)
+            ckpt = design_history.load_checkpoint(
+                self.store, ref.id, f"rev-{rev_raw}", conn=conn
+            )
+            if ckpt is None:
+                have = (
+                    f"available revisions: {revs[0].rev}..{revs[-1].rev}"
+                    if revs
+                    else "this design has no recorded revisions"
+                )
+                raise NotFound(
+                    f"se design {str(ref.slug)!r} has no revision {rev_raw}; {have}"
+                )
+            tree = persist.tree_from_json(ckpt.payload, store=self.store)
+            tree.own_slug = str(ref.slug)
+            tree.foreign = self._foreign_resolver()
+            persist.save_tree(
+                self.store,
+                ref_id=ref.id,
+                tree=tree,
+                card_text=_card_text(ttl, description, tree),
+                conn=conn,
+            )
+            _materialize_states(self.store, ref.id, tree, conn=conn, set_by="se.edit")
+            new_rev = _record_revision(
+                self.store, ref.id, ops=op_list, turn=turn, conn=conn
+            )
+        persist.sync_realized_by(self.store, ref.id, tree)
+        return Response(
+            body=(
+                f"# se design '{ref.slug}' restored to rev {rev_raw} "
+                f"(recorded as rev {new_rev})\n\n"
+            )
+            + _render_tree(tree, ttl, description)
+        )
+
+    def _render_revisions(self, ref: Any) -> str:
+        revs = design_history.list_revisions(self.store, ref.id)
+        if not revs:
+            return (
+                f"# se design '{ref.slug}' revisions\n\n"
+                "no recorded revisions (saved before the ledger existed)"
+            )
+        ckpts = {c.id: c for c in design_history.list_checkpoints(self.store, ref.id)}
+        lines = [
+            f"# se design '{ref.slug}' revisions ({len(revs)})",
+            "",
+            "| rev | time (UTC) | ops | blocks |",
+            "|---|---|---|---|",
+        ]
+        for r in revs:
+            when = (
+                r.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+                if r.created_at
+                else "?"
+            )
+            names = ", ".join(
+                str(o.get("op", "?")) for o in r.ops if isinstance(o, dict)
+            )
+            ck = ckpts.get(r.checkpoint_id) if r.checkpoint_id is not None else None
+            blocks = (ck.headline or {}).get("blocks", "?") if ck else "?"
+            lines.append(f"| {r.rev} | {when} | {names or '—'} | {blocks} |")
+        lines += [
+            "",
+            "restore: edit(kind='se', id="
+            f"{str(ref.slug)!r}, ops=[{{'op':'restore_revision','rev':N}}])",
+        ]
+        return "\n".join(lines)
 
     # ── get ──────────────────────────────────────────────────────────
     def get(
@@ -865,6 +963,8 @@ class SeHandler(Handler):
                     load_structure=_load_structure,
                 )
             )
+        if v == "revisions":
+            return Response(body=self._render_revisions(ref))
         if v == "measures":
             return Response(body=_render_measures(tree))
         if v == "datums":
@@ -901,7 +1001,14 @@ class SeHandler(Handler):
                 raise Unsupported(
                     str(exc), next="pip install --force-reinstall 'precis-mcp'"
                 ) from exc
-            return Response(body=body)
+            digest, qualifier = self._validate_digest(
+                self._validate_findings(tree, ref.id)
+            )
+            if qualifier:
+                body = body.replace(
+                    "✓ no DRC findings", "no DRC findings" + qualifier, 1
+                )
+            return Response(body=body.rstrip("\n") + "\n\n" + digest)
         if v == "kinematics":
             return Response(body=self._render_kinematics(tree, ref.id))
         if v == "bom":
@@ -987,6 +1094,51 @@ class SeHandler(Handler):
             "directions)",
         )
 
+    def _validate_findings(self, tree: SeTree, ref_id: int) -> list[Any]:
+        """Every ``view='validate'`` finding (pure + store-aware + atomic),
+        shared with ``view='drc'``'s validate digest so the two never
+        disagree about what validate found."""
+        findings = list(se_validate.validate(tree))
+        findings.extend(
+            se_validate.port_override_unapplied_findings(self.store, tree, ref_id)
+        )
+        bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
+            self.store, tree
+        )
+        generated_records = se_atomic_render.bound_generated_records(self.store, tree)
+        chain_records = se_atomic_render.bound_chain_records(self.store, tree)
+        findings.extend(
+            se_atomic_validate.validate_atomic(
+                tree,
+                bound_scenes=bound_scenes,
+                bound_full_scenes=bound_full_scenes,
+                generated_bound=frozenset(generated_records),
+                generated_records=generated_records,
+                chain_records=chain_records,
+            )
+        )
+        return findings
+
+    @staticmethod
+    def _validate_digest(findings: list[Any]) -> tuple[str, str]:
+        """(one-line digest, headline qualifier) for ``view='drc'``."""
+        bad = [f for f in findings if f.severity in ("error", "warn")]
+        if not bad:
+            return "validate: clean", ""
+        n_error = sum(1 for f in bad if f.severity == "error")
+        n_warn = len(bad) - n_error
+        first = bad[0]
+        digest = (
+            f"validate: {n_error} error(s), {n_warn} warning(s) — "
+            f"first: {first.rule} {first.detail}; see view='validate'"
+        )
+        parts = []
+        if n_error:
+            parts.append(f"{n_error} error(s)")
+        if n_warn:
+            parts.append(f"{n_warn} warning(s)")
+        return digest, "; validate has " + " and ".join(parts)
+
     def _render_validate(self, tree: SeTree, ref_id: int) -> str:
         """``view='validate'`` — :mod:`precis_se.validate`'s findings plus
         :func:`precis_se.atomic.validate.validate_atomic`'s, under the
@@ -1008,25 +1160,7 @@ class SeHandler(Handler):
         The header also records **which scenario governed** these checks
         (:func:`_scenario_line`) — a verdict whose production context isn't
         stated can't be re-read later."""
-        findings = list(se_validate.validate(tree))
-        findings.extend(
-            se_validate.port_override_unapplied_findings(self.store, tree, ref_id)
-        )
-        bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
-            self.store, tree
-        )
-        generated_records = se_atomic_render.bound_generated_records(self.store, tree)
-        chain_records = se_atomic_render.bound_chain_records(self.store, tree)
-        findings.extend(
-            se_atomic_validate.validate_atomic(
-                tree,
-                bound_scenes=bound_scenes,
-                bound_full_scenes=bound_full_scenes,
-                generated_bound=frozenset(generated_records),
-                generated_records=generated_records,
-                chain_records=chain_records,
-            )
-        )
+        findings = self._validate_findings(tree, ref_id)
         header_lines = [_fill_fraction_line(tree), _scenario_line(self.store, ref_id)]
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
@@ -1779,28 +1913,18 @@ class SeHandler(Handler):
         ref = self.store.get_ref(kind="se", id=str(id).strip())
         if ref is None:
             raise NotFound(f"se design {id!r} not found")
-        # gr459058: retiring a design does NOT retire the `structure` refs
-        # its generate/join ops minted, so each retire leaves one live
-        # structure per bound block.  Reporting the block count alone read
-        # as "all of it is gone" and quietly grew the orphan set (the two
-        # rows td458221 tracks are this, not probe litter).  Deleting them
-        # here would be a write the caller did not ask for, so name them
-        # instead and let the caller decide — the cheap, honest half.
-        orphans = sorted(
-            {
-                node.bound
-                for node in persist.load_tree(self.store, ref.id).blocks.values()
-                if node.bound_kind == "structure" and node.bound
-            }
-        )
-        n = persist.retire_design(self.store, ref.id)
+        # gr459058: the retire cascades to the structures this design's
+        # blocks minted/bound, except ones another live design still binds
+        # or the (undecided) building-block promotion protects.
+        n, retired, kept = persist.retire_design(self.store, ref.id)
         body = f"retired se design '{ref.slug}' ({n} block(s))"
-        if orphans:
-            body += (
-                f"\n\n{len(orphans)} structure(s) stay live — a design retire "
-                "does not retire what its blocks were bound to. Delete the "
-                "ones you are done with:\n"
-                + "\n".join(f"  delete(kind='structure', id={s!r})" for s in orphans)
+        if retired:
+            body += f"\n\nretired {len(retired)} bound structure(s): " + ", ".join(
+                retired
+            )
+        if kept:
+            body += f"\n\n{len(kept)} structure(s) stay live:\n" + "\n".join(
+                f"  {s} ({why})" for s, why in sorted(kept.items())
             )
         return Response(body=body)
 
@@ -5033,6 +5157,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     "chain": frozenset({"state"}),
     "export": frozenset({"format"}),
     "measures": frozenset(),
+    "revisions": frozenset(),
     "datums": frozenset(),
     "pockets": frozenset(),
     "validate": frozenset(),

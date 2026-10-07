@@ -188,6 +188,11 @@ get(kind="draft")  # list ALL drafts
 get(kind="draft", project="<project-todo-id>")  # → that project's draft outline
 ```
 
+Rebind or unbind the owner with `link(kind='draft', id='<slug>',
+target='todo:N', rel='draft-of', mode='remove')`; `mode='add'` refuses while
+a live owner exists (remove first). A retired owner is skipped by readers
+and counted by `precis draft audit-owners`.
+
 A draft is born with a title heading (never empty), bound 1:1 to its
 project todo. The brief lives on the project's `meta.workspace.brief`;
 the draft carries `path`/`format`.

@@ -1224,3 +1224,65 @@ def test_guard_energy_comparable_allows_a_matching_fingerprint():
     same_model_a = {"provenance": "computed", "model": "mace"}
     same_model_b = {"provenance": "computed", "model": "mace"}
     guard_energy_comparable(same_model_a, same_model_b)  # no raise
+
+
+# ── gr459568: summary head by default, one probe arg key, validate tally ──
+
+
+def _big_pd(n: int = 45) -> str:
+    return json.dumps(
+        {
+            "cell": {"a": 40.0, "b": 40.0, "c": 40.0, "pbc": [False, False, False]},
+            "ops": [
+                {"op": "add_atom", "element": "Pd", "frac": [0.02 * i, 0.5, 0.5]}
+                for i in range(n)
+            ],
+        }
+    )
+
+
+def test_default_get_is_summary_head_above_threshold(structure):
+    structure.put(id="big_pd", text=_big_pd(45))
+    body = structure.get(id="big_pd").body
+    assert "45 atoms" in body and "bbox" in body and "# validate:" in body
+    assert "view='atoms'" in body
+    assert "aPd7" not in body  # no per-atom rows
+    full = structure.get(id="big_pd", view="atoms").body
+    assert "aPd7" in full and "# bbox" in full
+
+
+def test_default_get_inlines_small_structure(structure):
+    structure.put(id="pd_pair", text=_PD)
+    body = structure.get(id="pd_pair").body
+    assert body.index("# validate:") < body.index("aPd1")
+
+
+def test_atom_views_require_atom_key(structure):
+    structure.put(id="pd_pair", text=_PD)
+    for view in ("atom", "neighborhood"):
+        with pytest.raises(BadInput, match="atom"):
+            structure.get(id="pd_pair", view=view, args={})
+        with pytest.raises(NotFound):
+            structure.get(id="pd_pair", view=view, args={"atom": "aZz9"})
+    nb = structure.get(id="pd_pair", view="neighborhood", args={"atom": "aPd1"})
+    assert "aPd2" in nb.body
+    alias = structure.get(id="pd_pair", view="neighborhood", args={"center": "aPd1"})
+    assert "aPd2" in alias.body
+
+
+def test_validate_leads_with_count_by_rule_table(structure):
+    structure.put(
+        id="clash",
+        text=json.dumps(
+            {
+                "cell": {"a": 10.0, "b": 10.0, "c": 10.0, "pbc": [False] * 3},
+                "ops": [
+                    {"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5]},
+                    {"op": "add_atom", "element": "O", "frac": [0.51, 0.5, 0.5]},
+                ],
+            }
+        ),
+    )
+    lines = structure.get(id="clash", view="validate").body.splitlines()
+    assert lines[0].startswith("# ")
+    assert "count" in lines[1]

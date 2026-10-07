@@ -35,6 +35,8 @@ from typing import Any
 
 from psycopg import Connection
 
+from precis.utils.hostname import is_container_id_host
+
 log = logging.getLogger(__name__)
 
 
@@ -77,6 +79,10 @@ class KindsMixin:
         unknown-process roster.
         """
         if not specs or process == "unknown":
+            return 0
+        if is_container_id_host(host):
+            # gr461595: throwaway container id, never boots again — pure ballast.
+            log.debug("upsert_kind_providers: skipping ephemeral host %r", host)
             return 0
         sql = (
             "INSERT INTO kind_provider (slug, host, process, last_seen) "

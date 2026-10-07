@@ -107,8 +107,12 @@ h/(3,3,A) --bond--> f/(3,3,A)
 h/(3,3,A) --bond--> f/(3,3,B)
 """
     )
-    par = sorted(dict(f.data)["parity"] for f in codes["annot.sublattice"])
-    assert par == ["cross", "same"]
+    # one rolled-up INFO per seam; per-bond detail lives in data["bonds"]
+    (f,) = codes["annot.sublattice"]
+    d = dict(f.data)
+    assert (d["n_bonds"], d["same"], d["cross"]) == (2, 1, 1)
+    assert "2 bonds, 1 same / 1 cross" in f.message
+    assert sorted(v for _i, _j, v in d["bonds"]) == ["cross", "same"]
 
 
 def test_hole_dir_disambiguates() -> None:
@@ -392,7 +396,8 @@ b: fullerene(C60)
 b @ h/(7,0,A):0 [9-6]
 """
     )
-    subs = [dict(f.data)["host_sublattice"] for f in codes["annot.sublattice"]]
+    (rolled,) = codes["annot.sublattice"]
+    subs = [v for _i, _j, v in dict(rolled.data)["bonds"]]
     assert len(subs) == 6 and all(x in ("A", "B") for x in subs)
     summary = dict(codes["annot.host_sublattices"][0].data)
     assert summary["A"] + summary["B"] == 6
@@ -412,3 +417,31 @@ b @ h/(7,0,A):0 [9-6]
     assert all("component" in f.message for f in chis)
     res = [f for f in codes["euler.residual"]]
     assert res and all(f.severity.name == "INFO" for f in res)
+
+
+def test_agent_render_leads_with_verdicts() -> None:
+    from hexfold.report import Finding, Report, Severity
+
+    r = Report(
+        (
+            Finding("annot.sublattice", Severity.INFO, "x", where="s"),
+            Finding("geom.summary", Severity.INFO, "x"),
+            Finding("euler.chi", Severity.INFO, "x"),
+            Finding("geom.bond.long", Severity.WARN, "x"),
+            Finding("net.components", Severity.INFO, "x"),
+            Finding("seam.rings", Severity.INFO, "x"),
+            Finding("boom", Severity.ERROR, "x"),
+        )
+    )
+    codes = [ln.split()[1] for ln in r.render(agent=True).splitlines()]
+    assert codes == [
+        "boom",
+        "geom.bond.long",
+        "euler.chi",
+        "seam.rings",
+        "net.components",
+        "geom.summary",
+        "annot.sublattice",
+    ]
+    # default order unchanged: INFO sorted by code
+    assert r.render().splitlines()[2].split()[1] == "annot.sublattice"

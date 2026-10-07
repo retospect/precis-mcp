@@ -177,7 +177,10 @@ MERGE_CONFIDENCE_THRESHOLD = 0.85
 class Verdict(TypedDict):
     """One ``dedup_judge`` / ``merge_confirm`` outcome."""
 
-    verdict: Verdict3
+    #: ``"error"`` only from :func:`dedup_judge` on a dispatch failure —
+    #: not a verdict; :func:`judge_candidates` retries it once and
+    #: :func:`place` refuses to mint while one is left.
+    verdict: Verdict3 | Literal["error"]
     confidence: float
     rationale: str
 
@@ -1145,9 +1148,10 @@ def dedup_judge(a: str, b: str) -> Verdict:
     Merges only on genuinely the same fact + same conditions; any real
     difference -> ``"different"``; opposite polarity at the same scope ->
     ``"contradicts"``. Biased hard toward ``"different"`` — a dispatch
-    error or unparseable response also degrades to ``"different"`` at
-    confidence 0.0, never a silent ``"same"`` (the over-merge guard holds
-    even on infrastructure failure).
+    response that is unparseable degrades to ``"different"`` at
+    confidence 0.0, never a silent ``"same"``. A dispatch error is NOT a
+    verdict: it returns ``verdict="error"`` (confidence 0.0) so a transient
+    failure can't read as "different" and mint a duplicate hub.
     """
     prompt = _DEDUP_PROMPT.format(claim_a=a, claim_b=b)
     res = route(
@@ -1163,7 +1167,11 @@ def dedup_judge(a: str, b: str) -> Verdict:
     )
     if res.error:
         log.warning("taproot: dedup_judge dispatch failed: %s", res.error)
-        return _coerce_verdict(None, default_rationale=f"dispatch error: {res.error}")
+        return Verdict(
+            verdict="error",
+            confidence=0.0,
+            rationale=f"dispatch error: {res.error}",
+        )
     data = res.data or _parse_json_object(res.text)
     return _coerce_verdict(data, default_rationale="unparseable model output")
 
@@ -1171,9 +1179,8 @@ def dedup_judge(a: str, b: str) -> Verdict:
 # Prod MEDIUM dedup runs cloud haiku over the ``claude_p`` transport: one
 # ``claude -p`` subprocess per call, ~10 s, no resource slot. The cap bounds
 # that subprocess burst on the MCP host (two rounds for a typical k≈8)
-# rather than any slot count. A failed judgment does not raise — it
-# degrades to "different", so an overloaded burst would mint a duplicate
-# hub, not an error.
+# rather than any slot count. A failed judgment is retried once, then
+# :func:`place` refuses the mint (``Upstream``).
 JUDGE_MAX_WORKERS = 4
 
 
@@ -1196,14 +1203,24 @@ def judge_candidates(
     the router still sees the caller's session / tick attribution. An
     exception from any judgment propagates, as the serial loop did.
     """
+
+    def judge_once(claim: str) -> Verdict:
+        v = judge_fn(sentence, claim)
+        if v["verdict"] == "error":
+            log.warning(
+                "taproot: dedup judgment errored, retrying once: %s", v["rationale"]
+            )
+            v = judge_fn(sentence, claim)
+        return v
+
     if len(candidates) <= 1:
-        return [(cand, judge_fn(sentence, cand.claim)) for cand in candidates]
+        return [(cand, judge_once(cand.claim)) for cand in candidates]
     workers = min(max_workers, len(candidates))
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="dedup-judge"
     ) as pool:
         futures = [
-            pool.submit(contextvars.copy_context().run, judge_fn, sentence, cand.claim)
+            pool.submit(contextvars.copy_context().run, judge_once, cand.claim)
             for cand in candidates
         ]
         return [
@@ -1301,7 +1318,18 @@ def place(
     ``judged`` may be empty (``block`` found no candidates) -> **new**.
     ``merge_confirm_fn`` is injectable for tests (default
     :func:`merge_confirm`, a real BIG dispatch).
+
+    Raises :class:`~precis.errors.Upstream` when any candidate's judgment
+    is still ``"error"`` (dispatch failed after :func:`judge_candidates`'
+    retry): an unjudged candidate must not read as "different" and mint a
+    duplicate hub, so the caller retries the whole placement.
     """
+    errored = [v for _, v in judged if v["verdict"] == "error"]
+    if errored:
+        raise Upstream(
+            f"dedup judge failed on {len(errored)}/{len(judged)} candidates "
+            f"after retry ({errored[0]['rationale']}); hub not minted — retry"
+        )
     same_high = [
         (cand, v)
         for cand, v in judged

@@ -178,12 +178,15 @@ Each edit bumps the design version. A graph edit invalidates any prior relax.
 get(kind="structure")  # list all designs
 get(
     kind="structure", id="pd111"
-)  # the TOC: formula · natoms · pbc · bonds · per-atom rows
+)  # the TOC head: formula · natoms · pbc · bonds · bbox · validate counts
+get(kind="structure", id="pd111", view="atoms")  # the per-atom table
 ```
 
 The TOC is the **one round-trip overview**: cell summary, composition, pbc,
-bond count, fragment count, the last relax envelope (if any), and one row
-per atom (element · fractional position · coordination · fixed). A symmetry-
+bond count, bounding box, validator error/warning counts and the last relax
+envelope (if any). The per-atom rows (element · fractional position ·
+coordination · fixed) are inlined only for ≤40 atoms; above that use
+`view='atoms'`. `put`/`edit` echo the same head. A symmetry-
 reduced (Wyckoff-orbit) collapse is a later increment.
 
 ## Probe it — `get(view=…, args={…})`
@@ -201,15 +204,15 @@ get(
     ..., view="atom", args={"atom": "aPd2", "run": 7}
 )  # pin a specific run's per-atom force (else: current-version run, else a cheap EMT estimate)
 get(
-    ..., view="neighborhood", args={"center": "aPd2", "radius": 3.0}
-)  # the coordination shell within R Å
+    ..., view="neighborhood", args={"atom": "aPd2", "radius": 3.0}
+)  # the coordination shell within R Å (`center` also accepted)
 get(..., view="bonds")  # the whole bond list (order · kind · provenance · image)
 get(
     ..., view="find", args={"element": "Pd", "undercoordinated": true}
 )  # select atoms by predicate
 get(
     ..., view="validate"
-)  # DRC, two tiers: errors (overlaps/valence/bond length — these gate a
+)  # leads with a count-by-(severity, rule) table; DRC, two tiers: errors (overlaps/valence/bond length — these gate a
 #    cloud relax; the valence budget is charge-aware, so a declared N+/O-/etc.
 #    is judged against ITS state, not luck) + advisory warnings (VSEPR angle
 #    strain, twisted π bond, 3-/4-ring, hybridization conflict, an

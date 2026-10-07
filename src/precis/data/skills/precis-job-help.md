@@ -142,7 +142,9 @@ put(kind='todo',
 link(kind='todo', id=<that_todo_id>, target='gripe:42', rel='fixes')
 
 # 3) Walk away. The dispatch worker (in the default rotation) mints
-#    the job under it within one tick. Poll the parent todo's
+#    the job under it on its next pass — minutes, not seconds (one SYS
+#    cycle, 15-18 min observed; prio is ascending, lower = hotter, see
+#    precis-minter-help). Poll the parent todo's
 #    status if you want; the job lives under it.
 ```
 

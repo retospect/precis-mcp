@@ -1084,12 +1084,18 @@ class _PathwayTreeMixin:
         return sid
 
     def _pathway(
-        self, store: Store, sid: int, *, status: str = "computing", tier: str = "neb"
+        self,
+        store: Store,
+        sid: int,
+        *,
+        status: str = "computing",
+        tier: str = "neb",
+        title: str = "test pathway",
     ) -> int:
         ref = store.insert_ref(
             kind="pathway",
             slug=f"test-pw-{sid}-{status}",
-            title="test pathway",
+            title=title,
             meta={"status": status, "candidate_ref": sid, "tier": tier},
         )
         return int(ref.id)
@@ -1428,6 +1434,32 @@ class TestReconcileStaleComputingPathways(_PathwayTreeMixin):
         meta = _pathway_meta(store, pw)
         assert meta["status"] == "failed"
         assert meta["failed_reason"] == "orphaned (no live compute)"
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("pathway x (computing)", "pathway x (failed)"),
+            ("pathway x custom", "pathway x custom"),
+        ],
+    )
+    def test_failed_stamp_swaps_computing_title_suffix(
+        self, store: Store, title: str, expected: str
+    ) -> None:
+        q = _mk_quest(store, "A striving")
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid, title=title)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+        self._age_pathway(store, pw, "8 days")
+
+        assert loop_mod._reconcile_stale_computing_pathways(store) == 1
+
+        assert _pathway_meta(store, pw)["status"] == "failed"
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT title FROM refs WHERE ref_id = %s", (pw,)
+            ).fetchone()
+        assert row is not None and row[0] == expected
 
     def test_stale_with_a_still_running_job_is_left_alone(self, store: Store) -> None:
         q = _mk_quest(store, "A striving")

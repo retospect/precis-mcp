@@ -162,7 +162,23 @@ def test_c3_non_length_unit_derives_nothing() -> None:
     )
     assert out.value is None
     assert not any("mismatch" in n for n in out.notes)
-    assert any("'deg'" in n and "length in m" in n for n in out.notes)
+    # Nothing to derive is not a finding: no "length in m" noise (gr465128).
+    assert not any("nothing to derive" in n or "length in m" in n for n in out.notes)
+    from precis_se import handler as handler_mod
+
+    row = handler_mod._measure_row(
+        _measure(
+            "b",
+            "tilt",
+            value=5.0,
+            unit="deg",
+            datum="face:b.side3",
+            relation={"feature": "face:b.side1"},
+            reason="generated",
+        ),
+        tree,
+    )
+    assert row["reason"] == "generated"
 
 
 # ── c4: moving the pose leaves datum-relative measurements unchanged ─────

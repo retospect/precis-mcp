@@ -99,7 +99,7 @@ def test_range_through_ninety_degrees_flags_arm_against_post(
 def test_range_short_of_the_post_draws_no_sweep_finding(handler: SeHandler) -> None:
     _put(handler, "rotor_short", _rotor_ops({"range": [0.0, math.pi / 4.0]}))
     body = handler.get(id="rotor_short", view="drc").body
-    assert _sweep_lines(body) == []
+    assert [ln.split("\t")[1] for ln in _sweep_lines(body)] == ["joint_sweep_clean"]
 
 
 # ── criterion 3: discrete states 0 and π pass view='sweep' — the gap ──────
@@ -133,7 +133,8 @@ def test_discrete_states_at_zero_and_pi_pass_sweep_without_a_range(
     sweep = handler.get(id="rotor_states", view="sweep").body
     assert "2/2 combination(s) checked" in sweep
     assert "no interference in any checked state" in sweep
-    assert _sweep_lines(handler.get(id="rotor_states", view="drc").body) == []
+    body = handler.get(id="rotor_states", view="drc").body
+    assert [ln.split("\t")[1] for ln in _sweep_lines(body)] == ["joint_sweep_not_run"]
 
 
 def test_state_posing_control_a_quarter_turn_state_is_caught_by_sweep(
@@ -379,3 +380,127 @@ def test_moves_drifted_off_both_ends_is_reported_unchecked() -> None:
     found = kinematics_drc.sweep_findings(tree)
     assert [f.rule for f in found] == ["joint_sweep_unchecked"]
     assert "'gone'" in found[0].detail
+
+
+# ── not-run / clean lines (gr464669) ────────────────────────────────────────
+
+
+def _rules(tree: SeTree) -> list[str]:
+    return [f.rule for f in kinematics_drc.sweep_findings(tree)]
+
+
+def test_revolute_joints_without_a_range_say_the_sweep_did_not_run() -> None:
+    tree = apply_ops(SeTree(), _rotor_ops(None))
+    found = kinematics_drc.sweep_findings(tree)
+    assert [f.rule for f in found] == ["joint_sweep_not_run"]
+    assert found[0].severity == "info"
+    assert found[0].detail.startswith("1 revolute/prismatic joints, 0 declare")
+
+
+def test_design_without_joints_draws_no_sweep_finding() -> None:
+    ops = [
+        {"op": "add_block", "name": "a", "envelope": "box:w0.01d0.01h0.01"},
+        {"op": "add_block", "name": "b", "envelope": "box:w0.01d0.01h0.01"},
+    ]
+    assert _rules(apply_ops(SeTree(), ops)) == []
+
+
+def test_one_ranged_joint_sweeping_clean_reports_the_swept_count() -> None:
+    tree = apply_ops(SeTree(), _rotor_ops({"range": [0.0, math.pi / 4.0]}))
+    found = kinematics_drc.sweep_findings(tree)
+    assert [f.rule for f in found] == ["joint_sweep_clean"]
+    assert found[0].severity == "info"
+    assert found[0].detail.startswith("1 joint(s) swept")
+    assert found[0].subject == "1 joint(s)"
+
+
+def test_interference_suppresses_the_clean_line() -> None:
+    tree = apply_ops(SeTree(), _rotor_ops({"range": [0.0, math.pi], "samples": 9}))
+    rules = _rules(tree)
+    assert "joint_sweep_interference" in rules
+    assert "joint_sweep_clean" not in rules
+
+
+# ── rigid riders (gr462067) ─────────────────────────────────────────────────
+
+
+def _rider_ops(rider_joint: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The rotor plus a ``rider`` 20 mm above the arm's tip and an
+    ``obstacle`` 20 mm above the post. Authored, all clear; the arm turns
+    clear of the obstacle, but a rider carried with it lands on it."""
+    ops = _rotor_ops({"range": [0.0, math.pi], "samples": 9})
+    ops += [
+        {
+            "op": "add_block",
+            "name": "rider",
+            "envelope": "box:w0.006d0.006h0.01",
+            "pose": [0.03, 0.0, 0.02],
+        },
+        {"op": "add_port", "block": "rider", "name": "p", "pose": [0, 0, 0]},
+        {
+            "op": "add_block",
+            "name": "obstacle",
+            "envelope": "box:w0.006d0.006h0.01",
+            "pose": [0.0, 0.03, 0.02],
+        },
+    ]
+    if rider_joint is not None:
+        ops += [
+            {"op": "add_port", "block": "arm", "name": "r", "pose": [0, 0, 0.0]},
+            {"op": "connect", "a": "arm.r", "b": "rider.p", "joint": rider_joint},
+        ]
+    return ops
+
+
+def _rider_hits(tree: SeTree) -> list[str]:
+    return [
+        f.detail
+        for f in kinematics_drc.sweep_findings(tree)
+        if f.rule == "joint_sweep_interference" and "rider" in f.detail
+    ]
+
+
+def test_rigid_rider_collides_during_the_sweep_and_is_restored() -> None:
+    tree = apply_ops(SeTree(), _rider_ops({"class": "rigid"}))
+    before = {n: (list(b.pose), list(b.rot)) for n, b in tree.blocks.items()}
+    hits = _rider_hits(tree)
+    assert len(hits) == 1, hits
+    assert "rider ↔ obstacle" in hits[0]
+    after = {n: (list(b.pose), list(b.rot)) for n, b in tree.blocks.items()}
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    "rider_joint",
+    [None, {"class": "revolute", "axis": [0.0, 0.0, 1.0]}],
+    ids=["no-connect", "non-rigid-class"],
+)
+def test_rider_not_rigidly_attached_stays_put_during_the_sweep(
+    rider_joint: dict[str, Any] | None,
+) -> None:
+    tree = apply_ops(SeTree(), _rider_ops(rider_joint))
+    assert _rider_hits(tree) == []
+
+
+def test_rigid_closure_excludes_the_fixed_end_even_with_a_loop_back() -> None:
+    ops = _rider_ops({"class": "rigid"}) + [
+        {"op": "add_port", "block": "frame_box", "name": "s", "pose": [0, 0, 0]},
+        {"op": "add_port", "block": "rider", "name": "f", "pose": [0, 0, 0]},
+        {
+            "op": "connect",
+            "a": "rider.f",
+            "b": "frame_box.s",
+            "joint": {"class": "rigid"},
+        },
+    ]
+    tree = apply_ops(SeTree(), ops)
+    swept = tree.connects[0]
+    assert swept.joint is not None and swept.joint["class"] == "revolute"
+    moving = kinematics_drc._moving_set(tree, swept, "arm", "frame_box")
+    assert "frame_box" not in moving
+    assert {"arm", "rider"} <= moving
+    before = list(tree.blocks["frame_box"].pose)
+    found = kinematics_drc.sweep_findings(tree)
+    assert tree.blocks["frame_box"].pose == before
+    assert not [f for f in found if "frame_box" in f.detail and "↔" in f.detail]
+    assert len(_rider_hits(tree)) == 1

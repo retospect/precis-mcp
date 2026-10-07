@@ -20,6 +20,7 @@ import pytest
 
 from precis.design import history
 from precis.dispatch import Hub
+from precis.errors import NotFound
 from precis.handlers.structure import StructureHandler
 from precis.store import Store
 from precis_se import persist
@@ -242,3 +243,58 @@ def test_se_put_with_no_ops_refuses_to_empty_a_populated_design(
     # legitimate first save), and so may a design that has no blocks.
     assert "no blocks yet" in se.put(id="blank", text="").body
     assert "no blocks yet" in se.put(id="blank", text='{"ops": []}').body
+
+
+def _block_set(store: Store, ref_id: int) -> set[str]:
+    return set(persist.load_tree(store, ref_id).blocks)
+
+
+def test_se_restore_revision_brings_back_rev_n_and_records_itself(
+    se: SeHandler, store: Store
+) -> None:
+    se.put(id="caster1", text=json.dumps({"ops": _CASTER_OPS}))
+    ref_id = _ref_id(store, "se", "caster1")
+    se.edit(
+        id="caster1",
+        ops=[{"op": "add_block", "name": "cap", "parent": "hub", "pose": [0, 0, 0.02]}],
+    )
+    assert _block_set(store, ref_id) == {"fork", "hub", "cap"}
+    # Wipe the design down to a single block, then restore rev 2.
+    se.put(
+        id="caster1",
+        ops=[{"op": "add_block", "name": "only", "envelope": "box:w0.01d0.01h0.01"}],
+    )
+    assert _block_set(store, ref_id) == {"only"}
+    wiped_rev = len(history.list_revisions(store, ref_id))
+
+    restore = [{"op": "restore_revision", "rev": 2}]
+    out = se.edit(id="caster1", ops=restore)
+
+    assert "restored to rev 2" in out.body
+    assert _block_set(store, ref_id) == {"fork", "hub", "cap"}
+    revs = history.list_revisions(store, ref_id)
+    assert len(revs) == wiped_rev + 1
+    assert revs[-1].ops == restore
+    assert revs[-1].rev == wiped_rev + 1
+
+
+def test_se_restore_unknown_revision_names_the_available_range(
+    se: SeHandler,
+) -> None:
+    se.put(id="caster1", text=json.dumps({"ops": _CASTER_OPS}))
+    with pytest.raises(NotFound, match=r"available revisions: 1\.\.1"):
+        se.edit(id="caster1", ops=[{"op": "restore_revision", "rev": 9}])
+
+
+def test_se_view_revisions_lists_rev_time_ops_and_block_count(
+    se: SeHandler,
+) -> None:
+    se.put(id="caster1", text=json.dumps({"ops": _CASTER_OPS}))
+    se.edit(id="caster1", ops=[{"op": "add_block", "name": "cap", "parent": "hub"}])
+    body = se.get(id="caster1", view="revisions").body
+    rows = [ln for ln in body.splitlines() if ln.startswith("| ") and "rev" not in ln]
+    assert len(rows) == 2
+    assert rows[0].startswith("| 1 |") and "add_block" in rows[0]
+    assert rows[0].rstrip().endswith("| 2 |")
+    assert rows[1].startswith("| 2 |") and rows[1].rstrip().endswith("| 3 |")
+    assert "Z |" in rows[1]

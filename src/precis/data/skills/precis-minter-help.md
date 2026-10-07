@@ -59,6 +59,22 @@ get(kind="todo", id=todo.id, view="tree")
 # → todo + the spawned job under it (job rendered with ⚙ marker)
 ```
 
+## How long until the job appears? (and what `prio` means)
+
+Minting is **not instant**. The minter is one pass inside the worker's
+sequential SYS cycle, so a new executor todo waits for the whole cycle to
+come round: typically one cycle, observed **15–18 minutes** on prod —
+minutes, not seconds. Until then the todo sits `STATUS:open` with no child;
+that is normal. Once minted, the parent carries a `job-minted` event and the
+child job sits under it. A todo still unminted after ~30 minutes is a stalled
+mint, not latency: it surfaces on `search(kind='todo', view='attention')`
+under "Executor todo, no job minted".
+
+`prio` is **ascending — lower is hotter**: 1 = chat/preempt, 2 = cron,
+5 = default (migration `0014_refs_prio.sql`). `prio=8` is *colder* than the
+default and will not expedite anything; and no `prio` shortens the mint wait,
+it only orders claims among queued jobs.
+
 ## What gets rejected at mint time?
 
 An unknown `meta.executor` / `meta.job_type`, or a job_type incompatible

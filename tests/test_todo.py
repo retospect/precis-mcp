@@ -430,3 +430,18 @@ def test_status_list_hints_round_trip(handler: TodoHandler) -> None:
     assert any(f"id={rid}" in h for h in hints), hints
     tag_hints = [h for h in hints if h.startswith("tag(")]
     assert tag_hints and f"id={rid}" in tag_hints[0]
+
+
+def test_create_ack_states_minter_latency_only_for_executor_todos(
+    handler: TodoHandler,
+) -> None:
+    """gr453861: the executor ack says the mint is minutes away."""
+    plain = handler.put(text="plain todo")
+    assert "minter" not in plain.body
+    ex = handler.put(
+        text="executor todo",
+        meta={"executor": "claude_inproc", "job_type": "diagnose_gripe"},
+    )
+    assert "executor=claude_inproc" in ex.body
+    assert "minter picks this up on its next pass" in ex.body
+    assert "job-minted" in ex.body

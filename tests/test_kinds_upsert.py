@@ -106,6 +106,20 @@ def test_upsert_kind_providers_skips_unknown_process(store: Store) -> None:
     assert store.find_kind_providers("testkind-u", max_age_seconds=24 * 3600) == []
 
 
+def test_upsert_kind_providers_skips_container_id_host(store: Store) -> None:
+    """gr461595: a 12-hex container-id host upserts nothing; a normal
+    hostname (even hex-ish but not 12 chars) still does."""
+    spec = _FakeSpec(kind="testkind-h", is_numeric=False, title="H", description="h")
+    store.upsert_kinds([spec])
+    assert (
+        store.upsert_kind_providers([spec], host="070b9620ec08", process="precis-test")
+        == 0
+    )
+    assert store.find_kind_providers("testkind-h", max_age_seconds=24 * 3600) == []
+    store.upsert_kind_providers([spec], host="melchior", process="precis-test")
+    assert store.find_kind_providers("testkind-h") == ["melchior"]
+
+
 def test_prune_kind_providers_drops_aged_rows(store: Store) -> None:
     """gr452084 defect 4: rows for a (host, process) that stopped booting age
     past the retention window and get pruned; a fresh row stays."""

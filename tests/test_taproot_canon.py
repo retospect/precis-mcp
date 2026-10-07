@@ -707,12 +707,12 @@ def test_dedup_judge_parses_a_same_verdict(monkeypatch: pytest.MonkeyPatch) -> N
     assert v == {"verdict": "same", "confidence": 0.92, "rationale": "identical fact"}
 
 
-def test_dedup_judge_degrades_to_different_on_dispatch_error(
+def test_dedup_judge_flags_dispatch_error_not_different(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(canon, "route", lambda req: _result(error="boom"))
     v = dedup_judge("claim A", "claim B")
-    assert v["verdict"] == "different"
+    assert v["verdict"] == "error"
     assert v["confidence"] == 0.0
 
 
@@ -991,6 +991,37 @@ def test_report_format_renders_confusion_and_rates(tmp_path: Any) -> None:
     assert "1 pairs" in text
 
 
+def test_eval_canonicalization_tallies_an_errored_judge_separately(
+    tmp_path: Any,
+) -> None:
+    """gr462136: a dispatch error is a verdict of ``"error"`` — it is neither
+    a merge decision nor silently ``different``. The report counts it apart
+    from the confusion matrix and the over/under-merge rates."""
+    fixture = tmp_path / "pairs.jsonl"
+    fixture.write_text(
+        '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n'
+        '{"pair_id": 2, "claim_a": "C", "claim_b": "D", "relation": "equivalent"}\n',
+        encoding="utf-8",
+    )
+    seen: list[str] = []
+
+    def flaky_judge(a: str, b: str) -> Verdict:
+        seen.append(a)
+        if a == "A":
+            return Verdict(
+                verdict="error", confidence=0.0, rationale="dispatch error: boom"
+            )
+        return _verdict("same", 0.9)
+
+    report = eval_canonicalization(fixture, dedup_judge_fn=flaky_judge, progress=False)
+    assert report.total == 2
+    assert [r.pair_id for r in report.errored] == [1]
+    assert report.over_merges == []
+    assert report.under_merges == []
+    assert sum(report.confusion.values()) == 1
+    assert "errored" in report.format()
+
+
 # ── eval_extraction — the AIDA-Atomic gate (offline, stub extractor) ────
 
 _ATOM_A = CanonicalClaim(sentence="A", scope={})
@@ -1171,3 +1202,54 @@ def test_judge_candidates_propagates_judge_error() -> None:
 
 def test_judge_candidates_empty() -> None:
     assert canon.judge_candidates("q", [], dedup_judge) == []
+
+
+# ── dispatch error: retry once, then refuse the mint (gr462136) ─────────
+
+
+def _err() -> Verdict:
+    return Verdict(verdict="error", confidence=0.0, rationale="dispatch error: x")
+
+
+def test_judge_error_retried_once_then_same_attaches() -> None:
+    cands = [MergeCandidate(hub_ref_id=7, claim="c", distance=0.0)]
+    calls: list[int] = []
+
+    def judge(a: str, b: str) -> Verdict:
+        calls.append(1)
+        if len(calls) == 1:
+            return _err()
+        return Verdict(verdict="same", confidence=0.95, rationale="same")
+
+    judged = canon.judge_candidates("q", cands, judge)
+    placement = canon.place(_CLAIM, judged)
+
+    assert len(calls) == 2
+    assert placement.action == "attach"
+    assert placement.hub_ref_id == 7
+
+
+def test_judge_error_twice_refuses_mint() -> None:
+    from precis.errors import Upstream
+
+    cands = [MergeCandidate(hub_ref_id=i, claim="c", distance=0.0) for i in range(3)]
+    calls: list[int] = []
+
+    def judge(a: str, b: str) -> Verdict:
+        calls.append(1)
+        return _err()
+
+    judged = canon.judge_candidates("q", cands, judge)
+    assert len(calls) == 6  # each candidate tried twice
+    with pytest.raises(Upstream, match="not minted"):
+        canon.place(_CLAIM, judged)
+
+
+def test_genuine_different_still_mints() -> None:
+    cands = [MergeCandidate(hub_ref_id=1, claim="c", distance=0.0)]
+    judged = canon.judge_candidates(
+        "q",
+        cands,
+        lambda a, b: Verdict(verdict="different", confidence=0.9, rationale="no"),
+    )
+    assert canon.place(_CLAIM, judged).action == "new"

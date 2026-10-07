@@ -70,26 +70,54 @@ def _design_with_bound_block(
     )
 
 
-def test_retiring_a_design_names_the_structures_it_leaves_live(
-    handler: SeHandler, structure: StructureHandler
+def test_retiring_a_design_cascades_to_its_bound_structures(
+    handler: SeHandler, structure: StructureHandler, store: Store
 ) -> None:
     _design_with_bound_block(handler, structure, design="d-orphan", struct="s-orphan")
     body = handler.delete(id="d-orphan").body
     assert "retired se design 'd-orphan'" in body
-    # The count alone was the defect: it has to say what survived, and
-    # give the call that removes it.
-    assert "1 structure(s) stay live" in body
-    assert "delete(kind='structure', id='s-orphan')" in body
+    assert "retired 1 bound structure(s): s-orphan" in body
+    assert "stay live" not in body
+    assert store.get_ref(kind="structure", id="s-orphan") is None
 
 
-def test_the_structure_really_does_survive_the_retire(
+def test_a_structure_bound_by_two_designs_survives_until_the_last(
     handler: SeHandler, structure: StructureHandler, store: Store
 ) -> None:
-    """The message is only honest if the leak is real — pin the behaviour
-    it describes, so a later cascade fix has to update both together."""
-    _design_with_bound_block(handler, structure, design="d-survive", struct="s-survive")
-    handler.delete(id="d-survive")
-    assert store.get_ref(kind="structure", id="s-survive") is not None
+    _design_with_bound_block(handler, structure, design="d-one", struct="s-shared")
+    handler.put(
+        id="d-two",
+        text=json.dumps(
+            {
+                "ops": [
+                    {"op": "add_block", "name": "blk", "envelope": "sphere:r2e-10"},
+                    {"op": "bind_structure", "block": "blk", "design": "s-shared"},
+                ]
+            }
+        ),
+    )
+    body = handler.delete(id="d-one").body
+    assert "1 structure(s) stay live" in body
+    assert "s-shared (bound by d-two)" in body
+    assert store.get_ref(kind="structure", id="s-shared") is not None
+    body = handler.delete(id="d-two").body
+    assert "retired 1 bound structure(s): s-shared" in body
+    assert store.get_ref(kind="structure", id="s-shared") is None
+
+
+def test_a_protected_structure_survives_the_cascade(
+    handler: SeHandler,
+    structure: StructureHandler,
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis_se import persist
+
+    monkeypatch.setattr(persist, "_is_protected_structure", lambda _s, _i: True)
+    _design_with_bound_block(handler, structure, design="d-prot", struct="s-prot")
+    body = handler.delete(id="d-prot").body
+    assert "s-prot (protected)" in body
+    assert store.get_ref(kind="structure", id="s-prot") is not None
 
 
 def test_a_design_with_no_bound_blocks_says_nothing_extra(

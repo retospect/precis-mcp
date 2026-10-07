@@ -285,3 +285,42 @@ def test_a_real_error_category_is_still_red() -> None:
         summary + "\n" + _INTERNALERROR_TAIL, pytest_exit_code=3
     )
     assert code == 3
+
+
+# ── gr471933: the crash is printed and signalled, not just swallowed ─────
+
+
+def test_main_prints_traceback_tail_and_log_path_and_signals_crash(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+    import sys
+
+    log_file = tmp_path / "run.log"
+    # A DIFFERENT INTERNALERROR than get_file's — the gripe's crash.
+    tail = "".join(f"INTERNALERROR> frame {i}\n" for i in range(40))
+    log_file.write_text("collecting ...\n" + tail, encoding="utf-8")
+    (tmp_path / ".testmondata").write_text("x", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, str(_GUARD), str(log_file), "3", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert proc.returncode == guard.TESTMON_CRASH_RC == 75
+    assert str(log_file) in proc.stderr
+    assert "frame 39" in proc.stderr and "frame 10" in proc.stderr
+    assert "frame 9\n" not in proc.stderr  # only the last 30 lines
+    assert not (tmp_path / ".testmondata").exists()
+
+
+def test_real_failure_with_crash_keeps_its_own_exit_code(tmp_path: Path) -> None:
+    log_file = tmp_path / "run.log"
+    log_file.write_text(
+        "========= 2 failed, 100 passed in 5.00s =========\n" + _INTERNALERROR_TAIL,
+        encoding="utf-8",
+    )
+    assert guard.main([str(log_file), "1", str(tmp_path)]) == 1

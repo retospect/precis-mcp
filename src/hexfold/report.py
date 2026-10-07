@@ -53,6 +53,19 @@ class Finding:
         return dict(sorted(d.items()))
 
 
+#: INFO codes that carry the build verdict; listed right after ERROR/WARN
+#: in the agent-facing echo (``Report.render(agent=True)``)
+DECISION_CODES = ("euler.chi", "seam.rings", "net.components", "geom.summary")
+
+
+def _agent_rank(f: Finding) -> tuple[int, int]:
+    if f.severity > Severity.INFO:
+        return (0, 0)
+    if f.code in DECISION_CODES:
+        return (1, DECISION_CODES.index(f.code))
+    return (2, 0)
+
+
 @dataclass(frozen=True)
 class Report:
     findings: tuple[Finding, ...] = ()
@@ -73,15 +86,22 @@ class Report:
     def infos(self) -> tuple[Finding, ...]:
         return tuple(f for f in self.findings if f.severity == Severity.INFO)
 
+    def agent_sorted(self) -> Report:
+        """Verdict-first order for the agent-facing echo: ERROR/WARN, then
+        the decision-bearing INFO codes, then the remaining INFO."""
+        return Report(
+            tuple(sorted(self.findings, key=lambda f: (_agent_rank(f), f._key())))
+        )
+
     def sorted(self) -> Report:
         return Report(tuple(sorted(self.findings, key=lambda f: f._key())))
 
     def merge(self, other: Report) -> Report:
         return Report(self.findings + other.findings).sorted()
 
-    def render(self, verbose: bool = False) -> str:
+    def render(self, verbose: bool = False, agent: bool = False) -> str:
         lines = []
-        for f in self.sorted().findings:
+        for f in (self.agent_sorted() if agent else self.sorted()).findings:
             loc = f"{f.where} " if f.where else ""
             span = f" @{f.span[0]}:{f.span[1]}" if f.span else ""
             lines.append(f"{f.severity.name:5} {f.code} {loc}{f.message}{span}")

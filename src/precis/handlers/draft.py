@@ -371,7 +371,7 @@ class DraftHandler(Handler):
     #: not a mention: a draft (e.g. a living dossier) put in a quest's
     #: service (gripe 161912; see ``precis-quest-help``: "Any node ...
     #: can serve a quest").
-    _GENERIC_LINK_RELS: ClassVar[frozenset[str]] = frozenset({"serves"})
+    _GENERIC_LINK_RELS: ClassVar[frozenset[str]] = frozenset({"serves", "draft-of"})
 
     #: ref.meta keys ``edit(kind='draft', id=<slug>, meta=…)`` may patch
     #: at the REF level (``id`` names the draft, not a chunk) — gr345334.
@@ -392,7 +392,8 @@ class DraftHandler(Handler):
         rel: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Folder placement (``rel='parent'``) or a ``serves`` edge.
+        """Folder placement (``rel='parent'``), a ``serves`` edge or the
+        ``draft-of`` owner bind.
 
         ``rel='parent'`` is the reserved virtual relation — a
         ``refs.parent_id`` write into a ``kind='folder'`` container, never a stored ``links`` row. ``rel='serves'`` goes
@@ -412,6 +413,18 @@ class DraftHandler(Handler):
             ref = resolve_live_slug_ref(self.store, kind="draft", id=str(id).strip())
             target = require_link_target("draft", target)
             validate_link_mode(mode)
+            if rel == "draft-of" and mode == "add":
+                owners = self.store.drafts.draft_owners(ref.id)
+                if owners:
+                    raise BadInput(
+                        f"draft {ref.slug or ref.id} already has a live "
+                        f"draft-of owner (todo {owners[0]}); draft-of is 1:1",
+                        next=[
+                            f"link(kind='draft', id='{ref.slug or ref.id}', "
+                            f"target='todo:{owners[0]}', rel='draft-of', "
+                            "mode='remove') then add the new owner",
+                        ],
+                    )
             n_added, n_removed = apply_link_ops(
                 self.store,
                 ref.id,
@@ -430,13 +443,17 @@ class DraftHandler(Handler):
                 )
             )
         raise BadInput(
-            "draft link supports only rel='parent' (folder placement) or "
-            "rel='serves' (mark this draft as serving a quest)",
+            "draft link supports only rel='parent' (folder placement), "
+            "rel='serves' (mark this draft as serving a quest) or "
+            "rel='draft-of' (bind/unbind the owning project todo)",
             next=[
                 "link(kind='draft', id='<slug>', target='folder:N', "
                 "rel='parent') places; mode='remove' unfiles",
                 "link(kind='draft', id='<slug>', target='quest:N', "
                 "rel='serves') marks this draft as serving that quest",
+                "link(kind='draft', id='<slug>', target='todo:N', "
+                "rel='draft-of', mode='remove') unbinds the owner; mode='add' "
+                "binds one when none is live",
                 "cross-references live in prose, not the link verb: "
                 "edit(kind='draft', id='dc<src>', text='…existing… "
                 "[dc<target>]') and the autolinker materialises the "
