@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+"""Drive a remote tmux fleet of Codex TUI sessions over ssh.
+
+Config (nothing is hard-coded; the repo is public):
+  PRECIS_FLEET_SSH           ssh target, e.g. user@host   (required; --ssh)
+  PRECIS_FLEET_TMUX_SESSION  tmux session name, default 0 (--session)
+  PRECIS_FLEET_PANE_COMMANDS allowed pane_current_command list for send/ask,
+                             default codex,uv,node        (--pane-commands)
+
+Subcommands: ls | read | send | wait | ask | cat.  One ssh call each.
+Message text travels over ssh stdin into a per-invocation tmux buffer
+(`load-buffer -b` + `paste-buffer -p -d -b`), so quotes, `$`, backticks and
+newlines survive; only one final newline is dropped (it would double-submit).
+send/ask refuse unless the target pane runs an expected agent process
+(--any-command skips that check) and the window has exactly one pane.
+
+A pane is BUSY while its visible screen shows "esc to interrupt".
+Codex truncates long lines itself ("..."), which capture-pane -J cannot
+undo: ask agents to write long answers to a file and fetch it with `cat`.
+Exit codes: 0 ok, 124 wait timeout, 3 refused (pane busy), 4 text not seen,
+5 tmux buffer/paste failed, 6 tmux session/window missing, 7 refused (pane
+command not allowed, or several panes).
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+
+BUSY_MARK = "esc to interrupt"
+PROMPT = "›"  # the Codex prompt glyph
+DEFAULT_PANE_COMMANDS = "codex,uv,node"
+EXIT_MISSING = 6
+EXIT_REFUSED = 7
+
+
+# ---------------------------------------------------------------- pure parts
+
+
+def window_target(session: str, win: str) -> str:
+    """tmux target for a window given by index or exact name."""
+    win = win.strip()
+    if not win:
+        raise ValueError("empty window")
+    if win.startswith("-") or session.startswith("-"):
+        raise ValueError("window/session must not start with '-'")
+    if win.isdigit():
+        return f"{session}:{win}"
+    return f"{session}:={win}"
+
+
+def buffer_name() -> str:
+    """Unique tmux buffer name per invocation (no cross-delivery between senders)."""
+    return f"frmsg-{os.getpid()}-{secrets.token_hex(6)}"
+
+
+def check_ssh_dest(dest: str) -> str:
+    if dest.startswith("-"):
+        raise ValueError("ssh destination must not start with '-'")
+    return dest
+
+
+def check_pane_commands(spec: str) -> str:
+    names = [c for c in spec.split(",") if c]
+    if not names or not all(re.fullmatch(r"[A-Za-z0-9._+-]+", c) for c in names):
+        raise ValueError(f"bad pane command list: {spec!r}")
+    return ",".join(names)
+
+
+def is_busy(screen: str) -> bool:
+    return BUSY_MARK in screen
+
+
+def strip_blank(text: str) -> list[str]:
+    return [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+
+
+def tail(lines: list[str], n: int) -> list[str]:
+    return lines[-n:] if n > 0 else lines
+
+
+def after_message(lines: list[str], message: str) -> list[str]:
+    """Lines after the last echo of `message`, minus the trailing empty prompt.
+
+    Falls back to all lines when the echo is not found.
+    """
+    first = next((ln.strip() for ln in message.splitlines() if ln.strip()), "")
+    needle = first[:60]
+    start = -1
+    if needle:
+        for i, ln in enumerate(lines):
+            if needle in ln:
+                start = i
+    out = lines[start + 1 :] if start >= 0 else list(lines)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].lstrip().startswith(PROMPT):
+            out = out[:i]
+            break
+    return out
+
+
+def parse_ls(text: str) -> list[tuple[str, str, str, str, str]]:
+    rows = []
+    for ln in text.splitlines():
+        parts = ln.split("|", 4)
+        if len(parts) == 5:
+            rows.append((parts[0], parts[1], parts[2], parts[3], parts[4]))
+    return rows
+
+
+def landed(capture: str, message: str) -> bool:
+    """True when the tail of the message shows in the pane (or the pane went busy)."""
+    if is_busy(capture):
+        return True
+    last = next((ln.strip() for ln in reversed(message.splitlines()) if ln.strip()), "")
+    probe = last[-40:]
+    return bool(probe) and probe in capture
+
+
+# ------------------------------------------------------------- remote shell
+
+_MISSING = f'{{ echo "fleet-remote: tmux target missing" >&2; exit {EXIT_MISSING}; }}'
+
+# busy: 0 = busy, 1 = idle, 2 = capture failed (target missing).
+_BUSY_FN = (
+    'busy() { o=$(tmux capture-pane -p -t "$T" </dev/null 2>/dev/null) || return 2\n'
+    f"  case $o in *'{BUSY_MARK}'*) return 0;; *) return 1;; esac; }}\n"
+    f"need_target() {{ busy; [ $? -eq 2 ] && {_MISSING}; return 0; }}\n"
+)
+
+
+def script_ls(session: str) -> str:
+    s = shlex.quote(session)
+    return (
+        f"S={s}\n"
+        'w=$(tmux list-windows -t "$S" -F '
+        "'#{window_index}|#{window_name}|#{pane_current_command}|#{pane_current_path}' "
+        f'</dev/null) || {{ echo "fleet-remote: tmux session missing" >&2; exit {EXIT_MISSING}; }}\n'
+        "printf '%s\\n' \"$w\" | while IFS='|' read -r i n c p; do\n"
+        '  o=$(tmux capture-pane -p -t "$S:$i" </dev/null 2>/dev/null) || o=\n'
+        f'  case $o in *"{BUSY_MARK}"*) b=busy;; *) b=idle;; esac\n'
+        '  printf \'%s|%s|%s|%s|%s\\n\' "$i" "$b" "$c" "$n" "$p"\n'
+        "done\n"
+    )
+
+
+def script_read(target: str, history: int) -> str:
+    return (
+        f"tmux capture-pane -J -p -t {shlex.quote(target)} -S -{int(history)} </dev/null"
+        f" || {_MISSING}\n"
+    )
+
+
+def _poll_idle(timeout: int) -> str:
+    return (
+        f"end=$(( $(date +%s) + {int(timeout)} ))\n"
+        "n=0\n"
+        "while :; do\n"
+        "  busy; r=$?\n"
+        f"  [ $r -eq 2 ] && {_MISSING}\n"
+        "  if [ $r -eq 0 ]; then n=0; else n=$((n+1)); fi\n"
+        "  [ $n -ge 2 ] && break\n"
+        "  if [ $(date +%s) -ge $end ]; then rc=124; break; fi\n"
+        "  sleep 3\n"
+        "done\n"
+    )
+
+
+def script_wait(target: str, timeout: int) -> str:
+    return (
+        f"T={shlex.quote(target)}\nrc=0\n"
+        + _BUSY_FN
+        + _poll_idle(timeout)
+        + "exit $rc\n"
+    )
+
+
+def _pane_guard(allowed: str | None, cleanup: str) -> str:
+    """Remote check, run right before paste: one pane, expected process."""
+
+    def die(msg: str, code: int) -> str:
+        return f'{{ echo "fleet-remote: {msg}" >&2; {cleanup}exit {code}; }}'
+
+    out = (
+        'np=$(tmux list-panes -t "$T" -F x </dev/null 2>/dev/null) || '
+        + die("tmux target missing", EXIT_MISSING)
+        + "\n"
+        + 'if [ "$(printf \'%s\\n\' "$np" | wc -l)" -gt 1 ]; then '
+        + die("window has several panes; refusing", EXIT_REFUSED)
+        + "; fi\n"
+    )
+    if allowed is None:
+        return out
+    return (
+        out
+        + "pc=$(tmux display-message -p -t \"$T\" '#{pane_current_command}' </dev/null) || "
+        + die("tmux target missing", EXIT_MISSING)
+        + "\n"
+        + f'case ",{allowed}," in *",$pc,"*) ;; *) '
+        + die(f"pane runs '$pc', not an agent ({allowed}); refusing", EXIT_REFUSED)
+        + ";; esac\n"
+    )
+
+
+def _send_part(force: bool, buf: str, allowed: str | None) -> str:
+    b = shlex.quote(buf)
+    cleanup = f"tmux delete-buffer -b {b} 2>/dev/null; "
+    guard = (
+        ""
+        if force
+        else 'busy; r=$?; if [ $r -eq 0 ]; then echo "fleet-remote: pane is busy" >&2; '
+        + cleanup
+        + "exit 3; fi\n"
+    )
+    return (
+        "need_target\n"
+        # the message is on stdin: load it, guard, then deliver at once
+        + f"tmux load-buffer -b {b} - || {{ {cleanup}exit 5; }}\n"
+        + guard
+        + _pane_guard(allowed, cleanup)
+        + f'tmux paste-buffer -d -p -b {b} -t "$T" </dev/null || {{ {cleanup}exit 5; }}\n'
+        + "sleep 0.5\n"
+        + 'tmux send-keys -t "$T" Enter </dev/null\n'
+        + "sleep 1\n"
+    )
+
+
+def script_send(target: str, force: bool, buf: str, allowed: str | None) -> str:
+    return (
+        f"T={shlex.quote(target)}\n"
+        + _BUSY_FN
+        + _send_part(force, buf, allowed)
+        + 'tmux capture-pane -J -p -t "$T" -S -40 </dev/null\n'
+    )
+
+
+def script_ask(
+    target: str, force: bool, timeout: int, history: int, buf: str, allowed: str | None
+) -> str:
+    # Wait up to 30 s for the pane to go busy, then for two idle polls.
+    went_busy = (
+        "for k in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do\n"
+        "  busy; r=$?; [ $r -eq 0 ] && break\n"
+        f"  [ $r -eq 2 ] && {_MISSING}\n"
+        "  sleep 1\n"
+        "done\n"
+    )
+    return (
+        f"T={shlex.quote(target)}\nrc=0\n"
+        + _BUSY_FN
+        + _send_part(force, buf, allowed)
+        + went_busy
+        + _poll_idle(timeout)
+        + f'tmux capture-pane -J -p -t "$T" -S -{int(history)} </dev/null\n'
+        + "exit $rc\n"
+    )
+
+
+def script_cat(path: str) -> str:
+    return f"cat -- {shlex.quote(path)} </dev/null\n"
+
+
+# --------------------------------------------------------------------- main
+
+
+def run_ssh(
+    ssh: str, script: str, stdin: str | None = None, timeout: float = 120
+) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "--",
+        ssh,
+        "sh -c " + shlex.quote(script),
+    ]
+    return subprocess.run(
+        cmd,
+        input=stdin if stdin is not None else "",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _emit(proc: subprocess.CompletedProcess[str]) -> None:
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+
+
+def _message(arg: str | None) -> str:
+    msg = sys.stdin.read() if arg in (None, "-") else arg
+    # Preserve the text exactly; drop only the one final newline (it would
+    # double-submit after the paste).
+    if msg.endswith("\r\n"):
+        msg = msg[:-2]
+    elif msg.endswith("\n"):
+        msg = msg[:-1]
+    if not msg.strip():
+        sys.exit("fleet-remote: empty message")
+    return msg
+
+
+def _pane_opts(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument(
+        "--pane-commands",
+        default=os.environ.get("PRECIS_FLEET_PANE_COMMANDS", DEFAULT_PANE_COMMANDS),
+        help="comma list of allowed pane_current_command values",
+    )
+    sp.add_argument(
+        "--any-command", action="store_true", help="skip the pane-command check"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Drive a remote tmux fleet of Codex TUIs.")
+    p.add_argument("--ssh", default=os.environ.get("PRECIS_FLEET_SSH"))
+    p.add_argument(
+        "--session", default=os.environ.get("PRECIS_FLEET_TMUX_SESSION", "0")
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("ls")
+    r = sub.add_parser("read")
+    r.add_argument("win")
+    r.add_argument("-n", type=int, default=60)
+    s = sub.add_parser("send")
+    s.add_argument("win")
+    s.add_argument("message", nargs="?")
+    s.add_argument("--force", action="store_true")
+    _pane_opts(s)
+    w = sub.add_parser("wait")
+    w.add_argument("win")
+    w.add_argument("--timeout", type=int, default=600)
+    a = sub.add_parser("ask")
+    a.add_argument("win")
+    a.add_argument("message", nargs="?")
+    a.add_argument("--timeout", type=int, default=600)
+    a.add_argument("-n", type=int, default=0, help="keep last N lines (0 = all)")
+    a.add_argument("--force", action="store_true")
+    _pane_opts(a)
+    c = sub.add_parser("cat")
+    c.add_argument("path")
+    args = p.parse_args(argv)
+
+    if not args.ssh:
+        sys.exit("fleet-remote: set PRECIS_FLEET_SSH (e.g. user@host) or pass --ssh")
+    try:
+        check_ssh_dest(args.ssh)
+        if args.session.startswith("-"):
+            raise ValueError("session must not start with '-'")
+    except ValueError as e:
+        sys.exit(f"fleet-remote: {e}")
+
+    if args.cmd == "ls":
+        proc = run_ssh(args.ssh, script_ls(args.session))
+        _emit(proc)
+        for i, b, cmd, n, path in parse_ls(proc.stdout):
+            print(f"{i:<3} {n:<20} {cmd:<10} {b:<5} {path}")
+        return proc.returncode
+
+    if args.cmd == "cat":
+        proc = run_ssh(args.ssh, script_cat(args.path))
+        _emit(proc)
+        sys.stdout.write(proc.stdout)
+        return proc.returncode
+
+    try:
+        target = window_target(args.session, args.win)
+        allowed = None
+        if args.cmd in ("send", "ask") and not args.any_command:
+            allowed = check_pane_commands(args.pane_commands)
+    except ValueError as e:
+        sys.exit(f"fleet-remote: {e}")
+
+    if args.cmd == "read":
+        proc = run_ssh(args.ssh, script_read(target, max(args.n * 4, 200)))
+        _emit(proc)
+        print("\n".join(tail(strip_blank(proc.stdout), args.n)))
+        return proc.returncode
+
+    if args.cmd == "wait":
+        proc = run_ssh(
+            args.ssh, script_wait(target, args.timeout), timeout=args.timeout + 60
+        )
+        _emit(proc)
+        if proc.returncode == EXIT_MISSING:
+            print("target missing")
+        else:
+            print(
+                "idle" if proc.returncode == 0 else f"not idle (exit {proc.returncode})"
+            )
+        return proc.returncode
+
+    msg = _message(args.message)
+
+    if args.cmd == "send":
+        proc = run_ssh(
+            args.ssh,
+            script_send(target, args.force, buffer_name(), allowed),
+            stdin=msg,
+        )
+        _emit(proc)
+        if proc.returncode != 0:
+            return proc.returncode
+        if not landed(proc.stdout, msg):
+            print("fleet-remote: sent, but text not seen in pane", file=sys.stderr)
+            return 4
+        print("sent: text landed")
+        return 0
+
+    # ask
+    proc = run_ssh(
+        args.ssh,
+        script_ask(target, args.force, args.timeout, 3000, buffer_name(), allowed),
+        stdin=msg,
+        timeout=args.timeout + 120,
+    )
+    _emit(proc)
+    if proc.returncode in (3, 5, EXIT_MISSING, EXIT_REFUSED):
+        return proc.returncode
+    lines = after_message(strip_blank(proc.stdout), msg)
+    print("\n".join(tail(lines, args.n)))
+    return proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

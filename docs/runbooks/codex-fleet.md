@@ -15,6 +15,13 @@ selects the primary repository; otherwise Git's common directory locates it.
 Optional `--token-file PATH` selects the existing credential file to load as
 the child process's `PRECIS_MCP_TOKEN`; no credential file is selected by default.
 
+`scripts/fleet-remote` drives a fleet that lives on another host from a
+local Claude session over ssh (`ls`, `read`, `send`, `wait`, `ask`, `cat`);
+the destination comes only from `PRECIS_FLEET_SSH` or `--ssh`, never from a
+literal. Messages travel on ssh stdin into a tmux buffer, so quoting is not an
+issue; `send <win> - < file` carries a multi-line brief, `--force` sends into
+a busy pane. `--help` lists the exit codes.
+
 Roster columns: `index`, `name`, `model`, `effort`, `threads`, `summary`, tab
 separated with one header row. Names are lowercase slugs; indices are unique.
 Prompts live at `STATE/prompts/NAME.txt`; the launcher preserves window 0.
