@@ -22,6 +22,7 @@ Pure read; doubles as the draft-export format.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from precis.nanopub import assemble, evidence
@@ -76,6 +77,10 @@ def render_nanopub_view(store: Store, ref: Ref) -> Response:
                 "mint will require a re-grounded verbatim quote + unique "
                 "snip per passage (no source, no atom)"
             )
+    if row is not None:
+        predecessor = store.nanopub_predecessor_artifact(row.id)
+        if predecessor:
+            inp = replace(inp, supersedes=predecessor.trusty_uri)
     # D1 gate parity (disputes-edge split, migration 0151): blocking =
     # any live `contradicts` edge touching the hub (adjudication-derived,
     # any counterpart kind, either direction — same read as

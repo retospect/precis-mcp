@@ -519,3 +519,6 @@ definition-of-done.
 
 GPL-3.0-or-later. See the full text at
 [gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html).
+
+`precis nanopub supersede FI` stages a local successor candidate for an anchored,
+unpublished claim artifact; review and same-key signing remain separate steps.

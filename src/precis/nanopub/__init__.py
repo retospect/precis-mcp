@@ -39,6 +39,15 @@ Slices 1-3 — local, reversible:
 - :mod:`.mint` — freeze-at-review + mint+sign pipeline; signs the
   artifact, not the claim (reword => new claim identity, re-sign => new
   artifact identity only).
+- :mod:`.supersede` — interactive local successor staging for anchored,
+  unpublished hubs. The explicit publish-row relationship (0190) survives
+  discard/restage independently of disposable grounding; it supplies
+  ``npx:supersedes`` in pubinfo and enforces the predecessor's signing key.
+  Ref links were rejected because versions share a hub. Candidate deletion
+  detaches the successor but retains the obligation; restaging reattaches it
+  atomically. Live publication holds the same hub lock across preflight, POST
+  and bookkeeping, preventing a staging race while publication is in flight.
+  Published supersession and retraction remain separate follow-ups.
 - :mod:`.freshness` — sign-time ``grounding-stale`` gate: supporting
   evidence linked after approve froze the grounding (``frozen_at`` in the
   envelope) blocks sign unless confirmed.

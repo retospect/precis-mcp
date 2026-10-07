@@ -53,6 +53,7 @@ from precis.nanopub.vocab import (
     COMPOSITE_CLAIM,
     DCT,
     HYPOTHESIS,
+    NPX,
     PRECIS,
     PROV,
     SEC_ACCESSION,
@@ -145,6 +146,8 @@ class MintInput:
     #: Software provenance (structured, resolved live at mint):
     #: {"name": ..., "version": ..., "sha": ..., "llm_models": [...]}.
     software: dict[str, Any] = field(default_factory=dict)
+    #: Resolved from the explicit publish-row relationship, never payload JSON.
+    supersedes: str | None = None
 
 
 def build_graphs(inp: MintInput, ns: Namespace) -> tuple[Graph, Graph, Graph]:
@@ -280,6 +283,10 @@ def _pubinfo(inp: MintInput, ns: Namespace) -> Graph:
     g = Graph()
     this = ns[""]
     assertion = ns["assertion"]
+    if inp.supersedes:
+        g.add(
+            (URIRef(str(ns).removesuffix("#")), NPX.supersedes, URIRef(inp.supersedes))
+        )
     # License scoped to the assertion graph, never over quote bytes.
     g.add((assertion, DCT.license, URIRef(CC_BY)))
     if inp.grounding:
@@ -331,6 +338,8 @@ def draft_trig(inp: MintInput) -> str:
     assertion_g, prov_g, pub_g = build_graphs(inp, ns)
 
     ds = Dataset()
+    if inp.supersedes:
+        ds.bind("npx", NPX)
     head = ds.graph(URIRef(ns["Head"]))
     this = URIRef(str(ns)[:-1])  # strip the '#'
     head.add((this, RDF.type, NP.Nanopublication))

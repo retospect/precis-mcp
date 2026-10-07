@@ -468,6 +468,9 @@ def sign(
         signer_orcid=signer_orcid,
         signer_name=signer_name,
     )
+    predecessor = store.nanopub_predecessor_artifact(row.id)
+    if predecessor and fingerprint(profile.public_key) != predecessor.key_fingerprint:
+        raise BadInput("a successor must use the predecessor's signing key")
     np = _build_and_sign(inp, profile, _fold_llm_models(row.grounding, llm_models))
 
     trig_bytes = np.rdf.serialize(format="trig").encode("utf-8")
@@ -634,7 +637,9 @@ def _mint_input(
         motivated_by.append(dep_row.trusty_uri)
         dependency_codes[str(ref_id)] = dep_row.trusty_uri
 
+    predecessor = store.nanopub_predecessor_artifact(row.id)
     inp = assemble.MintInput(
+        supersedes=predecessor.trusty_uri if predecessor else None,
         artifact_type=row.artifact_type,
         sentence=canonical_sentence(row.approved_title),
         aida_uri=row.aida_uri,

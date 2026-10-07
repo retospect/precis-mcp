@@ -471,3 +471,14 @@ artifacts are frozen by construction (the code IS the content hash);
 Retraction/supersede are *flags derived from edges* (only a same-signer,
 verified retraction counts), never exclusions. Concurrence — an external
 nanopub asserting one of our AIDA sentences — raises an `alert`.
+
+## Correct an anchored, unpublished artifact
+
+Run `precis nanopub supersede FI` to stage a local candidate linked to the
+previous artifact. It refuses published predecessors. Review the candidate
+against current evidence, then approve and sign through the ordinary doors
+using the predecessor's key. Staging performs no signing or network calls.
+The successor pubinfo carries `npx:supersedes` pointing to the predecessor's
+trusty URI; previous signed bytes and OTS proofs remain unchanged. Reopening
+or discarding/restaging a candidate retains that predecessor obligation.
+Published supersession and retraction are not supported by this door.

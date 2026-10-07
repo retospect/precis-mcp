@@ -39,7 +39,7 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
     # signed → reviewed is the dependency-dirty flip (topo re-mint);
     # signed → candidate is the local edit reopen (discard artifact ref).
     "signed": ("anchored", "reviewed", "candidate"),
-    "anchored": ("published",),
+    "anchored": ("published", "superseded"),
     "published": ("superseded", "retracted"),
     "superseded": (),
     "retracted": (),

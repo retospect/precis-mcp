@@ -23,6 +23,8 @@ Subcommands:
   introduction nanopub (``--live`` to POST; then add its trusty URI to
   the ORCID record out-of-band — that back-link is the actual binding).
 * ``reopen FI``         — flip a pre-anchor row back to candidate.
+* ``supersede FI``      — stage a linked candidate for an anchored, unpublished
+  row; no signing or network. Published predecessors are refused.
 * ``re-stamp BATCH_ID`` — the stuck-pending remedy: flip a named batch's
   ``anchored`` rows back to ``signed`` (batch id cleared) so the next
   ``anchor --live`` sweep picks them into a fresh batch. The old batch's
@@ -130,6 +132,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_reopen = s.add_parser("reopen", help="Flip a pre-anchor row back to candidate.")
     p_reopen.add_argument("hub")
+
+    p_supersede = s.add_parser(
+        "supersede",
+        help="Stage a successor for an anchored, unpublished hub (local only).",
+        description="Stage a successor for an anchored, unpublished hub; no signing or network.",
+    )
+    p_supersede.add_argument("hub", help="fi<id> or bare ref id.")
 
     p_restamp = s.add_parser(
         "re-stamp",
@@ -291,6 +300,8 @@ def run(args: argparse.Namespace) -> None:
             _sign(args, store)
         elif cmd == "reopen":
             _reopen(args, store)
+        elif cmd == "supersede":
+            _supersede(args, store)
         elif cmd == "re-stamp":
             _restamp(args, store)
         elif cmd == "view":
@@ -473,6 +484,16 @@ def _reopen(args: argparse.Namespace, store) -> None:
     else:
         print(f"row {row.id} is {row.state!r} — only reviewed/signed reopen")
         sys.exit(1)
+
+
+def _supersede(args: argparse.Namespace, store) -> None:
+    from precis.nanopub.supersede import supersede
+
+    row = supersede(store, _hub_id(args.hub), interactive=True)
+    print(
+        f"staged successor publish row {row.id} for fi{row.claim_ref_id} → candidate; "
+        "review and sign separately"
+    )
 
 
 def _restamp(args: argparse.Namespace, store) -> None:

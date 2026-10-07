@@ -15,7 +15,9 @@ forever. Accordingly this module is triple-gated:
 
 What is POSTed is the **exact stored artifact bytes** (the proof-store
 authority), never a re-serialization — the trusty URI covers those
-bytes. Target URL is a registry constant (mirrors replicate), not
+bytes. Live publication and local supersession serialize on the hub through
+preflight, POST and bookkeeping, so a public predecessor cannot be classified
+as unpublished during an in-flight POST. Target URL is a registry constant (mirrors replicate), not
 agent-supplied, so this is not a `safe_fetch` surface.
 """
 
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -93,6 +96,29 @@ def publish(
             "interactive surface a person is driving (pass interactive=True); "
             "no worker, job, or scheduled pass may publish"
         )
+    # Supersede uses the same hub lock. Hold it across the fresh preflight,
+    # POST and local bookkeeping: locking only record_published is too late.
+    # NO KEY UPDATE permits our nested store calls' FK key-share locks.
+    with store.pool.connection() if live else nullcontext() as guard:
+        if guard is not None:
+            guard.execute(
+                "SELECT ref_id FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (hub_ref_id,),
+            )
+        return _publish_checked(
+            store, hub_ref_id, live=live, registry_url=registry_url, post=post
+        )
+
+
+def _publish_checked(
+    store: Store,
+    hub_ref_id: int,
+    *,
+    live: bool,
+    registry_url: str,
+    post: Callable[[str, bytes], None] | None,
+) -> PublishResult:
+    """The live caller holds the per-hub lock; dry runs need no lock."""
     row = store.nanopub_publish_row(hub_ref_id)
     issues = publish_preflight(store, hub_ref_id, row=row)
     blocking = [i for i in issues if i.blocking]
