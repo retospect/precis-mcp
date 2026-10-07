@@ -1965,6 +1965,25 @@ def test_census_records_dropped_outcome_with_a_reason_matching_the_derived_prose
     assert refdes_row.outcome == "dropped"
     assert refdes_row.reason is not None
     assert f"TP4: {refdes_row.reason}" in result.dropped
+    assert refdes_row.x_mm is None and refdes_row.y_mm is None
+
+
+def test_census_refdes_anchor_is_the_drawn_labels_bottom_left():
+    ir = from_graph(_graph("TP5", 16, x=10.0, y=5.0), stackup=DEFAULT_STACKUP)
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.refdes == "TP5" and c.kind == "refdes")
+    assert row.outcome in ("placed", "relocated")
+    assert row.x_mm is not None and row.y_mm is not None
+    xs, ys = [], []
+    for d in result.draws["top"]:
+        if d["role"] == "refdes" and d["refdes"] == "TP5":
+            for seg in d["segments"]:
+                for p in (seg["start"], seg["end"]):
+                    xs.append(p[0])
+                    ys.append(p[1])
+    assert xs and ys
+    assert row.x_mm <= min(xs) + 1e-6 and row.y_mm <= min(ys) + 1e-6
+    assert min(xs) - row.x_mm < 0.5 and min(ys) - row.y_mm < 0.5
 
 
 def _blocked_pin1_corner():

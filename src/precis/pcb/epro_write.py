@@ -27,9 +27,23 @@ documents:
   arc is written with a positive sweep (:func:`arc_sweep_deg`, the exact
   inverse of the reader's ``cw = sweep > 0``). A blind/buried via is
   written through-hole and named in a warning: ``VIA`` is documented
-  through-hole only, and flattening one silently would short layers.
+  through-hole only, and flattening one silently would short layers;
+* pours (slice 2d): a ``ctype='pour'`` whose polygon is an axis-aligned
+  rectangle becomes a ``POUR`` zone (the ``"R"`` rectangle op, the only
+  zone shape Pro has been seen to write), which Pro RE-POURS on open with
+  its own clearances — precis' realized fill (holes, islands) is not
+  carried, and the response says so. A free-polygon pour is dropped with
+  a warning rather than written in a path shape no Pro file has shown;
+* silk (slice 2e): courtyard outlines, pin-1 marks and board-frame text
+  strokes as ``POLY`` on the silk layers; the refdes label as the
+  editable ``Designator`` ``ATTR`` anchored at the silk pass's own text
+  box (``model["silk_labels"]``, ``silk.SilkPlacement.x_mm/y_mm``,
+  ``origin`` LEFT_BOTTOM) with its stroked twin suppressed, so no label
+  prints twice. Pro's font replaces precis' stroke glyphs; the ``mirror``
+  flag is written ``False`` on both sides, which assumes Pro mirrors
+  bottom-layer text by layer — unverified until a human opens one.
 
-**What it deliberately does not emit** — pours (slice 2d); silk, courtyards, pin-1 ticks (2e); mask-open regions,
+**What it deliberately does not emit** — mask-open regions,
 mounting-hole/fiducial free pads, per-pad paste/mask intent (2f); and NO
 ``SCH``/``SCH_PAGE``/``DEVICE``/``SYMBOL`` document, on purpose: a
 schematic invites "update PCB from schematic", which rewrites the netlist
@@ -423,7 +437,36 @@ def _pad_record(
     return body
 
 
-# ── copper (slice 2c) ───────────────────────────────────────────────────
+# ── copper (slices 2c/2d) ───────────────────────────────────────────────
+#: ``POUR.width`` / ``pourType.fineness`` exactly as Pro 3.2.149 wrote them
+#: on all eight pours of the real 4-layer board (every one a rectangle
+#: ``["R", x, y, w, h, angle, 0]`` whose box spans ``x..x+w`` and
+#: ``y-h..y`` in the Y-down frame at angle 0 — checked against each net's
+#: own copper extent, 2026-10-07).
+_POUR_WIDTH = 0.2
+_POUR_FINENESS = 8
+
+
+def _axis_aligned_rect(
+    polygon: list[Any],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """``((x0, y0), (x1, y1))`` when ``polygon`` is an axis-aligned
+    rectangle (4 corners, optionally closed), else ``None``. The only
+    ``POUR`` zone shape observed from Pro is the ``"R"`` rectangle op, so
+    that is the only one written."""
+    pts = [(float(p[0]), float(p[1])) for p in polygon]
+    if len(pts) == 5 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) != 4:
+        return None
+    xs, ys = sorted({x for x, _ in pts}), sorted({y for _, y in pts})
+    if len(xs) != 2 or len(ys) != 2:
+        return None
+    if {(x, y) for x, y in pts} != {(x, y) for x in xs for y in ys}:
+        return None
+    return (xs[0], ys[0]), (xs[1], ys[1])
+
+
 def sorted_copper(model: dict[str, Any]) -> list[dict[str, Any]]:
     """The model's copper items in an order that does not depend on the
     model's (a re-route lists the same rows differently; the file must
@@ -439,6 +482,8 @@ class _CopperOut:
     arcs: int = 0
     vias: int = 0
     pours: int = 0
+    pours_dropped: int = 0
+    pours_with_holes: int = 0
     netless: int = 0
     widthless: int = 0
     unknown: int = 0
@@ -465,7 +510,30 @@ def _write_copper(
         ctype = str(item.get("ctype") or "")
         net = str(item.get("net") or "")
         if ctype == "pour":
+            lid = ids.get(str(item.get("layer") or ""))
+            rect = _axis_aligned_rect(item.get("polygon") or [])
+            if lid is None or rect is None:
+                out.pours_dropped += 1
+                continue
+            (x0, y0), (x1, y1) = rect
+            fx, fy = to_epro_xy(x0, y0, frame)
+            if item.get("holes"):
+                out.pours_with_holes += 1
             out.pours += 1
+            s.record(
+                "POUR",
+                {
+                    "netName": net,
+                    "layerId": lid,
+                    "width": _POUR_WIDTH,
+                    "name": f"POUR{out.pours}",
+                    "order": 0,
+                    "path": [["R", fx, fy, to_mils(x1 - x0), to_mils(y1 - y0), 0, 0]],
+                    "pourType": {"pourType": "SOLID", "fineness": _POUR_FINENESS},
+                    "keepIsland": False,
+                },
+                _rid(slug, f"pour:{n}"),
+            )
             continue
         if ctype == "via":
             if item.get("x") is None or item.get("y") is None:
@@ -555,8 +623,16 @@ def _copper_warnings(cu: _CopperOut) -> list[str]:
     out: list[str] = []
     if cu.pours:
         out.append(
-            f"{cu.pours} pour(s)/plane(s) are NOT exported yet (slice 2d) — "
-            "Pro shows the board without its planes; re-pour there"
+            f"{cu.pours} pour(s)/plane(s) written as POUR zones over their "
+            "rectangle — Pro re-pours them on open with ITS clearance rules, "
+            "so the fill differs from precis' (antipads, islands, thermals)"
+        )
+    if cu.pours_dropped:
+        out.append(
+            f"{cu.pours_dropped} pour(s)/plane(s) are NOT exported: a "
+            "non-rectangular zone, or a layer the stackup does not declare — "
+            "Pro's POUR path for a free polygon has not been observed in a "
+            "Pro-written file, so it is not guessed"
         )
     if cu.blind:
         shown = ", ".join(cu.blind[:6]) + ("…" if len(cu.blind) > 6 else "")
@@ -583,6 +659,82 @@ def _copper_warnings(cu: _CopperOut) -> list[str]:
     if cu.dropped:
         shown = "; ".join(cu.dropped[:4]) + ("…" if len(cu.dropped) > 4 else "")
         out.append(f"{len(cu.dropped)} copper segment(s) dropped: {shown}")
+    return out
+
+
+# ── silk (slice 2e) ─────────────────────────────────────────────────────
+@dataclass
+class _SilkOut:
+    polys: int = 0
+    refdes: int = 0
+    regions: int = 0
+    clear: int = 0
+
+
+def _write_silk(
+    s: _Stream, model: dict[str, Any], *, slug: str, frame: EproFrame
+) -> _SilkOut:
+    """Every silk stroke draw (:mod:`precis.pcb.silk`'s courtyard outlines,
+    pin-1 marks, board-frame text) as a ``POLY`` on the side's silk layer.
+    A ``role == "refdes"`` draw is SUPPRESSED: its text travels as the
+    editable ``Designator`` ``ATTR`` instead, anchored where these strokes
+    would have printed (``model["silk_labels"]``), so a label is never
+    doubled. A region fill and a clear-polarity (knockout) draw have no
+    observed Pro counterpart and are counted for the warning."""
+    out = _SilkOut()
+    silk = model.get("silkscreen") or {}
+    for side, lid in (("top", _L_SILK_TOP), ("bottom", _L_SILK_BOTTOM)):
+        draws = [d for d in silk.get(side) or [] if isinstance(d, dict)]
+        draws.sort(key=lambda d: json.dumps(d, sort_keys=True, default=str))
+        for k, draw in enumerate(draws):
+            if draw.get("polarity") == "clear":
+                out.clear += 1
+                continue
+            if draw.get("shape") == "region":
+                out.regions += 1
+                continue
+            if draw.get("role") == "refdes":
+                out.refdes += 1
+                continue
+            pts: list[tuple[float, float]] = []
+            for seg in draw.get("segments") or []:
+                a = to_epro_xy(float(seg["start"][0]), float(seg["start"][1]), frame)
+                b = to_epro_xy(float(seg["end"][0]), float(seg["end"][1]), frame)
+                if not pts or pts[-1] != a:
+                    pts.append(a)
+                pts.append(b)
+            if len(pts) < 2:
+                continue
+            s.record(
+                "POLY",
+                {
+                    "netName": "",
+                    "layerId": lid,
+                    "width": to_mils(float(draw.get("width_mm") or 0.0)),
+                    "path": _poly_path(pts),
+                    "polyType": "NORMAL",
+                },
+                _rid(slug, f"silk:{side}:{k}"),
+            )
+            out.polys += 1
+    return out
+
+
+def _silk_warnings(so: _SilkOut, *, labelled: int) -> list[str]:
+    out: list[str] = []
+    if so.refdes:
+        out.append(
+            f"{so.refdes} refdes silk stroke(s) suppressed: designators travel "
+            f"as editable ATTR text ({labelled} anchored where the silk pass "
+            "put them, the rest at their part origin) — Pro renders them with "
+            "its own font, not precis' stroke glyphs"
+        )
+    if so.regions or so.clear:
+        out.append(
+            f"{so.regions} silk region fill(s) and {so.clear} knockout "
+            "(clear-polarity) stroke(s) are NOT exported — no observed Pro "
+            "record carries them"
+        )
     return out
 
 
@@ -691,12 +843,35 @@ def epro_files(
             "(and the reader refuses a file without one)"
         )
 
+    labels = {
+        str(lab.get("refdes") or ""): lab
+        for lab in model.get("silk_labels") or []
+        if lab.get("x") is not None and lab.get("y") is not None
+    }
     pad_ids: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
     for refdes, part in parts.items():
         cid = comp_id[refdes]
         x, y = to_epro_xy(float(part.inst["x"]), float(part.inst["y"]), frame)
         side = _COMP_BOTTOM if part.bottom else _COMP_TOP
         silk = _L_SILK_BOTTOM if part.bottom else _L_SILK_TOP
+        label = labels.get(refdes)
+        if label is not None:
+            # The silk pass's own anchor (bottom-left of the text box,
+            # board frame): Pro's ``origin`` LEFT_BOTTOM is the same corner
+            # once Y is flipped, so the editable text lands where the
+            # stroked label would have printed (slice 2e).
+            lx, ly = to_epro_xy(float(label["x"]), float(label["y"]), frame)
+            text_attrs: dict[str, Any] = {
+                "x": lx,
+                "y": ly,
+                "fontSize": to_mils(float(label.get("height_mm") or 0.0)),
+                "strokeWidth": to_mils(float(label.get("stroke_width_mm") or 0.0)),
+                "origin": "LEFT_BOTTOM",
+                "angle": _clean(float(label.get("angle") or 0.0)),
+                "mirror": False,
+            }
+        else:
+            text_attrs = {"x": x, "y": y, "angle": 0, "origin": "LEFT_BOTTOM"}
         s.record(
             "COMPONENT",
             {
@@ -714,8 +889,7 @@ def epro_files(
             {
                 "parentId": cid,
                 "layerId": silk,
-                "x": x,
-                "y": y,
+                **text_attrs,
                 "key": "Designator",
                 "value": refdes,
                 "valueVisible": True,
@@ -749,6 +923,7 @@ def epro_files(
         pad_ids[refdes] = entries
 
     cu = _write_copper(s, copper_items, slug=slug, frame=frame, layers=layers)
+    silk_out = _write_silk(s, model, slug=slug, frame=frame)
 
     if synthesized:
         xs = [p[0] for p in outline] or [0.0]
@@ -829,13 +1004,7 @@ def epro_files(
             f"{len(model['mask_open_regions'])} soldermask-opening region(s) "
             "are NOT exported — Pro will mask-cover that area"
         )
-    if (model.get("silkscreen") or {}).get("top") or (
-        model.get("silkscreen") or {}
-    ).get("bottom"):
-        warnings.append(
-            "silkscreen is NOT exported (slice 2e); designators are written "
-            "as editable attributes"
-        )
+    warnings += _silk_warnings(silk_out, labelled=len(labels.keys() & parts.keys()))
     oblique = sorted(
         r for r, part in parts.items() if any("oblique_rot" in p for p in part.pads)
     )
@@ -882,6 +1051,11 @@ def epro_files(
             "arcs": cu.arcs,
             "vias": cu.vias,
             "pours": cu.pours,
+            "pours_dropped": cu.pours_dropped,
+            "silk_polys": silk_out.polys,
+            "silk_refdes_suppressed": silk_out.refdes,
+            "silk_dropped": silk_out.regions + silk_out.clear,
+            "labels_anchored": len(labels.keys() & parts.keys()),
         },
     )
 

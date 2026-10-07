@@ -112,7 +112,19 @@ Per slice; the real one is a human opening the file.
    (td468296's acceptance, closed). The human half (Pro's own unrouted
    count, click-through nets) rides the 2b look.
 3. **2d — pours.** *Done: re-pour in Pro succeeds; visual compare against
-   `view='svg'`.*
+   `view='svg'`.* **BUILT 2026-10-07, rectangles only:** every one of
+   the real board's eight pours is an `"R"` zone
+   (`["R", x, y, w, h, angle, 0]`, box `x..x+w`, `y-h..y` in the Y-down
+   frame at angle 0 — pinned against each net's own copper extent), so an
+   axis-aligned pour polygon (precis' plane pours over a rectangular
+   board) is written as that zone with `width 0.2`, `SOLID`/`fineness 8`;
+   the realized fill (antipads, islands) is Pro's to re-derive and the
+   response says so. A free-polygon pour is dropped WITH a warning: Pro's
+   POUR path for a polygon zone has not been observed, and a guessed path
+   shape is the pre-spike `unk` risk this item exists to avoid. Wanted
+   from Reto for the polygon case: a Pro-written file with one
+   non-rectangular pour (add it to the throwaway test project below). The
+   human half (re-pour succeeds, visual compare) rides the 2b look.
 4. **2e — silk + editable designators.** Courtyard/pin-1 `POLY`, designator as
    `ATTR`/`STRING` **with its stroked twin suppressed from the `POLY` stream**.
    Needs the label anchor, which `SilkPlacement` does not carry — add
@@ -120,7 +132,17 @@ Per slice; the real one is a human opening the file.
    `check_silk_printability` read the census and are unaffected) rather than
    dumping the designator at the component origin and losing the placement
    `silk.py` worked to compute. *Done: designators are selectable, editable text
-   at the same place our gerber prints them; no doubled labels.*
+   at the same place our gerber prints them; no doubled labels.* **BUILT
+   2026-10-07:** `SilkPlacement.x_mm/y_mm/angle_deg` (bottom-left of the
+   drawn label's text box, angle 0) ride `_fab_model`'s new
+   `silk_labels`; the `Designator` `ATTR` is anchored there with
+   `origin` LEFT_BOTTOM, `fontSize`/`strokeWidth` from the silk pass,
+   `mirror false`; courtyard, pin-1 and board-frame strokes are `POLY` on
+   layers 3/4; `role == "refdes"` strokes are suppressed, so no label
+   doubles; region fills and knockout strokes are warned drops. Unverified
+   until the 2b look: that Pro mirrors bottom-layer `ATTR` text by layer
+   (we write `mirror false` on both sides) and that LEFT_BOTTOM is the
+   text box corner, not the baseline.
 5. **2f — deferred set.** Per-distinct-footprint `FOOTPRINT` document with a
    real `angle` (R1 is closed, so this is now a size/tidiness change rather
    than a correctness one), rule areas, `mask_open_regions`, NPTH holes,

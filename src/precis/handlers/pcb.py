@@ -3003,7 +3003,7 @@ class PcbHandler(Handler):
         }
         vias = [c for c in copper if c.get("ctype") == "via"]
         capability = self._stackup_capability(board["stackup"])
-        pads, silk_draws, furniture_warnings, _silk_census, copper = (
+        pads, silk_draws, furniture_warnings, silk_census, copper = (
             self._board_furniture(
                 ir,
                 pads,
@@ -3020,6 +3020,24 @@ class PcbHandler(Handler):
             )
         )
         warnings.extend(furniture_warnings)
+        # Where each DRAWN refdes label sits (silk.SilkPlacement x/y): the
+        # anchor an editable-text export (.epro2 ATTR) uses so the
+        # retypeable designator lands where the stroked one prints. The
+        # gerber writer ignores the key (its model docstring is the
+        # contract); additive, like `instances`.
+        silk_labels = [
+            {
+                "refdes": c.refdes,
+                "side": c.side,
+                "x": c.x_mm,
+                "y": c.y_mm,
+                "angle": c.angle_deg,
+                "height_mm": c.height_mm,
+                "stroke_width_mm": c.stroke_width_mm,
+            }
+            for c in silk_census
+            if c.kind == "refdes" and c.x_mm is not None and c.y_mm is not None
+        ]
 
         model: dict[str, Any] = {
             "layers": layer_names,
@@ -3039,6 +3057,7 @@ class PcbHandler(Handler):
             # know (its model docstring is the contract), so this is
             # additive for the fab path.
             "instances": design["instances"],
+            "silk_labels": silk_labels,
         }
         return model, warnings
 
@@ -3122,11 +3141,11 @@ class PcbHandler(Handler):
         path.write_bytes(blob)
 
         st = exported.stats
-        if st["lines"] or st["arcs"] or st["vias"]:
+        if st["lines"] or st["arcs"] or st["vias"] or st["pours"]:
             copper_line = (
                 f"copper: {st['lines']} line(s), {st['arcs']} arc(s), "
-                f"{st['vias']} via(s) on {st['tracks']} track(s); pours are "
-                "not exported yet (slice 2d)."
+                f"{st['vias']} via(s) on {st['tracks']} track(s), "
+                f"{st['pours']} pour zone(s) (Pro re-pours them on open)."
             )
         else:
             copper_line = (

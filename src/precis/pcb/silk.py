@@ -582,6 +582,16 @@ class SilkPlacement:
     reason: str | None = None
     stroke_width_mm: float = 0.0
     height_mm: float | None = None
+    #: Where a DRAWN refdes label sits: the bottom-left corner of its text
+    #: box in board mm (+Y up) and the glyph angle (always 0 — "read from
+    #: one side"). Populated only for ``kind="refdes"`` with outcome
+    #: ``placed``/``relocated``; an export that writes the designator as
+    #: editable text (EasyEDA ``ATTR``, pcb-epro-export slice 2e) anchors
+    #: it here instead of at the part origin, so the retypeable label lands
+    #: where the stroked one would have printed.
+    x_mm: float | None = None
+    y_mm: float | None = None
+    angle_deg: float = 0.0
 
 
 def _prose_from_census(
@@ -3232,6 +3242,8 @@ def build_silk(
                 obstacle_from_bbox(corners, label=f"{refdes} refdes silk")
             )
             placed_text = True
+            label_x = min(p[0] for p in corners)
+            label_y = min(p[1] for p in corners)
             if spot != default_spot:
                 shared = (
                     f", the spot its aligned row of {group_size} identical parts shares"
@@ -3254,6 +3266,8 @@ def build_silk(
                         ),
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,
+                        x_mm=label_x,
+                        y_mm=label_y,
                     )
                 )
             else:
@@ -3265,6 +3279,8 @@ def build_silk(
                         outcome="placed",
                         stroke_width_mm=stroke_width_mm,
                         height_mm=height_mm,
+                        x_mm=label_x,
+                        y_mm=label_y,
                     )
                 )
             break

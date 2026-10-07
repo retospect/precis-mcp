@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Slice 2d (pours) of [pcb-epro-export](../pcb-epro-export.md), then 2e (silk + editable designators); 2c (copper: LINE/ARC/VIA) landed 2026-10-07 and round-trips Reto's asymbendtest fixture to 0.001 um (td468296 closed). The same session runs ewod-pcb first while Reto's 2026-10-07 routing/placement/pin-swap investigation is open (ordered by Reto via chat-interface, ahead of EasyEDA); resume here when that note lands. Do next 1 (the router on the real board) is now ewod-pcb's router question too — measure there, do not re-plan it here.
+- **Next:** Slice 2f (the deferred set: per-distinct-footprint documents, rule areas, mask openings, NPTH, teardrops) of [pcb-epro-export](../pcb-epro-export.md), then the 0.5 um round-trip test; 2c (copper) landed 2026-10-07 (660a2eccf) and round-trips Reto's asymbendtest fixture to 0.001 um (td468296 closed); 2d (pours as rectangle zones) and 2e (silk strokes as POLY, designators as anchored editable ATTR) are built the same day, committed locally, landing when the coordinator's hold lifts. Wanted from Reto: a Pro-written file with one non-rectangular pour, so the polygon zone path can be written rather than guessed. The same session runs ewod-pcb first while Reto's 2026-10-07 routing/placement/pin-swap investigation is open (ordered by Reto via chat-interface, ahead of EasyEDA); resume here when that note lands. Do next 1 (the router on the real board) is now ewod-pcb's router question too — measure there, do not re-plan it here.
 - **Blocked by:** Nothing for 2d/2e. Reopened 2026-10-07 by the coordinator (Reto's order: route/place first, then EasyEDA). Reto's Pro look at the 2b file is a review-queue item (`pcb-easyeda-round-trip-2`), not a blocker: the UNVERIFIED banner stays until it lands. Shared router/realizer files belong to [ewod-pcb](ewod-pcb.md#resume); sequence, do not merge.
 - **Unblocks:** A corrected board that routes and round-trips.
 - **Acceptance:** Use [pcb-router-fails-at-real-board-size](../pcb-router-fails-at-real-board-size.md) and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
@@ -178,7 +178,15 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    (17 netted arcs on two layers, 2 bottom parts) comes back with worst
    copper error 0.001 um and worst bottom-pad error 0.048 um
    (`test_real_board_copper_and_bottom_pads_round_trip`, env-gated).
-   Next: 2d pours, 2e silk/designators.
+   **2d (pours) BUILT 2026-10-07, rectangle zones only** (the one shape
+   Pro has been seen to write; a polygon pour is dropped with a warning
+   until a Pro-written polygon-pour fixture exists — asked of Reto in
+   the item). **2e (silk + editable designators) BUILT 2026-10-07**:
+   `SilkPlacement` x/y/angle → `_fab_model["silk_labels"]` → the
+   Designator ATTR anchored where the silk pass drew it, strokes as POLY,
+   refdes strokes suppressed. Next: 2f (per-distinct-footprint documents,
+   rule areas, mask openings, NPTH, teardrops — each round-trips or is a
+   warned drop), then the round-trip test (item 6 in Horizon).
 5. **backlog/pcb-export-dir-confinement.md** — the four file exports
    write to any agent-supplied `dir`. Cheap and mechanical, and it closes
    a write-anywhere path on the shared server, so it ranks above the
@@ -199,12 +207,7 @@ export/fab if this file outgrows itself.
    carry no net and nothing yet exercises the mirror outbound. Gates 2c and
    2f only; blocks nothing in import.
 
-3. **backlog/pcb-epro-export.md** slice 2d (pours) — 2c landed
-   2026-10-07; planes Pro re-pours on open, the difference between
-   readable and editable.
-4. **backlog/pcb-epro-export.md** slice 2e (silk + editable designators) —
-   waits on 2d and SilkPlacement gaining x/y/angle; retypeable refdes text.
-4. **backlog/pcb-epro-export.md** slice 2f (deferred set) — waits on 2b–2e;
+4. **backlog/pcb-epro-export.md** slice 2f (deferred set) — 2b–2e built;
    each of footprint documents, rule areas, mask openings, NPTH, teardrops
    either round-trips or becomes a warned drop.
 6. **backlog/pcb-epro-export.md** round-trip test (0.5 um geometry equality)

@@ -390,7 +390,25 @@ def test_things_the_slice_does_not_carry_are_warned_about():
             }
         ],
         mask_open_regions=[{"side": "top", "polygon": [[0, 0], [1, 0], [1, 1]]}],
-        silkscreen={"top": [{"width_mm": 0.15, "segments": []}], "bottom": []},
+        silkscreen={
+            "top": [
+                {
+                    "width_mm": 0.15,
+                    "role": "refdes",
+                    "refdes": "R1",
+                    "segments": [
+                        {"shape": "line", "start": [1, 1], "end": [2, 1]},
+                        {"shape": "line", "start": [2, 1], "end": [2, 2]},
+                    ],
+                },
+                {
+                    "shape": "region",
+                    "role": "sn-box",
+                    "polygon": [[0, 0], [1, 0], [1, 1]],
+                },
+            ],
+            "bottom": [],
+        },
     )
     model["drills"].append({"x": 2.0, "y": 2.0, "dia_mm": 3.0, "plated": False})
     model["instances"].append({"refdes": "X9", "x": None, "y": None})
@@ -402,11 +420,147 @@ def test_things_the_slice_does_not_carry_are_warned_about():
         "1 part(s) sit at a non-right-angle rotation with rect/obround pads (R7)",
         "1 pour(s)/plane(s)",
         "1 soldermask-opening",
-        "silkscreen is NOT exported",
+        "1 refdes silk stroke(s) suppressed",
+        "1 silk region fill(s)",
         "1 drill(s) belong to no exported pad or via",
         "unplaced part(s) omitted: X9",
     ):
         assert needle in text, needle
+
+
+# ── silk + editable designators (slice 2e) ──────────────────────────────
+def _line(a, b):
+    return {"shape": "line", "start": list(a), "end": list(b)}
+
+
+def test_designator_attr_is_anchored_where_the_silk_pass_put_the_label():
+    label = {
+        "refdes": "R1",
+        "side": "top",
+        "x": 4.0,
+        "y": 3.2,
+        "angle": 0.0,
+        "height_mm": 0.8,
+        "stroke_width_mm": 0.15,
+    }
+    model = _model(silk_labels=[label])
+    ex = _export(model)
+    pcb = _read(ex).pcb()
+    frame = epro_write.frame_for(model)
+
+    def designator(refdes):
+        (a,) = [
+            b
+            for b in pcb.bodies("ATTR")
+            if b.get("key") == "Designator" and b.get("value") == refdes
+        ]
+        return a
+
+    r1 = designator("R1")
+    lx, ly = epro_write.to_epro_xy(4.0, 3.2, frame)
+    assert r1["x"] == pytest.approx(lx) and r1["y"] == pytest.approx(ly)
+    assert r1["origin"] == "LEFT_BOTTOM"
+    assert r1["fontSize"] == pytest.approx(epro_write.to_mils(0.8))
+    assert r1["strokeWidth"] == pytest.approx(epro_write.to_mils(0.15))
+    assert r1["mirror"] is False
+    assert r1["angle"] == 0
+    assert r1["valueVisible"] is True
+
+    r2 = designator("R2")
+    comp = next(
+        r.body
+        for r in pcb.of_type("COMPONENT")
+        if r.id == r2["parentId"] and r.body is not None
+    )
+    r2_inst = next(i for i in model["instances"] if i["refdes"] == "R2")
+    cx, cy = epro_write.to_epro_xy(r2_inst["x"], r2_inst["y"], frame)
+    assert (comp["x"], comp["y"]) == (cx, cy)
+    assert r2["x"] == comp["x"] and r2["y"] == comp["y"]
+    assert r2["origin"] == "LEFT_BOTTOM"
+    assert ex.stats["labels_anchored"] == 1
+
+
+def _silk_model():
+    outline = [
+        _line((5, 5), (7, 5)),
+        _line((7, 5), (7, 6)),
+        _line((7, 6), (5, 6)),
+        _line((5, 6), (5, 5)),
+    ]
+    return _model(
+        silkscreen={
+            "top": [
+                {"width_mm": 0.15, "role": "outline", "segments": outline},
+                {
+                    "width_mm": 0.2,
+                    "role": "pin1",
+                    "segments": [_line((4.5, 4.5), (4.9, 4.5))],
+                },
+                {
+                    "width_mm": 0.15,
+                    "role": "refdes",
+                    "refdes": "R1",
+                    "segments": [
+                        _line((1, 1), (2, 1)),
+                        _line((2, 1), (2, 2)),
+                        _line((2, 2), (3, 2)),
+                    ],
+                },
+            ],
+            "bottom": [
+                {
+                    "width_mm": 0.3,
+                    "role": "title",
+                    "segments": [_line((9, 9), (10, 9)), _line((10, 9), (10, 10))],
+                },
+                {
+                    "width_mm": 0.15,
+                    "polarity": "clear",
+                    "segments": [_line((12, 9), (13, 9))],
+                },
+            ],
+        }
+    )
+
+
+def test_silk_strokes_become_polys_and_refdes_strokes_are_suppressed():
+    model = _silk_model()
+    ex = _export(model)
+    pcb = _read(ex).pcb()
+    top = [b for b in pcb.bodies("POLY") if b["layerId"] == 3]
+    bot = [b for b in pcb.bodies("POLY") if b["layerId"] == 4]
+    assert len(top) == 2 and len(bot) == 1
+    for b in top + bot:
+        assert b["netName"] == ""
+        assert b["polyType"] == "NORMAL"
+    widths = sorted(b["width"] for b in top)
+    assert widths == pytest.approx(
+        sorted([epro_write.to_mils(0.15), epro_write.to_mils(0.2)])
+    )
+    assert bot[0]["width"] == pytest.approx(epro_write.to_mils(0.3))
+
+    _outline, frame = epro.board_outline(pcb)
+    box = next(b for b in top if b["width"] == pytest.approx(epro_write.to_mils(0.15)))
+    pts = [frame.xy(x, y) for x, y in epro._poly_points(box["path"])]
+    want = [(5, 5), (7, 5), (7, 6), (5, 6), (5, 5)]
+    assert len(pts) == 5
+    for (gx, gy), (wx, wy) in zip(pts, want, strict=True):
+        assert abs(gx - wx) < _TOL_MM and abs(gy - wy) < _TOL_MM
+
+    assert ex.stats["silk_polys"] == 3
+    assert ex.stats["silk_refdes_suppressed"] == 1
+    assert ex.stats["silk_dropped"] == 1
+    text = " | ".join(ex.warnings)
+    assert "suppressed" in text and "knockout" in text
+
+
+def test_silk_order_does_not_leak_into_the_bytes():
+    a = _silk_model()
+    b = _silk_model()
+    b["silkscreen"]["top"].reverse()
+    assert epro_write.zip_epro(_export(a).files) == epro_write.zip_epro(
+        _export(b).files
+    )
 
 
 # ── THE frame test: write, read back, every pad where the model put it ──
@@ -551,6 +705,61 @@ def test_a_model_whose_outline_is_not_at_the_origin_round_trips_relative_to_it()
         assert abs(gy - (p["y"] - oy)) < _TOL_MM
     feat = next(f for f in design.features if f["ftype"] == "outline")
     assert feat["geom"]["path"][0] == [0.0, 0.0]
+
+
+# ── pours (slice 2d): rectangle zones only, Pro re-pours ────────────────
+def test_a_rectangular_pour_is_written_as_an_r_zone_pro_re_pours():
+    pour = {
+        "ctype": "pour",
+        "layer": "In1.Cu",
+        "net": "GND",
+        "polygon": [[2.0, 2.0], [28.0, 2.0], [28.0, 18.0], [2.0, 18.0], [2.0, 2.0]],
+        "holes": [[[10.0, 10.0], [11.0, 10.0], [11.0, 11.0]]],
+    }
+    model = _model(copper=[pour])
+    ex = _export(model)
+    pcb = _read(ex).pcb()
+    (rec,) = pcb.bodies("POUR")
+    frame = epro_write.frame_for(model)
+    fx, fy = epro_write.to_epro_xy(2.0, 2.0, frame)
+    assert rec["netName"] == "GND" and rec["layerId"] == 15
+    assert rec["path"] == [
+        ["R", fx, fy, epro_write.to_mils(26.0), epro_write.to_mils(16.0), 0, 0]
+    ]
+    assert rec["pourType"] == {"pourType": "SOLID", "fineness": 8}
+    assert rec["width"] == 0.2 and rec["name"] == "POUR1"
+    # the box spans y-h..y in the Y-down frame: its top edge is board y=18
+    top_x, top_y = epro_write.to_epro_xy(28.0, 18.0, frame)
+    assert fy - epro_write.to_mils(16.0) == pytest.approx(top_y, abs=1e-3)
+    assert fx + epro_write.to_mils(26.0) == pytest.approx(top_x, abs=1e-3)
+    assert ex.stats["pours"] == 1 and ex.stats["pours_dropped"] == 0
+    assert any("re-pours" in w for w in ex.warnings)
+    # the reader's net census counts the pour's net as used
+    assert "GND" in epro.live_nets(pcb)[0]
+
+
+def test_a_free_polygon_pour_is_dropped_with_a_warning_not_guessed():
+    tri = {
+        "ctype": "pour",
+        "layer": "B.Cu",
+        "net": "GND",
+        "polygon": [[2.0, 2.0], [28.0, 2.0], [15.0, 18.0]],
+    }
+    off = {**tri, "layer": "X.Cu", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}
+    ex = _export(_model(copper=[tri, off]))
+    assert _read(ex).pcb().bodies("POUR") == []
+    assert ex.stats["pours"] == 0 and ex.stats["pours_dropped"] == 2
+    assert any("non-rectangular" in w and "2 pour(s)" in w for w in ex.warnings)
+    assert not any("re-pours" in w for w in ex.warnings)
+
+
+def test_axis_aligned_rect_detection():
+    rect = epro_write._axis_aligned_rect
+    assert rect([[0, 0], [2, 0], [2, 1], [0, 1]]) == ((0.0, 0.0), (2.0, 1.0))
+    assert rect([[2, 1], [0, 1], [0, 0], [2, 0], [2, 1]]) == ((0.0, 0.0), (2.0, 1.0))
+    assert rect([[0, 0], [2, 0], [2, 1]]) is None
+    assert rect([[0, 0], [2, 0.5], [2, 1], [0, 1]]) is None
+    assert rect([]) is None
 
 
 # ── handler: view='epro' over a live store ──────────────────────────────
@@ -1021,7 +1230,9 @@ def test_copper_drops_and_flattenings_are_warned():
     assert [b["netName"] for b in pcb.bodies("LINE")] == [""]  # netless, written
     assert pcb.bodies("ARC") == []  # the degenerate arc was dropped
     assert len(pcb.bodies("VIA")) == 1
-    assert (ex.stats["lines"], ex.stats["vias"], ex.stats["pours"]) == (1, 1, 1)
+    # the triangle pour is counted as dropped (2d writes rectangles only)
+    assert (ex.stats["lines"], ex.stats["vias"], ex.stats["pours"]) == (1, 1, 0)
+    assert ex.stats["pours_dropped"] == 1
 
 
 def test_copper_order_does_not_leak_into_the_bytes():
