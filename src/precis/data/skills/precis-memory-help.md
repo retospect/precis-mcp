@@ -6,6 +6,7 @@ answers:
   - how do I jot down a quick note before I forget it?
   - how do I record a decision I just made, with its rationale?
   - how do I flag an open question to come back to later?
+  - how do I recall what I already know before starting a task?
   - how do I attach a memory to the paper section it came from?
   - how do I distil an expensive research-cache answer into a durable memory?
 applies-to: get/search (kind='memory'), put (kind='memory')
@@ -138,6 +139,22 @@ search(kind="memory", tags=["project:precis-v2", "confidence-strong"])
 `q=` runs over memory text (mechanics: `precis-search-help`). `tags=`
 narrows to refs carrying every listed tag (AND). Omit `q=` to browse a
 tag slice.
+
+## Recall what I already know before starting a task
+## Match a memory hit to the topic file I may have loaded
+
+```python
+search(kind="memory", tags=["SPACE:repo-dev"], q="<the task in a sentence>", view="index")
+get(kind="memory", id="me4641", view="fisheye+1hop+recall")  # on the best hit
+```
+
+`view='index'` prints each hit as the session-start bullet, one per line:
+`- <Title> (me4641, <filename>) — <hook>`. The filename appears when the
+memory mirrors a topic file; the hook is `meta.hook`, else the body's first
+line. `q=` is required. The second call opens the hit with its linked
+neighbours and the nearest unlinked memories in the same `SPACE:`
+(`precis-fisheye-help`). Shell form: `precis memory index --q "<task>" --k 5`.
+Any other `view=` on memory search is refused.
 
 ## Read a memory I have the id for
 ## Open a memory by id

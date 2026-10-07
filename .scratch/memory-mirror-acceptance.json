@@ -1,0 +1,725 @@
+{
+  "status": "PASS_SYNTHETIC_TEST_DB_ONLY",
+  "source_sha": "0662bc0cfcae6c8038e24ef7b50373e931049ce8",
+  "reviewed_source_sha": "2755f8a1adf70ea3ad38ed9318b8fac8f9b6b2e4",
+  "verified_git_blobs": {
+    "src/precis/cli/memory_mirror.py": "df3473252b161fc9c17c0bbe1bb8c98982a46023",
+    "src/precis/cli/memory.py": "6f297d32aae6d46d452f7d25c0b151a46538c78c",
+    "src/precis/utils/text.py": "ee025af69aae61fd32f7060c78abe178a797b995"
+  },
+  "test_sha256": "dc3f6bf44ea68ca39cc1648853e536e6691cf7c6821d3b7d5baf23a2619c541a",
+  "source_provenance": "generated shape fixture; actual orchestrator source path not established; no real content read",
+  "database": "precis_test_ea705e3eb85d",
+  "address_warning": "ALL ids below are ephemeral TEST-DB addresses, NOT production handles",
+  "topic_files": 120,
+  "index_bytes": 15360,
+  "total_files": 121,
+  "metadata_types": {
+    "user": 30,
+    "feedback": 30,
+    "project": 30,
+    "reference": 30
+  },
+  "nodes_per_namespace": 121,
+  "edges_per_namespace": 360,
+  "final_nodes_two_namespaces": 242,
+  "final_edges_two_namespaces": 720,
+  "sample_test_refs": {
+    "MEMORY.md": 17,
+    "topic-000.md": 18,
+    "topic-001.md": 19
+  },
+  "sample_test_edges": [
+    {
+      "src": 17,
+      "dst": 18,
+      "rel": "related-to"
+    },
+    {
+      "src": 17,
+      "dst": 19,
+      "rel": "related-to"
+    },
+    {
+      "src": 17,
+      "dst": 20,
+      "rel": "related-to"
+    }
+  ],
+  "expected_actual": "121/121 files byte-identical after export and reexport; 121 identities and 360 edges unchanged on rerun; YAML/body literal checks passed",
+  "per_file_hashes": {
+    "MEMORY.md": {
+      "input": "4db862543d752fe2e9b75b99a33ed6fbea1eae8891e6238da3aa411244f35cd9",
+      "export": "4db862543d752fe2e9b75b99a33ed6fbea1eae8891e6238da3aa411244f35cd9",
+      "reexport": "4db862543d752fe2e9b75b99a33ed6fbea1eae8891e6238da3aa411244f35cd9"
+    },
+    "topic-000.md": {
+      "input": "7c44fa19969c70964e27a54e9910ccbafefcebc6020fec43019714f0d6583867",
+      "export": "7c44fa19969c70964e27a54e9910ccbafefcebc6020fec43019714f0d6583867",
+      "reexport": "7c44fa19969c70964e27a54e9910ccbafefcebc6020fec43019714f0d6583867"
+    },
+    "topic-001.md": {
+      "input": "a8539ad056cbb284f031b03d6d3b2473870fa61ec8a13277e3117a49cfbdcc6b",
+      "export": "a8539ad056cbb284f031b03d6d3b2473870fa61ec8a13277e3117a49cfbdcc6b",
+      "reexport": "a8539ad056cbb284f031b03d6d3b2473870fa61ec8a13277e3117a49cfbdcc6b"
+    },
+    "topic-002.md": {
+      "input": "a471d069e03d285be6f491a96e8b9814214de42e3b72fd3b3b6e55ee0d15dab3",
+      "export": "a471d069e03d285be6f491a96e8b9814214de42e3b72fd3b3b6e55ee0d15dab3",
+      "reexport": "a471d069e03d285be6f491a96e8b9814214de42e3b72fd3b3b6e55ee0d15dab3"
+    },
+    "topic-003.md": {
+      "input": "d8d0b25a6dd1a2c35b0699d8fc1aaf3b0baa39658c6428880d11cc032e11e7dc",
+      "export": "d8d0b25a6dd1a2c35b0699d8fc1aaf3b0baa39658c6428880d11cc032e11e7dc",
+      "reexport": "d8d0b25a6dd1a2c35b0699d8fc1aaf3b0baa39658c6428880d11cc032e11e7dc"
+    },
+    "topic-004.md": {
+      "input": "07947e4ca3dfd8da0235d5aa40f530657c63ca781f571e872e0da7b30a348ead",
+      "export": "07947e4ca3dfd8da0235d5aa40f530657c63ca781f571e872e0da7b30a348ead",
+      "reexport": "07947e4ca3dfd8da0235d5aa40f530657c63ca781f571e872e0da7b30a348ead"
+    },
+    "topic-005.md": {
+      "input": "6e53dec814b8ddad775cca2f2f74516fb999101bd9d9e28918b0649f05e45a00",
+      "export": "6e53dec814b8ddad775cca2f2f74516fb999101bd9d9e28918b0649f05e45a00",
+      "reexport": "6e53dec814b8ddad775cca2f2f74516fb999101bd9d9e28918b0649f05e45a00"
+    },
+    "topic-006.md": {
+      "input": "bbe9e7a6d116e049cc9cdd001727658c88e657c29afa3d8e63124ec571f21d59",
+      "export": "bbe9e7a6d116e049cc9cdd001727658c88e657c29afa3d8e63124ec571f21d59",
+      "reexport": "bbe9e7a6d116e049cc9cdd001727658c88e657c29afa3d8e63124ec571f21d59"
+    },
+    "topic-007.md": {
+      "input": "1deb18fda495ce808fe6f46005087f1f0236dc5248f3fe278332e7e607c233ff",
+      "export": "1deb18fda495ce808fe6f46005087f1f0236dc5248f3fe278332e7e607c233ff",
+      "reexport": "1deb18fda495ce808fe6f46005087f1f0236dc5248f3fe278332e7e607c233ff"
+    },
+    "topic-008.md": {
+      "input": "809445e558cd01ed6692a74ab197dfcdf1bef79815234cde57626984680a9769",
+      "export": "809445e558cd01ed6692a74ab197dfcdf1bef79815234cde57626984680a9769",
+      "reexport": "809445e558cd01ed6692a74ab197dfcdf1bef79815234cde57626984680a9769"
+    },
+    "topic-009.md": {
+      "input": "f45e2e1859f5eddcad40ee52a49cfa73dcbbac36c9b8b943d25ae4d4604194c8",
+      "export": "f45e2e1859f5eddcad40ee52a49cfa73dcbbac36c9b8b943d25ae4d4604194c8",
+      "reexport": "f45e2e1859f5eddcad40ee52a49cfa73dcbbac36c9b8b943d25ae4d4604194c8"
+    },
+    "topic-010.md": {
+      "input": "cf3696701109bdbaf31ba8b41eb482c2074c0e6ef684e430812895050d9cf52f",
+      "export": "cf3696701109bdbaf31ba8b41eb482c2074c0e6ef684e430812895050d9cf52f",
+      "reexport": "cf3696701109bdbaf31ba8b41eb482c2074c0e6ef684e430812895050d9cf52f"
+    },
+    "topic-011.md": {
+      "input": "b8bd49fb21b08b571c6479a82c83f4e50b9118c4922752237481bb0e7fadc857",
+      "export": "b8bd49fb21b08b571c6479a82c83f4e50b9118c4922752237481bb0e7fadc857",
+      "reexport": "b8bd49fb21b08b571c6479a82c83f4e50b9118c4922752237481bb0e7fadc857"
+    },
+    "topic-012.md": {
+      "input": "094b51c9f1bd68373c91b21c23731c04eb78740588c7a961464dbc32cf8e5786",
+      "export": "094b51c9f1bd68373c91b21c23731c04eb78740588c7a961464dbc32cf8e5786",
+      "reexport": "094b51c9f1bd68373c91b21c23731c04eb78740588c7a961464dbc32cf8e5786"
+    },
+    "topic-013.md": {
+      "input": "ca785459719fbfc8efde5d382e7a2a419644faeda2ac32dc07efb8c5573775c6",
+      "export": "ca785459719fbfc8efde5d382e7a2a419644faeda2ac32dc07efb8c5573775c6",
+      "reexport": "ca785459719fbfc8efde5d382e7a2a419644faeda2ac32dc07efb8c5573775c6"
+    },
+    "topic-014.md": {
+      "input": "ea926e7ccabdd5cfa6a805af5dc6df083508cd1bbe26264d552713845cc0cfeb",
+      "export": "ea926e7ccabdd5cfa6a805af5dc6df083508cd1bbe26264d552713845cc0cfeb",
+      "reexport": "ea926e7ccabdd5cfa6a805af5dc6df083508cd1bbe26264d552713845cc0cfeb"
+    },
+    "topic-015.md": {
+      "input": "edbd5b0ebbd141f31f0bd95712e95d1e3515bb76c4d405614c200b3a66ccabe0",
+      "export": "edbd5b0ebbd141f31f0bd95712e95d1e3515bb76c4d405614c200b3a66ccabe0",
+      "reexport": "edbd5b0ebbd141f31f0bd95712e95d1e3515bb76c4d405614c200b3a66ccabe0"
+    },
+    "topic-016.md": {
+      "input": "b4bc7586659e7e010a47352e2231544c9e42c623f1794141e315d2d553197907",
+      "export": "b4bc7586659e7e010a47352e2231544c9e42c623f1794141e315d2d553197907",
+      "reexport": "b4bc7586659e7e010a47352e2231544c9e42c623f1794141e315d2d553197907"
+    },
+    "topic-017.md": {
+      "input": "8eb9f79fcb9eb5b58d9ec7b15a4f427732d5962827b530a6c96e7290633c38c6",
+      "export": "8eb9f79fcb9eb5b58d9ec7b15a4f427732d5962827b530a6c96e7290633c38c6",
+      "reexport": "8eb9f79fcb9eb5b58d9ec7b15a4f427732d5962827b530a6c96e7290633c38c6"
+    },
+    "topic-018.md": {
+      "input": "76c4f3201616eb2a9562df7f99d484ad29919282ec3dac1756631f349a74f157",
+      "export": "76c4f3201616eb2a9562df7f99d484ad29919282ec3dac1756631f349a74f157",
+      "reexport": "76c4f3201616eb2a9562df7f99d484ad29919282ec3dac1756631f349a74f157"
+    },
+    "topic-019.md": {
+      "input": "3e766937aeb97f3d6b8f16c21ea7cbcde63a729efaea6ca56b3f19fa6fe52f23",
+      "export": "3e766937aeb97f3d6b8f16c21ea7cbcde63a729efaea6ca56b3f19fa6fe52f23",
+      "reexport": "3e766937aeb97f3d6b8f16c21ea7cbcde63a729efaea6ca56b3f19fa6fe52f23"
+    },
+    "topic-020.md": {
+      "input": "f6fef7f1f6477749b3b51d6c3b5de5fa9d9f66f07bc2a705825883943f120b5d",
+      "export": "f6fef7f1f6477749b3b51d6c3b5de5fa9d9f66f07bc2a705825883943f120b5d",
+      "reexport": "f6fef7f1f6477749b3b51d6c3b5de5fa9d9f66f07bc2a705825883943f120b5d"
+    },
+    "topic-021.md": {
+      "input": "7aa7761b8197fed43e6b1f00f667ceaec6455c0c5327b61bdf8ed9d8629aa46d",
+      "export": "7aa7761b8197fed43e6b1f00f667ceaec6455c0c5327b61bdf8ed9d8629aa46d",
+      "reexport": "7aa7761b8197fed43e6b1f00f667ceaec6455c0c5327b61bdf8ed9d8629aa46d"
+    },
+    "topic-022.md": {
+      "input": "f1988252d35a9cc3033ba37bb4270093ee30294987920a7122d486d7e6f66816",
+      "export": "f1988252d35a9cc3033ba37bb4270093ee30294987920a7122d486d7e6f66816",
+      "reexport": "f1988252d35a9cc3033ba37bb4270093ee30294987920a7122d486d7e6f66816"
+    },
+    "topic-023.md": {
+      "input": "d185179c4294b1f591f9e932445b54d166167cfffafb8a3620c52bca9fbd6af5",
+      "export": "d185179c4294b1f591f9e932445b54d166167cfffafb8a3620c52bca9fbd6af5",
+      "reexport": "d185179c4294b1f591f9e932445b54d166167cfffafb8a3620c52bca9fbd6af5"
+    },
+    "topic-024.md": {
+      "input": "6b9493d4965e879e4c8c923c3cfd94c6c50e3e3befac60a44590b5bc4b651575",
+      "export": "6b9493d4965e879e4c8c923c3cfd94c6c50e3e3befac60a44590b5bc4b651575",
+      "reexport": "6b9493d4965e879e4c8c923c3cfd94c6c50e3e3befac60a44590b5bc4b651575"
+    },
+    "topic-025.md": {
+      "input": "07e4ba7cb713be1623351a23890e7822fba56a66c88ef3880ea721774b223fdc",
+      "export": "07e4ba7cb713be1623351a23890e7822fba56a66c88ef3880ea721774b223fdc",
+      "reexport": "07e4ba7cb713be1623351a23890e7822fba56a66c88ef3880ea721774b223fdc"
+    },
+    "topic-026.md": {
+      "input": "7a9a14c289d7f09eb3151a7f419d28efb5e869917f05c8d26101cbf7bd99cb7c",
+      "export": "7a9a14c289d7f09eb3151a7f419d28efb5e869917f05c8d26101cbf7bd99cb7c",
+      "reexport": "7a9a14c289d7f09eb3151a7f419d28efb5e869917f05c8d26101cbf7bd99cb7c"
+    },
+    "topic-027.md": {
+      "input": "5e785dbc5c2cc8196f03ef13b7c65e10b1d2574214cabad2c71567d6405c4872",
+      "export": "5e785dbc5c2cc8196f03ef13b7c65e10b1d2574214cabad2c71567d6405c4872",
+      "reexport": "5e785dbc5c2cc8196f03ef13b7c65e10b1d2574214cabad2c71567d6405c4872"
+    },
+    "topic-028.md": {
+      "input": "01cd4cd8c453fdad4363a6c89380b5b8163bec47b2a36db4056ec139addf6b22",
+      "export": "01cd4cd8c453fdad4363a6c89380b5b8163bec47b2a36db4056ec139addf6b22",
+      "reexport": "01cd4cd8c453fdad4363a6c89380b5b8163bec47b2a36db4056ec139addf6b22"
+    },
+    "topic-029.md": {
+      "input": "2a8cf1ce63048c5c3563cb7e1f88a0df9d155e83f45bc4a6d92a56b3a9ad8048",
+      "export": "2a8cf1ce63048c5c3563cb7e1f88a0df9d155e83f45bc4a6d92a56b3a9ad8048",
+      "reexport": "2a8cf1ce63048c5c3563cb7e1f88a0df9d155e83f45bc4a6d92a56b3a9ad8048"
+    },
+    "topic-030.md": {
+      "input": "fcd0ef5dd79c4ac9cd12de6dd70b4b42ea99e05aa553b2da880ca8988843d616",
+      "export": "fcd0ef5dd79c4ac9cd12de6dd70b4b42ea99e05aa553b2da880ca8988843d616",
+      "reexport": "fcd0ef5dd79c4ac9cd12de6dd70b4b42ea99e05aa553b2da880ca8988843d616"
+    },
+    "topic-031.md": {
+      "input": "57a63f1c83bf80b4458da31fcb69e3e3eaa65d0eb4b1d8baac69994b24b2f0f7",
+      "export": "57a63f1c83bf80b4458da31fcb69e3e3eaa65d0eb4b1d8baac69994b24b2f0f7",
+      "reexport": "57a63f1c83bf80b4458da31fcb69e3e3eaa65d0eb4b1d8baac69994b24b2f0f7"
+    },
+    "topic-032.md": {
+      "input": "bb1a736cc27c2f42e433c60436be43584de965a11a1d64c1817eef54e699bb9f",
+      "export": "bb1a736cc27c2f42e433c60436be43584de965a11a1d64c1817eef54e699bb9f",
+      "reexport": "bb1a736cc27c2f42e433c60436be43584de965a11a1d64c1817eef54e699bb9f"
+    },
+    "topic-033.md": {
+      "input": "47551560d58eb57477f82a2e3a63bcc3ec331ab3a5a84aa4e3e40b0cb4efd5b8",
+      "export": "47551560d58eb57477f82a2e3a63bcc3ec331ab3a5a84aa4e3e40b0cb4efd5b8",
+      "reexport": "47551560d58eb57477f82a2e3a63bcc3ec331ab3a5a84aa4e3e40b0cb4efd5b8"
+    },
+    "topic-034.md": {
+      "input": "4282b99999cb1152e80f980effd794644dce35ca01af17405c44b30c298b1da8",
+      "export": "4282b99999cb1152e80f980effd794644dce35ca01af17405c44b30c298b1da8",
+      "reexport": "4282b99999cb1152e80f980effd794644dce35ca01af17405c44b30c298b1da8"
+    },
+    "topic-035.md": {
+      "input": "f135190acf27af8c6d9fb8a43ee1f423c3f5e6dc0373cd60471b10cc28ec9deb",
+      "export": "f135190acf27af8c6d9fb8a43ee1f423c3f5e6dc0373cd60471b10cc28ec9deb",
+      "reexport": "f135190acf27af8c6d9fb8a43ee1f423c3f5e6dc0373cd60471b10cc28ec9deb"
+    },
+    "topic-036.md": {
+      "input": "c15eb6cec00468e9bf65fef2b2d2755d2d661feeada0097379b34db431db336b",
+      "export": "c15eb6cec00468e9bf65fef2b2d2755d2d661feeada0097379b34db431db336b",
+      "reexport": "c15eb6cec00468e9bf65fef2b2d2755d2d661feeada0097379b34db431db336b"
+    },
+    "topic-037.md": {
+      "input": "3e9f6a682a904c8cc858720e4a43444c24944181a30b4385ce6f2970b4926904",
+      "export": "3e9f6a682a904c8cc858720e4a43444c24944181a30b4385ce6f2970b4926904",
+      "reexport": "3e9f6a682a904c8cc858720e4a43444c24944181a30b4385ce6f2970b4926904"
+    },
+    "topic-038.md": {
+      "input": "512f6c465496f77a5bc7a20b28fff8683cee8dda88e7507afc71f46ee290b2f8",
+      "export": "512f6c465496f77a5bc7a20b28fff8683cee8dda88e7507afc71f46ee290b2f8",
+      "reexport": "512f6c465496f77a5bc7a20b28fff8683cee8dda88e7507afc71f46ee290b2f8"
+    },
+    "topic-039.md": {
+      "input": "11936321887de90c4c5f28af325c9520a914cb9648473656c87b693c389735ce",
+      "export": "11936321887de90c4c5f28af325c9520a914cb9648473656c87b693c389735ce",
+      "reexport": "11936321887de90c4c5f28af325c9520a914cb9648473656c87b693c389735ce"
+    },
+    "topic-040.md": {
+      "input": "d9f3dc58fba9bb039fa8c2437ae391b1e8914a2b7311318b1db2664fdb2726f2",
+      "export": "d9f3dc58fba9bb039fa8c2437ae391b1e8914a2b7311318b1db2664fdb2726f2",
+      "reexport": "d9f3dc58fba9bb039fa8c2437ae391b1e8914a2b7311318b1db2664fdb2726f2"
+    },
+    "topic-041.md": {
+      "input": "f8917d30ce9525f31705f6b91288582ede9418975e38a80f6c8e379b1c275c42",
+      "export": "f8917d30ce9525f31705f6b91288582ede9418975e38a80f6c8e379b1c275c42",
+      "reexport": "f8917d30ce9525f31705f6b91288582ede9418975e38a80f6c8e379b1c275c42"
+    },
+    "topic-042.md": {
+      "input": "23dd9775ce1743bc200886e5b5082d741e3fa98ed9c8646b8248196cdf21fef1",
+      "export": "23dd9775ce1743bc200886e5b5082d741e3fa98ed9c8646b8248196cdf21fef1",
+      "reexport": "23dd9775ce1743bc200886e5b5082d741e3fa98ed9c8646b8248196cdf21fef1"
+    },
+    "topic-043.md": {
+      "input": "83daa5a826fc6230dce69ceedfde325e8157e54c587a277d45f9228e4cd26448",
+      "export": "83daa5a826fc6230dce69ceedfde325e8157e54c587a277d45f9228e4cd26448",
+      "reexport": "83daa5a826fc6230dce69ceedfde325e8157e54c587a277d45f9228e4cd26448"
+    },
+    "topic-044.md": {
+      "input": "12445d0e775be03700e174e0c72c4d5dd3d58c87b7c1a78995004692e1189ea7",
+      "export": "12445d0e775be03700e174e0c72c4d5dd3d58c87b7c1a78995004692e1189ea7",
+      "reexport": "12445d0e775be03700e174e0c72c4d5dd3d58c87b7c1a78995004692e1189ea7"
+    },
+    "topic-045.md": {
+      "input": "3b5f9cc229f6da66d023251618b86982f94734ef164f6cc09a06db384eb4ef6f",
+      "export": "3b5f9cc229f6da66d023251618b86982f94734ef164f6cc09a06db384eb4ef6f",
+      "reexport": "3b5f9cc229f6da66d023251618b86982f94734ef164f6cc09a06db384eb4ef6f"
+    },
+    "topic-046.md": {
+      "input": "5c524a7391c936168eb6cfdcbabe78e68523a00c52ea04fe5bbf5bd2a53d983d",
+      "export": "5c524a7391c936168eb6cfdcbabe78e68523a00c52ea04fe5bbf5bd2a53d983d",
+      "reexport": "5c524a7391c936168eb6cfdcbabe78e68523a00c52ea04fe5bbf5bd2a53d983d"
+    },
+    "topic-047.md": {
+      "input": "6c299a72e5656ccc0f30555d3d1fbaa1e1ce73b4cf626554ab231f0a17ba678e",
+      "export": "6c299a72e5656ccc0f30555d3d1fbaa1e1ce73b4cf626554ab231f0a17ba678e",
+      "reexport": "6c299a72e5656ccc0f30555d3d1fbaa1e1ce73b4cf626554ab231f0a17ba678e"
+    },
+    "topic-048.md": {
+      "input": "9399cc80c7b81f1dc1bfd985f76e3ea140197e20662bb319e5577a9056e6bd58",
+      "export": "9399cc80c7b81f1dc1bfd985f76e3ea140197e20662bb319e5577a9056e6bd58",
+      "reexport": "9399cc80c7b81f1dc1bfd985f76e3ea140197e20662bb319e5577a9056e6bd58"
+    },
+    "topic-049.md": {
+      "input": "d355820f121ca68a0a98ffeb21c5c51e486eb896b1e81e32e3ea9438c695790d",
+      "export": "d355820f121ca68a0a98ffeb21c5c51e486eb896b1e81e32e3ea9438c695790d",
+      "reexport": "d355820f121ca68a0a98ffeb21c5c51e486eb896b1e81e32e3ea9438c695790d"
+    },
+    "topic-050.md": {
+      "input": "b5aef7dcf4119ccfddb347aeb64e33ac544374d7c1d48f8eea505bcd81c2a277",
+      "export": "b5aef7dcf4119ccfddb347aeb64e33ac544374d7c1d48f8eea505bcd81c2a277",
+      "reexport": "b5aef7dcf4119ccfddb347aeb64e33ac544374d7c1d48f8eea505bcd81c2a277"
+    },
+    "topic-051.md": {
+      "input": "a67936fe845fdd88ed1b961b36c4ac9136e9b5f1a8f7e5630aa79bef491669e7",
+      "export": "a67936fe845fdd88ed1b961b36c4ac9136e9b5f1a8f7e5630aa79bef491669e7",
+      "reexport": "a67936fe845fdd88ed1b961b36c4ac9136e9b5f1a8f7e5630aa79bef491669e7"
+    },
+    "topic-052.md": {
+      "input": "898829c2bc366b5865a8d2fe412510a7e892d97a20ac9e2ef499ca94d29d6881",
+      "export": "898829c2bc366b5865a8d2fe412510a7e892d97a20ac9e2ef499ca94d29d6881",
+      "reexport": "898829c2bc366b5865a8d2fe412510a7e892d97a20ac9e2ef499ca94d29d6881"
+    },
+    "topic-053.md": {
+      "input": "4405855dc1230dffcb6a47976d19a33879d399351c0c45f0242f7ffb1d484913",
+      "export": "4405855dc1230dffcb6a47976d19a33879d399351c0c45f0242f7ffb1d484913",
+      "reexport": "4405855dc1230dffcb6a47976d19a33879d399351c0c45f0242f7ffb1d484913"
+    },
+    "topic-054.md": {
+      "input": "1c2b8f1e10300756e508637e8e991768f2250e261dd4a1640013f7bd6b0f9a31",
+      "export": "1c2b8f1e10300756e508637e8e991768f2250e261dd4a1640013f7bd6b0f9a31",
+      "reexport": "1c2b8f1e10300756e508637e8e991768f2250e261dd4a1640013f7bd6b0f9a31"
+    },
+    "topic-055.md": {
+      "input": "9a0cc428befb529bf2d1cff7eb16e922e1c7de4e8ad01769e8d2c394d1a7760c",
+      "export": "9a0cc428befb529bf2d1cff7eb16e922e1c7de4e8ad01769e8d2c394d1a7760c",
+      "reexport": "9a0cc428befb529bf2d1cff7eb16e922e1c7de4e8ad01769e8d2c394d1a7760c"
+    },
+    "topic-056.md": {
+      "input": "a1dd47304747e8308c6082eea0bb06243082b40f03a3e8eb7d0d2a5038fc92d6",
+      "export": "a1dd47304747e8308c6082eea0bb06243082b40f03a3e8eb7d0d2a5038fc92d6",
+      "reexport": "a1dd47304747e8308c6082eea0bb06243082b40f03a3e8eb7d0d2a5038fc92d6"
+    },
+    "topic-057.md": {
+      "input": "3649c1ec811eb0ac50f26f71ef3418140f63c7d996482d0837c6312281fdb712",
+      "export": "3649c1ec811eb0ac50f26f71ef3418140f63c7d996482d0837c6312281fdb712",
+      "reexport": "3649c1ec811eb0ac50f26f71ef3418140f63c7d996482d0837c6312281fdb712"
+    },
+    "topic-058.md": {
+      "input": "abe2ab48d1c3286d335a4d682e0b5c6dcd953b84bed8fd1e0df7aca9a32e7b92",
+      "export": "abe2ab48d1c3286d335a4d682e0b5c6dcd953b84bed8fd1e0df7aca9a32e7b92",
+      "reexport": "abe2ab48d1c3286d335a4d682e0b5c6dcd953b84bed8fd1e0df7aca9a32e7b92"
+    },
+    "topic-059.md": {
+      "input": "776426019e006e9abc2ebb12696b819fb0b647c6b6daf4be48ccce7b28e819b1",
+      "export": "776426019e006e9abc2ebb12696b819fb0b647c6b6daf4be48ccce7b28e819b1",
+      "reexport": "776426019e006e9abc2ebb12696b819fb0b647c6b6daf4be48ccce7b28e819b1"
+    },
+    "topic-060.md": {
+      "input": "94df3844f5e0ad6e603cd5aa9cb12ab1f72a829728e5c355380e8f6aa311a7a6",
+      "export": "94df3844f5e0ad6e603cd5aa9cb12ab1f72a829728e5c355380e8f6aa311a7a6",
+      "reexport": "94df3844f5e0ad6e603cd5aa9cb12ab1f72a829728e5c355380e8f6aa311a7a6"
+    },
+    "topic-061.md": {
+      "input": "f5b4d9db6f2f1fc44bc89f38233039854c9c3a57a95e5237d45215e66fcbed2b",
+      "export": "f5b4d9db6f2f1fc44bc89f38233039854c9c3a57a95e5237d45215e66fcbed2b",
+      "reexport": "f5b4d9db6f2f1fc44bc89f38233039854c9c3a57a95e5237d45215e66fcbed2b"
+    },
+    "topic-062.md": {
+      "input": "58321eb28a3b1509a9438d4e25ed40d5607e72a1c642c00b2cab85d7462fcfbb",
+      "export": "58321eb28a3b1509a9438d4e25ed40d5607e72a1c642c00b2cab85d7462fcfbb",
+      "reexport": "58321eb28a3b1509a9438d4e25ed40d5607e72a1c642c00b2cab85d7462fcfbb"
+    },
+    "topic-063.md": {
+      "input": "c42aa40c040a0779fc784d53a629ef75c9e25ddd9d6939bd13bb67a1f081bdd2",
+      "export": "c42aa40c040a0779fc784d53a629ef75c9e25ddd9d6939bd13bb67a1f081bdd2",
+      "reexport": "c42aa40c040a0779fc784d53a629ef75c9e25ddd9d6939bd13bb67a1f081bdd2"
+    },
+    "topic-064.md": {
+      "input": "07a81ba4b0e8ce64d4b75beedf66fa0aa251bd9c09f372eba24ed160a22a0b85",
+      "export": "07a81ba4b0e8ce64d4b75beedf66fa0aa251bd9c09f372eba24ed160a22a0b85",
+      "reexport": "07a81ba4b0e8ce64d4b75beedf66fa0aa251bd9c09f372eba24ed160a22a0b85"
+    },
+    "topic-065.md": {
+      "input": "2500b286ba807b5a424e2e0a82af4195e96a2d574befb8b812f46a7b7dcfabd0",
+      "export": "2500b286ba807b5a424e2e0a82af4195e96a2d574befb8b812f46a7b7dcfabd0",
+      "reexport": "2500b286ba807b5a424e2e0a82af4195e96a2d574befb8b812f46a7b7dcfabd0"
+    },
+    "topic-066.md": {
+      "input": "d28816819025df459f8843a70e5945f337673d82825932aa75007f734afba411",
+      "export": "d28816819025df459f8843a70e5945f337673d82825932aa75007f734afba411",
+      "reexport": "d28816819025df459f8843a70e5945f337673d82825932aa75007f734afba411"
+    },
+    "topic-067.md": {
+      "input": "dd8f1c27f0073a954e4317c7561fe9543e7c0bd6423a8a674069b7473d0674b5",
+      "export": "dd8f1c27f0073a954e4317c7561fe9543e7c0bd6423a8a674069b7473d0674b5",
+      "reexport": "dd8f1c27f0073a954e4317c7561fe9543e7c0bd6423a8a674069b7473d0674b5"
+    },
+    "topic-068.md": {
+      "input": "a9b710f22fa6872d87c08da4db80240dbf805c1fdd8e3c820d7e85f88ed9d88c",
+      "export": "a9b710f22fa6872d87c08da4db80240dbf805c1fdd8e3c820d7e85f88ed9d88c",
+      "reexport": "a9b710f22fa6872d87c08da4db80240dbf805c1fdd8e3c820d7e85f88ed9d88c"
+    },
+    "topic-069.md": {
+      "input": "8e57f997d873f76d5419c0bffb473051f65574b725385a448990518511676829",
+      "export": "8e57f997d873f76d5419c0bffb473051f65574b725385a448990518511676829",
+      "reexport": "8e57f997d873f76d5419c0bffb473051f65574b725385a448990518511676829"
+    },
+    "topic-070.md": {
+      "input": "1cae2d5643cb2e20a90c66eb340ca86570d9bc8735d57ec4c7f57b42478e8c42",
+      "export": "1cae2d5643cb2e20a90c66eb340ca86570d9bc8735d57ec4c7f57b42478e8c42",
+      "reexport": "1cae2d5643cb2e20a90c66eb340ca86570d9bc8735d57ec4c7f57b42478e8c42"
+    },
+    "topic-071.md": {
+      "input": "53c4a0c8df320147e64c17def910d4243dbe913df7c99b5837b35d453a546536",
+      "export": "53c4a0c8df320147e64c17def910d4243dbe913df7c99b5837b35d453a546536",
+      "reexport": "53c4a0c8df320147e64c17def910d4243dbe913df7c99b5837b35d453a546536"
+    },
+    "topic-072.md": {
+      "input": "13e51230d4722c35d11d16dd28028cc27ff078fc917014e94d183898d7096d4b",
+      "export": "13e51230d4722c35d11d16dd28028cc27ff078fc917014e94d183898d7096d4b",
+      "reexport": "13e51230d4722c35d11d16dd28028cc27ff078fc917014e94d183898d7096d4b"
+    },
+    "topic-073.md": {
+      "input": "5df2f3bd0e2b2ceeb3d384a39cb56479e38f04021ce13c6ed194f224448e7eff",
+      "export": "5df2f3bd0e2b2ceeb3d384a39cb56479e38f04021ce13c6ed194f224448e7eff",
+      "reexport": "5df2f3bd0e2b2ceeb3d384a39cb56479e38f04021ce13c6ed194f224448e7eff"
+    },
+    "topic-074.md": {
+      "input": "76f96d7a8c1961742dc67f427ddfbfefb6bd6d9b3d97a3ac6dc96b193f68e98c",
+      "export": "76f96d7a8c1961742dc67f427ddfbfefb6bd6d9b3d97a3ac6dc96b193f68e98c",
+      "reexport": "76f96d7a8c1961742dc67f427ddfbfefb6bd6d9b3d97a3ac6dc96b193f68e98c"
+    },
+    "topic-075.md": {
+      "input": "c4857f1fb9d1bc475da1ac15a7fb32cc1f91e0b0a9519c8218199c257bd64b53",
+      "export": "c4857f1fb9d1bc475da1ac15a7fb32cc1f91e0b0a9519c8218199c257bd64b53",
+      "reexport": "c4857f1fb9d1bc475da1ac15a7fb32cc1f91e0b0a9519c8218199c257bd64b53"
+    },
+    "topic-076.md": {
+      "input": "88177cb69d4cfaa970b16ecf4d8ad1d223a41da766041bccbade4590efa3e404",
+      "export": "88177cb69d4cfaa970b16ecf4d8ad1d223a41da766041bccbade4590efa3e404",
+      "reexport": "88177cb69d4cfaa970b16ecf4d8ad1d223a41da766041bccbade4590efa3e404"
+    },
+    "topic-077.md": {
+      "input": "31caf6fc74d660df4cf59a88af534e3f25900609f0d299df8c88cae805c862d7",
+      "export": "31caf6fc74d660df4cf59a88af534e3f25900609f0d299df8c88cae805c862d7",
+      "reexport": "31caf6fc74d660df4cf59a88af534e3f25900609f0d299df8c88cae805c862d7"
+    },
+    "topic-078.md": {
+      "input": "442e6c44c3f6c5f6a48d98dfd965445cd4f61ae4a5bab8752bfcff021a7686c4",
+      "export": "442e6c44c3f6c5f6a48d98dfd965445cd4f61ae4a5bab8752bfcff021a7686c4",
+      "reexport": "442e6c44c3f6c5f6a48d98dfd965445cd4f61ae4a5bab8752bfcff021a7686c4"
+    },
+    "topic-079.md": {
+      "input": "834b03a88c1237ebaccd005a449efa2cc3e3bea3b0a77087289bb010bed7dad6",
+      "export": "834b03a88c1237ebaccd005a449efa2cc3e3bea3b0a77087289bb010bed7dad6",
+      "reexport": "834b03a88c1237ebaccd005a449efa2cc3e3bea3b0a77087289bb010bed7dad6"
+    },
+    "topic-080.md": {
+      "input": "ef953712f3e1388558faa820f9775f95f181d80e8d1dac4d1864efa447615f29",
+      "export": "ef953712f3e1388558faa820f9775f95f181d80e8d1dac4d1864efa447615f29",
+      "reexport": "ef953712f3e1388558faa820f9775f95f181d80e8d1dac4d1864efa447615f29"
+    },
+    "topic-081.md": {
+      "input": "3bede8f3ff633cc676dd947195bec7e1ef5d4105706e916c740f2d9998c0543f",
+      "export": "3bede8f3ff633cc676dd947195bec7e1ef5d4105706e916c740f2d9998c0543f",
+      "reexport": "3bede8f3ff633cc676dd947195bec7e1ef5d4105706e916c740f2d9998c0543f"
+    },
+    "topic-082.md": {
+      "input": "c687c1ca66e6b8d501007e1b0b7d471f41125f29d5d4d5d40f62c33e373182bc",
+      "export": "c687c1ca66e6b8d501007e1b0b7d471f41125f29d5d4d5d40f62c33e373182bc",
+      "reexport": "c687c1ca66e6b8d501007e1b0b7d471f41125f29d5d4d5d40f62c33e373182bc"
+    },
+    "topic-083.md": {
+      "input": "853947f811d34a96868d8839f2b30f3fd459a2b66757f81d273377189254e8d4",
+      "export": "853947f811d34a96868d8839f2b30f3fd459a2b66757f81d273377189254e8d4",
+      "reexport": "853947f811d34a96868d8839f2b30f3fd459a2b66757f81d273377189254e8d4"
+    },
+    "topic-084.md": {
+      "input": "827f365ca0588a5f0992f770a6e6898f33db2481f9ac9b306ddb9599e2886cf9",
+      "export": "827f365ca0588a5f0992f770a6e6898f33db2481f9ac9b306ddb9599e2886cf9",
+      "reexport": "827f365ca0588a5f0992f770a6e6898f33db2481f9ac9b306ddb9599e2886cf9"
+    },
+    "topic-085.md": {
+      "input": "18f0ca8661707485a414b7b21b2cfea587b7b255420985895b9e6941545ec245",
+      "export": "18f0ca8661707485a414b7b21b2cfea587b7b255420985895b9e6941545ec245",
+      "reexport": "18f0ca8661707485a414b7b21b2cfea587b7b255420985895b9e6941545ec245"
+    },
+    "topic-086.md": {
+      "input": "be425179259bce483927174ea6d4675d84f330ebae9f50bcecbd68b74b80c8dd",
+      "export": "be425179259bce483927174ea6d4675d84f330ebae9f50bcecbd68b74b80c8dd",
+      "reexport": "be425179259bce483927174ea6d4675d84f330ebae9f50bcecbd68b74b80c8dd"
+    },
+    "topic-087.md": {
+      "input": "04b6319bc25ce7c9e948875390b0560d687525c6354f1af40513dc1907ec2b53",
+      "export": "04b6319bc25ce7c9e948875390b0560d687525c6354f1af40513dc1907ec2b53",
+      "reexport": "04b6319bc25ce7c9e948875390b0560d687525c6354f1af40513dc1907ec2b53"
+    },
+    "topic-088.md": {
+      "input": "5309a11daf5f2e8713fb32981bbab121eedb7bfb67c0c851dab858c716c26b4c",
+      "export": "5309a11daf5f2e8713fb32981bbab121eedb7bfb67c0c851dab858c716c26b4c",
+      "reexport": "5309a11daf5f2e8713fb32981bbab121eedb7bfb67c0c851dab858c716c26b4c"
+    },
+    "topic-089.md": {
+      "input": "4c7e44fb6c67e3330a30ab79520c7aecf1914ef40b6344f4b0c929eb73b05846",
+      "export": "4c7e44fb6c67e3330a30ab79520c7aecf1914ef40b6344f4b0c929eb73b05846",
+      "reexport": "4c7e44fb6c67e3330a30ab79520c7aecf1914ef40b6344f4b0c929eb73b05846"
+    },
+    "topic-090.md": {
+      "input": "59359007080564a28b7b886d3e0ae0cfa7e92dd2b187603a156c4574a03155f7",
+      "export": "59359007080564a28b7b886d3e0ae0cfa7e92dd2b187603a156c4574a03155f7",
+      "reexport": "59359007080564a28b7b886d3e0ae0cfa7e92dd2b187603a156c4574a03155f7"
+    },
+    "topic-091.md": {
+      "input": "5d5f7871cbbb31748fc996ebc422014d82d77d7cf14cfb708be1871cd9227b96",
+      "export": "5d5f7871cbbb31748fc996ebc422014d82d77d7cf14cfb708be1871cd9227b96",
+      "reexport": "5d5f7871cbbb31748fc996ebc422014d82d77d7cf14cfb708be1871cd9227b96"
+    },
+    "topic-092.md": {
+      "input": "9a537e1d9b2335b85b7cf139eb8243b468d43837a0cd3587bde5d4e8a6df42bd",
+      "export": "9a537e1d9b2335b85b7cf139eb8243b468d43837a0cd3587bde5d4e8a6df42bd",
+      "reexport": "9a537e1d9b2335b85b7cf139eb8243b468d43837a0cd3587bde5d4e8a6df42bd"
+    },
+    "topic-093.md": {
+      "input": "e091c19413dac54a6a69e648001f780ec4b73023a366a097c7d291dfb94549f6",
+      "export": "e091c19413dac54a6a69e648001f780ec4b73023a366a097c7d291dfb94549f6",
+      "reexport": "e091c19413dac54a6a69e648001f780ec4b73023a366a097c7d291dfb94549f6"
+    },
+    "topic-094.md": {
+      "input": "cda0ff8fb7e13eec7f73a704fb38fa82e163e6f10bf3c2649c5140a53ea82c72",
+      "export": "cda0ff8fb7e13eec7f73a704fb38fa82e163e6f10bf3c2649c5140a53ea82c72",
+      "reexport": "cda0ff8fb7e13eec7f73a704fb38fa82e163e6f10bf3c2649c5140a53ea82c72"
+    },
+    "topic-095.md": {
+      "input": "bb9a6083a92e3bf0d0ce2f41941d3cc63d7474d30bd4a50437bbaf69ca89bc6e",
+      "export": "bb9a6083a92e3bf0d0ce2f41941d3cc63d7474d30bd4a50437bbaf69ca89bc6e",
+      "reexport": "bb9a6083a92e3bf0d0ce2f41941d3cc63d7474d30bd4a50437bbaf69ca89bc6e"
+    },
+    "topic-096.md": {
+      "input": "2b3a1b617ec98cc8fe40f86f410e2686c79467418a41537ea37e7b29c56073ee",
+      "export": "2b3a1b617ec98cc8fe40f86f410e2686c79467418a41537ea37e7b29c56073ee",
+      "reexport": "2b3a1b617ec98cc8fe40f86f410e2686c79467418a41537ea37e7b29c56073ee"
+    },
+    "topic-097.md": {
+      "input": "f31033368fb73056754b24fe6f9aad45d03028c0c6175726cf89f7c7a630cd8d",
+      "export": "f31033368fb73056754b24fe6f9aad45d03028c0c6175726cf89f7c7a630cd8d",
+      "reexport": "f31033368fb73056754b24fe6f9aad45d03028c0c6175726cf89f7c7a630cd8d"
+    },
+    "topic-098.md": {
+      "input": "a6cdb3e8d912b5c412ffa09696330a8f95359a9f1fab7aec5073e04fe1753cdc",
+      "export": "a6cdb3e8d912b5c412ffa09696330a8f95359a9f1fab7aec5073e04fe1753cdc",
+      "reexport": "a6cdb3e8d912b5c412ffa09696330a8f95359a9f1fab7aec5073e04fe1753cdc"
+    },
+    "topic-099.md": {
+      "input": "1c08f0133f96b3b6d149b79d836835812f9329a72f5bbd392a187750ffae7541",
+      "export": "1c08f0133f96b3b6d149b79d836835812f9329a72f5bbd392a187750ffae7541",
+      "reexport": "1c08f0133f96b3b6d149b79d836835812f9329a72f5bbd392a187750ffae7541"
+    },
+    "topic-100.md": {
+      "input": "d8fc98c25c734a4242a870c738d89d0ea6b5a63e25726440d3d4912c5aa9d5e4",
+      "export": "d8fc98c25c734a4242a870c738d89d0ea6b5a63e25726440d3d4912c5aa9d5e4",
+      "reexport": "d8fc98c25c734a4242a870c738d89d0ea6b5a63e25726440d3d4912c5aa9d5e4"
+    },
+    "topic-101.md": {
+      "input": "89e64d9cf3a0ba2cc4bf72eb5723ce7fcd8f65d8787565fe8f7da8c07e74cfbd",
+      "export": "89e64d9cf3a0ba2cc4bf72eb5723ce7fcd8f65d8787565fe8f7da8c07e74cfbd",
+      "reexport": "89e64d9cf3a0ba2cc4bf72eb5723ce7fcd8f65d8787565fe8f7da8c07e74cfbd"
+    },
+    "topic-102.md": {
+      "input": "0b3e6667c7ae8dcd73d99f6310fdab942badd5916a24fc2c589e9e66bc265d22",
+      "export": "0b3e6667c7ae8dcd73d99f6310fdab942badd5916a24fc2c589e9e66bc265d22",
+      "reexport": "0b3e6667c7ae8dcd73d99f6310fdab942badd5916a24fc2c589e9e66bc265d22"
+    },
+    "topic-103.md": {
+      "input": "9341366e7853635f8e40fe846b8b283f2bfe36b2392dbd2eec7bbcf85ff0cd5f",
+      "export": "9341366e7853635f8e40fe846b8b283f2bfe36b2392dbd2eec7bbcf85ff0cd5f",
+      "reexport": "9341366e7853635f8e40fe846b8b283f2bfe36b2392dbd2eec7bbcf85ff0cd5f"
+    },
+    "topic-104.md": {
+      "input": "b02a6baa672dc278d583b0ebbb2ac5f20737d91b69988781edcad496a6a30524",
+      "export": "b02a6baa672dc278d583b0ebbb2ac5f20737d91b69988781edcad496a6a30524",
+      "reexport": "b02a6baa672dc278d583b0ebbb2ac5f20737d91b69988781edcad496a6a30524"
+    },
+    "topic-105.md": {
+      "input": "e9637dc5eaa6f76dcaa0ac42bcdd54b00c60e9be2e3057aab195b74d8bd63da0",
+      "export": "e9637dc5eaa6f76dcaa0ac42bcdd54b00c60e9be2e3057aab195b74d8bd63da0",
+      "reexport": "e9637dc5eaa6f76dcaa0ac42bcdd54b00c60e9be2e3057aab195b74d8bd63da0"
+    },
+    "topic-106.md": {
+      "input": "f8e776f40345e71efb04f0f93d79849371b8a173842a57210d0a27f824f21667",
+      "export": "f8e776f40345e71efb04f0f93d79849371b8a173842a57210d0a27f824f21667",
+      "reexport": "f8e776f40345e71efb04f0f93d79849371b8a173842a57210d0a27f824f21667"
+    },
+    "topic-107.md": {
+      "input": "caa71959495752d9887d99f6c1d9825f9b712f6f1450f7cc4f77167930fe3ef6",
+      "export": "caa71959495752d9887d99f6c1d9825f9b712f6f1450f7cc4f77167930fe3ef6",
+      "reexport": "caa71959495752d9887d99f6c1d9825f9b712f6f1450f7cc4f77167930fe3ef6"
+    },
+    "topic-108.md": {
+      "input": "7f8b4335fb8a25f98676a6f100d00db59dc608f4670b0fb808130da2b05cfe81",
+      "export": "7f8b4335fb8a25f98676a6f100d00db59dc608f4670b0fb808130da2b05cfe81",
+      "reexport": "7f8b4335fb8a25f98676a6f100d00db59dc608f4670b0fb808130da2b05cfe81"
+    },
+    "topic-109.md": {
+      "input": "230cf6ac6157453db608ecf49ee1a0fb8db35a77e87256f49854489fc10617df",
+      "export": "230cf6ac6157453db608ecf49ee1a0fb8db35a77e87256f49854489fc10617df",
+      "reexport": "230cf6ac6157453db608ecf49ee1a0fb8db35a77e87256f49854489fc10617df"
+    },
+    "topic-110.md": {
+      "input": "9f35adfede23db03284efef0397f72747b6472f748ad177877edaba1851f9fc2",
+      "export": "9f35adfede23db03284efef0397f72747b6472f748ad177877edaba1851f9fc2",
+      "reexport": "9f35adfede23db03284efef0397f72747b6472f748ad177877edaba1851f9fc2"
+    },
+    "topic-111.md": {
+      "input": "0abaa63df5328a16de791daa6faa0cdb9dbac79333f23e62c0873b52a0fc9406",
+      "export": "0abaa63df5328a16de791daa6faa0cdb9dbac79333f23e62c0873b52a0fc9406",
+      "reexport": "0abaa63df5328a16de791daa6faa0cdb9dbac79333f23e62c0873b52a0fc9406"
+    },
+    "topic-112.md": {
+      "input": "952d514754635a71544a3faddec91ec30b54f89d029944dd139113264244a554",
+      "export": "952d514754635a71544a3faddec91ec30b54f89d029944dd139113264244a554",
+      "reexport": "952d514754635a71544a3faddec91ec30b54f89d029944dd139113264244a554"
+    },
+    "topic-113.md": {
+      "input": "ecbbbccaaf69746453ffad27ce255b66d8561e518bf966b5c14e7c4282374528",
+      "export": "ecbbbccaaf69746453ffad27ce255b66d8561e518bf966b5c14e7c4282374528",
+      "reexport": "ecbbbccaaf69746453ffad27ce255b66d8561e518bf966b5c14e7c4282374528"
+    },
+    "topic-114.md": {
+      "input": "89e33573333bd42acf9f544c25756cda3b319eb775848d38ec7766790d016b2a",
+      "export": "89e33573333bd42acf9f544c25756cda3b319eb775848d38ec7766790d016b2a",
+      "reexport": "89e33573333bd42acf9f544c25756cda3b319eb775848d38ec7766790d016b2a"
+    },
+    "topic-115.md": {
+      "input": "36f857b7574dc51ff6a9813aca57c74f4750eba7e7815692bc3278aaf9bacfa9",
+      "export": "36f857b7574dc51ff6a9813aca57c74f4750eba7e7815692bc3278aaf9bacfa9",
+      "reexport": "36f857b7574dc51ff6a9813aca57c74f4750eba7e7815692bc3278aaf9bacfa9"
+    },
+    "topic-116.md": {
+      "input": "06d7381301e6dd440ba9a3b43d3fde67eab9af02184c145b04d8af2204e6c2b4",
+      "export": "06d7381301e6dd440ba9a3b43d3fde67eab9af02184c145b04d8af2204e6c2b4",
+      "reexport": "06d7381301e6dd440ba9a3b43d3fde67eab9af02184c145b04d8af2204e6c2b4"
+    },
+    "topic-117.md": {
+      "input": "0a5baca1ba3b38d3e892f0dad22115fa46b94f34cbda6c9605c13fd29ee288fb",
+      "export": "0a5baca1ba3b38d3e892f0dad22115fa46b94f34cbda6c9605c13fd29ee288fb",
+      "reexport": "0a5baca1ba3b38d3e892f0dad22115fa46b94f34cbda6c9605c13fd29ee288fb"
+    },
+    "topic-118.md": {
+      "input": "a9f9723a5af6ddbdec0a91b90380772394caf7ac71dc532d2eac556575393222",
+      "export": "a9f9723a5af6ddbdec0a91b90380772394caf7ac71dc532d2eac556575393222",
+      "reexport": "a9f9723a5af6ddbdec0a91b90380772394caf7ac71dc532d2eac556575393222"
+    },
+    "topic-119.md": {
+      "input": "2e3e1810ecfc6a7dd74914b55a0933b4e4e196bb8483b4234a10bfa40ae8365f",
+      "export": "2e3e1810ecfc6a7dd74914b55a0933b4e4e196bb8483b4234a10bfa40ae8365f",
+      "reexport": "2e3e1810ecfc6a7dd74914b55a0933b4e4e196bb8483b4234a10bfa40ae8365f"
+    }
+  },
+  "calls": [
+    {
+      "argv": [
+        "memory",
+        "mirror",
+        "import",
+        "/tmp/pytest-of-precis/pytest-0/test_synthetic_orchestrator_ro0/synthetic-source",
+        "--namespace",
+        "acceptance",
+        "--database-url",
+        "<verified throwaway test DSN>"
+      ],
+      "receipt": "{\"created\": 121, \"missing\": [], \"refs\": {\"MEMORY.md\": 17, \"topic-000.md\": 18, \"topic-001.md\": 19, \"topic-002.md\": 20, \"topic-003.md\": 21, \"topic-004.md\": 22, \"topic-005.md\": 23, \"topic-006.md\": 24, \"topic-007.md\": 25, \"topic-008.md\": 26, \"topic-009.md\": 27, \"topic-010.md\": 28, \"topic-011.md\": 29, \"topic-012.md\": 30, \"topic-013.md\": 31, \"topic-014.md\": 32, \"topic-015.md\": 33, \"topic-016.md\": 34, \"topic-017.md\": 35, \"topic-018.md\": 36, \"topic-019.md\": 37, \"topic-020.md\": 38, \"topic-021.md\": 39, \"topic-022.md\": 40, \"topic-023.md\": 41, \"topic-024.md\": 42, \"topic-025.md\": 43, \"topic-026.md\": 44, \"topic-027.md\": 45, \"topic-028.md\": 46, \"topic-029.md\": 47, \"topic-030.md\": 48, \"topic-031.md\": 49, \"topic-032.md\": 50, \"topic-033.md\": 51, \"topic-034.md\": 52, \"topic-035.md\": 53, \"topic-036.md\": 54, \"topic-037.md\": 55, \"topic-038.md\": 56, \"topic-039.md\": 57, \"topic-040.md\": 58, \"topic-041.md\": 59, \"topic-042.md\": 60, \"topic-043.md\": 61, \"topic-044.md\": 62, \"topic-045.md\": 63, \"topic-046.md\": 64, \"topic-047.md\": 65, \"topic-048.md\": 66, \"topic-049.md\": 67, \"topic-050.md\": 68, \"topic-051.md\": 69, \"topic-052.md\": 70, \"topic-053.md\": 71, \"topic-054.md\": 72, \"topic-055.md\": 73, \"topic-056.md\": 74, \"topic-057.md\": 75, \"topic-058.md\": 76, \"topic-059.md\": 77, \"topic-060.md\": 78, \"topic-061.md\": 79, \"topic-062.md\": 80, \"topic-063.md\": 81, \"topic-064.md\": 82, \"topic-065.md\": 83, \"topic-066.md\": 84, \"topic-067.md\": 85, \"topic-068.md\": 86, \"topic-069.md\": 87, \"topic-070.md\": 88, \"topic-071.md\": 89, \"topic-072.md\": 90, \"topic-073.md\": 91, \"topic-074.md\": 92, \"topic-075.md\": 93, \"topic-076.md\": 94, \"topic-077.md\": 95, \"topic-078.md\": 96, \"topic-079.md\": 97, \"topic-080.md\": 98, \"topic-081.md\": 99, \"topic-082.md\": 100, \"topic-083.md\": 101, \"topic-084.md\": 102, \"topic-085.md\": 103, \"topic-086.md\": 104, \"topic-087.md\": 105, \"topic-088.md\": 106, \"topic-089.md\": 107, \"topic-090.md\": 108, \"topic-091.md\": 109, \"topic-092.md\": 110, \"topic-093.md\": 111, \"topic-094.md\": 112, \"topic-095.md\": 113, \"topic-096.md\": 114, \"topic-097.md\": 115, \"topic-098.md\": 116, \"topic-099.md\": 117, \"topic-100.md\": 118, \"topic-101.md\": 119, \"topic-102.md\": 120, \"topic-103.md\": 121, \"topic-104.md\": 122, \"topic-105.md\": 123, \"topic-106.md\": 124, \"topic-107.md\": 125, \"topic-108.md\": 126, \"topic-109.md\": 127, \"topic-110.md\": 128, \"topic-111.md\": 129, \"topic-112.md\": 130, \"topic-113.md\": 131, \"topic-114.md\": 132, \"topic-115.md\": 133, \"topic-116.md\": 134, \"topic-117.md\": 135, \"topic-118.md\": 136, \"topic-119.md\": 137}, \"unchanged\": 0, \"unresolved\": [], \"updated\": 0}"
+    },
+    {
+      "argv": [
+        "memory",
+        "mirror",
+        "export",
+        "/tmp/pytest-of-precis/pytest-0/test_synthetic_orchestrator_ro0/synthetic-export",
+        "--namespace",
+        "acceptance",
+        "--database-url",
+        "<verified throwaway test DSN>"
+      ],
+      "receipt": "exported 121 files"
+    },
+    {
+      "argv": [
+        "memory",
+        "mirror",
+        "import",
+        "/tmp/pytest-of-precis/pytest-0/test_synthetic_orchestrator_ro0/synthetic-source",
+        "--namespace",
+        "acceptance",
+        "--database-url",
+        "<verified throwaway test DSN>"
+      ],
+      "receipt": "{\"created\": 0, \"missing\": [], \"refs\": {\"MEMORY.md\": 17, \"topic-000.md\": 18, \"topic-001.md\": 19, \"topic-002.md\": 20, \"topic-003.md\": 21, \"topic-004.md\": 22, \"topic-005.md\": 23, \"topic-006.md\": 24, \"topic-007.md\": 25, \"topic-008.md\": 26, \"topic-009.md\": 27, \"topic-010.md\": 28, \"topic-011.md\": 29, \"topic-012.md\": 30, \"topic-013.md\": 31, \"topic-014.md\": 32, \"topic-015.md\": 33, \"topic-016.md\": 34, \"topic-017.md\": 35, \"topic-018.md\": 36, \"topic-019.md\": 37, \"topic-020.md\": 38, \"topic-021.md\": 39, \"topic-022.md\": 40, \"topic-023.md\": 41, \"topic-024.md\": 42, \"topic-025.md\": 43, \"topic-026.md\": 44, \"topic-027.md\": 45, \"topic-028.md\": 46, \"topic-029.md\": 47, \"topic-030.md\": 48, \"topic-031.md\": 49, \"topic-032.md\": 50, \"topic-033.md\": 51, \"topic-034.md\": 52, \"topic-035.md\": 53, \"topic-036.md\": 54, \"topic-037.md\": 55, \"topic-038.md\": 56, \"topic-039.md\": 57, \"topic-040.md\": 58, \"topic-041.md\": 59, \"topic-042.md\": 60, \"topic-043.md\": 61, \"topic-044.md\": 62, \"topic-045.md\": 63, \"topic-046.md\": 64, \"topic-047.md\": 65, \"topic-048.md\": 66, \"topic-049.md\": 67, \"topic-050.md\": 68, \"topic-051.md\": 69, \"topic-052.md\": 70, \"topic-053.md\": 71, \"topic-054.md\": 72, \"topic-055.md\": 73, \"topic-056.md\": 74, \"topic-057.md\": 75, \"topic-058.md\": 76, \"topic-059.md\": 77, \"topic-060.md\": 78, \"topic-061.md\": 79, \"topic-062.md\": 80, \"topic-063.md\": 81, \"topic-064.md\": 82, \"topic-065.md\": 83, \"topic-066.md\": 84, \"topic-067.md\": 85, \"topic-068.md\": 86, \"topic-069.md\": 87, \"topic-070.md\": 88, \"topic-071.md\": 89, \"topic-072.md\": 90, \"topic-073.md\": 91, \"topic-074.md\": 92, \"topic-075.md\": 93, \"topic-076.md\": 94, \"topic-077.md\": 95, \"topic-078.md\": 96, \"topic-079.md\": 97, \"topic-080.md\": 98, \"topic-081.md\": 99, \"topic-082.md\": 100, \"topic-083.md\": 101, \"topic-084.md\": 102, \"topic-085.md\": 103, \"topic-086.md\": 104, \"topic-087.md\": 105, \"topic-088.md\": 106, \"topic-089.md\": 107, \"topic-090.md\": 108, \"topic-091.md\": 109, \"topic-092.md\": 110, \"topic-093.md\": 111, \"topic-094.md\": 112, \"topic-095.md\": 113, \"topic-096.md\": 114, \"topic-097.md\": 115, \"topic-098.md\": 116, \"topic-099.md\": 117, \"topic-100.md\": 118, \"topic-101.md\": 119, \"topic-102.md\": 120, \"topic-103.md\": 121, \"topic-104.md\": 122, \"topic-105.md\": 123, \"topic-106.md\": 124, \"topic-107.md\": 125, \"topic-108.md\": 126, \"topic-109.md\": 127, \"topic-110.md\": 128, \"topic-111.md\": 129, \"topic-112.md\": 130, \"topic-113.md\": 131, \"topic-114.md\": 132, \"topic-115.md\": 133, \"topic-116.md\": 134, \"topic-117.md\": 135, \"topic-118.md\": 136, \"topic-119.md\": 137}, \"unchanged\": 121, \"unresolved\": [], \"updated\": 0}"
+    },
+    {
+      "argv": [
+        "memory",
+        "mirror",
+        "import",
+        "/tmp/pytest-of-precis/pytest-0/test_synthetic_orchestrator_ro0/synthetic-export",
+        "--namespace",
+        "acceptance-copy",
+        "--database-url",
+        "<verified throwaway test DSN>"
+      ],
+      "receipt": "{\"created\": 121, \"missing\": [], \"refs\": {\"MEMORY.md\": 138, \"topic-000.md\": 139, \"topic-001.md\": 140, \"topic-002.md\": 141, \"topic-003.md\": 142, \"topic-004.md\": 143, \"topic-005.md\": 144, \"topic-006.md\": 145, \"topic-007.md\": 146, \"topic-008.md\": 147, \"topic-009.md\": 148, \"topic-010.md\": 149, \"topic-011.md\": 150, \"topic-012.md\": 151, \"topic-013.md\": 152, \"topic-014.md\": 153, \"topic-015.md\": 154, \"topic-016.md\": 155, \"topic-017.md\": 156, \"topic-018.md\": 157, \"topic-019.md\": 158, \"topic-020.md\": 159, \"topic-021.md\": 160, \"topic-022.md\": 161, \"topic-023.md\": 162, \"topic-024.md\": 163, \"topic-025.md\": 164, \"topic-026.md\": 165, \"topic-027.md\": 166, \"topic-028.md\": 167, \"topic-029.md\": 168, \"topic-030.md\": 169, \"topic-031.md\": 170, \"topic-032.md\": 171, \"topic-033.md\": 172, \"topic-034.md\": 173, \"topic-035.md\": 174, \"topic-036.md\": 175, \"topic-037.md\": 176, \"topic-038.md\": 177, \"topic-039.md\": 178, \"topic-040.md\": 179, \"topic-041.md\": 180, \"topic-042.md\": 181, \"topic-043.md\": 182, \"topic-044.md\": 183, \"topic-045.md\": 184, \"topic-046.md\": 185, \"topic-047.md\": 186, \"topic-048.md\": 187, \"topic-049.md\": 188, \"topic-050.md\": 189, \"topic-051.md\": 190, \"topic-052.md\": 191, \"topic-053.md\": 192, \"topic-054.md\": 193, \"topic-055.md\": 194, \"topic-056.md\": 195, \"topic-057.md\": 196, \"topic-058.md\": 197, \"topic-059.md\": 198, \"topic-060.md\": 199, \"topic-061.md\": 200, \"topic-062.md\": 201, \"topic-063.md\": 202, \"topic-064.md\": 203, \"topic-065.md\": 204, \"topic-066.md\": 205, \"topic-067.md\": 206, \"topic-068.md\": 207, \"topic-069.md\": 208, \"topic-070.md\": 209, \"topic-071.md\": 210, \"topic-072.md\": 211, \"topic-073.md\": 212, \"topic-074.md\": 213, \"topic-075.md\": 214, \"topic-076.md\": 215, \"topic-077.md\": 216, \"topic-078.md\": 217, \"topic-079.md\": 218, \"topic-080.md\": 219, \"topic-081.md\": 220, \"topic-082.md\": 221, \"topic-083.md\": 222, \"topic-084.md\": 223, \"topic-085.md\": 224, \"topic-086.md\": 225, \"topic-087.md\": 226, \"topic-088.md\": 227, \"topic-089.md\": 228, \"topic-090.md\": 229, \"topic-091.md\": 230, \"topic-092.md\": 231, \"topic-093.md\": 232, \"topic-094.md\": 233, \"topic-095.md\": 234, \"topic-096.md\": 235, \"topic-097.md\": 236, \"topic-098.md\": 237, \"topic-099.md\": 238, \"topic-100.md\": 239, \"topic-101.md\": 240, \"topic-102.md\": 241, \"topic-103.md\": 242, \"topic-104.md\": 243, \"topic-105.md\": 244, \"topic-106.md\": 245, \"topic-107.md\": 246, \"topic-108.md\": 247, \"topic-109.md\": 248, \"topic-110.md\": 249, \"topic-111.md\": 250, \"topic-112.md\": 251, \"topic-113.md\": 252, \"topic-114.md\": 253, \"topic-115.md\": 254, \"topic-116.md\": 255, \"topic-117.md\": 256, \"topic-118.md\": 257, \"topic-119.md\": 258}, \"unchanged\": 0, \"unresolved\": [], \"updated\": 0}"
+    },
+    {
+      "argv": [
+        "memory",
+        "mirror",
+        "export",
+        "/tmp/pytest-of-precis/pytest-0/test_synthetic_orchestrator_ro0/synthetic-reexport",
+        "--namespace",
+        "acceptance-copy",
+        "--database-url",
+        "<verified throwaway test DSN>"
+      ],
+      "receipt": "exported 121 files"
+    }
+  ],
+  "limits": "Synthetic CLI/test-DB acceptance only. No deployed feature, production memory migration, native mirror verb, model or scientific claim. DB clone removed by canonical fixture teardown."
+}

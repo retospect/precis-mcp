@@ -279,6 +279,21 @@ other, 2 and 3 are independent of everything above.
   browser; (ii) rewire `eye_render._first_hop` onto `neighbourhood` (every
   link kind's render; `tests/test_eye_render.py`, `tests/test_finding.py`).
   Remaining: 2, 3.
+- **[built 2026-10-07, slice 2]** `MemoryHandler.search(view='index')`
+  (explicit `view` kwarg; `None` forwards unchanged; other values
+  `BadInput` with `options=['index']`; requires `q=`), rendering through
+  the shared `cli/memory.py::bullet_line` (filename suffix only in the
+  index/`--q` renders; the plain session render is byte-identical).
+  `precis memory index --q <text> --k N` goes through the handler with
+  the configured embedder. `precis-memory-help` has the recall section.
+  **Recall number (AC 5): 9/10 at k=5** on
+  `tests/test_memory_recall_fixture.py` (24 repo-dev topics + 3 research
+  distractors; the lexical leg plus the hash `MockEmbedder`, no stored
+  vectors, so a floor for the real hybrid search, not a semantic
+  benchmark; miss: "label timestamps with Z, use datetime" →
+  `timestamps_utc`). `tests/test_memory_mirror_acceptance.py` pins the
+  git blob sha of `cli/memory.py`; the pin moved with this edit and moves
+  again on any further edit. Remaining: 3.
 - **[readiness vet 2026-10-07 → folded]** Verdict was needs-work (4
   blockers, 7 advisories, split suggested); every finding is resolved in
   the text above: the mirror meta key is `filename` not `name`; AC 1

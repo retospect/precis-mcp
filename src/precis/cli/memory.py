@@ -511,15 +511,37 @@ def _order_key(ref: Any) -> tuple[int, int, int]:
     return (1, 0, ref.id)
 
 
-def _bullet_line(ref: Any, *, cut_hooks: bool) -> str:
+def bullet_line(
+    ref: Any,
+    *,
+    cut_hooks: bool,
+    filename: bool = False,
+    fallback_hook: str = "",
+) -> str:
+    """One index bullet: ``- <Title> (<handle>[, <filename>]) — <hook>``.
+
+    The session-start index uses the default (no filename); the recall
+    renders (``--q`` and ``search(view='index')``) pass ``filename=True`` so a
+    hit matches the topic file the harness may also have recalled, and
+    ``fallback_hook`` (the body's first line) for a node with no ``meta.hook``.
+    """
     from precis.utils import handle_registry
 
+    meta = ref.meta or {}
     handle = handle_registry.try_format("memory", ref.id) or str(ref.id)
-    hook = str((ref.meta or {}).get("hook") or "")
+    if filename:
+        fname = (meta.get("file_mirror") or {}).get("filename")
+        if fname:
+            handle = f"{handle}, {fname}"
+    hook = str(meta.get("hook") or fallback_hook)
     if cut_hooks and len(hook) > HOOK_CUT_CHARS:
         hook = hook[: HOOK_CUT_CHARS - 1].rstrip() + "…"
     line = f"- {ref.title} ({handle})"
     return f"{line} — {hook}" if hook else line
+
+
+def _bullet_line(ref: Any, *, cut_hooks: bool) -> str:
+    return bullet_line(ref, cut_hooks=cut_hooks)
 
 
 def _render(sections: list[tuple[str, list[Any]]], *, cut_hooks: bool) -> str:
@@ -532,7 +554,14 @@ def _render(sections: list[tuple[str, list[Any]]], *, cut_hooks: bool) -> str:
     return "\n".join(out) + "\n"
 
 
-def render_memory_index(store: Store, budget_tok: int | None = None) -> str:
+def render_memory_index(
+    store: Store,
+    budget_tok: int | None = None,
+    *,
+    q: str | None = None,
+    k: int = 5,
+    embedder: Any = None,
+) -> str:
     """Render the ``SPACE:repo-dev`` memory index, one bullet per node.
 
     Every node, imported or native, renders as ``- <Title> (<handle>) —
@@ -544,7 +573,20 @@ def render_memory_index(store: Store, budget_tok: int | None = None) -> str:
     full render exceeds it (~4 bytes/token), hooks are cut to
     :data:`HOOK_CUT_CHARS` characters and one trailing line names the
     overage — a tripwire, not a hard limit.
+
+    With ``q`` the render is instead the ``k`` best hits for ``q`` among
+    ``SPACE:repo-dev`` memories, one bullet each with the mirror filename
+    beside the handle — exactly :meth:`MemoryHandler.search`'s
+    ``view='index'``, run through the handler so the hybrid search uses the
+    ``embedder`` the caller wires (``None`` = lexical only).
     """
+    if q is not None:
+        from precis.dispatch import Hub
+        from precis.handlers.memory import MemoryHandler
+
+        handler = MemoryHandler(hub=Hub(store=store, embedder=embedder))
+        resp = handler.search(q=q, tags=[SPACE_TAG], page_size=k, view="index")
+        return resp.body + "\n"
     return _render_loaded(_load_nodes(store), budget_tok)
 
 
@@ -741,6 +783,19 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "stderr line and leaves the index output and exit code alone."
         ),
     )
+    idx.add_argument(
+        "--q",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Recall instead of listing: print the --k best hybrid-search hits "
+            "for TEXT among SPACE:repo-dev memories as index bullets (with the "
+            "mirror filename beside the handle)."
+        ),
+    )
+    idx.add_argument(
+        "--k", type=int, default=5, help="Hits to print with --q (default 5)."
+    )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
     mirror = msub.add_parser(
         "mirror", help="Explicit faithful file/graph snapshot exchange."
@@ -803,6 +858,15 @@ def run(args: argparse.Namespace) -> None:
             except ImportRefused as exc:
                 raise SystemExit(f"precis memory import: refused: {exc}") from exc
             print(report.summary())
+        elif args.q is not None:
+            from precis.embedder import make_embedder
+
+            embedder = make_embedder(cfg.embedder, dim=store.embedding_dim())
+            print(
+                render_memory_index(store, q=args.q, k=args.k, embedder=embedder),
+                end="",
+                flush=True,
+            )
         else:
             loaded = _load_nodes(store)
             print(_render_loaded(loaded, args.budget_tok), end="", flush=True)

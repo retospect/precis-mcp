@@ -814,3 +814,39 @@ def test_export_failure_keeps_the_previous_node_set(
 
     assert {p.name: p.read_text(encoding="utf-8") for p in dest.iterdir()} == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["nodes"]
+
+
+# ---------------------------------------------------------------------------
+# precis memory index --q … --k N (memory-recall-walk-keep slice 2)
+# ---------------------------------------------------------------------------
+
+
+def test_q_flag_is_wired_into_the_cli() -> None:
+    ns = _build_parser().parse_args(["memory", "index", "--q", "x", "--k", "3"])
+    assert (ns.q, ns.k) == ("x", 3)
+    ns = _build_parser().parse_args(["memory", "index"])
+    assert (ns.q, ns.k) == (None, 5)
+
+
+def test_q_prints_the_handlers_index_view_lines(store: Store, hub: Hub) -> None:
+    import_memory_dir(store, FIXTURE)
+    want = (
+        MemoryHandler(hub=hub)
+        .search(q="token", tags=[SPACE_TAG], page_size=5, view="index")
+        .body
+    )
+    assert want.startswith("- ")
+    assert render_memory_index(store, q="token", k=5, embedder=hub.embedder) == (
+        want + "\n"
+    )
+    assert len(want.splitlines()) <= 5
+
+
+def test_without_q_the_cli_prints_the_plain_index(
+    store: Store, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_memory_dir(store, FIXTURE)
+    before = render_memory_index(store)
+    _run_index_cli(store, monkeypatch)
+    assert capsys.readouterr().out == before
+    assert re.search(r"\(me\d+, ", before) is None  # no filename suffix

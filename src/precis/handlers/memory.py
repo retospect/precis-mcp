@@ -920,7 +920,86 @@ class MemoryHandler(NumericRefHandler):
 
     # ── search: body-chunk search + cross-kind hits come from the base
     # (NumericRefHandler._search_body_chunks / _body_search_hits) via the
-    # search_body_chunks opt-in above. ──────────────────────────────
+    # search_body_chunks opt-in above. ``view='index'`` is the one addition:
+    # the hit *is* the session-start index bullet. ──────────────────────
+
+    def search(
+        self,
+        *,
+        q: str | None = None,
+        tags: list[str] | None = None,
+        page_size: int = 10,
+        page: int = 1,
+        mode: str | None = None,
+        view: str | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Body-chunk search; ``view='index'`` renders hits as index bullets.
+
+        ``view='index'`` returns one ``- <Title> (me<id>[, <filename>]) —
+        <hook>`` line per best-ranked memory (the session-start index shape;
+        ``<filename>`` is ``meta.file_mirror.filename`` when mirrored,
+        ``<hook>`` is ``meta.hook`` else the body's first line). Any other
+        ``view`` is refused; ``None`` is the unchanged default render.
+        """
+        if view is None:
+            return super().search(
+                q=q,
+                tags=tags,
+                page_size=page_size,
+                page=page,
+                mode=mode,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                **_kw,
+            )
+        if view != "index":
+            raise BadInput(
+                f"unknown view {view!r} for search(kind='memory')",
+                options=["index"],
+                next=(
+                    "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
+                    "view='index')"
+                ),
+            )
+        if not (q and q.strip()):
+            raise BadInput(
+                "search(kind='memory', view='index') requires q=",
+                next=(
+                    "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
+                    "view='index')"
+                ),
+            )
+        from precis.cli.memory import bullet_line
+
+        normalized = Tag.normalize_filter(tags, kind=self.kind)
+        hits, _total = self._best_body_hits(
+            q,
+            normalized,
+            page_size,
+            page=page,
+            mode=mode,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+        )
+        if not hits:
+            tag_suffix = f" tagged {normalized}" if normalized else ""
+            return Response(body=f"no {self._sense()} entries match {q!r}{tag_suffix}")
+        self.store.chunks.bump_salience(
+            self.store.chunks.card_chunk_ids([ref.id for _, ref, _ in hits])
+        )
+        lines = []
+        for _block, ref, _rank in hits:
+            first = next(
+                (ln.strip() for ln in self._body_text(ref).splitlines() if ln.strip()),
+                "",
+            )
+            lines.append(
+                bullet_line(ref, cut_hooks=False, filename=True, fallback_hook=first)
+            )
+        return Response(body="\n".join(lines))
 
     # ── supersede: the one guarded destructive verb (dreaming) ──────
 

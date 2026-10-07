@@ -1368,3 +1368,71 @@ def test_recall_stays_inside_the_focus_space(runtime_with_store: PrecisRuntime) 
     assert f"me{res}" not in dev_out
     res_out = h.get(id=res, view="fisheye+1hop+recall").body.split("— recall")[1]
     assert f"me{dev_a}" not in res_out and f"me{dev_b}" not in res_out
+
+
+# ---------------------------------------------------------------------------
+# Recall: search(view='index') — the index line is the hit (slice 2)
+# ---------------------------------------------------------------------------
+
+
+def _put_repo_dev(
+    handler: MemoryHandler,
+    store: Store,
+    text: str,
+    title: str,
+    *,
+    hook: str | None = None,
+    filename: str | None = None,
+) -> int:
+    meta = {"hook": hook} if hook else None
+    out = handler.put(text=text, title=title, tags=["SPACE:repo-dev"], meta=meta)
+    ref_id = id_of(out.body)
+    if filename:
+        store.stamp_ref_meta(ref_id, {"file_mirror": {"filename": filename}})
+    return ref_id
+
+
+def test_search_view_index_renders_handle_filename_and_hook(
+    handler: MemoryHandler, store: Store
+) -> None:
+    a = _put_repo_dev(
+        handler,
+        store,
+        "The quokka scheduler stalls when heartbeat lapses.",
+        "Quokka stall",
+        hook="restart the quokka scheduler",
+        filename="quokka_stall.md",
+    )
+    b = _put_repo_dev(
+        handler,
+        store,
+        "Native quokka note\nsecond line",
+        "Quokka native",
+    )
+    out = handler.search(q="quokka", tags=["SPACE:repo-dev"], view="index").body
+    lines = out.splitlines()
+    assert (
+        f"- Quokka stall (me{a}, quokka_stall.md) — restart the quokka scheduler"
+        in lines
+    )
+    # no hook, no mirror filename: first body line stands in for the hook
+    assert f"- Quokka native (me{b}) — Native quokka note" in lines
+    assert all(ln.startswith("- ") for ln in lines)
+
+
+def test_search_view_index_is_refused_for_other_views_and_empty_q(
+    handler: MemoryHandler,
+) -> None:
+    with pytest.raises(BadInput) as ei:
+        handler.search(q="x", view="nope")
+    assert "index" in str(ei.value) + str(getattr(ei.value, "options", ""))
+    with pytest.raises(BadInput):
+        handler.search(view="index", tags=["SPACE:repo-dev"])
+
+
+def test_search_default_view_is_unchanged(handler: MemoryHandler, store: Store) -> None:
+    _put_repo_dev(handler, store, "zebra body text", "Zebra title", hook="zebra hook")
+    default = handler.search(q="zebra", tags=["SPACE:repo-dev"]).body
+    assert default == handler.search(q="zebra", tags=["SPACE:repo-dev"], view=None).body
+    assert "zebra hook" not in default
+    assert "Zebra title" in default
