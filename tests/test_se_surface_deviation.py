@@ -765,11 +765,60 @@ def test_block_captures_inverse_from_same_canonicalization() -> None:
     np.testing.assert_array_equal(result.coords, unchanged.coords)
     assert result.envelope == unchanged.envelope
     assert result.topology["canonical_json"] == unchanged.topology["canonical_json"]
+    # the default H caps sit after the carbons; the receipt map is checked on
+    # the carbon rows the authored target was built from
+    assert result.topology["terminated"]["count"] > 0
+    carbon = result.coords[: len(raw)]
     np.testing.assert_allclose(
-        result.coords @ np.array(mapping["Q"]) + mapping["b_A"],
+        carbon @ np.array(mapping["Q"]) + mapping["b_A"],
         raw * [1, 1, -1],
         atol=1e-12,
     )
+
+
+def test_block_inverse_survives_the_h_cap_lift() -> None:
+    """Axial rim caps on a tube sit below the lowest carbon; the envelope
+    re-floor shifts every atom up and the receipt map must absorb it."""
+    from hexfold.build import build
+    from precis_se.atomic.generators.hexfold_spec import _block_from_net
+    from precis_se.atomic.generators.sp2 import VDW_MARGIN_A
+
+    net = build("hexfold 0.2\norigin t\nt: tube(5,5,len=3)\n", strict=False)
+    raw = np.asarray(net.seed3, dtype=float)
+    _, features, _ = receipt_fixture("open")
+    target = capture_target(tuple(features), {})
+    bare = _block_from_net(
+        net,
+        raw,
+        spec="fixture",
+        report=net.report,
+        fidelity="stick",
+        target=target,
+        target_flip=np.array([1, 1, -1]),
+        terminate="none",
+    )
+    capped = _block_from_net(
+        net,
+        raw,
+        spec="fixture",
+        report=net.report,
+        fidelity="stick",
+        target=target,
+        target_flip=np.array([1, 1, -1]),
+    )
+    n = len(raw)
+    count = capped.topology["terminated"]["count"]
+    assert count > 0 and len(capped.coords) == n + count
+    lift = capped.coords[:n, 2].min() - bare.coords[:, 2].min()
+    assert lift > 0.5  # an H points down past the bottom rim
+    assert capped.coords[:, 2].min() == pytest.approx(VDW_MARGIN_A, abs=1e-9)
+    for block in (bare, capped):
+        m = block.topology["surface_target"]["map"]
+        np.testing.assert_allclose(
+            block.coords[:n] @ np.array(m["Q"]) + m["b_A"],
+            raw * [1, 1, -1],
+            atol=1e-9,
+        )
 
 
 @pytest.fixture
