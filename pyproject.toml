@@ -334,7 +334,7 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # export excludes autocatpath (--no-emit-package, deploy/playbooks/
 # 03-precis-constraints.yml) and the catalyst installs resolve it from the
 # host wheelhouse (deploy/roles/autocatpath, --find-links).
-catalyst = ["autocatpath>=0.23.0"]
+catalyst = ["autocatpath>=0.24.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in the shipped
@@ -345,7 +345,7 @@ catalyst = ["autocatpath>=0.23.0"]
 # `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
 # Same 0.20.0-not-on-PyPI caveat as the `catalyst` floor above.
 catalyst-gpu = [
-    "autocatpath[mace]>=0.23.0",
+    "autocatpath[mace]>=0.24.0",
     "cuequivariance-torch; sys_platform == 'linux'",
 ]
 # Global structure search (docs/backlog/global-structure-search-gofee-agox.md
@@ -611,7 +611,7 @@ dev = [
 # tool.uv.sources applies only to THIS project's lock/sync — cluster
 # `uv pip install precis-mcp[...]` never reads it (wheelhouse covers those).
 [tool.uv.sources]
-autocatpath = { git = "https://github.com/retospect/catpath", rev = "47357857f8df06eb0dad73fe9dbe3a4ea1cd7faa" }  # v0.23.0
+autocatpath = { git = "https://github.com/retospect/catpath", rev = "9a4cfede3efaa4f2d8aa2afb92427db41e4a8096" }  # v0.24.0
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway", "src/precis_dft", "src/precis_estimate", "src/precis_se", "src/hexfold", "src/precis_surface", "src/precis_chain"]

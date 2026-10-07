@@ -9,7 +9,8 @@ owner: catalysis session
 # Surface-Pourbaix validity map + reaction staircase as a catalyst optimizer
 
 **Lifted 2026-10-07** (Reto, via chat-interface): ready for slices 1–2,
-owner = the catalysis session, after the catpath 0.23.0 lock; see
+owner = the catalysis session, after the catpath lock (0.24.0 since
+2026-10-07); see
 §Rulings below. Filed 2026-10-02 as file-only. The full design is Reto's transfer prompt,
 `~/.claude/projects/-Users-reto-precis-mcp/scratch/review-msgs/surface-pourbaix-transfer-prompt.md`;
 this item is its index. Its **DECIDED** points are settled and are not
@@ -156,7 +157,8 @@ Shapley field.
 ## Rulings 2026-10-07 (Reto, via chat-interface)
 
 - "File only" LIFTED. Slices 1–2 are `ready`; owner = the catalysis
-  session; start after `uv lock -P autocatpath` takes catpath 0.23.0.
+  session; started after the catpath lock. Anchors compute on 0.24.0
+  (Reto's ruling 2026-10-07): engine token recorded per anchor.
 - Sequencing: first build = anchor inventory + inner CHE sweep with error
   bands (slice 1). The hydride pilot (catalysis-selectivity item 23, still
   HELD) hangs off slice 2.
@@ -200,6 +202,8 @@ So anchors are computed, not read.
   2026-10-07) — so a 0.24.0 anchor is uncorrected and keyed `None` until
   catpath's brief lands; the pathway's `results.json` on 0.24.0 sits on
   the corrected gauge, so the θ→0 comparison must account for that).
+  The lock is 0.24.0 since 2026-10-07, so every anchor minted from here
+  carries `engine_version` 0.24.0; nothing precis-side corrects it.
 - `precis_pathway.surface_pourbaix` (pure, engine-free): γ_A(n; U) =
   γ_A(n; 0) − n·ν_A·U/area with ν_A = 2n_O + 4n_C − n_H on the RHE scale
   (pH only tilts the SHE view by 0.059 V/pH); the resting envelope on a U

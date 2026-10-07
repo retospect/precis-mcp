@@ -76,7 +76,8 @@ BUILD_USER="${USER:-unknown}"
 # same engine the cluster wheelhouse is built from (scripts/deploy reads the
 # same stanza), so a dev container and a prod worker key margins by one
 # engine token. Catpath main runs ahead of its tags (2026-10-07: main at
-# 0.24.0 with energy-moving corrections on by default, lock at v0.23.0), so
+# 0.24.0 with energy-moving corrections on by default while the lock sat at
+# v0.23.0 for part of the day), so
 # resolving main's HEAD here would bake an engine the lock never took. Docker
 # keys the layer on command text, so threading the sha also busts the cache
 # exactly when the pin moves. Falls back to main's HEAD, then the bare `main`

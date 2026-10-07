@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Surface-Pourbaix slice 1 residue (`surface-pourbaix-staircase-optimizer.md` §Slice 1 contract): mint the first clean-Pd(111) `surface_coverage_scan` on the GPU node, wire the θ→0 comparison to pw455722, deliver the catpath brief (prebuilt-slab coverage scan); then slice 2 (resting-state map), then the Pd-hydride precis-side fixes (item 2). The catpath lock is done: 0.23.0, rev-pinned (2026-10-07).
-- **Blocked by:** Items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Chemistry's seed re-mint is ruled NOT a re-run (2026-10-07). Catpath 0.24.0 (gas + Pd H* corrections ON by default) waits on Reto's ruling before it is locked.
+- **Next:** Surface-Pourbaix slice 1 residue (`surface-pourbaix-staircase-optimizer.md` §Slice 1 contract): mint the first clean-Pd(111) `surface_coverage_scan` on the GPU node, wire the θ→0 comparison to pw455722, deliver the catpath brief (prebuilt-slab coverage scan); then slice 2 (resting-state map), then the Pd-hydride precis-side fixes (item 2). The catpath lock is 0.24.0, rev-pinned at the v0.24.0 tag (Reto's ruling 2026-10-07); every anchor and margin from here is minted on 0.24.0.
+- **Blocked by:** Items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Chemistry's seed re-mint is ruled NOT a re-run (2026-10-07). Prod runs 0.24.0 only after the round-6 deploy; the first anchor mint waits for that.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** Use [the latest handoff and item holds](#thread-context); engine-version checks must match the released engine. No re-run is authorized by this entry point.
 - **Worktree:** `catalysis-selectivity`
@@ -78,18 +78,32 @@ only; everything this thread built is on main and was live by round 4.
   Reto lifts them.
 
 **Resume (2026-10-07, released from the Codex-merge hold):**
-- **Catpath 0.23.0 is locked**, rev-pinned (`tool.uv.sources` names the
-  v0.23.0 commit 4735785, not `branch = "main"`); engine token 0.23.0.
-  Catpath main already carries 0.23.1 (NH₂OH gas entry) and 0.24.0 (the
-  item-19 gas and Pd H* corrections, ON by default, recorded under
-  `results.corrections`). 0.24.0 is NOT taken: it moves every level, so
-  it waits on Reto's ruling; switch the `rev` and re-lock when he rules.
-- **0.23.0 margins are not comparable with pw455722's** (0.22.0): the
-  coadsorbed network grew from 50 to 54 states and 34 to 37 steps and
-  carries a new `network_digest`. `frontier.same_network_basis` already
-  keeps them apart (version equality first), so the engine-version guard
-  needs no change for 0.23.0; when 0.24.0 lands, the corrections record
-  joins the basis (item 24's "correction-set id").
+- **Catpath 0.24.0 is locked** (Reto's ruling, 2026-10-07, one change
+  after the 0.23.0 pin): `tool.uv.sources` names the v0.24.0 tag commit
+  9a4cfede, not `branch = "main"`; floors `>=0.24.0`; engine token
+  0.24.0. 0.24.0 = 0.23.0's network (NH₂OH scission, NO+NO coupling,
+  `network_digest`) + 0.23.1's NH₂OH gas entry + the item-19 gas (NH₃,
+  NO, N₂O, NH₂OH) and Pd H* +0.25 eV corrections, ON by default and
+  recorded under `results.corrections`. No precis-side correction code
+  existed to strip (grep over `src/precis_pathway`, 2026-10-07), so
+  there is no double correction. Coverage anchors stay uncorrected on
+  0.24.0: `coverage.scan` applies no corrections (catpath session), and
+  the scan job records `meta.corrections` from the scan payload, never
+  the config.
+- **Margins restale by the engine-version rule**: `frontier.
+  same_network_basis` compares `version` first, so every 0.22.0
+  (pw455722) and 0.23.0 margin is demoted against a 0.24.0 one with no
+  guard change; 0.23.0 margins were already non-comparable with 0.22.0
+  (50→54 states, 34→37 steps, new `network_digest`), and 0.24.0 moves
+  every level on top. Still open: fold `results.corrections` into the
+  basis as item 24's "correction-set id", so a corrections flip inside
+  one engine version cannot pass as comparable.
+- **td470248 approved** (Reto via chat-interface, 2026-10-07): BEEF-vdW
+  single points on the four existing PdH H-flight geometries (Ta-adjacent
+  β-PdH midpoint + endpoint `B_Ta.extxyz`, undoped β-PdH midpoint +
+  endpoint). The launch still needs a verified pre-launch estimate under
+  $25 per run, or the exact command handed to Reto; me470247 says the PBE
+  basis is unmeasured, so measure it on the first single point.
 - `scripts/build-image` now builds the dev image's autocatpath layer from
   the lock's sha (it resolved catpath main's HEAD before, which would have
   baked 0.24.0 under a 0.23.0 lock); the cluster wheelhouse already built
@@ -122,8 +136,9 @@ only; everything this thread built is on main and was live by round 4.
    hydrogenation, N₂ and N₂O are in the network; every ranking on
    qu164903 inherits the error. Slice 1 done (parked is incomplete);
    screening stays parked (R2), and the like-with-like network-basis
-   ranking has shipped. Catpath 0.23.0 (NO+NO coupling, NH₂OH scission,
-   template-level `network_digest`) is locked (2026-10-07). Left: the
+   ranking has shipped. Catpath 0.24.0 (NO+NO coupling, NH₂OH scission,
+   template-level `network_digest`, gas + Pd H* corrections ON) is
+   locked (2026-10-07). Left: the
    neb-tier re-run of pw455722's candidate (steps 5–6), held by item 25.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
