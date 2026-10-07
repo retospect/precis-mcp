@@ -16,10 +16,20 @@ documents:
   ``COMPONENT`` + ``ATTR`` ``Designator`` + ``ATTR`` ``Footprint`` +
   ``PAD_NET`` per netted pad;
 * one ``FOOTPRINT`` document per placed INSTANCE (``R1_0402``,
-  ``R2_0402``, … — the decided first cut, ``docs/backlog/pcb-epro-export.md``).
+  ``R2_0402``, … — the decided first cut, ``docs/backlog/pcb-epro-export.md``);
+* copper (slice 2c): every ``ctype='track'`` segment as a ``LINE`` or
+  ``ARC`` on its copper layer, every ``ctype='via'`` as a through-hole
+  ``VIA``. The records are the ones the reader decodes
+  (:func:`precis.pcb.epro.extract_tracks` / :func:`extract_vias`), so a
+  written board reads back through it; ``tests/test_pcb_epro_export.py``
+  holds that round trip to 0.5 um. An ``ARC`` stores a SIGNED sweep in
+  the Y-down frame; the Y flip reverses handedness, so a precis ``cw``
+  arc is written with a positive sweep (:func:`arc_sweep_deg`, the exact
+  inverse of the reader's ``cw = sweep > 0``). A blind/buried via is
+  written through-hole and named in a warning: ``VIA`` is documented
+  through-hole only, and flattening one silently would short layers.
 
-**What it deliberately does not emit** — tracks, vias, pours (slices
-2c/2d); silk, courtyards, pin-1 ticks (2e); mask-open regions,
+**What it deliberately does not emit** — pours (slice 2d); silk, courtyards, pin-1 ticks (2e); mask-open regions,
 mounting-hole/fiducial free pads, per-pad paste/mask intent (2f); and NO
 ``SCH``/``SCH_PAGE``/``DEVICE``/``SYMBOL`` document, on purpose: a
 schematic invites "update PCB from schematic", which rewrites the netlist
@@ -65,6 +75,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -105,6 +116,10 @@ _L_INNER0 = 15
 #: Where the "this board carries synthesized pads" STRING sits, mm above
 #: the outline's top edge.
 _NOTE_RISE_MM = 2.0
+
+#: ``ARC.arcType`` as Pro 3.2.149 writes it on every routed arc of the
+#: 2026-10-05 asymbendtest fixture (17 of 17); the reader never reads it.
+_ARC_TYPE = "DOT"
 
 
 # ── frame conversions ───────────────────────────────────────────────────
@@ -161,15 +176,62 @@ def to_footprint_local(
     return to_mils(dx), to_mils(dy if bottom else -dy)
 
 
+def arc_sweep_deg(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    center: tuple[float, float],
+    *,
+    cw: bool,
+) -> float:
+    """The signed ``ARC.angle`` for a precis arc segment (board mm, +Y up).
+
+    The reader (:func:`precis.pcb.epro._segment`) decides ``cw`` from the
+    stored sign alone — ``cw = sweep > 0`` — because the Y flip is a
+    reflection and reverses handedness. So the magnitude is the angle
+    swept around ``center`` from ``start`` to ``end`` in the arc's own
+    direction, and the sign is ``+`` for ``cw``. ``0`` means the arc has
+    no finite centre (start == end, or a degenerate centre) and is the
+    caller's cue to drop it: the reader drops a 0/360 sweep too.
+    """
+    a0 = math.atan2(start[1] - center[1], start[0] - center[0])
+    a1 = math.atan2(end[1] - center[1], end[0] - center[0])
+    mag = (a0 - a1) % (2 * math.pi) if cw else (a1 - a0) % (2 * math.pi)
+    deg = math.degrees(mag)
+    if deg <= 0.0 or deg >= 360.0:
+        return 0.0
+    return deg if cw else -deg
+
+
+def copper_layer_ids(layers: list[str]) -> dict[str, int]:
+    """precis layer name -> ``layerId``, the inverse of
+    :func:`precis.pcb.epro.copper_layers` over the ids
+    :func:`_layer_records` declares: top 1, bottom 2, inner ``i`` at
+    ``15 + i`` (spike-observed on the real 4-layer board: 1, 15, 16, 2)."""
+    if len(layers) < 2:
+        return {}
+    ids = {str(layers[0]): _L_TOP, str(layers[-1]): _L_BOTTOM}
+    for i, name in enumerate(layers[1:-1]):
+        ids[str(name)] = _L_INNER0 + i
+    return ids
+
+
 def frame_for(model: dict[str, Any]) -> EproFrame:
-    """The frame enclosing the outline, every placed instance and every pad
-    (plus a margin), so a part hanging off the board still lands at a
-    positive coordinate."""
+    """The frame enclosing the outline, every placed instance, every pad
+    and every copper endpoint (plus a margin), so a part hanging off the
+    board still lands at a positive coordinate."""
     xs: list[float] = []
     ys: list[float] = []
     for x, y in model.get("outline") or []:
         xs.append(float(x))
         ys.append(float(y))
+    for item in model.get("copper") or []:
+        if item.get("ctype") == "via" and item.get("x") is not None:
+            xs.append(float(item["x"]))
+            ys.append(float(item["y"]))
+        for seg in item.get("segments") or []:
+            for px, py in (seg.get("start"), seg.get("end")):
+                xs.append(float(px))
+                ys.append(float(py))
     for inst in model.get("instances") or []:
         if inst.get("x") is not None and inst.get("y") is not None:
             xs.append(float(inst["x"]))
@@ -361,6 +423,169 @@ def _pad_record(
     return body
 
 
+# ── copper (slice 2c) ───────────────────────────────────────────────────
+def sorted_copper(model: dict[str, Any]) -> list[dict[str, Any]]:
+    """The model's copper items in an order that does not depend on the
+    model's (a re-route lists the same rows differently; the file must
+    not)."""
+    items = [i for i in model.get("copper") or [] if isinstance(i, dict)]
+    return sorted(items, key=lambda i: json.dumps(i, sort_keys=True, default=str))
+
+
+@dataclass
+class _CopperOut:
+    tracks: int = 0
+    lines: int = 0
+    arcs: int = 0
+    vias: int = 0
+    pours: int = 0
+    netless: int = 0
+    widthless: int = 0
+    unknown: int = 0
+    dropped: list[str] = field(default_factory=list)
+    blind: list[str] = field(default_factory=list)
+    off_layer: dict[str, int] = field(default_factory=dict)
+
+
+def _write_copper(
+    s: _Stream,
+    items: list[dict[str, Any]],
+    *,
+    slug: str,
+    frame: EproFrame,
+    layers: list[str],
+) -> _CopperOut:
+    """``LINE``/``ARC``/``VIA`` records for every track segment and via in
+    ``items`` (already :func:`sorted_copper`). Pours are counted for the
+    caller's warning, not written (slice 2d)."""
+    ids = copper_layer_ids(layers)
+    through = [str(layers[0]), str(layers[-1])] if layers else []
+    out = _CopperOut()
+    for n, item in enumerate(items):
+        ctype = str(item.get("ctype") or "")
+        net = str(item.get("net") or "")
+        if ctype == "pour":
+            out.pours += 1
+            continue
+        if ctype == "via":
+            if item.get("x") is None or item.get("y") is None:
+                out.dropped.append(f"via on {net or '?'} without a position")
+                continue
+            vx, vy = float(item["x"]), float(item["y"])
+            span = item.get("layers") or item.get("span")
+            if span and [str(span[0]), str(span[-1])] != through:
+                out.blind.append(f"{net or '?'} at ({vx:.3f}, {vy:.3f})")
+            if not net:
+                out.netless += 1
+            cx, cy = to_epro_xy(vx, vy, frame)
+            s.record(
+                "VIA",
+                {
+                    "netName": net,
+                    "centerX": cx,
+                    "centerY": cy,
+                    "holeDiameter": to_mils(float(item.get("drill_mm") or 0.0)),
+                    "viaDiameter": to_mils(float(item.get("dia_mm") or 0.0)),
+                    "viaType": "NORMAL",
+                    "unusedInnerLayers": [],
+                },
+                _rid(slug, f"via:{n}"),
+            )
+            out.vias += 1
+            continue
+        if ctype != "track":
+            out.unknown += 1
+            continue
+        layer = str(item.get("layer") or "")
+        lid = ids.get(layer)
+        if lid is None:
+            out.off_layer[layer] = out.off_layer.get(layer, 0) + 1
+            continue
+        width = float(item.get("width_mm") or 0.0)
+        if width <= 0.0:
+            out.widthless += 1
+            continue
+        if not net:
+            out.netless += 1
+        wrote = 0
+        for k, seg in enumerate(item.get("segments") or []):
+            a = (float(seg["start"][0]), float(seg["start"][1]))
+            b = (float(seg["end"][0]), float(seg["end"][1]))
+            if a == b:
+                out.dropped.append(
+                    f"zero-length {layer} segment on {net or '?'} at "
+                    f"({a[0]:.3f}, {a[1]:.3f})"
+                )
+                continue
+            ax, ay = to_epro_xy(a[0], a[1], frame)
+            bx, by = to_epro_xy(b[0], b[1], frame)
+            body: dict[str, Any] = {
+                "netName": net,
+                "layerId": lid,
+                "startX": ax,
+                "startY": ay,
+                "endX": bx,
+                "endY": by,
+                "width": to_mils(width),
+            }
+            if seg.get("shape") == "arc":
+                c = (float(seg["center"][0]), float(seg["center"][1]))
+                sweep = arc_sweep_deg(a, b, c, cw=bool(seg.get("cw", True)))
+                if sweep == 0.0:
+                    out.dropped.append(
+                        f"{layer} arc on {net or '?'} at ({a[0]:.3f}, {a[1]:.3f}) "
+                        "has no finite centre (full circle or degenerate)"
+                    )
+                    continue
+                body["angle"] = _clean(round(sweep, 9))
+                body["arcType"] = _ARC_TYPE
+                s.record("ARC", body, _rid(slug, f"arc:{n}:{k}"))
+                out.arcs += 1
+            else:
+                s.record("LINE", body, _rid(slug, f"line:{n}:{k}"))
+                out.lines += 1
+            wrote += 1
+        if wrote:
+            out.tracks += 1
+    return out
+
+
+def _copper_warnings(cu: _CopperOut) -> list[str]:
+    """Everything :func:`_write_copper` could not carry, one line each."""
+    out: list[str] = []
+    if cu.pours:
+        out.append(
+            f"{cu.pours} pour(s)/plane(s) are NOT exported yet (slice 2d) — "
+            "Pro shows the board without its planes; re-pour there"
+        )
+    if cu.blind:
+        shown = ", ".join(cu.blind[:6]) + ("…" if len(cu.blind) > 6 else "")
+        out.append(
+            f"{len(cu.blind)} blind/buried via(s) written as THROUGH-HOLE "
+            f"({shown}) — VIA carries no span in this format; fix their span "
+            "in Pro before fabricating"
+        )
+    if cu.netless:
+        out.append(
+            f"{cu.netless} copper item(s) carry no net and are written as "
+            "netless copper (Pro keeps it; a precis re-import skips it)"
+        )
+    if cu.widthless:
+        out.append(f"{cu.widthless} track(s) have no width and are not exported")
+    if cu.off_layer:
+        named = ", ".join(f"{k or '?'} ({v})" for k, v in sorted(cu.off_layer.items()))
+        out.append(
+            f"{sum(cu.off_layer.values())} track(s) sit on a layer the stackup "
+            f"does not declare and are not exported: {named}"
+        )
+    if cu.unknown:
+        out.append(f"{cu.unknown} copper item(s) of an unknown kind are not exported")
+    if cu.dropped:
+        shown = "; ".join(cu.dropped[:4]) + ("…" if len(cu.dropped) > 4 else "")
+        out.append(f"{len(cu.dropped)} copper segment(s) dropped: {shown}")
+    return out
+
+
 # ── the export ──────────────────────────────────────────────────────────
 @dataclass
 class EproExport:
@@ -437,8 +662,10 @@ def epro_files(
     for lay in _layer_records(n_inner):
         s.record("LAYER", lay, _dumps(["LAYER", lay["layerId"]]))
 
+    copper_items = sorted_copper(model)
     nets = sorted(
         {str(p["net"]) for part in parts.values() for p in part.pads if p.get("net")}
+        | {str(i["net"]) for i in copper_items if i.get("net")}
     )
     for net in nets:
         s.record("NET", {"netType": None}, _dumps(["NET", net]))
@@ -521,6 +748,8 @@ def epro_files(
                 )
         pad_ids[refdes] = entries
 
+    cu = _write_copper(s, copper_items, slug=slug, frame=frame, layers=layers)
+
     if synthesized:
         xs = [p[0] for p in outline] or [0.0]
         ys = [p[1] for p in outline] or [0.0]
@@ -574,18 +803,16 @@ def epro_files(
             f"{orphans} pad(s) belong to no placed part (fiducials, stray "
             f"rows) and are not exported"
         )
-    copper = list(model.get("copper") or [])
-    if copper:
-        warnings.append(
-            f"{len(copper)} copper item(s) (tracks/vias/pours) are NOT exported "
-            "yet (slice 2c/2d) — the colleague gets parts, pads, nets and an "
-            "outline, not routing"
-        )
+    warnings += _copper_warnings(cu)
     exported_holes = {
         (round(float(p["x"]), 3), round(float(p["y"]), 3))
         for part in parts.values()
         for p in part.pads
         if p.get("drill")
+    } | {
+        (round(float(i["x"]), 3), round(float(i["y"]), 3))
+        for i in copper_items
+        if i.get("ctype") == "via" and i.get("x") is not None
     }
     loose = [
         d
@@ -594,8 +821,8 @@ def epro_files(
     ]
     if loose:
         warnings.append(
-            f"{len(loose)} drill(s) belong to no exported pad (mounting holes, "
-            f"vias) and are not exported"
+            f"{len(loose)} drill(s) belong to no exported pad or via (mounting "
+            f"holes) and are not exported"
         )
     if model.get("mask_open_regions"):
         warnings.append(
@@ -650,6 +877,11 @@ def epro_files(
             "components": len(parts),
             "pads": sum(len(p.pads) for p in parts.values()),
             "nets": len(nets),
+            "tracks": cu.tracks,
+            "lines": cu.lines,
+            "arcs": cu.arcs,
+            "vias": cu.vias,
+            "pours": cu.pours,
         },
     )
 
@@ -677,8 +909,11 @@ __all__ = [
     "EproExport",
     "EproFrame",
     "SynthesizedPadError",
+    "arc_sweep_deg",
+    "copper_layer_ids",
     "epro_files",
     "frame_for",
+    "sorted_copper",
     "to_epro_xy",
     "to_footprint_local",
     "to_mils",

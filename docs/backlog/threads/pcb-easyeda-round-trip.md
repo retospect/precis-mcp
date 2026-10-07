@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When the organizer reopens the parked thread, resume Do next 1 using the current real-board measurements. The shared-occupancy negotiated congestion build named there is owned by [ewod-pcb](ewod-pcb.md#resume) (2026-10-07): its report landed and its dogfood-6 verdict is recorded in that thread; do not re-plan it here.
-- **Blocked by:** Parked at tier 3: start no new slice until organizer reopen. Reto’s Pro look remains pending; coordinate shared files with [ewod-pcb](ewod-pcb.md#resume).
+- **Next:** Slice 2d (pours) of [pcb-epro-export](../pcb-epro-export.md), then 2e (silk + editable designators); 2c (copper: LINE/ARC/VIA) landed 2026-10-07 and round-trips Reto's asymbendtest fixture to 0.001 um (td468296 closed). The same session runs ewod-pcb first while Reto's 2026-10-07 routing/placement/pin-swap investigation is open (ordered by Reto via chat-interface, ahead of EasyEDA); resume here when that note lands. Do next 1 (the router on the real board) is now ewod-pcb's router question too — measure there, do not re-plan it here.
+- **Blocked by:** Nothing for 2d/2e. Reopened 2026-10-07 by the coordinator (Reto's order: route/place first, then EasyEDA). Reto's Pro look at the 2b file is a review-queue item (`pcb-easyeda-round-trip-2`), not a blocker: the UNVERIFIED banner stays until it lands. Shared router/realizer files belong to [ewod-pcb](ewod-pcb.md#resume); sequence, do not merge.
 - **Unblocks:** A corrected board that routes and round-trips.
 - **Acceptance:** Use [pcb-router-fails-at-real-board-size](../pcb-router-fails-at-real-board-size.md) and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
 - **Worktree:** `pcb-easyeda-round-trip`
@@ -71,7 +71,10 @@ sequence, do not merge.
 gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
 `width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
 the annotation step can correct a net's current, not just its voltage.
-**Parked 2026-10-03 (TIER 3, Reto's priority review):** start no new
+**Reopened 2026-10-07** (coordinator, on Reto's "route/place first, then
+EasyEDA import/export"); owner is the `pcb` session that also runs
+ewod-pcb. First slice after reopen: export 2c (copper), landed the same
+day. **Parked 2026-10-03 (TIER 3, Reto's priority review):** start no new
 slice until the organizer reopens the thread. Last landed: 044b67bff
 (round 4): the route dedup key carries `pcb_route.CODE_VERSION`, and the
 sketch SVG restores pin swaps first. Round 3 (403b08026, measure-sort
@@ -167,7 +170,15 @@ review, banner "UNVERIFIED" until Reto opens one in Pro — review-queue
    angles on both sides, against `lookat-expected.svg`). Until that passes,
    every later export slice rests on an unverified premise, and the view's
    UNVERIFIED banner stays. On pass: drop the banner and the
-   description's "not yet opened" in the same commit.
+   description's "not yet opened" in the same commit. **2c (copper) BUILT
+   2026-10-07:** every track segment as `LINE`/`ARC`, every via as a
+   through-hole `VIA` (blind/buried flattened WITH a per-via warning),
+   nets declared before use, pours still warned (2d). Round trip through
+   the reader: 0.5 um on the synthetic model; Reto's asymbendtest fixture
+   (17 netted arcs on two layers, 2 bottom parts) comes back with worst
+   copper error 0.001 um and worst bottom-pad error 0.048 um
+   (`test_real_board_copper_and_bottom_pads_round_trip`, env-gated).
+   Next: 2d pours, 2e silk/designators.
 5. **backlog/pcb-export-dir-confinement.md** — the four file exports
    write to any agent-supplied `dir`. Cheap and mechanical, and it closes
    a write-anywhere path on the shared server, so it ranks above the
@@ -188,11 +199,9 @@ export/fab if this file outgrows itself.
    carry no net and nothing yet exercises the mirror outbound. Gates 2c and
    2f only; blocks nothing in import.
 
-2. **backlog/pcb-epro-export.md** slice 2c (copper) — waits on 2b and
-   td458069's arc; the first export a colleague can inspect, traces
-   clicking through to the right net.
-3. **backlog/pcb-epro-export.md** slice 2d (pours) — waits on 2c; planes Pro
-   re-pours on open, the difference between readable and editable.
+3. **backlog/pcb-epro-export.md** slice 2d (pours) — 2c landed
+   2026-10-07; planes Pro re-pours on open, the difference between
+   readable and editable.
 4. **backlog/pcb-epro-export.md** slice 2e (silk + editable designators) —
    waits on 2d and SilkPlacement gaining x/y/angle; retypeable refdes text.
 4. **backlog/pcb-epro-export.md** slice 2f (deferred set) — waits on 2b–2e;

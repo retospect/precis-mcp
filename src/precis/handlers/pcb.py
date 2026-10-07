@@ -3122,6 +3122,17 @@ class PcbHandler(Handler):
         path.write_bytes(blob)
 
         st = exported.stats
+        if st["lines"] or st["arcs"] or st["vias"]:
+            copper_line = (
+                f"copper: {st['lines']} line(s), {st['arcs']} arc(s), "
+                f"{st['vias']} via(s) on {st['tracks']} track(s); pours are "
+                "not exported yet (slice 2d)."
+            )
+        else:
+            copper_line = (
+                "copper: none — the file carries the outline, parts, pads and "
+                "nets only (run put(args={'op':'route'}) first for routing)."
+            )
         head = (
             f"# exported {slug} → EPRO2 (EasyEDA Pro)\n{path}  "
             f"({len(blob):,} bytes zipped)\n"
@@ -3130,8 +3141,7 @@ class PcbHandler(Handler):
             "No schematic is included, on purpose: do NOT run 'Update PCB from "
             "schematic' in Pro — it would rewrite the netlist and destroy the "
             "board.\n"
-            "Copper (tracks, vias, pours) is NOT exported yet (slice 2c): the "
-            "file carries the outline, parts, pads and nets only.\n"
+            f"{copper_line}\n"
             # Remove in the commit that records a human opening one in Pro
             # (docs/backlog/pcb-epro-export.md, 2b acceptance).
             "UNVERIFIED: no file from this writer has been opened in EasyEDA "

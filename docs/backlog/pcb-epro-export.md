@@ -102,7 +102,15 @@ Per slice; the real one is a human opening the file.
    `padAngle` 0 — writing the real angle waits for a Pro-written file that
    pins Pro's `padAngle` sense.
 2. **2c — copper.** `LINE`, `ARC`, `VIA`. *Done: Pro's unrouted count equals
-   `view='route-status'`; clicking a trace shows the right net.*
+   `view='route-status'`; clicking a trace shows the right net.* **BUILT
+   2026-10-07** (`epro_write._write_copper`): `ARC.angle` is the signed
+   sweep in the Y-down frame (`arc_sweep_deg`, the inverse of the reader's
+   `cw = sweep > 0`), `arcType` `"DOT"` as Pro 3.2.149 writes it; a
+   blind/buried via is written through-hole and named in a warning; nets a
+   track uses are declared before use. Round trip through the reader holds
+   0.5 um on the synthetic model and 0.001 um on the asymbendtest fixture
+   (td468296's acceptance, closed). The human half (Pro's own unrouted
+   count, click-through nets) rides the 2b look.
 3. **2d — pours.** *Done: re-pour in Pro succeeds; visual compare against
    `view='svg'`.*
 4. **2e — silk + editable designators.** Courtyard/pin-1 `POLY`, designator as

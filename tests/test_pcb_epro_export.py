@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
+import pathlib
 import zipfile
 from typing import Any
 
@@ -379,7 +381,14 @@ def test_things_the_slice_does_not_carry_are_warned_about():
     lonely = {**fid, "net": "LONELY", "role": None}
     model = _model(
         extra_pads=[fid, lonely],
-        copper=[{"ctype": "track", "layer": "F.Cu", "net": "GND"}],
+        copper=[
+            {
+                "ctype": "pour",
+                "layer": "F.Cu",
+                "net": "GND",
+                "polygon": [[0, 0], [1, 0], [1, 1]],
+            }
+        ],
         mask_open_regions=[{"side": "top", "polygon": [[0, 0], [1, 0], [1, 1]]}],
         silkscreen={"top": [{"width_mm": 0.15, "segments": []}], "bottom": []},
     )
@@ -391,10 +400,10 @@ def test_things_the_slice_does_not_carry_are_warned_about():
         "1 net(s) have no exported pad and are not in the file: LONELY",
         # R7 sits at 37 degrees with rect pads (review E1)
         "1 part(s) sit at a non-right-angle rotation with rect/obround pads (R7)",
-        "1 copper item(s)",
+        "1 pour(s)/plane(s)",
         "1 soldermask-opening",
         "silkscreen is NOT exported",
-        "1 drill(s) belong to no exported pad",
+        "1 drill(s) belong to no exported pad or via",
         "unplaced part(s) omitted: X9",
     ):
         assert needle in text, needle
@@ -636,7 +645,7 @@ def test_handler_epro_view_writes_a_readable_file(pcb, tmp_path):
     assert path.exists() and str(path) in resp.body
     assert "No schematic is included" in resp.body
     assert "Update PCB from schematic" in resp.body
-    assert "Copper (tracks, vias, pours) is NOT exported yet" in resp.body
+    assert "copper: none" in resp.body
     assert "UNVERIFIED: no file from this writer has been opened" in resp.body
 
     project = epro.read_archive(path.read_bytes())
@@ -714,3 +723,384 @@ def test_handler_epro_view_drops_gerber_only_notes(pcb, tmp_path, monkeypatch):
     assert "refdes label moved" not in body
     assert "no realized copper yet" not in body
     assert "silk-placement note(s) not shown" in body
+
+
+# ── copper (slice 2c) ───────────────────────────────────────────────────
+def _copper() -> list[dict[str, Any]]:
+    """Every copper shape the writer carries, inside the 30x20 outline. The
+    F.Cu track chains line -> cw arc -> line end to end."""
+    return [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "width_mm": 0.2,
+            "segments": [
+                {"shape": "line", "start": [5.0, 5.0], "end": [10.0, 5.0]},
+                {
+                    "shape": "arc",
+                    "start": [10.0, 5.0],
+                    "end": [8.0, 7.0],
+                    "center": [10.0, 7.0],
+                    "cw": True,
+                },
+                {"shape": "line", "start": [8.0, 7.0], "end": [8.0, 12.0]},
+            ],
+        },
+        {
+            "ctype": "track",
+            "layer": "In1.Cu",
+            "net": "N_R1",
+            "width_mm": 0.15,
+            "segments": [{"shape": "line", "start": [6.0, 3.0], "end": [14.0, 3.0]}],
+        },
+        {
+            "ctype": "track",
+            "layer": "B.Cu",
+            "net": "SHARED",
+            "width_mm": 0.15,
+            "segments": [
+                {
+                    "shape": "arc",
+                    "start": [20.0, 15.0],
+                    "end": [22.0, 17.0],
+                    "center": [20.0, 17.0],
+                    "cw": False,
+                }
+            ],
+        },
+        {
+            "ctype": "via",
+            "net": "GND",
+            "x": 25.0,
+            "y": 10.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+        },
+        {
+            "ctype": "via",
+            "net": "GND",
+            "x": 26.0,
+            "y": 12.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": ["F.Cu", "In1.Cu"],
+        },
+    ]
+
+
+def _canon_segments(tracks) -> dict[tuple, tuple[float, ...]]:
+    """``{rounded key: raw coords}`` for every segment of every track row.
+    The reader chains coincident segments and may walk one backwards, so
+    endpoints are sorted and an arc's ``cw`` flips with the swap."""
+    out: dict[tuple, tuple[float, ...]] = {}
+    for t in tracks:
+        if t.get("ctype", "track") != "track":
+            continue
+        for seg in t["segments"]:
+            a = (float(seg["start"][0]), float(seg["start"][1]))
+            b = (float(seg["end"][0]), float(seg["end"][1]))
+            flipped = tuple(round(v, 4) for v in b) < tuple(round(v, 4) for v in a)
+            if flipped:
+                a, b = b, a
+            coords = [*a, *b]
+            kind: tuple = ("line",)
+            if seg.get("shape") == "arc":
+                c = (float(seg["center"][0]), float(seg["center"][1]))
+                kind = ("arc", bool(seg["cw"]) != flipped)
+                coords += [*c]
+            key = (
+                t["layer"],
+                t["net"],
+                round(float(t["width_mm"]), 4),
+                *kind,
+                *(round(v, 4) for v in coords),
+            )
+            out[key] = tuple(coords)
+    return out
+
+
+def _worst_um(want: dict, got: dict) -> float:
+    """Worst coordinate error between two canonical maps, in um (the keys
+    are the rounded coordinates, so the same key pairs the same segment)."""
+    assert set(want) == set(got)
+    return 1000.0 * max(
+        (max(abs(x - y) for x, y in zip(want[k], got[k], strict=True)) for k in want),
+        default=0.0,
+    )
+
+
+def _read_copper(model: dict[str, Any]):
+    pcb = _read(_export(model)).pcb()
+    _outline, frame = epro.board_outline(pcb)
+    flat, _warn = epro.measured_copper(pcb, frame)
+    return pcb, flat
+
+
+def test_copper_round_trips_lines_arcs_and_vias_within_half_a_micron():
+    cu = _copper()
+    _pcb, flat = _read_copper(_model(copper=cu))
+
+    want = _canon_segments(cu)
+    got = _canon_segments(flat)
+    assert len(want) == 5  # 2 lines + 1 arc on F.Cu, 1 line, 1 arc
+    assert set(want) == set(got)
+    assert _worst_um(want, got) < _TOL_MM * 1000.0
+
+    vias = sorted((v for v in flat if v["ctype"] == "via"), key=lambda v: v["x"])
+    assert len(vias) == 2
+    for v, src in zip(vias, cu[3:], strict=True):
+        assert abs(v["x"] - src["x"]) < _TOL_MM and abs(v["y"] - src["y"]) < _TOL_MM
+        assert v["dia_mm"] == pytest.approx(0.6, abs=1e-4)
+        assert v["drill_mm"] == pytest.approx(0.3, abs=1e-4)
+        assert v["net"] == "GND"
+        assert list(v["span"]) == ["F.Cu", "B.Cu"]  # the blind one is flattened
+
+
+def test_arc_handedness_round_trips_both_ways():
+    # same chord (10,10)-(12,12); the centres are mirror images across it
+    ccw = {
+        "shape": "arc",
+        "start": [10.0, 10.0],
+        "end": [12.0, 12.0],
+        "center": [10.0, 12.0],
+        "cw": False,
+    }
+    cw = {**ccw, "center": [12.0, 10.0], "cw": True}
+    cu = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "GND",
+            "width_mm": 0.2,
+            "segments": [ccw],
+        },
+        {
+            "ctype": "track",
+            "layer": "B.Cu",
+            "net": "GND",
+            "width_mm": 0.2,
+            "segments": [cw],
+        },
+    ]
+    _pcb, flat = _read_copper(_model(copper=cu))
+    want, got = _canon_segments(cu), _canon_segments(flat)
+    assert set(want) == set(got)  # the key carries cw and the centre
+    assert _worst_um(want, got) < _TOL_MM * 1000.0
+    by_layer = {k[0]: k for k in got}
+    assert by_layer["F.Cu"][4] is False and by_layer["B.Cu"][4] is True
+
+
+def test_arc_sweep_deg_unit():
+    o, a, b = (0.0, 0.0), (1.0, 0.0), (0.0, 1.0)
+    assert epro_write.arc_sweep_deg(a, b, o, cw=False) == pytest.approx(-90.0)
+    assert epro_write.arc_sweep_deg(a, b, o, cw=True) == pytest.approx(270.0)
+    assert epro_write.arc_sweep_deg(a, a, o, cw=False) == 0.0
+    assert epro_write.arc_sweep_deg(a, a, o, cw=True) == 0.0
+
+
+def test_copper_nets_are_declared_before_use_including_copper_only_nets():
+    assert epro_write.copper_layer_ids(_LAYERS) == {
+        "F.Cu": 1,
+        "In1.Cu": 15,
+        "In2.Cu": 16,
+        "B.Cu": 2,
+    }
+    cu = [
+        {
+            "ctype": "track",
+            "layer": "F.Cu",
+            "net": "CU_ONLY",
+            "width_mm": 0.2,
+            "segments": [{"shape": "line", "start": [5.0, 5.0], "end": [9.0, 5.0]}],
+        },
+        {
+            "ctype": "track",
+            "layer": "B.Cu",
+            "net": "CU_ONLY",
+            "width_mm": 0.2,
+            "segments": [
+                {
+                    "shape": "arc",
+                    "start": [5.0, 8.0],
+                    "end": [7.0, 10.0],
+                    "center": [5.0, 10.0],
+                    "cw": False,
+                }
+            ],
+        },
+        {
+            "ctype": "via",
+            "net": "CU_ONLY",
+            "x": 12.0,
+            "y": 12.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+        },
+    ]
+    pcb = _read(_export(_model(copper=cu))).pcb()
+    layer_ids = {b["layerId"] for b in pcb.bodies("LAYER")}
+    declared: set[str] = set()
+    seen = {"LINE": 0, "ARC": 0, "VIA": 0}
+    for r in pcb.records:
+        if r.type == "NET":
+            declared.add(json.loads(str(r.id))[1])
+        elif r.type in seen:
+            assert r.body is not None
+            seen[r.type] += 1
+            assert "CU_ONLY" in declared, r.type  # NET came first
+            assert r.body["netName"] in declared
+            if "layerId" in r.body:
+                assert r.body["layerId"] in layer_ids
+    assert seen == {"LINE": 1, "ARC": 1, "VIA": 1}
+
+
+def test_copper_drops_and_flattenings_are_warned():
+    line = {"shape": "line", "start": [5.0, 5.0], "end": [9.0, 5.0]}
+    pour: dict[str, Any] = {
+        "ctype": "pour",
+        "layer": "F.Cu",
+        "net": "GND",
+        "polygon": [[0, 0], [1, 0], [1, 1]],
+    }
+
+    def track(layer, net, width, segments):
+        return {
+            "ctype": "track",
+            "layer": layer,
+            "net": net,
+            "width_mm": width,
+            "segments": segments,
+        }
+
+    degenerate = {
+        "shape": "arc",
+        "start": [5.0, 7.0],
+        "end": [5.0, 7.0],
+        "center": [3.0, 7.0],
+        "cw": True,
+    }
+    # start and end on one bearing from the centre: a 0/360 sweep
+    full_circle = {**degenerate, "end": [6.0, 7.0]}
+    cu = [
+        {
+            "ctype": "via",
+            "net": "GND",
+            "x": 20.0,
+            "y": 5.0,
+            "dia_mm": 0.6,
+            "drill_mm": 0.3,
+            "span": ["F.Cu", "In1.Cu"],
+        },
+        pour,
+        track("F.Cu", "", 0.2, [line]),
+        track("F.Cu", "GND", 0.2, [degenerate]),
+        track("F.Cu", "GND", 0.2, [full_circle]),
+        track("X.Cu", "GND", 0.2, [line]),
+        track("F.Cu", "GND", 0, [line]),
+    ]
+    model = _model(copper=cu)
+    # a drill sitting exactly under the via is the via's, not a loose one
+    model["drills"].append({"x": 20.0, "y": 5.0, "dia_mm": 0.3, "plated": True})
+    ex = _export(model)
+    text = " | ".join(ex.warnings)
+    for needle in (
+        "blind/buried",
+        "THROUGH-HOLE",
+        "pour(s)",
+        "carry no net",
+        "no finite centre",
+        "zero-length",
+        "layer the stackup does not declare",
+        "no width",
+    ):
+        assert needle in text, needle
+    assert "belong to no exported pad or via" not in text
+
+    pcb = _read(ex).pcb()
+    assert [b["netName"] for b in pcb.bodies("LINE")] == [""]  # netless, written
+    assert pcb.bodies("ARC") == []  # the degenerate arc was dropped
+    assert len(pcb.bodies("VIA")) == 1
+    assert (ex.stats["lines"], ex.stats["vias"], ex.stats["pours"]) == (1, 1, 1)
+
+
+def test_copper_order_does_not_leak_into_the_bytes():
+    cu = _copper()
+    a = epro_write.zip_epro(_export(_model(copper=cu)).files)
+    b = epro_write.zip_epro(_export(_model(copper=list(reversed(cu)))).files)
+    assert a == b
+
+
+# ── the real board, when someone points at one ──────────────────────────
+@pytest.mark.skipif(
+    not os.environ.get("PRECIS_EPRO_FIXTURE"),
+    reason="set PRECIS_EPRO_FIXTURE=/path/to/real.epro2 to run",
+)
+def test_real_board_copper_and_bottom_pads_round_trip():
+    data = pathlib.Path(os.environ["PRECIS_EPRO_FIXTURE"]).read_bytes()
+    project = epro.read_archive(data)
+    pcb = project.pcb()
+    design, frame = epro.build_design(project, pcb)
+    flat, _ = epro.measured_copper(pcb, frame)
+    layers = list(epro.copper_layers(pcb).values())
+
+    outline = next(f for f in design.features if f["ftype"] == "outline")
+    fps = {f["name"]: f for f in design.footprints}
+    net_of = {(c["refdes"], c["pin"]): c["net"] for c in design.connections}
+    pads: list[dict[str, Any]] = []
+    drills: list[dict[str, Any]] = []
+    for comp in design.components:
+        fp = fps.get(comp.get("footprint"))
+        if fp is None:
+            continue
+        pad_net = {
+            str(p["pad"]): net_of[(comp["refdes"], p["name"])]
+            for p in comp.get("pins", [])
+            if (comp["refdes"], p["name"]) in net_of
+        }
+        raw = [{**p, "number": p["pin"]} for p in fp["pads"]]
+        pp, dd = padplace.place_footprint_pads(
+            raw, comp, layers=layers, pin_to_net=pad_net
+        )
+        pads += pp
+        drills += dd
+    model = {
+        "layers": layers,
+        "outline": outline["geom"]["path"],
+        "copper": flat,
+        "pads": pads,
+        "drills": drills,
+        "silkscreen": {"top": [], "bottom": []},
+        "mask_open_regions": [],
+        "instances": design.components,
+    }
+    ex = epro_write.epro_files(model, slug="real")
+    project2 = epro.read_archive(epro_write.zip_epro(ex.files))
+    pcb2 = project2.pcb()
+    design2, frame2 = epro.build_design(project2, pcb2)
+    flat2, _ = epro.measured_copper(pcb2, frame2)
+
+    want, got = _canon_segments(flat), _canon_segments(flat2)
+    assert want, "the fixture carries no copper segments"
+    assert set(want) == set(got)
+    worst_cu = _worst_um(want, got)
+    assert worst_cu < _TOL_MM * 1000.0, f"worst copper error {worst_cu:.3f} um"
+
+    old, new = _board_pads_from_reader(design), _board_pads_from_reader(design2)
+    bottom = {c["refdes"] for c in design.components if c.get("layer") == "bottom"}
+    assert bottom, "the fixture has no bottom-side part"
+    worst_pad = 0.0
+    n = 0
+    for key, (ox, oy) in old.items():
+        if key[0] not in bottom:
+            continue
+        nx, ny = new[key]
+        worst_pad = max(worst_pad, abs(nx - ox), abs(ny - oy))
+        n += 1
+    assert n > 0
+    n_vias = sum(1 for v in flat if v["ctype"] == "via")
+    print(
+        f"REAL: {len(want)} segments, {n_vias} vias, worst copper "
+        f"{worst_cu:.3f} um, {n} bottom pads worst {worst_pad * 1000:.3f} um"
+    )
+    assert worst_pad < _TOL_MM, f"worst bottom-pad error {worst_pad * 1000:.3f} um"
