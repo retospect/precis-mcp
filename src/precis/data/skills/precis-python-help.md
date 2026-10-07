@@ -46,6 +46,33 @@ gives aliases `precis` and `cluster`). The `::` separator is python-
 specific and goes straight to a dotted qualname; `/` introduces a
 file path and `~` introduces a selector inside it.
 
+## Which checkout did this result use?
+
+Every successful Python read/search appends alias, resolved root, indexed
+Python corpus fingerprint and freshness, plus separately observed Git context.
+The corpus hash frames sorted paths and exact indexed raw-byte SHA256 values;
+it excludes non-Python files, symlinks and the indexer's hidden/skip directories.
+It is not a Git tree hash. File/symbol source comes from the indexed snapshot;
+reused modules are stat-checked with content-not-revalidated explicitly shown.
+Walks and Git observations are non-atomic; partial/unreadable/parse-error states
+are labelled. Git HEAD never identifies dirty/untracked bytes as a commit
+snapshot. Entry discovery labels separately read project metadata. Runtrace
+provenance does not attest executed bytes.
+
+`get(kind='python')` lists configured aliases and availability without indexing
+every root. Assert a known alias's expected root before indexing:
+
+```python
+get(kind='python', id='precis::pkg.mod.func', args={'expected_root': '/absolute/task/root'})
+search(kind='python', q='cache', scope='precis', args={'expected_root': '/absolute/task/root'})
+```
+
+`expected_root` requires an explicit alias id/scope and grants no access or
+registration. On mismatch, select an existing correct alias or have the operator
+configure a separately authorized local server for that directory. Roots are
+registered at server construction; there is no request-time arbitrary-path fallback. Do not bind
+production to an unreviewed mutable task checkout or edit through another root.
+
 ```python
 get(kind="python", id="precis")  # repo overview
 get(kind="python", id="precis/src/precis/cli.py")  # file outline

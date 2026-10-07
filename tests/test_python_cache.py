@@ -119,29 +119,19 @@ def test_deleted_file_dropped_from_index(tmp_path: Path) -> None:
     assert second.module("pkg.a") is not None
 
 
-def test_unchanged_file_with_same_mtime_is_not_reparsed(tmp_path: Path) -> None:
-    """If mtime is unchanged we trust the cache even if content changed.
-
-    This is the documented contract: agents that need a forced
-    re-index call `cache.drop(root)` first. Verifying the cache
-    actually skips reparse keeps us honest about the trade-off.
-    """
+def test_external_edit_with_restored_mtime_refreshes(tmp_path: Path) -> None:
+    """Size/ctime changes detect edits even when a tool restores mtime."""
     _write(tmp_path, "pkg/__init__.py", "")
     a = _write(tmp_path, "pkg/a.py", "def a(): pass\n")
-
     cache = RepoCache()
     first = cache.get(tmp_path)
-
-    # Sneakily rewrite content but pin the original mtime so the cache
-    # thinks nothing happened.
-    original_mtime_ns = a.stat().st_mtime_ns
+    original = a.stat()
     a.write_text("def renamed(): pass\n", encoding="utf-8")
-    os.utime(a, ns=(a.stat().st_atime_ns, original_mtime_ns))
-
+    os.utime(a, ns=(original.st_atime_ns, original.st_mtime_ns))
     second = cache.get(tmp_path)
-    assert first.module("pkg.a") is second.module("pkg.a")
-    assert second.symbol("pkg.a.a") is not None  # stale, by design
-    assert second.symbol("pkg.a.renamed") is None
+    assert first.module("pkg.a") is not second.module("pkg.a")
+    assert second.symbol("pkg.a.a") is None
+    assert second.symbol("pkg.a.renamed") is not None
 
 
 def test_multiple_roots_are_independent(tmp_path: Path) -> None:

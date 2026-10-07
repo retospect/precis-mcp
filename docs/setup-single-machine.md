@@ -95,3 +95,34 @@ feature-toggle vars, not app secrets):
 ## Cluster instead?
 
 Multi-host, ansible-provisioned: [`deploy/README.md`](../deploy/README.md).
+
+
+## Read an authorized task checkout through Python navigation
+
+Register roots at construction of a separately authorized local MCP reader,
+using the existing configuration (directories must already exist):
+
+```sh
+PRECIS_PYTHON_ROOTS=precis:/absolute/task/root
+```
+
+An embedded reader uses the same boundary:
+`PythonHandler(hub=hub, roots={"precis": Path("/absolute/task/root")})`.
+Neither a navigation id nor `expected_root` grants access or registers a root.
+Keep production registrations unchanged; do not bind production to mutable
+session source. This setup recipe does not authorize starting a new service.
+
+List available aliases without indexing them, then assert the expected root
+before any source lookup:
+
+```python
+get(kind="python")
+get(kind="python", id="precis", args={"expected_root": "/absolute/task/root"})
+search(kind="python", q="cache", scope="precis", args={"expected_root": "/absolute/task/root"})
+```
+
+The assertion requires an explicit alias id/scope; unscoped assertions and
+mismatches fail before indexing. Read the resolved root and indexed Python
+corpus fingerprint, independently of observed Git HEAD/branch/dirty state.
+Reuse is stat-checked with content-not-revalidated explicitly labelled;
+partial walks, unreadable files and parse errors limit the represented corpus.

@@ -1,38 +1,16 @@
-"""In-memory, mtime-invalidated `RepoIndex` cache.
+"""Root-scoped incremental AST cache with explicitly stat-checked freshness.
 
-AST parsing is cheap (~1 ms/file), idempotent, and derived from source
-that already lives on disk. So the python kind deliberately does NOT
-persist its outline to Postgres — instead it keeps a per-process cache
-keyed by file mtime and rebuilds stale entries on demand.
-
-Call pattern::
-
-    cache = RepoCache()
-    idx = cache.get(Path('/abs/path/to/repo'))   # full index, first hit
-    # ... files edited on disk ...
-    idx = cache.get(Path('/abs/path/to/repo'))   # only changed files reparsed
-
-One `RepoCache` instance manages any number of roots; roots are
-independent. Not thread-safe — precis runs request-serial today.
-
-Staleness detection is per-file:
-
-- New files (in tree, not in cache)             → parse, add.
-- Deleted files (in cache, not in tree)         → drop from cache.
-- Modified files (mtime_ns differs from cache)  → reparse, replace.
-- Unchanged files                               → reused verbatim.
-
-`mtime_ns` rather than `mtime` avoids sub-second false-negatives on
-filesystems with good resolution; on filesystems that only expose
-whole-second mtime (some network mounts) it still works but may miss
-edits within the same second. Good enough for dev-loop use; an agent
-reading stale code for one request is an acceptable failure mode.
+Unchanged size/mtime/ctime/device/inode reuses the indexed byte snapshot; it
+does not prove current content equality. Changed files get at most two parse
+attempts, with before/after identity checks. Failed/unstable files are omitted
+instead of attaching a successful fresh stamp to an old module. Tree walks
+are not atomic snapshots; partial walks retain earlier entries with a warning.
 """
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 from precis.python_index.indexer import (
@@ -40,97 +18,92 @@ from precis.python_index.indexer import (
     _walk_python_files,
     index_module,
 )
-from precis.python_index.types import ModuleIndex, RepoIndex
+from precis.python_index.types import IndexObservation, ModuleIndex, RepoIndex
 
-log = logging.getLogger(__name__)
+
+def _signature(path: Path) -> tuple[int, int, int, int, int]:
+    st = path.stat()
+    return st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino
 
 
 @dataclass(slots=True)
 class _CachedFile:
-    """One entry in the per-root cache: parsed module + the mtime we saw."""
-
     module: ModuleIndex
-    mtime_ns: int
+    signature: tuple[int, int, int, int, int]
 
 
 class RepoCache:
-    """Mtime-invalidated cache of `RepoIndex` per root directory.
-
-    `get(root)` is the only public method. First call parses every
-    `.py` file under `root`; subsequent calls re-stat the tree and
-    reparse only the files whose `mtime_ns` changed (or appeared).
-    """
+    """Independent per-root caches; stat checks reuse ASTs without byte scans."""
 
     def __init__(self) -> None:
-        # root_abs_path -> { file_relative_path -> _CachedFile }
         self._cache: dict[Path, dict[str, _CachedFile]] = {}
 
     def get(self, root: Path) -> RepoIndex:
-        """Return a `RepoIndex` for `root`, refreshing stale files."""
         root = root.resolve()
         if not root.is_dir():
+            self.drop(root)
             raise NotADirectoryError(f"not a directory: {root}")
-
+        started = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        root_identity = _signature(root)[3:]
         files_cache = self._cache.setdefault(root, {})
-
-        # Snapshot the current tree.
+        issues: list[str] = []
         current: dict[str, Path] = {}
-        for path in _walk_python_files(root):
-            try:
-                rel = path.relative_to(root).as_posix()
-            except ValueError:  # pragma: no cover — _walk yields under root
-                continue
-            current[rel] = path
-
-        # Evict deleted files.
-        for rel in list(files_cache):
-            if rel not in current:
+        try:
+            for path in _walk_python_files(root):
+                current[path.relative_to(root).as_posix()] = path
+        except OSError as exc:
+            issues.append(
+                f"partial walk: {type(exc).__name__}; retained entries unverified"
+            )
+        if not issues:
+            for rel in files_cache.keys() - current.keys():
                 del files_cache[rel]
 
-        # Add / update.
-        reparsed = 0
+        reparsed = reused = 0
         for rel, path in current.items():
             try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError as e:
-                # Race: file vanished between walk and stat. Drop.
-                log.debug("stat failed for %s: %s", path, e)
-                files_cache.pop(rel, None)
-                continue
-
-            cached = files_cache.get(rel)
-            if cached is not None and cached.mtime_ns == mtime_ns:
-                continue
-
-            try:
+                before = _signature(path)
+                cached = files_cache.get(rel)
+                if cached is not None and cached.signature == before:
+                    reused += 1
+                    continue
                 qualname = _qualname_for_file(path)
-            except ValueError as e:
-                log.warning("skipping %s: %s", path, e)
-                continue
+                for _attempt in range(2):
+                    before = _signature(path)
+                    module = index_module(path, qualname=qualname, file_relative=rel)
+                    after = _signature(path)
+                    if before == after:
+                        files_cache[rel] = _CachedFile(module, after)
+                        reparsed += 1
+                        break
+                else:
+                    files_cache.pop(rel, None)
+                    issues.append(f"{rel}: unstable read; omitted")
+            except (OSError, UnicodeError, ValueError) as exc:
+                files_cache.pop(rel, None)
+                issues.append(f"{rel}: {type(exc).__name__}; omitted")
 
-            module = index_module(path, qualname=qualname, file_relative=rel)
-            files_cache[rel] = _CachedFile(module=module, mtime_ns=mtime_ns)
-            reparsed += 1
-
-        if reparsed:
-            log.info(
-                "reparsed %d of %d files under %s",
+        try:
+            if not root.is_dir() or _signature(root)[3:] != root_identity:
+                raise NotADirectoryError(f"root disappeared or changed: {root}")
+        except OSError:
+            self.drop(root)
+            raise
+        idx = RepoIndex.build(root, [cf.module for cf in files_cache.values()])
+        return replace(
+            idx,
+            observation=IndexObservation(
+                started,
+                datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 reparsed,
-                len(current),
-                root,
-            )
-
-        return RepoIndex.build(
-            root=root,
-            modules=[cf.module for cf in files_cache.values()],
+                reused,
+                tuple(issues),
+            ),
         )
 
     def drop(self, root: Path) -> None:
-        """Forget everything we know about `root`. The next `get()` will
-        do a full reparse. Useful for tests and for agent-initiated
-        reindex commands."""
+        """Forget a root; the next read reparses its files."""
         self._cache.pop(root.resolve(), None)
 
     def known_roots(self) -> list[Path]:
-        """All roots currently held in the cache, in insertion order."""
         return list(self._cache)

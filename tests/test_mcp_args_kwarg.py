@@ -162,7 +162,19 @@ def test_args_none_is_noop(server_runtime: PrecisRuntime) -> None:
     to the no-args code path."""
     with_none = tools_core.get(kind="python", id="demo", view="toc")
     explicit_none = tools_core.get(kind="python", id="demo", view="toc", args=None)
-    assert with_none == explicit_none
+    # Observation times and reparse/reuse counts vary between calls; the
+    # navigation payload and indexed identity must be unchanged by args=None.
+    assert (
+        with_none.partition("\n\nPython content:\n")[2]
+        == explicit_none.partition("\n\nPython content:\n")[2]
+    )
+    assert with_none.splitlines()[0] == explicit_none.splitlines()[0]
+    for prefix in ("Python provenance:", "Indexed Python corpus:"):
+        assert next(
+            line for line in with_none.splitlines() if line.startswith(prefix)
+        ) == next(
+            line for line in explicit_none.splitlines() if line.startswith(prefix)
+        )
     assert "demopkg" in with_none
 
 
@@ -226,3 +238,18 @@ def test_get_without_args_still_works(server_runtime: PrecisRuntime) -> None:
 def test_calc_through_get_tool_unchanged(server_runtime: PrecisRuntime) -> None:
     out = tools_core.get(kind="calc", id="2+3*4")
     assert "14" in out
+
+
+def test_expected_root_crosses_mcp_boundary(server_runtime: PrecisRuntime) -> None:
+    """The identity assertion reaches the handler through generic args."""
+    handler = server_runtime.hub.handler_for("python")
+    assert isinstance(handler, PythonHandler)
+    root = handler.roots["demo"]
+    out = tools_core.get(kind="python", id="demo", args={"expected_root": str(root)})
+    assert not _is_error(out)
+    wrong = tools_core.get(
+        kind="python", id="demo", args={"expected_root": str(root / "other")}
+    )
+    assert _is_error(wrong)
+    assert "root mismatch" in _body(wrong)
+    assert handler.roots == {"demo": root}

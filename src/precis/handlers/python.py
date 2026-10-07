@@ -36,6 +36,12 @@ from precis.handlers import _python_reverse as reverse
 from precis.handlers import _python_runtrace as rtrace
 from precis.handlers import _python_write as write
 from precis.handlers._mode_help import require_mode
+from precis.handlers._python_provenance import (
+    indexed_file,
+    note_file,
+    note_index,
+    with_provenance,
+)
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
@@ -271,10 +277,12 @@ class PythonHandler(Handler):
 
     # ── get ────────────────────────────────────────────────────────
 
+    @with_provenance
     def get(
         self,
         *,
         id: str | int | None = None,
+        expected_root: str | None = None,
         view: str | None = None,
         entry: str | None = None,
         depth: int = 3,
@@ -286,13 +294,18 @@ class PythonHandler(Handler):
         expand_stdlib: bool = False,
         **_kw: Any,
     ) -> Response:
+        if expected_root is not None:
+            if id in (None, "", "/"):
+                raise BadInput("expected_root requires an explicit alias id")
+            self._check_expected_root(_parse_id(str(id)).alias, expected_root)
+
         # Index — no id, or "/" sentinel.
         if id is None or id == "/" or id == "":
             return Response(body=render.render_index(self.roots))
 
         parsed = _parse_id(str(id))
         root = self._resolve_alias(parsed.alias)
-        idx = self.cache.get(root)
+        idx = self._index(parsed.alias, root)
 
         # Validate view eagerly — gives a sharp error with options.
         if view is not None and view not in _SUPPORTED_VIEWS:
@@ -372,11 +385,13 @@ class PythonHandler(Handler):
 
     # ── search ─────────────────────────────────────────────────────
 
+    @with_provenance
     def search(
         self,
         *,
         q: str | None = None,
         scope: str | None = None,
+        expected_root: str | None = None,
         page_size: int = 10,
         mode: str | None = None,
         **_kw: Any,
@@ -404,6 +419,11 @@ class PythonHandler(Handler):
                 next="search(kind='python', q='your query')",
             )
 
+        if expected_root is not None:
+            if not scope:
+                raise BadInput("expected_root requires an explicit alias scope")
+            alias = scope.split("::", 1)[0].split("/", 1)[0]
+            self._check_expected_root(alias, expected_root)
         roots = self._roots_for_scope(scope)
         if not roots:
             raise NotFound(
@@ -423,7 +443,7 @@ class PythonHandler(Handler):
 
         hits: list[tuple[float, str, Symbol]] = []
         for alias, root in roots.items():
-            idx = self.cache.get(root)
+            idx = self._index(alias, root)
             for mod in idx.modules.values():
                 if scope_file and mod.file != scope_file:
                     continue
@@ -488,7 +508,7 @@ class PythonHandler(Handler):
                 body += (
                     "\n\nNote: the repo for this symbol may not be "
                     "configured in PRECIS_PYTHON_ROOTS — ask the user to "
-                    "add an alias=path entry."
+                    "add an alias:/absolute/root entry."
                 )
             return Response(body=body)
 
@@ -505,6 +525,9 @@ class PythonHandler(Handler):
             )
         ]
         for score, alias, sym in hits:
+            indexed = indexed_file(alias, sym.file)
+            if indexed is not None:
+                note_file(indexed[0], indexed[1])
             handle = f"{alias}::{sym.qualname}"
             sig = sym.signature or sym.kind
             lines.append(
@@ -1168,6 +1191,28 @@ class PythonHandler(Handler):
 
     # ── helpers ────────────────────────────────────────────────────
 
+    def _check_expected_root(self, alias: str, expected_root: str) -> None:
+        root = self._resolve_alias(alias)
+        if root != Path(expected_root).expanduser().resolve():
+            raise BadInput(
+                f"Python root mismatch: alias={alias!r}, configured={str(root)!r}, "
+                f"expected={expected_root!r}; available aliases={list(self.roots)!r}",
+                next="Configure an authorized local server with PRECIS_PYTHON_ROOTS=alias:/absolute/root; "
+                "expected_root grants no access or registration",
+            )
+
+    def _index(self, alias: str, root: Path) -> RepoIndex:
+        try:
+            idx = self.cache.get(root)
+        except OSError as exc:
+            raise NotFound(
+                f"Python root {alias!r} unavailable: {root}; index freshness unknown "
+                f"({type(exc).__name__})",
+                next="get(kind='python') to inspect configured roots",
+            ) from exc
+        note_index(alias, idx)
+        return idx
+
     def _resolve_alias(self, alias: str) -> Path:
         if alias not in self.roots:
             raise NotFound(
@@ -1199,9 +1244,10 @@ class PythonHandler(Handler):
         idx,
         view: str | None,
     ) -> Response:
+        note_file(idx, mod)
         # Line-range selector → source slice (overrides view).
         if parsed.start_line is not None:
-            text = (idx.root / mod.file).read_text(encoding="utf-8")
+            text = mod.source or ""
             end_line = parsed.end_line or parsed.start_line
             total_lines = len(text.splitlines())
             # A range that doesn't touch the file at all (start past EOF,
@@ -1237,7 +1283,7 @@ class PythonHandler(Handler):
 
         # File-level views.
         if view == "source":
-            text = (idx.root / mod.file).read_text(encoding="utf-8")
+            text = mod.source or ""
             return Response(
                 body=render.render_source(
                     text,
@@ -1265,8 +1311,11 @@ class PythonHandler(Handler):
                 f"scope={alias!r})",
             )
 
+        mod = idx.file(sym.file)
+        assert mod is not None
+        note_file(idx, mod)
         if view == "source":
-            text = (idx.root / sym.file).read_text(encoding="utf-8")
+            text = mod.source or ""
             return Response(
                 body=render.render_source(
                     text,
@@ -1356,7 +1405,7 @@ class PythonHandler(Handler):
         other_repos: dict[str, RepoIndex] = {}
         if cross_repo:
             other_repos = {
-                a: self.cache.get(p) for a, p in self.roots.items() if a != parsed.alias
+                a: self._index(a, p) for a, p in self.roots.items() if a != parsed.alias
             }
 
         # Console-script resolution (MCP critic round 2): if ``entry``
@@ -1478,6 +1527,7 @@ class PythonHandler(Handler):
             for alias, other in self.roots.items():
                 if alias == parsed.alias:
                     continue
+                self._index(alias, other)
                 syspath_entries.append(other)
                 syspath_entries.append(other.parent)
 

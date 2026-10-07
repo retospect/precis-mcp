@@ -124,6 +124,10 @@ class ModuleIndex:
     parse_error: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     calls: tuple[CallEdge, ...] = ()
+    # Exact disk bytes and decoded text captured together, unlike normalized sha256.
+    bytes_sha256: str | None = None
+    indexed_at: str | None = None
+    source: str | None = field(default=None, repr=False)
 
     @property
     def module_symbol(self) -> Symbol:
@@ -136,6 +140,17 @@ class ModuleIndex:
             if s.qualname == qualname:
                 return s
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexObservation:
+    """A non-atomic stat walk; reuse does not revalidate file content."""
+
+    started_at: str
+    finished_at: str
+    reparsed: int
+    reused: int
+    issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +169,8 @@ class RepoIndex:
     root: Path
     modules: dict[str, ModuleIndex] = field(default_factory=dict)
     _by_file: dict[str, ModuleIndex] = field(default_factory=dict, repr=False)
+
+    observation: IndexObservation | None = None
 
     @classmethod
     def build(cls, root: Path, modules: list[ModuleIndex]) -> RepoIndex:

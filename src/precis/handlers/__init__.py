@@ -5,6 +5,11 @@ declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
 register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+Python-only navigation provenance precedes content so pagination retains
+checkout identity. Call-local collection covers empty searches and cross-root
+views; Git observations do not attest indexed bytes. Entry metadata and runtrace
+execution remain separate. Root inventory does not index; authorization stays
+in ``PRECIS_PYTHON_ROOTS``.
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
 

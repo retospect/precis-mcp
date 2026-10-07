@@ -26,6 +26,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover — we pin >=3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
+from precis.handlers._python_provenance import note_external
 from precis.python_index import RepoIndex
 
 log = logging.getLogger(__name__)
@@ -94,17 +95,14 @@ def find_entries(idx: RepoIndex) -> EntriesReport:
     if pyproject_path is not None:
         try:
             scripts = list(_load_console_scripts(pyproject_path, idx))
-        except (OSError, tomllib.TOMLDecodeError) as e:
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as e:
             log.warning("failed reading %s: %s", pyproject_path, e)
 
     guards: list[MainGuard] = []
     for mod in idx.modules.values():
         if mod.parse_error is not None:
             continue
-        try:
-            text = (idx.root / mod.file).read_text(encoding="utf-8")
-        except OSError:
-            continue
+        text = mod.source or ""
         for line, summary in _find_main_guards(text):
             guards.append(MainGuard(file=mod.file, line=line, body_summary=summary))
 
@@ -137,7 +135,13 @@ def _load_console_scripts(pyproject: Path, idx: RepoIndex):
     to resolve `module:attr` to a known symbol in `idx` so the report
     can show file:line.
     """
-    raw = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    try:
+        source_bytes = pyproject.read_bytes()
+    except OSError:
+        note_external(pyproject, None, "unavailable")
+        raise
+    note_external(pyproject, source_bytes, "separately read; non-atomic")
+    raw = tomllib.loads(source_bytes.decode("utf-8"))
     project = raw.get("project") or {}
 
     # [project.scripts]

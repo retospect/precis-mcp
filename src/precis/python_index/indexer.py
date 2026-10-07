@@ -26,6 +26,7 @@ import ast
 import hashlib
 import logging
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from precis.python_index.types import (
@@ -118,7 +119,10 @@ def index_module(
     each Symbol's `file` field — defaults to the file's name if not
     given (useful for ad-hoc tests against a single file).
     """
-    source = path.read_text(encoding="utf-8")
+    raw = path.read_bytes()
+    indexed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    source = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    bytes_sha = hashlib.sha256(raw).hexdigest()
     sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
     rel = file_relative if file_relative is not None else path.name
 
@@ -143,6 +147,9 @@ def index_module(
             qualname=qualname,
             file=rel,
             sha256=sha,
+            bytes_sha256=bytes_sha,
+            indexed_at=indexed_at,
+            source=source,
             symbols=(module_sym,),
             parse_error=f"{type(e).__name__}: {e}",
         )
@@ -176,6 +183,9 @@ def index_module(
         qualname=qualname,
         file=rel,
         sha256=sha,
+        bytes_sha256=bytes_sha,
+        indexed_at=indexed_at,
+        source=source,
         symbols=(module_sym, *visitor.symbols),
         imports=imports,
         calls=tuple(visitor.calls),

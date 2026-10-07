@@ -144,7 +144,7 @@ def test_pattern_async(handler: PythonHandler) -> None:
 def test_pattern_decorator_and_conjunction(handler: PythonHandler) -> None:
     assert "r::pkg.core.Box.size" in handler.search(q="@property", mode="pattern").body
     both = handler.search(q="async @functools\\.cache", mode="pattern").body
-    assert "r::pkg.core.Box.fetch" in both and "serve" not in both
+    assert "r::pkg.core.Box.fetch" in both and "r::pkg.core.serve" not in both
 
 
 def test_pattern_regex_on_signature(handler: PythonHandler) -> None:

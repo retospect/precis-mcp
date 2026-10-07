@@ -292,7 +292,9 @@ def test_get_file_source_line_range(handler: PythonHandler) -> None:
     out = handler.get(id="r/pkg/m.py~L1-L3")
     assert "r/pkg/m.py:1-3" in out.body
     # Only the first 3 lines of the file should be in there.
-    body_after_header = out.body.split("\n", 3)[-1]
+    content = out.body.split("\n\nPython content:\n", 1)[-1]
+    source_body = out.body.splitlines()[0] + "\n" + content
+    body_after_header = source_body.split("\n", 3)[-1]
     assert body_after_header.count("\n") <= 4  # header + 3 lines + trailing nl
 
 
