@@ -277,6 +277,26 @@ def test_locked_sha_reads_the_pin_uv_already_records(tmp_path: Path) -> None:
     assert _sh(f'autocatpath_locked_sha "{lock}"').stdout == "b" * 40
 
 
+def test_locked_sha_reads_a_rev_pinned_source(tmp_path: Path) -> None:
+    """Since the v0.23.0 pin (2026-10-07) `tool.uv.sources` names a release
+    ``rev`` rather than ``branch = "main"``, so uv.lock's source line reads
+    ``catpath?rev=<sha>#<sha>``. The reader keys on the ``#<sha>"`` tail,
+    not the query string, so both forms resolve to the same commit."""
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        _LOCK_OTHER + "\n[[package]]\n"
+        'name = "autocatpath"\n'
+        'version = "0.23.0"\n'
+        'source = { git = "https://github.com/retospect/catpath?rev='
+        + "c" * 40
+        + "#"
+        + "c" * 40
+        + '" }\n',
+        encoding="utf-8",
+    )
+    assert _sh(f'autocatpath_locked_sha "{lock}"').stdout == "c" * 40
+
+
 def test_locked_sha_is_anchored_to_the_autocatpath_stanza(tmp_path: Path) -> None:
     """uv.lock has a `source = { git = ... }` line for EVERY git dependency, so
     a plain grep would happily return whichever one came first — here, a

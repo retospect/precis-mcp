@@ -383,12 +383,13 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
 # entry points and `precis_pathway`'s `import autocatpath` resolves against this
 # install. This is the dev mirror of cluster `roles/autocatpath` (which installs
 # `precis-mcp[catalyst-gpu]` → autocatpath[mace] on spark).
-# Tracks autocatpath `main`. Docker keys this RUN's cache on command TEXT, not the
-# remote's HEAD, so a bare `@main` silently baked a stale autocatpath and never
-# re-fetched on `--rebuild` (this is how the emit-side `_summarize` went missing
-# from the dev image). `scripts/build-image` resolves autocatpath's current main
-# HEAD on the host and threads it in as AUTOCATPATH_REV, so this layer busts (and
-# re-fetches) exactly when autocatpath main advances — no hash committed here, no
+# Tracks the commit uv.lock pins (the cluster wheelhouse builds from the same
+# stanza, so dev and prod run one engine token). Docker keys this RUN's cache on
+# command TEXT, not the remote's HEAD, so a bare `@main` silently baked a stale
+# autocatpath and never re-fetched on `--rebuild` (this is how the emit-side
+# `_summarize` went missing from the dev image). `scripts/build-image` reads the
+# lock's sha on the host and threads it in as AUTOCATPATH_REV, so this layer
+# busts (and re-fetches) exactly when the pin moves — no hash committed here, no
 # manual bump. A bare `docker build` with no arg falls back to `main`. Mirror of
 # cluster `roles/autocatpath` (installs `autocatpath[precis,mace]` on spark).
 ARG AUTOCATPATH_REV=main

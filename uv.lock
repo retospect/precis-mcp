@@ -385,8 +385,8 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.22.0"
-source = { git = "https://github.com/retospect/catpath?branch=main#973491d4a9b133bcb4c75cb2127a9644f38f94dd" }
+version = "0.23.0"
+source = { git = "https://github.com/retospect/catpath?rev=47357857f8df06eb0dad73fe9dbe3a4ea1cd7faa#47357857f8df06eb0dad73fe9dbe3a4ea1cd7faa" }
 dependencies = [
     { name = "ase" },
     { name = "matplotlib" },
@@ -4023,8 +4023,8 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
     { name = "ase", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
-    { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?branch=main" },
-    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?branch=main" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?rev=47357857f8df06eb0dad73fe9dbe3a4ea1cd7faa" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?rev=47357857f8df06eb0dad73fe9dbe3a4ea1cd7faa" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },

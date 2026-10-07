@@ -72,12 +72,21 @@ BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
 BUILD_USER="${USER:-unknown}"
 
-# Resolve autocatpath's current main HEAD on the host so the dev image's autocatpath
-# layer busts (and re-fetches) exactly when autocatpath main advances — Docker keys
-# that layer on command text, so a bare `@main` would silently stay stale. See
-# the AUTOCATPATH_REV ARG in docker/Dockerfile. Falls back to the `main` ref when
-# the host is offline (uv still resolves it, just without the cache-bust).
-AUTOCATPATH_REV="$(git ls-remote https://github.com/retospect/catpath main 2>/dev/null | cut -f1)"
+# Build the dev image's autocatpath layer from the commit uv.lock pins — the
+# same engine the cluster wheelhouse is built from (scripts/deploy reads the
+# same stanza), so a dev container and a prod worker key margins by one
+# engine token. Catpath main runs ahead of its tags (2026-10-07: main at
+# 0.24.0 with energy-moving corrections on by default, lock at v0.23.0), so
+# resolving main's HEAD here would bake an engine the lock never took. Docker
+# keys the layer on command text, so threading the sha also busts the cache
+# exactly when the pin moves. Falls back to main's HEAD, then the bare `main`
+# ref, when the lock has no git-sourced autocatpath (an index-resolved pin).
+# shellcheck source=scripts/lib/autocatpath-wheel.sh
+source scripts/lib/autocatpath-wheel.sh
+AUTOCATPATH_REV="$(autocatpath_locked_sha uv.lock 2>/dev/null || true)"
+if [[ -z "$AUTOCATPATH_REV" ]]; then
+    AUTOCATPATH_REV="$(git ls-remote https://github.com/retospect/catpath main 2>/dev/null | cut -f1)"
+fi
 AUTOCATPATH_REV="${AUTOCATPATH_REV:-main}"
 
 # The catpath repo is private: the in-build `git fetch` needs a token the

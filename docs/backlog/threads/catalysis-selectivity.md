@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When the catpath 0.23.0 release SHA arrives, run `uv lock -P autocatpath`, then check the engine-version guard.
-- **Blocked by:** Catpath release SHA; items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Resolve chemistry’s seed-remint hold question before a tick.
+- **Next:** Surface-Pourbaix slices 1–2 (anchor inventory + inner CHE sweep with error bands; `surface-pourbaix-staircase-optimizer.md`), then the Pd-hydride precis-side fixes (item 2). The catpath lock is done: 0.23.0, rev-pinned (2026-10-07).
+- **Blocked by:** Items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Chemistry's seed re-mint is ruled NOT a re-run (2026-10-07). Catpath 0.24.0 (gas + Pd H* corrections ON by default) waits on Reto's ruling before it is locked.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** Use [the latest handoff and item holds](#thread-context); engine-version checks must match the released engine. No re-run is authorized by this entry point.
 - **Worktree:** `catalysis-selectivity`
@@ -77,6 +77,41 @@ only; everything this thread built is on main and was live by round 4.
   The holds of items 23/25 (no re-runs, no hydride pilot) stay until
   Reto lifts them.
 
+**Resume (2026-10-07, released from the Codex-merge hold):**
+- **Catpath 0.23.0 is locked**, rev-pinned (`tool.uv.sources` names the
+  v0.23.0 commit 4735785, not `branch = "main"`); engine token 0.23.0.
+  Catpath main already carries 0.23.1 (NH₂OH gas entry) and 0.24.0 (the
+  item-19 gas and Pd H* corrections, ON by default, recorded under
+  `results.corrections`). 0.24.0 is NOT taken: it moves every level, so
+  it waits on Reto's ruling; switch the `rev` and re-lock when he rules.
+- **0.23.0 margins are not comparable with pw455722's** (0.22.0): the
+  coadsorbed network grew from 50 to 54 states and 34 to 37 steps and
+  carries a new `network_digest`. `frontier.same_network_basis` already
+  keeps them apart (version equality first), so the engine-version guard
+  needs no change for 0.23.0; when 0.24.0 lands, the corrections record
+  joins the basis (item 24's "correction-set id").
+- `scripts/build-image` now builds the dev image's autocatpath layer from
+  the lock's sha (it resolved catpath main's HEAD before, which would have
+  baked 0.24.0 under a 0.23.0 lock); the cluster wheelhouse already built
+  from the lock.
+- **Coverage anchors (surface-Pourbaix slice 1 input):** none exist as
+  refs. Prod (read-only, 2026-10-07): 376 structures on qu164903, 0
+  β-PdH or hydride structures anywhere, 0 explicit O*/OH* coverage
+  structures, no coverage/anchor meta keys. The 257 harvested candidates
+  each embed one pathway whose nodes hold single-adsorbate energies (one
+  per supercell, n=1, 0.22.0 engine, no corrections). catpath's
+  `autocatpath coverage` scan (γ(θ) per adsorbate per facet, MARI pick)
+  is the generator, but precis never calls it (`run_kinetics` sets
+  `mari=None`) and it builds its own clean slab from element+facet,
+  ignoring the prebuilt-slab side channel — doped slabs and β-PdH need a
+  catpath brief before their anchors can be scanned.
+- Surface-Pourbaix "file only" is lifted (Reto via chat-interface,
+  2026-10-07): slices 1–2 are this thread's next build, after the lock.
+  Rulings: q6 discrete slabs, q7 (111) only; slice 6 gets a quest-side
+  "which slab model to trust" representation; q2/q3 unruled.
+  `PRECIS_MP_API_KEY` is in the overlay; Pourbaix must not block on the
+  MP import.
+
 **Worktree:** `catalysis-selectivity`
 **Allocation decision (historical):** yes — Reto, 2026-10-02 ("high up").
 
@@ -87,9 +122,9 @@ only; everything this thread built is on main and was live by round 4.
    hydrogenation, N₂ and N₂O are in the network; every ranking on
    qu164903 inherits the error. Slice 1 done (parked is incomplete);
    screening stays parked (R2), and the like-with-like network-basis
-   ranking has shipped. Left: catpath 0.23.0 (NO+NO coupling, NH₂OH
-   scission, template-level `network_digest`) → `uv lock -P autocatpath`
-   → the neb-tier re-run of pw455722's candidate (steps 5–6).
+   ranking has shipped. Catpath 0.23.0 (NO+NO coupling, NH₂OH scission,
+   template-level `network_digest`) is locked (2026-10-07). Left: the
+   neb-tier re-run of pw455722's candidate (steps 5–6), held by item 25.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
    Pd(111). Stages 0–2 done. The pilot pair is built

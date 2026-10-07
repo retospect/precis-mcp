@@ -14,8 +14,11 @@ channel is a wheelhouse seeded by `scripts/deploy` (gr263082). General deploy:
    Commit the lock sync too. Lock-only commits past the precis pin are fine —
    the provenance check diffs only `src` + `pyproject.toml`.
 3. In precis: bump the `autocatpath>=` floor (2 places: the `catalyst` and
-   `catalyst-gpu` extras) and run `uv lock -P autocatpath` (it resolves
-   catpath's **remote** main — push first). Ship via `/go`.
+   `catalyst-gpu` extras), set `rev` in `[tool.uv.sources]` to the release
+   commit (the source is rev-pinned since 2026-10-07 — catpath main runs
+   ahead of its tags, and a `branch = "main"` source would re-lock onto an
+   untagged, energy-moving bump), then run `uv lock -P autocatpath` (it
+   resolves the **remote** commit — push first). Ship via `/go`.
 4. **Deploy needs `PRECIS_CATPATH_DIR=<catpath checkout>`** — the default
    `~/catpath` does not exist on the controller. With the floor bumped,
    `scripts/deploy` preflight builds the new wheel from that checkout
