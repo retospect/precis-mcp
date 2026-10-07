@@ -10,6 +10,17 @@ is the one rented kernel, and it is no longer the critical path: the
 in-house realizer + maze router produce the copper the gerbers are cut
 from.
 
+Route warm starts use Hungarian Manhattan-distance assignment from connected
+fixed-copper via terminals to admissible channel pads. Replay with In2.Cu/B.Cu
+routed 51/55 versus the radial start's 42/55 (mx456/mx457, td472840): fewer
+crossings alone did not predict routing yield. `warm_start="radial"` retains
+that alternative; incomplete terminal geometry falls back per group. A shorter
+Euclidean assignment is accepted only at the same Manhattan optimum (four-ULP
+sum tolerance): this preserves the older EWOD routing floor without losing
+the replay gain. Coordinate row ordering was refused after it fell to49/55. The
+anneal's crossing move and authored-baseline swap persistence stay unchanged;
+`last_route.warm_start` records each group's method and distance in mm.
+
 Negotiated congestion remains a per-route opt-in, never a global default.
 Its handler and realizer supported the knob before the job params contract
 registered it; that omission refused every advertised request at enqueue

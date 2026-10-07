@@ -3,11 +3,11 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Reto's ruling on [pcb-dogfood-6-routing-levers](../pcb-dogfood-6-routing-levers.md) (Do next 0; measured 2026-10-07 on the replay fixture: distance-cost channel assignment before routing = 51/55 with In2.Cu open, against 42 shipped; recommendation: ship that assignment as the route job's warm start, then plan the top/bottom plaza rows' exits in the template). Until he rules, [pcb-easyeda-round-trip](pcb-easyeda-round-trip.md) resumes at slice 2f (2c/2d/2e landed 2026-10-07 as 660a2eccf and a5534de1c, deploying with round 6, bb244e093). Session stopped 2026-10-07 on Reto's order after round 6; handed off ~14:05Z to the melchior Codex fleet (Reto via effer-hex): everything is on origin/main (last land 396e9bdc4, nothing unpushed); the probes (pin swap, lane capacity, distance assignment, negotiation sweep, pour fixture) are gitignored scratch in the Mac pcb worktree, re-derived from the routing-levers note's probe-method section; Reto's real .epro2 fixtures stay local (PRECIS_EPRO_FIXTURE). Layer lever dogfooded on prod 2026-10-07 (detail under Do next 4 and [Boards on prod](#boards-on-prod)): with In2.Cu opened, job 472111 (`negotiate=100`) = 45/55 with 29 vias; the 10 residual failures sit in rows 5–7 and plateau at ~24 nets in conflict, so the next lever is a third routable layer or escape order/placement, not iterations. Negotiated congestion on the B.Cu lock stays measured dead; arm B (job 470129) not repeated. R14–R16 shipped (prod 8.35.15), no renewed gate pending; R13 preview native dogfood PASS complete.
-- **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
+- **Next:** Driver rotation on snapshot replay, recommendation 2 of [pcb-dogfood-6-routing-levers](../pcb-dogfood-6-routing-levers.md), after the distance-assignment slice lands. Reto authorized distance, rotation, then lane template on 2026-10-07. Route warm start now defaults to Hungarian Manhattan via→pad distance; `warm_start="radial"` retains the prior path, and groups without connected via terminals fall back to radial. Fixture-only hard routing reproduces **51/55 versus 42/55** on In2.Cu+B.Cu, **31/55 versus 22/55** on B.Cu. Durable measures **mx456/mx457** quantify todo **td472840**; no real-board or deployment claim. EasyEDA round trip stays parked; gr467885 migration scope excluded; Nano readiness docs fold separately authorized. Original Mac probes remain scratch; re-derive from the remaining routing-levers method. Historical R14–R16 handoffs below remain historical.
+- **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service work; coordinator owns deployment. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
-- **Worktree:** Source commands in isolated `pcb-r14-route-gate-repair` at frozen53e6cb255, branch `work/pcb/r14-route-gate-repair`; original `pcb-pad-retention`/`codex-pcb` branches/fixtures/scratch and pane registration retained. Owner `pcb`, thread `01a108d5-fdb2-7913-a2e2-ee7a08e58d40`, pane `%23` (window6).
+- **Worktree:** Codex slice `work/pcb/routing-warm-start`, base origin/main47530add0, in session `codex-pcb/.scratch/routing-warm-start`; original dirty bootstrap and all older branches/scratch preserved. Owner pcb, window6. Native /src is separate from the task tree; local source checks and dev-DB replay only.
 - **Builds:** Not estimated here; use the owning slice estimate.
 - **Detail:** fleet-state `inbox/pcb-r14-route-gate-repair-ready.md/.json`, then `inbox/pcb-snapshot-ready.md/.json`, `inbox/pcb-escape-diagnosis.md/.json`, then `inbox/pcb-escape-ready.md`. [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
@@ -90,16 +90,14 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Do next
 
-0. **backlog/pcb-dogfood-6-routing-levers.md** — Reto's 2026-10-07 brief
-   ("far from optimal: investigate improved routing/placement/pinswap
-   mechanisms"), measured on the replay fixture: a distance-cost
-   (Manhattan via→pin) Hungarian channel assignment before routing takes
-   dogfood-6 from 42 to **51/55** with In2.Cu open and from 22 to 31 on
-   the B.Cu lock, where the shipped crossing-only swap gains 0–3; lane
-   capacity is not the wall (60 vertical / 36 horizontal lanes per layer
-   for 55 nets), the 0.15 mm jam between the top/bottom plaza rows and the
-   HV507's pad rows is. Five numbered results and a recommendation for
-   Reto to rule on are in the item; build nothing until he does.
+0. **backlog/pcb-dogfood-6-routing-levers.md** — Driver rotation next
+   (Reto-authorized recommendation 2), replay only, after the distance warm
+   start lands. With the same distance assignment, compare current 270°
+   against 0°/180° at the same origin and bottom side; DRC each arm and
+   retain routed/failed nets, vias and channel distance. **td472840** owns
+   this follow-up; **mx456/mx457** record 51/55 versus 42 on In2.Cu+B.Cu.
+   Lane template follows rotation (Reto-authorized recommendation3)
+   at this rank. No real-board routing or fixtures as dogfood/look items.
 0a. **backlog/pcb-silk-refdes-row-gets-no-shared-side.md**: Reto's own
    board (heater-base-test, 2026-10-02). Both asks are fixed: label spots
    are chosen in the board frame, and an aligned row or column of
@@ -177,6 +175,11 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    backlog/pcb-tightest-connected-part.md is the next item that will trip
    over it.
 4. **dogfood-6's 25 failed escapes are not corridor starvation.**
+   New replay evidence (2026-10-07, td472840, mx456/mx457): the route warm
+   start's connected-via distance assignment yields 51/55 on In2.Cu+B.Cu
+   (radial42/55), 31/55 on B.Cu (radial22/55), with the same fixed poses,
+   copper, default hard passes and no negotiation. Geometric routed DRC
+   remains clean; this is snapshot evidence, not a new prod route.
    Measured 2026-10-02: `view='congestion'` reports 0 over-capacity gaps;
    the failures split 8 `congestion` / 17 `no_path`. So
    backlog/pcb-placer-starves-the-escape-corridor.md lost its only

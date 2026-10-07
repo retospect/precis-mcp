@@ -412,6 +412,55 @@ def propose_reassignment(
     return tuple(pairs)
 
 
+def propose_distance_assignment(
+    ir: PcbIR, group: PinSwapGroup, far_by_pin: dict[int, Point]
+) -> tuple[tuple[tuple[int, int], ...], float] | None:
+    """Match nets to pads by Manhattan distance to their fixed-island vias.
+
+    The caller resolves actual connected terminals, never electrode centroids
+    or a generator ledger. Incomplete groups fall back to radial assignment.
+    An empty permutation is a valid optimum, distinct from unavailable geometry.
+    """
+    pins = [p for p in group.pins if p not in group.excluded]
+    if len(pins) < 2 or any(
+        p not in far_by_pin or p not in group.offsets for p in pins
+    ):
+        return None
+    x, y = float(ir.inst_x[group.instance]), float(ir.inst_y[group.instance])
+    if not math.isfinite(x) or not math.isfinite(y):
+        return None
+    near = [_pin_pos(x, y, group, p) for p in pins]
+    # Stable rows make tied optima independent of a stored prior swap.
+    sources = sorted(pins, key=lambda p: str(ir.net_name[int(ir.pin_net[p])]))
+    cost = [
+        [abs(far_by_pin[p][0] - nx) + abs(far_by_pin[p][1] - ny) for nx, ny in near]
+        for p in sources
+    ]
+    assign = _hungarian(cost)
+    # Prefer shorter straight-line chords only among Manhattan optima.
+    # An independent Euclidean solve is a tie heuristic, not a claim of
+    # lexicographic optimality; retain the primary solve when it costs more.
+    chords = [
+        [math.hypot(far_by_pin[p][0] - nx, far_by_pin[p][1] - ny) for nx, ny in near]
+        for p in sources
+    ]
+    alternate = _hungarian(chords)
+    optimum = math.fsum(cost[i][j] for i, j in enumerate(assign))
+    alternate_cost = math.fsum(cost[i][j] for i, j in enumerate(alternate))
+    if abs(alternate_cost - optimum) <= 4 * math.ulp(optimum) and math.fsum(
+        chords[i][j] for i, j in enumerate(alternate)
+    ) < math.fsum(chords[i][j] for i, j in enumerate(assign)):
+        assign = alternate
+    targets = {p: pins[assign[i]] for i, p in enumerate(sources)}
+    index = {p: i for i, p in enumerate(pins)}
+    permutation = [index[targets[p]] for p in pins]
+    pairs: list[tuple[int, int]] = []
+    for cycle in _cycles(permutation):
+        pivot = pins[cycle[0]]
+        pairs.extend((pivot, pins[i]) for i in cycle[1:])
+    return tuple(pairs), math.fsum(cost[i][j] for i, j in enumerate(assign))
+
+
 def propose_radial_assignment(
     ir: PcbIR, group: PinSwapGroup
 ) -> tuple[tuple[int, int], ...] | None:

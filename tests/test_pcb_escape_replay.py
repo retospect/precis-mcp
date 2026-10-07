@@ -2,17 +2,30 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import math
+from dataclasses import asdict, replace
+from itertools import combinations, permutations
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
-from precis.pcb import realize, session
+from precis.dispatch import Hub
+from precis.errors import BadInput
+from precis.handlers.pcb import PcbHandler
+from precis.pcb import pinswap, realize, session
 from precis.pcb.capabilities import capability_for
 from precis.pcb.drc import process_for_stackup
 from precis.pcb.snapshot import load_snapshot, read_snapshot
-from precis.workers.job_types.pcb_route import _graph_net_rules, _graph_net_voltages
+from precis.workers.job_types import pcb_route
+from precis.workers.job_types.pcb_route import (
+    _apply_pin_swap_warm_start,
+    _graph_net_rules,
+    _graph_net_voltages,
+    _resolve_pin_swap_groups,
+)
 
 
 def _hydrate(store):
@@ -51,7 +64,9 @@ def _failed(ir, result):
     return {str(ir.net_name[int(ir.seg_net[s])]) for s in result.unrouted}
 
 
-def _assert_legal(ir, graph, features, footprints, fixed, config, result):
+def _assert_legal(
+    ir, graph, features, footprints, fixed, config, result, layers=("B.Cu",)
+):
     findings = session.routed_drc_findings(
         ir,
         result,
@@ -63,7 +78,176 @@ def _assert_legal(ir, graph, features, footprints, fixed, config, result):
         net_voltages=_graph_net_voltages(graph),
     )
     assert not [f for f in findings if f.severity == "error"]
-    assert all(ir.stackup[t.layer]["name"] == "B.Cu" for t in result.tracks)
+    assert all(ir.stackup[t.layer]["name"] in layers for t in result.tracks)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("open_inner", [False, True])
+@pytest.mark.parametrize("method", ["distance", "radial"])
+def test_connected_via_channel_assignment_replay(store, open_inner, method):
+    ir, graph, features, footprints, fixed, config = _hydrate(store)
+    groups = _resolve_pin_swap_groups(ir, graph, [])
+    assert len(groups) == 1
+    report = _apply_pin_swap_warm_start(ir, groups, footprints, fixed, method)
+    assert report[0]["method"] == method
+    if method == "distance":
+        assert report[0]["distance_mm"] > 0
+        before = ir.pin_net.copy()
+        repeated = _apply_pin_swap_warm_start(ir, groups, footprints, fixed)
+        assert (ir.pin_net == before).all()
+        assert repeated == report
+    else:
+        assert report[0]["distance_mm"] is None
+    layers: tuple[str, ...] = ("B.Cu",)
+    if open_inner:
+        inner = next(
+            i for i, layer in enumerate(ir.stackup) if layer["name"] == "In2.Cu"
+        )
+        ir.stackup[inner] = {"name": "In2.Cu", "role": "signal", "routable": True}
+        config.class_rules["ewod_ARR1_escape"]["layers"] = ["In2.Cu", "B.Cu"]
+        layers = ("In2.Cu", "B.Cu")
+    result = realize.realize(
+        ir, config=config, footprints=footprints, fixed_copper=fixed
+    )
+    expected = {
+        ("distance", False): 31,
+        ("distance", True): 51,
+        ("radial", False): 22,
+        ("radial", True): 42,
+    }
+    assert 55 - len(_failed(ir, result)) == expected[method, open_inner]
+    _assert_legal(ir, graph, features, footprints, fixed, config, result, layers)
+
+
+@pytest.mark.parametrize("tied", [False, True])
+def test_distance_assignment_preserves_primary_optimum_replay(store, monkeypatch, tied):
+    ir, graph, _, footprints, fixed, _ = _hydrate(store)
+    group = _resolve_pin_swap_groups(ir, graph, [])[0]
+    far = {}
+
+    def capture(_ir, _group, terminals):
+        far.update(terminals)
+        return (), 0.0
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pinswap, "propose_distance_assignment", capture)
+        _apply_pin_swap_warm_start(ir, (group,), footprints, fixed)
+    x, y = float(ir.inst_x[group.instance]), float(ir.inst_y[group.instance])
+    orders = list(permutations(range(3)))
+    # Exhaustive three-channel subsets of the replay's actual pads and vias
+    # supply both a valid chord tie-break and a tempting higher-cost alternate.
+    for subset in combinations(group.pins, 3):
+        sources = sorted(subset, key=lambda p: str(ir.net_name[int(ir.pin_net[p])]))
+        near = [pinswap._pin_pos(x, y, group, p) for p in subset]
+        manhattan = [
+            [abs(far[p][0] - nx) + abs(far[p][1] - ny) for nx, ny in near]
+            for p in sources
+        ]
+        chords = [
+            [math.hypot(far[p][0] - nx, far[p][1] - ny) for nx, ny in near]
+            for p in sources
+        ]
+        totals = [
+            (
+                math.fsum(manhattan[i][j] for i, j in enumerate(order)),
+                math.fsum(chords[i][j] for i, j in enumerate(order)),
+            )
+            for order in orders
+        ]
+        primary = min(cost for cost, _ in totals)
+        alternate = min(range(len(orders)), key=lambda i: totals[i][1])
+        alternate_cost, alternate_chord = totals[alternate]
+        is_tied = abs(alternate_cost - primary) <= 4 * math.ulp(primary)
+        initial = pinswap._hungarian(manhattan)
+        initial_chord = math.fsum(chords[i][j] for i, j in enumerate(initial))
+        if is_tied != tied or alternate_chord >= initial_chord:
+            continue
+        small = replace(group, pins=subset)
+        proposal = pinswap.propose_distance_assignment(ir, small, far)
+        assert proposal is not None
+        swaps, reported = proposal
+        original = {int(ir.pin_net[p]): i for i, p in enumerate(sources)}
+        for a, b in swaps:
+            ir.swap_pins(a, b)
+        actual = [0] * 3
+        for j, pin in enumerate(subset):
+            actual[original[int(ir.pin_net[pin])]] = j
+        cost = math.fsum(manhattan[i][j] for i, j in enumerate(actual))
+        assert cost == pytest.approx(primary, rel=0, abs=4 * math.ulp(primary))
+        assert reported == cost
+        if tied:
+            assert math.fsum(
+                chords[i][j] for i, j in enumerate(actual)
+            ) == pytest.approx(alternate_chord)
+        else:
+            assert alternate_cost > cost
+        return
+    pytest.fail("replay lacks the requested Manhattan/chord trade-off")
+
+
+def test_distance_warm_start_falls_back_without_connected_vias(store):
+    ir, graph, _, footprints, _, _ = _hydrate(store)
+    groups = _resolve_pin_swap_groups(ir, graph, [])
+    before = ir.pin_net.copy()
+    report = _apply_pin_swap_warm_start(ir, groups, footprints, [])
+    assert report == [
+        {"refdes": "ARR1_SINK_0", "method": "radial", "distance_mm": None}
+    ]
+    # The replay's stored assignment already is the radial assignment.
+    assert (ir.pin_net == before).all()
+    assert pinswap.propose_distance_assignment(ir, groups[0], {}) is None
+    with pytest.raises(ValueError, match="warm_start"):
+        _apply_pin_swap_warm_start(ir, groups, footprints, [], "unknown")
+
+
+@pytest.mark.slow
+def test_route_op_distance_warm_start_replay(store):
+    ir, graph, _, _, _, _ = _hydrate(store)
+    ref = store.get_ref(kind="pcb", id="ewod-dogfood-6-escape-regression")
+    assert ref is not None
+    inner = next(i for i, layer in enumerate(ir.stackup) if layer["name"] == "In2.Cu")
+    ir.stackup[inner] = {"name": "In2.Cu", "role": "signal", "routable": True}
+    store.pcb_set_stackup(graph["board"]["board_id"], ir.stackup)
+    rules = graph["net_classes"]["ewod_ARR1_escape"]
+    rules["layers"] = ["In2.Cu", "B.Cu"]
+    store.pcb_set_class_rules(ref.id, "ewod_ARR1_escape", rules)
+    ctx: Any = SimpleNamespace(
+        store=store,
+        meta={"params": {"pcb_ref_id": ref.id, "iters": 3000, "seed": 0}},
+        record_failure=Mock(),
+        append_chunk=Mock(),
+    )
+    pcb_route._dispatch(ctx, pcb_route.SPEC)
+    updated = store.get_ref(kind="pcb", id=ref.id)
+    last = updated.meta["last_route"]
+    assert last["warm_start"][0]["method"] == "distance"
+    assert last["warm_start"][0]["distance_mm"] > 0
+    assert last["realized"] >= 51
+    assert store.pcb_pin_swaps_list(ref.id)
+
+
+def test_route_op_warm_start_flag_replay(store, monkeypatch):
+    _hydrate(store)
+    ref = store.get_ref(kind="pcb", id="ewod-dogfood-6-escape-regression")
+    assert ref is not None
+    hub = Hub(store=store)
+    job = Mock()
+    job.put.return_value = SimpleNamespace(body="fixture job captured")
+    monkeypatch.setattr(hub, "sibling", lambda kind: job)
+    handler = PcbHandler(hub=hub)
+    handler._enqueue_op(ref, "route", {"warm_start": "radial"})
+    assert job.put.call_args.kwargs["params"]["warm_start"] == "radial"
+    radial_key = job.put.call_args.kwargs["idem_key"]
+    handler._enqueue_op(ref, "route", {})
+    assert "warm_start" not in job.put.call_args.kwargs["params"]
+    assert job.put.call_args.kwargs["idem_key"] != radial_key
+    with pytest.raises(BadInput, match="warm_start"):
+        handler._enqueue_op(ref, "route", {"warm_start": "invalid"})
+    ctx: Any = SimpleNamespace(
+        meta={"params": {"warm_start": "invalid"}}, record_failure=Mock()
+    )
+    pcb_route._dispatch(ctx, pcb_route.SPEC)
+    ctx.record_failure.assert_called_once()
 
 
 @pytest.mark.slow

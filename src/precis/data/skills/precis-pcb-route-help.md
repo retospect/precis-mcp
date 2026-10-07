@@ -51,6 +51,10 @@ put(kind="pcb", id="sensor-node", args={"op": "route", "iters": 3000, "seed": 0}
   authoring time, or via `op='move'` below) is respected by both — a
   locked instance is never moved, guaranteed at the database write
   boundary, not just by the optimizer's own move generators.
+- Route `warm_start` defaults to `"distance"` (connected via→pad Manhattan
+  distance before annealing); missing via terminals use radial. `"radial"`
+  selects the old path. `last_route.warm_start` reports each group's method
+  and distance in mm (null for radial).
 - `op='route'` also accepts `negotiate` (int 0–100, default 0 = off):
   experimental negotiated-congestion iterations, tried only when the
   normal rip-up passes leave nets unrouted; capped at 60 s, and the result

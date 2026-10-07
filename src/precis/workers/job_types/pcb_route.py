@@ -65,7 +65,8 @@ log = logging.getLogger(__name__)
 # 2 = pin swaps restored before the layer sketch (5d50cd44a).
 # 3 = finer clearance-derived occupancy grid cap (faithful replay net+1).
 # 4 = restore global grid baseline after reference/fab seed regressions.
-CODE_VERSION = 4
+# 5 = connected-via distance assignment as the route warm start.
+CODE_VERSION = 5
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -73,6 +74,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "pcb_ref_id": {"type": "integer"},
         "iters": {"type": "integer", "minimum": 1},
         "seed": {"type": "integer"},
+        "warm_start": {"type": "string", "enum": ["distance", "radial"]},
         # Handler already validates the bounded per-call opt-in. Keep it
         # in the shared job contract too: otherwise enqueue refuses before
         # the existing RealizeConfig plumbing can ever see the value.
@@ -269,8 +271,69 @@ def _resolve_pin_swap_groups(
     return tuple(groups)
 
 
+def _apply_pin_swap_warm_start(
+    ir: PcbIR,
+    groups: tuple[pcb_pinswap.PinSwapGroup, ...],
+    footprints: dict[str, dict[str, Any]],
+    fixed_copper: list[dict[str, Any]],
+    method: str = "distance",
+) -> list[dict[str, Any]]:
+    """Resolve connected via terminals and apply each admissible assignment."""
+    if method not in ("distance", "radial"):
+        raise ValueError("warm_start must be distance or radial")
+    terminals = (
+        pcb_realize._island_terminals_by_pin(ir, footprints, fixed_copper)
+        if groups and method == "distance"
+        else {}
+    )
+    reports: list[dict[str, Any]] = []
+    for group in groups:
+        far_by_pin = {}
+        near_segments = pcb_pinswap._segments_near_pin(ir, group.instance)
+        degree = Counter(near_segments.values())
+        for seg, pin in near_segments.items():
+            if degree[pin] != 1:
+                continue
+            a, b = int(ir.seg_pin_a[seg]), int(ir.seg_pin_b[seg])
+            other = b if a == pin else a
+            key = (
+                str(ir.instance_refdes[int(ir.pin_instance[other])]),
+                str(ir.pin_label[other]),
+            )
+            points = {t.point for t, _ in terminals.get(key, ()) if t.kind == "via"}
+            if len(points) == 1:
+                far_by_pin[pin] = next(iter(points))
+        proposal = (
+            pcb_pinswap.propose_distance_assignment(ir, group, far_by_pin)
+            if method == "distance"
+            else None
+        )
+        if proposal is None:
+            pairs = pcb_pinswap.propose_radial_assignment(ir, group) or ()
+            used, distance = "radial", None
+        else:
+            pairs, distance = proposal
+            used = "distance"
+        for a, b in pairs:
+            ir.swap_pins(a, b)
+        reports.append(
+            {
+                "refdes": str(ir.instance_refdes[group.instance]),
+                "method": used,
+                "distance_mm": distance,
+            }
+        )
+    return reports
+
+
 def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     params = dict(ctx.meta.get("params") or {})
+    warm_start = str(params.get("warm_start", "distance"))
+    if warm_start not in ("distance", "radial"):
+        ctx.record_failure(
+            "pcb_route: warm_start must be distance or radial", failure_class="input"
+        )
+        return
     negotiate = int(params.get("negotiate") or 0)
     # Direct job puts share this spec but the v1 params validator only
     # checks types, not numeric schema bounds. Enforce the same cap here
@@ -451,16 +514,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     pin_swap_warnings: list[str] = []
     pin_swap_groups = _resolve_pin_swap_groups(ir, graph, pin_swap_warnings)
-    # Planar warm start BEFORE the anneal: each group's pins matched to
-    # their far ends in cyclic angular order (pinswap.propose_radial_
-    # assignment — the closed-form non-crossing assignment for a ring of
-    # pads facing a field of vias, which the anneal's pairwise move
-    # cannot reach from a crossed start). The anneal only improves on it,
-    # and the settled result still goes through the same pin_swap_diff
-    # write-back below, so persistence is unchanged.
-    for group in pin_swap_groups:
-        for pin_a, pin_b in pcb_pinswap.propose_radial_assignment(ir, group) or ():
-            ir.swap_pins(pin_a, pin_b)
+    # Shorter paths through fixed-copper corridors beat fewer airwire
+    # crossings on the replay. The settled diff still uses the authored baseline.
+    warm_start_report = _apply_pin_swap_warm_start(
+        ir, pin_swap_groups, footprints, fixed_copper, warm_start
+    )
     config = OptimizeConfig(
         iters=iters,
         seed=seed,
@@ -912,6 +970,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         {},  # positions already written above; this call is meta-only
         meta={
             "last_route": {
+                "warm_start": warm_start_report,
                 "iters": result.iters,
                 "realized": n_realized,
                 "failed": n_failed,

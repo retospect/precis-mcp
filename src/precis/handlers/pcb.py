@@ -851,6 +851,11 @@ class PcbHandler(Handler):
             params["iters"] = int(opts["iters"])
         if opts.get("seed") is not None:
             params["seed"] = int(opts["seed"])
+        if op == "route" and opts.get("warm_start") is not None:
+            warm_start = opts["warm_start"]
+            if warm_start not in ("distance", "radial"):
+                raise BadInput("pcb: warm_start must be distance or radial")
+            params["warm_start"] = warm_start
         # Opt-in negotiated congestion (realize.RealizeConfig.
         # negotiate_iterations); off unless asked for.
         if op == "route" and opts.get("negotiate") is not None:
