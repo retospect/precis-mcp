@@ -102,6 +102,20 @@ class SeedPartialResult(TypedDict):
     structures: dict[str, SeedStructureEntry]
 
 
+class CoverageScanResult(TypedDict):
+    """:func:`runner.run_coverage_scan`'s return — one model's ab-initio
+    thermodynamics coverage scan (``autocatpath.coverage.scan``'s payload,
+    verbatim, under ``coverage``) plus the footing every anchor is recorded
+    on: the resolved model tag, the engine version and the correction set
+    the engine ran with (``None`` on an engine that records none)."""
+
+    model: str
+    model_index: int
+    coverage: dict[str, Any]
+    engine_version: str
+    corrections: dict[str, Any] | None
+
+
 class DetachedHandle(TypedDict):
     """:func:`runner.submit_seed_partial_detached`'s return — persisted
     onto ``meta.compute_handle``; the handle
@@ -132,6 +146,7 @@ class PollResult(TypedDict, total=False):
 
 
 __all__ = [
+    "CoverageScanResult",
     "DetachedHandle",
     "NetworkTopology",
     "PathwayArtifact",

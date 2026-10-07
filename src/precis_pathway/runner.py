@@ -42,6 +42,7 @@ from autocatpath.config import Config
 from autocatpath.pipeline import Results, run
 
 from .types import (
+    CoverageScanResult,
     DetachedHandle,
     NetworkTopology,
     PathwayArtifact,
@@ -570,10 +571,6 @@ def run_seed_partial_subprocess(
     stdout, so MACE's chatty logging can't corrupt it; child stdout/stderr are
     logged for diagnosis and, on failure, folded into the raised error.
     """
-    import os
-    import subprocess
-    import tempfile
-
     request = {
         "config": config,
         "seed": seed,
@@ -581,7 +578,36 @@ def run_seed_partial_subprocess(
         "force_backend": force_backend,
         "slab_extxyz": slab_extxyz,
     }
-    with tempfile.TemporaryDirectory(prefix="autocatpath-seed-") as td:
+    result = _run_request_subprocess(
+        request,
+        timeout=timeout,
+        cpuset=cpuset,
+        job_name="autocatpath_seed",
+        unit=f"seed={seed} model_index={model_index}",
+        prefix="autocatpath-seed-",
+    )
+    return cast("SeedPartialResult", result)
+
+
+def _run_request_subprocess(
+    request: dict[str, Any],
+    *,
+    timeout: int,
+    cpuset: str | None,
+    job_name: str,
+    unit: str,
+    prefix: str,
+) -> dict[str, Any]:
+    """The blocking child launch both :func:`run_seed_partial_subprocess` and
+    :func:`run_coverage_scan_subprocess` share: write ``request`` to a temp
+    dir, run :func:`_child_cmd` under ``timeout`` (SIGKILL on expiry), read
+    the ``{"ok", "result"|"error"}`` envelope back. ``job_name``/``unit``
+    only shape the error text; ``prefix`` names the scratch dir."""
+    import os
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix=prefix) as td:
         req_path = os.path.join(td, "request.json")
         out_path = os.path.join(td, "result.json")
         with open(req_path, "w", encoding="utf-8") as fh:
@@ -601,21 +627,20 @@ def run_seed_partial_subprocess(
             # hung MACE/CUDA process is gone, the worker pass is free again.
             tail = (exc.stderr or exc.stdout or "")[-2000:]
             raise RuntimeError(
-                f"autocatpath_seed compute exceeded its {timeout}s wall budget "
-                f"and was killed (seed={seed} model_index={model_index}); "
-                f"last output: {tail!r}"
+                f"{job_name} compute exceeded its {timeout}s wall budget "
+                f"and was killed ({unit}); last output: {tail!r}"
             ) from exc
 
         if proc.stdout:
-            log.debug("autocatpath_seed child stdout:\n%s", proc.stdout[-4000:])
+            log.debug("%s child stdout:\n%s", job_name, proc.stdout[-4000:])
         if proc.stderr:
-            log.debug("autocatpath_seed child stderr:\n%s", proc.stderr[-4000:])
+            log.debug("%s child stderr:\n%s", job_name, proc.stderr[-4000:])
 
         if proc.returncode != 0 or not os.path.exists(out_path):
             tail = (proc.stderr or proc.stdout or "<no output>")[-2000:]
             msg = (
-                f"autocatpath_seed subprocess failed (rc={proc.returncode}, "
-                f"seed={seed} model_index={model_index}); last output: {tail!r}"
+                f"{job_name} subprocess failed (rc={proc.returncode}, "
+                f"{unit}); last output: {tail!r}"
             )
             # INFRA-class: the child was signal-killed (SIGKILL/OOM, a
             # negative returncode) or exited without writing its result
@@ -632,11 +657,119 @@ def run_seed_partial_subprocess(
             payload = json.load(fh)
 
     if not payload.get("ok"):
-        raise RuntimeError(
-            f"autocatpath_seed compute error (seed={seed} model_index={model_index}): "
-            f"{payload.get('error')}"
+        raise RuntimeError(f"{job_name} compute error ({unit}): {payload.get('error')}")
+    return cast("dict[str, Any]", payload["result"])
+
+
+# ── coverage anchors (surface-Pourbaix slice 1) ───────────────────────────
+
+
+def coverage_anchor_key(config: dict[str, Any]) -> str:
+    """Content address of an anchor set: everything that fixes *which slab,
+    which adsorbates at which coverages, on which thermodynamic footing* —
+    the config minus its ``mlip`` block (models pool under one key; the
+    model tag is recorded per scan) — plus the engine version, like
+    :func:`content_key`. The correction set rides in the config (an engine
+    that records one does so under ``corrections``), so a correction flip
+    changes the key."""
+    cfg = _prep(config, None).to_dict()
+    cfg.pop("mlip", None)
+    canonical = json.dumps(cfg, sort_keys=True, separators=(",", ":"))
+    payload = f"{canonical}\x00autocatpath=={__version__}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def run_coverage_scan(
+    config: dict[str, Any],
+    model_index: int = 0,
+    *,
+    force_backend: str | None = None,
+    log: Any = print,
+) -> CoverageScanResult:
+    """Run catpath's ab-initio-thermodynamics coverage scan
+    (``autocatpath.coverage.scan``) for the MLIP spec at ``model_index`` —
+    the anchor generator of ``docs/backlog/surface-pourbaix-staircase-
+    optimizer.md`` slice 1.
+
+    The engine's scan builds its own clean slab from ``config.slab``
+    (element + facet) and relaxes each ``(adsorbate, coverage)`` on it; it
+    does NOT read the prebuilt-slab side channel the pathway pipeline
+    honours, so a doped candidate or a hydride slab cannot be scanned here
+    until the engine takes one (briefed to the catpath session, 2026-10-07).
+    Per-model selection mirrors :func:`run_seed_partial`: the scan itself
+    only ever runs ``specs()[0]``, so the chosen spec is pinned onto the
+    config before the call. JSON-safe return (:class:`CoverageScanResult`).
+
+    ``corrections`` is what the SCAN records (``coverage.json``'s own
+    ``corrections`` block), never the config's: on 0.24.0 the scan prices
+    ``mu`` from the raw gas energies plus the thermo table only and applies
+    neither the gas set nor the H* shift (those run in
+    ``pipeline._corrections_plan`` at aggregation; catpath session,
+    2026-10-07), so a 0.24.0 anchor is uncorrected whatever the config says
+    and must be keyed as such — ``None`` until the engine applies and
+    records them (the catpath brief's ask 2).
+    """
+    from autocatpath.calculators import resolve_backend
+    from autocatpath.coverage import scan
+
+    cfg = _prep(config, force_backend)
+    specs = cfg.mlip.specs()
+    if not (0 <= model_index < len(specs)):
+        raise ValueError(
+            f"model_index={model_index} out of range for {len(specs)} spec(s)"
         )
-    return payload["result"]
+    backend, model = specs[model_index]
+    resolved = resolve_backend(backend)
+    if resolved != backend:
+        log(f"backend: auto -> {resolved} (best installed ML potential)")
+    c = copy.deepcopy(cfg)
+    c.mlip.backend, c.mlip.model, c.mlip.models = resolved, model, []
+    data = scan(c, log=log)
+    corrections = data.get("corrections")
+    return {
+        "model": str(
+            data.get("model") or (f"{resolved}:{model}" if model else resolved)
+        ),
+        "model_index": model_index,
+        "coverage": data,
+        "engine_version": __version__,
+        "corrections": corrections if isinstance(corrections, dict) else None,
+    }
+
+
+#: Default wall-clock bound (s) for a coverage scan child: a handful of
+#: adsorbates × four coverages of single relaxes on one slab — minutes on
+#: MACE, well inside the seed default.
+_DEFAULT_COVERAGE_TIMEOUT_S = 3600
+
+
+def run_coverage_scan_subprocess(
+    config: dict[str, Any],
+    model_index: int = 0,
+    *,
+    force_backend: str | None = None,
+    timeout: int = _DEFAULT_COVERAGE_TIMEOUT_S,
+    cpuset: str | None = None,
+) -> CoverageScanResult:
+    """:func:`run_coverage_scan` in a fresh, killable child — the same
+    ``python -m precis_pathway.runner`` entrypoint and isolation argument as
+    :func:`run_seed_partial_subprocess` (gr191351: never load MACE/CUDA in
+    the long-lived worker)."""
+    request = {
+        "mode": "coverage",
+        "config": config,
+        "model_index": model_index,
+        "force_backend": force_backend,
+    }
+    result = _run_request_subprocess(
+        request,
+        timeout=timeout,
+        cpuset=cpuset,
+        job_name="surface_coverage_scan",
+        unit=f"model_index={model_index}",
+        prefix="autocatpath-coverage-",
+    )
+    return cast("CoverageScanResult", result)
 
 
 def _tail_logs(scratch_dir: str, limit: int = 4000) -> str:
@@ -1375,16 +1508,30 @@ def _subprocess_main(argv: list[str]) -> int:
     if req.get("mode") == "kinetics":
         return _kinetics_child(req, out_path)
     try:
-        result = run_seed_partial(
-            req["config"],
-            int(req["seed"]),
-            int(req["model_index"]),
-            force_backend=req.get("force_backend"),
-            slab_extxyz=req.get("slab_extxyz"),
-            # Child logs go to stdout (parent captures + logs them); the JSON
-            # result travels by file, so this can't corrupt the envelope.
-            log=lambda *a, **k: print(*a, **k),
-        )
+        result: dict[str, Any]
+        if req.get("mode") == "coverage":
+            result = dict(
+                run_coverage_scan(
+                    req["config"],
+                    int(req.get("model_index", 0)),
+                    force_backend=req.get("force_backend"),
+                    log=lambda *a, **k: print(*a, **k),
+                )
+            )
+        else:
+            result = dict(
+                run_seed_partial(
+                    req["config"],
+                    int(req["seed"]),
+                    int(req["model_index"]),
+                    force_backend=req.get("force_backend"),
+                    slab_extxyz=req.get("slab_extxyz"),
+                    # Child logs go to stdout (parent captures + logs them);
+                    # the JSON result travels by file, so this can't corrupt
+                    # the envelope.
+                    log=lambda *a, **k: print(*a, **k),
+                )
+            )
         payload: dict[str, Any] = {"ok": True, "result": result}
     except Exception as exc:
         import traceback

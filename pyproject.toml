@@ -515,6 +515,10 @@ fold = "precis_bio.jobs:FOLD_SPEC"
 autocatpath_explore = "precis_pathway.job:SPEC"
 autocatpath_seed = "precis_pathway.seed_job:SPEC"
 autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
+# surface_coverage_scan: one MLIP model's coverage anchors on a slab + the
+# inner CHE sweep (docs/backlog/surface-pourbaix-staircase-optimizer.md,
+# slice 1). Same ssh_node/target_node seam as autocatpath_seed.
+surface_coverage_scan = "precis_pathway.coverage_job:SPEC"
 se_propose_atomic = "precis_se.atomic.propose:SPEC"
 # se_simp: the enqueued half of realize(kind='se', strategy='simp') — a
 # SIMP topology solve over one block's envelope, bound back as a cad

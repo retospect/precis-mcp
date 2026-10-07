@@ -171,6 +171,65 @@ Shapley field.
 - q2/q3 (reference consistency, oxide corrections): still being explained
   to Reto; no ruling yet.
 
+## Slice 1 contract (built 2026-10-07; the prompt's §3 inner loop + §5 source 2)
+
+**Anchor inventory (prod, read-only, 2026-10-07):** no coverage anchors
+exist as refs — 376 structures on qu164903, 0 β-PdH/hydride structures
+anywhere, 0 explicit O*/OH* coverage structures, no coverage/anchor meta
+keys. The 257 harvested candidates embed one pathway each whose nodes hold
+single-adsorbate energies (one per supercell, n=1, 0.22.0 engine, no
+corrections): an implicit θ→0 point per species, not a coverage series.
+So anchors are computed, not read.
+
+**What shipped:**
+- `surface_coverage_scan` job_type (`src/precis_pathway/coverage_job.py`):
+  one `(slab config, MLIP model)` run of catpath's `coverage` scan in a
+  killable child (`runner.run_coverage_scan_subprocess`, the seed child's
+  `python -m precis_pathway.runner` entrypoint with `mode: coverage`).
+  Defaults: adsorbates H, O, OH at 0.25/0.5/0.75/1.0 ML; (111) only (q7);
+  `coverage.facets` must be empty; a prebuilt slab is refused
+  (`failure_class="input"`) because the engine's scan builds its own clean
+  slab and ignores the pathway pipeline's prebuilt-slab side channel —
+  doped candidates and β-PdH wait on the catpath brief below.
+- Footing per anchor set (acceptance "one footing"): `meta.anchor_key`
+  (`runner.coverage_anchor_key`: config minus `mlip` + engine version),
+  `meta.model`, `meta.engine_version`, `meta.corrections` (what the scan
+  itself records, never the config's block: on 0.24.0 `coverage.scan`
+  applies neither the gas set nor the H* shift — they run only in
+  `pipeline._corrections_plan` at aggregation (catpath session,
+  2026-10-07) — so a 0.24.0 anchor is uncorrected and keyed `None` until
+  catpath's brief lands; the pathway's `results.json` on 0.24.0 sits on
+  the corrected gauge, so the θ→0 comparison must account for that).
+- `precis_pathway.surface_pourbaix` (pure, engine-free): γ_A(n; U) =
+  γ_A(n; 0) − n·ν_A·U/area with ν_A = 2n_O + 4n_C − n_H on the RHE scale
+  (pH only tilts the SHE view by 0.059 V/pH); the resting envelope on a U
+  grid; every boundary as the closed-form crossing of two affine lines;
+  **two bands per boundary, never summed**: `band_propagated` (source 2:
+  per-anchor bars — the run's own `search.energy_thresh` on both relaxes
+  plus any stated reservoir-pricing bar — pushed through the arithmetic,
+  σ_U* = √(σ_i²+σ_j²)/|s_i−s_j|; remedy "add an anchor", so
+  `needs_anchor` ranks boundaries by it) and `band_model_form` (source 3:
+  the same boundary's spread across the models that computed it, from
+  two models up). The job pools every succeeded scan on its `anchor_key`
+  (newest per model) and stamps the sweep as `meta.che_sweep` + a
+  `job_summary` naming the resting termination at `point_U_RHE`.
+- `compare_lowest_theta` is the θ→0 acceptance check (per-adsorbate
+  formation energy at the lowest coverage vs a pathway's single-adsorbate
+  energy); wiring it to a live pathway ref is the next slice-1 step.
+
+**Not yet (slice-1 residue):** minting the first prod scan on clean
+Pd(111) with the qu164903 base config (needs the GPU node; mint via
+`put(kind='job', job_type='surface_coverage_scan', params={config:
+REACTION_CONFIG, target_node: <gpu node>, point_U_RHE: -0.3})`), the live
+θ→0 comparison against pw455722's nodes, and the catpath brief (filed by
+the catpath session as its `docs/backlog/coverage-scan-prebuilt-slab-
+corrections.md`, draft, 2026-10-07): the coverage scan honours
+`cfg._prebuilt_slab` (doped slabs, β-PdH twins; `n_slab` from
+`slab.info` so lattice H is not counted), applies the same gas set and H*
+shift as the pipeline under `cfg.corrections`, and records a
+`corrections` block plus `slab_source: injected|built` in
+`coverage.json`.
+
 ## Explicitly NOT in scope
 
 - Slices 3–8: ordered, not scheduled; each needs its own `ready`.

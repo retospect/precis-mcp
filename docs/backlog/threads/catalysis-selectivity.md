@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Surface-Pourbaix slices 1–2 (anchor inventory + inner CHE sweep with error bands; `surface-pourbaix-staircase-optimizer.md`), then the Pd-hydride precis-side fixes (item 2). The catpath lock is done: 0.23.0, rev-pinned (2026-10-07).
+- **Next:** Surface-Pourbaix slice 1 residue (`surface-pourbaix-staircase-optimizer.md` §Slice 1 contract): mint the first clean-Pd(111) `surface_coverage_scan` on the GPU node, wire the θ→0 comparison to pw455722, deliver the catpath brief (prebuilt-slab coverage scan); then slice 2 (resting-state map), then the Pd-hydride precis-side fixes (item 2). The catpath lock is done: 0.23.0, rev-pinned (2026-10-07).
 - **Blocked by:** Items 23/25 keep every re-run and the hydride pilot held until Reto lifts them. Chemistry's seed re-mint is ruled NOT a re-run (2026-10-07). Catpath 0.24.0 (gas + Pd H* corrections ON by default) waits on Reto's ruling before it is locked.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** Use [the latest handoff and item holds](#thread-context); engine-version checks must match the released engine. No re-run is authorized by this entry point.

@@ -41,6 +41,14 @@ barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 ``{key}_untrusted_value``), and trust-gated kinetics scalars
 ``tof``/``log_tof``/band, ``kinetics_trusted``/``kinetics_note``/``drc_top``.
 
+``surface_pourbaix`` + ``coverage_job`` are the surface-Pourbaix inner loop
+(``docs/backlog/surface-pourbaix-staircase-optimizer.md`` slice 1): the
+``surface_coverage_scan`` job runs catpath's ab-initio-thermodynamics
+coverage scan for one MLIP model (the anchors, on a recorded footing:
+``anchor_key``/``engine_version``/``corrections``) and pools every model's
+scan on the same key into the CHE sweep — resting termination along U, each
+boundary with its propagated and model-form bands kept apart.
+
 ``step_retry`` is an unwired eligibility prerequisite: it selects only
 quantity-cited fatal convergence records and withholds all selection on
 endpoint mismatch. State-only basin failures cannot safely name a retry
