@@ -354,12 +354,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
   Do-next 4's fixture. Earlier history (the 116-error placement; jobs
   460181/460302 accepting 0 of 3000 moves for lack of an outline) is in
   git log.
-- **dogfood-1 through dogfood-5 are RETIRED** (Reto, 2026-09-30: "retire all
-  the junk dogfood"). Every one of them is measured against something now
-  known wrong: 1/2 had pinned sinks, 1/2/3 predate the real sink pin names,
-  4 predates the pad-orientation fix, 5 came off the stale MCP build. **Do
-  not cite a number off any of them** — that includes dogfood-4's 38
-  realized / 25 failed, which is the figure most likely to be quoted back.
 
 ## No action needed
 
