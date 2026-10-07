@@ -63,6 +63,12 @@ graph-health-metrics, five parked gripes, and the seam with
 
 ## Do next
 
+0. **[Graph node/edge trust state](../graph-node-trust-state.md)** — spec
+   landed on main 2026-10-07 from the `work/knowledge-mesh/graph-node-trust-state`
+   branch (status draft, Reto's five policy rulings of 2026-10-05 recorded,
+   slice 1 unblocked for the gated migration path, refs/links only). Owner-led,
+   independent review per slice; not for automatic fixer pickup.
+
 1. **backlog/taxon-facet-navigation.md slice 0 AC 0** — the
    `precis-classify-help` guide and `includes`/`excludes` validation/rendering
    landed in source 2026-10-05 (04c13fd28, Opus-reviewed), deployed in R16 (prod 8.35.15).

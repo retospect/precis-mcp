@@ -5,7 +5,7 @@ Subcommands:
 * ``precis draft export <slug> [--out DIR] [--include-sources]`` — render a
   draft into a compilable LaTeX project (``main.tex`` + ``refs.bib`` + a copy
   of the standard ``preamble.tex``). The output is **disposable** — re-export
-  from the draft, never hand-edit. Compile with ``latexmk -pdf main.tex``
+  from the draft, never hand-edit. Compile with ``latexmk -lualatex main.tex``
   (biber + makeglossaries run automatically). ``--include-sources`` bundles
   every cited paper/datasheet PDF the host holds and appends them as a
   ``pdfpages`` appendix (see ``precis.export.sources``).
@@ -347,7 +347,7 @@ def _run_export(args: argparse.Namespace) -> None:
 
     if not args.pdf:
         print(
-            f"draft export: compile with  latexmk -pdf -cd {result.main_tex}",
+            f"draft export: compile with  latexmk -lualatex -cd {result.main_tex}",
             file=sys.stderr,
         )
         return

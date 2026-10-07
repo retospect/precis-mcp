@@ -1,5 +1,8 @@
 """Document export engines (LaTeX → Tier-B).
 
+The packaged preamble loads ``fontspec``, so PDF compilation and the CLI's
+manual compile hint use LuaLaTeX (``latexmk -lualatex``).
+
 End-matter sections (each vanishes byte-identically when empty): trust
 marks ("Unverified claims", :mod:`._trust_marks`), nanopub "Published
 claim artifacts" (:mod:`._nanopub_appendix`), and the "Data package"
