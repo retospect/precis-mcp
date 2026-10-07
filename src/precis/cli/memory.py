@@ -817,12 +817,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         if mode == "import":
             parser.add_argument(
                 "--legacy",
-                choices=("refuse", "retire", "keep"),
+                choices=("refuse", "retire", "keep", "refresh"),
                 default="refuse",
                 help=(
                     "Live repo-dev nodes from the one-shot importer (no "
                     "file_mirror, title = a topic's name:): refuse (default), "
-                    "retire (soft-delete in the import), or keep (import beside)."
+                    "retire (soft-delete in the import), keep (import beside), or "
+                    "refresh (adopt the node in place, keeping its id and links)."
                 ),
             )
         parser.add_argument(

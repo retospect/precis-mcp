@@ -500,3 +500,90 @@ def test_cli_legacy_arg_and_unexported_stderr(
     assert captured.out.strip() == "exported 3 files"
     assert f"me{native}" in captured.err
     _unplant(store, native)
+
+
+def test_legacy_refresh_adopts_in_place_and_is_idempotent(
+    store: Store, hub: Hub, source: Path
+) -> None:
+    legacy = _plant_legacy(hub, "Alpha")
+    other = _plant_legacy(hub, "Unrelated note")
+    store.add_link(src_ref_id=other, dst_ref_id=legacy, relation="related-to")
+    report = import_mirror(store, source, namespace="fixture", legacy="refresh")
+    assert report.refreshed == [f"me{legacy}"] and report.retired == []
+    assert report.created == 2  # beta + MEMORY.md; alpha was adopted
+    assert report.refs["alpha.md"] == legacy
+    with psycopg.connect(_dsn(store)) as conn:
+        row = conn.execute(
+            "SELECT meta, retired_at FROM refs WHERE ref_id=%s", (legacy,)
+        ).fetchone()
+        assert row is not None
+        meta, retired = row
+        texts = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id=%s AND chunk_kind='memory_body'",
+            (legacy,),
+        ).fetchall()
+        inbound = conn.execute(
+            "SELECT 1 FROM links WHERE src_ref_id=%s AND dst_ref_id=%s",
+            (other, legacy),
+        ).fetchone()
+        outbound = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id=%s "
+            "AND meta->>'source'='file-mirror'",
+            (legacy,),
+        ).fetchall()
+        tags = {
+            r[0]
+            for r in conn.execute(
+                "SELECT t.namespace||':'||t.value FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id=rt.tag_id WHERE rt.ref_id=%s",
+                (legacy,),
+            ).fetchall()
+        }
+    assert retired is None and inbound is not None
+    assert meta["file_mirror"]["namespace"] == "fixture"
+    assert meta["file_mirror"]["filename"] == "alpha.md"
+    assert meta["hook"] == "Synthetic fixture"
+    body = (source / "alpha.md").read_text(encoding="utf-8").split("---\n", 2)[2]
+    assert [r[0] for r in texts] == [body]
+    assert outbound == [(report.refs["beta.md"],)]
+    assert {"SPACE:repo-dev", "OPEN:mirror:fixture"} <= tags
+    before = _snapshot(store)
+    again = import_mirror(store, source, namespace="fixture", legacy="refresh")
+    assert again.refreshed == [] and again.created == 0 and again.updated == 0
+    assert _snapshot(store) == before
+    _unplant(store, legacy, other)
+
+
+def test_legacy_refresh_ambiguous_title_refuses(
+    store: Store, hub: Hub, source: Path
+) -> None:
+    first = _plant_legacy(hub, "Alpha")
+    second = _plant_legacy(hub, "Alpha")
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused, match=rf"me{first}, me{second}"):
+        import_mirror(store, source, namespace="fixture", legacy="refresh")
+    assert _snapshot(store) == before
+    _unplant(store, first, second)
+
+
+def test_cli_legacy_refresh(
+    store: Store,
+    hub: Hub,
+    source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from precis.cli.memory import run
+
+    parse = _build_parser().parse_args
+    args = parse(
+        ["memory", "mirror", "import", str(source), "--namespace", "r"]
+        + ["--legacy", "refresh", "--database-url", _dsn(store)]
+    )
+    assert args.legacy == "refresh"
+    monkeypatch.setattr(Store, "connect", lambda _: store)
+    monkeypatch.setattr(store, "close", lambda: None)
+    legacy = _plant_legacy(hub, "Alpha")
+    run(args)
+    assert f'"refreshed": ["me{legacy}"]' in capsys.readouterr().out
+    _unplant(store, legacy)

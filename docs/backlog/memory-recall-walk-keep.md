@@ -297,6 +297,28 @@ other, 2 and 3 are independent of everything above.
   browser; (ii) rewire `eye_render._first_hop` onto `neighbourhood` (every
   link kind's render; `tests/test_eye_render.py`, `tests/test_finding.py`).
   Remaining: 2, 3.
+- **[built 2026-10-07, slice 4]** `import_mirror(..., legacy='refresh')`
+  adopts a title-matching legacy node in place: same ref_id and inbound
+  links, body replaced only when it differs (DELETE + INSERT through
+  `replace_body_chunk`, chunk-anchored links refuse as for any body
+  replacement), `SPACE:repo-dev` + `mirror:<ns>` tags, then the ordinary
+  meta overlay (`hook`, `frontmatter`, `file_mirror`) and link resolution.
+  Existing meta keys on the adopted node survive under the overlay; a
+  fresh node starts empty. `MirrorReport.refreshed` lists the handles and
+  `created` excludes them. Two live legacy nodes with one title, or two
+  files naming one legacy node, refuse the whole import. A second refresh
+  is a no-op (the node now carries `file_mirror`). Remaining: 5.
+- **[found 2026-10-07, revert precondition]** Forensics on the Mac are
+  exhausted: the memory dir keeps no version history,
+  `memory_consolidation_log.md` has no entry between the cutover
+  (2026-10-03) and the revert's discovery (2026-10-07), no transcript
+  records it, and `.pre-cutover` is gone. The cause cannot be recovered
+  after the fact. Proposal for the re-cut, needs Reto's go: make the next
+  cutover self-recording and self-detecting: the cutover writes a dated
+  line to the consolidation log and keeps `MEMORY.md.pre-cutover`;
+  `scripts/memory-lint` refuses (not just warns) when `.pre-cutover`
+  exists but the graph marker is gone, printing which session-start hook
+  last rendered the index. A revert then names itself.
 - **[built 2026-10-07, slice 2]** `MemoryHandler.search(view='index')`
   (explicit `view` kwarg; `None` forwards unchanged; other values
   `BadInput` with `options=['index']`; requires `q=`), rendering through

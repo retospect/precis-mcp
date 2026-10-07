@@ -61,6 +61,8 @@ class MirrorReport:
     unexported: list[str] = field(default_factory=list)
     #: Import: legacy one-shot nodes soft-deleted by ``legacy='retire'``.
     retired: list[str] = field(default_factory=list)
+    #: Import: legacy nodes adopted in place by ``legacy='refresh'`` (not in created).
+    refreshed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -298,11 +300,13 @@ def import_mirror(
     ``legacy`` decides what happens to live repo-dev nodes made by the one-shot
     importer (no ``file_mirror`` key, title equal to a topic's ``name:``):
     ``refuse`` (default) raises, ``retire`` soft-deletes them in this
-    transaction, ``keep`` imports beside them. Never adopted by title.
+    transaction, ``keep`` imports beside them, ``refresh`` adopts each in place
+    (same ref_id and inbound links, ``file_mirror`` stamped, body and links
+    rewritten as for a new node; several nodes with one title refuse).
     """
     _namespace(namespace)
-    if legacy not in ("refuse", "retire", "keep"):
-        raise ImportRefused("legacy must be refuse, retire or keep")
+    if legacy not in ("refuse", "retire", "keep", "refresh"):
+        raise ImportRefused("legacy must be refuse, retire, keep or refresh")
     report = MirrorReport()
     with store.tx() as conn:
         _lock(conn, namespace)
@@ -310,6 +314,7 @@ def import_mirror(
         files = {name: _parse(name, data) for name, data in raw.items()}
         targets = {name: _targets(f.body) for name, f in files.items()}
         nodes = _nodes(conn, namespace)
+        adopt: dict[str, int] = {}
         if legacy != "keep":
             found = _legacy_nodes(
                 conn,
@@ -322,9 +327,29 @@ def import_mirror(
                     "re-run with legacy='retire' (or --legacy retire) to soft-delete "
                     "them, or 'keep' to import beside them"
                 )
-            for rid, _title in found:
-                store.retire_ref(rid, conn=conn)
-                report.retired.append(f"me{rid}")
+            if legacy == "refresh":
+                by_title: dict[str, list[int]] = {}
+                for rid, title in found:
+                    by_title.setdefault(title, []).append(rid)
+                for title, rids in by_title.items():
+                    if len(rids) > 1:
+                        listing = ", ".join(f"me{r}" for r in rids)
+                        raise ImportRefused(
+                            f"ambiguous legacy nodes for title {title!r}: {listing}; "
+                            "retire all but one first"
+                        )
+                for n, f in files.items():
+                    if n != "MEMORY.md" and n not in nodes and f.title in by_title:
+                        rid = by_title[f.title][0]
+                        if rid in adopt.values():
+                            raise ImportRefused(
+                                f"me{rid}: several files share title {f.title!r}"
+                            )
+                        adopt[n] = rid
+            else:
+                for rid, _title in found:
+                    store.retire_ref(rid, conn=conn)
+                    report.retired.append(f"me{rid}")
         folded = {name.casefold(): name for name in nodes}
         for name in files:
             if name.casefold() in folded and folded[name.casefold()] != name:
@@ -357,6 +382,24 @@ def import_mirror(
                         rid, f.title, source="memory-mirror", conn=conn
                     )
                 report.updated += 1
+            elif name in adopt:
+                rid = adopt[name]
+                row = conn.execute(
+                    "SELECT meta FROM refs WHERE ref_id=%s", (rid,)
+                ).fetchone()
+                meta = dict(row[0] or {}) if row else {}
+                if _body(conn, rid) != f.body:
+                    _guard_chunk_links(conn, rid)
+                    store.chunks.replace_body_chunk(
+                        rid,
+                        f.body,
+                        chunk_kind="memory_body",
+                        source="memory-mirror",
+                        conn=conn,
+                    )
+                for tag in ["SPACE:repo-dev", f"mirror:{namespace}"]:
+                    store.add_tag(rid, Tag.parse_strict(tag, kind="memory"), conn=conn)
+                report.refreshed.append(f"me{rid}")
             else:
                 ref = store.insert_ref(
                     kind="memory", slug=None, title=f.title, conn=conn

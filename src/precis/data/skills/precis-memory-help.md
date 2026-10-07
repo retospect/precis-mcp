@@ -56,8 +56,9 @@ body edits but refuses changed file-authored metadata. These are CLI operations,
 not native MCP modes; they do not authorize migration of a real harness directory.
 `mirror import` refuses when live nodes from the one-shot importer share a topic's
 `name:` (`--legacy retire` soft-deletes them in the import, `--legacy keep` imports
-beside them); `mirror export` reports every live `SPACE:repo-dev` node it left out
-as `unexported`.
+beside them, `--legacy refresh` adopts each in place: same handle and inbound
+links, the file's body and links written over it); `mirror export` reports every
+live `SPACE:repo-dev` node it left out as `unexported`.
 
 **Where to edit.** A memory that has a file is edited in the graph with the anchored
 `edit` once the real mirror import has run for its namespace, and in the file before
