@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Shared-occupancy negotiated congestion routing (Do next; 97f67beb8 registered the job parameter). The R14 route-gate repair is on main (81f3dfaf1, 4820bb66d, 110f6dd4b) and R14–R16 have shipped (prod 8.35.15), so no renewed gate is pending — status review 2026-10-07. R13 preview native dogfood PASS is complete. EasyEDA remains parked.
+- **Next:** Dogfood the LAYER lever on ewod-dogfood-6 after the next deploy: `op='class_rules'` opening In2.Cu to `ewod_ARR1_escape`, then `op='route'` with `negotiate=10`. The 2026-10-07 replay routed 40/55 hard and 43/55 negotiated with In2.Cu open, against 22/55 on the B.Cu lock (Do next 4, measured). Negotiated congestion on the B.Cu lock is measured dead — it never converges — and the route job now prints the loop's report (`NegotiationReport`, this session) so a no-gain run says why; arm B (job 470129) stays not-repeated. The R14 route-gate repair is on main (81f3dfaf1, 4820bb66d, 110f6dd4b) and R14–R16 have shipped (prod 8.35.15), so no renewed gate is pending — status review 2026-10-07. R13 preview native dogfood PASS is complete. EasyEDA remains parked; it no longer names the negotiation build (ownership line added 2026-10-07).
 - **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service or release work in this slice. Historical handoffs below remain historical and do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -177,6 +177,29 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    What is left is a router question, and the router half belongs to
    pcb-easyeda-round-trip: hand them dogfood-6 as the fixture rather than
    diagnosing it here.
+   **Measured 2026-10-07 on the replay fixture** (`tests/fixtures/pcb/
+   ewod-dogfood-6-replay-v1.json.gz`, hydrated as
+   `tests/test_pcb_escape_replay._hydrate`; probes were untracked scratch
+   tests, 4 min for the per-net run):
+   - *Negotiated congestion never converges on the B.Cu lock.* 40
+     iterations under four pressure schedules (pres growth 1.5/3.0, hist
+     ×1/×5, pres start 0.5/2.0): 50–52 of 55 nets still in conflict after
+     EVERY iteration; every conflicted net re-routes to a different path
+     each iteration; no conflict is at an endpoint (so not the exempt-end
+     sliver); contested cells cover the whole board, not one choke. The
+     commit pass takes 10–14 of 53 proposals verbatim and scores 35–40
+     failed, so the hard passes' 33 is kept. Job 470129's "no gain" was
+     this, unreported — hence the report.
+   - *The 33 are contention, not walls, but the single layer is full.*
+     Each net alone (all other router nets ripped, `route_passes=1`):
+     53/55 route; only R0C1 and R0C4 fail alone, labelled `congestion`
+     (gripe 472026 — the label-honesty case this item already warned
+     about). The 33 failed nets alone: 17 route. So no re-ordering or
+     negotiation reaches far past 22 on B.Cu alone.
+   - *Opening In2.Cu is the lever:* same placement, escape class layers
+     `[In2.Cu, B.Cu]`: hard 40/55 (21 vias), negotiate=10 43/55 (26
+     vias). This is the Resume's Next; the class/layer policy itself is
+     item 6's question.
 5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
    driver-chain are general PCB primitives wearing EWOD names (the engine's
    only registered generator is `ewod_pad_array`). Sits beside 4: both are

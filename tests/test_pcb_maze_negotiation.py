@@ -229,6 +229,7 @@ def test_negotiation_is_off_by_default_and_never_runs_on_a_clean_board(monkeypat
     clean = realize(ir, config=RealizeConfig(router="maze", negotiate_iterations=10))
     assert not clean.unrouted
     assert not calls
+    assert clean.negotiation is None
 
 
 def test_a_converged_proposal_commits_verbatim_every_segment(monkeypatch):
@@ -246,18 +247,22 @@ def test_a_converged_proposal_commits_verbatim_every_segment(monkeypatch):
     def route_pass(*a, **k):
         preferred = k.get("preferred")
         if preferred:
-            k["accepted"] = accepted
+            # The realizer passes its own list (for the report); read it.
+            k.setdefault("accepted", accepted)
         out = real_pass(*a, **k)
         if not preferred:  # a hard pass: pretend it all failed
             return out[0], out[1], list(a[1]), out[3]
+        if k["accepted"] is not accepted:
+            accepted.extend(k["accepted"])
         seen["commit_unrouted"] = list(out[2])
         return out
 
     def negotiate(*a, **k):
-        proposal, conflicted = real_negotiate(*a, **k)
+        proposal, conflicted, report = real_negotiate(*a, **k)
         seen["proposal"] = proposal
         seen["conflicted"] = conflicted
-        return proposal, conflicted
+        seen["report"] = report
+        return proposal, conflicted, report
 
     monkeypatch.setattr(realize_mod, "_route_pass", route_pass)
     monkeypatch.setattr(realize_mod, "_negotiate", negotiate)
@@ -273,6 +278,23 @@ def test_a_converged_proposal_commits_verbatim_every_segment(monkeypatch):
     assert seen["commit_unrouted"] == []
     assert not result.unrouted
     _assert_no_crossings(result)
+    # The report says what happened, and the caller's copy carries the
+    # commit's half (accepted/won) the loop itself cannot know.
+    inner = seen["report"]
+    assert isinstance(inner, realize_mod.NegotiationReport)
+    assert inner.converged and inner.conflicted[-1] == 0
+    assert inner.iterations_run == len(inner.conflicted) >= 1
+    assert inner.proposals == len(proposal) and not inner.out_of_time
+    assert inner.accepted == 0 and not inner.won
+    outer = result.negotiation
+    assert outer is not None
+    assert (outer.iterations_run, outer.conflicted) == (
+        inner.iterations_run,
+        inner.conflicted,
+    )
+    assert outer.accepted == len(proposal) and outer.won
+    assert "converged" in outer.line() and "result taken" in outer.line()
+    assert outer.as_dict()["converged"] is True
     # Verbatim: every committed track run starts on its proposal's copper.
     starts = {
         (round(t.segments[0]["start"][0], 6), round(t.segments[0]["start"][1], 6))
@@ -356,7 +378,7 @@ def test_negotiation_stops_at_its_wall_clock_budget(monkeypatch):
     monkeypatch.setattr(realize_mod, "_negotiate", negotiate)
     ir = from_graph(_ladder_graph(6), stackup=DEFAULT_STACKUP)
     optimize(ir, OptimizeConfig(iters=300, seed=3))
-    realize(
+    result = realize(
         ir,
         config=RealizeConfig(
             router="maze",
@@ -366,6 +388,11 @@ def test_negotiation_stops_at_its_wall_clock_budget(monkeypatch):
         ),
     )
     assert seen["proposal"] == {}, "an iteration ran past a zero budget"
+    report = result.negotiation
+    assert report is not None and report.out_of_time
+    assert report.iterations_run == 0 and report.conflicted == ()
+    assert not report.converged and not report.won and report.accepted == 0
+    assert "out of time" in report.line() and "no iteration completed" in report.line()
 
 
 def test_the_budget_is_checked_per_net_not_per_iteration(monkeypatch):

@@ -138,6 +138,50 @@ def test_pcb_route_direct_job_refuses_out_of_range_before_board_read(
     assert not ctx.summaries
 
 
+def test_pcb_route_summary_says_what_the_negotiation_did(store: Store, monkeypatch):
+    """gr469872's follow-up: job 470129 (``negotiate=10`` on the EWOD
+    dogfood board) reported the same counts as ``negotiate=0`` and nothing
+    else. The report the realizer now returns must reach the job summary
+    and the stored ``last_route`` meta, verdict included."""
+    import dataclasses
+
+    ref_id = _seed(store, "route-negotiate-summary", _DESIGN)
+    real = pcb_route.pcb_realize.realize
+    report = pcb_route.pcb_realize.NegotiationReport(
+        iterations_run=3,
+        conflicted=(52, 52, 52),
+        proposals=53,
+        out_of_time=False,
+        elapsed_s=3.6,
+        accepted=13,
+        won=False,
+    )
+
+    def with_report(*args, **kwargs):
+        return dataclasses.replace(real(*args, **kwargs), negotiation=report)
+
+    monkeypatch.setattr(pcb_route.pcb_realize, "realize", with_report)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 50, "negotiate": 3})
+    _route(ctx)
+    summary = "\n".join(text for kind, text in ctx.summaries if kind == "job_summary")
+    assert (
+        "negotiated 3 iteration(s) in 4s: 52→52 net(s) in conflict, did not "
+        "converge; 53 proposal(s), 13 committed verbatim, result not taken"
+    ) in summary
+    ref = store.get_ref(kind="pcb", id="route-negotiate-summary")
+    assert ref is not None
+    assert ref.meta["last_route"]["negotiation"] == {
+        "iterations_run": 3,
+        "conflicted": [52, 52, 52],
+        "converged": False,
+        "proposals": 53,
+        "out_of_time": False,
+        "elapsed_s": 3.6,
+        "accepted": 13,
+        "won": False,
+    }
+
+
 @pytest.mark.parametrize("negotiate", [None, 0, 10, 100])
 def test_pcb_route_threads_negotiation_to_realizer(
     store: Store, monkeypatch, negotiate

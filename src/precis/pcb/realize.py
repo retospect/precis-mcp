@@ -862,6 +862,13 @@ class RealizeResult:
     #: reasons`` extended to the OTHER surprising case: a route that
     #: succeeded but not from where a reader would assume.
     island_terminals: dict[int, str] = field(default_factory=dict)
+    #: What the negotiated-congestion loop did, when it ran
+    #: (``config.negotiate_iterations > 0`` AND the re-ordering passes
+    #: left a net unrouted); ``None`` otherwise. The route job prints
+    #: :meth:`NegotiationReport.line` so a ``negotiate=N`` run that gains
+    #: nothing says whether the loop converged, ran out of time, or never
+    #: settled — the three very different next steps.
+    negotiation: NegotiationReport | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1369,6 +1376,7 @@ def _realize_maze(
     list[UnroutedReason],
     list[UnstitchedNet],
     dict[int, str],
+    NegotiationReport | None,
 ]:
     """Route ``ids`` on a shared occupancy grid — see :mod:`precis.pcb.
     maze` for why this cannot emit overlapping copper, and what it gives
@@ -1456,13 +1464,13 @@ def _realize_maze(
             )
             pads.append((point, net, shape, layers))
     if not pads:
-        return [], [], list(ids), [], [], [], {}
+        return [], [], list(ids), [], [], [], {}, None
 
     rules_by_net = {
         n: _resolve_track_rules(ir, n, PAD_LAYER, config) for n in range(ir.n_nets)
     }
     if not rules_by_net:
-        return [], [], list(ids), [], [], [], {}
+        return [], [], list(ids), [], [], [], {}, None
     # Rulings 2026-09-19 item 7 — per-net layer lock, resolved ONCE
     # (net-class-derived, not attempt-derived, same "built once outside
     # the retry loop" reasoning as `rules_by_net` itself). A net absent
@@ -1567,6 +1575,7 @@ def _realize_maze(
     Outcome = tuple[list[RealizedTrack], list[RealizedVia], list[int], dict[int, str]]
     best: Outcome | None = None
     best_score = (0, 0)
+    accepted_counts: list[int] = []
 
     def attempts(order: list[int], preferred: dict[int, _Proposal] | None) -> None:
         """Up to ``config.route_passes`` passes, failures to the front."""
@@ -1574,6 +1583,7 @@ def _realize_maze(
         for _attempt in range(max(1, config.route_passes)):
             attempt_grid = maze.OccupancyGrid(spec, clearance_mm=clearance)
             attempt_grid.set_body_mask(body_mask)
+            accepted: list[int] | None = [] if preferred is not None else None
             outcome = _route_pass(
                 ir,
                 order,
@@ -1591,7 +1601,10 @@ def _realize_maze(
                 island_terminals=island_terminals,
                 net_layers=net_layers,
                 preferred=preferred,
+                accepted=accepted,
             )
+            if accepted is not None:
+                accepted_counts.append(len(accepted))
             # Fewest failed NETS first — a net with any unrouted segment
             # fails the route job (Reto, 2026-10-01) — then fewest failed
             # segments.
@@ -1607,12 +1620,14 @@ def _realize_maze(
             order = failed + [s for s in order if s not in set(failed)]
 
     attempts(order, None)
+    negotiation: NegotiationReport | None = None
     if best_score[0] and config.negotiate_iterations > 0:
         # The re-ordering passes left nets unrouted: negotiate (see
         # `_negotiate`), then commit the proposal onto a hard grid the same
         # way, conflict-free nets first. Kept only if it scores better, so
         # it can cost time but never realized nets.
-        proposal, conflicted = _negotiate(
+        hard_best = best
+        proposal, conflicted, report = _negotiate(
             ir,
             order,
             plane_ids,
@@ -1631,6 +1646,15 @@ def _realize_maze(
         )
         settled = [s for s in order if int(ir.seg_net[s]) not in conflicted]
         attempts(settled + [s for s in order if s not in set(settled)], proposal)
+        negotiation = NegotiationReport(
+            report.iterations_run,
+            report.conflicted,
+            report.proposals,
+            report.out_of_time,
+            report.elapsed_s,
+            accepted=max(accepted_counts, default=0),
+            won=best is not hard_best,
+        )
     assert best is not None  # the loop runs at least once
     tracks, vias, unrouted, island_terminal_notes = best
     # The pour RIM insets by the board-edge rule alone — NOT `edge_inset`,
@@ -1729,6 +1753,7 @@ def _realize_maze(
         reasons,
         unstitched,
         island_terminal_notes,
+        negotiation,
     )
 
 
@@ -2529,6 +2554,72 @@ class _Proposal:
     copper: maze.RoutePath
 
 
+@dataclass(frozen=True, slots=True)
+class NegotiationReport:
+    """What one :func:`_negotiate` run did — the route job's only window
+    into the loop. Before this, a ``negotiate=10`` job on the EWOD dogfood
+    board (job 470129) reported the same 22/33 as ``negotiate=0`` and
+    nothing else, and a four-arm replay (2026-10-07: 40 iterations, three
+    pressure schedules) was needed to learn that 52 of 55 nets were still
+    in conflict after EVERY iteration — the loop never converged, and the
+    job had no way to say so."""
+
+    #: Full iterations completed (a budget cut-off mid-iteration counts
+    #: none; its partial proposals are still committed).
+    iterations_run: int
+    #: Nets still in conflict after each completed iteration, in order.
+    #: Converged means the last entry is 0.
+    conflicted: tuple[int, ...]
+    #: Segments holding a proposal when the loop ended.
+    proposals: int
+    #: ``config.negotiate_budget_s`` ran out before the iterations did.
+    out_of_time: bool
+    elapsed_s: float
+    #: Most proposals one commit pass took verbatim (:func:`_route_pass`'s
+    #: ``accepted``) — how much of the negotiated plan survived the hard
+    #: grid.
+    accepted: int = 0
+    #: The result the caller gets came from a commit pass, not from the
+    #: plain re-ordering passes before it.
+    won: bool = False
+
+    @property
+    def converged(self) -> bool:
+        return bool(self.conflicted) and self.conflicted[-1] == 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "iterations_run": self.iterations_run,
+            "conflicted": list(self.conflicted),
+            "converged": self.converged,
+            "proposals": self.proposals,
+            "out_of_time": self.out_of_time,
+            "elapsed_s": round(self.elapsed_s, 1),
+            "accepted": self.accepted,
+            "won": self.won,
+        }
+
+    def line(self) -> str:
+        """One summary sentence for a job digest."""
+        if self.conflicted:
+            trail = f"{self.conflicted[0]}→{self.conflicted[-1]} net(s) in conflict"
+        else:
+            trail = "no iteration completed"
+        verdict = (
+            "converged"
+            if self.converged
+            else "out of time"
+            if self.out_of_time
+            else "did not converge"
+        )
+        taken = "taken" if self.won else "not taken (hard passes scored better)"
+        return (
+            f"negotiated {self.iterations_run} iteration(s) in "
+            f"{self.elapsed_s:.0f}s: {trail}, {verdict}; {self.proposals} "
+            f"proposal(s), {self.accepted} committed verbatim, result {taken}"
+        )
+
+
 def _negotiation_claims(
     grid: maze.OccupancyGrid, path: maze.RoutePath, req: _SegRequest, clearance: float
 ) -> list[tuple[float, float, int, int, float]]:
@@ -2569,10 +2660,12 @@ def _negotiate(
     fixed_copper: list[dict[str, Any]] | None,
     island_terminals: dict[int, tuple[_EndTerminals, _EndTerminals]] | None,
     net_layers: dict[int, list[int]] | None,
-) -> tuple[dict[int, _Proposal], set[int]]:
+) -> tuple[dict[int, _Proposal], set[int], NegotiationReport]:
     """Negotiated congestion over the routed nets (:class:`maze.
-    Negotiation`): a proposal per segment, plus the nets still in conflict
-    when the iterations or ``config.negotiate_budget_s`` ran out.
+    Negotiation`): a proposal per segment, the nets still in conflict
+    when the iterations or ``config.negotiate_budget_s`` ran out, and a
+    :class:`NegotiationReport` of what happened (``accepted``/``won`` are
+    the caller's to fill — they are known only after the commit).
 
     Each iteration rips up and re-routes every net that ended the last one
     in conflict, whole (its connections attach to one another, so a net is
@@ -2627,9 +2720,11 @@ def _negotiate(
         by_net.setdefault(req.net_id, []).append(seg_id)
     paths: dict[int, _Proposal] = {}
     conflicted = set(by_net)
-    deadline = time.monotonic() + config.negotiate_budget_s
+    started = time.monotonic()
+    deadline = started + config.negotiate_budget_s
+    trail: list[int] = []
+    out_of_time = False
     for _iteration in range(config.negotiate_iterations):
-        out_of_time = False
         for net_id, segs in by_net.items():
             if net_id not in conflicted:
                 continue
@@ -2684,10 +2779,18 @@ def _negotiate(
                 if hits.shape[0]:
                     conflicted.add(net_id)
                     neg.add_history(hits)
+        trail.append(len(conflicted))
         if not conflicted:
             break
         neg.pres_fac *= maze.NEGOTIATE_PRES_GROWTH
-    return paths, conflicted
+    report = NegotiationReport(
+        iterations_run=len(trail),
+        conflicted=tuple(trail),
+        proposals=len(paths),
+        out_of_time=out_of_time,
+        elapsed_s=time.monotonic() - started,
+    )
+    return paths, conflicted, report
 
 
 def _route_pass(
@@ -5727,9 +5830,16 @@ def realize(
         route_ids, fixed_realized = _split_fixed_realized(
             ir, ids, footprints, fixed_copper
         )
-        tracks, vias, unrouted, pours, reasons, unstitched, island_notes = (
-            _realize_maze(ir, route_ids, config, footprints, fixed_copper)
-        )
+        (
+            tracks,
+            vias,
+            unrouted,
+            pours,
+            reasons,
+            unstitched,
+            island_notes,
+            negotiation,
+        ) = _realize_maze(ir, route_ids, config, footprints, fixed_copper)
         warnings = _gap_usage(ir, route_ids, config)
         return RealizeResult(
             tuple(tracks),
@@ -5741,6 +5851,7 @@ def realize(
             tuple(unstitched),
             tuple(fixed_realized),
             island_notes,
+            negotiation=negotiation,
         )
     if config.router != "tangent":
         raise ValueError(

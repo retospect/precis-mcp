@@ -14,7 +14,11 @@ Negotiated congestion remains a per-route opt-in, never a global default.
 Its handler and realizer supported the knob before the job params contract
 registered it; that omission refused every advertised request at enqueue
 (gr469872). Registering the existing parameter fixes reachability without
-changing copper policy, the 60-second cap, or off-by-default routing.
+changing copper policy, the 60-second cap, or off-by-default routing. The
+loop reports what it did (``realize.NegotiationReport``: iterations,
+conflict trail, budget, proposals committed, whether its result was taken)
+and the route job prints that line — on the EWOD dogfood board's B.Cu lock
+it never converges (ewod-pcb thread, 2026-10-07).
 
 Map, in pipeline order (design doc:
 ``docs/backlog/pcb-guided-place-route.md``):

@@ -918,10 +918,17 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "dangling": n_dangling,
                 "vias": len(rres.vias),
                 "warnings": [w.message() for w in rres.warnings][:20],
+                "negotiation": (
+                    rres.negotiation.as_dict() if rres.negotiation else None
+                ),
             }
         },
     )
     pin_swap_summary = "\n" + "\n".join(pin_swap_warnings) if pin_swap_warnings else ""
+    # A `negotiate=N` run that gains nothing must say WHY (gr469872's
+    # follow-up: job 470129 reported the baseline 22/33 and nothing else).
+    if rres.negotiation is not None:
+        pin_swap_summary += "\n" + rres.negotiation.line()
     if unmatched_sketch:
         pin_swap_summary += (
             f"\nwarning: {unmatched_sketch} stored layer/side sketch "

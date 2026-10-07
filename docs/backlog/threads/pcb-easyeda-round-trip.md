@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** When the organizer reopens the parked thread, resume Do next 1 using the current real-board measurements.
+- **Next:** When the organizer reopens the parked thread, resume Do next 1 using the current real-board measurements. The shared-occupancy negotiated congestion build named there is owned by [ewod-pcb](ewod-pcb.md#resume) (2026-10-07): its report landed and its dogfood-6 verdict is recorded in that thread; do not re-plan it here.
 - **Blocked by:** Parked at tier 3: start no new slice until organizer reopen. Reto’s Pro look remains pending; coordinate shared files with [ewod-pcb](ewod-pcb.md#resume).
 - **Unblocks:** A corrected board that routes and round-trips.
 - **Acceptance:** Use [pcb-router-fails-at-real-board-size](../pcb-router-fails-at-real-board-size.md) and [latest handoff](#thread-context); compare against the latest 67/89 result and alignment/DRC findings, not the initial 8/89.
