@@ -128,6 +128,8 @@ Next step: slice (c), dogfooded on the first round cut after it lands.
     false-positive rate vs value; a decision, not a defect.
 11. **backlog/token-review-hook-gaps.md** — the bash-reflex nudge misses
     real traffic; compact-thrash re-reads.
+12. **backlog/session-prefix-and-fleet-context-cost.md** — a 105-137k
+    turn-one prefix is half of all cache reads; fleet windows run at 250k.
 
 ## Parked
 

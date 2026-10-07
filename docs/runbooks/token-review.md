@@ -68,6 +68,15 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-10-07** — 24h window, 13 main-loop sessions, 566M cache-read tokens
+  (dedup by message id) vs ~2M output. Half is the fixed 105-137k turn-one
+  prefix (tool schemas: Figma plugin, Claude Docs, `precis` put/edit) × ~2400
+  turns; the rest is eight Fable fleet windows at 210-275k average context,
+  ~10% of it coordinator/wakeup chatter. Old rules (sed -n, TaskOutput
+  re-polls) were not material. Filed `session-prefix-and-fleet-context-cost`.
+  Codex fleet (melchior) not in the local corpus. Surface side filed as
+  gr472987 (todo append), gr472988 (gripe render), gr472989 (gripe put+link),
+  gr472990 (count/group + raw prod-psql detour).
 - **2026-10-02** — scanned the 25 largest main-loop sessions since 09-25
   (13.9k Bash calls, 6-88 MB each). Rule D `sed -n` still unfixed: 2303 calls
   (17% of Bash), 196 slices >5 KB = ~1.4 MB; 613/2758 sed/Read-by-path calls
