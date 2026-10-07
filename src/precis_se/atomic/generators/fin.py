@@ -93,6 +93,7 @@ def _normalize(params: dict[str, Any]) -> tuple[int, int, int, str, str, float]:
 
 def build_fin(params: dict[str, Any]) -> GeneratedBlock:
     n, periods, rows, side, name, k = _normalize(params)
+    termination = terminate_mode(params)
     try:
         net, graft = fin_tube(n, periods, rows, side)
     except ValueError as exc:
@@ -214,11 +215,13 @@ def build_fin(params: dict[str, Any]) -> GeneratedBlock:
         "features": [{"name": name, "type": FEATURE_TYPE, "side": side, "rows": rows}],
         "k_tether": k,
     }
+    if "terminate" in params:
+        normalized["terminate"] = termination
     block = _block_from_net(
         net,
         pos,
         spec="",
-        terminate=terminate_mode(params),
+        terminate=termination,
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={

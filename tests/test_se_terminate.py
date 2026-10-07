@@ -142,7 +142,8 @@ def test_fin_scene_is_capped_by_default() -> None:
     block = build_hexfold_scene(params)
     bare = build_hexfold_scene({**params, "terminate": "none"})
     assert block.elements.count("H") == 34 and bare.elements.count("H") == 0
-    assert block.topology["scene"] == bare.topology["scene"]
+    assert "terminate" not in block.topology["scene"]
+    assert bare.topology["scene"] == {**block.topology["scene"], "terminate": "none"}
     assert block.tags == [TERMINATED_TAG]
 
 

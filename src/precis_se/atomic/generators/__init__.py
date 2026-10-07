@@ -75,6 +75,9 @@ the remaining sheets relax under the existing forces. No spring threshold
 changes or general rail topology are added. Its three fixed planes cannot
 become a revolution-target receipt, so stored surface_deviation stays unavailable
 while seam-ring, bond, angle and tether residual findings remain inspectable.
+Typed Y and fin scenes retain an explicit termination mode in their replay
+params: otherwise replaying a bare carbon scene silently adds H. An omitted
+mode keeps the historical scene shape and the family default.
 """
 
 from __future__ import annotations

@@ -88,6 +88,7 @@ def _normalize(params: dict[str, Any]) -> tuple[int, int, str, float]:
 
 def build_y_junction(params: dict[str, Any]) -> GeneratedBlock:
     periods, row_pairs, name, k = _normalize(params)
+    termination = terminate_mode(params)
     net, result = straight_y(periods, row_pairs)
     normals = np.zeros_like(result.coords)
     for j, (_region, ords) in enumerate(net.regions):
@@ -214,11 +215,13 @@ def build_y_junction(params: dict[str, Any]) -> GeneratedBlock:
         ],
         "k_tether": k,
     }
+    if "terminate" in params:
+        normalized["terminate"] = termination
     block = _block_from_net(
         net,
         pos,
         spec="",
-        terminate=terminate_mode(params),
+        terminate=termination,
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={
