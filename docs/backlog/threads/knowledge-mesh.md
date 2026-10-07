@@ -104,9 +104,7 @@ graph-health-metrics, five parked gripes, and the seam with
    Above fisheye because duplicate hubs split live evidence that the
    monthly papers (qu459585) and nanopub cites read now. Reuse waits on
    stranded branch `gripe_180306` (bundle on Reto's Mac) reaching origin;
-   `merge_hubs` on main covers the merge if it cannot. Sibling gr462136
-   (an errored dedup judgment read as "different") is owned by
-   claims-and-evidence.
+   `merge_hubs` on main covers the merge if it cannot.
 5. **backlog/taxon-facet-navigation.md slices 1–3** — nearest-sibling
    refusal, `under=` on every kind, `view='facets'`. Above part refs,
    fisheye and the measures gaps (Reto 2026-10-05, as high as practical):
@@ -244,8 +242,6 @@ items.
   definitional/methodological claim classes a taxonomy or architecture
   paper needs to cite; unparks with Do-next 9, which names a definitional
   claim class explicitly (membership yes/no/unknown).
-- **gr182230** — taproot chase-trigger recall gap (60 days old, pre-enablement). Unparks
-  when chase_trigger is enabled by default; inert until then.
 - **gr445531** — whether spectral graph theory buys anything on precis's
   graph structures; unparks when Horizon 3 gives it a populated graph
   worth measuring the spectrum of.

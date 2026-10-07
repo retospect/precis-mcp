@@ -54,7 +54,7 @@ Reto 2026-10-01). Skeleton draft `catpath-methods` exists, with a plan
 paragraph per section; next comes importing the missing methods papers.
 **No GPAW relax has ever completed in prod** (the two DFT-rung jobs ever
 dispatched both failed; the 09-18 serial run measured 10–18 min per ionic
-step, gr346449). So the timed MPI run is also the first completion test: if
+step). So the timed MPI run is also the first completion test: if
 it fails for any reason other than speed, chemistry reports and stops.
 Ruled 2026-10-02 (chemistry-6, option 1): the orchestrator rebuilds the MPI
 image on pollux in the round-2 window; pollux stays the `dft` host
@@ -71,8 +71,7 @@ Measure: wall per SCF iteration; one ionic step at 1 rank on the new image
 first, then 8 ranks (review note §5). Rank the items below by what that
 paper needs.
 
-1. **gr322060** (relax-infra tracker). gr345366 closed 2026-10-03:
-   no parse failures on 63301c5c across three quests' ticks.
+1. **gr322060** (relax-infra tracker).
    `backlog/qu164903-campaign.md` residuals are ops/Reto
    (st164913 un-rule-out, kinetics cutover prod write, presentation items);
    `backlog/quest-seed-orphan-recovery.md` is down to its audit half.
@@ -90,7 +89,7 @@ paper needs.
    (via knowledge-mesh-12): qu202467 is the knowledge-mesh measures pilot;
    held DORMANT (set 20:06Z, no ticks) until that pilot lands (~4 builds,
    knowledge-mesh thread). Pilot landed 2026-10-04 (122 measure runs, 114 approved); resume is with Reto as review-queue knowledge-mesh-13. Restart is knowledge-mesh's call, not ours. tick_count
-   did not advance on that tick (stuck at 314; gr464538), so count
+   did not advance on that tick (stuck at 314), so count
    ticks from the quest's chunks, not meta. The "six unresolved gold stubs" blocker was
    a visibility defect: five had bodies since August/September, but the
    tick's literature section shows about 12 of 484 served papers, and the

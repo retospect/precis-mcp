@@ -27,8 +27,6 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
 **Worktree:** `local-compute`
 **Allocation decision (historical):** yes (2026-10-01, Reto: "Bring it back we will").
 **Resume (2026-10-03, after round 3 deployed 929107f3):**
-- The gr464223 eval fix is verified in prod: a CLI local-vs-cloud compare scored both arms. Gripe closed.
-- `scripts/prod-precis` lacks the LLM base url (gr464670).
 - Waiting on:
   - Reto, for local-compute-12. The NAS role shares are proposed in `cluster-fileserver-move.md`.
   - knowledge-mesh, for its km-8 task set (model pick and the vllm Slice 1 branch).
@@ -143,7 +141,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    | local `glm-4.7-flash` (melchior) | 0.750 | 0.800 | 2/40 | 0/40 |
    | cloud `z-ai/glm-4.7-flash` | 0.825 | 0.850 | 1/40 | 0/40 |
 
-   - The CLI could not run it then. It runs since round 3 (gr464223, closed): it never bound its store,
+   - The CLI could not run it then. It runs since round 3: it never bound its store,
      and the operator chain's pinned rung model overrides the candidate id.
      The local arm was driven through `run_eval(dispatch_fn=...)`, using the
      LOCAL transport at the served endpoint: **hook-driven, bypasses the
@@ -171,7 +169,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
      `summarize_v2_200.json` next to v1.
    - **200-task compare, 2026-10-03: PASSES the rule.** Run through the
      fixed `pinned_dispatch` path (this tree's code, slot-accounted, breaker
-     on), so it also exercises the gr464223 fix: no void arm, one cloud 504.
+     on), so it also exercises the eval fix: no void arm, one cloud 504.
 
      | arm | run | prose (n=150) | non-prose (n=50) | wall |
      |---|---|---|---|---|
@@ -297,7 +295,7 @@ task set.
 7. **backlog/embedder-capacity-ownership.md** — decided (Reto 20:47Z
    2026-10-02, td461158, §Decided in the item): this thread holds aggregate
    embedder capacity; owner is the embedder service; provisional capacity
-   12.7–13.6 texts/s mixed, query p50 ~2 s / p95 ~5 s (gr459844 rig, a
+   12.7–13.6 texts/s mixed, query p50 ~2 s / p95 ~5 s (a
    floor); host-level admission and a shared vector cache declined. Left:
    the N-client load test once local LLM rungs share the box with the
    embedder, so after 5; then delete the item. The capacity plan (2) carries
@@ -346,16 +344,7 @@ task set.
 
 ## Parked
 
-- **embed drain** — **gr456034**, **gr454865**: the `embed_batch` backlog is
-  not draining, by a different mechanism than the closed gr347576, and
-  `chase_trigger` carries a dead batch-size knob. Unparks when Do-next 7
-  (embedder capacity ownership) picks this up — it is the same bottleneck seen
-  from the queue end. The **ingest-fidelity** half of what was parked here as
-  one cluster left on 2026-10-01: Reto ruled it its own thread,
-  `threads/ingest-and-fetch.md`, so gr228652, gr228699, gr453859, gr453860,
-  gr453862, gr453913 and gr456181 are ranked there, not here. gr458393
-  (`_greedy_split` pagination) was mis-clustered here at the 09-30 review and
-  is ranked in se-3d-viewer.
+- (none)
 
 ## No action needed
 

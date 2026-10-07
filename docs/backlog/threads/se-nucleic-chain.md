@@ -56,7 +56,7 @@ worktree's code against the prod DB (not the deployed code).
 ## Horizon
 
 1. **atom findings name design objects** — `envelope_fit` now names its
-   atom by residue and helix offset (gr457928's slice); the other
+   atom by residue and helix offset; the other
    structure-level findings on a bound segment (bond geometry, clashes)
    still say `aO44` — extend them the same way through
    `atomic/validate.py::chain_atom_name` when one bites in a dogfood.
@@ -169,13 +169,6 @@ worktree's code against the prod DB (not the deployed code).
   the unknown-uid and unbound-block refusals left the agent to find a uid
   — they now name `view='block'` and the block's own token.
 - **td458169** — done 2026-09-30; results in the todo's text.
-- **gr457928** — loop nucleotides chain by default: `realize_chain`
-  relaxes the loop backbone unless `relax_loops=false` (Reto ruled
-  default-on 2026-09-30 night); envelope_fit skips loop atoms and names
-  a protruding atom by residue; residue rows persist. Tagged done.
-  Prod-verified 2026-10-01 on `dogfood-hairpin-4` (the hairpin Reto saw
-  with overly long bonds, rebuilt with the relax): worst loop O3'–P step
-  9.74 → 1.96 Å, no envelope_fit finding, 4 complementary pairs.
 - **base-pair complementarity is a read, not a look** — Reto on
   dogfood-nucleic-3 (2026-09-30): "I am not sure if basepairs in fact
   match"; the product could not answer (`pairing.watson_crick` had no
@@ -187,13 +180,6 @@ worktree's code against the prod DB (not the deployed code).
   prod's dogfood-nucleic-3 by hand first (all 21 pairs, 2.9 Å N1–N3).
   Reto ruled strict: an undeclared G·T is an error, a wobble is a declared
   `W-W-cis`.
-- **gr458472** — filed 2026-09-30 from that re-dogfood: a `put(kind='se',
-  ops=[…])` call lost its ops (put's schema has no `ops=`) and wiped the
-  design; recovered by replaying design_revisions by hand. The refusal half
-  is fixed in the commit that added this line (put with no ops refuses
-  while the design has blocks). The rest — a restore_revision op, a
-  revisions view, `ops=` on put's schema — is se persist work, not this
-  thread's; it stays on the gripe.
 - **backlog/se-fold-layout-coaxial-and-tails.md** — shipped 2026-09-30 and
   deleted, delete-on-ship: a helix reached through zero unpaired
   nucleotides is placed end to end on the one it stacks on (phase0 tuned so

@@ -26,8 +26,8 @@ package-split superseded, private-until-paper = invisible. The goal is a
 minimal releasable model package that is also fully useful inside precis,
 and deploys that don't take hours for a simple change. Pathway
 presentation work is the same thread by dependency.
-**Last reviewed:** 2026-09-30 (pillar review same day added gr458360 and
-gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
+**Last reviewed:** 2026-09-30 (pillar review same day added two gripe items
+to Do next, and the 11-gripe god-module cluster to Horizon)
 **Worktree:** `plugin-split` (any fresh tree works; nothing is unlanded)
 
 ## Detailed handoff here (2026-10-03)
@@ -59,7 +59,7 @@ gr454796 to Do next, and the 11-gripe god-module cluster to Horizon)
   `precis.cli.registry`; a plugin adds commands via the `precis.cli`
   entry-point group. Behaviour-neutral at the CLI surface — help output
   is byte-identical to the eager tree (`tests/test_cli_lazy.py`).
-- **Step 3 is done** (deploy 38; gr459123 closed 2026-10-02 after the
+- **Step 3 is done** (deploy 38, 2026-10-02: the
   session MCP's respawn resolved `precis-pathway-help` from the plugin).
   A long-lived container holding old install metadata needs a reinstall or
   respawn after any entry-point change; the session MCP's in-place serve
@@ -109,8 +109,8 @@ failure, and `full` drains and bounces the **worker** units, not only web.
 This round supplied a matching data point: a `src/precis_pathway/`-only
 commit deployed at 00:30Z, and the 04:12Z dispatched run executed the new
 code. Fix option 1 is withdrawn in the gripe; what survives is dev-side
-staleness, owned by gr458061 (session MCP containers) and gr459123 (gate
-container metadata). Nothing in this thread waits on it.
+staleness, owned by gr458061 (session MCP containers) and gate
+container metadata. Nothing in this thread waits on it.
 
 ## Horizon
 
@@ -156,7 +156,7 @@ own item); they become items as each comes into reach.
 
 ## Parked
 
-- **gr458944** — pathway titles. Dogfooding this thread's surface on prod
+- **Pathway titles.** Dogfooding this thread's surface on prod
   2026-09-30 found 697 of 701 pathway refs titled "(computing)", including
   every `status: ready` one: the dispatched-job path seeds that placeholder
   and completion never replaced it. The write-path fix is **verified on

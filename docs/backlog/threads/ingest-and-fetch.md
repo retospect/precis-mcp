@@ -30,7 +30,7 @@ on main (round 6: c83c46973, 5d95cb2fc, 714ef6049, a20d35169), nothing
 unshipped on any branch, no agent or job running. Waiting on the round-6
 deploy, then the after-deploy steps below.
 - Landed: SI builds 1 and 2 with re-arm fixes (item 1), the arXiv
-  e-print magic-byte and plain-TeX staging (gr465473 closed), and a
+  e-print magic-byte and plain-TeX staging, and a
   connect-failure retry on Crossref and bib_parse (c83c46973, round 6).
 - At the orchestrator's gate, not landed by this thread: the safe_fetch
   next-address fallback, branch `worktree-agent-a3b62578f305e3772` tip
@@ -147,10 +147,10 @@ deploy, then the after-deploy steps below.
      next-address fallback design is accepted (reviews §3) and goes
      through the orchestrator's gate as a branch.
    Delete this item once walker and web triggers are seen on prod.
-2. **gr228652** (`backlog/ingest-strips-greek-glyphs.md`) — μ/Greek
+2. **`backlog/ingest-strips-greek-glyphs.md`** — μ/Greek
    destroyed at extraction. Confirmed live, and its deployed detector was
-   inert until gr461607 (stub upgrade dropped `paper.meta` for 99.7% of new
-   papers; fixed alongside this re-rank). Reto ruled
+   inert until the stub-upgrade fix (the upgrade dropped `paper.meta` for
+   99.7% of new papers; fixed alongside this re-rank). Reto ruled
    2026-10-02 (review item ingest-and-fetch-2): detection only for now.
    Flagged papers get marked, and findings and cites drawn from them carry
    a caveat. Recovery is decided once the post-deploy `meta.glyph_health`
@@ -162,7 +162,7 @@ deploy, then the after-deploy steps below.
    10-02) was a false positive: its 12 control characters were all TeX
    CMEX delimiter glyphs. Fixed in round 2 by not counting C0 from
    math-extension fonts; the stored flag on 461434 stays until re-analysed.
-   gr461607 verified live: 1 of 15 PDF ingests since the deploy carries
+   The stub-upgrade fix verified live: 1 of 15 PDF ingests since the deploy carries
    `glyph_health`, against 0 of 1,198 the week before. Next, about a day
    after the round-2 deploy (63301c5c, 2026-10-03 13:49Z): measure
    detector precision, as the orchestrator accepted it 2026-10-02. First,
@@ -237,8 +237,8 @@ deploy, then the after-deploy steps below.
    document`, so a re-fetch cannot heal them: they go to the policy's
    corrupt bucket (repair or OCR), not another re-fetch. Seen on 6 of
    batch 2's no-body refs and 5 of batch 1's. Side defects filed:
-   gr465473 (the arXiv e-print of a PDF-only submission is parsed as a
-   LaTeX tarball; fixed by a magic-byte check in the arxiv_source leg) and gr465474 (an arXiv fetch for ref 202942 minted
+   the arXiv e-print of a PDF-only submission parsed as a
+   LaTeX tarball (fixed by a magic-byte check in the arxiv_source leg), and gr465474 (an arXiv fetch for ref 202942 minted
    anon ref 465241 instead of folding into it). Next: once batch 2
    drains, apply the policy to what is still bodiless, routing
    Pdfium-unreadable PDFs to repair. This
@@ -246,19 +246,19 @@ deploy, then the after-deploy steps below.
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`.
-4. **gr453859** — of 13,874 stubs, ~3,926 have been tried and every leg
+4. **No-OA stubs** — of 13,874 stubs, ~3,926 have been tried and every leg
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
    (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
    acquire re-stamp guard (`ACQUIRE_REARM_DAYS`). Still open: the /drive
    "Stubs (to get)" queue (`precis_web/routes/drive.py`) mixes the no-OA
-   set in, and gr453862's stub-readout remainder.
+   set in, and the stub-readout remainder.
 5. **`backlog/elsevier-preview-remediation.md`** — ~2,796 papers whose
    body is a 1-page preview. Same "looks done, isn't" shape as 2. Ranked
    below it because the fix is a cluster ops run (the vault key), not code.
 6. **`backlog/ref-2615-is-a-mis-bound-record.md`** — one ref bound to two
    different papers' PDFs/DOI. Silent corruption, but a single row.
-7. **gr456181** — 4,313 S2-enriched papers have no venue. Reto approved
+7. **S2 venue re-arm** — 4,313 S2-enriched papers have no venue. Reto approved
    the re-arm 2026-10-02 on condition of gentleness. The enrich lane
    (`stub_rank`) claims stubs only, so it reaches 3,119 of them; the live
    `external_rate_limits` row holds S2 at 1 req/s, and one `/paper/batch`
@@ -307,27 +307,10 @@ deploy, then the after-deploy steps below.
 
 ## No action needed
 
-- **gr228699** — duplicate of gr228652, closed wontfix 2026-10-02.
-- **gr453862**, **gr453913** — fixes verified in prod 2026-10-02 (1
-  residual audit row; 0 recurrences since 09-28).
+- (none)
 
 ## Seam
 
-- **gr463966** (session advisory locks under pgbouncer transaction
-  pooling, a blocker for the Stage B DISCARD ALL): claims-and-evidence
-  owns the fix for all three sites. That includes this pipeline's
-  `ingest/claim.py` (`Claim`, the per-PDF Marker claim) and
-  `workers/chunk_keywords.py`. The leaked lock is chunk_keywords'
-  `_LOCK_KEY`. It recurs on fresh pooled backends: it was on pid 11267,
-  then on 15730 (born 14:14Z) at 14:44Z on 2026-10-03. Recycling one
-  backend therefore does not clear it. Only the code fix does, and Stage
-  B's DISCARD ALL waits on that fix, not on the held lock. The `Claim`
-  leak means two hosts can run Marker on the same PDF until the fix
-  deploys.
-
-- `local-compute` parks the **embed-drain** half of what was one cluster
-  (gr456034, gr454865). That is throughput, this thread is fidelity; they
-  touch different code and neither sequences the other.
 - `knowledge` (taxonomy, quests, papers) consumes this pipeline's output.
   Every fidelity defect here reaches that programme as a wrong answer with no
   error.

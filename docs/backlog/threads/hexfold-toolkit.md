@@ -45,21 +45,12 @@ process did is now detected (`composite_part_stolen`). The execution
 environment is now trustworthy too (every session on the shared HTTP
 server since 09-29), so the order below is: make joins diagnosable, then
 make measured rows trustworthy.
-**Last reviewed:** 2026-10-01 (09-30 re-ranks: gr457995/gr457996 refuted;
-integrity check shipped and gr458061 moved to the
-`session-mcp-shared-server` thread; pillar review added the T-handle
-bearing, four gripes and the instrumentation leg; 22:30Z dogfood round
-shipped gr458713, confirmed gr454650 harder, closed gr454563. 10-01
-round: gr456213 **closed** — it was fixed on 09-29 and I had ranked it 2
-off a stale auto-diagnosis, see "No action needed"; gr459058 and gr459057
-filed from that round, then both fixed in the 01:18Z round, leaving only
-gr459058’s cascade-vs-refuse ruling at 3. 02:16Z round: gr454650
-**closed and my escalation of it retracted** — already fixed, with
-regression tests I never looked for; the one real defect under it was a
-ring-less net crashing the stick pass, also fixed. 11:00Z: gr456203 and
-gr456212 verified and closed (the latter needed its element half
-written); gr458061 removed as a met precondition — the transport move it
-waited on happened 09-29 — note at the bottom)
+**Last reviewed:** 2026-10-01 (09-30 re-ranks: integrity check shipped and
+gr458061 moved to the `session-mcp-shared-server` thread; pillar review
+added the T-handle bearing, four gripes and the instrumentation leg. 10-01
+rounds: the cascade-vs-refuse ruling at 3; gr458061 removed as a
+met precondition — the transport move it waited on happened 09-29 — note
+at the bottom)
 **Worktree:** `hexfold-toolkit` (live work is currently in `hexa`)
 
 ## Detailed handoff
@@ -272,11 +263,10 @@ waited on happened 09-29 — note at the bottom)
            deploys, read back with `view='block'`.
        - Round-2 prod dogfood (2026-10-03 13:53Z, design
          `hexfold-dogfood-r2`, hexfold 0.3.0) shows why this comes first.
-       - `sw` and gr462144's sheet_sw build ok on prod:
+       - `sw` and sheet_sw build ok on prod:
          - rings {5:2, 7:2};
          - atom count equal to pristine;
          - sheet_sw bond rms 0.006 Å, no seed overlap and no clash.
-         - gr462144 is closed.
        - The pillar 3+3 foot through the deployed generator (untethered
          stick) is NOT ok:
          - `geom.clash` ERRORs at 0.54–0.97 Å;
@@ -321,7 +311,6 @@ waited on happened 09-29 — note at the bottom)
      - Open: nanobuds-paper regenerates prod `hexa-nanobud-pillar`
        (structure 459564, stored as a peapod) and reports the
        before/after z table. I confirm it when it arrives.
-     - gr462144 (`sheet_sw` stacked seed) is verified on prod and closed.
    - **Seed tier: built 2026-10-02.** `geom.seed_overlap` is an ERROR
      for seed pairs under 0.7 Å, and `geom.summary` gains
      `seed_clash_count`/`seed_clash_min`. Exactly the four seed-wrong
@@ -358,18 +347,16 @@ waited on happened 09-29 — note at the bottom)
          energy once the science lane is back. If buckled wins, the seed
          tier should offer an out-of-plane core perturbation as an
          option.
-     - **gr462074** `tube_ring_closure`: seed 212 pairs, 0.00 Å. **Not a
+     - `tube_ring_closure`: seed 212 pairs, 0.00 Å. **Not a
        placement bug.** Two straight rigid tubes cannot close a ring, so
        the joint cycle solve stacks `b` exactly on `a` (centroid distance
        0.0). The example is a `registry.closure` fixture, and its ERROR
        is the correct report. The example comment and
        `test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves`'s
-       docstring now say so. Close gr462074 on that reading when the MCP
-       is back (it was down at 20:00Z).
+       docstring now say so.
      - **gr462075** `flanged_doughnut`: every seed pair under 0.7 Å
        (22, min 0.15 Å) lies among the 24 atoms of the `outer` k=3 seam.
-       Seam atoms are seeded at their rim neighbours' mean (the gr347187
-       fix), and the three rims they average over (`top.in`,
+       Seam atoms are seeded at their rim neighbours' mean, and the three rims they average over (`top.in`,
        `bottom.in`, `flange.hole`) are placed up to 11.45 Å apart by the
        known part-graph cycle residual
        (`test_example_seeds_have_no_long_crossing_bonds`' 11.7 bound). So
@@ -527,13 +514,12 @@ waited on happened 09-29 — note at the bottom)
      - Then the full graded drum on prod.
    - Probe scripts are not in the repo (/tmp/hexa-bud/gradfoot.py,
      ports.py, seams.py, meridian.py, f3.hx, f33.hx).
-4. **gr459602 + gr459568 + gr459571** — the agent cannot read what it
-   built. The stats need the tier of the coordinates they were measured
+4. **The agent cannot read what it
+   built.** The stats need the tier of the coordinates they were measured
    on: `structure-geometry-tier-visible` (Reto, 2026-10-01) makes that tier
-   visible in the viewer. Reto asked for mean/extreme C–C bond lengths per build
-   (gr459602); a structure's default `get` is an 80 KB atom table with no
-   summary and its probe views disagree on argument names (gr459568); the
-   check echo is two-thirds per-bond INFO (gr459571). gr459602/gr459568
+   visible in the viewer. Reto asked for mean/extreme C–C bond lengths per build; a structure's default `get` is an 80 KB atom table with no
+   summary and its probe views disagree on argument names; the
+   check echo is two-thirds per-bond INFO. The first two
    live in the `structure` kind, outside this thread's files; they rank
    here because hexfold builds are where they bite.
    - Reto asked again on 2026-10-01: "can we see bond and angle strain
@@ -555,7 +541,7 @@ waited on happened 09-29 — note at the bottom)
    (SPEC §25.3) then the join dry-run, after slice 1. Slice 3
    goes last by the file's own decision: a dry-run needs a reading
    surface to prove it wrote nothing with.
-7. **gr459058, remaining half** — Reto ruled 2026-10-01 (recorded on the
+7. **Design retire cascade, remaining half** — Reto ruled 2026-10-01 (recorded on the
    gripe): a design retire **cascades** to the structures its blocks
    minted, except structures promoted to building-block status, and
    (no ruling needed) except any structure another live design still
@@ -570,7 +556,7 @@ waited on happened 09-29 — note at the bottom)
    `trust_measured`, which is the entire point of the catalogue.
    - Reto ruled 2026-10-01 (td458117) that gr456641 belongs to this
      thread, not the auto-fix lane. Job 457204 timed out, and the branch
-     it reported pushing never existed (gr458326).
+     it reported pushing never existed.
    - Contained until then: `DbCatalogueStore` withholds measured rows
      unless `trust_measured=True`, and nothing sets it. Leave it off.
    - First slice, half shipped (7bf54004b, a stranded fix_gripe branch):
@@ -703,8 +689,8 @@ not tick, wake or re-scope them without his word. On prod they are tagged
 
 ## Parked
 
-- **backlog/se-op-handler-test-fixture.md** — was ranked for gr457996,
-  which is refuted, so its motivating case is gone. The prepare/finish
+- **backlog/se-op-handler-test-fixture.md** — was ranked for a refuted
+  gripe, so its motivating case is gone. The prepare/finish
   seam is still untested; unparks the next time a phase bug is suspected,
   with a real instance to write the first test on.
 - **backlog/se-join-unknown-op-in-web-proposal.md** — `status: ready`, but
@@ -712,13 +698,8 @@ not tick, wake or re-scope them without his word. On prod they are tagged
 
 ## No action needed
 
-- **gr457995**, **gr457996** — both REFUTED 2026-09-30. The
-  `join.part_addressed` guard and the catalogue seed are both correct; a
-  16-hour-stale server process produced both symptoms. Kept as the worked
-  example behind gr458061 (below).
 - **gr458061** — this thread's precondition, **met; removed from Do-next
-  2026-10-01.** It needed both a truthful served-sha surface (gr457361,
-  done) and an end to per-session stdio servers that could serve stale
+  2026-10-01.** It needed both a truthful served-sha surface (done) and an end to per-session stdio servers that could serve stale
   modules. The second was td458385, and it turns out to have been done on
   **2026-09-29 around 17:00** — every session's config has pointed at the
   shared `http://127.0.0.1:8765/mcp` since then, and on 10-01 the shared
@@ -728,40 +709,6 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   reading the config. Dogfood results from 09-30 onward ran against the
   shared server and are not provisional on transport grounds. The
   question about it I had queued for Reto was moot.
-- **gr456201** — ruled: regeneration is the remedy, no new write path.
-  Closed on prod 2026-09-30 with that ruling as its resolution; it had
-  been left open under this heading — the drift that verifying each label
-  against the code, not the prose, is meant to stop.
-- **gr456202** — not a bug; `rim_word` takes `abs(turn)` by design.
-  Closed on prod 2026-09-30, same as above.
-- **gr456203** — CLOSED 2026-10-01 after verifying, not on its label:
-  `_leak_finding` names the breached measure(s) and prints each value
-  against its own threshold, and
-  `test_seam_leak_names_the_breached_measure_and_its_threshold` pins it.
-- **gr456212** — CLOSED 2026-10-01, and the "auto-diagnosed as already
-  fixed" label this file carried was half wrong. The sigma half was done
-  (`seam.sigma`); the element half never landed — nothing in the join
-  path compared the two rims' elements. Shipped `seam.element` (WARN,
-  matching `seam.sigma`, because `JOINERS` is keyed on a lattice pair so
-  heterojunctions can exist later; promoting it to ERROR is a product
-  call). The load-bearing test is the negative: two carbon rims draw
-  nothing, since every ordinary join passes through it.
-- **gr454650** — CLOSED 2026-10-01, **and my 09-30 "confirmed, worse than
-  filed" comment on it is retracted.** It was already fixed by
-  `build._split_degenerate_tube_rims`, with four regression tests in
-  `tests/hexfold/test_len1_rims.py` that all pass on main — I escalated
-  it to Do-next 3 without ever checking for existing coverage. The
-  "five cyclobutanes" reading was wrong too: SPEC puts
-  `ring.size.unusual` *outside* `[4, 8]`, so a four-ring in a seam is
-  inside the library's accepted band by design, and that test file pins
-  `seam.rings {4:5, 6:5}` as the intended result (every face in `[4, 8]`,
-  `sum == 10`, one per fused bond pair). `rings={}` for the bare `len=1`
-  armchair tube is likewise consistent — every atom on a rim, no face
-  closed, `chi=0 rims=2 residual 0` is what an open band reports.
-  Whether hexfold's `[4, 8]` band *should* admit cyclobutanes in an sp²
-  seam is a spec question needing a citation, not a defect; not filed as
-  one. **The real residue** was a different bug and is fixed: see
-  `gr454650`'s own comment and the stick-geometry entry below.
 - **ring-less nets and the stick pass** — FIXED 2026-10-01 in the same
   round. `tube(5,5,len=1)` with geometry on raised `IndexError` from
   `stick.py`'s `springs[:, 0]`, because `_angle_springs` returns `[]` for
@@ -771,55 +718,11 @@ not tick, wake or re-scope them without his word. On prod they are tagged
   back *and* that `geom.summary` is present, so a future "fix" that skips
   the geometry pass instead of running it fails the test. It surfaced as
   "hexfold internal error while compiling the spec" on a legal spec.
-- **gr459057** — FIXED 2026-10-01. `generate` then `join` in one ops list
-  can never work (the mint is deferred until the list validates) and the
-  error now says so and names the remedy. Note for a later pass: the
-  same-batch case is **not** detected precisely, because
-  `finish_generate` sets `bound_kind` and `bound` together, so a block
-  generated in the same list is indistinguishable from a bare one at join
-  time; the message names the deferral as the likely cause and keeps a
-  correct fallback clause. Threading the pending-generate set through
-  would allow a precise, separate error.
-- **gr459058, reporting half** — FIXED 2026-10-01: a retire now prints
-  the structures it left live and the `delete(kind='structure', …)` call
-  for each. One test pins the leak itself, so a later cascade fix has to
-  update the message in the same change rather than quietly making it a
-  lie. Reto ruled cascade on 2026-10-01; building it is Do-next 7.
-- **gr454488** — CLOSED 2026-10-02. All eight residuals were fixed on
-  2026-09-28 by 1a5475438 (in prod), with regression tests in
-  `tests/test_se_hexfold_dogfood2.py`; this file had it ranked at 7 for
-  four days without checking.
-- **gr456213** — CLOSED 2026-10-01, and the closure is a correction of
-  this file. It was fixed on 2026-09-29 by Reto's own ruling that a part
-  may not belong to two composites: `prepare_join` refuses via
-  `_addressed_part_redirect` as `join.part_addressed`, before either side
-  is rebuilt, and names the owning composite's already-exposed port to
-  use instead. Verified live on prod — a join addressing a recorded part
-  was refused with exactly that message. The unconditional
-  `node.parent` assignment the auto-diagnosis pointed at still exists,
-  but every endpoint reaching it has cleared the gate, so its old parent
-  is either `None` or an ordinary non-composite layout parent, reported
-  as a `join.reparented` INFO.
-  **Why this file had it at Do-next 2:** I took comment 1's auto-diagnosis
-  at face value. That comment describes pre-fix code and was never re-run;
-  comment 3 had reset the row to open for an unrelated reason (a false
-  "branch pushed" claim, gr458326). So the ranking rested on a stale
-  report — the same failure this thread's re-rank note is about, committed
-  by the person who wrote the note. The method that caught it was running
-  the scenario against prod instead of reading the diagnosis. **Follow-on:**
-  ref 457890's corruption is therefore historical damage from the
-  stale-process window, not evidence of a live write path, and current
-  code cannot reproduce it. Also: the refuse-vs-reconcile question I was
-  about to put to Reto was already answered by him on 09-29 — refuse.
-- **gr454563** — REFUTED 2026-09-30 by the same round: the parser now
-  raises `5:13: unknown parameter 'length' for tube — known: hand, len,
-  m, n`, which is the remedy the gripe asked for. Closed. Whoever fixed
-  it never linked it, which is why it sat ranked for two days.
 - **`hx-sheet-tube-trial`** — not a defect. Reto read it in the viewer as
   a sheet plus a blob; its four-line spec fuses tube to cap and never
   joins the sheet to anything, so two loose components in one se block is
-  a faithful render of what was asked for. What it *did* surface is
-  gr458713, since shipped as `net.components`.
+  a faithful render of what was asked for. What it *did* surface
+  shipped as `net.components`.
 
 <!-- Re-rank note, per the README: the first version of this list ranked a
 join-side corruption bug at 1 and a test fixture at 5. Both rested on
@@ -834,8 +737,8 @@ item that makes a wrong answer impossible over the one that makes a wrong
 answer visible, and prefer both over re-measuring.
 
 The 10-01 rounds added the symmetric lesson, learned the expensive way at
-ranks 2 and 3 of this very list. gr456213 sat at 2 because I trusted an
-auto-diagnosis of code that had since been fixed; gr454650 sat at 3
+ranks 2 and 3 of this very list. One item sat at 2 because I trusted an
+auto-diagnosis of code that had since been fixed; another sat at 3
 because I "confirmed" a defect against prod without checking whether a
 test file already asserted the behaviour was intended — it did, and the
 chemistry objection I built on top of it contradicted the spec's own

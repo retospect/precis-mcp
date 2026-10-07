@@ -94,8 +94,7 @@ CLI calls and read-only `scripts/prod-psql`; `verify-edges` judges each
 edge against the whole claim, so never attach a methods-only passage to
 "name the method".
 **Last reviewed:** 2026-10-02 (pillar review 2026-09-30 same day absorbed the nanobud
-library items and the hexfold seam-figure want; pruned gr450329/gr450339,
-both STATUS:done)
+library items and the hexfold seam-figure want)
 **Worktree:** `nanobuds-paper`
 
 ## Do next
@@ -165,7 +164,7 @@ fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
    **Item 17 answered 21:21Z:** structures decent, perspective needs work →
    persp + bud-up framing + fog rendered (`figs/render_persp.py`,
    `persp-compare.png`), camera choice is look-at item 18; viz3d persp
-   scaling gripe gr462672. New ask: one composite hero figure on a single
+   scaling is a known gripe. New ask: one composite hero figure on a single
    sheet (front-left tiny bump, behind it a tube with C60 on top, to the
    right a bud and a pill protrusion), built with the smooth-space/hexfold
    tooling; feasibility asked of hexfold-toolkit; preview to Reto before
@@ -363,13 +362,13 @@ td173019.
    findings check (Do next 2; rewording after signing re-opens hubs); the 173020 batch in
    td345830–td345836.
 2. **export + submission** — waits on 1 (td450082 done 2026-10-03 19:39Z). The
-   `placeholder_figures` waiver is deployed (gr454753, on prod since
+   `placeholder_figures` waiver is deployed (on prod since
    2026-10-02), so a reading export no longer needs the ten figures;
    jo461157 is that export (params `placeholder_figures: true`). Submission
    still needs every figure imaged and cleared. docx/pdf via the local prod
    export path against the RSC template. 43020 stays frozen.
 3. **preprint slot blockers** — the repo-side blockers for the monthly
-   preprint (the ten image-less figures, gr459050) are
+   preprint (the ten image-less figures) are
    this thread's; the posting step itself (arXiv/Zenodo submission) is
    Reto's: td459586, qu459585's October todo.
 4. **backlog/nanobud-campaign.md**
@@ -424,13 +423,7 @@ td173019.
   fi449540/fi449588/fi449590 were retitled (dc3824813/15/16) re-pinned by
   rewriting each chunk unchanged; export no longer blocked. Three legacy pc cites
   became hubs: fi458947 (twelve-pentagon rule, dc2445873; grounded on pc2580141 plus the two primary sources review note fi188551 named, pc244266 and pc281158, attached 2026-10-01), fi458948 (AFM
-  5-7 kinks, dc2445877) and fi458952 (schwarzon shielding, dc2445916). Filed gr458941 (every hub shows "no originator
-  derived yet") and gr458943 (hygiene view and windows refuse forms the skill
-  documents). The ten caption cites stay `Reproduced from [pc…]` by policy.
-- **gr459050** — dr173020 is bound draft-of two project todos (td43019 carried
-  over by the fork, td173019 its own); filed 2026-10-01, fix belongs in the
-  fork; do not drop the edge by hand, 43020's binding must stay.
-- **gr450123** — embedder contention; infra, owned elsewhere.
+  5-7 kinks, dc2445877) and fi458952 (schwarzon shielding, dc2445916). The ten caption cites stay `Reproduced from [pc…]` by policy.
 - **jo449492** — the backfill succeeded (189 scanned, 13 converted, 0
   failed); read back in full by td458276 (done 2026-09-30) — a re-run over
   dr173020 is safe.

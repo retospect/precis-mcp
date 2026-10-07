@@ -48,9 +48,9 @@ and is the first build on reopen. The sheet-job adapter waits on
 se-machine-design's input shape (Do-next).
 
 1. **gr464240, round-3 dogfood done (job 464668, prod 929107f32):**
-   22 of 55 routable nets realized (round 2: 20; before gr462607: 29),
+   22 of 55 routable nets realized (round 2: 20; earlier: 29),
    0 vias, best_at=0/708 (round 2: 17/699): the anneal never beat its
-   start state. gr464237's fix helped by 2 nets, but it did not recover
+   start state. A fix helped by 2 nets, but it did not recover
    the 29. Still open; do step 2 before touching the cost model, so the
    v4 generator's effect is measured on its own.
 2. **ewod-dogfood-6 re-put still owed** (ARR1 stored v3, code v4; the
@@ -259,20 +259,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    (195 ms of 287 ms at 8x8). Its findings name a pad by part/pin and give
    the nearest points since 2026-10-01, so `pad[ARR1_R7C0]` no longer reads
    as an electrode when it is the driver's land.
-   **gr458087 was stale, not a regression — reconciled 2026-09-30 by
-   re-running the measurement.** Its 1.9 s/8x8 and 30 s/4-tile figures are
-   the PRE-fix state; the STRtree fix it proposed is already in
-   `check_via_pad_keepout`, whose own comment cites gr458087 and quotes
-   those numbers as history. Re-measured on `main` today over the same
-   `tests/test_pcb_ewod_generator_drc.py::_ewod_model` fixture:
-   `via_pad_keepout` 20 ms of a 224 ms pass at 8x8 (55 pads / 55 vias),
-   97 ms of 1279 ms at 16x16 (231 pads / 200 vias). So the rule is no
-   longer the bottleneck at any size measured, `check_clearance` is, and
-   the affordability prerequisite this item named is genuinely discharged.
-   It had been bounced back to `STATUS:open` by the
-   false-push incident (gr458326), so nobody noticed the real fix had
-   landed by another route. **Closed: it reads `STATUS:done` on prod
-   (checked 2026-10-01).** Reading nearby:
+   Reading nearby:
    **backlog/pcb-placer-obstacle-set-is-mounting-holes-only.md** — what
    is left of the placer's obstacle set after authored VIAS became
    obstacles on 2026-10-01: authored tracks and pours are still

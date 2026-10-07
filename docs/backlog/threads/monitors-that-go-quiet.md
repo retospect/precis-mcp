@@ -24,7 +24,7 @@ exited 0 while printing a refusal now exits 3 on stderr, and the fix_gripe lane
 stopped reporting deliveries it had not made — a fix branch counts as delivered
 only once `git ls-remote` finds it on the repo's real upstream, which the lane
 had never once reached. On 2026-10-02 the NAS probe stopped attesting only its
-own interpreter: each NAS-touching process now attests itself (gr248866, built,
+own interpreter: each NAS-touching process now attests itself (built,
 awaiting deploy). What remains is one signal that lies by omission, a worker
 host no detector can see, and (found 2026-10-04) that no Prometheus alert rule
 is evaluated anywhere, so every one of them is silent (Do-next 1). The last held decision closed 2026-09-30: `ship --quick`
@@ -33,7 +33,7 @@ warns when main's last shard verdict is 24h old and refuses at 48h, on Reto's
 answered before the 30-day prune took them; what they turned up — an
 unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
-**Last reviewed:** 2026-10-04 (reopened for the alert-delivery job, Do-next 1); 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: gr248866 verified, diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done; gr462731 filed); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (gr248866 built on Reto's option-1 ruling; gr245505 verified on prod); 2026-10-02 (gr458459/gr452203/gr452084 found shipped by siblings and verified on prod; gr454480 fixed; gr248866 adopted); 2026-10-02 (stranded-branch work finished and deployed; gr458899 closed on prod); 2026-09-30 (pillar review same day added four orphan
+**Last reviewed:** 2026-10-04 (reopened for the alert-delivery job, Do-next 1); 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (NAS attestation built on Reto's option-1 ruling); 2026-10-02 (stranded-branch work finished and deployed); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
 gr346534, soft-deleted)
 **Worktree:** `monitors-that-go-quiet`
@@ -48,7 +48,7 @@ gr346534, soft-deleted)
   how a rule is tested end to end without paging Reto). The orchestrator
   gives a verdict before B is built; A can start without it.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the
-  diagnose_gripe cost ledger (job 464662), and gr248866.
+  diagnose_gripe cost ledger (job 464662).
 - Waiting on others: the review session's resend of dedupe items 1 and 2
   (Do-next 2); the orchestrator's round for the NFS-hang branch (Do-next 3).
 - Later, no outside wait: the attributability-journal design note (Do-next 4),
@@ -109,7 +109,7 @@ gr346534, soft-deleted)
    prompt says so. Two more filer gaps from the review session's dedupe
    analysis are fixed in the same change. First, an ask minted before
    `doctor_ask_refs` existed is now matched on the handle in its title:
-   td462461 was minted while td456667 on gr456034 was open. Second, a
+   td462461 was minted while td456667 was open. Second, a
    "No queryable surface" tool-gap bullet stays in the report as a
    non-ask instead of minting (td455178). Deployed in round 2
    (63301c5c, 13:49Z 2026-10-03). Dogfood PASS at 18:17Z. The first
@@ -179,14 +179,7 @@ gr346534, soft-deleted)
 
 ## No action needed
 
-- **gr248866 verified on prod after round 2** (2026-10-03 13:51Z). melchior
-  carries per-process NAS attestations, all `ok=true` with fresh `ts`:
-  precis-web, precis-worker, both drain workers and the agent lane
-  (`launched_by=launchd`), plus asa-bot and asa-slack (`terminal`).
-  balthazar carries precis-worker. castor and pollux are Linux, so they
-  attest nothing, as designed. Reto's reconcile-sweep call stays td461151.
-
-- **the fix_gripe self-repair lane** (gr458326, gr452384, gr456240) — closed
+- **the fix_gripe self-repair lane** — closed
   by Reto's ruling 2026-10-02 (td460703, "Drop the lane, we run locally
   session here"): lane OFF. It never delivered; every job skipped at the dry
   run because melchior's fix checkout holds no push credential. Switch: prod
@@ -199,35 +192,7 @@ gr346534, soft-deleted)
   about 23:10Z: td461210 `won't-do` (its 7 leaves' gripes were all fixed on main;
   evidence in its body), the 35 open groomer todos under td375465
   `won't-do`, jobs 462123–462125 already `cancelled`, and no fix_gripe job
-  queued or claimed. The guard-prod-psql hook that stopped the pane on the
-  ruled switch writes is gr462731.
-
-- **gr245505** — verified on prod 2026-10-02. After the 81154bc0 deploy
-  (cut 2026-10-01 23:14Z), the 2 structural reviews took 4 and 11 turns
-  (`llm_call_log`, `source='review:structural'`), and no
-  `review:tool-starved:structural` alert has fired. In the 7 days before
-  the deploy, 7 of 29 runs were single-turn starves. The last pre-deploy
-  alert (459405) read `precis=pending`, but its text head was a usage-limit
-  message, so the usage cap may have caused that one. Tool-call counts are
-  not persisted; `turns_used` is the proxy.
-
-- **gr454480** — fixed 2026-10-02, pending close. A fix agent that makes no
-  commit because the defect is already gone now ends on an
-  `ALREADY FIXED: <evidence>` line; `fix_gripe.run` returns `already_fixed`,
-  and the executor marks the job succeeded and moves the gripe to
-  `in_review` with the evidence in a comment — no failure bubble, no
-  reopen. The groomer only mints for `STATUS:open` gripes, so this cannot
-  loop the way the stranded branch did. The line is honoured only on a
-  clean finish (no `terminal_reason`), so an agent cut off by `max_turns`
-  still fails.
-- **gr458459, gr452203, gr452084** — shipped by sibling sessions
-  2026-10-01 and deployed (in `origin/prod`). backlog-lint gates on
-  front-matter `status:` and names its evidence (1977b48b8); doctor asks
-  dedup on the gripe/alert/commit handles a bullet names (52a6ed3ed) — prod
-  2026-10-02: 50 open asks, down from 161, with `seen_count=2` on the first
-  re-asks; the kind-shrinkage detector has its recency anchor and registry
-  cross-check (`_detect_kind_shrinkage`) — prod: 0 kind-shrinkage alerts
-  since 2026-10-01.
+  queued or claimed.
 
 - **the fix_gripe skip path** — observed on prod 2026-09-30, so the lane's
   inertness is no longer a code-reading claim. Four real runs
@@ -239,19 +204,6 @@ gr346534, soft-deleted)
   `sweeper.py` excludes the cancelled case from `bubble_job_failure`, so no
   failure bubble reaches the parent — td458571 is still `STATUS:open`, not
   parked. Nothing here to do.
-- **gr458317** — fixed 2026-09-30, pending close. `precis tools` sent an
-  `[error:…]` refusal to stdout at exit 0; it now goes to stderr at exit 3,
-  kept distinct from 1 (the CLI crashed) so a caller can tell "the verb said
-  no" from "the tool is broken". The gripe's one unaudited risk is clear:
-  nothing in the tree calls `precis tools` or `prod-precis` programmatically.
-  Fixing it turned up the same defect in `precis eval` — right exit code,
-  wrong stream, and no check at all for a rendered refusal string, so that
-  case also exited 0 — so the contract now lives in
-  `precis.cli._common.is_refusal` / `REFUSAL_EXIT` and both commands share it.
-- **gr456236** — fixed 2026-09-30, pending close: the staleness guard now
-  runs on the green verdict too and prints even under `--for-hook`. Landed
-  from the gripe's own diagnosis, not from the auto-fix lane's branch
-  (`gripe_456236` was gone from origin by the time it was reviewed).
 - **the cancelled-run verdict hole** — closed 2026-09-30 by
   `scripts/last-gated-main-sha` + check.yml's main-push range. The range can
   only widen, so the failure direction is over-gating; a lookup that cannot

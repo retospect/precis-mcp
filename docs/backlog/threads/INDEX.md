@@ -65,7 +65,7 @@ Seams:
   mechanism and the click-time pick route, the chain thread owns the
   resolver (`precis_se/pick.py`, built) the route calls.
 - precis_se atomic output — a composite corrupted by a stale process
-  (gr458061; gr457995 refuted, there is no join-side bug) renders in the
+  (gr458061) renders in the
   viewer as a wrong picture; hexfold's `composite_part_stolen` validate
   check now reports it, so the viewer's interest is unchanged, only the cause.
 - se-machine-design (the se owner, active since 2026-10-01) owns the design model, including the
@@ -106,7 +106,7 @@ Seams:
 - roadmap-quest owns the quest loop that dispatches and consumes
   pathways; chemistry owns the engine's health and output contract and, since
   2026-10-01, the catalysis quests' content (qu164903 ticking, the qu202467
-  restart report, gr345366, gr322060).
+  restart report, gr322060).
 - catalysis-selectivity edits the ammonia network content and adds link
   fields (`added`/`removed`, typed `kind`); chemistry owns the engine
   contract and the wheel bump. `backlog/catpath-desorption-link-kind.md`
@@ -229,7 +229,7 @@ Seams:
   no thread owns deploy, so gr457894 is ranked in plugin-split.
 - `scripts/main-ci-status` / check.yml — `backlog/main-stays-gated.md`
   (monitors thread) gates every other thread's "is main green"
-  answer — and as of 2026-09-30 it answers: the stale-verdict read (gr456236),
+  answer — and as of 2026-09-30 it answers: the stale-verdict read,
   the main-push lane range (now starting at the last sha with a real shard
   verdict), and a ruff+mypy pre-qland lint all landed. Every thread that qlands
   now pays ~3 min it did not before, and gets told about its own lint drift
@@ -253,7 +253,7 @@ this pipeline, not the pipeline.
 
 Seams:
 - `local-compute.md` Parked holds the **embed-drain** half of what used to be
-  one cluster (gr456034, gr454865). Throughput there, fidelity here; different
+  one cluster. Throughput there, fidelity here; different
   code, neither sequences the other.
 - `backlog/graph-maintenance-queue.md` (local-compute) spends local capacity on
   this pipeline's output — a corrupt extraction makes that spend worse than
@@ -269,7 +269,7 @@ Recorded 2026-09-30 so the gaps are visible on the map rather than discovered
 one gripe at a time. Four were listed; three are gone — the ingest cluster has
 its own programme above, the job-lifecycle cluster was ranked across
 `monitors-that-go-quiet` and `roadmap-quest`, and `scripts/test`'s container
-moved to Python 3.13 (gr458726) to match the ship gate. The one below has a
+moved to Python 3.13 to match the ship gate. The one below has a
 decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute.
 
 - **fleet capacity is unmeasured** — gr458727 (ranked in `local-compute.md`

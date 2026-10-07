@@ -68,7 +68,7 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
   (dr173020's DOIs all validate) · `draft-cite-groundwork-prepass` (hold) ·
   `tex-layer2-fixer-fate` · `dossier-paper-handles-emitted-bare-not-bracketed`
   (quest tick prompt, not drafts; still a small live bug).
-- **Export** — `draft-export-panel-per-format-tabs` (gate fix gr454753 is
+- **Export** — `draft-export-panel-per-format-tabs` (the gate fix is
   deployed; the submission export can pass `doi_links`/`library_links` as job
   params) · `endnote-export-validation` (hits only if submission goes docx +
   EndNote) · `export-glyph-allowlist` (jo461157 compiled with no glyph
@@ -103,7 +103,7 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 
 - `canon.JUDGE_MAX_WORKERS` = 4 since round 2 (round 1 ran 8 at p50 23 s per
   mint). Revisit if prod `put(kind='finding', supporters=)` p50 climbs past
-  ~45 s, or if `taproot:dedup` rows start erroring (gr462136 reads an error
+  ~45 s, or if `taproot:dedup` rows start erroring (an error reads
   as "different").
 
 ## Seam
@@ -111,7 +111,4 @@ All `backlog/<slug>.md`. Not hit by the October paper (reason in brackets).
 - `knowledge-mesh.md` Horizon holds draft-linearization (the draft as a graph
   view); this thread holds authoring and export of the draft itself. Neither
   reorders the other.
-- `graph-memory-consumers.md` parks gr454753/gr454749 (export gate) behind its
-  Do-next 1 (`memory-native-authoring`); if the October triage hits them they move
-  here.
 - `claims-and-evidence.md` owns the claim side of cite-time attach.

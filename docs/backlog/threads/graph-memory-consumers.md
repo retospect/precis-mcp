@@ -200,9 +200,6 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 - **gr343055** — `render_figure_chunk` has no production caller, so a
   draft graph-figure stays a placeholder; parks behind Do-next 1 with
   the other draft-authoring surface gripes.
-- **gr454753**, **gr454749** — draft export gate inconsistency and the
-  raw-identifier-in-prose guard; both are draft-authoring surface
-  questions, park behind Do-next 1 rather than fixed independently here.
 - **gr447365** — an agent routed a Précis URL through webfetch instead of
   the native handle: a discoverability failure on the agent surface;
   unparks with backlog/capability-discovery-on-a-sprawling-surface.md.

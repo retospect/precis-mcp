@@ -39,11 +39,11 @@ off that gap until it closes.
 - **Round 3 is deployed** (929107f32, 2026-10-03T20:35Z). It was
   dogfooded on prod data with main's code: `view='print'`, the 3MF export
   and `view='drc'` render. The joint sweep was not exercised: no prod
-  design declares a joint `params.range` (gr464669).
+  design declares a joint `params.range`.
 - **Region slice A** (Do next 1) is live on prod (4181421ce, 2026-10-04T00:15Z, migrations core 0182 and se 0018). Dogfooded there through a throwaway design, now retired:
   - every documented op works as precis-se-regions-help says: measures with measurands, patch and ring selectors, add/set/remove pocket, `set_measure measurand=`, `unit_mismatch` in drc, and `view='ops'` round-trip;
   - every documented refusal fires.
-  Five polish issues are in gr465128: reason-column noise in `view='measures'`, unit drift in a taxon's text, unclear "declaration on frame" wording, `atoms:` accepted on an unbound block, and taxon `under=` leaking. Grammar and review verdicts are in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` §3–§5.
+  Five polish issues: reason-column noise in `view='measures'`, unit drift in a taxon's text, unclear "declaration on frame" wording, `atoms:` accepted on an unbound block, and taxon `under=` leaking. Grammar and review verdicts are in `~/.claude/projects/-Users-reto-precis-mcp/reviews/se-machine-design.md` §3–§5.
 - **Organic print** (Do next 2): print 1, se `organic-bracket-1` as
   file v3, is printing in PLA (Reto, 2026-10-03T21:18Z). Bambu Studio
   02.08.02.61 showed only "invalid config", a Studio bug for every
@@ -53,7 +53,6 @@ off that gap until it closes.
     Smoother would be goooder." So print 2 wants O2–O4.
   - The load test is still owed, in item se-machine-design-6. The solver
     predicts about 0.04 mm tip drop at 1 kg and 0.08 mm at 2 kg.
-  - O1 shipped 264f412c0 (round 4, 2026-10-04): gr464340 and gr464343 are closed, and the gr464343 repro designs are retired.
   - **The print check and the download button are live on prod** (round 4, 727728cc9, 2026-10-04T04:40Z), with the fieldops version stamp (2c440745c).
     - `precis/cad/mesh_check.py` checks the shipped mesh for Bambu's floating-region rule and Studio 02.08.02.61's cantilever rule, and the 3MF package against the core spec. It also does a guarded export-time tail lift, which Reto allowed at 19:32Z with nothing stored.
     - `fieldops.flat_bed` cuts a flat bed face in the field.
@@ -78,13 +77,13 @@ off that gap until it closes.
     ports with a solid contact boss), about 1 build, ahead of O2–O4?
 - **Joint sweep** shipped c5a2e8624 and was dogfooded on prod 2026-10-03
   (round 2): a throwaway design gave `joint_sweep_interference` at 90° as
-  specified, and was then retired (note §12a). Residual gr462067: rigidly
+  specified, and was then retired (note §12a). Residual: rigidly
   connected, unparented blocks stay still during the sweep. Its first
   consumer is `hexfold-t-handle-bearing` (hexfold-toolkit).
 - **drc cost** (note §12a): `view='drc'` on unicycle-c1 takes about 17 s. 92% of
   that is `geometry_plausibility._pair_clearance` (about 1 s per connect);
-  the fastener insertion pass is about 0.3 s per screw. The profile is on
-  gr450524 (finding 5). No finding for se-3d-viewer. When finding 5 is
+  the fastener insertion pass is about 0.3 s per screw. The profile is in
+  finding 5. No finding for se-3d-viewer. When finding 5 is
   taken up, the number to beat is 1.9 s per connect under cProfile (about
   1 s without it). It dominates any design with more than a handful of
   connects.
@@ -235,13 +234,9 @@ off that gap until it closes.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
   (Do-next 9) rather than as its own entry.
-- **gr451270** — se atomic tpms/schwarzite generator: family aliases
-  rejected by the error message that names them, serial required-param
-  discovery, inconsistent defaults. Unparks alongside gr451269 (same
-  generator).
 - **gr451269** — se atomic tpms/schwarzite generator emits topologically
   correct nets whose bond lengths are not carbon and nothing checks it;
-  companion to gr451270, same generator, same dogfood.
+  same generator and dogfood as the family-alias and default fixes.
 - **backlog/method-transfer-stellar-signal-separation.md** — Graz notes;
   maybe useful for object manipulation (Reto, 2026-10-01). Unparks if an
   object-manipulation thread opens.

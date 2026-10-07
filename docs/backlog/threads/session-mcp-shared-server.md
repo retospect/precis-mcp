@@ -22,7 +22,7 @@ out, and that item's role bullet is why: they depend on process-level role
 separation this server cannot give them. Today it is one long-lived
 streamable-http server, live since 2026-09-29 and dogfooded. The defect
 this thread shipped — every bounce killed the calls in flight — is fixed
-(gr457887: the drain latches a high-water ticket instead of waiting for an
+(the drain latches a high-water ticket instead of waiting for an
 always-busy server to go idle, and the bound is 120 s and env-tunable),
 re-verified on the isolated rig and now **confirmed in production**: the
 2026-09-30T23:14:30Z bounce logged `drained 1 in-flight call(s)` on a real
@@ -30,7 +30,7 @@ session's call, which under the old design is the call that would have been
 killed. The three bounces around it drained 0, so the fix is exercised by
 ordinary traffic rather than only by a rig. The second defect — a status surface
 that could not say which sha a session was talking to — is fixed and
-verified (gr457361: the watched checkout's HEAD outranks the baked env,
+verified (the watched checkout's HEAD outranks the baked env,
 git-identity fields come from one lane instead of being mixed, and a live
 `source_drift` field says whether the tree has moved past the import;
 the 11:10Z boot banner reports `[watched-checkout]` against the mounted
@@ -47,22 +47,22 @@ per-session stdio containers rather than harden them (td458385), and on
 resumed — `docker ps` now shows `precis-mcp-http` alone (AC5 passes). That
 makes it the single point of failure for every session. Since 2026-10-01
 14:20Z a PID-1 supervisor holds its port across restarts, so restarts no
-longer strand sessions (gr459481), and kills a wedged server (liveness
+longer strand sessions, and kills a wedged server (liveness
 detector). Since 2026-10-01 ~17:52Z it serves the deployed code: `/src`
 is a plain clone (`~/work/projects/code/precis-mcp-prod`) that
 `scripts/deploy` moves to each deployed sha, so a qland no longer restarts
 it and a deploy restarts it once (`deploy`'s change, Reto ran the
-recreate). Embedder admission is answered (gr459844). Since 2026-10-01
-20:25Z secrets reach it as mounted files, not container env (gr458350), and
-since 23:13Z its caches live on a host mount that survives a recreate
-(gr460339). Next: stop recreates stranding interactive sessions, then the
+recreate). Embedder admission is answered. Since 2026-10-01
+20:25Z secrets reach it as mounted files, not container env, and
+since 23:13Z its caches live on a host mount that survives a recreate.
+Next: stop recreates stranding interactive sessions, then the
 capacity and isolation gaps.
 **Last reviewed:** 2026-10-03 (handoff: Waiting-on block added)
 **Worktree:** `session-mcp-shared-server`
 **Resume (2026-10-03 22:08Z, session closed to save usage; nothing in
 flight, nothing to build until the waits below clear):**
 - **Done:** round 3 deployed as 929107f32 with the gate log line
-  (84540789d) and the gr463966 transaction-scoped locks (514091d4). Neither
+  (84540789d) and the transaction-scoped locks (514091d4). Neither
   had been exercised by 20:40Z: no gated pass and no chunk_keywords pass
   since the deploy.
 - **Next, all read-only checks, through cluster-ops with BEGIN READ ONLY:**
@@ -95,11 +95,11 @@ check their state first.
     restarts pgbouncer in round 3's restart window. This thread does not
     `round in` it.
   - **Order inside round 3's window:** restart pgbouncer only after every
-    worker host runs the gr463966 fix. A pgbouncer restart closes every
+    worker host runs the transaction-scoped lock fix. A pgbouncer restart closes every
     server connection, so it clears the leaked lock. Old code running after
     the restart leaks it again.
   - **Stage B** (`DISCARD ALL` + `server_reset_query_always = 1`): this
-    thread owns the switch. gr463966 is fixed on main in 514091d4 (round
+    thread owns the switch. The lock fix is on main in 514091d4 (round
     3, claims-and-evidence): all three sites (`ingest/claim.py`,
     `workers/chunk_keywords.py`, `workers/anki_sync.py`) take
     `pg_try_advisory_xact_lock` on a dedicated connection via
@@ -115,7 +115,7 @@ check their state first.
     3815272043, objid 1600878336). At 14:44Z it was held on pooled backend
     15730, born 14:14Z. Backend 11267, named at 12:38Z, has since been
     recycled, so the leak recurs until the fix deploys.
-  - **gr463967 closed, not a blocker for Stage B:** asa_bot's LISTEN already goes over
+  - **asa_bot's LISTEN is not a blocker for Stage B:** asa_bot's LISTEN already goes over
     the direct 5433 tunnel (`PRECIS_NOTIFY_DATABASE_URL` in
     `deploy/roles/asa_bot/templates/com.asa.bot.plist.j2`). The LISTEN
     backend had been idle 57 min at 14:44Z; pgbouncer closes a pooled
@@ -143,12 +143,12 @@ check their state first.
   watchdog drained generation 1 (0 in-flight calls) and generation 2
   started at 13:50:16Z on 63301c5c, migration 0181. Session tools work
   and the log shows no errors since. Fairness (c43ddf046, `server.py`)
-  is therefore loaded. The gr462133 supervisor fix is in
+  is therefore loaded. The supervisor stop-signal fix is in
   `mcp_supervisor.py`, which runs as PID 1 and loads only on a recreate.
-  The organizer-mcp-2 cutover is that recreate; close gr462133 once the
+  The organizer-mcp-2 cutover is that recreate; the fix is live once the
   new backend is up on a sha at or after 7f006bf09.
 
-0. **gr460711 — any refused window longer than the client's retry budget
+0. **Any refused window longer than the client's retry budget
    strands sessions; make the server's refused windows short.** Measured
    2026-10-02 on Claude Code v2.1.285 (MCP client logs under
    `~/Library/Caches/claude-cli-nodejs/<project>/mcp-logs-precis/`):
@@ -218,11 +218,11 @@ check their state first.
      `deploy/mcp-http/precis-mcp-http-ensure.sh` (9c668358a). The live
      copy under `~/work/infrastructure/precis-mcp/` is still copied by
      hand, and Horizon 1 (mcps role vs wrapper) decides whether that stays.
-   **gr462133 (round-1 gate hang):** the supervisor swallowed a stop
+   **Round-1 gate hang:** the supervisor swallowed a stop
    SIGTERM that landed between reaping one generation and assigning the
    next. Fixed in 7f006bf09 (round 2); it loads at the first recreate
    after the deploy that carries it.
-   **Incident gr462598, 2026-10-02 15:04:13–15:04:54Z (this thread):** a test
+   **Incident 2026-10-02 15:04:13–15:04:54Z (this thread):** a test
    harness for the fleet wait ran the live ensure script with test ports;
    it removed the server, then recreated it on 8799. Restored on 8765 by
    hand. 8765 was refused for 24 s, so every connected session on melchior
@@ -234,14 +234,14 @@ check their state first.
    - a provisional capacity number is recorded;
    - no host-level admission token, no shared vector cache.
    The N-client load test waits for the local LLM rungs. Root cause and
-   the admission fix (gr459844) are in the item.
+   the admission fix are in the item.
 
 2. **backlog/session-mcp-http-server.md** — AC2 passes now: it was written
-   as "precis-status reports the new sha", which gr457361 made unpassable,
+   as "precis-status reports the new sha", which the watched-checkout fix made unpassable,
    and the 11:10Z banner
    (`precis-mcp 8.35.1 @ 05ce7657ceef (main) [watched-checkout] /src`)
    satisfies it. AC5 passes as of 2026-10-01T11:00Z (one container). AC1
-   passes since gr459481's supervisor (live 14:20Z 2026-10-01). Left: AC3,
+   passes since the supervisor (live 14:20Z 2026-10-01). Left: AC3,
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
 3. **backlog/mcp-shared-transport-concurrency.md** — the gaps the shared
@@ -351,16 +351,9 @@ check their state first.
 
 ## No action needed
 
-- **gr458038** — refuted: my own filing, retracted as a measurement error.
-  The precis-status uptime I called stale came from a pre-flip stdio
-  container (`precis-mcp-dev-59558`) while the "real" age I compared it to
-  was `precis-mcp-http`; `_STARTED_AT` is captured at module import and
-  cannot survive a restart. It was ranked here as sharing gr457361's root
-  cause — it does not, and landing that fix has no bearing on it.
 - **stale-serve leak / scripts/reap-stale-serves** — measured absent across
   the cluster and moot on the shared server.
 - **pgbouncer and embedder saturation** — measured 2026-09-30T06:44Z: 17/100
-  connections, embedder queue-wait 0, 0 shed. Supersedes any reading of
-  gr450123 as an ongoing incident.
+  connections, embedder queue-wait 0, 0 shed.
 - **stdio-vs-shared-HTTP as an open decision** — settled by the deployment;
   server.py docstring corrected in 550f9ae6.

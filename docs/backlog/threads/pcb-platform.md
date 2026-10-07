@@ -30,8 +30,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 
 1. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
    netlist/role/one-check-surface model the rest of this list assumes
-   exists, and it already closes three gripes (gr449483, gr449579,
-   gr346004) on landing.
+   exists.
 2. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps,
    pinout-view-and-connector-intake and meta-blocks all build on.

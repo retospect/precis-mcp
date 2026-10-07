@@ -21,17 +21,16 @@ that as the far end all three se threads serve. Today the affordances work
 and are verified by canvas pixel-diff at the deployed sha. As of 2026-09-30
 that is no longer only against local fixtures: prod's `unicycle-c1` was
 copied down and pixel-diffed, and every affordance held EXCEPT the live
-level change (gr458329, since resolved as a measurement artifact) — the first defect this thread found on
+level change (since resolved as a measurement artifact) — the first defect this thread found on
 real data rather than by reasoning. The list is about making that
 verification repeatable by someone other than the author, then the deferred
-features. gr457931 shipped 2026-09-30 and changes the shape of that gap:
+features. The ops view, shipped 2026-09-30, changes the shape of that gap:
 `get(kind='se', view='ops')` emits a design as a replayable ops list, so a
 prod design can now be copied into a local DB over the read-only MCP and
 pixel-diffed there. That is a different question from td458066, which asks
 whether an agent drives a BROWSER against prod — a check against prod DATA
-no longer needs one. No live corruption. gr457995, which used to sit
-here as "hexfold join corruption renders as a wrong picture", was refuted
-2026-09-30 — there is no join corruption. The real cause was gr458061: a
+no longer needs one. No live corruption. A suspected hexfold
+join corruption (a wrong picture) was refuted 2026-09-30. The real cause was gr458061: a
 session MCP process serving stale in-memory code for hours while every
 cheap check (mtime, grep, a fresh import in the same container) reads
 current. For this viewer that inverts the first question about a wrong
@@ -78,9 +77,8 @@ value table (atom N9 (N) / residue DG 1 = deoxyguanosine / chain A =
 strand hp), the pick header and residue row name the atom and base, an
 "axes" checkbox drives the corner marker and the PNG/SVG export follows
 it, and the smooth/strain rows stay on every structure with their
-references in the labels ("keep it as is, it's cool"). gr462702 is
-closed: Reto no longer has the failing browser, so the shipped fallback
-stands (se-3d-viewer-3, option 2). Item 2's three speed levers
+references in the labels ("keep it as is, it's cool"). Reto no longer has the
+failing browser, so the shipped fallback stands (se-3d-viewer-3, option 2). Item 2's three speed levers
 (se-3d-viewer-6) shipped in round 3; the next build is 5
 (the fastener insertion DRC); 3 needs a reproducer and 4 a design. The nightly viewer check covers the atomic overlay
 since 2026-10-02; `strain` checks atom hover since instancing, so atom
@@ -167,7 +165,7 @@ up:
    API — applyContainerMode drives visibility through private
    `_rendered.nestedGroup.groups[path]` handles that do not survive a later
    setState(). Same class as the original inert toggle, fails silently.
-   No reproducer yet: gr458329 looked like one and turned out to be a
+   No reproducer yet: the live-level-change report looked like one and turned out to be a
    measurement artifact (the swap works), so this item is back to needing
    a trigger found rather than reasoned.
 4. **backlog/se-3d-viewer-ux-batch.md**, bidirectional hover — the vendored
@@ -287,12 +285,12 @@ se-machine-design's `backlog/se-region-property-layer.md`.
   re-verified 2026-09-30 on prod's own `unicycle-c1` copied down via
   `view='ops'`: n=44829 on isolate with NO scene refetch, pixel-identical
   when cleared. The LIVE-LEVEL half of the same item is settled too, after
-  a false alarm: gr458329 read it as broken on a real design and the swap
+  a false alarm: the report read it as broken on a real design and the swap
   turned out to work (43 → 32 tree rows, n=643, ~3 s) — see below.
 - The "Multiple instances of Three.js" console warning — expected, documented
   in blocktree-3d.js; no gripe.
 
-## What gr458329 turned out to be (2026-10-01)
+## What the live-level-change report turned out to be (2026-10-01)
 
 Resolved as NOT a viewer defect, and the correction is worth keeping
 because the mistake is cheap to repeat. The live level change works: on a
@@ -367,7 +365,7 @@ after.
 
 ## Busy-state follow-ups (2026-10-01)
 
-The `#bt3d-busy` mark that closed gr458329 cost a smaller thing on the way
+The `#bt3d-busy` mark that closed the live-level-change report cost a smaller thing on the way
 in, found by probing its own new code the round after: `setBusy` disables
 `#bt3d-overrides`, disabling a focused element blurs it, and browsers do not
 hand focus back on re-enable. Since Enter in that box is what starts the
@@ -383,7 +381,7 @@ and for a text field that is focus and caret, not just the value.
 
 ## Seam
 
-`src/precis/_pagination.py` is adopted here, not owned here. gr458393 was
+`src/precis/_pagination.py` is adopted here, not owned here. The chunking bug was
 fixed under this thread because no thread owned core response chunking and
 this thread's dogfooding found it. Reto's call (2026-09-30): re-home it to
 a runtime/platform thread deliberately when one exists — a file every MCP

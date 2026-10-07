@@ -30,9 +30,8 @@ Slice 1c is complete as of 2026-10-01: the copper measurement report and
 The whole write path (export) is unbuilt.
 **On prod since 2026-10-02:** the real board is imported as pcb
 `heater-base-test`, APWR/BPWR annotated (td458070 closed), all 89 nets
-unrouted. Dogfooding it found gr460567 (courtyards from synthesized pad
-sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones;
-closed). DRC still shows 4 annular-ring errors on the SATA connector's
+unrouted. Dogfooding it found a courtyard bug (courtyards from synthesized pad
+sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones). DRC still shows 4 annular-ring errors on the SATA connector's
 slot holes (imported as round, with a warning; no slot model yet —
 gr461213, Horizon 14).
 Reto's 2026-10-02 look found the CN1/CN2 standoff rings around no hole
@@ -68,9 +67,6 @@ The cross-design half (a part aligned to another design's feature) rides
 pcb-se-binding.
 Collides with ewod-pcb on generator/DRC/realizer files:
 sequence, do not merge.
-gr457053 is closed: a re-`put` now patches `net_class`/`est_current_a`/
-`width_mm`/`note` onto an existing net alongside the 0171 spec columns, so
-the annotation step can correct a net's current, not just its voltage.
 **Reopened 2026-10-07** (coordinator, on Reto's "route/place first, then
 EasyEDA import/export"); owner is the `pcb` session that also runs
 ewod-pcb. First slice after reopen: export 2c (copper), landed the same

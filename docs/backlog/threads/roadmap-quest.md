@@ -196,7 +196,7 @@ a block exists. The replay is on the gripe, and the dialectic design is
    searches, 4 papers linked `serves` the quest, 0 hubs, no quantified
    claim, so `meta.supply` stayed unwritten; dry, gaps [2, 2]. It took
    ~25 min because quest S2 search ran keyless and double-retried
-   (gr459597, 61×429); fixed 2026-10-01 together with local-first search
+   (61×429); fixed 2026-10-01 together with local-first search
    (S2 only when the graph has fewer than 3 relevant hits). Tick 3
    (2026-10-01 23:15Z, 3.5 min, no 429) took supply @big again and wrote
    qu453869 `meta.supply.placement_error_nm = 1.2` [fi460566], 3 papers
@@ -236,37 +236,29 @@ a block exists. The replay is on the gripe, and the dialectic design is
    linearisation questions are decided.
 6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
-7. **gr453861** — an executor-bearing todo (the shape qu453863's own tick
-   dispatch uses) sits STATUS:open with no child job for up to ~18 minutes
-   with no signal distinguishing normal minter cadence from a stalled
-   dispatch; worth an observable before the first live tick's silence is
-   mistaken for a wedge.
-8. **gr454792** — neither documented path actually unparks a
-   child-failed-final leaf; if a `roadmap_tick` job ever lands there, the
-   two-tag manual recipe in the gripe is the only one that works.
 
 Quest-loop machinery, ranked here 2026-10-01 (engine and qu164903 items are
 the chemistry thread's):
 
-9. **backlog/quest-tick-slicing-residuals.md** — requeue-from-checkpoint and
+7. **backlog/quest-tick-slicing-residuals.md** — requeue-from-checkpoint and
    stale-stage agentlog finalize; the stage machine shipped, these are the
    residual failure paths.
-10. **backlog/quest-loop-safety.md** — the "rubric key never produced"
-    warning (the anti-spin breaker shipped, gr170252); a silent empty
+8. **backlog/quest-loop-safety.md** — the "rubric key never produced"
+    warning (the anti-spin breaker shipped); a silent empty
     frontier is the failure it names.
-11. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
+9. **gr459054** — `quest/roadmap_tick.py` imports `precis_se.handler`, the
     one grandfathered breach of the plugin import boundary (plugin-split
     owns the boundary; the fix is in quest code).
-12. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
+10. **backlog/quest-loop-cadence-strip.md** — the web dashboard shows no
     cadence or why-not-ticking.
-13. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
+11. **backlog/quest-bodies.md** — the `inquiry` body and qu401863's restart
     checklist.
-14. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
+12. **backlog/web-quest-editor.md** — create/reprioritise the quest tree from
     the web; last, a human surface over a loop that must tick first.
-15. **backlog/todo-tree-plan.md** — remaining fold candidates of the
+13. **backlog/todo-tree-plan.md** — remaining fold candidates of the
     todo-tree plan; the todo tree is the quest loop's work substrate, so it
     sequences after the loop ticks. Platform pass 2026-10-02.
-16. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
+14. **Local leg ignores hub verdicts.** `quest/search.py::_local_graph_search`
     has no trust or posture filter, and `finding` is in `LINKABLE_KINDS`.
     So a refuted hub, such as fi460566 or fi460856 (marked 2026-10-02 by
     claims-and-evidence with a `support: "no"` edge verdict), can still
