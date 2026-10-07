@@ -18,11 +18,11 @@ from hexfold.report import Finding, Report, Severity
 from hexfold.stick import _angle_springs, stick_relax_pinned
 from hexfold.y_junction import straight_y
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
-from precis_se.atomic.generators.hexfold_spec import _block_from_net
+from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
 
 def _normalize(params: dict[str, Any]) -> tuple[int, int, str, float]:
-    if set(params) - {"sheet", "features", "k_tether"}:
+    if set(params) - {"sheet", "features", "k_tether", "terminate"}:
         raise GeneratorError(
             "straight Y accepts only sheet, features, k_tether; no extra or mixed feet"
         )
@@ -218,6 +218,7 @@ def build_y_junction(params: dict[str, Any]) -> GeneratedBlock:
         net,
         pos,
         spec="",
+        terminate=terminate_mode(params),
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={

@@ -54,12 +54,15 @@ def _build(spec: str, **params: object) -> GeneratedBlock:
 
 def test_hexfold_tube_counts_and_ports() -> None:
     block = _build(TUBE_SPEC)
-    assert len(block.elements) == 80
-    assert len(block.bonds) == 110
+    # 80 carbons, 110 C-C bonds; the default termination then caps the
+    # 20 rim atoms with one H each (Reto 2026-10-07)
+    assert len(block.elements) == 100 and block.elements.count("C") == 80
+    assert len(block.bonds) == 130
+    assert block.topology["n_atoms"] == 80 and block.topology["n_bonds"] == 110
     assert len(block.ports) == 2
     assert block.hybridizations is not None
-    assert set(block.hybridizations) == {"sp2"}
-    assert len(block.hybridizations) == 80
+    assert set(block.hybridizations) == {"sp2", "s"}
+    assert len(block.hybridizations) == 100
     # Every remaining port carries its whole dangling ring.
     assert all(p.atoms is not None and len(p.atoms) == 10 for p in block.ports)
     cad_dsl.parse(block.envelope, require_units=True)
@@ -107,8 +110,8 @@ def test_hexfold_fidelity_check_returns_report_and_mints_nothing() -> None:
 def test_hexfold_fidelity_stick_builds_atoms() -> None:
     block = _build(TUBE_SPEC, fidelity="stick")
     assert block.dry_run is False
-    assert len(block.elements) == 80
-    assert len(block.bonds) == 110
+    assert len(block.elements) == 100
+    assert len(block.bonds) == 130
     assert "fidelity=stick" in block.provenance
 
 
@@ -116,7 +119,7 @@ def test_hexfold_fidelity_defaults_to_stick() -> None:
     # No fidelity/dry_run at all → the old non-dry-run behavior.
     block = _build(TUBE_SPEC)
     assert block.dry_run is False
-    assert len(block.elements) == 80
+    assert len(block.elements) == 100
 
 
 def test_hexfold_unsupported_fidelity_raises() -> None:
@@ -138,7 +141,7 @@ def test_hexfold_dry_run_alias_maps_to_fidelity() -> None:
     # dry_run=False ⇒ fidelity="stick": same build-and-mint shape.
     stuck = _build(TUBE_SPEC, dry_run=False)
     assert stuck.dry_run is False
-    assert len(stuck.elements) == 80
+    assert len(stuck.elements) == 100
     # Both given and agreeing is fine either way.
     _build(TUBE_SPEC, dry_run=True, fidelity="check")
     _build(TUBE_SPEC, dry_run=False, fidelity="stick")
@@ -187,14 +190,14 @@ def test_prepare_generate_binds_atoms_and_ports(store: Store) -> None:
         "hx-design",
     )
     assert pending is not None
-    assert "80 atom(s)" in echo and "110 bond(s)" in echo
-    assert len(pending.scene.atoms) == 80
-    assert len(pending.scene.bonds) == 110
+    assert "100 atom(s)" in echo and "130 bond(s)" in echo
+    assert len(pending.scene.atoms) == 100
+    assert len(pending.scene.bonds) == 130
     assert len(pending.ports_map) == 2
     # Ports are bound to real atom labels in the minted scene.
     assert all(label in pending.scene.atoms for label in pending.ports_map.values())
     # Per-atom hybridization made it onto the scene atoms.
-    assert {a.hybridization for a in pending.scene.atoms.values()} == {"sp2"}
+    assert {a.hybridization for a in pending.scene.atoms.values()} == {"sp2", "s"}
     # The block landed in the tree with ports.
     node = tree.blocks["tube"]
     assert set(node.ports) == {"in", "out"}
@@ -351,6 +354,7 @@ _GOLDEN_TOPOLOGY_KEYS = [
     "rings",
     "seed_kind",
     "spec",
+    "terminated",
 ]
 
 _GOLDEN: dict[str, dict[str, object]] = {
@@ -385,7 +389,12 @@ _GOLDEN: dict[str, dict[str, object]] = {
         "n_atoms": 972,
         "canonical_json": "398e9fe24d61191ff5dd68bf9d90acde7e8da694bc06a5ff26b52a91d36eb198",
         "ports": [],
-        "bonds": "d6a47a0cc4d34c5f761b724db4c0255ece9a248685fa426f3864a389ef4b5240",
+        # re-pinned 2026-10-07 with the termination default: the spec's own
+        # `terminate: ... = H` bonds are C-H, order 1 "pairwise", where the
+        # block used to stamp them aromatic 1.5 like a C-C bond (the one
+        # golden whose spec carries H; atoms, ports, measures and the
+        # canonical JSON are unchanged)
+        "bonds": "a8233814a890605c43d9024f86256e26f1be4593818a9a98c3064deaeba13ed3",
         "measures": "c915f64651e03e526dc153dd76a67155f9d9807a77733f248b0f7bd4fc269265",
         "topology_keys": _GOLDEN_TOPOLOGY_KEYS,
         "provenance": "b9896deade5996aed763ab5b65fc1db3b60792d22f3933bcaa3a484398e29d67",
@@ -418,7 +427,10 @@ _GOLDEN_RELAXED: dict[str, tuple[float, float, float]] = {
 # never to make a refactor pass.
 @pytest.mark.parametrize("name", sorted(_GOLDEN_SPECS))
 def test_hexfold_output_is_pinned_golden(name: str) -> None:
-    block = _build(_GOLDEN_SPECS[name])
+    # pinned on the bare carbon output: the default H-termination is a
+    # separate, deliberate step (tests/test_se_terminate.py), not part of
+    # what a hexfold refactor must hold
+    block = _build(_GOLDEN_SPECS[name], terminate="none")
     assert _golden_fingerprint(block) == _GOLDEN[name]
     got = _relaxed_geometry(block)
     want = _GOLDEN_RELAXED[name]

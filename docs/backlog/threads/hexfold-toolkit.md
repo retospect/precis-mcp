@@ -11,6 +11,20 @@
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
+## Default behaviours (rulings that every build applies)
+
+- **Open edges are H-terminated at the end of every hexfold-family
+  build** (Reto 2026-10-07, via chat-interface; shipped in
+  `_block_from_net`): after the relax and the geometry judgement, every
+  carbon short of its valence gets an H at 1.09 Å along its missing bond;
+  the block records `terminated: {element, mode, count, hosts}` and the
+  structure carries the tag `terminated:h`, so se reports, renders and a
+  DFT handoff know the edges are capped and why. The findings still
+  describe the carbon net. Opt-out per op: `terminate: "none"`;
+  `terminate: "ports-open"` leaves join ports' rim atoms bare for a later
+  fuse. The scene grammar (Do-next 1a) inherits it as its cross-cutting
+  rule.
+
 ## Thread context
 
 **Status:** ends when hexfold composites join, catalogue and validate
@@ -277,7 +291,7 @@ waited on happened 09-29 — note at the bottom)
    render byte-identically. Slice 0 first: a tethered-relax op over `.hx`
    text or a join plus a tether list, so a scene is askable the same day
    without a deploy. Cross-cutting default: H-termination of every open
-   edge at the end of every build with the `terminated:H` tag
+   edge at the end of every build with the `terminated:h` tag
    (`terminate: "none" | "ports-open"` opts out) — shipping first in
    `_block_from_net` for the hexfold family. Acceptance: Y-A, both fin
    scenes and the 120° seam tube regenerate from parameter sets within

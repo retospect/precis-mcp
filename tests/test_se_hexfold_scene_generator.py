@@ -152,4 +152,4 @@ def test_a_pillar_and_a_bump_mint_tethered_with_their_caveats() -> None:
     assert not [f for f in findings if f["code"].startswith("scene.top.R_")]
     summary = next(f for f in findings if f["code"] == "geom.summary")
     assert summary["data"]["relax"] == "tethered"
-    assert len(block.elements) == topo["n_atoms"]
+    assert len(block.elements) == topo["n_atoms"] + topo["terminated"]["count"]

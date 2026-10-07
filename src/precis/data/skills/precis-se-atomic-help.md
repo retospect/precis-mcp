@@ -77,7 +77,16 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   the generated atoms, adds the block (envelope + ports + topology
   facts), and binds it — the echo names the minted slug. A `structure`
   design already living at the target slug is a loud rejection —
-  `generate` never overwrites. `hexfold` takes `params.spec` (a `.hx`
+  `generate` never overwrites. **Every hexfold-family generator
+  (`hexfold`, `hexfold_scene` and its Y/fin entries) H-terminates open
+  edges as its last step by default** (Reto 2026-10-07): after the relax
+  and the judgement, every carbon short of its valence gets an H at
+  1.09 Å along its missing bond; the block carries
+  `topology.terminated` (`element`, `mode`, `count`, `hosts`) and the
+  structure the tag `terminated:h`; the report still describes the
+  carbon net. `params.terminate`: `"H"` (default), `"ports-open"`
+  (join ports' rim atoms stay bare for a later fuse), `"none"`.
+  `hexfold` takes `params.spec` (a `.hx`
   spec text: tubes/cones/fullerenes/holes/nanobud attachments as one
   topology-only notation — `precis-hexfold-help`) and `params.fidelity`
   (`check|stick`, default `stick`; `check` is a report-only preview that

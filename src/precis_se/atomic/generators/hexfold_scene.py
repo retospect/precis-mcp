@@ -12,7 +12,10 @@ the normal tether toward the authored surfaces.
 "radius", "tube_len", "top"?, "top_R"?, "top_fillet"?}], "extra"?: str,
 "k_tether"?: float}``;
 ``top`` defaults to ``"open"``, ``extra`` (verbatim ``.hx`` lines, for
-buds) to ``""``, ``k_tether`` to 1.0. An unknown key at either level is
+buds) to ``""``, ``k_tether`` to 1.0, ``terminate`` to ``"H"`` (every
+hexfold-family block caps its open edges last, see
+:func:`~precis_se.atomic.generators.hexfold_spec._block_from_net`). An
+unknown key at either level is
 refused by name, so a typo never silently drops a feature option. The
 planner's refusals (a seam-phase hole cell, overlapping features, a top the
 build cannot seat) arrive as :class:`GeneratorError`.
@@ -104,9 +107,13 @@ from precis_se.atomic.generators.authored_foot import (
     table_lid_fillet,
     top_tabled,
 )
-from precis_se.atomic.generators.hexfold_spec import _block_from_net, _internal_message
+from precis_se.atomic.generators.hexfold_spec import (
+    _block_from_net,
+    _internal_message,
+    terminate_mode,
+)
 
-_PARAM_KEYS = ("sheet", "features", "extra", "k_tether")
+_PARAM_KEYS = ("sheet", "features", "extra", "k_tether", "terminate")
 _FEATURE_KEYS = ("name", "at", "n", "radius", "tube_len", "top", "top_R", "top_fillet")
 _FEATURE_REQUIRED = ("name", "at", "n", "radius", "tube_len")
 # Scene-relax ceiling on every sphere top, tabled or not: the table makes
@@ -565,6 +572,7 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
         ),
         target_flip=_FLIP,
         provenance_tail=tail,
+        terminate=terminate_mode(params),
     )
 
 

@@ -61,7 +61,11 @@ def _generate(
         {
             "op": "generate",
             "generator": "hexfold",
-            "params": {"spec": spec},
+            # parts built to be joined: their rims are join ports, so the
+            # default H-termination is opted out (Reto 2026-10-07) -- a
+            # capped rim relaxes to a different far-rim geometry than the
+            # bare whole-spec fuse this module compares against
+            "params": {"spec": spec, "terminate": "ports-open"},
             "name": name,
         },
         design_slug,

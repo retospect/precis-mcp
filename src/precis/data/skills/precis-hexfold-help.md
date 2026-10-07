@@ -373,6 +373,25 @@ Three planes are unsupported by the revolution target format, so stored
 `surface_deviation` is honestly unavailable. Unequal dihedrals/k>=5 return
 `fit.unsolvable`; tube internal rails and variant B remain unimplemented.
 
+## Open edges are H-terminated by default
+
+Every `hexfold` / `hexfold_scene` generate caps each carbon short of its
+valence (3 for sp2, 4 for sp3) with an H at 1.09 Å along the missing
+bond, as the last step after the relax and the geometry judgement, so a
+render, an se report or a DFT handoff sees closed-shell edges. The block
+records `terminated: {element: H, mode, count, hosts}` and the structure
+carries the tag `terminated:h`; the findings still describe the carbon
+net, and ports, regions and finding ordinals are unchanged (H atoms are
+appended). `params.terminate` is `"H"` (default), `"ports-open"` (the
+join ports' rim atoms stay bare so a later fuse can use them) or
+`"none"`. A spec's own `terminate: inst.port = H` lines still work and
+are not doubled: a capped atom is no longer short. A placed H that lands
+inside another atom's clash bar (converging rims at a Y's seam end) is
+kept and reported as `terminate.clash` WARN. Parts built to be joined
+should use `"ports-open"`: a join trims the caps off the ports it
+consumes, but a part relaxed with capped rims before the join keeps that
+rim geometry elsewhere. A join's own composite is not re-capped yet.
+
 ## Fin on a tube: sp3 graft along an axial zigzag chain
 
 The other exclusive scene entry grafts a single-layer graphene strip to

@@ -33,6 +33,7 @@ allowed when they agree.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -43,7 +44,8 @@ from hexfold.build import Port as HxPort
 from hexfold.canon import canonical_json
 from hexfold.check import check, geometry_findings
 from hexfold.extent import measures as hx_measures
-from hexfold.report import BuildError, HexfoldError, Report
+from hexfold.lattice import SP3_IDEAL_DEG
+from hexfold.report import BuildError, Finding, HexfoldError, Profile, Report, Severity
 from hexfold.stick import stick
 from precis_se.atomic.generators._types import (
     GeneratedBlock,
@@ -268,7 +270,99 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
     # ``## generated`` could not otherwise tell whether the minted
     # geometry is sane (gr454488 residual 3).
     report = net.report.merge(Report(tuple(geometry_findings(net))))
-    return _block_from_net(net, stick(net), spec=spec, report=report, fidelity=fidelity)
+    return _block_from_net(
+        net,
+        stick(net),
+        spec=spec,
+        report=report,
+        fidelity=fidelity,
+        terminate=terminate_mode(params),
+    )
+
+
+#: ``params.terminate`` for every hexfold-family generator: cap every
+#: under-coordinated carbon with H (``"H"``, the default), leave the join
+#: ports' rim atoms bare but cap the rest (``"ports-open"``), or cap nothing
+#: (``"none"``).
+TERMINATE_MODES = ("H", "ports-open", "none")
+TERMINATED_TAG = "terminated:h"
+
+
+def terminate_mode(params: dict[str, Any]) -> str:
+    """The ``terminate`` mode an op asks for, validated against
+    :data:`TERMINATE_MODES`; absent means ``"H"``."""
+    mode = params.get("terminate", "H")
+    if mode not in TERMINATE_MODES:
+        raise GeneratorError(
+            f"terminate must be one of {list(TERMINATE_MODES)}; got {mode!r}"
+        )
+    return str(mode)
+
+
+def _h_directions(unit: np.ndarray, missing: int, hyb: str) -> list[np.ndarray]:
+    """Unit directions for ``missing`` H atoms on a carbon whose present
+    bonds point along the rows of ``unit``: the missing-bond bisector for
+    one, and the lattice/tetrahedral completion for two."""
+    away = -unit.sum(axis=0)
+    norm = float(np.linalg.norm(away))
+    away = away / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
+    if missing == 1:
+        return [away]
+    # a perpendicular to the present bonds' plane (or any, for one bond)
+    if len(unit) >= 2:
+        n = np.cross(unit[0], unit[1])
+    else:
+        probe = np.array([1.0, 0.0, 0.0])
+        if abs(float(unit[0] @ probe)) > 0.9:
+            probe = np.array([0.0, 1.0, 0.0])
+        n = np.cross(unit[0], probe)
+    n /= max(float(np.linalg.norm(n)), 1e-12)
+    if hyb == "sp3":
+        # two tetrahedral completions straddle the bisector out of the
+        # present bonds' plane
+        half = math.radians(SP3_IDEAL_DEG / 2.0)
+        return [away * math.cos(half) + s * n * math.sin(half) for s in (1.0, -1.0)]
+    # sp2 with one bond: the two in-plane completions at 120 deg from it
+    side = np.cross(n, unit[0])
+    side /= max(float(np.linalg.norm(side)), 1e-12)
+    return [-unit[0] * 0.5 + s * side * math.sqrt(3.0) / 2.0 for s in (1.0, -1.0)]
+
+
+def _terminate_open_edges(
+    net: Net, coords: np.ndarray, mode: str
+) -> tuple[list[int], list[np.ndarray]]:
+    """Which carbons get an H and where: every atom short of its
+    valence (3 for sp2, 4 for sp3), skipping ports' rim atoms under
+    ``"ports-open"``. Returns parallel lists of host ordinals and H
+    positions (``sigma_CH_A`` along the completion directions)."""
+    if mode == "none":
+        return [], []
+    skip: set[int] = set()
+    if mode == "ports-open":
+        for _name, port in net.ports:
+            skip.update(port.dangling or port.atoms)
+    degree = [0] * len(net.atoms)
+    nbrs: list[list[int]] = [[] for _ in net.atoms]
+    for i, j, _o in net.bonds:
+        degree[i] += 1
+        degree[j] += 1
+        nbrs[i].append(j)
+        nbrs[j].append(i)
+    hosts: list[int] = []
+    positions: list[np.ndarray] = []
+    for a in net.atoms:
+        if a.element != "C" or a.hyb not in ("sp2", "sp3") or a.ord in skip:
+            continue
+        want = 4 if a.hyb == "sp3" else 3
+        missing = want - degree[a.ord]
+        if missing <= 0 or degree[a.ord] == 0:
+            continue
+        vec = coords[nbrs[a.ord]] - coords[a.ord]
+        unit = vec / np.linalg.norm(vec, axis=1)[:, None]
+        for direction in _h_directions(unit, min(missing, 2), a.hyb):
+            hosts.append(a.ord)
+            positions.append(coords[a.ord] + net.lattice.sigma_CH_A * direction)
+    return hosts, positions
 
 
 def _block_from_net(
@@ -282,6 +376,7 @@ def _block_from_net(
     target: dict[str, Any] | None = None,
     target_flip: np.ndarray | None = None,
     provenance_tail: str = "",
+    terminate: str = "H",
 ) -> GeneratedBlock:
     """Mint the block from a built ``net`` and its coordinates: the
     canonical frame and envelope, bond orders/kinds, ports, rings, length
@@ -290,7 +385,17 @@ def _block_from_net(
     :mod:`~precis_se.atomic.generators.hexfold_scene` (tethered ones);
     ``report`` is the caller's merged findings, ``extra_topology`` extra
     topology keys, and ``provenance_tail`` is appended to the provenance
-    line."""
+    line.
+
+    **Termination is the last step** (Reto, 2026-10-07): with ``terminate``
+    ``"H"`` every carbon short of its valence gets an H at ``sigma_CH_A``
+    along its missing bond, after the relax and after the judgement, so
+    the report still describes the carbon net while the stored atoms are
+    capped for renders, se reports and a DFT handoff. The H atoms are
+    appended after the carbons (ports, regions and findings keep their
+    ordinals), recorded in ``topology["terminated"]`` and tagged
+    :data:`TERMINATED_TAG` on the structure; ``"ports-open"`` leaves the
+    join ports' rim atoms bare for a later fuse, ``"none"`` caps nothing."""
     inverse: dict[str, Any] = {}
     coords, envelope = _canonical_frame(
         np.asarray(raw_coords, dtype=float),
@@ -299,15 +404,78 @@ def _block_from_net(
     elements = [a.element for a in net.atoms]
     hybridizations = [a.hyb for a in net.atoms]
     sp3 = {i for i, a in enumerate(net.atoms) if a.hyb == "sp3"}
+    not_carbon = {i for i, a in enumerate(net.atoms) if a.element != "C"}
     bonds = [
         (
             i,
             j,
-            _SP2_BOND_ORDER if i not in sp3 and j not in sp3 else 1.0,
-            "aromatic" if i not in sp3 and j not in sp3 else "pairwise",
+            _SP2_BOND_ORDER if {i, j}.isdisjoint(sp3 | not_carbon) else 1.0,
+            "aromatic" if {i, j}.isdisjoint(sp3 | not_carbon) else "pairwise",
         )
         for i, j, _o in net.bonds
     ]
+    h_hosts, h_positions = _terminate_open_edges(net, coords, terminate)
+    h_clashes: list[tuple[float, int, int]] = []
+    if h_positions:
+        base = len(elements)
+        carbon = coords
+        coords = np.vstack([coords, np.asarray(h_positions, dtype=float)])
+        # the envelope must hold the caps too: same frame, re-floored so
+        # the lowest atom (now possibly an H) sits one vdW margin above
+        # z = 0 as the envelope contract says, re-measured over every atom;
+        # the carbons move by that one rigid z shift and nothing else
+        lift = VDW_MARGIN_A - float(coords[:, 2].min())
+        if lift:
+            coords[:, 2] += lift
+            carbon = carbon + np.array([0.0, 0.0, lift])
+            if inverse:
+                inverse["b"] = inverse["b"] - np.array([0.0, 0.0, lift]) @ inverse["Q"]
+        radius = float(np.linalg.norm(coords[:, :2], axis=1).max()) + VDW_MARGIN_A
+        height = float(coords[:, 2].max()) + VDW_MARGIN_A
+        envelope = f"cyl:r{fmt_length_A(radius)}h{fmt_length_A(height)}"
+        elements.extend("H" for _ in h_positions)
+        hybridizations.extend("s" for _ in h_positions)
+        bonds.extend(
+            (host, base + k, 1.0, "pairwise") for k, host in enumerate(h_hosts)
+        )
+        # a placed H that lands inside another atom's clash bar is reported,
+        # never dropped: two converging rims (a Y's seam end, a strip's
+        # corner against a tube rim) can want H where there is no room
+        profile = Profile.DEFAULT
+        h_xyz = coords[base:]
+        for k, (host, p) in enumerate(zip(h_hosts, h_xyz)):
+            d_c = np.linalg.norm(carbon - p, axis=1)
+            d_c[host] = np.inf
+            for other in np.flatnonzero(d_c < profile.clash_bar("C", elements[0])):
+                h_clashes.append((float(d_c[other]), base + k, int(other)))
+            d_h = np.linalg.norm(h_xyz[k + 1 :] - p, axis=1)
+            for m in np.flatnonzero(d_h < profile.clash_bar("H", "H")):
+                h_clashes.append((float(d_h[m]), base + k, base + k + 1 + int(m)))
+        h_clashes.sort()
+        if h_clashes:
+            worst = h_clashes[0]
+            report = report.merge(
+                Report(
+                    (
+                        Finding(
+                            "terminate.clash",
+                            Severity.WARN,
+                            f"{len(h_clashes)} placed H within another atom's clash "
+                            f"bar (closest {worst[0]:.2f} A, atoms {worst[1]} and "
+                            f"{worst[2]}): converging open edges want H where there "
+                            "is no room; the caps are kept, judge the edge before a "
+                            "DFT handoff",
+                            where=str(worst[1]),
+                            data=(
+                                ("count", len(h_clashes)),
+                                ("min_A", round(worst[0], 3)),
+                                ("pairs", [[i, j] for _d, i, j in h_clashes[:10]]),
+                            ),
+                        ),
+                    )
+                )
+            )
+    capped = bool(h_positions) or any(a.element == "H" for a in net.atoms)
 
     ports: list[GeneratedPort] = []
     se_names = [_se_port_name(p.name) for _n, p in net.ports]
@@ -377,6 +545,17 @@ def _block_from_net(
     }
     if extra_topology:
         topology.update(extra_topology)
+    topology["terminated"] = {
+        "element": "H",
+        "mode": terminate,
+        "count": len(h_positions),
+        "hosts": sorted(set(h_hosts)),
+        "clashes": len(h_clashes),
+        "bond_A": net.lattice.sigma_CH_A,
+        "why": "open edges capped after the relax and the judgement so renders, "
+        "se reports and a DFT handoff see a closed-shell edge; the report "
+        "describes the carbon net",
+    }
     if target is not None:
         if target_flip is None:
             raise GeneratorError("evaluated target requires its build-to-judge map")
@@ -393,6 +572,7 @@ def _block_from_net(
         f"{len(net.bonds)} bonds; rings {rings}); fidelity={fidelity} "
         f"seed={net.seed_kind}; coordinates derived, not part of the format"
         f"{provenance_tail}"
+        + (f"; {len(h_positions)} open edge(s) H-terminated" if h_positions else "")
     )
     return GeneratedBlock(
         envelope=envelope,
@@ -404,4 +584,5 @@ def _block_from_net(
         bonds=bonds,
         hybridizations=hybridizations,
         measures=measures,
+        tags=[TERMINATED_TAG] if capped else [],
     )

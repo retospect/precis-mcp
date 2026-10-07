@@ -95,7 +95,7 @@ sets, what exists: Y-A (`se:hexfold-dogfood-y-a`), the two fin scenes
 grammar caps every under-coordinated carbon with H (1.09 Å along the
 missing bond; sp2 edges and sp3 hosts alike), records it on the block
 (`terminated: {element: H, count, mode}`) and tags the structure
-`terminated:H` (the `autoterminate` rule), so se reports, renders and a
+`terminated:h` (the `autoterminate` rule), so se reports, renders and a
 DFT handoff know the edges are capped and why. Opt-out per op:
 `terminate: "none"`; `terminate: "ports-open"` leaves join ports bare for
 a later fuse. Shipped first in `_block_from_net` for the hexfold family

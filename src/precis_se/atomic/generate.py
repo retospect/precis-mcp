@@ -153,6 +153,20 @@ class PendingGenerate:
     #: (dogfood 2026-09-27: ``extent.snap``/``fit.propagated`` for a minted
     #: block were unreachable through every se view).
     generated: dict[str, Any] | None = None
+    #: Tags the generator asks for on the minted structure ref
+    #: (:attr:`GeneratedBlock.tags`), applied right after ``structure_save``.
+    tags: tuple[str, ...] = ()
+
+
+def _tag_structure(
+    store: Store, ref_id: int, tags: tuple[str, ...], conn: Any = None
+) -> None:
+    """Put the generator's tags (``terminated:h`` and the like) on the
+    minted structure ref, as the system actor."""
+    from precis.store.types import Tag
+
+    for text in tags:
+        store.add_tag(ref_id, Tag.parse(text), set_by="system", conn=conn)
 
 
 def prepare_generate(
@@ -380,6 +394,7 @@ def prepare_generate(
         provenance=block.provenance,
         ports_map=ports_map,
         generated=generated_record(gen_name, block.topology),
+        tags=tuple(block.tags),
     )
     topo = ", ".join(f"{k}={_topo_brief(v)}" for k, v in block.topology.items())
     echo = (
@@ -397,6 +412,7 @@ def prepare_generate(
 #: digests them) and the ports already live on the se block.
 _GENERATED_RECORD_KEYS = (
     "hexfold",
+    "terminated",
     "spec",
     "report",
     "rings",
@@ -499,8 +515,10 @@ def finish_generate(store: Store, tree: SeTree, pending: PendingGenerate) -> Non
                 generated["surface_target"], snapshot
             )
             store.stamp_ref_meta(ref.id, {"generated": generated}, conn=conn)
+            _tag_structure(store, ref.id, pending.tags, conn=conn)
     else:
-        store.structure_save(**save_args)
+        ref, _created = store.structure_save(**save_args)
+        _tag_structure(store, ref.id, pending.tags)
     node.bound_kind = "structure"
     node.bound = pending.struct_slug
     for port_name, atom_label in pending.ports_map.items():

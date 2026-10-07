@@ -22,14 +22,14 @@ from hexfold.lattice import SP3_IDEAL_DEG
 from hexfold.report import Finding, Report, Severity
 from hexfold.stick import _angle_springs, stick_relax_pinned
 from precis_se.atomic.generators._types import GeneratedBlock, GeneratorError
-from precis_se.atomic.generators.hexfold_spec import _block_from_net
+from precis_se.atomic.generators.hexfold_spec import _block_from_net, terminate_mode
 
 FEATURE_TYPE = "fin-sp3-z"
 DEFAULT_ROWS = 4
 
 
 def _normalize(params: dict[str, Any]) -> tuple[int, int, int, str, str, float]:
-    if set(params) - {"tube", "features", "k_tether"}:
+    if set(params) - {"tube", "features", "k_tether", "terminate"}:
         raise GeneratorError(
             "fin scene accepts only tube, features, k_tether; no sheet, extra or mixed feet"
         )
@@ -218,6 +218,7 @@ def build_fin(params: dict[str, Any]) -> GeneratedBlock:
         net,
         pos,
         spec="",
+        terminate=terminate_mode(params),
         report=Report(tuple(findings)).sorted(),
         fidelity="stick",
         extra_topology={

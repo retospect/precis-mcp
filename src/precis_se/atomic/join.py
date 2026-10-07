@@ -406,6 +406,21 @@ def _rebuild_block(store: Store, struct_slug: str) -> tuple[Block, list[str], An
                 f"{struct_slug!r}'s spec no longer builds cleanly: {exc}"
             ) from exc
         net_elements = [a.element for a in net.atoms]
+        # the generator's default H-termination appends its caps after the
+        # carbons (``generated.terminated.count`` of them); a join consumes
+        # the ports those caps sit on, so the part is rebuilt bare and the
+        # caps are left behind with the stored block
+        n_caps = int((generated.get("terminated") or {}).get("count") or 0)
+        n_bare = len(elements) - n_caps
+        if n_caps and elements[n_bare:] != ["H"] * n_caps:
+            raise _JoinStale(
+                f"{struct_slug!r}: its record says {n_caps} terminating H but "
+                "the stored atoms do not end with them — the block was edited "
+                "since it was generated"
+            )
+        elements = elements[:n_bare]
+        labels = labels[:n_bare]
+        coords = coords[:n_bare]
         if net_elements != elements:
             raise _JoinStale(
                 f"{struct_slug!r}: stored {len(elements)} atom(s) but its "

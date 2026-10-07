@@ -179,3 +179,8 @@ class GeneratedBlock:
     #: its block -- ``prepare_generate`` turns each into an ``add_measure``.
     #: Empty for the pre-existing generators.
     measures: list[GeneratedMeasure] = field(default_factory=list)
+    #: Tags ``finish_generate`` puts on the minted structure ref, so
+    #: downstream readers see a build-time fact without opening the
+    #: record -- ``terminated:h`` for a block whose open edges were capped
+    #: (the hexfold family's default final step, Reto 2026-10-07).
+    tags: list[str] = field(default_factory=list)
