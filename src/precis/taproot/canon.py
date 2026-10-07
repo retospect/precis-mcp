@@ -1151,7 +1151,13 @@ def dedup_judge(a: str, b: str) -> Verdict:
     response that is unparseable degrades to ``"different"`` at
     confidence 0.0, never a silent ``"same"``. A dispatch error is NOT a
     verdict: it returns ``verdict="error"`` (confidence 0.0) so a transient
-    failure can't read as "different" and mint a duplicate hub.
+    failure can't read as "different" and mint a duplicate hub. An EMPTY
+    reply (no text, no parsed data) is likewise an error: the model said
+    nothing (a transport that 200s with blank content produced ~1360 of
+    them, gr464672), so there is no judgment to degrade — reading it as
+    "different" silently switched dedup off. A non-empty but unparseable
+    reply stays "different": the model did answer, just not in a shape we
+    can read, and the bias is toward not merging.
     """
     prompt = _DEDUP_PROMPT.format(claim_a=a, claim_b=b)
     res = route(
@@ -1172,6 +1178,9 @@ def dedup_judge(a: str, b: str) -> Verdict:
             confidence=0.0,
             rationale=f"dispatch error: {res.error}",
         )
+    if not res.data and not (res.text or "").strip():
+        log.warning("taproot: dedup_judge got an empty model reply")
+        return Verdict(verdict="error", confidence=0.0, rationale="empty model reply")
     data = res.data or _parse_json_object(res.text)
     return _coerce_verdict(data, default_rationale="unparseable model output")
 

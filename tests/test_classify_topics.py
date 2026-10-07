@@ -638,3 +638,58 @@ class TestPerTopicGating:
         assert len(subset_client.calls) == 1
         assert _has_marker(store, ref_id, full_marker)
         assert not _has_marker(store, ref_id, topic_marker_value(["mof"]))
+
+    def test_worker_preserves_full_marker(self, store: Any) -> None:
+        """A full-taxonomy marker is never replaced by a subset worker."""
+        ref_id = _seed_paper(
+            store,
+            "Haber-Bosch catalyst with zeolitic imidazolate framework",
+            "We combine ammonia synthesis with a metal-organic framework.",
+        )
+        full = _FakeClient('{"topics": ["mof"]}')
+        run_classify_topics_pass(store, client=full, batch_size=10, ref_ids=[ref_id])
+        full_marker = topic_marker_value(all_topic_slugs())
+        assert _has_marker(store, ref_id, full_marker)
+
+        worker = _FakeClient('{"topics": ["nh3-synthesis"]}')
+        result = run_classify_topics_pass(
+            store,
+            client=worker,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert worker.calls == []
+        assert _has_marker(store, ref_id, full_marker)
+        assert not _has_marker(store, ref_id, topic_marker_value(["nh3-synthesis"]))
+
+    def test_growing_older_subset_replaces_subset_marker(self, store: Any) -> None:
+        """An enabled-set expansion reclaims a subset-marked ref."""
+        ref_id = _seed_paper(
+            store,
+            "Haber-Bosch catalyst with zeolitic imidazolate framework",
+            "We combine ammonia synthesis with a metal-organic framework.",
+        )
+        run_classify_topics_pass(
+            store,
+            client=_FakeClient('{"topics": ["nh3-synthesis"]}'),
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+        old = topic_marker_value(["nh3-synthesis"])
+        assert _has_marker(store, ref_id, old)
+
+        grown = _FakeClient('{"topics": ["mof", "nh3-synthesis"]}')
+        result = run_classify_topics_pass(
+            store,
+            client=grown,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis", "mof"],
+            ref_ids=[ref_id],
+        )
+        assert result["claimed"] == 1
+        assert len(grown.calls) == 1
+        assert _has_marker(store, ref_id, topic_marker_value(["mof", "nh3-synthesis"]))
+        assert not _has_marker(store, ref_id, old)

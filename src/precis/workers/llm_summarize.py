@@ -276,6 +276,13 @@ class LlmResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     cost_usd: float | None = None
+    #: The choice's ``finish_reason``, whether the message carried
+    #: ``tool_calls`` and whether it carried an explicit ``refusal`` — lets a
+    #: caller tell an empty-but-fine reply from an empty completion with
+    #: nothing usable (gr464672).
+    finish_reason: str | None = None
+    has_tool_calls: bool = False
+    has_refusal: bool = False
 
 
 class LlmClient:
@@ -355,7 +362,16 @@ class LlmClient:
             prompt_tokens=int(prompt) if prompt is not None else None,
             completion_tokens=int(completion) if completion is not None else None,
             cost_usd=float(cost) if cost is not None else None,
+            finish_reason=_finish_reason(body),
+            has_tool_calls=isinstance(message, dict)
+            and bool(message.get("tool_calls")),
+            has_refusal=isinstance(message, dict) and bool(message.get("refusal")),
         )
+
+
+def _finish_reason(body: dict[str, Any]) -> str | None:
+    fr = body["choices"][0].get("finish_reason")
+    return fr if isinstance(fr, str) else None
 
 
 # ---------------------------------------------------------------------------

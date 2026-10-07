@@ -75,7 +75,7 @@ _DEFAULT_LIMIT = 2000
 _MICRO_BATCH = 32
 
 
-def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
+def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> dict[str, int] | None:
     params = dict(ctx.meta.get("params") or {})
     limit = int(params.get("limit", _DEFAULT_LIMIT))
     if limit <= 0:
@@ -83,7 +83,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             f"embed_batch: params.limit must be positive, got {limit!r}",
             failure_class="infra",
         )
-        return
+        return None
     # §F cycle b fix: an EXPLICIT params.embedder is an override; absent
     # (the materializer-minted default) must fall through to
     # ``resolve_embedder``'s own ``name or cfg.embedder`` — passing the
@@ -101,7 +101,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         embedder = resolve_embedder(name=embedder_name, dim=ctx.store.embedding_dim())
     except ValueError as exc:
         ctx.record_failure(f"embed_batch: {exc}", failure_class="infra")
-        return
+        return None
 
     # Fail fast, BEFORE claiming anything, when the resolved embedder is a
     # non-production backend that the ``embedders`` FK table doesn't know:
@@ -128,7 +128,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "this unit",
                 failure_class="infra",
             )
-            return
+            return None
 
     handler = EmbedHandler(embedder)
     processed = ok_total = failed_total = 0
@@ -151,7 +151,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 "chunk(s) — another worker generation reclaimed this job; "
                 "stopping without a terminal status",
             )
-            return
+            return None
         batch_limit = min(_MICRO_BATCH, limit - processed)
         with ctx.store.pool.connection() as conn:
             rows = handler.claim_batch(conn, limit=batch_limit)
@@ -176,7 +176,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                 f"chunk(s) embedded: {exc}",
                 failure_class="infra",
             )
-            return
+            return None
 
         with ctx.store.pool.connection() as conn:
             for row, payload in zip(rows, results, strict=True):
@@ -197,6 +197,8 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"embedded {ok_total} chunk(s) ({failed_total} failed) — "
         f"queue_remaining≈{remaining}",
     )
+    # Read by job_inproc's per-job log line (``embedded=N``); nothing persists it.
+    return {"embedded": ok_total, "failed": failed_total}
 
 
 def _run(*_a: Any, **_k: Any) -> Any:

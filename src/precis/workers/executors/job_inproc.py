@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 from precis.workers.executors._common import (
@@ -56,6 +57,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     claim_executor_jobs,
+)
+from precis.workers.executors._common import (
+    current_status as _current_status,
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
@@ -221,6 +225,30 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     return {"claimed": len(rows), "ok": ok, "failed": failed}
 
 
+_COUNT_KEYS = ("drained", "embedded", "n")
+
+
+def _log_done(
+    job_type: object, ref_id: int, outcome: str, started: float, result: Any = None
+) -> None:
+    """One INFO line per finished job so the job_type is greppable in
+    ``worker_logs`` (the runner-level pass line only counts claims)."""
+    extra = ""
+    if isinstance(result, dict):
+        for key in _COUNT_KEYS:
+            if key in result:
+                extra = f" {key}={result[key]}"
+                break
+    log.info(
+        "job_inproc: %s job %d %s in %.1fs%s",
+        job_type,
+        ref_id,
+        outcome,
+        time.monotonic() - started,
+        extra,
+    )
+
+
 def _run_one(ctx: DispatchContext) -> None:
     """Dispatch one claimed job — plugin ``dispatch`` only. job_inproc has
     no in-tree built-in switch (unlike ``claude_inproc``'s fix_gripe/
@@ -234,6 +262,13 @@ def _run_one(ctx: DispatchContext) -> None:
     ``meta`` local names, so a mid-dispatch mutation (``renew_own_lease``
     stamping :data:`_LEASE_LOST_META_KEY`) is visible here regardless of
     which name reads it back."""
+    started = time.monotonic()
+    outcome, result = _dispatch_one(ctx)
+    _log_done(ctx.meta.get("job_type"), ctx.ref_id, outcome, started, result)
+
+
+def _dispatch_one(ctx: DispatchContext) -> tuple[str, Any]:
+    """Body of :func:`_run_one`; returns ``(ok|failed, dispatch result)``."""
     store, ref_id, meta = ctx.store, ctx.ref_id, ctx.meta
     job_type_name = meta.get("job_type")
     if not job_type_name:
@@ -244,7 +279,7 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return "failed", None
     spec = get_job_type(str(job_type_name))
     if spec is None:
         _record_failure(
@@ -254,7 +289,7 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return "failed", None
     if spec.dispatch is None:
         _record_failure(
             store,
@@ -264,9 +299,9 @@ def _run_one(ctx: DispatchContext) -> None:
             gripe_rollback=None,
             failure_class="infra",
         )
-        return
+        return "failed", None
 
-    spec.dispatch(ctx, spec)
+    result = spec.dispatch(ctx, spec)
     if meta.get(_LEASE_LOST_META_KEY):
         # A mid-drain renewal (renew_own_lease) found this job's lease
         # already reclaimed by another worker generation — the new
@@ -280,12 +315,15 @@ def _run_one(ctx: DispatchContext) -> None:
             "transition to the new owner",
             ref_id,
         )
-        return
+        return "failed", result
     # Mirrors claude_inproc's plugin-dispatch finalize: the dispatcher does
     # its work and appends a summary but leaves the happy-path terminal
     # transition to the executor; a dispatcher that already recorded a
     # failure/cancellation is left untouched.
     _finalize_plugin_dispatch(store, ref_id)
+    with store.pool.connection() as conn:
+        status = _current_status(conn, ref_id)
+    return ("failed" if status == _FAILED else "ok"), result
 
 
 __all__ = ["renew_own_lease", "run_job_inproc_pass"]

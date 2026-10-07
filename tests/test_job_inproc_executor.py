@@ -122,6 +122,27 @@ def test_dispatch_runs_synchronously_and_finalizes_succeeded(
     assert _status(store, rid) == "succeeded"
 
 
+def test_completed_job_logs_job_type_and_outcome(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        job_inproc,
+        "get_job_type",
+        lambda name: _spec(dispatch=lambda _c, _s: {"drained": 2000}),
+    )
+    rid = _mk_queued_job(store)
+
+    with caplog.at_level("INFO", logger=job_inproc.log.name):
+        job_inproc.run_job_inproc_pass(store, limit=1)
+
+    lines = [
+        r.getMessage() for r in caplog.records if "fake_embed_batch" in r.getMessage()
+    ]
+    assert len(lines) == 1
+    assert f"job {rid} ok in " in lines[0]
+    assert lines[0].endswith("drained=2000")
+
+
 def test_unknown_job_type_fails_infra(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -156,6 +156,9 @@ def test_ambiguous_doi_prefix_is_not_a_redirect(
         "/drive", params={"q": "10.1021/acscatal.3c0196"}, follow_redirects=False
     )
     _assert_search_page(resp)
+    # The matching papers are listed first, though no chunk matches the DOI.
+    assert "paper twin-a2023" in resp.text
+    assert "paper twin-b2023" in resp.text
 
 
 def test_unknown_doi_falls_through_to_search(

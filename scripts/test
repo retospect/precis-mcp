@@ -355,8 +355,13 @@ UV_WITH="${UV_WITH:-}"
 TESTMON_ARGS=()
 TESTMON_ENV=()
 if [[ "$IMPACTED" == "1" ]]; then
-    UV_WITH="${UV_WITH:+${UV_WITH} }--with pytest-testmon"
-    TESTMON_ARGS=(--testmon)
+    # gr451018: a first-time map build runs the whole suite serial under
+    # tracing and has wedged for hours with no test name. pytest-timeout's
+    # thread method (signal can't interrupt threaded tests) dumps every
+    # thread's stack + the test id, then exits non-zero — a real failure to
+    # testmon-exit-guard (no INTERNALERROR, so no rc-75 plain re-run).
+    UV_WITH="${UV_WITH:+${UV_WITH} }--with pytest-testmon --with pytest-timeout"
+    TESTMON_ARGS=(--testmon "--timeout=${PRECIS_IMPACTED_TEST_TIMEOUT:-900}" --timeout_method=thread)
     TESTMON_ENV=(-e "TESTMON_DATAFILE=/app/.testmondata")
     NPROC=(-n0)
     # pytest-testmon's own bookkeeping can INTERNALERROR on an extensionless

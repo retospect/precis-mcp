@@ -452,8 +452,10 @@ async def index(
     # or as a unique prefix) goes straight to that item's page instead of
     # the chunk search. Ambiguous prefixes / no match fall through. Other
     # facets (k/state/folder/…) never affect resolution.
+    ambiguous_ids: list[int] = []
     if q:
         hit = await asyncio.to_thread(resolve_query_identifier, store, q)
+        ambiguous_ids = hit.ambiguous_ref_ids
         if hit.ref is not None:
             return RedirectResponse(
                 url=presenter_for(hit.ref.kind).open_url(hit.ref), status_code=302
@@ -646,6 +648,20 @@ async def index(
             tags=tags,
             offset=offset,
         )
+        if ambiguous_ids and offset == 0:
+            # An ambiguous DOI prefix: list the matching papers first.
+            first, _ = await asyncio.to_thread(
+                _recent_rows,
+                store,
+                ["paper"],
+                [],
+                None,
+                None,
+                0,
+                ref_ids=ambiguous_ids,
+            )
+            seen = {r["id"] for r in first}
+            rows = [*first, *(r for r in rows if r.get("id") not in seen)]
         # Total-match count for the "showing N of ~K" header — a lexical
         # approximation (the fused semantic+lexical ranking that actually
         # populates ``rows`` has no cheap exact total), but it's the

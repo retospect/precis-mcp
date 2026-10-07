@@ -1253,3 +1253,25 @@ def test_genuine_different_still_mints() -> None:
         lambda a, b: Verdict(verdict="different", confidence=0.9, rationale="no"),
     )
     assert canon.place(_CLAIM, judged).action == "new"
+
+
+def test_dedup_judge_flags_empty_reply_as_error_and_judge_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr464672: a 200 with blank content is an error, not a "different"."""
+    calls: list[int] = []
+
+    def fake_route(req: Any) -> Any:
+        calls.append(1)
+        return _result(data=None, text="", error=None)
+
+    monkeypatch.setattr(canon, "route", fake_route)
+    v = dedup_judge("claim A", "claim B")
+    assert v["verdict"] == "error"
+    assert v["rationale"] == "empty model reply"
+
+    calls.clear()
+    cands = [MergeCandidate(hub_ref_id=7, claim="c", distance=0.0)]
+    judged = canon.judge_candidates("q", cands)
+    assert len(calls) == 2  # tried, retried once
+    assert judged[0][1]["verdict"] == "error"

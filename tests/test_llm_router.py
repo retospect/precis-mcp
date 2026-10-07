@@ -1902,6 +1902,70 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["messages"] == [{"role": "user", "content": "judge this"}]
 
 
+def _openai_compat_with_body(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> router.LlmResult:
+    """Run _dispatch_openai_compat over a fake HTTP 200 carrying ``body``."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    class FakeTransport:
+        def post_json(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return body
+
+    real = summ.LlmClient
+    monkeypatch.setattr(
+        summ, "LlmClient", lambda cfg: real(cfg, transport=FakeTransport())
+    )
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    return router._dispatch_openai_compat(
+        LlmRequest(tier=Tier.MEDIUM, prompt="x"), model="m"
+    )
+
+
+def test_openai_compat_empty_completion_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr464672: HTTP 200 + empty content + no tool calls => error set (the
+    llm_call_log row writes ``errored = result.error is not None``)."""
+    out = _openai_compat_with_body(
+        monkeypatch,
+        {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]},
+    )
+    assert out.error == "empty completion (finish_reason=stop)"
+
+
+def test_openai_compat_empty_completion_length_still_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out = _openai_compat_with_body(
+        monkeypatch,
+        {"choices": [{"message": {"content": None}, "finish_reason": "length"}]},
+    )
+    assert out.error == "empty completion (finish_reason=length)"
+
+
+def test_openai_compat_empty_content_with_tool_calls_is_not_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out = _openai_compat_with_body(
+        monkeypatch,
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{"id": "1", "type": "function"}],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        },
+    )
+    assert out.error is None
+
+
 def test_dispatch_openai_compat_thinking_off_disables_reasoning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

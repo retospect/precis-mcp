@@ -3086,7 +3086,20 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             error=str(exc),
             paused=_is_unavailability(exc),
         )
-    return result_from_openai(res, model=model, tier=req.tier)
+    out = result_from_openai(res, model=model, tier=req.tier)
+    # An HTTP 200 with empty content, no tool calls and no refusal is a
+    # failed call, not an answer (gr464672: ~1360 taproot:dedup replies were
+    # logged errored=false and read downstream as a real "different").
+    # tool_calls with empty content is a normal reply; finish_reason=length
+    # with empty content is still nothing usable, so it errors too.
+    if (
+        not (out.text or "").strip()
+        and not getattr(res, "has_tool_calls", False)
+        and not getattr(res, "has_refusal", False)
+    ):
+        finish = getattr(res, "finish_reason", None)
+        out = replace(out, error=f"empty completion (finish_reason={finish})")
+    return out
 
 
 def _read_system_prompt(sp: str | Path | None) -> str | None:
