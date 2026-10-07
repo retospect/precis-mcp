@@ -57,14 +57,19 @@ not native MCP modes; they do not authorize migration of a real harness director
 `mirror import` refuses when live nodes from the one-shot importer share a topic's
 `name:` (`--legacy retire` soft-deletes them in the import, `--legacy keep` imports
 beside them, `--legacy refresh` adopts each in place: same handle and inbound
-links, the file's body and links written over it); `mirror export` reports every
-live `SPACE:repo-dev` node it left out as `unexported`.
+links, the file's body and links written over it); `mirror export` writes a live
+`SPACE:repo-dev` node that has no file to a new `<slug>.md` (slug of the title,
+`-<id>` on a clash; `description:` = its hook (else the body's first line),
+`metadata.type` = its `type` meta
+or `project`) and stamps it as a mirror node, and reports any node it still
+cannot render (no title, or another namespace's) as `unexported`.
 
 **Where to edit.** A memory that has a file is edited in the graph with the anchored
 `edit` once the real mirror import has run for its namespace, and in the file before
 that; the mirror export is how the file catches up. A memory with no file is created
 with `put(kind='memory', tags=['SPACE:repo-dev','section:<slug>'], meta={'hook': '…'})`
-and stays graph-only (reported as `unexported`) until an export policy exists.
+and gets its file at the next `mirror export`; set `meta={'type': 'user'|'feedback'|
+'project'|'reference'}` to choose the file's `metadata.type` (default `project`).
 
 ## Save a thought
 ## Capture a note

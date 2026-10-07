@@ -470,6 +470,15 @@ def test_edit_meta_only_sets_the_hook(handler: MemoryHandler, store: Store) -> N
     assert handler._body_text(ref) == "body stays"
 
 
+def test_edit_meta_type_is_validated(handler: MemoryHandler, store: Store) -> None:
+    mid = id_of(handler.put(text="body").body)
+    handler.edit(id=mid, meta={"type": "reference"})
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.meta["type"] == "reference"
+    with pytest.raises(BadInput, match="meta\\['type'\\]"):
+        handler.edit(id=mid, meta={"type": "bogus"})
+
+
 def test_edit_meta_with_text_rewrites_both(
     handler: MemoryHandler, store: Store
 ) -> None:
@@ -506,7 +515,7 @@ def test_bad_meta_raises_on_put_and_edit(
 
 
 def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
-    with pytest.raises(BadInput, match=r"allowed keys: \['hook'\]"):
+    with pytest.raises(BadInput, match=r"allowed keys: \['hook', 'type'\]"):
         handler.put(text="x", meta={"nope": "y"})
 
 

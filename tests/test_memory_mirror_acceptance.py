@@ -27,8 +27,8 @@ SOURCE_SHA = "0662bc0cfcae6c8038e24ef7b50373e931049ce8"
 REVIEWED_SHA = "2755f8a1adf70ea3ad38ed9318b8fac8f9b6b2e4"
 ROOT = Path(__file__).resolve().parents[1]
 MIRROR_BLOBS = {
-    "src/precis/cli/memory_mirror.py": "abbd3c47bb9a2bff65c04388fe23f81c5d0e0623",
-    "src/precis/cli/memory.py": "1c9640547a677aa727116a8e9df06dc3916c041f",
+    "src/precis/cli/memory_mirror.py": "57df4173ab98929c2151a63d23608a65be5d38c0",
+    "src/precis/cli/memory.py": "6221172b05433fa75a44765db8f0a13e24ac4343",
     "src/precis/utils/text.py": "ee025af69aae61fd32f7060c78abe178a797b995",
 }
 

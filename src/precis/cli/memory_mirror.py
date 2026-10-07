@@ -27,6 +27,7 @@ from psycopg import Connection
 
 from precis.cli.memory import GRAPH_MARKER, ImportRefused
 from precis.store import ChunkInsert, Store, Tag
+from precis.utils.text import slugify
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _WIKI = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
@@ -61,6 +62,8 @@ class MirrorReport:
     unexported: list[str] = field(default_factory=list)
     #: Import: legacy one-shot nodes soft-deleted by ``legacy='retire'``.
     retired: list[str] = field(default_factory=list)
+    #: Export: native nodes (no ``file_mirror``) rendered to new files and stamped.
+    exported_native: list[str] = field(default_factory=list)
     #: Import: legacy nodes adopted in place by ``legacy='refresh'`` (not in created).
     refreshed: list[str] = field(default_factory=list)
 
@@ -272,6 +275,49 @@ def _unexported(conn: Connection, namespace: str) -> list[str]:
     return [f"me{row[0]}" for row in rows]
 
 
+_TYPES = ("user", "feedback", "project", "reference")
+
+
+def _natives(conn: Connection) -> list[tuple[int, str, dict[str, Any]]]:
+    """Live repo-dev memories with no ``file_mirror`` key and a title, locked."""
+    rows = conn.execute(
+        "SELECT r.ref_id, r.title, r.meta FROM refs r WHERE r.kind='memory' "
+        "AND r.retired_at IS NULL AND NOT (r.meta ? %s) AND btrim(r.title) <> '' "
+        "AND EXISTS (SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id=rt.tag_id "
+        "WHERE rt.ref_id=r.ref_id AND t.namespace='SPACE' AND t.value='repo-dev' "
+        "AND (rt.expires_at IS NULL OR rt.expires_at > now())) "
+        "ORDER BY r.ref_id FOR NO KEY UPDATE OF r",
+        (_KEY,),
+    ).fetchall()
+    return [(int(rid), str(title), dict(meta or {})) for rid, title, meta in rows]
+
+
+def _describe(meta: dict[str, Any], body: str, title: str) -> str:
+    """``meta.hook``, else the body's first non-empty line (sans ``#``), else title."""
+    hook = str(meta.get("hook") or "").strip()
+    if hook:
+        return hook
+    for line in body.splitlines():
+        line = line.strip().lstrip("#").strip()
+        if line:
+            return line[:160].rstrip()
+    return title.strip()
+
+
+def _render_native(
+    slug: str, meta: dict[str, Any], body: str, title: str
+) -> tuple[str, dict[str, Any]]:
+    """Header text and frontmatter dict for a native node under the export policy."""
+    kind = meta.get("type")
+    fm: dict[str, Any] = {
+        "name": slug,
+        "description": _describe(meta, body, title),
+        "metadata": {"type": kind if kind in _TYPES else "project"},
+    }
+    dumped = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True)
+    return f"---\n{dumped}---\n", fm
+
+
 def _guard_chunk_links(conn: Connection, rid: int) -> None:
     # Replacing a chunk must not cascade-delete another author's anchors.
     # Lock chunks before a fresh link read, so concurrent FK inserts cannot
@@ -478,8 +524,17 @@ def import_mirror(
 def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
     """Export a locked snapshot to an exclusively new directory; never overwrite.
 
-    ``created`` counts files written; ``unexported`` lists live repo-dev nodes
-    with no (or another namespace's) ``file_mirror`` key, which get no file.
+    Nodes carrying this namespace's ``file_mirror`` key are written byte-faithfully.
+    A live repo-dev node with no ``file_mirror`` key and a title is rendered to a
+    new ``<slug>.md`` (slug of the title, ``-<ref_id>`` on a filename clash;
+    ``name:`` = slug, ``description:`` = ``meta.hook`` (else the body's first line, else the
+    title; stamped back as ``meta.hook``), ``metadata.type`` =
+    ``meta.type`` when one of user/feedback/project/reference, else ``project``)
+    and stamped with ``file_mirror`` in the same transaction, so the next import
+    sees an ordinary mirror node (its title becomes the slug, as import would
+    set it); handles go in ``exported_native``. ``created`` counts every file
+    written. ``unexported`` lists the remaining live repo-dev
+    nodes (another namespace's, or an empty or unsluggable title).
     """
     _namespace(namespace)
     report = MirrorReport()
@@ -502,26 +557,70 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
                     f"{name}: graph metadata differs from YAML; explicit reconciliation required"
                 )
             output[name] = raw
-        report.unexported = _unexported(conn, namespace)
-    # mkdir and exclusive file creation refuse races without trusting advisory file locks.
-    try:
-        dest.mkdir()
-    except FileExistsError as exc:
-        raise ImportRefused(
-            f"export destination exists: {dest}; choose a new directory"
-        ) from exc
-    dest_fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for name, raw in output.items():
-            fd = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=dest_fd,
-            )
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(raw)
-    finally:
-        os.close(dest_fd)
+        taken = {name.casefold() for name in output}
+        stamps: list[
+            tuple[int, str, str, str, dict[str, Any], dict[str, Any], bytes]
+        ] = []
+        for rid, title, meta in _natives(conn):
+            base = slugify(title).replace("-", "_")
+            if not base:
+                continue
+            slug = base if f"{base}.md".casefold() not in taken else f"{base}-{rid}"
+            name = f"{slug}.md"
+            if name.casefold() in taken:
+                continue
+            taken.add(name.casefold())
+            body = _body(conn, rid)
+            header, fm = _render_native(slug, meta, body, title)
+            raw = (header + body).encode("utf-8")
+            output[name] = raw
+            stamps.append((rid, title, name, header, fm, meta, raw))
+        stamped_ids = {st[0] for st in stamps}
+        report.unexported = [
+            h for h in _unexported(conn, namespace) if int(h[2:]) not in stamped_ids
+        ]
+        # mkdir and exclusive file creation refuse races without trusting advisory file locks.
+        try:
+            dest.mkdir()
+        except FileExistsError as exc:
+            raise ImportRefused(
+                f"export destination exists: {dest}; choose a new directory"
+            ) from exc
+        dest_fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name, raw in output.items():
+                fd = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=dest_fd,
+                )
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(raw)
+        finally:
+            os.close(dest_fd)
+        # Stamp last, inside the transaction: a failed write rolls the stamps back.
+        for rid, title, name, header, fm, meta, raw in stamps:
+            mirror: dict[str, Any] = {
+                "namespace": namespace,
+                "filename": name,
+                "header": header,
+                "file_digest": _digest(raw.decode()),
+                "unresolved": [],
+            }
+            stamped = {
+                **meta,
+                "hook": fm["description"],
+                "frontmatter": fm,
+                "order": 0,
+                _KEY: mirror,
+            }
+            if title != fm["name"]:  # a mirror node's title is its file's name:
+                store.chunks.set_ref_title(
+                    rid, fm["name"], source="memory-mirror", conn=conn
+                )
+            mirror["graph_digest"] = _state(conn, rid, fm["name"], stamped, namespace)
+            store.update_ref(rid, meta_patch=stamped, conn=conn)
+            report.exported_native.append(f"me{rid}")
     report.created = len(output)
     return report

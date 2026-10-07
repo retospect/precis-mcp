@@ -396,13 +396,14 @@ def test_export_reports_unexported_native_and_other_namespace(
     native = _plant_legacy(hub, "Native note")
     dest = tmp_path / "out"
     report = export_mirror(store, dest, namespace="fixture")
-    assert report.unexported == [f"me{native}"]
-    assert report.created == 3 and sorted(p.name for p in dest.iterdir()) == [
+    assert report.unexported == []
+    assert report.exported_native == [f"me{native}"]
+    assert report.created == 4 and sorted(p.name for p in dest.iterdir()) == [
         "MEMORY.md",
         "alpha.md",
         "beta.md",
+        "native_note.md",
     ]
-    assert import_mirror(store, source, namespace="fixture").unexported == []
     other = import_mirror(store, source, namespace="other")
     again = export_mirror(store, tmp_path / "out2", namespace="other")
     assert again.unexported == sorted(
@@ -441,6 +442,10 @@ def test_legacy_refuse_retire_keep(
     _unplant(store, kept)
 
 
+def report_native(store: Store, dest: Path) -> int:
+    return sum(1 for p in dest.iterdir() if p.name.startswith("synthetic_project"))
+
+
 def test_legacy_modes_leave_121_file_export_byte_identical(
     store: Store, hub: Hub, tmp_path: Path
 ) -> None:
@@ -461,7 +466,11 @@ def test_legacy_modes_leave_121_file_export_byte_identical(
         assert report.retired == ([f"me{legacy}"] if mode == "retire" else [])
         dest = tmp_path / f"export-{ns}"
         export_mirror(store, dest, namespace=ns)
-        assert {p.name: p.read_bytes() for p in dest.iterdir()} == files
+        got = {p.name: p.read_bytes() for p in dest.iterdir()}
+        if mode == "keep":  # the kept native node is now exported beside the 121
+            assert len(got) == 122 and report_native(store, dest) == 1
+            got = {k: v for k, v in got.items() if k in files}
+        assert got == files
     _unplant(store, *kept)
 
 
@@ -497,8 +506,8 @@ def test_cli_legacy_arg_and_unexported_stderr(
         )
     )
     captured = capsys.readouterr()
-    assert captured.out.strip() == "exported 3 files"
-    assert f"me{native}" in captured.err
+    assert captured.out.strip() == "exported 4 files"
+    assert f"exported native: me{native}" in captured.err
     _unplant(store, native)
 
 
@@ -587,3 +596,96 @@ def test_cli_legacy_refresh(
     run(args)
     assert f'"refreshed": ["me{legacy}"]' in capsys.readouterr().out
     _unplant(store, legacy)
+
+
+def _ref_meta(store: Store, rid: int) -> dict[str, Any]:
+    with psycopg.connect(_dsn(store)) as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id=%s", (rid,)).fetchone()
+    assert row is not None
+    return dict(row[0])
+
+
+def _ref_title(store: Store, rid: int) -> str:
+    with psycopg.connect(_dsn(store)) as conn:
+        row = conn.execute("SELECT title FROM refs WHERE ref_id=%s", (rid,)).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def _plant_meta(hub: Hub, title: str, **meta: Any) -> int:
+    resp = MemoryHandler(hub=hub).put(
+        text="Native body.\n", title=title, tags=["SPACE:repo-dev"], meta=meta or None
+    )
+    return _created_id(resp)
+
+
+def test_export_native_policy_stamp_and_round_trip(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    import_mirror(store, source, namespace="fixture")
+    hooked = _plant_meta(hub, "Native Note: v2!", hook="a one-line hook")
+    typed = _plant_meta(hub, "Typed ref", hook="h", type="reference")
+    bad = _plant_meta(hub, "Bad kind", hook="h")
+    store.update_ref(bad, meta_patch={"type": "nonsense"})
+    dest = tmp_path / "out"
+    report = export_mirror(store, dest, namespace="fixture")
+    assert report.exported_native == [f"me{hooked}", f"me{typed}", f"me{bad}"]
+    assert report.unexported == []
+    assert report.created == 6
+    text = (dest / "native_note_v2.md").read_text(encoding="utf-8")
+    assert text == (
+        "---\nname: native_note_v2\ndescription: a one-line hook\n"
+        "metadata:\n  type: project\n---\nNative body.\n"
+    )
+    assert "type: reference" in (dest / "typed_ref.md").read_text(encoding="utf-8")
+    assert "type: project" in (dest / "bad_kind.md").read_text(encoding="utf-8")
+    mirror = _ref_meta(store, hooked)["file_mirror"]
+    assert mirror["namespace"] == "fixture"
+    assert _ref_title(store, hooked) == "native_note_v2"
+    assert mirror["filename"] == "native_note_v2.md"
+    assert mirror["header"] == text.split("Native body.")[0]
+    # Round trip: the exported dir re-imports with the native nodes untouched.
+    again = import_mirror(store, dest, namespace="fixture")
+    assert again.created == 0 and again.updated == 0
+    assert again.refs["native_note_v2.md"] == hooked
+    # The next export no longer treats them as native.
+    nxt = export_mirror(store, tmp_path / "out2", namespace="fixture")
+    assert nxt.exported_native == []
+    _unplant(store, hooked, typed, bad)
+
+
+def test_export_native_slug_collision_and_empty_title(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    import_mirror(store, source, namespace="fixture")
+    first = _plant_meta(hub, "Alpha", hook="h")  # alpha.md already mirrored
+    second = _plant_meta(hub, "Dup", hook="h")
+    third = _plant_meta(hub, "dup", hook="h")
+    blank = _plant_legacy(hub, "placeholder")
+    store.chunks.set_ref_title(blank, "", source="test")
+    dest = tmp_path / "out"
+    report = export_mirror(store, dest, namespace="fixture")
+    names = sorted(p.name for p in dest.iterdir())
+    assert f"alpha-{first}.md" in names and "dup.md" in names
+    assert f"dup-{third}.md" in names
+    assert report.exported_native == [f"me{first}", f"me{second}", f"me{third}"]
+    assert report.unexported == [f"me{blank}"]
+    _unplant(store, first, second, third, blank)
+
+
+def test_export_native_hookless_uses_body_line(
+    store: Store, hub: Hub, source: Path, tmp_path: Path
+) -> None:
+    import_mirror(store, source, namespace="fixture")
+    rid = _plant_meta(hub, "Hookless note")
+    store.chunks.replace_body_chunk(
+        rid, "\n## Heading line here\nmore\n", chunk_kind="memory_body", source="test"
+    )
+    dest = tmp_path / "out"
+    export_mirror(store, dest, namespace="fixture")
+    text = (dest / "hookless_note.md").read_text(encoding="utf-8")
+    assert "description: Heading line here\n" in text
+    assert _ref_meta(store, rid)["hook"] == "Heading line here"
+    again = import_mirror(store, dest, namespace="fixture")
+    assert again.created == 0 and again.updated == 0
+    _unplant(store, rid)

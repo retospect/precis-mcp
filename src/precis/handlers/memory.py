@@ -75,13 +75,15 @@ _TITLE_MAX = 80
 
 #: ``meta=`` keys a caller may write on put/edit. ``hook`` is the one-line
 #: index text of a ``SPACE:repo-dev`` memory (``precis memory index``).
-_META_ALLOWED = ("hook",)
+_META_ALLOWED = ("hook", "type")
+_MEMORY_TYPES = ("user", "feedback", "project", "reference")
 
 
 def _validate_meta(meta: Any) -> dict[str, Any]:
     """Check a caller's ``meta=`` and return the cleaned patch.
 
-    Only ``hook`` is writable: a non-empty single-line ``str`` (stripped).
+    ``hook`` is a non-empty single-line ``str`` (stripped); ``type`` is one of
+    user/feedback/project/reference (the mirror export's ``metadata.type``).
     Anything else raises :class:`BadInput` naming the allowed keys.
     """
     example = "meta={'hook': 'one-line index text'}"
@@ -112,6 +114,14 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
         if "\n" in hook or "\r" in hook:
             raise BadInput("meta['hook'] must be one line (no newline)", next=example)
         out["hook"] = hook
+    if "type" in meta:
+        if meta["type"] not in _MEMORY_TYPES:
+            raise BadInput(
+                f"meta['type'] must be one of {list(_MEMORY_TYPES)}, "
+                f"got {meta['type']!r}",
+                next="meta={'type': 'reference'}",
+            )
+        out["type"] = meta["type"]
     return out
 
 
@@ -300,7 +310,7 @@ class MemoryHandler(NumericRefHandler):
         validity. Meaningless (but harmless) on a non-inference memory.
 
         ``meta={'hook': '...'}`` sets the memory's one-line index text
-        (``refs.meta.hook``); ``hook`` is the only writable key.
+        (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
         """
         # This fresh payload is passed down the stack, never staged on self.
         # Validate the public meta allowlist before adding internal fields.
@@ -365,7 +375,9 @@ class MemoryHandler(NumericRefHandler):
         # when absent (an inference gains them incrementally via edit()
         # too, so a rule-first / warrant-later authoring order works).
         meta: dict[str, Any] = {
-            k: create_meta[k] for k in ("rule", "warrant", "hook") if k in create_meta
+            k: create_meta[k]
+            for k in ("rule", "warrant", "hook", "type")
+            if k in create_meta
         }
 
         all_tag_strs: list[str] = list(self.default_tags_on_create)
@@ -598,7 +610,7 @@ class MemoryHandler(NumericRefHandler):
                         ref.id, new_title, source="agent", conn=conn
                     )
             changed = ", ".join(
-                k for k in ("rule", "warrant", "hook") if k in meta_patch
+                k for k in ("rule", "warrant", "hook", "type") if k in meta_patch
             )
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
             if new_title is not None:

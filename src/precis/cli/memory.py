@@ -860,6 +860,11 @@ def run(args: argparse.Namespace) -> None:
                         store, Path(args.dir), namespace=args.namespace
                     )
                     print(f"exported {exported.created} files")
+                    if exported.exported_native:
+                        print(
+                            f"exported native: {' '.join(exported.exported_native)}",
+                            file=sys.stderr,
+                        )
                     if exported.unexported:
                         print(
                             f"unexported: {' '.join(exported.unexported)}",

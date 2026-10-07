@@ -252,7 +252,7 @@ other, 2 and 3 are independent of everything above.
   cannot be rendered (no title).
 - **[open, non-blocking]** Whether `view='index'` should also exist on
   `get(kind='memory', id='/recent')`; start without.
-- **[decision 3, recommendation — needs Reto's go, destructive on prod; td471883]**
+- **[decision 3, RULED by Reto 2026-10-07 on td471883: refresh in place is the plan, retire is the fallback; GO for the real import on the first deploy that carries the mirror (round 7), after the revert precondition]** Original recommendation, kept for the record:
   Before the real mirror import, retire the 146 legacy `SPACE:repo-dev`
   nodes from the 2026-10-03 one-shot import (`--legacy retire`). They are
   stale against the files since the cutover was reverted (found
@@ -319,6 +319,27 @@ other, 2 and 3 are independent of everything above.
   `scripts/memory-lint` refuses (not just warns) when `.pre-cutover`
   exists but the graph marker is gone, printing which session-start hook
   last rendered the index. A revert then names itself.
+- **[built 2026-10-07, slice 5]** `export_mirror` renders a live
+  `SPACE:repo-dev` node with no `file_mirror` key and a non-empty title to a
+  new `<slug>.md` (slug = `slugify(title)` with `_` joins; `-<ref_id>` on a
+  filename clash with a mirrored file or an earlier native node), frontmatter
+  `name` = slug, `description` = `meta.hook`, `metadata.type` = `meta.type`
+  if one of the four values else `project`, body = the `memory_body` chunk.
+  The node is stamped with `file_mirror` (incl. `graph_digest`, `hook`,
+  `frontmatter`) in the export transaction, after the files are written, so a
+  failed write rolls the stamps back and the next import sees an ordinary
+  mirror node (round trip: `created == updated == 0`); the node's title is
+  reset to the slug, since a mirror node's title is its file's `name:` and
+  export refuses a mismatch. `MirrorReport.
+  exported_native` lists the handles; `created` counts every file written;
+  `unexported` keeps empty-title nodes and other namespaces' nodes. `type`
+  is now a writable memory meta key (validated). A hookless node's
+  `description` is the first non-empty body line (heading markers stripped,
+  160 chars), else the title, and is stamped back as `meta.hook` so graph
+  and file agree and import accepts it. The human-readable title of a
+  native node is replaced by the slug on first export; the hook is where
+  the readable line lives. Skipped: a title with no `[a-z0-9]` stays
+  `unexported`. Remaining: none.
 - **[built 2026-10-07, slice 2]** `MemoryHandler.search(view='index')`
   (explicit `view` kwarg; `None` forwards unchanged; other values
   `BadInput` with `options=['index']`; requires `q=`), rendering through
