@@ -490,6 +490,11 @@ placement without relaxation. It does not change this public `seam`
 grammar or cyclic `Port` semantics, implement general rail endpoints or
 solve curved/closed seams. Closed internal tube rails for nanoreactor T2
 need a later authored-port/topology and placement contract.
+`hexfold.fin120.seam_tube` runs that same seam along a tube axis: the
+strip is one half-sheet, the two wall halves the other two, closed on
+the far side by a zigzag fuse in direct register (one bond per top-rim
+atom, six-cycles across); an analytic seed with the wall on a circle and
+the seam registration exact, no relaxation, no public grammar.
 
 #### 11.4 Holes and openings `[impl 0.1]`
 

@@ -34,6 +34,12 @@ one axial zigzag chain by one radial sp3 C-C bond per period. It must be
 the only feature, with ``name``, ``type``, ``side`` and optional ``rows``
 (default 4, about three hexagon rows).
 
+**Seam-tube feature contract.** A feature with ``"type": "fin-k3-120-z"``
+routes the whole call to :func:`~precis_se.atomic.generators.fin120.build_fin120`:
+the Y's equal-120 seam along a tube axis, the strip as the third sheet and
+the two wall halves (``tube: [rows, periods]``, row pairs per half) closed
+by a zigzag fuse; same feature keys as the fin.
+
 **Authored tops.** ``top: "sphere"`` (n a multiple of 6, n >= 12; optional
 ``top_R`` and ``top_fillet``, Å) and ``top: "lid"`` with ``top_fillet`` (at
 most the tube radius) hold the top to an authored surface, planned by
@@ -500,6 +506,10 @@ def build_hexfold_scene(params: dict[str, Any]) -> GeneratedBlock:
             from precis_se.atomic.generators.fin import build_fin
 
             return build_fin(params)
+        if typed == ["fin-k3-120-z"]:
+            from precis_se.atomic.generators.fin120 import build_fin120
+
+            return build_fin120(params)
         # the Y adapter owns every other typed declaration, including the
         # refusals (unequal dihedrals, k >= 5, unknown types)
         from precis_se.atomic.generators.y_junction import build_y_junction

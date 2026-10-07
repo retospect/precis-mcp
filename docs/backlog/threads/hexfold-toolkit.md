@@ -3,7 +3,7 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Reto's fin scenes (2026-10-07, via chat-interface, after the Y): `hexfold_scene` feature `fin-sp3-z` is built — an `(n,n)` tube with a 4-row-pair strip grafted along one axial zigzag chain by one radial sp3 bond per period (§11.1 `bond`, not the refused unequal k3 seam), outward or inward. Prod ops after the deploy: outward `tube:[10,20]` and inward `tube:[18,20]` (rows 4 needs at least (16,16); the tip keeps 2 Å from the axis), then the /se URLs to Reto. Local measurements: outward 963 atoms, inward 1,603, no clashes, sp3 host angles 87–124° at the pinned registration. Then the gr459567 family's authored bud face on a flat sheet (W3 pair bar shipped 2026-10-07), then gr459928. Y variant A ran on prod 2026-10-07 12:15Z (round 5, fc8ad08f7): `se:hexfold-dogfood-y-a` block `y` UID 212, 5,790 atoms, 87 seam eight-cycles, 0 clashes, 696 ring-angle WARNs, matching the dev-DB build; URL handed to Reto, td471803 done. Native stored-target acceptance on legacy r5 recorded on gr470905 (default reads honest-unavailable, override and null boundaries as specified); a receipt-backed positive read still needs a post-R17 sphere/cylinder generation. Contract/evidence: [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** the four fin prod ops, split by deploy: the sp3 graft `fin-sp3-z` outward `tube:[10,20]` and inward `tube:[18,20]` need round 6 (54e6957c8 + 447791d14, deploying 2026-10-07 on bb244e093); Reto's 120° seam version `fin-k3-120-z` (the Y seam along the axis, strip as third sheet, wall halves closed by a far-side zigzag fuse, wall free) outward `tube:[10,20]` and inward `tube:[18,20]` needs round 7, which carries this landing. Each pair: run via the session MCP, hand Reto the /se URLs via chat-interface, cc the coordinator. Local measurements, all clash-free and H-terminated by default: sp3 outward 963 C, inward 1,603 C, host angles 87–124° at the pinned registration; seam tubes outward 1,076 C (seam line 0.85 Å proud of the 6.96 Å mean wall radius), inward 1,780 C (notch 0.6 Å deep at 12.38 Å mean radius), seam angles exact. Held in the hexfold tree for the next landing: the gr470905 review fixes (receipt validated at generation as a typed refusal, reflected map required on read). Open for Reto on gr470905: stored-mode surface deviation scores the H caps too; exclude or label them. Then the re-vet of Do-next 1a (slice 0 split out as backlog/hexfold-tethered-relax-op.md), then gr459928. Y variant A ran on prod 2026-10-07 12:15Z (round 5, fc8ad08f7): `se:hexfold-dogfood-y-a` block `y` UID 212, 5,790 atoms, 87 seam eight-cycles, 0 clashes, 696 ring-angle WARNs, matching the dev-DB build; URL handed to Reto, td471803 done. Native stored-target acceptance on legacy r5 recorded on gr470905 (default reads honest-unavailable, override and null boundaries as specified); a receipt-backed positive read still needs a post-R17 sphere/cylinder generation. Contract/evidence: [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -281,21 +281,25 @@ waited on happened 09-29 — note at the bottom)
        R ≳ 12 Å. At least 2 dev cycles (the grammar, then the rows), not
        yet scoped.
 
-1a. **backlog/hexfold-scene-grammar-from-primitives.md — scene grammar
-   from primitives** (Reto ruled YES 2026-10-07, via chat-interface;
-   status draft, readiness vet owed). Ranked right behind the hero path
-   because it is the frame every further "next variant" lands in: tube,
-   sheet, seam/graft line, strip and top as primitives, each with its own
-   tether, one composition rule, one planner and one judgement; today's
-   foot features, the Y and the fin become parameter sets, stored scenes
-   render byte-identically. Slice 0 first: a tethered-relax op over `.hx`
-   text or a join plus a tether list, so a scene is askable the same day
-   without a deploy. Cross-cutting default: H-termination of every open
-   edge at the end of every build with the `terminated:h` tag
-   (`terminate: "none" | "ports-open"` opts out) — shipping first in
-   `_block_from_net` for the hexfold family. Acceptance: Y-A, both fin
-   scenes and the 120° seam tube regenerate from parameter sets within
-   the bars, plus one new scene with zero code change.
+1a. **backlog/hexfold-tethered-relax-op.md (slice 0, first) and
+   backlog/hexfold-scene-grammar-from-primitives.md (the grammar,
+   blocked-by slice 0)** (Reto ruled YES 2026-10-07, via chat-interface;
+   both draft, model opus; the readiness vet of 2026-10-07 said
+   needs-work and its blockers are applied, re-vet owed). Ranked right
+   behind the hero path because it is the frame every further "next
+   variant" lands in. Slice 0 = a `hexfold_tethered` generator: `.hx`
+   text plus a tether list (`instance | region | atoms` selectors,
+   plane/cylinder/sphere/line surfaces, `pinned`, per-tether `k`), and
+   the extraction of the planner the Y, fin and seam-tube adapters share
+   (`relax_tethered`, pure refactor first), so a scene is askable the
+   same day without a deploy. The grammar then makes tube, sheet,
+   seam/graft line, strip and top primitives with the three existing
+   solvers as the only joins; the four typed/foot forms become parameter
+   sets, `plan_scene` wrapped not decomposed. Acceptance runs with
+   `terminate:"none"` against committed small goldens; prod parity for
+   Y-A, the fins and the seam tubes is a recorded post-deploy procedure;
+   the new zero-code scene is a tube with two opposite sp3 strips.
+   H-termination is shipped (Default behaviours above) and inherited.
 
 2. **gr459567 family: overlaps the clash check now reports.** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]

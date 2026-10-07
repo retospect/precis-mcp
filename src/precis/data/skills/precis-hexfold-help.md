@@ -392,6 +392,36 @@ should use `"ports-open"`: a join trims the caps off the ports it
 consumes, but a part relaxed with capped rims before the join keeps that
 rim geometry elsewhere. A join's own composite is not re-capped yet.
 
+## Seam tube: the 120° Y seam run along a tube axis
+
+The strip joins the wall as the equal-120 sp2 k3 seam (the Y grammar)
+with the two halves of the tube wall as the other two sheets, closed on
+the far side by a zigzag fuse. Each wall half leaves the seam at 120°
+from the strip, so a free wall closes with a cusp at the seam: a teardrop
+around an outward strip, a heart-shaped notch around an inward one.
+
+```json
+{"op":"generate","generator":"hexfold_scene","name":"y",
+ "params":{"tube":[10,20],
+ "features":[{"name":"y","type":"fin-k3-120-z","side":"out","rows":4}]}}
+```
+
+`tube` is `[rows, periods]`: row pairs per wall half (the zigzag seam
+along the axis forces an armchair-type wall; two halves of `rows` row
+pairs close to about the `(rows,rows)` family, e.g. rows 10 seeds at
+6.95 Å, rows 18 at 12.37 Å) and seam periods; `side` and `rows` as for
+the sp3 fin. An inward strip that would come within 2 Å of the axis is
+refused naming the smallest wall that seats it (strip rows 4 needs 17).
+One tethered stick pass: seam atoms and their three neighbours pinned at
+the exact 120° registration, strip tethered to its half-plane, **wall
+free** (no cylinder tether), so `tube.cross_section` reports what the
+wall settled into: for rows 10 outward the seam line stands 0.85 Å proud
+of the mean wall radius; for rows 18 inward the notch is about 0.6 Å
+deep. `seam.rings` (eight-cycles plus the far-side six-cycles),
+`seam.geometry` and `geom.summary` are retained; `surface_deviation` is
+unavailable. Preview geometry only. The sp3 graft fin below is the other
+way to hang a strip on a tube.
+
 ## Fin on a tube: sp3 graft along an axial zigzag chain
 
 The other exclusive scene entry grafts a single-layer graphene strip to

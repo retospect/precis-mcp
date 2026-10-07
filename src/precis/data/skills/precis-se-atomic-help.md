@@ -107,7 +107,10 @@ thread macrocycles, declare degrees of freedom, bind ports to atoms in a
   side:'out'|'in', rows?}]` with `tube:[n,periods]` grafts a graphene
   strip along an axial zigzag chain of an `(n,n)` tube by one radial sp3
   bond per period (the §11.1 `bond` attachment; `graft.rings`,
-  `graft.geometry` retained; surface deviation unavailable).
+  `graft.geometry` retained; surface deviation unavailable); and
+  `type:'fin-k3-120-z'` with `tube:[rows,periods]` runs the Y's
+  equal-120 seam along a tube axis with the strip as the third sheet
+  and the wall free to close around it (`tube.cross_section`).
   `smooth_drum` takes `neck` and `wall` (zigzag tube counts `n` of a
   `(n,0)` stalk and wall, `wall > neck`) plus optional `stalk_length_A`,
   `wall_height_A`, `sheet_radius_A`, `min_flat_A`, `relax`: a sheet →
