@@ -81,7 +81,7 @@ log = logging.getLogger(__name__)
 
 #: Publish states whose grounding is frozen (:func:`precis.nanopub.state.
 #: frozen_rung`); the same tuple :mod:`.pin_lint` uses.
-FROZEN_STATES = ("reviewed", "signed", "anchored", "published")
+FROZEN_STATES = ("reviewed", "signed", "anchored", "publishing", "published")
 
 #: A paper this short with no methods/results heading is a letter.
 LETTER_MAX_CHUNKS = 45

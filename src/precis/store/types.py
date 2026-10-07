@@ -1366,4 +1366,4 @@ TODO_BODY_KIND = "todo_body"
 FAMILY_STUB_META_KEY = "family_stub"
 
 #: Publish states that mean "a human key attested this claim".
-SIGNED_FINDING_STATES = ("signed", "anchored", "published")
+SIGNED_FINDING_STATES = ("signed", "anchored", "publishing", "published")

@@ -94,7 +94,15 @@ def test_contains_verbatim_keeps_meaningful_punctuation() -> None:
 def test_forward_path_is_legal() -> None:
     import itertools
 
-    path = ["candidate", "reviewed", "signed", "anchored", "published", "superseded"]
+    path = [
+        "candidate",
+        "reviewed",
+        "signed",
+        "anchored",
+        "publishing",
+        "published",
+        "superseded",
+    ]
     for a, b in itertools.pairwise(path):
         state.check_transition(a, b)
 

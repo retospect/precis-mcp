@@ -60,6 +60,7 @@ _STATE_ACTION = {
     "reviewed": ("sign", "Sign"),
     "signed": ("reopen", "Reopen (discard artifact pointer, re-mint)"),
     "anchored": ("publish-cli", "Publish via CLI (point of no return)"),
+    "publishing": (None, "Publishing — in flight; precis nanopub reconcile if stuck"),
     "published": (None, "Published — change = supersede/retract"),
 }
 

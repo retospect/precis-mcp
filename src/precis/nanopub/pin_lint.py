@@ -58,7 +58,7 @@ log = logging.getLogger(__name__)
 
 #: Publish states whose grounding is frozen (the rungs of
 #: :func:`precis.nanopub.state.frozen_rung` that are not ``''``).
-FROZEN_STATES = ("reviewed", "signed", "anchored", "published")
+FROZEN_STATES = ("reviewed", "signed", "anchored", "publishing", "published")
 
 _TERM_CAP = 6
 _WS_RE = re.compile(r"\s+")

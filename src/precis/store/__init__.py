@@ -41,6 +41,11 @@ existing writers. Cache locks never span model calls or GET; bounded conflicts
 roll back without rebasing. Conn-aware ref/chunk reads avoid a second pooled
 connection under these locks. Conversation appends share stored ordinal allocation.
 
+Nanopub supersession uses an explicit version relationship, separate from
+approval's replaceable grounding envelope. A discarded candidate detaches the
+successor; its predecessor obligation survives and reattaches atomically on
+restaging. No signed bytes or timestamp proofs are rewritten.
+
 The schema is defined in `src/precis/migrations/0001_initial.sql`.
 Generated baselines provision every extension prerequisite and load the full
 seed vocabulary with a transaction-local public search path, so sealed seed

@@ -22,9 +22,10 @@ migrations. Any migration goes through coordinator gated `/go`, not quick deploy
 
 (a)+(b) crosses separate publication concurrency and consumer-review paths.
 Implement (b) first because existing `chunk_review`, `reviews` and `refs.meta`
-provide the required review surfaces without a migration. The initial (a) WIP
-is preserved separately and excluded; it also needs its publication-lock/pool
-issue corrected under the newly widened signed/published policy.
+provide the required review surfaces without a migration. The (a) slice's publication-lock/pool
+issue is fixed by a durable `publishing` state (no transaction across the
+registry POST; `precis nanopub reconcile` resolves ambiguous outcomes). Still
+open there: the newly widened signed/published policy.
 
 Own `refine_claim_sentence` in-place title/scope edits, hypothesis
 `testable_by`/`motivation` edits (preserving their existing prose history), and

@@ -102,10 +102,6 @@ def test_candidate_edit_lists_flags_and_preserves_every_consumer(store: Any) -> 
     with store.pool.connection() as conn:
         conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (retired,))
         before_links = conn.execute("SELECT * FROM links ORDER BY link_id").fetchall()
-        assert (
-            conn.execute("SELECT to_regclass('nanopub_supersessions')").fetchone()[0]
-            is None
-        )
     unrelated, other_chunk = _draft(store, "unrelated", "No claim reference.")
     with store.pool.connection() as conn:
         before_links = conn.execute("SELECT * FROM links ORDER BY link_id").fetchall()
