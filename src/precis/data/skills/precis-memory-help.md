@@ -50,8 +50,8 @@ retag with `tag(add=['section:<slug>'], remove=['section:<old>'])`.
 For explicit file coexistence, the operator CLI `precis memory mirror import
 DIR --namespace NAME` preserves YAML name/description/metadata, body prose and
 filenames; `memory mirror export DEST --namespace NAME` writes a fresh directory.
-Reruns update the same imported handles and resolve `[[slug]]` links. Missing
-files stay live; graph edits cause an import conflict. Export preserves graph
+Reruns update the same imported handles and resolve `[[…]]` links (a topic
+filename stem inside double brackets). Missing files stay live; graph edits cause an import conflict. Export preserves graph
 body edits but refuses changed file-authored metadata. These are CLI operations,
 not native MCP modes; they do not authorize migration of a real harness directory.
 

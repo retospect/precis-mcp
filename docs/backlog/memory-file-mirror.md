@@ -7,6 +7,48 @@ prio: high
 
 # Memory file mirror
 
+## R17 acceptance reconciliation on the post-DRY base
+
+Base `0662bc0cfcae6c8038e24ef7b50373e931049ce8`; select only the reviewed
+synthetic acceptance from `216fc6320` plus the correction from `7d6bec859`.
+Do not import older graph/web contract drafts or overwrite current integration
+source. No runtime, shared fixture, storage, migration or skills expansion.
+
+Retain both red gates: `37499608446` on `ab88a1e6` failed UTF-8, literal skill
+link and Docker-only target checks; `37503762283` on `7d6bec859` passed all six
+test shards but failed mypy because parsed DSN values are typed
+`str | int | None`. Narrow the database value with an explicit string assertion
+before the private-name regexp and return; never stringify an invalid value.
+Keep canonical endpoint/template/private-clone checks, ambient routing refusal,
+DB marker/availability handling and all guard cases. Corpus guidance uses the
+existing non-target `[[…]]` convention, without a gate exception.
+
+Source identity assertions remain mandatory. Pin the actual post-DRY CLI blob
+`e30ddd99e8f07dc6a2741e29c41eb2962762ddbf`, unchanged mirror blob
+`df3473252b161fc9c17c0bbe1bb8c98982a46023`, and shared text helper blob
+`ee025af69aae61fd32f7060c78abe178a797b995`. Retain original reviewed commit
+`2755f8a1adf70ea3ad38ed9318b8fac8f9b6b2e4` as provenance; record the new base
+separately. The CLI delta replaces local `_slugify` at two string call sites
+with shared `slugify` defaults: lowercase, collapse non-ASCII-alphanumeric runs
+to hyphens, strip ends, no folding/truncation or nonempty fallback. Add bounded
+literal-output cases for section keys (including empty/punctuation/Unicode)
+to substantiate equivalence, not just a replaced source hash.
+
+Synthetic fixture: 120 Markdown topics plus 15360-byte index, all four YAML
+metadata types, Why/How lines, Unicode, CRLF/no-final-newline and forward links.
+Import/export/reimport verifies per-file byte hashes, stable filename/ref identity,
+exact graph edges and metadata using only a verified canonical private test DB.
+Actual orchestrator directory path/content remains unknown; no real copy or
+production migration claim. Retain original `td470555` synthetic PASS and scoped
+type refusal at9GB as history. Base mirror154 tests and scoped types3 already
+passed on `11c40d438`; scoped runtime is unchanged here, so do not repeat them.
+
+Run only canonical acceptance plus affected shipped-skill-corpus test, then
+scoped types and host Ruff/format/diff. Independent correction-only review and
+one fresh exact-SHA remote gate follow; no failed-run retry. Root owns integration
+and full gate. Append results/readback to existing `td470555`; pointer
+`inbox/memory-r17-ci-repair-ready.md/.json`. No production memory or model work.
+
 ## Boundary
 
 Reto R17: files and graph coexist. Explicit export supersedes the old
