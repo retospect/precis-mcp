@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Launch Devin CLI in its own task worktree, in a tmux window.
+#
+#   scripts/devin-tree NAME [--purpose TEXT] [--prompt-file FILE]
+#                           [--model ID] [--session TMUX_SESSION] [--dry-run]
+#
+# Mirrors `claude -w NAME`: worktree .claude/worktrees/NAME on branch
+# worktree-NAME, cut from origin/main (an existing tree/branch is reused,
+# never reset). The tree is locked `pid <N>` to the Devin process, which is
+# what scripts/inflight and the reaper read as liveness; when Devin exits the
+# lock goes dead and a merged+clean tree auto-reaps like any Claude tree.
+# --purpose writes .claude/purpose (the inflight table's PURPOSE column).
+# --model takes an id from `devin models list` (default: Devin's own, SWE-2
+# High; all SWE-2 tiers are free). Devin runs `--permission-mode auto`; its
+# first call to each MCP tool still asks — allow get/search/more for
+# read-only work, never "all tools" unless the task writes to precis (the
+# session MCP is PROD).
+#
+# Internal: `--exec TREE [DEVIN ARGS]` re-locks TREE to its own pid, then
+# execs Devin under that same pid (the tmux window runs this).
+set -euo pipefail
+
+root=$(git rev-parse --path-format=absolute --git-common-dir)
+root=${root%/.git}
+
+if [[ ${1:-} == --exec ]]; then
+	tree=$2
+	shift 2
+	git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true
+	git -C "$root" worktree lock --reason "pid $$" "$tree"
+	exec devin --permission-mode auto "$@"
+fi
+
+usage() { sed -n '4,5p' "$0" | sed 's/^# *//' >&2; exit 2; }
+[[ $# -ge 1 && ${1:0:1} != - ]] || usage
+name=$1
+shift
+[[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || { echo "devin-tree: bad name: $name" >&2; exit 2; }
+purpose="" prompt_file="" model="" session="" dry_run=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	--purpose) purpose=$2; shift 2 ;;
+	--prompt-file) prompt_file=$(realpath "$2"); shift 2 ;;
+	--model) model=$2; shift 2 ;;
+	--session) session=$2; shift 2 ;;
+	--dry-run) dry_run=1; shift ;;
+	*) usage ;;
+	esac
+done
+if [[ -z $session ]]; then
+	[[ -n ${TMUX:-} ]] || { echo "devin-tree: not in tmux; pass --session" >&2; exit 2; }
+	session=$(tmux display-message -p '#S')
+fi
+tree=$root/.claude/worktrees/$name
+branch=worktree-$name
+devin_args=()
+[[ -n $model ]] && devin_args+=(--model "$model")
+[[ -n $prompt_file ]] && devin_args+=(--prompt-file "$prompt_file")
+
+if ((dry_run)); then
+	printf 'tree=%s branch=%s session=%s devin=%s\n' "$tree" "$branch" "$session" \
+		"devin --permission-mode auto ${devin_args[*]:-}"
+	exit 0
+fi
+
+if [[ ! -d $tree ]]; then
+	git -C "$root" fetch -q origin main
+	if git -C "$root" show-ref -q --verify "refs/heads/$branch"; then
+		git -C "$root" worktree add -q "$tree" "$branch"
+	else
+		git -C "$root" worktree add -q -b "$branch" "$tree" origin/main
+	fi
+fi
+# Hold the tree until the window's --exec re-locks it to Devin's pid, so the
+# reaper never sees a fresh, merged, clean, sessionless tree in between.
+git -C "$root" worktree unlock "$tree" >/dev/null 2>&1 || true
+git -C "$root" worktree lock --reason "pid $$" "$tree"
+[[ -n $purpose ]] && printf '%s\n' "$purpose" >"$tree/.claude/purpose"
+
+tmux new-window -t "=$session:" -n "devin-$name" -c "$tree" \
+	"exec $(printf '%q ' "$(realpath "$0")" --exec "$tree" ${devin_args[@]+"${devin_args[@]}"})"
+# Wait (≤10 s) for the window to take the lock over before this pid exits.
+for _ in $(seq 50); do
+	reason=$(git -C "$root" worktree list --porcelain |
+		awk -v t="worktree $tree" '$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}')
+	[[ $reason != "locked pid $$" ]] && break
+	sleep 0.2
+done
+echo "devin-tree: $name → $tree (tmux $session:devin-$name)"

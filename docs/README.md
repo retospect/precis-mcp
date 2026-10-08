@@ -1,6 +1,6 @@
 # The doc system — how to read it, how to keep it true
 
-One contract, referenced by `CLAUDE.md`, `.windsurfrules`, and `AGENTS.md`
+One contract, referenced by `CLAUDE.md` and `AGENTS.md`
 (tool-specific rules stay in those files; the doc system is defined once,
 here). The main reader and writer is an LLM: keep prose compact, use
 glossary terms, and prefer deleting to archiving — git is the history,
