@@ -439,6 +439,7 @@ class PythonHandler(Handler):
             )
         preds = reverse.compile_pattern(q) if mode == "pattern" else None
         needle = q.lower()
+        terms = _query_terms(q) if mode != "pattern" else []
         scope_qn_prefix, scope_file = _split_scope(scope)
 
         hits: list[tuple[float, str, Symbol]] = []
@@ -454,9 +455,9 @@ class PythonHandler(Handler):
                     ):
                         continue
                     if preds is not None:
-                        score = 1.0 if reverse.matches_pattern(sym, preds) else 0.0
+                        score = _score_pattern(sym, preds)
                     else:
-                        score = _score_symbol(sym, needle)
+                        score = _score_symbol(sym, needle, terms)
                     if score > 0:
                         hits.append((score, alias, sym))
 
@@ -512,7 +513,7 @@ class PythonHandler(Handler):
                 )
             return Response(body=body)
 
-        hits.sort(key=lambda h: -h[0])
+        hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
         total = len(hits)
         hits = hits[:page_size]
 
@@ -1262,13 +1263,15 @@ class PythonHandler(Handler):
                     next=f"get(kind='python', id='{parsed.alias}/{mod.file}', "
                     f"view='outline')",
                 )
+            body = render.render_source(
+                text,
+                file_label=f"{parsed.alias}/{mod.file}",
+                start_line=parsed.start_line,
+                end_line=end_line,
+            )
             return Response(
-                body=render.render_source(
-                    text,
-                    file_label=f"{parsed.alias}/{mod.file}",
-                    start_line=parsed.start_line,
-                    end_line=end_line,
-                )
+                body=body
+                + _enclosing_note(parsed.alias, mod, parsed.start_line, end_line)
             )
 
         # Block selector → resolve a Track B symbol within this file.
@@ -1387,19 +1390,19 @@ class PythonHandler(Handler):
             raise BadInput(
                 "view='callgraph' takes a bare alias id (no file / qualname / selector)",
                 next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
-                f"entry='pkg.mod:func')",
+                f"args={{'entry': 'pkg.mod:func'}})",
             )
         if entry is None or not entry.strip():
             raise BadInput(
                 "view='callgraph' requires entry=",
                 next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
-                f"entry='pkg.mod:func', depth=3)",
+                f"args={{'entry': 'pkg.mod:func', 'depth': 3}})",
             )
         if not isinstance(depth, int) or depth < 1 or depth > 10:
             raise BadInput(
                 f"depth must be an int in [1, 10]; got {depth!r}",
                 next=f"get(kind='python', id={parsed.alias!r}, view='callgraph', "
-                f"entry={entry!r}, depth=3)",
+                f"args={{'entry': {entry!r}, 'depth': 3}})",
             )
 
         other_repos: dict[str, RepoIndex] = {}
@@ -1611,15 +1614,79 @@ def _is_test_path(file: str) -> bool:
     return basename.startswith("test_") or basename.endswith("_test.py")
 
 
-def _score_symbol(sym: Symbol, needle: str) -> float:
+_STOPWORDS = frozenset(
+    {"the", "and", "for", "with", "that", "this", "from", "are", "was", "how", "where"}
+)
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_SUFFIXES = ("ations", "ation", "ings", "ing", "ies", "ed", "es", "s")
+
+
+def _stem(word: str) -> str:
+    """Light suffix-stripping stem (pinning/pinned -> pinn, redirects -> redirect)."""
+    for suf in _SUFFIXES:
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[: -len(suf)]
+    return word
+
+
+def _query_terms(q: str) -> list[str]:
+    """Split a free-text query into distinct lowercase stems.
+
+    Splits on non-alphanumerics (so snake_case and dotted names break up)
+    and on CamelCase boundaries; drops one/two-letter words and stopwords.
+    Only used when the query yields more than one term or when the plain
+    substring match misses.
+    """
+    out: list[str] = []
+    for raw in re.split(r"[^0-9A-Za-z]+", _CAMEL_RE.sub(" ", q)):
+        w = raw.lower()
+        if len(w) < 3 or w in _STOPWORDS:
+            continue
+        st = _stem(w)
+        if st not in out:
+            out.append(st)
+    return out
+
+
+def _score_terms(sym: Symbol, terms: list[str]) -> float:
+    """Per-term any-match score: more distinct terms matched = higher."""
+    qn = sym.qualname.lower()
+    name = sym.name.lower()
+    sig = (sym.signature or "").lower()
+    doc = (sym.docstring or "").lower()
+    total = 0.0
+    matched = 0
+    for t in terms:
+        w = 0.0
+        if t in name:
+            w = 3.0
+        elif t in qn:
+            w = 2.0
+        if t in sig:
+            w = max(w, 1.0) + 0.5
+        if t in doc:
+            w = max(w, 1.0) + 0.5
+        if w:
+            matched += 1
+            total += w
+    if not matched:
+        return 0.0
+    # Coverage is squared: a symbol matching every term must outrank one that
+    # matches a single term heavily (e.g. ``follow_redirects`` in a signature).
+    return total * (matched / len(terms)) ** 2
+
+
+def _score_symbol(sym: Symbol, needle: str, terms: list[str] | None = None) -> float:
     """Lexical match score for a symbol against a lowercased query.
 
     Higher is better. Zero means no hit. Heuristic but stable:
-    - exact qualname match           → 10
-    - qualname contains needle       → 5  (+ short-name bonus)
-    - signature contains needle      → 2
-    - docstring contains needle      → 1
-    - test-file symbol               → ×0.5 (implementation ranks above tests)
+    - exact qualname match           -> 10
+    - qualname contains needle       -> 5  (+ short-name bonus)
+    - signature contains needle      -> 2
+    - docstring contains needle      -> 1
+    - per-term (multi-word / stemmed) fallback adds a coverage-weighted
+      score, so ``'SSRF redirect pinning'`` is any-term, not all-words
+    - test-file symbol               -> x0.5 (implementation ranks above tests)
     """
     score = 0.0
     qn = sym.qualname.lower()
@@ -1634,9 +1701,81 @@ def _score_symbol(sym: Symbol, needle: str) -> float:
         score += 2
     if sym.docstring and needle in sym.docstring.lower():
         score += 1
+    if terms and (len(terms) > 1 or score == 0):
+        score += _score_terms(sym, terms)
     if _is_test_path(sym.file):
         score *= 0.5
     return score
+
+
+def _score_pattern(
+    sym: Symbol, preds: list[tuple[str, re.Pattern[str] | None]]
+) -> float:
+    """Rank a `mode='pattern'` hit: 0 = no match.
+
+    Text predicates score name match 3 > qualname 2 > signature 1.5 >
+    docstring 1 (docstring only ranks, it never admits a hit); the hit
+    scores the mean over its text predicates. Test files are halved.
+    """
+    if not reverse.matches_pattern(sym, preds):
+        return 0.0
+    vals: list[float] = []
+    for kind, rx in preds:
+        if kind != "text" or rx is None:
+            continue
+        if rx.search(sym.name):
+            vals.append(3.0)
+        elif rx.search(sym.qualname):
+            vals.append(2.0)
+        elif sym.signature and rx.search(sym.signature):
+            vals.append(1.5)
+        elif sym.docstring and rx.search(sym.docstring):
+            vals.append(1.0)
+        else:
+            vals.append(1.0)
+    score = sum(vals) / len(vals) if vals else 1.0
+    if _is_test_path(sym.file):
+        score *= 0.5
+    return score
+
+
+def _enclosing_note(alias: str, mod: ModuleIndex, start: int, end: int) -> str:
+    """Trailer naming the innermost symbol(s) around a Track-A line read.
+
+    One entry for the start line and, when different, one for the end
+    line; module-level lines fall back to the module symbol only when no
+    def/class encloses them. Includes a Next hint to open the symbol.
+    """
+    found: list[Symbol] = []
+    for line in (start, end):
+        best: Symbol | None = None
+        for sym in mod.symbols:
+            if sym.kind == "module" or not (sym.start_line <= line <= sym.end_line):
+                continue
+            if best is None or (sym.end_line - sym.start_line) < (
+                best.end_line - best.start_line
+            ):
+                best = sym
+        if best is not None and best not in found:
+            found.append(best)
+    if not found:
+        return ""
+    out = "\nEnclosing symbol" + ("s" if len(found) > 1 else "") + ":\n"
+    for sym in found:
+        out += (
+            f"  {sym.name} (lines {sym.start_line}-{sym.end_line})  "
+            f"{alias}::{sym.qualname}\n"
+        )
+    first = found[0]
+    out += render_next_section(
+        [
+            (
+                f"get(kind='python', id='{alias}::{first.qualname}')",
+                f"open {first.name}",
+            )
+        ]
+    )
+    return out + "\n"
 
 
 def _resolve_block_selector(mod: ModuleIndex, selector: str) -> Symbol | None:

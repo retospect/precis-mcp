@@ -1,0 +1,92 @@
+"""Python-kind search: per-term lexical scoring, pattern ranking."""
+
+from __future__ import annotations
+
+import re
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from precis.dispatch import Hub
+from precis.handlers.python import PythonHandler
+
+
+def _write(repo: Path, rel: str, content: str) -> None:
+    f = repo / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(textwrap.dedent(content).lstrip("\n"), encoding="utf-8")
+
+
+@pytest.fixture
+def handler(tmp_path: Path) -> PythonHandler:
+    _write(tmp_path, "pkg/__init__.py", '"""pkg."""\n')
+    _write(
+        tmp_path,
+        "pkg/fetch.py",
+        '''
+        def safe_get(url):
+            """``client.get(url)`` with SSRF-validated, IP-pinned redirects."""
+            return url
+        ''',
+    )
+    _write(
+        tmp_path,
+        "pkg/prov.py",
+        '''
+        def corpus_fingerprint(x):
+            """Hash of the indexed corpus."""
+            return x
+
+        def unrelated(x):
+            """Mentions provenance only in a docstring."""
+            return x
+        ''',
+    )
+    _write(
+        tmp_path,
+        "pkg/a_first.py",
+        '''
+        def zzz():
+            """Talks about provenance."""
+        ''',
+    )
+    _write(tmp_path, "pkg/provenance.py", "def stamp():\n    pass\n")
+    _write(tmp_path, "tests/test_provenance.py", "def test_provenance():\n    pass\n")
+    return PythonHandler(hub=Hub(), roots={"r": tmp_path})
+
+
+def _handles(body: str) -> list[str]:
+    return re.findall(r"^## (\S+)", body, flags=re.M)
+
+
+def test_multiword_any_term_with_stemming(handler: PythonHandler) -> None:
+    body = handler.search(q="SSRF redirect pinning").body
+    assert "r::pkg.fetch.safe_get" in _handles(body)
+
+
+def test_more_terms_matched_ranks_higher(handler: PythonHandler) -> None:
+    handles = _handles(handler.search(q="indexed corpus fingerprint").body)
+    assert handles[0] == "r::pkg.prov.corpus_fingerprint"
+
+
+def test_exact_qualname_still_first(handler: PythonHandler) -> None:
+    handles = _handles(handler.search(q="pkg.fetch.safe_get").body)
+    assert handles[0] == "r::pkg.fetch.safe_get"
+
+
+def test_camel_and_snake_tokenised(handler: PythonHandler) -> None:
+    handles = _handles(handler.search(q="CorpusFingerprint").body)
+    assert "r::pkg.prov.corpus_fingerprint" in handles
+
+
+def test_pattern_ranks_name_over_docstring_and_tests(handler: PythonHandler) -> None:
+    body = handler.search(q="provenance", mode="pattern", page_size=50).body
+    handles = _handles(body)
+    scores = [float(x) for x in re.findall(r"score=([\d.]+)", body)]
+    assert len(set(scores)) > 1
+    assert scores == sorted(scores, reverse=True)
+    # name/qualname matches precede the test module hit
+    assert handles.index("r::pkg.provenance") < handles.index(
+        "r::test_provenance.test_provenance"
+    )

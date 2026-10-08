@@ -124,6 +124,10 @@ class ModuleIndex:
     parse_error: str | None = None
     imports: dict[str, str] = field(default_factory=dict)
     calls: tuple[CallEdge, ...] = ()
+    # Function-local imports as (function qualname, bound name, resolved
+    # qualname). They resolve calls inside that function and feed the
+    # `importers` view; `imports` stays module-scope only.
+    local_imports: tuple[tuple[str, str, str], ...] = ()
     # Exact disk bytes and decoded text captured together, unlike normalized sha256.
     bytes_sha256: str | None = None
     indexed_at: str | None = None

@@ -189,6 +189,7 @@ def index_module(
         symbols=(module_sym, *visitor.symbols),
         imports=imports,
         calls=tuple(visitor.calls),
+        local_imports=tuple(visitor.local_imports),
     )
 
 
@@ -230,6 +231,8 @@ class _SymbolVisitor(ast.NodeVisitor):
         self._class_stack: list[str] = []
         self.symbols: list[Symbol] = []
         self.calls: list[CallEdge] = []
+        # (function qualname, bound name, resolved qualname) per local import.
+        self.local_imports: list[tuple[str, str, str]] = []
 
     # ── classes ──────────────────────────────────────────────────────
 
@@ -294,10 +297,19 @@ class _SymbolVisitor(ast.NodeVisitor):
         # / class / lambda boundaries so calls inside locally-defined
         # helpers don't get attributed to this enclosing function.
         class_qn = self._class_stack[-1] if self._class_stack else None
+        local_imports = _collect_local_imports(
+            node.body, module_qualname=self.module_qualname
+        )
+        for bound, value in local_imports.items():
+            self.local_imports.append((qualname, bound, value))
+        # Function-local imports shadow module-scope names inside this body.
+        scope_imports = (
+            {**self.imports, **local_imports} if local_imports else self.imports
+        )
         for call_node in _walk_calls_in_function_body(node.body):
             callee = _resolve_call(
                 call_node,
-                imports=self.imports,
+                imports=scope_imports,
                 top_level_names=self.top_level_names,
                 class_qualname=class_qn,
             )
@@ -371,28 +383,60 @@ def _collect_imports(tree: ast.Module, *, module_qualname: str) -> dict[str, str
     """
     imports: dict[str, str] = {}
     for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname:
-                    imports[alias.asname] = alias.name
-                else:
-                    # `import a.b.c` only binds the leftmost segment.
-                    bound = alias.name.split(".")[0]
-                    imports[bound] = alias.name
-        elif isinstance(node, ast.ImportFrom):
-            base = _resolve_relative_base(
-                level=node.level,
-                module=node.module,
-                current_qualname=module_qualname,
-            )
-            if base is None:
-                continue
-            for alias in node.names:
-                if alias.name == "*":
-                    continue  # star-imports: no bound names tracked
-                bound = alias.asname or alias.name
-                imports[bound] = f"{base}.{alias.name}" if base else alias.name
+        _bind_import(node, imports, module_qualname=module_qualname)
     return imports
+
+
+def _collect_local_imports(
+    body: list[ast.stmt], *, module_qualname: str
+) -> dict[str, str]:
+    """Names bound by `import` / `from … import` inside a function body.
+
+    Same shape as `_collect_imports`, but walks nested `if` / `try` /
+    `with` / loop blocks (a guarded local import still binds the name) and
+    prunes at nested function / class / lambda boundaries.
+    """
+    found: dict[str, str] = {}
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(
+            node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+        ):
+            return
+        _bind_import(node, found, module_qualname=module_qualname)
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in body:
+        walk(stmt)
+    return found
+
+
+def _bind_import(
+    node: ast.AST, imports: dict[str, str], *, module_qualname: str
+) -> None:
+    """Record the names one `Import` / `ImportFrom` node binds (else no-op)."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            if alias.asname:
+                imports[alias.asname] = alias.name
+            else:
+                # `import a.b.c` only binds the leftmost segment.
+                bound = alias.name.split(".")[0]
+                imports[bound] = alias.name
+    elif isinstance(node, ast.ImportFrom):
+        base = _resolve_relative_base(
+            level=node.level,
+            module=node.module,
+            current_qualname=module_qualname,
+        )
+        if base is None:
+            return
+        for alias in node.names:
+            if alias.name == "*":
+                continue  # star-imports: no bound names tracked
+            bound = alias.asname or alias.name
+            imports[bound] = f"{base}.{alias.name}" if base else alias.name
 
 
 def _resolve_relative_base(

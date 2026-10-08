@@ -40,7 +40,8 @@ def render_callers(alias: str, sym: Symbol, idx: RepoIndex) -> str:
     Exact rows come from edges resolved to `sym.qualname` (or a member
     of it, for a class). A second, labelled section lists unresolved
     edges whose final name segment matches (`handler.search(...)` where
-    the receiver's type is not tracked): a lexical lead, not a resolution.
+    the receiver's type is not tracked, or a bare `name(...)` whose
+    binding the indexer could not see): a lexical lead, not a resolution.
     """
     prefix = sym.qualname + "."
     exact: list[tuple[str, str, int, str]] = []
@@ -54,8 +55,8 @@ def render_callers(alias: str, sym: Symbol, idx: RepoIndex) -> str:
                 exact.append(row)
             elif (
                 sym.kind in ("function", "method")
-                and e.callee.rsplit(".", 1)[-1] == sym.name
-                and "." in e.callee.removeprefix("ext:")
+                and e.callee.startswith("ext:")
+                and e.callee.rsplit(".", 1)[-1].removeprefix("ext:") == sym.name
             ):
                 lexical.append(row)
     exact.sort(key=lambda r: (r[1], r[2]))
@@ -90,7 +91,11 @@ def render_callers(alias: str, sym: Symbol, idx: RepoIndex) -> str:
 
 
 def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
-    """Modules whose module-scope imports resolve into `module`."""
+    """Modules whose imports resolve into `module`.
+
+    Module-scope imports are listed bare; imports inside a function body
+    are labelled `(in <function>)`.
+    """
     rows: list[tuple[str, str, str]] = []
     for mod in idx.modules.values():
         if mod.qualname == module:
@@ -100,18 +105,26 @@ def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
             for bound, value in mod.imports.items()
             if _import_target(value, idx) == module
         )
-        if names:
-            rows.append((mod.qualname, mod.file, ", ".join(names)))
+        local = sorted(
+            f"{bound} (in {fn.removeprefix(mod.qualname + '.')})"
+            for fn, bound, value in mod.local_imports
+            if _import_target(value, idx) == module
+        )
+        if names or local:
+            rows.append((mod.qualname, mod.file, ", ".join([*names, *local])))
     rows.sort()
     lines = [f"# importers of {module}  ({len(rows)} modules)\n"]
     if not rows:
-        lines.append("  (no module imports it at module scope)")
+        lines.append("  (no module imports it)")
     for qn, file, bound_names in rows[:_CAP]:
         lines.append(f"  {alias}::{qn}  {file}  [{bound_names}]")
     if len(rows) > _CAP:
         lines.append(f"  … ({len(rows) - _CAP} more)")
     lines.append("")
-    lines.append("Function-local imports are not indexed.")
+    lines.append(
+        "Imports inside function bodies are listed with `(in <function>)`; imports inside nested\n"
+        "functions, `exec`, and `importlib.import_module` are not indexed."
+    )
     lines.append("")
     lines.append("Next:")
     lines.append(f"  get(kind='python', id='{alias}::{module}', view='imports')")

@@ -46,6 +46,7 @@ class _Node:
     tag: str = ""
     children: list[_Node] = field(default_factory=list)
     multiplicity: int = 1  # collapsed dup-call count at this level
+    note: str = ""  # free-text block rendered under the root (module entries)
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +98,57 @@ def build_callgraph(
         visited=visited,
         other_indexes=other_indexes,
     )
+    entry_sym = idx.symbol(entry_qn)
+    if entry_sym is not None and entry_sym.kind == "module":
+        root.note = _module_note(idx, entry_qn, has_calls=bool(root.children))
     return root
 
 
+def _module_note(idx: RepoIndex, module_qn: str, *, has_calls: bool) -> str:
+    """Explain a module-rooted graph and list its top-level callables."""
+    mod = idx.module(module_qn)
+    names = [
+        s.qualname
+        for s in (mod.symbols if mod else ())
+        if s.kind in ("function", "class") and s.parent == module_qn
+    ]
+    public = [q for q in names if not q.rsplit(".", 1)[-1].startswith("_")]
+    shown = public or names
+    lead = (
+        "Module entry: showing module-level calls only."
+        if has_calls
+        else "Module entry: no module-level calls found, so there is nothing "
+        "to expand. Pick a function as the entry."
+    )
+    if not shown:
+        return lead + " The module defines no top-level functions or classes."
+    lines = [lead, "Top-level callables (use one as entry):"]
+    lines.extend(f"  {q}" for q in shown[:25])
+    if len(shown) > 25:
+        lines.append(f"  … {len(shown) - 25} more")
+    return "\n".join(lines)
+
+
+# Cache of caller→edges lookups keyed by RepoIndex identity. RepoIndex is a
+# slotted frozen dataclass (no weakref), so the index is held alongside the
+# result to keep ``id`` unambiguous; bounded to a few live repos.
+_CALLS_CACHE: dict[int, tuple[RepoIndex, dict[str, list[CallEdge]]]] = {}
+_CALLS_CACHE_MAX = 8
+
+
 def _index_calls(idx: RepoIndex) -> dict[str, list[CallEdge]]:
+    """Cached `_build_call_index` (one build per RepoIndex instance)."""
+    hit = _CALLS_CACHE.get(id(idx))
+    if hit is not None and hit[0] is idx:
+        return hit[1]
+    built = _build_call_index(idx)
+    if len(_CALLS_CACHE) >= _CALLS_CACHE_MAX:
+        _CALLS_CACHE.pop(next(iter(_CALLS_CACHE)))
+    _CALLS_CACHE[id(idx)] = (idx, built)
+    return built
+
+
+def _build_call_index(idx: RepoIndex) -> dict[str, list[CallEdge]]:
     """Pre-build a `caller_qualname → [CallEdge]` lookup.
 
     For class qualnames we also include edges from the class's methods
@@ -114,17 +162,22 @@ def _index_calls(idx: RepoIndex) -> dict[str, list[CallEdge]]:
             by_caller[edge.caller].append(edge)
 
     # Add class-level aggregations: every class qualname maps to the
-    # union of its methods' call edges.
-    for mod in idx.modules.values():
-        for sym in mod.symbols:
-            if sym.kind == "class":
-                pref = sym.qualname + "."
-                aggregated: list[CallEdge] = []
-                for caller, calls in list(by_caller.items()):
-                    if caller.startswith(pref):
-                        aggregated.extend(calls)
-                if aggregated:
-                    by_caller[sym.qualname] = aggregated
+    # union of its methods' call edges. Walk each caller's dotted
+    # prefixes once instead of scanning every caller per class.
+    class_qns = {
+        sym.qualname
+        for mod in idx.modules.values()
+        for sym in mod.symbols
+        if sym.kind == "class"
+    }
+    agg: dict[str, list[CallEdge]] = defaultdict(list)
+    for caller, calls in by_caller.items():
+        parts = caller.split(".")
+        for i in range(1, len(parts)):
+            pre = ".".join(parts[:i])
+            if pre in class_qns:
+                agg[pre].extend(calls)
+    by_caller.update(agg)
 
     return dict(by_caller)
 
@@ -233,6 +286,8 @@ def render_callgraph(
         f"(depth={max_depth}{', cross-repo' if cross_repo else ''})\n"
     )
     lines = [header, _render_label(root)]
+    if root.note:
+        lines.insert(1, root.note + "\n")
     _render_children(root.children, prefix="", out=lines)
 
     # Legend covers what tags can appear.
@@ -248,7 +303,7 @@ def render_callgraph(
     lines.append("Next:")
     lines.append(
         f"  get(kind='python', id={alias!r}, view='callgraph', "
-        f"entry={entry!r}, depth={max_depth + 2})"
+        f"args={{'entry': {entry!r}, 'depth': {max_depth + 2}}})"
     )
     return "\n".join(lines)
 
