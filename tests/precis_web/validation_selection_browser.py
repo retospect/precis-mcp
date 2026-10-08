@@ -56,6 +56,13 @@ def probe(fixtures: Path, output: Path, browser_name: str = "chromium") -> None:
                 data, mime = html, "text/html"
             elif parsed.path == "/se/selection_atomic":
                 data, mime = atomic_html, "text/html"
+            elif parsed.path in ("/molecule-fixture", "/fixture.js"):
+                suffix = "html" if parsed.path == "/molecule-fixture" else "js"
+                path = (
+                    Path(__file__).parent / "fixtures" / f"molecule-renderer.{suffix}"
+                )
+                data = path.read_bytes()
+                mime = "text/html" if suffix == "html" else "text/javascript"
             elif parsed.path.endswith("/scene3d.json"):
                 data, mime = json.dumps(active["scene"]).encode(), "application/json"
             elif parsed.path.endswith("/atomic3d.json"):
@@ -268,6 +275,132 @@ def probe(fixtures: Path, output: Path, browser_name: str = "chromium") -> None:
             page.wait_for_function(
                 "window.__validationViewer && document.querySelector('#bt3d-viewer canvas')"
             )
+            page.wait_for_function("""() => {
+                const group = window.__validationViewer._rendered.scene
+                    .getObjectByName('bt3d-atomic-overlay');
+                return group && group.children.some(m => m.isInstancedMesh && m.count === 90);
+            }""")
+
+            def molecular_witness():
+                return page.evaluate("""() => {
+                    const rendered = window.__validationViewer._rendered;
+                    const group = rendered.scene.getObjectByName('bt3d-atomic-overlay');
+                    const atoms = group.children.find(m => m.isInstancedMesh && m.count === 60);
+                    const bonds = group.children.find(m => m.isInstancedMesh && m.count === 90);
+                    const surface = group.children.find(m => m.isMesh && !m.isInstancedMesh);
+                    return {
+                        atoms: atoms.count, bonds: bonds.count, visible: group.visible,
+                        positions: Array.from({length: atoms.count}, (_, i) =>
+                            Array.from(atoms.instanceMatrix.array.slice(i * 16 + 12, i * 16 + 15))),
+                        atomVisible: atoms.visible, bondVisible: bonds.visible,
+                        atomOpacity: atoms.material.opacity, bondOpacity: bonds.material.opacity,
+                        surfaceVisible: surface.visible, surfaceOpacity: surface.material.opacity,
+                        surfacePositions: Array.from(surface.geometry.attributes.position.array),
+                        envelopes: Object.values(rendered.nestedGroup.groups)
+                            .filter(g => g.front).map(g => g.front.material.visible),
+                    };
+                }""")
+
+            molecular = molecular_witness()
+            check(
+                molecular["atoms"] == 60 and molecular["bonds"] == 90,
+                "extracted core renders 60 atoms and 90 bonds",
+            )
+            for slider_value in (0, 50, 100):
+                page.locator("#bt3d-smooth").evaluate(
+                    "(el, value) => { el.value = value; el.dispatchEvent(new Event('input', {bubbles: true})); }",
+                    slider_value,
+                )
+                page.wait_for_function(
+                    """opacity => {
+                        const group = window.__validationViewer._rendered.scene
+                            .getObjectByName('bt3d-atomic-overlay');
+                        return group.children.find(m => m.isInstancedMesh && m.count === 60)
+                            .material.opacity === opacity;
+                    }""",
+                    arg=1 - slider_value / 100,
+                )
+                molecular = molecular_witness()
+                t = slider_value / 100
+                block = atomic_payload["atomic"]["blocks"][0]
+                expected_positions = [
+                    [a + (b - a) * t for a, b in zip(c, s, strict=True)]
+                    for c, s in zip(block["coords"], block["smooth"], strict=True)
+                ]
+                check(
+                    all(
+                        abs(actual - expected) < 1e-4
+                        for actual_row, expected_row in zip(
+                            molecular["positions"], expected_positions, strict=True
+                        )
+                        for actual, expected in zip(
+                            actual_row, expected_row, strict=True
+                        )
+                    )
+                    and all(
+                        abs(actual - expected) < 1e-4
+                        for actual, expected in zip(
+                            molecular["surfacePositions"],
+                            [v for row in expected_positions for v in row],
+                            strict=True,
+                        )
+                    ),
+                    f"slider {slider_value} places atoms and surface at payload interpolation",
+                )
+                check(
+                    molecular["atomOpacity"] == molecular["bondOpacity"] == 1 - t
+                    and molecular["surfaceOpacity"] == t
+                    and molecular["atomVisible"] == molecular["bondVisible"] == (t < 1)
+                    and molecular["surfaceVisible"] == (t > 0),
+                    f"slider {slider_value} preserves molecular visibility and opacity",
+                )
+            for on in (False, True):
+                page.locator("#bt3d-atoms").set_checked(on)
+                molecular = molecular_witness()
+                check(
+                    molecular["visible"] == on
+                    and bool(molecular["envelopes"])
+                    and all(visible == (not on) for visible in molecular["envelopes"]),
+                    f"atoms {'on' if on else 'off'} restores matching envelope visibility",
+                )
+            page.locator("#bt3d-smooth").evaluate(
+                "el => { el.value = 0; el.dispatchEvent(new Event('input', {bubbles: true})); }"
+            )
+            page.evaluate("""() => {
+                const group = window.__validationViewer._rendered.scene
+                    .getObjectByName('bt3d-atomic-overlay');
+                const geometries = new Set(), materials = new Set();
+                group.traverse(mesh => {
+                    if (mesh.geometry) geometries.add(mesh.geometry);
+                    if (mesh.material) materials.add(mesh.material);
+                });
+                window.__molecularDisposal = {group, geometries: geometries.size,
+                    materials: materials.size, geometryEvents: 0, materialEvents: 0};
+                for (const geometry of geometries) geometry.addEventListener('dispose', () =>
+                    window.__molecularDisposal.geometryEvents++);
+                for (const material of materials) material.addEventListener('dispose', () =>
+                    window.__molecularDisposal.materialEvents++);
+            }""")
+            page.locator("#bt3d-isolate").select_option("hub")
+            page.wait_for_function("""() => {
+                const old = window.__molecularDisposal;
+                const group = window.__validationViewer._rendered.scene
+                    .getObjectByName('bt3d-atomic-overlay');
+                return group && group !== old.group && group.children.length >= 3;
+            }""")
+            check(
+                page.evaluate("""() => {
+                    const old = window.__molecularDisposal;
+                    let count = 0;
+                    window.__validationViewer._rendered.scene.traverse(object => {
+                        if (object.name === 'bt3d-atomic-overlay') count++;
+                    });
+                    return count === 1 && old.group.parent === null
+                        && old.geometryEvents === old.geometries
+                        && old.materialEvents === old.materials;
+                }"""),
+                "scene replacement disposes old molecular resources and leaves one group",
+            )
             page.locator("#bt3d-validate summary").click()
             bound_button = page.locator('[data-validation-subject="hub.rim"]')
             bound_button.focus()
@@ -303,6 +436,15 @@ def probe(fixtures: Path, output: Path, browser_name: str = "chromium") -> None:
                 bound_button.get_attribute("aria-pressed") == "false",
                 "atomic overlay identity mismatch rejects selection",
             )
+            page.goto(f"http://127.0.0.1:{server.server_port}/molecule-fixture")
+            page.wait_for_function("window.fixtureRendered || window.fixtureDone")
+            page.screenshot(path=str(output / "structure-core-rendered.png"))
+            page.wait_for_function("window.fixtureDone")
+            structure = page.evaluate("window.fixtureReport")
+            check(
+                structure.get("pass") is True, f"standalone extracted core: {structure}"
+            )
+            report["standalone_structure"] = structure
             check(set(requests) == {"GET"}, "interaction issues no mutation requests")
             check(not errors, "no browser runtime errors")
             page.screenshot(path=str(output / "final-page.png"), full_page=True)
