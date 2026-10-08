@@ -277,6 +277,12 @@ def _chunk_scope_clauses(
     return out
 
 
+def header_card_text(title: str | None, hook: str | None) -> str:
+    """``title\nhook`` with empty parts skipped (migration 0191 mirrors it)."""
+    parts = [(p or "").strip() for p in (title, hook)]
+    return "\n".join(p for p in parts if p)
+
+
 def _ord_card_clause(card_kinds: tuple[str, ...] | None) -> str:
     """The body-vs-card scope predicate for a search leg. Search
     defaults to body chunks only (``c.ord >= 0``) — synthetic cards
@@ -453,6 +459,7 @@ class ChunkStore:
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        chunk_kinds: list[str] | None = None,
         distinct_refs: bool = False,
         since: datetime | None = None,
         until: datetime | None = None,
@@ -482,6 +489,7 @@ class ChunkStore:
             # (never retired). Paired with _resolve_at's retired-anchor recovery.
             "c.retired_at IS NULL",
             _ord_card_clause(card_kinds),
+            *_chunk_scope_clauses(chunk_kinds, None),
             "c.tsv @@ qq.qq",
             *_chunk_noise_clauses(text_alias="c.text"),
         ]
@@ -1929,6 +1937,43 @@ class ChunkStore:
                 ).fetchone()
             assert row is not None
             return int(row[0])
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def sync_header_card(
+        self,
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+    ) -> int | None:
+        """Re-emit a memory's header card from ``refs.title`` + ``meta.hook``.
+
+        The card (``card_combined``, ``ord=-1``) holds ``title\nhook`` —
+        never the body — so title and hook are searchable by both legs
+        without double-embedding the ``memory_body`` prose. Empty parts are
+        skipped; with both empty any existing card is deleted instead of
+        writing an empty one. Returns the new ``chunk_id`` or ``None``.
+        Call inside the transaction that changed the title / hook.
+        """
+
+        def _do(c: Connection) -> int | None:
+            row = c.execute(
+                "SELECT title, meta->>'hook' FROM refs WHERE ref_id = %s",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            text = header_card_text(row[0], row[1])
+            if not text:
+                c.execute(
+                    "DELETE FROM chunks WHERE ref_id = %s AND ord = -1",
+                    (ref_id,),
+                )
+                return None
+            return self.upsert_card_combined(ref_id, text, conn=c)
 
         if conn is not None:
             return _do(conn)

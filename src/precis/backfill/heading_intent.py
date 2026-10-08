@@ -124,6 +124,7 @@ def set_intent(
             [ChunkInsert(ord=0, text=text, meta={"chunk_kind": _BODY_KIND})],
             replace=True,
         )
+        store.chunks.sync_header_card(existing)
         return existing
     ref = store.insert_ref(
         kind="memory",
@@ -135,6 +136,7 @@ def set_intent(
         ref.id,
         [ChunkInsert(ord=0, text=text, meta={"chunk_kind": _BODY_KIND})],
     )
+    store.chunks.sync_header_card(ref.id)
     return int(ref.id)
 
 

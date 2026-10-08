@@ -830,3 +830,18 @@ def test_missing_retire_refuses_absent_index_root(store: Store, source: Path) ->
     assert _live(store, first.refs["MEMORY.md"])
     keep = import_mirror(store, source, namespace="fixture")
     assert keep.missing == ["MEMORY.md"]
+
+
+def test_import_creates_header_card_from_title_and_hook(
+    store: Store, source: Path
+) -> None:
+    report = import_mirror(store, source, namespace="fixture")
+    with psycopg.connect(_dsn(store)) as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = ANY(%s) AND ord = -1 "
+            "AND chunk_kind = 'card_combined'",
+            (list(report.refs.values()),),
+        ).fetchall()
+    texts = {r[0] for r in rows}
+    assert "Alpha\nSynthetic fixture" in texts
+    assert "Beta\nSynthetic fixture" in texts

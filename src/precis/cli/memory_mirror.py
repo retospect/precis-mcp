@@ -514,6 +514,7 @@ def import_mirror(
                 _KEY: mirror,
             }
             store.update_ref(rid, meta_patch=meta, conn=conn)
+            store.chunks.sync_header_card(rid, conn=conn)
             nodes[name] = (rid, f.title, meta)
             changed.add(name)
         # All refs now exist: forward references and newly available targets resolve.
@@ -656,6 +657,7 @@ def export_mirror(store: Store, dest: Path, *, namespace: str) -> MirrorReport:
                 )
             mirror["graph_digest"] = _state(conn, rid, fm["name"], stamped, namespace)
             store.update_ref(rid, meta_patch=stamped, conn=conn)
+            store.chunks.sync_header_card(rid, conn=conn)
             report.exported_native.append(f"me{rid}")
     report.created = len(output)
     return report

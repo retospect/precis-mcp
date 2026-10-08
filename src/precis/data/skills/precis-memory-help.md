@@ -153,7 +153,9 @@ search(kind="memory", tags=["project:precis-v2", "confidence-strong"])
 
 `q=` runs over memory text (mechanics: `precis-search-help`). `tags=`
 narrows to refs carrying every listed tag (AND). Omit `q=` to browse a
-tag slice.
+tag slice. A memory's title and `meta.hook` are searchable too:
+`scope='title'` matches only those, `scope='body'` only the body prose,
+omitted matches both (`search(kind="memory", q="quokka", scope="title")`).
 
 ## Recall what I already know before starting a task
 ## Match a memory hit to the topic file I may have loaded

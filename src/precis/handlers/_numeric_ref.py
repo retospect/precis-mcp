@@ -459,6 +459,9 @@ class NumericRefHandler(Handler):
         # slice 4.
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        # Pre-validated by the kind (memory: 'title' | 'body'); see
+        # :meth:`_best_body_hits`.
+        chunk_scope: str | None = None,
         **_kw: Any,
     ) -> Response:
         if sort is not None:
@@ -558,6 +561,7 @@ class NumericRefHandler(Handler):
                 mode=mode,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                chunk_scope=chunk_scope,
             )
 
         # Title lexical fused with a hybrid block leg (see
@@ -1003,6 +1007,7 @@ class NumericRefHandler(Handler):
         mode: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        chunk_scope: str | None = None,
     ) -> tuple[list[tuple[Any, Ref, float]], int]:
         """Best-ranked chunk per ref for a hybrid body-chunk query.
 
@@ -1039,6 +1044,12 @@ class NumericRefHandler(Handler):
         lexical leg at all), and the default/``'hybrid'`` falls through to
         the same ``search_chunks_fused`` call this used before the fix.
         """
+        # ``chunk_scope`` narrows which chunks may match: 'title' = only the
+        # opted-in header card, 'body' = never the card, None = both.
+        card_kinds = None if chunk_scope == "body" else self.search_card_kinds
+        chunk_kinds = (
+            list(card_kinds) if chunk_scope == "title" and card_kinds else None
+        )
         raw = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec_for(getattr(self.hub, "embedder", None), q, mode),
@@ -1049,6 +1060,8 @@ class NumericRefHandler(Handler):
             max_distance=SEMANTIC_DISTANCE_FLOOR,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            card_kinds=card_kinds,
+            chunk_kinds=chunk_kinds,
         )
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
@@ -1072,6 +1085,8 @@ class NumericRefHandler(Handler):
                 distinct_refs=True,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
+                card_kinds=card_kinds,
+                chunk_kinds=chunk_kinds,
             ),
             len(ordered),
         )
@@ -1088,6 +1103,7 @@ class NumericRefHandler(Handler):
         mode: str | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        chunk_scope: str | None = None,
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(
@@ -1098,6 +1114,7 @@ class NumericRefHandler(Handler):
             mode=mode,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
+            chunk_scope=chunk_scope,
         )
         if self.heat_salience_on_body_search:
             self.store.chunks.bump_salience(
@@ -1151,6 +1168,12 @@ class NumericRefHandler(Handler):
             lines.append(self._render_body_search_hit(ref, block, rank))
         return Response(body="\n".join(lines))
 
+    def _hit_text(self, ref: Ref, block: Any) -> str:
+        """Display text for a best-hit chunk. Default: the chunk itself;
+        kinds that opt cards into search override so a card hit still
+        renders prose (see ``MemoryHandler._hit_text``)."""
+        return str(block.text or "")
+
     def _render_body_search_hit(self, ref: Ref, block: Any, rank: float) -> str:
         """One result line for a body-chunk hit.
 
@@ -1162,7 +1185,7 @@ class NumericRefHandler(Handler):
         title = ref.title or ""
         if title:
             label += f": {title}"
-        return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(block.text)}"
+        return f"\n## {label}  (rank={rank:.2f})\n{self._snippet(self._hit_text(ref, block))}"
 
     def _body_search_hits(
         self,
@@ -1190,8 +1213,9 @@ class NumericRefHandler(Handler):
             SearchHit(
                 score=rank,
                 kind=self.kind,
-                title=ref.title or self._snippet(block.text, max_chars=80),
-                preview=self._snippet(block.text),
+                title=ref.title
+                or self._snippet(self._hit_text(ref, block), max_chars=80),
+                preview=self._snippet(self._hit_text(ref, block)),
                 ref_id=ref.id,
             )
             for block, ref, rank in ordered

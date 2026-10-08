@@ -1532,3 +1532,83 @@ def test_mention_connection_loss_cannot_return_success(
     assert persisted_state() == before
     assert failure is not None, "closed mention connection returned false success"
     assert "transaction" in str(failure)
+
+
+def test_search_scope_title_vs_body(handler: MemoryHandler, store: Store) -> None:
+    ref_id = _put_repo_dev(
+        handler,
+        store,
+        "ocelot lives only in the body",
+        "Pangolin header",
+        hook="lemur hook",
+    )
+    for scope in ("title", "body"):
+        for view in (None, "index"):
+            hit_t = handler.search(q="pangolin", mode="lexical", scope=scope, view=view)
+            hit_b = handler.search(q="ocelot", mode="lexical", scope=scope, view=view)
+            found_t = f"me{ref_id}" in hit_t.body or f"memory {ref_id}" in hit_t.body
+            found_b = f"me{ref_id}" in hit_b.body or f"memory {ref_id}" in hit_b.body
+            assert found_t == (scope == "title"), (scope, view, "title word")
+            assert found_b == (scope == "body"), (scope, view, "body word")
+    # omitted = both
+    assert f"memory {ref_id}" in handler.search(q="pangolin", mode="lexical").body
+    assert f"memory {ref_id}" in handler.search(q="ocelot", mode="lexical").body
+
+
+def test_search_scope_rejects_other_values(handler: MemoryHandler) -> None:
+    with pytest.raises(BadInput) as ei:
+        handler.search(q="x", scope="everything")
+    assert "title" in str(getattr(ei.value, "options", "")) + str(ei.value)
+    with pytest.raises(BadInput):
+        handler.search(q="x", scope="nope", view="index")
+
+
+def _card_text(store: Store, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND ord = -1 "
+            "AND chunk_kind = 'card_combined'",
+            (ref_id,),
+        ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def test_header_card_makes_title_and_hook_searchable(
+    handler: MemoryHandler, store: Store
+) -> None:
+    ref_id = _put_repo_dev(
+        handler,
+        store,
+        "the body talks about something else entirely",
+        "Wombat sizing rule",
+        hook="narwhal pinning",
+    )
+    assert _card_text(store, ref_id) == "Wombat sizing rule\nnarwhal pinning"
+    for word in ("wombat", "narwhal"):
+        default = handler.search(q=word, mode="lexical").body
+        assert f"memory {ref_id}" in default, word
+        # The render shows the body, not the card text.
+        assert "something else entirely" in default
+        index = handler.search(
+            q=word, mode="lexical", tags=["SPACE:repo-dev"], view="index"
+        ).body
+        assert f"me{ref_id}" in index, word
+
+
+def test_title_edit_reemits_header_card(handler: MemoryHandler, store: Store) -> None:
+    ref_id = _put_repo_dev(handler, store, "plain body prose", "Quokka header")
+    handler.edit(id=ref_id, title="Axolotl header")
+    assert _card_text(store, ref_id) == "Axolotl header"
+    assert f"memory {ref_id}" not in handler.search(q="quokka", mode="lexical").body
+    assert f"memory {ref_id}" in handler.search(q="axolotl", mode="lexical").body
+    handler.edit(id=ref_id, meta={"hook": "tapir hook"})
+    assert _card_text(store, ref_id) == "Axolotl header\ntapir hook"
+    assert f"memory {ref_id}" in handler.search(q="tapir", mode="lexical").body
+
+
+def test_header_card_text_skips_empty_parts() -> None:
+    from precis.store._chunks_ops import header_card_text
+
+    assert header_card_text("  Title ", None) == "Title"
+    assert header_card_text("", " hook ") == "hook"
+    assert header_card_text(None, "  ") == ""

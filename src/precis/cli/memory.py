@@ -345,12 +345,14 @@ def import_memory_dir(
         if orphan is not None:
             if write:
                 store.update_ref(orphan, meta_patch=meta)
+                store.chunks.sync_header_card(orphan)
             return orphan
         if not write:
             return next(fake_ids)  # a dry run's stand-in id; never stored
         resp = handler.put(text=body, title=title, tags=tags)
         ref_id = _created_id(resp)
         store.update_ref(ref_id, meta_patch=meta)
+        store.chunks.sync_header_card(ref_id)  # put() ran before meta.hook landed
         return ref_id
 
     # Section node ids as they stood before this run — the only ``part-of``
@@ -365,6 +367,7 @@ def import_memory_dir(
         if ref.title != sec.title:
             if write:
                 store.chunks.set_ref_title(sec_id, sec.title, source="agent")
+                store.chunks.sync_header_card(sec_id)
             changed = True
         if (ref.meta or {}).get("order") != sec.order:
             if write:
@@ -383,6 +386,7 @@ def import_memory_dir(
         if ref.title != b.title:
             if write:
                 store.chunks.set_ref_title(topic_id, b.title, source="agent")
+                store.chunks.sync_header_card(topic_id)
             changed = True
         if handler._body_text(ref) != body:
             if write:
@@ -396,6 +400,7 @@ def import_memory_dir(
         if patch:
             if write:
                 store.update_ref(topic_id, meta_patch=patch)
+                store.chunks.sync_header_card(topic_id)
             changed = True
         want = f"{SECTION_TAG_PREFIX}{sec.slug}"
         have = sorted(
