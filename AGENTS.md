@@ -27,6 +27,10 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   callees) and `scripts/coderef callers|deps <file.py::Sym>`. Both read
   main, not your worktree; grep is truth for code you changed. Skill
   `precis-python-help`.
+- **Rounds**: when a round is open (`scripts/round status`), mark it from
+  your tree with `scripts/round in <sha>|none|eta <text>`. The mark is the
+  status report; message the coordinator only for a question, blocker or
+  decision. Details: `docs/conventions/shipping.md`.
 - **Plans**: non-trivial changes get a spec in `docs/backlog/<slug>.md`
   first; it is deleted in the shipping commit.
 

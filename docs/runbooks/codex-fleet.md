@@ -90,6 +90,10 @@ each release. This launcher does not gate, merge, deploy or close gripes.
 - Each worker keeps a compact handoff: objective, current branch, next action,
   evidence, blockers and deployed SHA used for dogfood. Update before ending
   or compaction and after meaningful results.
+- Status goes in state, not messages: a `scripts/round` mark or the handoff
+  note replaces "landed / still working / nothing" messages to the
+  coordinator. Queue a message only for a question, blocker or decision.
+  Startup prompts in `STATE/prompts/` carry the same rule.
 - Shared fleet state holds registrations, notes, decisions, inbox, reports and
   review checkpoints outside tracked content. Keep its location in coordinator
   and worker startup prompts; preserve it across restarts and worktree cleanup.

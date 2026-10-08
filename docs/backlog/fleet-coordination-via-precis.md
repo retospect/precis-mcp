@@ -30,7 +30,9 @@ sender had already written. Gripe loop: 41 `ScheduleWakeup` calls were
 mostly re-arms inside message-woken turns; ~5 timer fires, ~2 noop.
 
 So: most status chatter is senders messaging *after* marking — a prompt
-fix, no store needed. A shared store removes the 10% relay only if the
+fix, no store needed. That fix is in (round-open message, AGENTS.md
+§Rules by pointer, runbook codex-fleet); re-measure a round's coordinator
+transcript before building anything here. A shared store removes the 10% relay only if the
 melchior clone writes to it too. Rulings and questions stay messages.
 
 ## Why it is more than a token saving (2026-10-08)
