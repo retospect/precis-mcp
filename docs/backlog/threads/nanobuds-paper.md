@@ -348,10 +348,19 @@ td173019.
    that first failed on a quota halt finished on a later tick; closed
    2026-10-08). Their change requests are 169 parentless open todos,
    td472261–td472811 (about 17 duplicate pairs). Triage 2026-10-08:
-   98 factual or citation defects, 21 structural, 50 style; the ruling
-   list went to Reto in-session. Once ruled: apply the yes items as draft
-   edits, close all 169, and watch td472567/td472337 (dc2445877 seam
-   pentagon count), which would reverse the August fix td204510.
+   98 factual or citation defects, 21 structural, 50 style. **Reto ruled
+   yes on all; applied on prod 2026-10-08:** 59 prose chunks edited, 7
+   orphan glossary terms retired, dc2445900 retitled, the empty "Emerging
+   Applications" heading and the External References stub section
+   retired, Curvature promoted to a top-level section; 167 request todos
+   closed, 2 left open (td472360 finding chase, td472790 hub corroborator
+   audit, neither a draft edit). Plan and per-edit acks: Mac-local
+   `/tmp/nanobud-apply/` (not durable). Two wordings for Reto: dc2445877
+   now reports the source's six-pentagon-plus-six-heptagon accounting and
+   leaves the extra-pentagon question open (sources pc56033/pc54243
+   contradict the earlier denial; Gauss–Bonnet needs only the heptagons);
+   dc2445944 calls the Nicholls imaging "in situ" in one sentence and
+   "ex situ" in another.
 3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
