@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# SessionStart hook: surface memory hygiene + the once/day reconsolidation-due
-# signal — but only when ACTIONABLE. Silent on a clean, in-budget index that was
-# already reconsolidated today, so it stays low-noise like map-staleness.
+# SessionStart hook: run scripts/memory-lint in the background and print
+# nothing. The lint takes ~18 s (one `git merge-base` per sha in every memory
+# file), which used to hold up every session start for a nudge that was
+# usually silent. Its last result lands in ~/.cache/precis/memory-lint.log;
+# /whatneedsdoing still runs the lint itself and reports it.
 #
-# Wired in .claude/settings.json (SessionStart). Never blocks: memory lives
-# outside the repo, so a missing dir or a slow scan just means no nudge.
-set -euo pipefail
-cd "$(dirname "$0")/../.."
+# Wired in .claude/settings.json (SessionStart). Never blocks, never fails.
+set -uo pipefail
+cd "$(dirname "$0")/../.." || exit 0
 
-out="$(scripts/memory-lint 2>/dev/null || true)"
-if printf '%s' "$out" | grep -qiE 'issue|DUE|OVER'; then
-    echo "🧠 memory-lint (from /whatneedsdoing's hygiene step):"
-    printf '%s\n' "$out" | sed 's/^/   /'
-fi
+log="${XDG_CACHE_HOME:-$HOME/.cache}/precis/memory-lint.log"
+mkdir -p "$(dirname "$log")" 2>/dev/null || exit 0
+nohup bash -c 'scripts/memory-lint >"$1.tmp" 2>&1; mv -f "$1.tmp" "$1"' _ "$log" \
+    >/dev/null 2>&1 </dev/null &
+disown 2>/dev/null || true
 exit 0
