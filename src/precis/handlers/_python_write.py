@@ -22,6 +22,7 @@ Three independent concerns split out so the handler stays readable:
 from __future__ import annotations
 
 import ast
+import hashlib
 import logging
 import os
 import re
@@ -383,3 +384,43 @@ def splice_lines(
 
     new = "".join(lines[:lo]) + replacement + "".join(lines[hi:])
     return new
+
+
+# ---------------------------------------------------------------------------
+# Range-content guard (Track-A line-range edits)
+# ---------------------------------------------------------------------------
+
+
+def range_sha(lines: list[str]) -> str:
+    """Content hash of a run of lines: first 8 hex of sha256 over the
+    UTF-8 bytes of the lines exactly as in the file (``keepends=True``,
+    newline-normalised to ``\\n``, no trimming). Reads print it as
+    ``range: L<a>-<b> sha=<hash>``; edits accept it as ``base_sha=``.
+    """
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()[:8]
+
+
+def lines_of(text: str) -> list[str]:
+    return text.splitlines(keepends=True)
+
+
+def range_sha_of(text: str, start: int, end: int) -> str:
+    """`range_sha` of lines [start, end] (1-indexed inclusive, end clamped)."""
+    return range_sha(lines_of(text)[max(start, 1) - 1 : end])
+
+
+def range_line(text: str, start: int, end: int) -> str:
+    """The one-line ``range: L<a>-<b> sha=<hash>`` read/edit annotation."""
+    n = len(lines_of(text))
+    lo, hi = max(start, 1), min(end, n)
+    return f"range: L{lo}-{hi} sha={range_sha_of(text, lo, hi)}"
+
+
+def find_sha_runs(text: str, length: int, sha: str) -> list[int]:
+    """Start lines (1-indexed) of every run of `length` lines hashing to `sha`."""
+    lines = lines_of(text)
+    return [
+        i + 1
+        for i in range(len(lines) - length + 1)
+        if range_sha(lines[i : i + length]) == sha
+    ]

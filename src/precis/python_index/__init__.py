@@ -7,6 +7,14 @@ classes, functions, methods, line ranges, signatures, and docstrings.
 Used by `precis.handlers.python` (slug-addressed kind) and also stands
 alone for unit tests / one-off introspection.
 
+Symbols: modules, classes, functions, methods and nested functions
+(``outer.inner``, ``Class.meth.helper``; a repeated nested name under one
+parent becomes ``name#2``, ``name#3`` in source order). Call edges resolve
+through function-local imports and nested functions, and calls inside
+lambdas are credited to the enclosing function; function-body imports are
+recorded per function (``ModuleIndex.local_imports``). Not indexed: classes
+defined inside functions, ``exec``, ``importlib.import_module``.
+
 Deliberately **not** persisted to Postgres — AST parsing is cheap,
 idempotent, and the source-of-truth already lives on disk. An
 in-memory `RepoCache` re-stats the tree and reparses only files whose

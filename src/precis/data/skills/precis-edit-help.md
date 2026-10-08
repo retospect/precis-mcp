@@ -150,6 +150,10 @@ edit(kind="markdown", id="<slug>~L42-58", mode="replace", text="<new region body
 `~L<n>` selects one line; `~L<n>-<m>` selects an inclusive line range.
 Available on every file kind.
 
+python `~L<a>-<b>` ids take `base_sha=` (the `sha=` of the `range:` line a
+read printed): the edit follows the content if lines shifted, and is
+refused if it changed. Detail: `precis-python-help` "Edit by line range".
+
 ## Edit a python function or class by qualname
 ## Rewrite one symbol without touching neighbours
 

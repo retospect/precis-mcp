@@ -103,6 +103,11 @@ get(
 Ambiguous qualnames return `BadInput` with `options=` listing every
 matching qualname.
 
+Nested functions are symbols: `outer.inner`, method-nested
+`Class.meth.helper`. A repeated nested name under one parent gets
+`name#2`, `name#3` in source order. File outlines show top-level defs
+only; reach nested ones by qualname.
+
 ## Find the right place to start
 ## I'm new to this repo — where do I begin?
 ## Orient in an unfamiliar Python codebase
@@ -157,7 +162,8 @@ many edges traversable.
 | `outline` | per-file outline with type annotations |
 | `source` | raw source for the resolved region |
 | `entries` | console scripts + `__main__` guards |
-| `callgraph` | entry-rooted static call tree (needs `args={'entry': ...}`) |
+| `callgraph` | entry-rooted static call tree (needs `args={'entry': ...}`); a module entry lists its top-level callables |
+| `provenance` | checkout/corpus/Git detail for an alias, file or symbol id |
 | `runtrace` | dynamic trace; gated by `PRECIS_PYTHON_ALLOW_EXEC=1` |
 | `callers` | call sites that reference a symbol (`<alias>::<qualname>`) |
 | `importers` | modules that import a module (`<alias>::<module>`) |
@@ -171,6 +177,11 @@ get(kind="python", id="precis/src/precis/service.py~L444")
 # Response resolves L444 → boot (lines 444-612). Then:
 get(kind="python", id="precis::precis.service.boot")
 ```
+
+A Track-A read ends with `range: L444-444 sha=1a2b3c4d` (see "Edit by
+line range") and an `Enclosing symbol:` note naming the innermost
+symbol(s) and a `Next:` to open it. `view='source'` on a symbol prints the
+same `range:` line for its span.
 
 ## Trace a boot path
 ## How does the `precis` entry point reach this function?
@@ -221,8 +232,11 @@ get(kind="python", id="precis::precis.service.Hub.register_ability", view="calle
 
 `callers` lists resolved edges first, then unresolved call sites with
 the same method name (`handler.search(...)` where the receiver's type
-isn't tracked) as a labelled lead. No type inference, no MRO walk;
-`getattr` dispatch is invisible.
+isn't tracked) as a labelled lead; bare same-name calls that resolve
+nowhere are listed as leads too. Calls through function-local imports,
+inside lambdas (credited to the enclosing function) and inside nested
+functions resolve. No type inference, no MRO walk; `getattr` dispatch
+is invisible.
 
 ## Who imports this module, and what does it import?
 
@@ -231,8 +245,10 @@ get(kind="python", id="precis::precis.handlers.python", view="importers")
 get(kind="python", id="precis::precis.handlers.python", view="imports")
 ```
 
-`importers` rows are `r::<module>  file  [bound names]`. Only
-module-scope imports are indexed; function-local imports don't show.
+`importers` rows are `r::<module>  file  [bound names]`. Imports inside
+function bodies (nested functions included) are listed as
+`name (in <func>)`. Not indexed: imports in classes defined inside
+functions, `exec`, `importlib.import_module`.
 
 ## Find symbols by decorator, async, or regex
 
@@ -272,22 +288,41 @@ follow-ups.
 ## Edit by line range
 ## Replace lines when I have line numbers
 
+Prefer qualname edits (above); they are position-independent. Use line
+ranges only when you have coordinates, and guard them: read, note the
+`range: L<a>-<b> sha=<8hex>` line, pass it back as `base_sha=`.
+
 ```python
+get(kind="python", id="precis/src/precis/service.py~L204-206")
+# ... range: L204-206 sha=1a2b3c4d
+
 edit(
     kind="python",
     id="precis/src/precis/service.py~L204-206",
     text="        return self.handlers.get(kind)",
     mode="replace",
+    base_sha="1a2b3c4d",
 )
 ```
 
 ```text
-replaced lines 204-206 → 204
-affects symbols: precis.service.Hub.handler_for
+range: L204-204 sha=9f8e7d6c
+relocated: L204-L206 -> L207-L209 (content moved by 3 lines down)
+replaced lines 204-206 -> 204
 ast.parse:       ok
-ruff:            1 change
-  - 1 whitespace adjustment (format)
 ```
+
+`sha` = first 8 hex of sha256 over the exact bytes of those lines
+(newlines included, `\n`-normalised). Works with replace, find-replace
+and insert (delete = `replace` with `text=''`), and `dry_run`.
+- Lines still hash to `base_sha`: edit applies as addressed.
+- They moved (lines inserted/removed above): if exactly one same-length
+  run hashes to it, the edit lands there and says `relocated: ...`.
+- Changed, or several runs match: refused, file untouched; the error
+  gives the current sha, the matches, and a `Next:` to re-read (or edit
+  the enclosing symbol by qualname).
+- No `base_sha`: applies as addressed, plus a `hint:` line. The edit
+  response's `range:` line is the sha for chaining the next guarded edit.
 
 Line numbers are 1-indexed, inclusive both ends (vi/sed/GitHub
 permalink convention). `L120-128` is 9 lines; `L120` is one.

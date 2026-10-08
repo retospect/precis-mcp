@@ -21,6 +21,7 @@ Views: ``toc`` (repo-level), ``outline`` (file/symbol; default),
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 from dataclasses import dataclass
@@ -122,6 +123,16 @@ def parse_python_roots(raw: str | None) -> dict[str, Path]:
 # ---------------------------------------------------------------------------
 # Address parsing
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Guard:
+    """Outcome of the Track-A range-content guard for one edit."""
+
+    start: int
+    end: int  # effective (post-relocation, EOF-clamped) range
+    total: int  # file line count before the edit
+    notes: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,9 +746,15 @@ class PythonHandler(Handler):
         nth: int | None = None,
         allow_rename: bool = False,
         dry_run: bool | str = False,
+        base_sha: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Region-edit an existing python file or symbol.
+
+        Track-A line-range ids accept ``base_sha=`` (the ``sha=`` of the
+        ``range:`` line a read printed): the edit lands on the lines
+        that hash to it, relocating if they moved, refusing if they
+        changed (see ``_guard_line_range``).
 
         Routes through the same three gates (parse / qualname-drop /
         ruff) as the legacy ``put(mode=...)`` path. ``mode='find-
@@ -748,8 +765,61 @@ class PythonHandler(Handler):
         root = self._resolve_alias(parsed.alias)
         if mode == "append":
             return self._put_append(parsed, root, text)
+        guard: _Guard | None = None
+        if parsed.start_line is not None and parsed.file is not None:
+            parsed, guard = self._guard_line_range(parsed, root, base_sha)
+        elif base_sha is not None:
+            raise BadInput(
+                "base_sha= guards line-range ids only (…~L<a>-<b>)",
+                next="drop base_sha=; qualname edits are position-independent",
+            )
+        resp = self._edit_dispatch(
+            parsed=parsed,
+            root=root,
+            mode=mode,
+            text=text,
+            find=find,
+            before=before,
+            after=after,
+            where=where,
+            match=match,
+            nth=nth,
+            allow_rename=allow_rename,
+            dry_run=dry_run,
+        )
+        if guard is None:
+            return resp
+        notes = list(guard.notes)
+        if normalize_dry_run(dry_run) is None:
+            post = (root / str(parsed.file)).read_text(encoding="utf-8")
+            new_end = guard.end + len(write.lines_of(post)) - guard.total
+            if new_end >= guard.start:
+                notes.insert(0, write.range_line(post, guard.start, new_end))
+            else:
+                notes.insert(0, "range: (deleted)")
+        head, _, rest = resp.body.partition("\n")
+        return Response(body="\n".join([head, *notes, rest]))
+
+    def _edit_dispatch(
+        self,
+        *,
+        parsed: _ParsedId,
+        root: Path,
+        mode: str,
+        text: str | None,
+        find: str | None,
+        before: str,
+        after: str,
+        where: str | None,
+        match: str,
+        nth: int | None,
+        allow_rename: bool,
+        dry_run: bool | str,
+    ) -> Response:
         if mode == "replace":
-            return self._put_replace(parsed, root, text, allow_rename=allow_rename)
+            return self._put_replace(
+                parsed, root, text, allow_rename=allow_rename, dry_run=dry_run
+            )
         op_kind = "edit" if mode == "find-replace" else mode
         return self._put_anchored(
             parsed=parsed,
@@ -764,6 +834,86 @@ class PythonHandler(Handler):
             nth=nth,
             allow_rename=allow_rename,
             dry_run=dry_run,
+        )
+
+    def _guard_line_range(
+        self, parsed: _ParsedId, root: Path, base_sha: str | None
+    ) -> tuple[_ParsedId, _Guard | None]:
+        """Check a Track-A edit against ``base_sha`` (range-content guard).
+
+        Returns the (possibly relocated) id plus the notes to add to the
+        response. Exact-hash only: the addressed lines hash to base_sha
+        -> as-is; else a unique run of the same length that does ->
+        relocated; else BadInput. No ``base_sha`` -> unchanged + a hint.
+        """
+        assert parsed.file is not None and parsed.start_line is not None
+        path = root / parsed.file
+        if not path.is_file():
+            return parsed, None  # the edit path raises the proper NotFound
+        text = path.read_text(encoding="utf-8")
+        total = len(write.lines_of(text))
+        a = parsed.start_line
+        b = parsed.end_line or a
+        if a < 1 or a > max(total, 1):
+            return parsed, None  # the edit path raises the range error
+        hi = min(b, total)
+        cur = write.range_sha_of(text, a, hi)
+        if base_sha is None:
+            hint = (
+                f"hint: pass base_sha={cur} (the sha= of a read of this range) "
+                f"to guard against shifted lines"
+            )
+            return parsed, _Guard(a, hi, total, [hint])
+        want = base_sha.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{8}", want):
+            raise BadInput(
+                f"base_sha={base_sha!r} is not 8 hex chars",
+                next="copy the sha= value from the 'range:' line of a read",
+            )
+        if cur == want:
+            return parsed, _Guard(a, hi, total, [])
+        n = b - a + 1
+        runs = sorted(write.find_sha_runs(text, n, want), key=lambda r: abs(r - a))
+        if len(runs) == 1:
+            a2 = runs[0]
+            b2 = a2 + n - 1
+            moved = a2 - a
+            note = (
+                f"relocated: L{a}-L{b} -> L{a2}-L{b2} "
+                f"(content moved by {abs(moved)} line{'s' if abs(moved) != 1 else ''}"
+                f" {'down' if moved > 0 else 'up'})"
+            )
+            new = dataclasses.replace(parsed, start_line=a2, end_line=b2)
+            return new, _Guard(a2, min(b2, total), total, [note])
+        rid = f"{parsed.alias}/{parsed.file}"
+        if runs:
+            cands = ", ".join(f"L{r}-L{r + n - 1}" for r in runs[:8])
+            raise BadInput(
+                f"base_sha={want} matches {len(runs)} places in {parsed.file} "
+                f"({cands}); L{a}-L{b} now hashes to {cur}",
+                next=f"edit again with an unambiguous id, e.g. "
+                f"id='{rid}~L{runs[0]}-L{runs[0] + n - 1}' (base_sha={want})",
+            )
+        sym = None
+        mod = self.cache.get(root).file(parsed.file)
+        if mod is not None:
+            for s_ in mod.symbols:
+                if s_.kind == "module" or not (s_.start_line <= a <= s_.end_line):
+                    continue
+                if sym is None or (s_.end_line - s_.start_line) < (
+                    sym.end_line - sym.start_line
+                ):
+                    sym = s_
+        nxt = f"get(kind='python', id='{rid}~L{a}-L{b}') to re-read the range"
+        if sym is not None:
+            nxt += (
+                f"; or edit the symbol by name: id='{parsed.alias}::{sym.qualname}'"
+                f" (position-independent)"
+            )
+        raise BadInput(
+            f"L{a}-L{b} of {parsed.file} changed since read: current sha={cur}, "
+            f"expected base_sha={want}, and no {n}-line run matches it",
+            next=nxt,
         )
 
     @_translate_readonly_fs
@@ -873,6 +1023,7 @@ class PythonHandler(Handler):
         text: str | None,
         *,
         allow_rename: bool,
+        dry_run: bool | str = False,
     ) -> Response:
         if text is None:
             raise BadInput("replace requires text=", next="add text='...'")
@@ -902,6 +1053,8 @@ class PythonHandler(Handler):
             pre_in_region=pre_in_region,
             allow_rename=allow_rename,
             change_summary=_replace_summary(parsed, region),
+            dry_run=dry_run,
+            edited_spans=(region,) if region is not None else (),
         )
 
     def _put_delete(
@@ -1395,6 +1548,9 @@ class PythonHandler(Handler):
             )
             return Response(
                 body=body
+                + "\n"
+                + write.range_line(text, parsed.start_line, end_line)
+                + "\n"
                 + _enclosing_note(parsed.alias, mod, parsed.start_line, end_line)
             )
 
@@ -1472,6 +1628,9 @@ class PythonHandler(Handler):
                     start_line=sym.start_line,
                     end_line=sym.end_line,
                 )
+                + "\n"
+                + write.range_line(text, sym.start_line, sym.end_line)
+                + "\n"
             )
         if view == "toc":
             raise BadInput(
