@@ -1,5 +1,5 @@
 ---
-description: End-of-session wrap-up — commit WIP, sync onto main, gate on GitHub's full CI matrix (scripts/ship --remote), then atomically squash-merge to main. Run from inside a feature worktree.
+description: "End-of-session wrap-up: commit WIP, sync onto main, gate on GitHub CI (scripts/ship --remote), squash-merge. Run from a feature worktree."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Agent
 ---

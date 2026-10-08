@@ -45,6 +45,18 @@ about 2M output tokens. The cost is context re-sent on every turn, not output.
   prompt; slim the `precis` put/edit schemas (also cuts every cluster agent's
   prefix); disable the Figma plugin per project; trim MEMORY.md to its 15KB
   floor and the inflight table in the SessionStart hook.
+- (f) **Graph-mode memory index is bigger, not smaller.** Flipping MEMORY.md
+  to the graph marker makes `scripts/hooks/session-start-memory.sh` print
+  `precis memory index`. On 2026-10-08 that rendered 292 entries, 31.5 KB
+  (~8k tokens) even at `--budget-tok 1500`: over budget,
+  `precis.cli.memory._render_loaded` only cuts each hook to
+  `HOOK_CUT_CHARS`, it never drops entries. It also carries stale imported
+  thread states and doubled titles ("catalysis-selectivity campaign (me464081)
+  — catalysis-selectivity campaign …"). Today's hand-kept MEMORY.md is
+  17.7 KB (~4.5k). Not flipped. For a saving the render must print only an
+  always-on subset (in-flight threads, hazards) and leave the rest to
+  `search(kind='memory', tags=['SPACE:repo-dev'], …)` recall; owner: the
+  graph-memory-consumers thread.
 - (e) **Miner defects** (`scripts/mine-sessions`): the scoreboard's
   cache-read total counts each content block, not each API message (1.45B
   vs 566M deduplicated by `message.id`); `render_obesity` ranks by call

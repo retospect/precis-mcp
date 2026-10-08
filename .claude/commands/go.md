@@ -1,5 +1,5 @@
 ---
-description: Implement the agreed spec, ship to main, and deploy to the cluster — the dark-factory one-keystroke. Run from inside a feature worktree.
+description: "Implement the agreed spec, ship to main with the local gate, and deploy. Run from a feature worktree."
 argument-hint: "[optional ship/commit message]"
 allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(cat:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Bash(uv:*), Bash(tail:*), Agent, Monitor, TaskStop
 ---

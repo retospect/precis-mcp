@@ -1,5 +1,5 @@
 ---
-description: Summarize the next logical steps and emit both a /compact retention argument and a copy-paste recovery prompt to resume after compacting. Use before compacting, or any time you want a clean-context restart point.
+description: "Summarize next steps; emit a /compact retention argument and a copy-paste recovery prompt. Use before compacting or for a clean restart point."
 argument-hint: "[optional steer — where you want to go next, e.g. 'do the factory with the flubber']"
 allowed-tools: Bash(git:*), Read, Glob, Grep, mcp__precis__get, mcp__precis__search
 ---

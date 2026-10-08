@@ -1,11 +1,6 @@
 ---
 name: flow
-description: >-
-  Use when a request is substantial enough to need a spec before coding, or
-  when unsure which stage-tool (ready / coder / reviewer / land / go /
-  issue-closer) applies next. Maps the repo's request → spec → spec-review →
-  coding → ship stages to the tool that owns each. Repo-dev tool for
-  developing precis-mcp; NOT a precis product skill.
+description: "Use when a request needs a spec before coding, or unsure which stage tool (ready, coder, reviewer, land, go, issue-closer) applies next."
 ---
 
 # flow — request to shipped, without reinventing a stage

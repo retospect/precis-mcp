@@ -26,7 +26,7 @@
 #
 # Usage:
 #   scripts/inflight            # the table
-#   scripts/inflight --for-hook # same, with a one-line intro; always exits 0
+#   scripts/inflight --for-hook # compact: only live/dirty/unmerged/current rows; always exits 0
 #                               # (wired as a SessionStart hook in .claude/settings.json)
 #   scripts/inflight --json     # structured form for /workspace-cleanup: each
 #                               # worktree gets a `bucket` verdict —
@@ -141,6 +141,7 @@ purpose_field() { # purpose_field <path> <head> <branch>
 }
 
 ROWS=()          # emitted, |-delimited
+SHOW=()          # parallel to ROWS: 1 = matters for overlap (--for-hook prints only these)
 REMOVABLE=()     # names safe to reap (merged + clean + no live session)
 JSONROWS=()      # --json only: \x1f-delimited records, joined \x1e at render time
 
@@ -163,6 +164,9 @@ emit() { # emit <path> <head> <branch> <locked>
   purp=$(purpose_field "$path" "$head" "$branch")
   last=$(trunc "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)" 46)
   ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
+  # overlap-relevant: current tree, live session, dirty, or commits ahead of main
+  if [ "$mark" = '*' ] || [[ "$sess" == live#* ]] || [ "$dirtyf" != 'clean' ] || [[ "$verd" == ↑* ]]
+  then SHOW+=(1); else SHOW+=(0); fi
   # removable = merged into main, clean tree, no live session, not the current wt, not main.
   # A lock whose reason carries no `pid <N>` (sess = `locked`) was placed by hand
   # or by older code; reap must not guess it dead (incident 2026-08-15,
@@ -224,6 +228,7 @@ emit_branch() { # emit_branch <branch> <head> — a local branch git's own
   purp=$(trunc "$purp" 58)
   last=$(trunc "$(git log -1 --format='%cr — %s' "$branch" 2>/dev/null)" 46)
   ROWS+=("(no worktree) ${branch}|—|—|${verd}|${purp}|${last}")
+  if [[ "$verd" == ↑* ]]; then SHOW+=(1); else SHOW+=(0); fi
 
   # 0 unmerged commits vs $BASE = safe to `git branch -D`; anything else is
   # real stranded work reap-worktrees must only ever report, never delete.
@@ -300,8 +305,21 @@ print(json.dumps({"base": base, "stashCount": stash_count, "worktrees": worktree
 fi
 
 if [ "$FOR_HOOK" = 1 ]; then
-  echo "🌳 In-flight worktrees on this machine (scan for overlap with your task;"
-  echo "   once your task is clear, write one line to .claude/purpose):"
+  # Compact: only trees that matter for overlap, short PURPOSE, LAST = age only.
+  echo "🌳 In-flight trees (scan for overlap; once your task is clear, write one line to .claude/purpose):"
+  HIDDEN=0
+  for i in "${!ROWS[@]}"; do [ "${SHOW[$i]}" = 1 ] || HIDDEN=$((HIDDEN+1)); done
+  {
+    printf '%s\n' "WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST"
+    for i in "${!ROWS[@]}"; do
+      [ "${SHOW[$i]}" = 1 ] || continue
+      IFS='|' read -r c1 c2 c3 c4 c5 c6 <<<"${ROWS[$i]}"
+      printf '%s|%s|%s|%s|%s|%s\n' "$c1" "$c2" "$c3" "$c4" "$(trunc "$c5" 50)" "${c6%% — *}"
+    done
+  } | column -t -s '|'
+  [ "$HIDDEN" -gt 0 ] && echo "+ ${HIDDEN} merged/clean/sessionless trees hidden (scripts/inflight for all)"
+  [ "${#REMOVABLE[@]}" -gt 0 ] && echo "${#REMOVABLE[@]} removable — reap-worktrees handles them"
+  exit 0
 fi
 {
   printf '%s\n' "WORKTREE|SESSION|DIRTY|VS-${BASE}|PURPOSE|LAST"

@@ -1,6 +1,6 @@
 ---
 name: housekeeper
-description: "Sonnet worktree/branch janitor — confirms with user, then removes safe_remove-bucket worktrees; hard-stops on live/dirty/unmerged trees."
+description: "Sonnet worktree/branch janitor: confirms with user, removes safe worktrees; stops on live, dirty or unmerged trees."
 tools: Bash, Read, AskUserQuestion, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---

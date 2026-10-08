@@ -1,5 +1,5 @@
 ---
-description: The product-plan review — Reto as customer, this session as PM. Re-read docs/roadmap.md against the backlog, the open gripes and every active thread owner; find the gaps between each pillar's end state and what is filed; relink orphan gripes; prune closed pointers; update the active set. Run at every session-restart wave, or when Reto restates a pillar.
+description: "Product-plan review: reconcile docs/roadmap.md with backlog, gripes and active threads; relink orphan gripes, prune closed pointers. Run each session-restart wave."
 argument-hint: "[pillar to focus on — memory | 3d | local | personal | all (default all)]"
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash(scripts/inflight:*), Bash(scripts/docs-index:*), Bash(scripts/backlog-lint:*), Bash(scripts/ship:*), Bash(git log:*), Bash(git status:*), Bash(git add:*), Bash(git commit:*), Bash(git fetch:*), Bash(git merge:*), Bash(grep:*), Bash(ls:*), Bash(wc:*), Task, ListAgents, SendMessage, mcp__precis__get, mcp__precis__search, mcp__precis__put
 ---

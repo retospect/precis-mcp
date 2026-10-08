@@ -1,6 +1,6 @@
 ---
 name: navigator
-description: "Read-only orientation specialist for this repo's code (not the product) — answers where/how, cites file:line."
+description: "Haiku read-only repo-code orientation (not the product): answers where/how, cites file:line."
 tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: haiku
 ---

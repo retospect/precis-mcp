@@ -1,11 +1,6 @@
 ---
 name: bug
-description: >-
-  Use when a bug report or gripe lands and a fix is about to be written —
-  classify it into one of three buckets first, and dispatch a read-only
-  root-cause investigation when the obvious fix would patch the symptom and
-  leave the real defect live. Repo-dev tool for developing precis-mcp; NOT a
-  precis product skill.
+description: "Use when a bug report or gripe lands before writing a fix: classify into one of three buckets; dispatch root-cause if the obvious fix patches a symptom."
 ---
 
 # bug — triage before you patch

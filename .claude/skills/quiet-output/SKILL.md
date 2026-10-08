@@ -1,11 +1,6 @@
 ---
 name: quiet-output
-description: >-
-  Before running a verbose dev command whose output would flood the session —
-  a deploy (scripts/deploy), an image build, an ingest run, a migration, a
-  git/gh/psql/grep/find with a large result — run it through `rtk` so only the
-  signal reaches context instead of a 1000-line firehose. Repo-dev tool for
-  developing precis-mcp; NOT a precis product skill.
+description: "Before a verbose dev command (deploy, image build, ingest, migration, big git/gh/psql/grep/find output), run it through rtk so only signal reaches context."
 ---
 
 # quiet-output — keep noisy command logs out of context with rtk

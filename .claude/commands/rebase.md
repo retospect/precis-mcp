@@ -1,5 +1,5 @@
 ---
-description: Fast-forward or rebase the current worktree's branch onto main. Deterministic script for the clean path; LLM steps in only to resolve real conflicts or ask you.
+description: "Fast-forward or rebase the current worktree's branch onto main; script for the clean path, LLM only for real conflicts."
 argument-hint: "[optional base ref, default origin/main]"
 allowed-tools: Bash(scripts/rebase:*), Bash(git:*)
 ---

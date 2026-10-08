@@ -1,5 +1,5 @@
 ---
-description: Mine recent agent sessions (local .jsonl + the prod tool_calls ledger + llm_call_log) for where the precis MCP surface confused an agent, wasted tokens, or was missing a capability — then attach measured evidence to the existing backlog item, or file a gripe. The 14-day surface-review pass.
+description: "Mine recent agent sessions and prod tool-call logs for where the precis MCP surface confused agents or lacked capability; attach evidence to backlog or file a gripe."
 argument-hint: "[window, e.g. '7d' or '14d' — default 14d]"
 allowed-tools: Read, Grep, Glob, Edit, Write, Bash(scripts/mine-sessions/run.sh:*), Bash(uv run scripts/mine-sessions/*), Bash(scripts/surface-review:*), Bash(scripts/docs-index:*), Bash(git log:*), Bash(git show:*), Bash(git merge-base:*), Bash(grep:*), Bash(ls:*), Bash(wc:*), Task, mcp__precis__get, mcp__precis__search, mcp__precis__put
 ---

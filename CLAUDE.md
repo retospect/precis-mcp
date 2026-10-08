@@ -17,63 +17,27 @@ Repo-dev recall, durable writes and outage behavior:
 
 Work always happens on a task branch in a separate worktree (`claude -w <name>`).
 Never edit or commit in the primary `main` checkout; integrate branches in
-a dedicated integration worktree. **`/land`** = ship with the
-gate on GitHub (`scripts/ship --remote`: commit WIP → sync main → push
-`ci/<branch>` → wait for the check.yml gate (shape and duration:
-`docs/conventions/testing.md` §CI shapes; run ship in background, output to a
-log) → atomic CAS squash-merge to `main` —
-a full-gate ship lands an exactly-tested tree, or says it did not and pins
-nothing. The repo-wide ship lock is narrow: held only for the seconds of
-fetch → squash → CAS push → local-main ff, never across sync, lint, a gate
-or the CI wait. If main moves meanwhile, a tree that adds a migration or
-touches `safe_fetch.py` re-syncs and re-runs CI once; any other tree, or
-that one after its retry, lands by an in-lock forward merge of main instead,
-prints "not a deploy warrant", writes no `.ship-sha` and moves no `gated`
-ref, and the squash carries a `Gate: forward-merged over N commits` trailer
-(`--quick` forward-merges the same way when main moved, with a
-`Gate: lint only` trailer, or `Gate: none` under `PRECIS_QLAND_LINT=0`). Squawk on new
-migration SQL stays host-side. `--remote --impacted` = opt-in local impacted
-pre-gate first; bare `--impacted` = legacy local-only gate). **`/go`** = ship
-with the LOCAL suite + diff-coverage gate (changed src lines need
-tests; the gate's default lane is `-m 'not slow'` — the slow cluster is
-covered by check.yml's unfiltered 6 shards on every push, `--slow` /
-`PRECIS_GATE_SLOW=1` restores the full set) + `scripts/deploy` of the
-**gated sha** (`--pinned`, never bare —
-bare re-resolves `main` and can ship an ungated sibling qland), plus a
-budgeted advisory mutation pass
-(`scripts/mutate-diff`). **`/qland`** = pytest-ungated burst-land
-(`scripts/ship --quick`: commit WIP → sync → **drift guard** (warns when main's
-last all-green shard matrix is 24h old, refuses at 48h — a burst that outran
-its verdicts wants a `/go`, not another qland; never refuses on an age it
-could not look up) → **pre-qland lint** (ruff · mypy ·
-import contracts · DB-free hygiene tests (type-ignore ratchet, posix/encoding guards, doc pointers, secret scan) — no full pytest, no gate slot, ~3 min; `PRECIS_QLAND_LINT=0` to
-skip) → squash-merge) for when
-many trees are in flight — qland them one by one, then one
-`/go` gates the integrated `main` + deploys (ship skips the push when the
-tree already equals main). **`/qgo`** = the fast dev cycle: qland + deploy
-that sha **ungated**, then a repair gate only if a slot is free (never
-queued — queuing starves the 2-slot semaphore). Prod may run broken code
-until the next pass: accepted on a dev cluster, and `scripts/qgo-guard`
-hard-refuses the two things prod cannot take back (any
-`*/migrations/*.sql`, `safe_fetch.py`) — those take `/go`.
-All abort+report on failure and are idempotent —
-fix and re-run. Merge target is `main` (no `master`). Red gate: the failure
-is printed above the `✖` — read *that*, never `scripts/ship` (remote-gate
-red: ship prints the failing jobs + `gh run view <id> --log-failed`).
-Where a commit has got to is three refs: `main` (landed), `origin/gated`
-(last full-gate green), `origin/prod` (what the cluster runs) — script-moved,
-fast-forward only, never committed to (`deploy/README.md`).
+a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
+
+- **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
+  squash-merge to `main`. Run ship in background, output to a log.
+- **`/go`** — local suite + diff-coverage gate, then `scripts/deploy --pinned`
+  of the gated sha (never bare `scripts/deploy`).
+- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. Burst-land many
+  trees, then one `/go`.
+- **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
+  `safe_fetch.py` (`scripts/qgo-guard` refuses; those take `/go`).
+
+All are idempotent — fix and re-run. Red gate: read the failure above the
+`✖`, not `scripts/ship`. Refs: `main` (landed), `origin/gated` (last
+full-gate green), `origin/prod` (what runs) — script-moved, never committed to.
 
 Many sibling sessions run at once: scan the injected `scripts/inflight` table
 for overlap; once your task is clear, write one line to `.claude/purpose`.
-When a coordinator has a peer round open (`scripts/round status`), end your
-land by marking it from your own tree — `scripts/round in <sha>`,
-`scripts/round none`, or `scripts/round eta <text>` — instead of messaging;
-leave deploys to the coordinator (`/round`: deploys the exact open release head with a fresh green CI verdict (newest green main without a release) via `scripts/round gate|deploy` — no local gate, no ship lock). The fleet itself — one tmux
-window per active thread plus Reto's `review` window — comes up, and
-recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
-session a question for Reto is a review-queue item
-(`.claude/fleet/review-protocol.md`), not a stop in the pane.
+When a coordinator has a round open (`scripts/round status`), mark it from
+your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging,
+and leave deploys to the coordinator. Fleet: `/fleet`; in a fleet session a
+question for Reto goes to the review queue (`.claude/fleet/review-protocol.md`).
 Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
 (`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
 delete what shipped, insert what you filed at its rank (README there).

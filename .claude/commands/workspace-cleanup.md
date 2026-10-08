@@ -1,5 +1,5 @@
 ---
-description: Review every worktree/branch in flight on this machine and clean up what's safe. Deterministic data collection (scripts/inflight --json) + a Sonnet agent to confirm-and-remove the clear-cut cases; ambiguous dirty worktrees come back here for judgment.
+description: "Review all worktrees/branches in flight and clean up the safe ones; ambiguous dirty trees come back for judgment."
 allowed-tools: Bash(scripts/inflight:*), Bash(git:*), Agent
 ---
 

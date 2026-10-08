@@ -1,11 +1,6 @@
 ---
 name: backup-restore-drill
-description: >-
-  Use when asked to test the prod Postgres backups, run a restore drill, or
-  answer "could we actually restore?" — restores a real nightly dump into a
-  throwaway pgvector container on an idle node, verifies it against prod, times
-  it, records the result and tears it down. Repo-dev / fleet-ops tool; NOT a
-  precis product skill.
+description: "Use to test prod Postgres backups or answer 'could we actually restore?': restores a nightly dump into a throwaway container, verifies, times, tears down."
 ---
 
 # backup-restore-drill — prove the backups restore

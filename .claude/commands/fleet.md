@@ -1,5 +1,5 @@
 ---
-description: Bring up (or recover) the thread-session fleet in tmux and take the orchestrator seat — one window per active thread, a review window for Reto, one `scripts/fleet watch` watcher, and the release rounds. Idempotent; run it after a crash. Run from the orchestrator's worktree, inside tmux.
+description: "Bring up or recover the thread-session fleet in tmux and take the orchestrator seat. Idempotent; run after a crash, inside tmux."
 argument-hint: "[optional note, e.g. 'after crash' or a thread to leave out]"
 allowed-tools: Bash(scripts/fleet:*), Bash(scripts/round:*), Bash(scripts/inflight:*), Bash(tmux:*), Bash(git:*), Monitor, Read, Write
 ---

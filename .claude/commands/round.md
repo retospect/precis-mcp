@@ -1,5 +1,5 @@
 ---
-description: Coordinate one peer round — peers dogfood on prod, fix, qland; you deploy the exact open release head with a fresh green CI verdict (newest green main when no release) (scripts/round gate|deploy), verify, and open the next round. Run from the coordinating (deploy) session's worktree.
+description: "Coordinate one peer round: deploy the open release head with a fresh green CI verdict, verify, open the next round. Run from the deploy session."
 argument-hint: "[optional note for the round ping]"
 allowed-tools: Bash(scripts/round:*), Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/inflight:*), Bash(scripts/qgo-guard:*), Bash(git:*), Bash(cat:*), Agent, SendMessage, ListAgents
 ---

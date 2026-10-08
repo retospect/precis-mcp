@@ -1,5 +1,5 @@
 ---
-description: Quick-land — commit WIP, sync onto main, run ruff+mypy only, squash-merge WITHOUT pytest. For burst-landing many in-flight worktrees under gate congestion; finish the burst with one /go (full gate + deploy). Run from inside a feature worktree.
+description: "Quick-land: commit WIP, sync, ruff+mypy only, squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Agent
 ---

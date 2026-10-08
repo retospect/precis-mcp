@@ -1,5 +1,5 @@
 ---
-description: Quick-go — squash-merge to main WITHOUT a gate, deploy that sha to the cluster, then start a repair gate only if a slot is free. The fast dev-cycle path; /go is the slow authoritative one. Run from inside a feature worktree.
+description: "Quick-go: ungated squash-merge to main, deploy that sha, repair gate if a slot is free. Fast path; /go is the authoritative one."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(scripts/deploy:*), Bash(scripts/qgo-guard:*), Bash(scripts/mutate-diff:*), Bash(git:*), Bash(docker:*), Monitor, Agent
 ---

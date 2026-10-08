@@ -1,12 +1,6 @@
 ---
 name: docs-triage
-description: >-
-  Triage docs/backlog/ — decide when an item file gets deleted (shipped /
-  stale / snoozed), how far to compact one, and where surviving truth goes
-  (the owning package docstring). Reach for it when scripts/backlog-lint
-  flags done-marked items, when a ship leaves its backlog item behind, or
-  when the backlog needs a currency pass. Repo-dev tool for developing
-  precis-mcp; NOT a precis product skill.
+description: "Triage docs/backlog/: when to delete an item (shipped, stale, snoozed), how far to compact, where surviving truth goes. Use when backlog-lint flags items."
 ---
 
 # docs-triage — keep the backlog live, delete the rest

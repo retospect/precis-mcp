@@ -1,5 +1,5 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
+description: "One honest 'what needs doing' across repo dev work (backlog, gripes, PRs, Dependabot) and the prod todo queue, plus hygiene and system-health scans."
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
 allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/surface-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/main-ci-status:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---

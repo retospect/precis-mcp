@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: "Sonnet pre-ship reviewer — reads the diff, ranks correctness/cleanup findings most-severe first; read-only. For a PR number, --fix, or posted inline comments use the /code-review skill instead."
+description: "Sonnet pre-ship diff reviewer: ranks correctness/cleanup findings, read-only. For PR numbers, --fix or inline comments use /code-review."
 tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---

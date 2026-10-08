@@ -1,12 +1,6 @@
 ---
 name: differentiation
-description: >-
-  Before writing gradient-descent code for any design objective in this repo
-  (shape/level-set, SIMP density, pcb placement, atomic geometry), decide how
-  each term's derivative is obtained — adjoint, reverse-mode autodiff,
-  forward/complex-step, or freeze-and-anneal — and how the assembled gradient
-  gets verified. Repo-dev entry point; the substance is the product skill
-  precis-differentiation-help.
+description: "Before writing gradient-descent code for any design objective: decide how each term's derivative is obtained and how the gradient is verified. Substance: precis-differentiation-help."
 ---
 
 # differentiation — derivative route before descent
