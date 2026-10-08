@@ -166,6 +166,17 @@ routes unchanged.
 detail/comment timeline, and ``retire`` (soft-delete, "fix landed", distinct
 from ``wontfix``). Filing appends ``— filed by <login> …``; body is the record.
 
+**SE validation selection** — ``routes/blocktree_view.py`` and the 3D
+client reuse block selection for finding messages. Targets carry the loaded
+snapshot identity and actual transformed port pose; a read-only activation
+recheck refuses stale rows. Nullable anchors stay unavailable because placing
+a marker at the block centre would misrepresent a port. Legacy bound ports
+use the existing atom-origin helper and the overlay's pinned structure
+version; selection refuses an overlay with a different binding identity.
+Ambiguous dotted block/port subjects stay unavailable rather than guessing.
+Selection changes
+view state only, preserving diagnostics, design data and compute state.
+
 **Manual (`/manual`)** — ``routes/manual.py`` renders user how-to chapters
 from ``src/precis_web/manual/``. They live in-package because the wheel ships
 only ``src/``; each chapter ships with its described button. Ordered filenames

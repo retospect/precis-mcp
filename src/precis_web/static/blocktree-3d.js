@@ -1517,7 +1517,8 @@ async function _setupAtomicOverlay(viewer, atomicUrl, smoothEls, sceneShapes, pr
     return counts;
   }
 
-  return { applyT, setVisible, pickAtom, hasTarget, setTargetVisible, strainStats, applyStrain };
+  const bindings = new Map(blocks.map((b) => [String(b.src.uid), b.src.binding]));
+  return { applyT, setVisible, pickAtom, hasTarget, setTargetVisible, strainStats, applyStrain, bindings };
 }
 
 // ── load-time id/name path invariant self-check ─────────────────────────
@@ -1604,6 +1605,9 @@ export async function blocktreeViewer3D({
   // only renders it alongside the atomic↔smooth slider.
   atomsToggle,
   sceneUrl,
+  validationPanel,
+  validationIdentity,
+  validationUrl,
   atomicUrl,
   smoothEls,
   // Strain-layer rows `{bond, angle}` (the surface-deviation row is
@@ -1953,6 +1957,32 @@ export async function blocktreeViewer3D({
   //: can put its tint back — `clear()` + `render()` rebuilds every
   //: material at its own colour.
   let selectedPath = null;
+  let validationSeq = 0;
+  let validationMarker = null;
+
+  function validationStatus(message, stale = false) {
+    const status = validationPanel && validationPanel.querySelector("[role=status]");
+    if (status) status.textContent = message;
+    const refresh = validationPanel && validationPanel.querySelector("[data-validation-refresh]");
+    if (refresh) refresh.hidden = !stale;
+  }
+
+  function clearValidationSelection() {
+    if (validationMarker) {
+      validationMarker.removeFromParent();
+      for (const mesh of validationMarker.children) {
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+      }
+      validationMarker = null;
+    }
+    if (validationPanel) {
+      for (const button of validationPanel.querySelectorAll("[data-validation-subject]")) {
+        button.setAttribute("aria-pressed", "false");
+        button.closest("tr").style.backgroundColor = "";
+      }
+    }
+  }
 
   function tintSelection(primaryPath) {
     // The selection itself first, in its own colour, so a partner that
@@ -1973,7 +2003,12 @@ export async function blocktreeViewer3D({
     repaint();
   }
 
-  function selectPath(primaryPath) {
+  function selectPath(primaryPath, { finding = false } = {}) {
+    if (!finding) {
+      validationSeq++;
+      clearValidationSelection();
+      validationStatus("");
+    }
     clearHighlight();
     selectedPath = primaryPath;
     tintSelection(primaryPath);
@@ -1989,7 +2024,115 @@ export async function blocktreeViewer3D({
     if (typeof onSelectBlock === "function" && part && part.name) {
       onSelectBlock(part.name);
     }
-    if (part && part.uid !== undefined) showPick({ token: `<se:${part.uid}>` });
+    if (!finding && part && part.uid !== undefined) showPick({ token: `<se:${part.uid}>` });
+  }
+
+  // The server rechecks the page's exact snapshot, and the client checks
+  // both render generation and identity after every async boundary. A
+  // port marker uses the verified transformed anchor, never a block centre.
+  async function selectValidationFinding(button) {
+    const seq = ++validationSeq;
+    clearValidationSelection();
+    clearHighlight();
+    selectedPath = null;
+    repaint();
+    const identity = data.validation_identity;
+    if (!identity || identity !== validationIdentity) {
+      validationStatus("Selection unavailable: displayed design changed; refresh.", true);
+      return;
+    }
+    let gen = renderGen;
+    const current = () => seq === validationSeq && gen === renderGen
+      && identity === data.validation_identity;
+    validationStatus("Locating subject…");
+    try {
+      const url = new URL(validationUrl, window.location.href);
+      url.searchParams.set("identity", identity);
+      url.searchParams.set("subject", button.dataset.validationSubject);
+      const rev = new URL(sceneUrl, window.location.href).searchParams.get("rev");
+      if (rev) url.searchParams.set("rev", rev);
+      const response = await fetch(url);
+      const body = await response.json();
+      if (!current()) {
+        if (seq === validationSeq) validationStatus("Selection unavailable: view changed; select again.", true);
+        return;
+      }
+      if (!response.ok) throw new Error(body.error || "Subject is unavailable.");
+      if (body.identity !== identity) throw new Error("Displayed design changed; refresh.");
+      if (!body.targets || !body.targets.length) throw new Error(body.unavailable || "No spatial target recorded.");
+      const THREE = await import("three");
+      if (!current()) return;
+      // A collapsed ancestor can omit the subject. Reveal using the normal
+      // abstraction controls; this reads existing geometry, never realizes it.
+      if (body.targets.some((t) => !findPathByUid(data.shapes, String(t.uid)))) {
+        if (!levelSelect) throw new Error("Subject is not available in this view.");
+        levelSelect.value = "realized";
+        if (overridesInput) overridesInput.value = "";
+        await loadScene();
+        if (seq !== validationSeq || identity !== data.validation_identity) {
+          if (seq === validationSeq) validationStatus("Selection unavailable: displayed design changed; refresh.", true);
+          return;
+        }
+        gen = renderGen;
+      }
+      const paths = body.targets.map((t) => findPathByUid(data.shapes, String(t.uid)));
+      if (paths.some((p, i) => !p || findPart(data.shapes, p).name !== body.targets[i].block)) {
+        throw new Error("Subject geometry is unavailable in this snapshot.");
+      }
+      if (isolateSelect) isolateSelect.value = "";
+      renderScene(data.shapes);
+      gen = renderGen;
+      syncUrl();
+      if (body.targets.some((t) => t.binding)) {
+        const overlay = await atomicReady;
+        if (!current()) return;
+        if (!overlay || body.targets.some((t) => {
+          if (!t.binding) return false;
+          const shown = overlay.bindings.get(String(t.uid));
+          return !shown || shown.ref_id !== t.binding.ref_id ||
+            shown.version !== t.binding.version || shown.updated !== t.binding.updated;
+        })) {
+          throw new Error("Bound atom geometry changed or is unavailable; refresh.");
+        }
+      }
+      // Reveal previously hidden envelope leaves through the existing
+      // visibility state; clipping controls themselves stay unchanged.
+      for (const path of paths) {
+        const leaf = tintLeafOf(path);
+        if (leaf) viewer.setState(leaf, [1, 0]);
+      }
+      selectPath(paths[0], { finding: true });
+      for (const path of paths.slice(1)) tint(path, SELECTED_COLOUR);
+      const points = body.targets.map((t) => t.point);
+      const focus = [0, 1, 2].map((axis) => points.reduce((sum, p) => sum + p[axis], 0) / points.length);
+      viewer.setCameraTarget(focus);
+      validationMarker = new THREE.Group();
+      validationMarker.name = "bt3d-validation-marker";
+      validationMarker.renderOrder = 1000;
+      const radius = (_worldPerPixel(viewer, viewerEl) || 0.01) * 8;
+      for (const point of points) {
+        const marker = new THREE.Mesh(
+          new THREE.SphereGeometry(radius, 16, 12),
+          // Envelopes use the transparent pass. Join that pass so an
+          // opaque marker cannot be painted over after its depth-free draw.
+          new THREE.MeshBasicMaterial({ color: "#facc15", transparent: true, depthTest: false, depthWrite: false })
+        );
+        marker.position.set(...point);
+        marker.renderOrder = 1000;
+        validationMarker.add(marker);
+      }
+      viewer._rendered.scene.add(validationMarker);
+      button.setAttribute("aria-pressed", "true");
+      button.closest("tr").style.backgroundColor = "#e0f2fe";
+      validationStatus(`Selected ${button.dataset.validationSubject}.`);
+      viewerEl.scrollIntoView({ block: "center" });
+      repaint();
+    } catch (err) {
+      if (seq !== validationSeq) return;
+      clearValidationSelection();
+      validationStatus(`Selection unavailable: ${err.message || err}`, true);
+      repaint();
+    }
   }
 
   // ── pick panel (se-pick-hierarchy) ───────────────────────────────────
@@ -2182,6 +2325,7 @@ export async function blocktreeViewer3D({
   //: `{applyT, setVisible}` from the current scene's atomic overlay, or
   //: null while one is being built / when the design has no atoms.
   let atomicOverlay = null;
+  let atomicReady = Promise.resolve(null);
 
   // An atom click opens the pick panel. A click, not a drag: the press
   // and release must land within a few pixels, or it was an orbit. Wired
@@ -2416,6 +2560,8 @@ export async function blocktreeViewer3D({
   let renderGen = 0;
 
   function renderScene(shapes, { camera = null, refit = true } = {}) {
+    clearValidationSelection();
+    validationStatus("");
     shownShapes = shapes;
     renderGen++;
     viewer.clear();
@@ -2452,7 +2598,7 @@ export async function blocktreeViewer3D({
       // phases: only the first overlay load drives the bar.
       const prog = progressSpent ? null : progress;
       progressSpent = true;
-      _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes, prog, () => gen !== renderGen)
+      atomicReady = _setupAtomicOverlay(viewer, atomicUrl, smoothEls, shapes, prog, () => gen !== renderGen)
         .then((overlay) => {
           if (gen !== renderGen) return;
           atomicOverlay = overlay;
@@ -2464,6 +2610,7 @@ export async function blocktreeViewer3D({
             requestAnimationFrame(() => _bt3dMark("bt3d-atomic-built"));
           }
           if (prog) prog.done();
+          return overlay;
         })
         .catch((err) => {
           console.error("blocktree-3d: atomic overlay failed", err);
@@ -2475,6 +2622,7 @@ export async function blocktreeViewer3D({
           } else if (prog) {
             prog.hide();
           }
+          return null;
         });
     } else if (progress) {
       progress.done();
@@ -2944,6 +3092,14 @@ export async function blocktreeViewer3D({
 
   new MutationObserver(ensureChips).observe(viewerEl, { childList: true, subtree: true });
   ensureChips();
+
+  if (validationPanel && validationUrl) {
+    validationPanel.addEventListener("click", (event) => {
+      const row = event.target.closest("[data-validation-row]");
+      const button = row && row.querySelector("[data-validation-subject]");
+      if (button && validationPanel.contains(button)) selectValidationFinding(button);
+    });
+  }
 
   async function loadScene() {
     if (reloading) return;

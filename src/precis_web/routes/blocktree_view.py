@@ -99,7 +99,7 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -127,9 +127,11 @@ from precis.viz3d.sheetsmooth import ring_faces, smooth_sheet
 from precis_se import persist as se_persist
 from precis_se import stability as se_stability
 from precis_se import validate as se_validate
+from precis_se.atomic.validate import bound_port_origin
 from precis_se.handler import validate_digest as se_validate_digest
 from precis_se.handler import validate_findings as se_validate_findings
 from precis_se.ops import effective_envelope as se_effective_envelope
+from precis_se.ops import effective_ports as se_effective_ports
 from precis_se.pick import atom_hover_names
 from precis_surface.relax import angle_dev_by_atom, theta_p_by_atom
 from precis_surface.revolution import revolve
@@ -315,6 +317,144 @@ def _se_finding_blocks(subject: str, names: set[str]) -> list[str]:
 _FINDINGS_BUDGET_S = 3.0
 
 
+def _validation_binding(struct_ref: Any) -> dict[str, Any] | None:
+    """The bound structure identity used by both target and atomic payload."""
+    version = (struct_ref.meta or {}).get("version")
+    if version is None:
+        return None
+    updated = getattr(struct_ref, "updated_at", None)
+    return {
+        "ref_id": struct_ref.id,
+        "version": int(version),
+        "updated": updated.isoformat() if updated is not None else None,
+    }
+
+
+def _validation_identity(
+    tree: Any, ref_id: int, revision: int, store: Store | None = None
+) -> str:
+    """Identity of the loaded snapshot, including resolved port placements.
+
+    Loaded SE poses already compose parent placement. Hash the actual tree,
+    not a separately fetched latest version; catalogue/template ports are
+    included because the checkpoint deliberately omits derived facets.
+    """
+    evidence = {
+        "design": ref_id,
+        "revision": revision,
+        "tree": se_persist.tree_to_json(tree),
+        "bindings": {
+            name: _validation_binding(ref) if ref is not None else None
+            for name, node in tree.blocks.items()
+            if store is not None and getattr(node, "bound_kind", None) == "structure"
+            for ref in [_atomic_struct_ref(store, node)]
+        },
+        "resolved": {
+            name: {
+                "envelope": se_effective_envelope(tree, node),
+                "ports": {
+                    key: asdict(port)
+                    for key, port in se_effective_ports(tree, node).items()
+                },
+            }
+            for name, node in tree.blocks.items()
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _validation_targets(
+    tree: Any, subject: str, store: Store | None = None
+) -> dict[str, Any]:
+    """Resolve validator subjects exactly, never from explanatory prose.
+
+    A nullable port pose is absence, not the block centre. Block names may
+    contain dots: refuse block/port collisions, otherwise match bare names
+    first and split endpoints on the LAST dot (the SE endpoint contract).
+    Pairwise findings retain every endpoint.
+    """
+    targets: list[dict[str, Any]] = []
+    scale = scene_scale(tree, _ADAPTERS["se"].effective_envelope)
+    for side in subject.split("—"):
+        port_name: str | None = None
+        if side in tree.blocks:
+            owner, separator, candidate = side.rpartition(".")
+            owner_node = tree.blocks.get(owner)
+            if (
+                separator
+                and owner_node is not None
+                and candidate in se_effective_ports(tree, owner_node)
+            ):
+                return {
+                    "targets": [],
+                    "unavailable": "Finding has ambiguous block and port identities.",
+                }
+            name = side
+        else:
+            name, separator, port_name = side.rpartition(".")
+            if not separator:
+                return {"targets": [], "unavailable": "No spatial target recorded."}
+        node = tree.blocks.get(name)
+        if node is None or node.uid is None:
+            return {
+                "targets": [],
+                "unavailable": "Subject is absent from this snapshot.",
+            }
+        local: list[float] | None = [0.0, 0.0, 0.0]
+        binding: dict[str, Any] | None = None
+        if port_name is not None:
+            port = se_effective_ports(tree, node).get(port_name)
+            if port is None:
+                return {
+                    "targets": [],
+                    "unavailable": "No position recorded for this port.",
+                }
+            local = port.pose
+            if port.pose_source == "bound":
+                # A formerly measured pose is not evidence for the version
+                # currently shown by the bound atomic overlay.
+                local = None
+            if local is None and store is not None:
+                struct_ref = _atomic_struct_ref(store, node)
+                if (
+                    struct_ref is not None
+                    and port.bound_design == struct_ref.slug
+                    and port.bound_atom
+                ):
+                    binding = _validation_binding(struct_ref)
+                    if binding is not None:
+                        try:
+                            scene, _handles = store.structure_load(
+                                struct_ref.id, version=binding["version"]
+                            )
+                        except NotFound:
+                            return {
+                                "targets": [],
+                                "unavailable": "Bound atom snapshot is unavailable.",
+                            }
+                        local = bound_port_origin(scene, port.bound_atom)
+            if local is None:
+                return {
+                    "targets": [],
+                    "unavailable": "No position recorded for this port.",
+                }
+        point = [float(v) * scale for v in _block_pose(node).apply(cad_as_vec3(local))]
+        if not all(math.isfinite(v) for v in point):
+            return {"targets": [], "unavailable": "Subject position is unavailable."}
+        targets.append(
+            {
+                "uid": node.uid,
+                "block": name,
+                "port": port_name,
+                "point": point,
+                "binding": binding,
+            }
+        )
+    return {"targets": targets, "unavailable": None}
+
+
 def _se_validate_panel(store: Store, tree: Any, ref_id: int) -> dict[str, Any]:
     """The ``/se/<slug>`` page's validate digest line + findings rows —
     :func:`precis_se.handler.validate_findings`/``validate_digest``, the
@@ -327,6 +467,7 @@ def _se_validate_panel(store: Store, tree: Any, ref_id: int) -> dict[str, Any]:
             "rule": f.rule,
             "subject": f.subject,
             "detail": f.detail,
+            **_validation_targets(tree, f.subject, store),
         }
         for f in findings
         if f.severity in ("error", "warn")
@@ -982,11 +1123,15 @@ async def _view3d_page(
     # view='validate' (one function), live design only. Degrade to no
     # panel on a validator failure, never a 500'd page.
     validate_panel: dict[str, Any] | None = None
+    validation_identity: str | None = None
     if kind == "se" and not axis.read_only:
         try:
             validate_panel = await asyncio.to_thread(
                 _se_validate_panel, store, tree, ref.id
             )
+            validation_identity = _validation_identity(tree, ref.id, axis.shown, store)
+            if _revision_axis(store, ref.id, rev).current != axis.current:
+                validation_identity = None
         except Exception:
             log.exception("validate panel failed for %s %s", kind, slug)
     return templates.TemplateResponse(
@@ -1022,6 +1167,8 @@ async def _view3d_page(
             "chat": chat,
             "print_files": printable,
             "validate_panel": validate_panel,
+            "validation_identity": validation_identity,
+            "validation_url": f"/se/{quote(str(ref.slug), safe='')}/validation-targets",
         },
     )
 
@@ -1036,6 +1183,7 @@ def _build_scene3d(
     isolate: str | None,
     level_overrides: dict[str, str],
     rev: int | None = None,
+    validation_context: dict[str, Any] | None = None,
 ) -> tuple[
     Scene3D | None,
     dict[str, dict[str, Any]],
@@ -1062,6 +1210,9 @@ def _build_scene3d(
     ``None`` is the live tree, untinted, ``[]``."""
     adapter = _ADAPTERS[kind]
     changed: set[int] = set()
+    validation_axis = (
+        _revision_axis(store, ref_id, rev) if validation_context is not None else None
+    )
     if rev is None:
         tree: Tree[BlockNode, Any] = adapter.load_tree(store, ref_id)
         uid_by_name = _uid_by_name(store, kind, ref_id)
@@ -1072,6 +1223,18 @@ def _build_scene3d(
         # would otherwise be looked up under the wrong identity.
         uid_by_name = _uids_of(tree)
         changed = _changed_uids(store, ref_id, axis, tree)
+    if validation_context is not None and validation_axis is not None:
+        # UID and target identity come from the SAME tree as the mesh.
+        uid_by_name = _uids_of(tree)
+        identity: str | None = _validation_identity(
+            tree, ref_id, validation_axis.shown, store
+        )
+        if (
+            rev is None
+            and _revision_axis(store, ref_id, rev).current != validation_axis.current
+        ):
+            identity = None
+        validation_context["identity"] = identity
     kids = children_map(tree)
     plan, err = _plan_or_error(
         tree, kids, level=level, isolate=isolate, level_overrides=level_overrides
@@ -1138,6 +1301,7 @@ async def _scene3d_response(
             {"error": f"unknown level {level!r} — one of {LEVELS}"}, status_code=400
         )
     level_overrides = _parse_overrides(overrides)
+    validation_context: dict[str, Any] = {}
 
     def _build() -> tuple[
         Scene3D | None,
@@ -1160,6 +1324,7 @@ async def _scene3d_response(
             isolate=isolate,
             level_overrides=level_overrides,
             rev=rev,
+            validation_context=validation_context if kind == "se" else None,
         )
 
     try:
@@ -1224,6 +1389,7 @@ async def _scene3d_response(
             # gr340030 — the scale-bar overlay's own conversion factor:
             # real SI metres = a displayed coordinate / scale.
             "scale": scene.scale,
+            "validation_identity": validation_context.get("identity"),
             # Viewer fix (user report against se:unicycle-c1): the doubled
             # self-leaf path of every block that has both its own envelope
             # AND visible children — an opaque one otherwise encloses the
@@ -1382,7 +1548,7 @@ def _block_pose(node: Any) -> Any:
 #: Bump when :func:`_build_atomic_block_payload`'s output changes (a new
 #: field, a changed smoothing/ring rule): the payload cache is keyed on it,
 #: so without a bump a builder change serves stale geometry until restart.
-ATOMIC3D_PAYLOAD_VERSION = 2
+ATOMIC3D_PAYLOAD_VERSION = 3
 
 #: Approximate heap the payload cache may hold; least-recently-used entries
 #: are evicted past it.
@@ -1517,7 +1683,19 @@ def _build_atomic_block_payload(
     scale: float,
 ) -> dict[str, Any] | None:
     """The uncached builder behind :func:`_atomic_block_payload`."""
-    scene, _handles = store.structure_load(struct_ref.id)
+    binding = _validation_binding(struct_ref)
+    scene, _handles = (
+        store.structure_load(struct_ref.id, version=binding["version"])
+        if binding is not None
+        else store.structure_load(struct_ref.id)
+    )
+    if binding is not None:
+        # structure_load pins atom rows but the lattice remains live. A
+        # concurrent cell/save change must not cache mixed geometry under
+        # the earlier binding identity.
+        after_ref = store.get_ref(kind="structure", id=struct_ref.id)
+        if after_ref is None or _validation_binding(after_ref) != binding:
+            return None
     labels = list(scene.atoms)
     if not labels:
         return None
@@ -1549,6 +1727,7 @@ def _build_atomic_block_payload(
     payload: dict[str, Any] = {
         "uid": block_uid,
         "name": name,
+        "binding": binding,
         "elements": elements,
         # The hover readout's per-atom name — residue and chain for a
         # realize_chain structure, the scene label otherwise.
@@ -1949,6 +2128,49 @@ async def se_view_svg(
         colour=colour,
         isolate=isolate,
         overrides=overrides,
+    )
+
+
+@router.get("/se/{slug}/validation-targets")
+async def se_validation_targets(
+    request: Request, slug: str, identity: str, subject: str, rev: int | None = None
+) -> Response:
+    """Recheck a finding's shown snapshot at activation time; pure reads.
+
+    Declared poses use the loaded tree; legacy bound ports read the pinned
+    atom snapshot used by the overlay. A stale page cannot target a
+    newly renamed/replaced block just because its label happens to match.
+    """
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return JSONResponse({"error": "Design is unavailable."}, status_code=404)
+
+    def _read() -> dict[str, Any]:
+        axis = _revision_axis(store, ref.id, rev)
+        tree = _tree_at(store, "se", ref.id, axis)
+        loaded_identity = _validation_identity(tree, ref.id, axis.shown, store)
+        targets = _validation_targets(tree, subject, store)
+        after = _revision_axis(store, ref.id, rev)
+        if (
+            loaded_identity != identity
+            or _validation_identity(tree, ref.id, axis.shown, store) != loaded_identity
+            or (not axis.read_only and after.current != axis.current)
+        ):
+            return {
+                "error": "Displayed design changed; refresh to select this finding."
+            }
+        return {"identity": loaded_identity, **targets}
+
+    try:
+        body = await asyncio.to_thread(_read)
+    except _NoSuchRevision as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    return JSONResponse(
+        body,
+        status_code=409 if "error" in body else 200,
+        headers={"Cache-Control": "no-store"},
     )
 
 
