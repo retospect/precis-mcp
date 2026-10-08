@@ -25,6 +25,11 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
 - State is under `~/.cache/precis-mcp-http/` (`PRECIS_MCP_HTTP_STATE`):
   `backend` (live colour), `caddy/Caddyfile` (what the proxy routes to; it wins
   if it ever disagrees with `backend`), `ensure.log`, `secrets/`, `cache/`.
+- Extra python-kind roots for one host go in `python-roots` there, one
+  `name:/absolute/host/path` per line (e.g. a sibling repo). Each is mounted
+  read-only at `/roots/<name>` and appended to `PRECIS_PYTHON_ROOTS`; editing
+  the file changes the container spec, so the next ensure run swaps in a new
+  backend (blue-green). Invalid or missing entries are skipped with a note.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

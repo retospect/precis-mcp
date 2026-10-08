@@ -388,10 +388,34 @@ TOOL_CONCURRENCY="${PRECIS_MCP_TOOL_CONCURRENCY:-12}"
 POOL_MIN="${PRECIS_DB_POOL_MIN_SIZE:-4}"
 POOL_MAX="${PRECIS_DB_POOL_MAX_SIZE:-16}"
 
+# Extra python-kind roots for this host: one `alias:/absolute/host/path` per
+# line in ${STATE_DIR}/python-roots (# comments allowed). Per-host so the
+# public repo names no machine's layout. Each is mounted read-only at
+# /roots/<alias>; a change alters the container spec, so the next run
+# recreates (blue-green) on its own.
+PY_ROOTS="precis:/app,main:/main"
+EXTRA_MOUNTS=()
+if [ -f "${STATE_DIR}/python-roots" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [ -n "$line" ] || continue
+        root_name="${line%%:*}"
+        root_path="${line#*:}"
+        if ! [[ "$root_name" =~ ^[a-z][a-z0-9_-]*$ ]] || [ "$root_name" = precis ] \
+            || [ "$root_name" = main ] || [ "${root_path:0:1}" != / ] || [ ! -d "$root_path" ]; then
+            note "python-roots: skipping '${line}' (want name:/existing/dir, name not precis/main)"
+            continue
+        fi
+        PY_ROOTS="${PY_ROOTS},${root_name}:/roots/${root_name}"
+        EXTRA_MOUNTS+=(-v "${root_path}:/roots/${root_name}:ro")
+    done < "${STATE_DIR}/python-roots"
+fi
+
 ENVS=(
     -e PRECIS_SECRETS_FILE_DIR=/run/precis-secrets
     -e PRECIS_ROOT=/data/notes
-    -e PRECIS_PYTHON_ROOTS=precis:/app,main:/main
+    -e PRECIS_PYTHON_ROOTS="${PY_ROOTS}"
     -e PRECIS_MD_ROOTS=repo:/app,main:/main
     -e PRECIS_EMBEDDER=remote
     -e PRECIS_EMBEDDER_URL=http://host.docker.internal:8181
@@ -512,6 +536,7 @@ RUN_ARGS=(
     -v "${SECRETS_OUT}:/run/precis-secrets:ro"
     -v "${CACHE_DIR}:/home/precis/.cache/precis"
     -v "${UV_CACHE_VOLUME}:/home/precis/.cache/uv"
+    ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}
     "${ENVS[@]}"
     --entrypoint "$ENTRYPOINT"
 )
