@@ -171,7 +171,9 @@ def render_file_outline(alias: str, mod: ModuleIndex) -> str:
         lines.append("")
 
     # Functions (top-level only — kind='function')
-    funcs = [s for s in mod.symbols if s.kind == "function"]
+    funcs = [
+        s for s in mod.symbols if s.kind == "function" and s.parent == mod.qualname
+    ]
     if funcs:
         lines.append("  FUNCTIONS")
         for f in funcs:

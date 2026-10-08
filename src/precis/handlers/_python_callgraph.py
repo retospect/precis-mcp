@@ -47,6 +47,7 @@ class _Node:
     children: list[_Node] = field(default_factory=list)
     multiplicity: int = 1  # collapsed dup-call count at this level
     note: str = ""  # free-text block rendered under the root (module entries)
+    suggest: str = ""  # first top-level callable of a call-less module entry
 
 
 # ---------------------------------------------------------------------------
@@ -100,12 +101,15 @@ def build_callgraph(
     )
     entry_sym = idx.symbol(entry_qn)
     if entry_sym is not None and entry_sym.kind == "module":
-        root.note = _module_note(idx, entry_qn, has_calls=bool(root.children))
+        shown = _top_level_callables(idx, entry_qn)
+        root.note = _module_note(shown, has_calls=bool(root.children))
+        if not root.children and shown:
+            root.suggest = shown[0]
     return root
 
 
-def _module_note(idx: RepoIndex, module_qn: str, *, has_calls: bool) -> str:
-    """Explain a module-rooted graph and list its top-level callables."""
+def _top_level_callables(idx: RepoIndex, module_qn: str) -> list[str]:
+    """Public top-level functions/classes of a module (all if none public)."""
     mod = idx.module(module_qn)
     names = [
         s.qualname
@@ -113,7 +117,11 @@ def _module_note(idx: RepoIndex, module_qn: str, *, has_calls: bool) -> str:
         if s.kind in ("function", "class") and s.parent == module_qn
     ]
     public = [q for q in names if not q.rsplit(".", 1)[-1].startswith("_")]
-    shown = public or names
+    return public or names
+
+
+def _module_note(shown: list[str], *, has_calls: bool) -> str:
+    """Explain a module-rooted graph and list its top-level callables."""
     lead = (
         "Module entry: showing module-level calls only."
         if has_calls
@@ -299,12 +307,20 @@ def render_callgraph(
         lines.append("  [see above]   already expanded earlier in the tree")
         lines.append("  [truncated]   depth limit reached")
 
-    lines.append("")
-    lines.append("Next:")
-    lines.append(
-        f"  get(kind='python', id={alias!r}, view='callgraph', "
-        f"args={{'entry': {entry!r}, 'depth': {max_depth + 2}}})"
-    )
+    # Only suggest what expands something: a call-less module points at its
+    # first callable; a deeper depth only when the tree hit the depth limit.
+    next_entry, next_depth = None, max_depth
+    if root.suggest:
+        next_entry, next_depth = root.suggest, max_depth
+    elif _tree_uses_tags(root, {"truncated"}):
+        next_entry, next_depth = entry, max_depth + 2
+    if next_entry is not None:
+        lines.append("")
+        lines.append("Next:")
+        lines.append(
+            f"  get(kind='python', id={alias!r}, view='callgraph', "
+            f"args={{'entry': {next_entry!r}, 'depth': {next_depth}}})"
+        )
     return "\n".join(lines)
 
 

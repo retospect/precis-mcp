@@ -588,3 +588,25 @@ def test_over_allocated_rows_never_reach_disk(tmp_path: Path) -> None:
     reloaded = MdVectorCache(model="m", dim=4, cache_dir=tmp_path)
     assert len(reloaded) == 5
     assert reloaded.get(f"{3:064x}") is not None
+
+
+def test_retain_drops_unlisted_and_persists(tmp_path: Path) -> None:
+    cache = MdVectorCache(model="m", dim=3, cache_dir=tmp_path)
+    cache.add("a", [1.0, 0.0, 0.0])
+    cache.add("b", [0.0, 1.0, 0.0])
+    cache.add("c", [0.0, 0.0, 1.0])
+    cache.flush()
+    assert cache.retain(["a", "c", "zz"]) == 1
+    assert "b" not in cache and len(cache) == 2
+    c = cache.get("c")
+    assert c is not None
+    np.testing.assert_allclose(c, [0.0, 0.0, 1.0])
+    assert cache.retain(["a", "c"]) == 0
+    cache.flush()
+    reloaded = MdVectorCache(model="m", dim=3, cache_dir=tmp_path)
+    assert len(reloaded) == 2
+    a = reloaded.get("a")
+    assert a is not None
+    np.testing.assert_allclose(a, [1.0, 0.0, 0.0])
+    cache.add("d", [1.0, 1.0, 0.0])  # buffer still grows after a retain
+    assert len(cache) == 3

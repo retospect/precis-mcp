@@ -324,7 +324,11 @@ def test_handler_callgraph_renders_end_to_end(handler: PythonHandler) -> None:
     assert "pkg.m.a" in out.body
     assert "pkg.m.b" in out.body
     assert "pkg.m.helper" in out.body
-    assert "Next:" in out.body
+    # Fully expanded: nothing deeper to suggest.
+    assert "Next:" not in out.body
+    shallow = handler.get(id="r", view="callgraph", entry="pkg.m.main", depth=1)
+    assert "[truncated]" in shallow.body
+    assert "'entry': 'pkg.m.main', 'depth': 3}" in shallow.body
 
 
 # ---------------------------------------------------------------------------

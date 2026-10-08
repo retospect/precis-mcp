@@ -285,9 +285,9 @@ def test_signature_preserves_annotations_and_defaults(tmp_path: Path) -> None:
     assert "-> tuple[int, str] | None" in sig
 
 
-def test_function_locals_are_not_indexed(tmp_path: Path) -> None:
-    """Locally-defined helpers inside a function body are noise; we skip
-    them so the index stays focused on the API surface."""
+def test_nested_functions_are_indexed_as_dotted_symbols(tmp_path: Path) -> None:
+    """A def inside a def is a `function` symbol `outer.inner` parented on
+    its enclosing function."""
     _write(tmp_path, "pkg/__init__.py", "")
     _write(
         tmp_path,
@@ -301,7 +301,10 @@ def test_function_locals_are_not_indexed(tmp_path: Path) -> None:
     )
     idx = index_repo(tmp_path)
     assert idx.symbol("pkg.m.outer") is not None
-    assert idx.symbol("pkg.m.outer.helper") is None
+    helper = idx.symbol("pkg.m.outer.helper")
+    assert helper is not None
+    assert helper.kind == "function"
+    assert helper.parent == "pkg.m.outer"
 
 
 # ---------------------------------------------------------------------------
@@ -631,9 +634,9 @@ def test_unresolved_call_is_marked_ext(tmp_path: Path) -> None:
     assert "ext:thing.method" in callees
 
 
-def test_calls_in_nested_function_pruned(tmp_path: Path) -> None:
-    """Calls inside a locally-defined helper do NOT get attributed to
-    the enclosing function — locals are noise."""
+def test_calls_in_nested_function_not_attributed_to_outer(tmp_path: Path) -> None:
+    """Calls inside a nested function belong to that function's own symbol,
+    not to the enclosing one."""
     _write(tmp_path, "pkg/__init__.py", "")
     _write(
         tmp_path,
@@ -651,12 +654,12 @@ def test_calls_in_nested_function_pruned(tmp_path: Path) -> None:
     mod = idx.module("pkg.m")
     assert mod is not None
     callees = [c.callee for c in _calls_from(mod, "pkg.m.outer")]
-    # `inner()` resolves to ext:inner (it's a local def we don't track).
+    # `inner()` resolves to ext:inner (a local name the indexer doesn't bind).
     assert "ext:inner" in callees
-    # `os.path.join` came from inside the nested function — must not appear.
+    # `os.path.join` came from inside the nested function — not outer's.
     assert "os.path.join" not in callees
-    # And the nested `inner` itself must not have been emitted as a symbol.
-    assert idx.symbol("pkg.m.outer.inner") is None
+    assert idx.symbol("pkg.m.outer.inner") is not None
+    assert [c.callee for c in _calls_from(mod, "pkg.m.outer.inner")] == ["os.path.join"]
 
 
 def test_calls_inside_comprehensions_belong_to_outer(tmp_path: Path) -> None:

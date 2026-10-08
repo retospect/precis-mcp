@@ -5,6 +5,10 @@ views. It adds prose to Response.body without changing the shared response
 contract. File labels key the index snapshot so aliases of a mutable root
 cannot mix versions. Inventory performs no indexing. Git is separately observed once per
 root per response with one total time budget; no deployment identity fallback.
+
+Reads carry one summary line per consulted root (placed before the content so
+runtime pagination keeps it on page one); the full per-file detail block is
+the drill-down ``view='provenance'``.
 """
 
 from __future__ import annotations
@@ -84,7 +88,48 @@ def corpus_fingerprint(idx: RepoIndex) -> str:
     return digest.hexdigest()
 
 
-def _observe_git(root: Path) -> str:
+@dataclass(frozen=True)
+class GitFacts:
+    """One non-atomic Git observation of a root; never attests indexed bytes."""
+
+    state: str = "unobserved"
+    worktree: str = "unknown"
+    head: str = "unknown"
+    branch: str = "unknown"
+    dirty: str = "unknown"
+    root: str = ""
+    started: str = ""
+    finished: str = ""
+
+    def detail(self) -> str:
+        values = {
+            "worktree": self.worktree,
+            "head": self.head,
+            "branch": self.branch,
+            "dirty": self.dirty,
+        }
+        return (
+            f"Git separately observed: state={self.state}; "
+            + "; ".join(f"{key}={value!r}" for key, value in values.items())
+            + f"; dirty_scope={self.root!r} (all Git-visible files, including untracked; "
+            "ignored files and submodule contents excluded); indexed bytes are not attested as HEAD; "
+            f"observation={self.started}..{self.finished} (non-atomic, <=2s budget)"
+        )
+
+    def summary(self) -> str:
+        unavailable = self.state.startswith("unavailable")
+        if unavailable and self.head == "unknown":
+            return "git UNAVAILABLE"
+        head = self.head[:8] if self.head != "unknown" else "head-unknown"
+        verdict = {
+            "no": "clean (observed)",
+            "yes": "DIRTY (observed)",
+        }.get(self.dirty, "dirty=UNKNOWN")
+        flag = " PARTIAL" if self.state != "observed" else ""
+        return f"git {head} {verdict}{flag}"
+
+
+def _observe_git(root: Path) -> GitFacts:
     started = _utc_now()
     deadline = time.monotonic() + 2.0
     values = {
@@ -170,17 +215,69 @@ def _observe_git(root: Path) -> str:
                 state = "partial observation"
     except (OSError, subprocess.TimeoutExpired) as exc:
         state = f"unavailable/partial ({type(exc).__name__})"
+    return GitFacts(
+        state=state,
+        worktree=values["worktree"],
+        head=values["head"],
+        branch=values["branch"],
+        dirty=values["dirty"],
+        root=str(root),
+        started=started,
+        finished=_utc_now(),
+    )
+
+
+def _parse_errors(idx: RepoIndex) -> int:
+    return sum(mod.parse_error is not None for mod in idx._by_file.values())
+
+
+def _render_summary(
+    alias: str,
+    root: Path,
+    idx: RepoIndex | None,
+    reads: _Reads,
+    git: GitFacts,
+    *,
+    expected_root_ok: bool,
+) -> str:
+    """One line: checkout, corpus, git; loud on every non-default state."""
+    parts = [f"checkout: {alias}@{root}"]
+    if expected_root_ok:
+        parts[0] += " (expected_root ok)"
+    touched = list(reads.files.get(id(idx), {}).items()) if idx is not None else []
+    drill_id = f"{alias}/{touched[0][0]}" if len(touched) == 1 else alias
+    if not root.is_dir():
+        parts.append("root UNAVAILABLE")
+    if idx is None:
+        parts.append("corpus not indexed by this call")
+    else:
+        fingerprint = corpus_fingerprint(idx)
+        observation = idx.observation
+        if observation is None:
+            freshness = "freshness UNKNOWN"
+        elif observation.issues:
+            freshness = f"PARTIAL WALK ({len(observation.issues)} issues)"
+        else:
+            freshness = "stat-checked"
+        errors = _parse_errors(idx)
+        errtxt = f"PARSE ERRORS {errors}" if errors else "0 parse errors"
+        corpus = (
+            f"corpus {fingerprint[:8] if fingerprint != 'unknown' else 'UNKNOWN'} "
+            f"({len(idx._by_file)} files, {freshness}, {errtxt})"
+        )
+        if len(touched) == 1:
+            path, mod = touched[0]
+            corpus += f" file {path} {(mod.bytes_sha256 or 'UNKNOWN')[:8]}"
+        parts.append(corpus)
+    parts.append(git.summary())
     return (
-        f"Git separately observed: state={state}; "
-        + "; ".join(f"{key}={value!r}" for key, value in values.items())
-        + f"; dirty_scope={str(root)!r} (all Git-visible files, including untracked; "
-        "ignored files and submodule contents excluded); indexed bytes are not attested as HEAD; "
-        f"observation={started}..{_utc_now()} (non-atomic, <=2s budget)"
+        " · ".join(parts)
+        + f" — details: get(kind='python', id={drill_id!r}, view='provenance')"
     )
 
 
 def _render_root(
-    alias: str, root: Path, idx: RepoIndex | None, reads: _Reads, git: str
+    alias: str, root: Path, idx: RepoIndex | None, reads: _Reads, git: GitFacts
 ) -> str:
     lines = [
         f"Python provenance: alias={alias!r}; root={str(root)!r}; available={root.is_dir()}"
@@ -206,14 +303,14 @@ def _render_root(
                 "reused content-not-revalidated; non-atomic tree observation"
             )
             lines.extend(f"Index limitation: {issue}" for issue in observation.issues)
-        errors = sum(mod.parse_error is not None for mod in idx._by_file.values())
+        errors = _parse_errors(idx)
         lines.append(f"Parse-error files represented with limited symbols: {errors}")
         for path, mod in reads.files.get(id(idx), {}).items():
             lines.append(
                 f"Indexed file: {path!r}; bytes_sha256={mod.bytes_sha256 or 'unknown'}; "
                 f"indexed_at={mod.indexed_at or 'unknown'}"
             )
-    lines.append(git)
+    lines.append(git.detail())
     return "\n".join(lines)
 
 
@@ -230,10 +327,27 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
             if method.__name__ == "get" and kwargs.get("id") in (None, "", "/"):
                 roots = self.roots
             git = {root: _observe_git(root) for root in dict.fromkeys(roots.values())}
-            blocks = [
-                _render_root(alias, root, reads.indexes.get(alias), reads, git[root])
-                for alias, root in roots.items()
-            ]
+            detail = kwargs.get("view") == "provenance"
+            if detail:
+                blocks = [
+                    _render_root(
+                        alias, root, reads.indexes.get(alias), reads, git[root]
+                    )
+                    for alias, root in roots.items()
+                ]
+            else:
+                ok = kwargs.get("expected_root") is not None
+                blocks = [
+                    _render_summary(
+                        alias,
+                        root,
+                        reads.indexes.get(alias),
+                        reads,
+                        git[root],
+                        expected_root_ok=ok,
+                    )
+                    for alias, root in roots.items()
+                ]
             blocks.extend(reads.external)
             if kwargs.get("view") == "runtrace":
                 blocks.append(
@@ -242,15 +356,13 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
             if not blocks:
                 return response
             headline, _separator, content = response.body.partition("\n")
-            # Runtime pagination keeps the head. Preserve the existing headline,
-            # but put identity before potentially large source/search payloads.
-            body = (
-                headline
-                + "\n\n"
-                + "\n\n".join(blocks)
-                + "\n\nPython content:\n"
-                + content
-            )
+            # Runtime pagination keeps the head: identity goes before the
+            # potentially large source/search payload, after the headline.
+            body = headline + "\n\n" + "\n\n".join(blocks)
+            if not detail:
+                body += "\n\nPython content:\n" + content
+            elif content:
+                body += "\n\n" + content
             return replace(response, body=body)
         finally:
             _reads.reset(token)

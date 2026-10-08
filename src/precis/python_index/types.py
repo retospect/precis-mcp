@@ -113,8 +113,10 @@ class ModuleIndex:
 
     `calls` contains every static call edge originating in this module:
     one entry per `ast.Call` site inside an indexed function/method.
-    Calls inside nested functions, lambdas, and comprehensions inside
-    nested scopes are pruned (locals are noise). See `CallEdge`.
+    Calls inside lambdas are credited to the enclosing function (or the
+    module / class for module- or class-scope lambdas); nested functions
+    are their own symbols (`outer.inner`) with their own edges. Classes
+    defined inside functions are not indexed. See `CallEdge`.
     """
 
     qualname: str

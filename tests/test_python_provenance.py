@@ -50,8 +50,10 @@ def test_raw_crlf_digest_and_same_snapshot_source(
     for id in ("r/m.py", "r/m.py~L1-L2", "r::m.hello"):
         body = handler.get(id=id, view="source").body
         assert "return 1" in body and "return 2" not in body
-        assert mod.bytes_sha256 in body
-    assert "bytes_sha256=" in handler.search(q="hello", scope="r").body
+        assert f"file m.py {mod.bytes_sha256[:8]}" in body
+    assert "corpus " in handler.search(q="hello", scope="r").body
+    detail = handler.get(id="r/m.py", view="provenance").body
+    assert f"Indexed file: 'm.py'; bytes_sha256={mod.bytes_sha256}" in detail
 
 
 def test_inventory_no_index_and_deleted_root(
@@ -65,9 +67,10 @@ def test_inventory_no_index_and_deleted_root(
         raise AssertionError("inventory must not index")
 
     monkeypatch.setattr(handler.cache, "get", forbidden)
-    assert "not indexed by this call" in handler.get().body
+    assert "corpus not indexed by this call" in handler.get().body
     root.rmdir()
-    assert "available=False" in handler.get().body
+    assert "root UNAVAILABLE" in handler.get().body
+    assert "available=False" in handler.get(view="provenance").body
     monkeypatch.undo()
     with pytest.raises(NotFound, match="unavailable.*freshness unknown"):
         handler.get(id="r")
@@ -99,7 +102,8 @@ def test_root_guard_before_index_and_no_registration(
     assert list(handler.roots) == ["r"]
     monkeypatch.undo()
     _source(tmp_path)
-    assert "alias='r'" in handler.get(id="r", expected_root=str(tmp_path)).body
+    assert "checkout: r@" in handler.get(id="r", expected_root=str(tmp_path)).body
+    assert "expected_root ok" in handler.get(id="r", expected_root=str(tmp_path)).body
     assert (
         "hello"
         in handler.search(q="hello", scope="r::m", expected_root=str(tmp_path)).body
@@ -119,14 +123,16 @@ def test_views_and_no_hits_include_all_consulted_roots(
     handler = _handler(root, other=other)
     kw = {"entry": "m:hello", "cross_repo": True} if view == "callgraph" else {}
     body = handler.get(id="r", view=view, **kw).body
-    assert "Python provenance: alias='r'" in body
+    assert "checkout: r@" in body
     if view == "callgraph":
-        assert "Python provenance: alias='other'" in body
+        assert "checkout: other@" in body
     body = handler.search(q="not-present-anywhere").body
-    assert "Python provenance: alias='r'" in body
-    assert "Python provenance: alias='other'" in body
-    assert "reused content-not-revalidated" in body
-    assert "non-atomic tree observation" in body
+    assert "checkout: r@" in body
+    assert "checkout: other@" in body
+    detail = handler.get(id="r", view="provenance").body
+    assert "Python provenance: alias='r'" in detail
+    assert "reused content-not-revalidated" in detail
+    assert "non-atomic tree observation" in detail
 
 
 @pytest.mark.parametrize("view", ["callers", "imports", "importers"])
@@ -137,7 +143,60 @@ def test_reverse_views_provenance(tmp_path: Path, view: str) -> None:
         .get(id="r::m.hello" if view == "callers" else "r::m", view=view)
         .body
     )
-    assert "Python provenance: alias='r'" in body
+    assert "checkout: r@" in body
+
+
+def test_summary_is_one_line_with_drilldown(tmp_path: Path) -> None:
+    _source(tmp_path)
+    body = _handler(tmp_path).get(id="r::m.hello").body
+    summary = [ln for ln in body.splitlines() if ln.startswith("checkout:")]
+    assert len(summary) == 1
+    assert "details: get(kind='python', id='r/m.py', view='provenance')" in summary[0]
+    assert "0 parse errors" in summary[0] and "stat-checked" in summary[0]
+    assert "Indexed file:" not in body and "Git separately observed" not in body
+    assert body.index("checkout:") < body.index("Python content:")
+    detail = _handler(tmp_path).get(id="r::m.hello", view="provenance").body
+    for needle in (
+        "Python provenance: alias='r'",
+        "Indexed Python corpus:",
+        "Index freshness:",
+        "Indexed file: 'm.py'",
+        "Git separately observed:",
+    ):
+        assert needle in detail
+    assert "Python content:" not in detail
+    # Alias drill-down lists no per-file lines; unknown targets 404.
+    assert "Indexed file:" not in _handler(tmp_path).get(id="r", view="provenance").body
+    with pytest.raises(NotFound):
+        _handler(tmp_path).get(id="r/nope.py", view="provenance")
+    with pytest.raises(NotFound):
+        _handler(tmp_path).get(id="r::m.nope", view="provenance")
+
+
+def test_summary_flags_non_default_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _source(tmp_path)
+    (tmp_path / "broken.py").write_text("def (", encoding="utf-8")
+    monkeypatch.setattr(
+        provenance,
+        "_observe_git",
+        lambda root: provenance.GitFacts(state="observed", head="a" * 40, dirty="yes"),
+    )
+    line = next(
+        ln
+        for ln in _handler(tmp_path).get(id="r").body.splitlines()
+        if ln.startswith("checkout:")
+    )
+    assert "PARSE ERRORS 1" in line and "DIRTY (observed)" in line
+    assert "aaaaaaaa" in line
+    clean = provenance.GitFacts(head="b" * 40, dirty="no", state="observed")
+    assert clean.summary() == "git bbbbbbbb clean (observed)"
+    assert provenance.GitFacts(state="unavailable (non-Git)").summary() == (
+        "git UNAVAILABLE"
+    )
+    assert "dirty=UNKNOWN" in provenance.GitFacts(head="c" * 40).summary()
+    assert "PARTIAL" in provenance.GitFacts(state="partial observation").summary()
 
 
 def test_entry_metadata_separate_from_python_corpus(tmp_path: Path) -> None:
@@ -195,7 +254,11 @@ def test_reused_signature_explicitly_does_not_revalidate_content(
         .get(id="r/m.py", view="source")
         .body
     )
-    assert "return 1" in body and "content-not-revalidated" in body
+    assert "return 1" in body
+    detail = PythonHandler(hub=Hub(), roots={"r": tmp_path}, cache=cache).get(
+        id="r/m.py", view="provenance"
+    )
+    assert "content-not-revalidated" in detail.body
 
 
 @pytest.mark.parametrize("recover", [True, False])
@@ -240,10 +303,12 @@ def test_unreadable_decode_and_parse_limitations(tmp_path: Path) -> None:
     handler.get(id="r")
     (tmp_path / "m.py").write_bytes(b"\xff")
     (tmp_path / "broken.py").write_text("def (", encoding="utf-8")
-    body = handler.get(id="r").body
+    body = handler.get(id="r", view="provenance").body
     assert "UnicodeDecodeError; omitted" in body
     assert "partial/unstable" in body
     assert "Parse-error files represented with limited symbols: 1" in body
+    summary = handler.get(id="r").body
+    assert "PARSE ERRORS 1" in summary and "PARTIAL WALK" in summary
     assert handler.cache.get(tmp_path).file("m.py") is None
 
 
@@ -302,10 +367,12 @@ def test_two_git_worktrees_commits_dirty_untracked_and_detached(
     _source(two, "def hello(): return 3\n")
     (two / "untracked.py").write_text("value = 4\n", encoding="utf-8")
     handler = PythonHandler(hub=Hub(), roots={"one": one, "two": two})
-    first = handler.get(id="one").body
-    second = handler.get(id="two").body
+    first = handler.get(id="one", view="provenance").body
+    second = handler.get(id="two", view="provenance").body
     assert head_one in first and "dirty='no'" in first, first
     assert head_two in second and "dirty='yes'" in second, second
+    assert f"git {head_one[:8]} clean (observed)" in handler.get(id="one").body
+    assert f"git {head_two[:8]} DIRTY (observed)" in handler.get(id="two").body
     assert "branch='detached'" in second and "files=2" in second
     assert "indexed bytes are not attested as HEAD" in second
     assert provenance.corpus_fingerprint(
@@ -314,9 +381,10 @@ def test_two_git_worktrees_commits_dirty_untracked_and_detached(
     # Global filters also make dirty status explicitly unknown, even when
     # no attribute selects them in this fixture's tracked Python files.
     config.write_text('[filter "ambient"]\n\tclean = cat\n', encoding="utf-8")
-    inherited = handler.get(id="one").body
+    inherited = handler.get(id="one", view="provenance").body
     assert head_one in inherited and "dirty='unknown'" in inherited, inherited
     assert "executable filters" in inherited
+    assert f"git {head_one[:8]} dirty=UNKNOWN" in handler.get(id="one").body
 
 
 def test_git_unavailable_timeout_and_no_per_hit_calls(
@@ -329,14 +397,16 @@ def test_git_unavailable_timeout_and_no_per_hit_calls(
             raise failure
 
         monkeypatch.setattr(provenance.subprocess, "run", fail)
-        body = _handler(tmp_path).search(q="function").body
+        handler = _handler(tmp_path)
+        assert "git UNAVAILABLE" in handler.search(q="function").body
+        body = handler.get(id="r", view="provenance").body
         assert "head='unknown'" in body and "unavailable/partial" in body
     monkeypatch.undo()
     calls = []
 
-    def observe(root: Path) -> str:
+    def observe(root: Path) -> provenance.GitFacts:
         calls.append(root)
-        return "Git fixture unknown"
+        return provenance.GitFacts(state="fixture")
 
     monkeypatch.setattr(provenance, "_observe_git", observe)
     body = _handler(tmp_path).search(q="m", page_size=100).body
@@ -357,7 +427,8 @@ def test_partial_walk_retains_explicitly_unverified_entries(
 
     monkeypatch.setattr(cache_mod, "_walk_python_files", partial)
     handler = PythonHandler(hub=Hub(), roots={"r": tmp_path}, cache=cache)
-    body = handler.get(id="r").body
+    assert "PARTIAL WALK" in handler.get(id="r").body
+    body = handler.get(id="r", view="provenance").body
     assert "partial/unstable" in body
     assert "retained entries unverified" in body
     assert cache.get(tmp_path).file("m.py") is first.file("m.py")
@@ -407,13 +478,13 @@ def test_aliases_share_one_git_observation(
     _source(tmp_path)
     calls: list[Path] = []
 
-    def observe(root: Path) -> str:
+    def observe(root: Path) -> provenance.GitFacts:
         calls.append(root)
-        return "Git unknown fixture"
+        return provenance.GitFacts(state="fixture")
 
     monkeypatch.setattr(provenance, "_observe_git", observe)
     handler = PythonHandler(hub=Hub(), roots={"one": tmp_path, "two": tmp_path})
-    assert "alias='two'" in handler.search(q="hello").body
+    assert "checkout: two@" in handler.search(q="hello").body
     assert calls == [tmp_path]
 
 
@@ -436,7 +507,10 @@ def test_git_partial_observation_scoped_budget_and_env(
         return subprocess.CompletedProcess(args, 128, "", "fixture")
 
     monkeypatch.setattr(provenance.subprocess, "run", git)
-    body = _handler(tmp_path).search(q="hello").body
+    handler = _handler(tmp_path)
+    assert "head-unknown dirty=UNKNOWN PARTIAL" in handler.search(q="hello").body
+    calls.clear()
+    body = handler.get(id="r", view="provenance").body
     assert "partial observation" in body and "head='unknown'" in body
     assert len(calls) == 5
     assert calls[-1][-2:] == ["--", "."]
@@ -447,7 +521,7 @@ def test_git_time_budget_exhaustion_stays_explicit(
 ) -> None:
     times = iter((0.0, 3.0))
     monkeypatch.setattr(provenance.time, "monotonic", lambda: next(times))
-    body = provenance._observe_git(tmp_path)
+    body = provenance._observe_git(tmp_path).detail()
     assert "TimeoutExpired" in body and "head='unknown'" in body
 
 
@@ -473,7 +547,7 @@ def test_index_without_observation_is_unknown_and_collectors_are_call_local(
             return Response(body="fixture", cost="preserved", transient=True)
 
     response = Standalone().get(id="r")
-    assert "unknown (no cache observation)" in response.body
+    assert "freshness UNKNOWN" in response.body
     assert response.cost == "preserved" and response.transient
 
 
@@ -498,7 +572,7 @@ def test_runtrace_provenance_does_not_attest_execution(
         .get(id="r", view="runtrace", entry="m:hello", cross_repo=True)
         .body
     )
-    assert "alias='other'" in body
+    assert "checkout: other@" in body
     assert "does not attest executed bytes" in body
 
 
@@ -517,8 +591,10 @@ def test_navigation_never_executes_git_filters_or_monitors(tmp_path: Path) -> No
     _git(tmp_path, "config", "filter.fixture.process", f"touch '{sentinel}'")
     (tmp_path / ".gitattributes").write_text("*.py filter=fixture\n", encoding="utf-8")
     _source(tmp_path, "def changed(): return 2\n")
-    body = _handler(tmp_path).get(id="r").body
+    handler = _handler(tmp_path)
+    body = handler.get(id="r", view="provenance").body
     assert "dirty='unknown'" in body and "executable filters" in body
+    assert "dirty=UNKNOWN" in handler.get(id="r").body
     assert not sentinel.exists()
 
 
@@ -533,9 +609,8 @@ def test_large_source_first_page_keeps_provenance(
     page, cursor = PaginationCache().split(body, kind="python")
     assert cursor is not None
     assert page.startswith(body.splitlines()[0])
-    assert "Python provenance: alias='r'" in page
-    assert "Indexed file: 'm.py'; bytes_sha256=" in page
-    assert "Git separately observed:" in page
+    assert "checkout: r@" in page and "file m.py " in page
+    assert "details: get(kind='python'" in page
     assert "Python content:" in body
 
 
@@ -559,12 +634,8 @@ def test_aliases_of_mutable_root_keep_independent_file_snapshots(
     monkeypatch.setattr(handler.cache, "get", change_between_aliases)
     body = handler.search(q="m", page_size=100).body
     new_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    one_block = body.split("Python provenance: alias='one'", 1)[1].split(
-        "Python provenance: alias='two'", 1
-    )[0]
-    two_block = body.split("Python provenance: alias='two'", 1)[1].split(
-        "Python content:", 1
-    )[0]
-    assert old_digest in one_block and new_digest not in one_block
-    assert new_digest in two_block and old_digest not in two_block
+    one_block = body.split("checkout: one@", 1)[1].split("checkout: two@", 1)[0]
+    two_block = body.split("checkout: two@", 1)[1].split("Python content:", 1)[0]
+    assert old_digest[:8] in one_block and new_digest[:8] not in one_block
+    assert new_digest[:8] in two_block and old_digest[:8] not in two_block
     assert "one::m.hello" in body and "two::m.changed_name" in body

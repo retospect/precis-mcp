@@ -43,14 +43,24 @@ def repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_render_next_hint_uses_args_dict(repo: Path) -> None:
+def test_render_next_hint_uses_args_dict_when_depth_limited(repo: Path) -> None:
     idx = index_repo(repo)
-    tree = cgraph.build_callgraph(idx, entry="pkg.m.main", max_depth=1)
+    tree = cgraph.build_callgraph(idx, entry="pkg.m.main", max_depth=0)
     body = cgraph.render_callgraph(
-        tree, alias="r", entry="pkg.m.main", max_depth=1, cross_repo=False
+        tree, alias="r", entry="pkg.m.main", max_depth=0, cross_repo=False
     )
-    assert "args={'entry': 'pkg.m.main', 'depth': 3}" in body
+    assert "[truncated]" in body
+    assert "args={'entry': 'pkg.m.main', 'depth': 2}" in body
     assert "entry='pkg.m.main'," not in body
+
+
+def test_no_next_hint_when_tree_fully_expanded(repo: Path) -> None:
+    idx = index_repo(repo)
+    tree = cgraph.build_callgraph(idx, entry="pkg.m.main", max_depth=3)
+    body = cgraph.render_callgraph(
+        tree, alias="r", entry="pkg.m.main", max_depth=3, cross_repo=False
+    )
+    assert "pkg.m.helper" in body and "Next:" not in body
 
 
 def test_handler_error_hints_use_args_dict(repo: Path) -> None:
@@ -74,6 +84,10 @@ def test_module_entry_lists_top_level_callables(repo: Path) -> None:
     )
     assert "no module-level calls" in body
     assert "pkg.m.main" in body
+    # Next points at the first callable, not the same module at a deeper depth.
+    assert tree.suggest == "pkg.m.helper"
+    assert "args={'entry': 'pkg.m.helper', 'depth': 2}" in body
+    assert "'entry': 'pkg.m'," not in body
 
 
 def test_module_entry_via_handler(repo: Path) -> None:

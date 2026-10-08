@@ -122,8 +122,9 @@ def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
         lines.append(f"  … ({len(rows) - _CAP} more)")
     lines.append("")
     lines.append(
-        "Imports inside function bodies are listed with `(in <function>)`; imports inside nested\n"
-        "functions, `exec`, and `importlib.import_module` are not indexed."
+        "Imports inside function bodies (nested functions included) are listed with\n"
+        "`(in <function>)`; imports inside classes defined in functions, `exec`, and\n"
+        "`importlib.import_module` are not indexed."
     )
     lines.append("")
     lines.append("Next:")

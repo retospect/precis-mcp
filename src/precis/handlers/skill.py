@@ -2409,6 +2409,13 @@ def _collect_runtime_info() -> list[tuple[str, str]]:
             rows.append(("md_vector_warmup", warmup))
     except Exception:  # pragma: no cover — a status row must not raise
         pass
+    try:
+        from precis.handlers._python_semantic import warmup_state as _py_warmup
+
+        if (py_warmup := _py_warmup()) is not None:
+            rows.append(("python_vector_warmup", py_warmup))
+    except Exception:  # pragma: no cover — a status row must not raise
+        pass
     return rows
 
 

@@ -1084,6 +1084,22 @@ _MD_WARMUP_REARM_COOLDOWN_S = 60.0
 _MD_WARMUP_REARM_COOLDOWN_CAP_S = 900.0
 
 
+def _warm_python_semantic_background(runtime: PrecisRuntime) -> None:
+    """Start the `python` kind's symbol-embedding pass (own daemon thread).
+
+    Returns immediately: the handler spawns the thread, indexes the repos
+    and embeds on it, so boot and MCP connect never wait. No-op when the
+    kind is not registered or no embedder is wired; search degrades to
+    lexical until the pass finishes.
+    """
+    hub = getattr(runtime, "hub", None)
+    handler_for = getattr(hub, "handler_for", None)
+    handler = handler_for("python") if handler_for is not None else None
+    warm = getattr(handler, "warm_semantic", None)
+    if warm is not None:
+        warm()
+
+
 def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     """Best-effort: fill the `md` kind's vector cache in a background thread.
 
@@ -1525,6 +1541,7 @@ def main(
     start_nas_attest_thread(runtime.store, default_process="precis-serve")
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)
+    _warm_python_semantic_background(runtime)
 
     if transport == "stdio":
         mcp.run(transport="stdio")

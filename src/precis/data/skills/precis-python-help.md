@@ -48,16 +48,31 @@ file path and `~` introduces a selector inside it.
 
 ## Which checkout did this result use?
 
-Every successful Python read/search appends alias, resolved root, indexed
-Python corpus fingerprint and freshness, plus separately observed Git context.
-The corpus hash frames sorted paths and exact indexed raw-byte SHA256 values;
-it excludes non-Python files, symlinks and the indexer's hidden/skip directories.
-It is not a Git tree hash. File/symbol source comes from the indexed snapshot;
-reused modules are stat-checked with content-not-revalidated explicitly shown.
-Walks and Git observations are non-atomic; partial/unreadable/parse-error states
-are labelled. Git HEAD never identifies dirty/untracked bytes as a commit
-snapshot. Entry discovery labels separately read project metadata. Runtrace
-provenance does not attest executed bytes.
+Every successful Python read/search carries ONE summary line per consulted
+root, right after the headline and before `Python content:`:
+
+```
+checkout: main@/path/to/main · corpus 480d4806 (2677 files, stat-checked, 0 parse errors) · git 1a726c44 clean (observed) — details: get(kind='python', id='main', view='provenance')
+```
+
+`corpus` is the first 8 hex of the indexed-bytes fingerprint; the Git part is
+a separate observation and never certifies that the indexed bytes equal HEAD.
+Reads of exactly one file add ` file <path> <8-hex digest>`. Non-default states
+are upper-cased in the line: `DIRTY`, `dirty=UNKNOWN`, `git UNAVAILABLE`,
+`PARTIAL` (Git), `PARTIAL WALK`, `PARSE ERRORS n`, `root UNAVAILABLE`,
+`freshness UNKNOWN`; `(expected_root ok)` appears when you asserted one.
+
+Drill down with `view='provenance'` on an alias, file or symbol id: it renders
+the full block (alias/root, corpus framing and full SHA256, freshness window,
+reparsed/reused counts, index limitations, parse-error count, the exact
+`Indexed file:` raw-byte hash and `indexed_at` for that file/symbol, and the
+full Git state with branch, dirty scope and observation window). The corpus
+hash frames sorted paths and exact indexed raw-byte SHA256 values; it excludes
+non-Python files, symlinks and hidden/skip directories, and is not a Git tree
+hash. File/symbol source comes from the indexed snapshot; reused modules are
+stat-checked, content not revalidated (shown in the drill-down). Walks and Git
+observations are non-atomic. Entry discovery labels separately read project
+metadata. Runtrace provenance does not attest executed bytes.
 
 `get(kind='python')` lists configured aliases and availability without indexing
 every root. Assert a known alias's expected root before indexing:
@@ -97,8 +112,18 @@ search(kind="python", q="cache attribution", scope="precis")
 search(kind="python", q="where do we handle stale data", scope="precis", page=2)
 ```
 
-Hits embed qualname + signature + docstring; results come back as
-canonical addresses you can paste as `id=`. `page=1` is the default.
+Default search is hybrid: lexical score fused with embedding similarity
+of each symbol's qualname + signature + first docstring paragraph, so
+paraphrases ("stale data" -> cache invalidation) find symbols that share
+no words with the query. A query that is a substring of a qualname still
+ranks that symbol first. Hits are canonical addresses you can paste as
+`id=`; `sim=` shows the semantic similarity. `mode='lexical'` /
+`mode='semantic'` use one half only.
+
+The symbol index is built in the background after server start. Until it
+is ready (or with no embedder configured) the answer is lexical-only and
+a one-line `(...)` note under the headline says so; retry in a minute for
+semantic hits. Status: `python_vector_warmup` in `precis-status`.
 
 ## Read a file or a symbol
 ## Open Python source

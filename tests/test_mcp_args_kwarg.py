@@ -169,7 +169,7 @@ def test_args_none_is_noop(server_runtime: PrecisRuntime) -> None:
         == explicit_none.partition("\n\nPython content:\n")[2]
     )
     assert with_none.splitlines()[0] == explicit_none.splitlines()[0]
-    for prefix in ("Python provenance:", "Indexed Python corpus:"):
+    for prefix in ("checkout:",):
         assert next(
             line for line in with_none.splitlines() if line.startswith(prefix)
         ) == next(

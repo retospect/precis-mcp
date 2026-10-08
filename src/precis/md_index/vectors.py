@@ -396,6 +396,26 @@ class MdVectorCache:
             if self._dirty_since_flush >= self.flush_every:
                 self.flush()
 
+    def retain(self, keep: Iterable[str]) -> int:
+        """Drop every entry whose sha256 is not in `keep`; return the count.
+
+        In memory only — the caller decides when to `flush()`. Entries
+        are content-addressed, so a dropped hash that comes back later is
+        just a cache miss.
+        """
+        wanted = set(keep)
+        with self._lock:
+            kept = [i for i, sha in enumerate(self._shas) if sha in wanted]
+            dropped = len(self._shas) - len(kept)
+            if not dropped:
+                return 0
+            self._vectors = self._rows()[kept].copy()
+            self._shas = [self._shas[i] for i in kept]
+            self._index = {sha: i for i, sha in enumerate(self._shas)}
+            self._count = len(self._shas)
+            self._dirty_since_flush += dropped
+            return dropped
+
     def embed_missing(
         self,
         blocks: Iterable[MdBlockEntry],

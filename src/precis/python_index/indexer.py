@@ -176,6 +176,7 @@ def index_module(
         file_relative=rel,
         imports=imports,
         top_level_names=_collect_top_level_names(tree, module_qualname=qualname),
+        scan_lambdas="lambda" in source,
     )
     visitor.visit(tree)
 
@@ -208,9 +209,9 @@ class _SymbolVisitor(ast.NodeVisitor):
     Top-level functions and classes are emitted with `parent =
     module_qualname`; methods inside a class with `parent =
     class_qualname`. We only descend into class bodies (for methods +
-    nested classes); function bodies are not walked, so locally-defined
-    helpers are intentionally invisible — they are noise at index
-    granularity.
+    nested classes); function bodies are scanned for calls and for
+    nested defs (`outer.inner`, kind `function`, own call edges and
+    local imports); classes defined inside functions stay invisible.
     """
 
     def __init__(
@@ -220,7 +221,9 @@ class _SymbolVisitor(ast.NodeVisitor):
         file_relative: str,
         imports: dict[str, str],
         top_level_names: dict[str, str],
+        scan_lambdas: bool = True,
     ) -> None:
+        self.scan_lambdas = scan_lambdas
         self.module_qualname = module_qualname
         self.file_relative = file_relative
         self.imports = imports
@@ -255,6 +258,7 @@ class _SymbolVisitor(ast.NodeVisitor):
         # Descend so methods + nested classes get their parent right.
         self._stack.append(qualname)
         self._class_stack.append(qualname)
+        self._credit_scope_lambdas(node.body, caller=qualname)
         for child in node.body:
             self.visit(child)
         self._class_stack.pop()
@@ -278,7 +282,31 @@ class _SymbolVisitor(ast.NodeVisitor):
         # qualname). The module qualname is always at index 0 of the
         # stack, so depth > 1 means we are inside a class.
         kind: SymbolKind = "method" if len(self._stack) > 1 else "function"
+        self._emit_function(
+            node,
+            qualname=qualname,
+            parent=parent,
+            kind=kind,
+            is_async=is_async,
+            outer_imports=self.imports,
+        )
 
+    def _emit_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        qualname: str,
+        parent: str,
+        kind: SymbolKind,
+        is_async: bool,
+        outer_imports: dict[str, str],
+    ) -> None:
+        """Record `node`, its call edges, local imports, and nested defs.
+
+        `outer_imports` is the import scope visible at the def site: the
+        module imports for a top-level function / method, the enclosing
+        function's merged scope for a nested one.
+        """
         self.symbols.append(
             Symbol(
                 qualname=qualname,
@@ -293,20 +321,21 @@ class _SymbolVisitor(ast.NodeVisitor):
                 is_async=is_async,
             )
         )
-        # Walk the body for ast.Call sites — pruning at nested function
-        # / class / lambda boundaries so calls inside locally-defined
-        # helpers don't get attributed to this enclosing function.
+        # Calls in the body — including lambda bodies — are credited to
+        # this function. Nested defs/classes are pruned here and indexed
+        # as their own symbols below.
         class_qn = self._class_stack[-1] if self._class_stack else None
         local_imports = _collect_local_imports(
             node.body, module_qualname=self.module_qualname
         )
         for bound, value in local_imports.items():
             self.local_imports.append((qualname, bound, value))
-        # Function-local imports shadow module-scope names inside this body.
+        # Function-local imports shadow enclosing-scope names inside this body.
         scope_imports = (
-            {**self.imports, **local_imports} if local_imports else self.imports
+            {**outer_imports, **local_imports} if local_imports else outer_imports
         )
-        for call_node in _walk_calls_in_function_body(node.body):
+        nested_defs: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+        for call_node in _walk_calls_in_function_body(node.body, nested_defs):
             callee = _resolve_call(
                 call_node,
                 imports=scope_imports,
@@ -321,7 +350,48 @@ class _SymbolVisitor(ast.NodeVisitor):
                     line=call_node.lineno,
                 )
             )
-        # Do NOT descend further — locally-defined helpers stay invisible.
+        # Nested defs: `outer.inner`; a repeated name under one parent
+        # (conditional redefinition) gets `#2`, `#3`, … in source order.
+        seen: dict[str, int] = {}
+        for inner in nested_defs:
+            n = seen.get(inner.name, 0) + 1
+            seen[inner.name] = n
+            suffix = "" if n == 1 else f"#{n}"
+            self._emit_function(
+                inner,
+                qualname=f"{qualname}.{inner.name}{suffix}",
+                parent=qualname,
+                kind="function",
+                is_async=isinstance(inner, ast.AsyncFunctionDef),
+                outer_imports=scope_imports,
+            )
+
+    # ── module / class scope lambdas ─────────────────────────────────
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._credit_scope_lambdas(node.body, caller=self.module_qualname)
+        self.generic_visit(node)
+
+    def _credit_scope_lambdas(self, body: list[ast.stmt], *, caller: str) -> None:
+        """Credit calls inside lambdas at module / class-body scope to `caller`."""
+        if not self.scan_lambdas:
+            return
+        class_qn = self._class_stack[-1] if self._class_stack else None
+        for stmt in body:
+            for call_node in _walk_scope_lambda_calls(stmt):
+                self.calls.append(
+                    CallEdge(
+                        caller=caller,
+                        callee=_resolve_call(
+                            call_node,
+                            imports=self.imports,
+                            top_level_names=self.top_level_names,
+                            class_qualname=class_qn,
+                        ),
+                        file=self.file_relative,
+                        line=call_node.lineno,
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -489,10 +559,14 @@ def _collect_top_level_names(
     return names
 
 
-def _walk_calls_in_function_body(body: list[ast.stmt]) -> Iterable[ast.Call]:
+def _walk_calls_in_function_body(
+    body: list[ast.stmt],
+    nested: list[ast.FunctionDef | ast.AsyncFunctionDef] | None = None,
+) -> Iterable[ast.Call]:
     """Walk a function body's statements yielding every `ast.Call` node
-    in **source order**, pruning at nested function / class / lambda
-    boundaries.
+    in **source order**, pruning at nested function / class
+    boundaries (lambdas are walked: their calls belong to the enclosing
+    function; nested defs are indexed as their own symbols).
 
     Comprehensions, `if` / `for` / `while` / `try` / `with` blocks are
     NOT pruned — calls inside them belong to the enclosing function
@@ -503,20 +577,63 @@ def _walk_calls_in_function_body(body: list[ast.stmt]) -> Iterable[ast.Call]:
     follows the order calls appear in the source).
     """
     for stmt in body:
-        yield from _walk_calls(stmt)
+        yield from _walk_calls(stmt, nested)
 
 
-def _walk_calls(node: ast.AST) -> Iterable[ast.Call]:
-    """Recursive helper for ``_walk_calls_in_function_body``."""
-    if isinstance(
-        node,
-        ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda,
-    ):
-        return  # nested scope boundary — locals don't count
+def _walk_calls(
+    node: ast.AST, nested: list[ast.FunctionDef | ast.AsyncFunctionDef] | None = None
+) -> Iterable[ast.Call]:
+    """Recursive helper for ``_walk_calls_in_function_body``.
+
+    Nested defs met on the way are appended to `nested` (source order) so
+    one traversal serves both the call pass and the nested-def pass.
+
+    Lambdas are NOT a boundary (their calls belong to the enclosing
+    function); nested defs / classes are, except for the parts evaluated
+    in the enclosing scope (decorators, default values).
+    """
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if nested is not None:
+            nested.append(node)
+        for header in _def_header_nodes(node):
+            yield from _walk_calls(header)
+        return
+    if isinstance(node, ast.ClassDef):
+        for header in (*node.decorator_list, *node.bases):
+            yield from _walk_calls(header)
+        return
     if isinstance(node, ast.Call):
         yield node
     for child in ast.iter_child_nodes(node):
-        yield from _walk_calls(child)
+        yield from _walk_calls(child, nested)
+
+
+def _def_header_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    """Expressions of a def evaluated in the *enclosing* scope."""
+    a = node.args
+    defaults = [*a.defaults, *(d for d in a.kw_defaults if d is not None)]
+    return [*node.decorator_list, *defaults]
+
+
+def _walk_scope_lambda_calls(node: ast.AST) -> Iterable[ast.Call]:
+    """Calls inside lambdas evaluated in a module / class-body scope.
+
+    Prunes at defs and classes (those are their own scopes), but scans
+    the parts of a def evaluated here (decorators, default values).
+    """
+    if isinstance(node, ast.Lambda):
+        yield from _walk_calls(node)
+        return
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        for header in _def_header_nodes(node):
+            yield from _walk_scope_lambda_calls(header)
+        return
+    if isinstance(node, ast.ClassDef):
+        for header in (*node.decorator_list, *node.bases):
+            yield from _walk_scope_lambda_calls(header)
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _walk_scope_lambda_calls(child)
 
 
 def _resolve_call(

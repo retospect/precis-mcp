@@ -42,6 +42,7 @@ from precis.handlers._python_provenance import (
     note_index,
     with_provenance,
 )
+from precis.handlers._python_semantic import SemanticIndex, rrf
 from precis.handlers._readonly_fs import translate_readonly_fs as _translate_readonly_fs
 from precis.handlers._roots import parse_alias_roots
 from precis.handlers.plaintext import _require_find_and_text
@@ -74,9 +75,10 @@ _SUPPORTED_VIEWS = (
     "callers",
     "importers",
     "imports",
+    "provenance",
 )
 _REVERSE_VIEWS = ("callers", "importers", "imports")
-_SEARCH_MODES = ("pattern",)
+_SEARCH_MODES = ("pattern", "lexical", "semantic")
 _RUNTRACE_GATE_ENV = "PRECIS_PYTHON_ALLOW_EXEC"
 # After the seven-verb cutover, ``put`` on a file kind is creation-only.
 # Region edits live on ``edit`` (mode='find-replace'|'append'|'insert'|
@@ -274,6 +276,20 @@ class PythonHandler(Handler):
             resolved[alias] = p
         self.roots = resolved
         self.cache = cache or RepoCache()
+        # Semantic half of search (embedder may be None -> lexical only).
+        self._semantic = SemanticIndex(getattr(hub, "embedder", None))
+
+    def warm_semantic(self) -> None:
+        """Start the background symbol-embedding pass (server boot hook)."""
+        self._semantic.start_warmup(self._all_symbols)
+
+    def _all_symbols(self) -> list[Symbol]:
+        return [
+            sym
+            for alias, root in self.roots.items()
+            for mod in self._index(alias, root).modules.values()
+            for sym in mod.symbols
+        ]
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -314,6 +330,11 @@ class PythonHandler(Handler):
                 options=list(_SUPPORTED_VIEWS),
                 next=f"get(kind='python', id={id!r}, view='outline')",
             )
+
+        # Provenance drill-down — the wrapper renders the full detail block;
+        # here we only register the file(s) the id addresses.
+        if view == "provenance":
+            return self._render_provenance_target(parsed, idx)
 
         # Callgraph view — alias-only id; entry= required.
         if view == "callgraph":
@@ -396,7 +417,15 @@ class PythonHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Lexical search across symbols.
+        """Hybrid (lexical + semantic) search across symbols.
+
+        Default mode fuses the lexical score with embedding similarity of
+        each symbol's qualname + signature + first docstring paragraph
+        (reciprocal-rank fusion; a query that is a substring of a
+        qualname keeps lexical order first). ``mode='lexical'`` /
+        ``mode='semantic'`` use one half only. With no embedder, or while
+        the background index is still warming, it degrades to lexical and
+        says so in one line.
 
         ``mode='pattern'`` switches ``q`` to AND-ed structural predicates
         over indexed fields: ``async``, ``@decorator-regex``, or a regex
@@ -442,6 +471,8 @@ class PythonHandler(Handler):
         terms = _query_terms(q) if mode != "pattern" else []
         scope_qn_prefix, scope_file = _split_scope(scope)
 
+        use_lex = mode != "semantic"
+        scoped: list[tuple[str, Symbol]] = []
         hits: list[tuple[float, str, Symbol]] = []
         for alias, root in roots.items():
             idx = self._index(alias, root)
@@ -454,12 +485,37 @@ class PythonHandler(Handler):
                         or sym.qualname.startswith(scope_qn_prefix + ".")
                     ):
                         continue
+                    scoped.append((alias, sym))
                     if preds is not None:
                         score = _score_pattern(sym, preds)
-                    else:
+                    elif use_lex:
                         score = _score_symbol(sym, needle, terms)
+                    else:
+                        score = 0.0
                     if score > 0:
                         hits.append((score, alias, sym))
+
+        hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
+        sims: dict[int, float] = {}
+        sem_note: str | None = None
+        if mode != "pattern" and mode != "lexical":
+            self._semantic.start_warmup(self._all_symbols)
+            sem_hits, sem_note = self._semantic.rank(q, [s for _, s in scoped])
+            sims = {i: sim for sim, i in sem_hits}
+        if mode == "semantic" and not sims:
+            # No semantic ranking available: serve lexical instead of nothing.
+            sem_note = sem_note or "no symbol is similar enough to the query"
+            hits = [
+                (sc, a, s)
+                for a, s in scoped
+                if (sc := _score_symbol(s, needle, terms)) > 0
+            ]
+            hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
+        if sims:
+            hits = self._fuse(
+                hits, scoped, sims, needle, semantic_only=mode == "semantic"
+            )
+        sim_of = {id(scoped[i][1]): sim for i, sim in sims.items()}
 
         if not hits:
             # Empty-search recovery (MCP critic round 2): a bare
@@ -497,7 +553,10 @@ class PythonHandler(Handler):
                     "list files in this repo",
                 )
             )
-            body = f"no python symbols match {q!r}\n\n"
+            body = f"no python symbols match {q!r}\n"
+            if sem_note:
+                body += f"({sem_note})\n"
+            body += "\n"
             body += render_next_section(hints)
             # Fully-qualified symbol shape (`::` separator or dotted
             # path) that missed → the relevant repo may not be in
@@ -513,13 +572,12 @@ class PythonHandler(Handler):
                 )
             return Response(body=body)
 
-        hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
         total = len(hits)
         # Any-term matching inflates the total ("5 of 1099"); split it so
         # the caller sees how many hits match the whole query.
         n_all = (
             sum(1 for _, _, s in hits if _matches_all_terms(s, terms))
-            if len(terms) > 1
+            if len(terms) > 1 and not sims
             else None
         )
         hits = hits[:page_size]
@@ -537,19 +595,73 @@ class PythonHandler(Handler):
                 f"{n_all} match all {len(terms)} terms; "
                 f"{total - n_all} match only some."
             )
+        if sem_note:
+            lines.append(f"({sem_note})")
         for score, alias, sym in hits:
             indexed = indexed_file(alias, sym.file)
             if indexed is not None:
                 note_file(indexed[0], indexed[1])
             handle = f"{alias}::{sym.qualname}"
             sig = sym.signature or sym.kind
+            sim = sim_of.get(id(sym))
+            sim_txt = f", sim={sim:.2f}" if sim is not None else ""
             lines.append(
-                f"\n## {handle}  (score={score:.2f}, {sym.file}:{sym.start_line})"
+                f"\n## {handle}  (score={score:.2f}{sim_txt}, "
+                f"{sym.file}:{sym.start_line})"
             )
             lines.append(f"  {sig}")
             if sym.docstring:
                 lines.append(f"  {render._oneline(sym.docstring)}")
         return Response(body="\n".join(lines))
+
+    @staticmethod
+    def _fuse(
+        hits: list[tuple[float, str, Symbol]],
+        scoped: list[tuple[str, Symbol]],
+        sims: dict[int, float],
+        needle: str,
+        *,
+        semantic_only: bool,
+    ) -> list[tuple[float, str, Symbol]]:
+        """Merge lexical ``hits`` (best first) with semantic ``sims``.
+
+        Symbols whose qualname contains the whole query stay first in
+        lexical order (exact-name lookups must not be re-ranked by
+        meaning); the rest are ordered by reciprocal-rank fusion. Test
+        symbols are down-weighted like the lexical score does.
+        """
+        pos = {id(s): i for i, (_, s) in enumerate(scoped)}
+        lex = {pos[id(s)]: (sc, a, s) for sc, a, s in hits}
+        sem_order = sorted(sims, key=lambda i: -sims[i])
+        if semantic_only:
+            return [(0.0, scoped[i][0], scoped[i][1]) for i in sem_order]
+        pinned = [pos[id(s)] for _, _, s in hits if needle in s.qualname.lower()]
+        # A prose question ("where do we handle stale data") is a meaning
+        # query: its common words make lexical hits noise, so semantic
+        # rank leads. Identifier-shaped queries keep equal weights.
+        prose = len(needle.split()) >= 3 and not re.search(r"[_.:/(]", needle)
+        fused = rrf(
+            [[pos[id(s)] for _, _, s in hits], sem_order],
+            [1.0, 2.0 if prose else 1.0],
+        )
+        for i in fused:
+            if _is_test_path(scoped[i][1].file):
+                fused[i] *= 0.5
+        pin = set(pinned)
+        rest = sorted(
+            (i for i in fused if i not in pin),
+            key=lambda i: (
+                -fused[i],
+                scoped[i][0],
+                scoped[i][1].file,
+                scoped[i][1].start_line,
+            ),
+        )
+        out: list[tuple[float, str, Symbol]] = []
+        for i in [*pinned, *rest]:
+            alias, sym = scoped[i]
+            out.append((lex[i][0] if i in lex else 0.0, alias, sym))
+        return out
 
     # ── put: create a new file (creation-only) ─────────────────────
 
@@ -1314,6 +1426,28 @@ class PythonHandler(Handler):
             )
         # Default and view='outline'.
         return Response(body=render.render_file_outline(parsed.alias, mod))
+
+    def _render_provenance_target(self, parsed, idx) -> Response:
+        """Note the addressed file/symbol so the detail block lists its hash."""
+        mod = None
+        if parsed.qualname is not None:
+            sym = idx.symbol(parsed.qualname)
+            if sym is None:
+                raise NotFound(
+                    f"symbol {parsed.qualname!r} not found in repo {parsed.alias!r}",
+                    next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+                )
+            mod = idx.file(sym.file)
+        elif parsed.file is not None:
+            mod = idx.file(parsed.file)
+            if mod is None:
+                raise NotFound(
+                    f"file {parsed.file!r} not found in repo {parsed.alias!r}",
+                    next=f"get(kind='python', id={parsed.alias!r}, view='toc')",
+                )
+        if mod is not None:
+            note_file(idx, mod)
+        return Response(body=f"# Provenance detail for {parsed.alias}")
 
     def _render_symbol(
         self, alias: str, qualname: str, idx, view: str | None
