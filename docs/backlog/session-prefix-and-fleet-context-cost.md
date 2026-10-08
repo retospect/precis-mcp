@@ -33,12 +33,18 @@ about 2M output tokens. The cost is context re-sent on every turn, not output.
   ticks ≈ 55M tokens (~10%). Acceptable for now (Reto 2026-10-07); the
   longer-term option is `fleet-coordination-via-precis`.
 - (a) status 2026-10-07: Reto disabled the Figma, Claude Docs and
-  claude-context MCP servers for this project. 2026-10-08: it did not drop —
-  a session started after the change opened at 119.9k. Those tools were
-  deferred (schemas load only on ToolSearch), so they were never in the
-  prefix. Next: run `/context` in a fresh session for the real breakdown
-  (system prompt, loaded tool schemas such as `precis` put/edit, skills list,
-  SessionStart hook output, CLAUDE.md + MEMORY.md ≈ 7k).
+  claude-context MCP servers for this project. 2026-10-08: fresh Opus
+  sessions now open at 81-85k on turn one, down from 121-137k (about -30%).
+  `/context` on a fresh session after "hi" (85.2k): system tools 25.7k,
+  messages 18.7k (SessionStart hook output, agent list, environment and
+  other reminders), `precis` MCP tools 14.5k (8 tools; put/edit carry most),
+  memory files 12.8k (CLAUDE.md, MEMORY.md, RTK.md), skills 9.4k (60, of
+  which ~13 Figma plugin and ~15 anthropic-skills), system prompt 2.7k.
+  Remaining levers by size: deny unused built-in tools (DesignSync,
+  RemoteTrigger, Cron*, ReportFindings, …) if denial removes them from the
+  prompt; slim the `precis` put/edit schemas (also cuts every cluster agent's
+  prefix); disable the Figma plugin per project; trim MEMORY.md to its 15KB
+  floor and the inflight table in the SessionStart hook.
 - (e) **Miner defects** (`scripts/mine-sessions`): the scoreboard's
   cache-read total counts each content block, not each API message (1.45B
   vs 566M deduplicated by `message.id`); `render_obesity` ranks by call
