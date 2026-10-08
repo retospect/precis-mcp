@@ -116,6 +116,15 @@ def test_unknown_args_key_lists_typed_accepted_keys(mcp_runtime: None) -> None:
     assert out.count("prio: ") == 1, out
 
 
+def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
+    """``title=`` is core for put, but todo takes its title in ``text=``
+    (Fable dogfood 2026-10-08)."""
+    out = _call("put", {"kind": "todo", "title": "x"})
+    assert "[error:BadInput]" in out, out
+    assert "todo takes the title in text=" in out, out
+    assert "text: " not in out, out
+
+
 def test_legacy_top_level_json_string_list_is_parsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

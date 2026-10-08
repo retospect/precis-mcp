@@ -15,7 +15,7 @@ status: active
 # precis-put-help — create a new ref
 
 `put` is the create verb. It mints new refs and attaches tags or
-links on the same call. Rewriting an existing ref's body lives on
+links on the same call. Kind-specific options go inside args={...}; an unknown key returns the kind's accepted args= keys. Rewriting an existing ref's body lives on
 `edit`; flipping tags or links on an existing ref lives on `tag`
 and `link`.
 
@@ -99,11 +99,13 @@ Cloze cards (`{{cN::…}}`) sync to AnkiWeb; Anki owns scheduling — see `preci
 put(
     kind="citation",
     text="Z-scheme NOxRR achieves 78% selectivity at 1.2 V.",
-    source_handle="wang2020state~38..42",
-    source_quote="...selectivity reached 78% at 1.2 V vs RHE...",
-    verifier_confidence=0.92,
     link="pa5",
     rel="cites",
+    args={
+        "source_handle": "wang2020state~38..42",
+        "source_quote": "...selectivity reached 78% at 1.2 V vs RHE...",
+        "verifier_confidence": 0.92,
+    },
 )
 ```
 
@@ -153,14 +155,14 @@ Same `mode='create'` discipline as `markdown`. The `id=` form for
 put(
     kind="websearch",
     mode="import",
-    q="latest perovskite tandem efficiencies",
     text="<paste the answer body>",
+    args={"q": "latest perovskite tandem efficiencies"},
 )
-put(kind="perplexity-reasoning", mode="import", q="compare DAC and BECCS", text="...")
-put(kind="perplexity-research", mode="import", q="mechanism of NOxRR", text="...")
+put(kind="perplexity-reasoning", mode="import", text="...", args={"q": "compare DAC and BECCS"})
+put(kind="perplexity-research", mode="import", text="...", args={"q": "mechanism of NOxRR"})
 ```
 
-`mode='import'` lands the report in the cache keyed on `q=`; the
+`mode='import'` lands the report in the cache keyed on `args={'q': …}`; the
 next `get(kind='websearch', q='...')` hits cache at $0. See
 `precis-perplexity-help`.
 

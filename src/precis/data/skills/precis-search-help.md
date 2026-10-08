@@ -19,6 +19,8 @@ tags: orientation, verbs, troubleshooting
 
 # precis-search-help — search across kinds
 
+Kind-specific options go inside args={...}; an unknown key returns the kind's accepted args= keys.
+
 Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
 e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
 prefix infers the kind. Order is the relevance signal — for a fused
@@ -39,25 +41,27 @@ search(kind="paper,patent", q="photocatalysis")  # several kinds
 search(kind="paper", q="X", page=2, page_size=20)  # paginate
 search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
 search(kind="paper", q="X", scope="pa1")  # search inside one ref, by handle
-search(kind="paper", q="X", exclude=["pa1", "pa2"])  # skip refs by handle
-search(kind="paper", q="X", uncited="dr173020")  # skip what that draft already cites
-search(kind="patent", q="X", reach="remote")  # patent/edgar-only knob
+search(kind="paper", q="X", args={"exclude": ["pa1", "pa2"]})  # skip refs by handle
+search(kind="paper", q="X", args={"uncited": "dr173020"})  # skip what that draft already cites
+search(kind="patent", q="X", args={"reach": "remote"})  # patent/edgar-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
 search(
     kind="paper",
     q="X",
-    queries=["rephrase 1", "rephrase 2"],
-    answers=["a passage an ideal source would contain"],
-    per_paper=2,
     page_size=30,
+    args={
+        "queries": ["rephrase 1", "rephrase 2"],
+        "answers": ["a passage an ideal source would contain"],
+        "per_paper": 2,
+    },
 )  # broad / high-recall (see below)
 ```
 
-A few more args, in brief: `title=`/`author=` run a byline-record
-lookup on paper search (`precis-paper-help`). `folder=` restricts hits
+A few more args, in brief: `args={'title': …}`/`args={'author': …}` run a byline-record
+lookup on paper search (`precis-paper-help`). `args={'folder': …}` restricts hits
 to one folder's live subtree — id, `folder:N`, `fo<N>` handle, or name
 — and forces the cross-kind fan-out (`precis-folder-help`).
-`angle=`/`like=` run a salience-rotation search seeded from a ref
+`args={'angle': N, 'like': …}` run a salience-rotation search seeded from a ref
 handle (`precis-dreaming-help`). `view='dreamable'` / `'stubs'` /
 `'chase-queue'` swap in a different result shape and ignore `q=` — a
 salience pick, or the paper-acquisition backlog (`precis-dreaming-help`,
@@ -107,11 +111,11 @@ it words the idea differently than you did. Hand `search` **several
 angles at once** and let it fuse them; a chunk that surfaces across
 phrasings rises to the top.
 
-Two knobs, both paper-side, both fused with `q` into one ranked list:
+Two `args=` knobs, both paper-side, fused with `q` into one ranked list:
 
-- `queries=[…]` — **rephrasings of the question** (synonyms, broader /
+- `args={'queries': […]}` — **rephrasings of the question** (synonyms, broader /
   narrower framings, sub-questions hiding inside it). Up to 8.
-- `answers=[…]` — **hypothetical answer passages** (HyDE): 1–3 short
+- `args={'answers': […]}` — **hypothetical answer passages** (HyDE): 1–3 short
   paragraphs written the way you'd expect an *ideal source chunk* to
   read. Often the single biggest lever for technical queries — the
   fake answer lives in "chunk space", not "question space". Up to 8.
@@ -120,47 +124,47 @@ Two knobs, both paper-side, both fused with `q` into one ranked list:
 search(
     kind="paper",
     q="does single-atom Cu help nitrate-to-ammonia selectivity?",
-    queries=[
-        "single-atom copper catalyst NO3RR selectivity",
-        "Cu coordination environment ammonia faradaic efficiency",
-        "isolated Cu sites suppress hydrogen evolution nitrate",
-    ],
-    answers=[
-        "Isolating Cu as single atoms on an N-doped carbon support "
-        "raises NH3 faradaic efficiency to ~90% by weakening *NO "
-        "binding and suppressing the competing hydrogen-evolution "
-        "reaction, shifting selectivity toward ammonia.",
-    ],
-    per_paper=2,  # at most 2 chunks per paper → broader spread
     page_size=30,  # widen the net so the fused set surfaces
+    args={
+        "queries": [
+            "single-atom copper catalyst NO3RR selectivity",
+            "Cu coordination environment ammonia faradaic efficiency",
+            "isolated Cu sites suppress hydrogen evolution nitrate",
+        ],
+        "answers": [
+            "Isolating Cu as single atoms on an N-doped carbon support "
+            "raises NH3 faradaic efficiency to ~90% by weakening *NO "
+            "binding and suppressing the competing hydrogen-evolution "
+            "reaction, shifting selectivity toward ammonia.",
+        ],
+        "per_paper": 2,  # at most 2 chunks per paper → broader spread
+    },
 )
 ```
 
 Then **poke around** before trusting a hit: read the full chunk
-(`get(id='pc…')`), or `search(kind='paper', scope='pa…', q='…')` to
-read more of that paper around it. Cite or write a memory once you've
-confirmed the context — never off the keyword row alone.
+(`get(id='pc…')`) or `search(kind='paper', scope='pa…', q='…')`.
+Cite only once you've confirmed the context, never off the keyword row.
 
 Rules of thumb:
 - Research / triage questions, not exact-string lookups (`mode='lexical'`
   for those).
 - 3–5 `queries` + 1–2 `answers` is plenty; more legs ≠ better.
-- `per_paper=2` is a good default for *breadth*; drop it to mine one
+- `args={'per_paper': 2}` is a good default for *breadth*; drop it to mine one
   paper deeply.
-- Honors `mode=`, `tags=`, `scope=`, `exclude=`, and year filters like
+- Honors `mode=`, `tags=`, `scope=`, `args={'exclude': …}`, and year filters like
   any search (a `'lexical'` broad search fuses only the text legs).
 - **Paginate by repeating the broad knobs** — `page=2` must carry the
-  same `queries=`/`answers=`/`per_paper=`, or it silently switches to
-  single-query ordering and duplicates page 1. The `Next:` trailer
-  echoes the full call — paste it verbatim.
+  same `args=`, or it silently switches to single-query ordering and
+  duplicates page 1. The `Next:` trailer echoes the full call.
 - The headline shows a returned count with no "of K" total — there's
   no honest lexical total for a fused set; the trailer offers
   `page=N+1` while candidates remain.
 
-### good=True — deep search (async campaign)
+### args={'good': True} — deep search (async campaign)
 
 When even the fused list is too much to read yourself, hand the
-judging off: `search(kind='paper', q='…', good=True)` doesn't return
+judging off: `search(kind='paper', q='…', args={'good': True})` doesn't return
 hits — it queues a background *campaign* that runs the broad fusion,
 fans the candidate pool out to cheap LLM triage children, and merges
 their keep/relevance verdicts into one ranked list:
@@ -169,8 +173,10 @@ their keep/relevance verdicts into one ranked list:
 search(
     kind="paper",
     q="oxygen evolution overpotential on NiFe",
-    queries=["NiFe oxyhydroxide OER overpotential"],  # optional seeds
-    good=True,
+    args={
+        "queries": ["NiFe oxyhydroxide OER overpotential"],  # optional seeds
+        "good": True,
+    },
 )
 # → deep search queued: job=8123 status=queued
 #   poll: get(kind='job', id=8123)
@@ -216,8 +222,8 @@ finding underneath a hub never appears on its own, only the hub itself.
 `kind='source'` is a fixed two-kind fan-out — `paper` plus live claim
 hubs, nothing else — the same merge and the same posture prefix as the
 unscoped wildcard above, just narrowed to "is there a settled claim
-about this, or only raw passages?" `uncited=`/`cited=` compose with it
-exactly as with any other cross-kind call; `hubbed=` does not — it's a
+about this, or only raw passages?" `uncited`/`cited` (in `args=`) compose with it
+exactly as with any other cross-kind call; `hubbed` does not — it's a
 paper-ref-only restriction, so it still needs `kind='paper'` on its own.
 
 ## See more results
@@ -231,11 +237,10 @@ search(kind="paper", q="photocatalysis", page=3, page_size=20)
 
 `page=1` is the default. Bump `page=` to walk results. `page_size=`
 sets the page size (default 10, max 100) — *not* a quality cutoff
-despite the name. `k=` and `limit=` are accepted aliases for
-`page_size=`; `page_size=` is the canonical spelling.
+despite the name. `page_size=` is the canonical spelling.
 
 Broad-retrieval searches paginate the same way, but the `page=N+1`
-call must repeat the same `queries=`/`answers=`/`per_paper=` arguments
+call must repeat the same `queries`/`answers`/`per_paper` `args=` keys
 (see "Broad retrieval" above) — dropping them switches to the
 single-query ordering mid-walk.
 
@@ -305,31 +310,31 @@ paper does X come up?"
 ## Search but ignore these refs
 
 ```python
-search(kind="paper", q="photocatalysis", exclude=["pa1", "pa2"])  # handles from output
+search(kind="paper", q="photocatalysis", args={"exclude": ["pa1", "pa2"]})  # handles from output
 ```
 
 Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to
 the underlying ref. A stale/unknown **slug** is silently dropped; a
 well-formed but dead **handle** (`pa<id>` naming no live ref) is instead
 named in a `⚠ exclude=: …` line in the response — you copy-pasted a
-specific id, so a silent drop would hide the mistake. `exclude=` is the
+specific id, so a silent drop would hide the mistake. `args={'exclude': …}` is the
 skip-list for known-irrelevant refs, not a paging mechanism — use `page=`
 for that.
 
 ## Best chunks, one per paper, about X, excluding what a draft already cites
 ## Skip papers a draft (or one section of it) already cites
 
-`exclude=` also accepts **containers** in the same list: a whole draft
+`exclude` also accepts **containers** in the same list: a whole draft
 (`dr…`) or a draft-chunk subtree (`dc…`) — resolved server-side to every
 paper cited anywhere within (`[pa…]` direct, `[pc…]` via its owning
 paper, `[fi…]` via a claim hub's grounding/supporter papers). You never
 walk the draft's cites by hand:
 
 ```python
-search(kind="paper", q="wang tile guided self assembly", per_paper=1,
-       exclude=["dr42995"])                    # the whole draft's cite closure
-search(kind="paper", q="wang tile guided self assembly", per_paper=1,
-       exclude=["dc48213"])                     # just that section's closure
+search(kind="paper", q="wang tile guided self assembly",
+       args={"per_paper": 1, "exclude": ["dr42995"]})  # the whole draft's cite closure
+search(kind="paper", q="wang tile guided self assembly",
+       args={"per_paper": 1, "exclude": ["dc48213"]})  # just that section's closure
 ```
 
 A `dr…`/`dc…` entry that doesn't resolve raises `BadInput` naming it
@@ -343,10 +348,10 @@ flags every hit `held:`/`stub:`/`NEW` against the corpus.
 ## The query-driven twin of view='backfill'
 
 ```python
-search(kind="paper", q="wang tile guided self assembly", uncited="dr173020")
+search(kind="paper", q="wang tile guided self assembly", args={"uncited": "dr173020"})
 ```
 
-`uncited=<draft>` (a `dr<id>` handle, slug, or bare ref_id) drops every
+`args={'uncited': <draft>}` (a `dr<id>` handle, slug, or bare ref_id) drops every
 source that draft already cites — the same closure `exclude=['dr…']`
 computes (direct cites, plus a cited claim hub's evidence-**supporters**;
 a paper that **contradicts** a cited claim keeps surfacing). The response
@@ -372,7 +377,7 @@ drops it from the merge and says so (`_(uncited=: skipped edgar — …)_`).
 ## cited= — the mirror of uncited=
 
 ```python
-search(kind="paper", q="wang tile guided self assembly", cited="dr173020")
+search(kind="paper", q="wang tile guided self assembly", args={"cited": "dr173020"})
 ```
 
 `cited=<draft>` is the inclusion mirror of `uncited=`: same closure, same
@@ -392,12 +397,12 @@ falls through to an unfiltered search).
 ## hubbed=true/false — paper-only
 
 ```python
-search(kind="paper", q="nitrate reduction catalyst", hubbed=False)
+search(kind="paper", q="nitrate reduction catalyst", args={"hubbed": False})
 ```
 
-`hubbed=True` restricts to papers that are a supporter
+`hubbed: True` restricts to papers that are a supporter
 (`establishes`/`corroborates` evidence edge) of at least one live claim
-hub; `hubbed=False` excludes them — the well-trodden-path guard
+hub; `hubbed: False` excludes them — the well-trodden-path guard
 (`precis-read-for-question`): once a paper's evidence is already in a
 hub, a fresh reading pass wants the *rest* of the corpus. `kind='paper'`
 only — any other kind raises `BadInput`. Composes with
@@ -440,7 +445,7 @@ Read that line, not the row it promoted — the promoted row is still a
 *chunk* (often the paper's boilerplate first chunk), so its keywords can
 look nothing like your query. `held` vs `want` says whether the PDF is in
 the corpus. For every title match as a record, use `search(kind='paper',
-title='…')`.
+args={'title': '…'})`.
 
 ## Find the right skill for a task
 ## Which skill explains how to do X?
@@ -462,11 +467,11 @@ This is the standard first move on any non-trivial task.
 ## How do I find a patent that isn't ingested yet?
 
 ```python
-search(kind="patent", q="photocatalysis", reach="remote")
-search(kind="patent", tags=["cpc:B01J27/24"], reach="remote")
+search(kind="patent", q="photocatalysis", args={"reach": "remote"})
+search(kind="patent", tags=["cpc:B01J27/24"], args={"reach": "remote"})
 ```
 
-`reach=` is patent/EDGAR-only. `'both'` (default) merges local + remote;
+`args={'reach': …}` is patent/EDGAR-only. `'both'` (default) merges local + remote;
 `'local'` skips OPS/SEC; `'remote'` returns only hits *not* already in
 the local store. CQL details in `precis-patent-search-help`.
 
@@ -481,13 +486,13 @@ the local store. CQL details in `precis-patent-search-help`.
 
 ## Browse gripes, todos and quests by priority
 
-Without a query or special view, `sort='prio'` lists lower priorities first
-(unset priority sorts at 5); `sort='recency'` lists most recently updated first.
+Without a query or special view, `args={'sort': 'prio'}` lists lower priorities first
+(unset priority sorts at 5); `args={'sort': 'recency'}` lists most recently updated first.
 Status/tag filters and pagination compose with either sort.
 
 ```python
-search(kind='gripe', status='open', sort='prio', page_size=20)
-search(kind='todo', tags=['waiting-for:reto'], sort='recency')
+search(kind='gripe', status='open', page_size=20, args={'sort': 'prio'})
+search(kind='todo', tags=['waiting-for:reto'], args={'sort': 'recency'})
 ```
 
 Queryless lifecycle browse (`todo`, `gripe`, `quest`, `alert`) defaults to live

@@ -488,7 +488,7 @@ class BylineSearch:
         if has_more:
             nav.append(
                 (
-                    f"search(kind='paper', {field}={q!r}, page={int(page) + 1})",
+                    f"search(kind='paper', args={{{field!r}: {q!r}}}, page={int(page) + 1})",
                     "see more matching papers",
                 )
             )
@@ -1289,7 +1289,7 @@ class PaperSearchResultRenderer:
                                 open_desc,
                             ),
                             (
-                                f"search(kind='{kind}', title={q!r})",
+                                f"search(kind='{kind}', args={{'title': {q!r}}})",
                                 "list every paper whose title matches",
                             ),
                         ]

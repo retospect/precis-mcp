@@ -1616,16 +1616,21 @@ class DispatchMixin(RuntimeShape):
                 if k not in accepted_top and k not in _ALWAYS_TOLERATED_TOP_LEVEL_KWARGS
             )
             if unknown_top:
-                accepted_list = _typed_kwargs(type(handler), verb, accepted_top)
+                # Core params are top-level on the slim schema; the
+                # options list names only what goes inside args=.
+                core = set(CORE_PARAMS.get(verb, ())) | {"args"}
+                accepted_list = _typed_kwargs(
+                    type(handler), verb, {k for k in accepted_top if k not in core}
+                )
+                hint = (
+                    f" — {kind} takes the title in text="
+                    if "title" in unknown_top and "text" in accepted_top
+                    else ""
+                )
                 raise BadInput(
-                    f"{verb}(kind={kind!r}) does not accept {unknown_top!r} — "
-                    "these kwargs have no effect on this handler and would "
-                    "be silently dropped",
+                    f"{verb}(kind={kind!r}) does not accept {unknown_top!r}"
+                    f"{hint}; its args= keys are listed below",
                     options=accepted_list,
-                    next=(
-                        f"get(kind='skill', id='precis-{kind}-help') — "
-                        f"{kind}.{verb} accepted kwargs: {accepted_list or '(none)'}"
-                    ),
                 )
 
         # F7: catch handler-signature-required kwargs that the caller

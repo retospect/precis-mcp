@@ -25,7 +25,7 @@ Todos are work items in the store. The canonical address is the
 
 ```python
 put(kind="todo", text="Review section 3 of abazari2024design.")
-put(kind="todo", text="Draft the abstract.", prio=3)
+put(kind="todo", text="Draft the abstract.", args={"prio": 3})
 put(
     kind="todo",
     text="Wait on reviewer feedback.",
@@ -34,7 +34,7 @@ put(
 ```
 
 Server assigns the integer id and defaults to `STATUS:open`. Pass
-`prio=` / `tags=` on `put` to set priority or project in one
+`args={'prio': N}` / `tags=` on `put` to set priority or project in one
 round-trip.
 
 ## See what's on my plate
@@ -81,7 +81,7 @@ tag(kind="todo", id=122, add=["STATUS:won't-do"])  # decided not to do it
 tag(kind="todo", id=141, prio=1)  # hottest — preempts the rotation
 tag(kind="todo", id=141, prio=8)  # cold
 tag(kind="todo", id=141, add=["PRIO:urgent"])  # alias for prio=1
-put(kind="todo", text="Fix the gate.", prio=3)  # set at create
+put(kind="todo", text="Fix the gate.", args={"prio": 3})  # set at create
 ```
 
 Priority is the `prio` column (1..10, **lower = hotter**, default 5) —
@@ -119,7 +119,7 @@ link(kind="todo", id=141, rel="parent", mode="remove")  # detach 141 to a top-le
 
 A move that would form a cycle, nest deeper than the tree's depth
 cap, or touch a strategic / tactical node from a worker source is
-rejected. To set the parent when *creating* a todo, pass `parent_id=`
+rejected. To set the parent when *creating* a todo, pass `args={'parent_id': N}`
 on `put` instead. The current parent shows under `## parent` in
 `get(kind='todo', id=141, view='links')`.
 
