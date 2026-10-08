@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -34,6 +35,19 @@ def run(*args: str, cwd: Path | None = None) -> str:
     if result.returncode:
         raise Refusal(f"{shlex.join(args[:3])}: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def codex_defaults() -> dict:
+    """Model/effort every flagless window gets from the user's Codex config."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return {}
+    return {
+        "model": config.get("model"),
+        "effort": config.get("model_reasoning_effort"),
+    }
 
 
 def read_json(path: Path) -> dict:
@@ -259,17 +273,16 @@ class Fleet:
             if running:
                 print(json.dumps({"name": worker["name"], "status": "already-running"}))
                 continue
+            # Any override flag (-m, -c, --approve-for-me, --profile,
+            # --no-daemon) forces Codex 0.161 into embedded mode, where
+            # functions.exec, the only path to MCP tools, cannot start. Model,
+            # effort and approvals come from ~/.codex/config.toml; a window
+            # needing another model/effort is switched with /model in its TUI.
             command = [
                 "codex",
-                "--no-daemon",
                 *(["resume", resume] if resume else []),
                 "-C",
                 worker["worktree"],
-                "-m",
-                worker["model"],
-                "-c",
-                f"model_reasoning_effort={worker['effort']}",
-                "--approve-for-me",
                 "--add-dir",
                 str(self.state),
                 "--",
@@ -278,6 +291,18 @@ class Fleet:
             if self.args.dry_run:
                 print(json.dumps({**worker, "status": "would-start", "argv": command}))
                 continue
+            defaults = codex_defaults()
+            drift = [
+                f"{key} {defaults[key]} != roster {worker[key]}"
+                for key in ("model", "effort")
+                if defaults.get(key) and defaults[key] != worker[key]
+            ]
+            if drift:
+                print(
+                    f"fleet-codex: {worker['name']}: config {', '.join(drift)};"
+                    " switch with /model in its window",
+                    file=sys.stderr,
+                )
             bootstrap = [
                 sys.executable,
                 str(Path(__file__).resolve().with_name("codex-fleet-session")),

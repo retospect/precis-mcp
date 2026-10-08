@@ -39,11 +39,27 @@ on local main. Existing branches/worktrees are reused without resets; branch
 mismatches stop the launch. A worker's next task still needs its own slice
 branch/worktree, assigned by the coordinator.
 
-Codex starts with `--no-daemon`, the roster model/effort, `--approve-for-me`,
-and `--add-dir STATE` for handoffs. `scripts/codex-fleet-session` reads the
-explicit token file immediately before exec; the embedded server inherits the
-fresh environment. The launcher checks readability and nonempty content before
-creating windows. Token values never enter arguments, config, logs or state.
+Codex starts with only `-C WORKTREE`, `--add-dir STATE` for handoffs and the
+prompt. Any override flag (`-m`, `-c`, `--approve-for-me`, `--profile`,
+`--enable`/`--disable`, `--no-daemon`) puts Codex 0.161 in embedded mode,
+where `functions.exec` fails `code-mode host exited during handshake`; code
+mode is Codex's only path to MCP tools, so the worker loses precis. Model,
+effort and approvals (`approvals_reviewer = "auto_review"`, sandbox
+`workspace-write`) come from `~/.codex/config.toml`. The roster's model/effort
+is the target: the launcher prints a note when config differs, and you switch
+that window with `/model` in its TUI.
+
+MCP clients run in the launchd-spawned Codex daemon, which never sees the
+pane environment. Give it the token once per login:
+`launchctl setenv PRECIS_MCP_TOKEN "$PRECIS_MCP_TOKEN"`, then
+`pkill -f app-server-daemon` and wait a few seconds before the next `codex`
+(an immediate start fails "Server is draining"). `precis: failed (0 tools)`
+means the daemon lacks the token; its log is table `logs` in
+`~/.codex/logs_2.sqlite`. `scripts/codex-fleet-session` still loads an explicit
+token file into the pane environment immediately before exec and refuses
+`--no-daemon`. The launcher checks the token file's readability and nonempty
+content before creating windows. Token values never enter arguments, config,
+logs or state.
 Each worker registers from its actual worktree and pane;
 the coordinator may seed its own registration when tool workdir differs from
 the TUI directory. Native queue delivery checks the pane again on every send.

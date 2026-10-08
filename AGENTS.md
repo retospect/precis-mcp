@@ -21,6 +21,12 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   style `llm-facing-prose.md`; code anchors `code-anchors.md`).
 - **Tests and gate shape**: `docs/conventions/testing.md`. Run tests with
   `scripts/test`; never bare `pytest`, `pip` or `mypy`.
+- **Code navigation**: structure first, grep second. The precis python kind
+  (`search(kind='python', mode='pattern', q=...)`;
+  `get(kind='python', id='main::<qualname>')` for signature, callers and
+  callees) and `scripts/coderef callers|deps <file.py::Sym>`. Both read
+  main, not your worktree; grep is truth for code you changed. Skill
+  `precis-python-help`.
 - **Plans**: non-trivial changes get a spec in `docs/backlog/<slug>.md`
   first; it is deleted in the shipping commit.
 

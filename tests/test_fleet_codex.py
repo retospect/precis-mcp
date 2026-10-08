@@ -15,6 +15,16 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fleet-codex"
 THREAD = "01900000-0000-7000-8000-000000000001"
+# Codex 0.161 runs embedded (code mode, hence MCP, broken) under any of these.
+EMBEDDED_MODE_FLAGS = {
+    "--no-daemon",
+    "--approve-for-me",
+    "--profile",
+    "-m",
+    "-c",
+    "--enable",
+    "--disable",
+}
 OTHER_THREAD = "01900000-0000-7000-8000-000000000002"
 
 FAKE_COMMAND = r"""
@@ -171,10 +181,17 @@ def fleet():
                 "Read AGENTS.md. Literal 'quotes', $HOME, `uname`, $(pwd) and\nnewlines.",
                 encoding="utf-8",
             )
+        codex_home = fake / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            'model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n',
+            encoding="utf-8",
+        )
         env = {
             **os.environ,
             "PATH": str(fake) + os.pathsep + os.environ["PATH"],
             "FAKE_STATE": str(fake),
+            "CODEX_HOME": str(codex_home),
         }
         value = Fleet(root, state, fake, env, roster)
         value.git("init", "-b", "main")
@@ -210,9 +227,13 @@ def test_isolated_branches_idempotence_dirty_preservation_and_quoting(fleet: Fle
     assert command[-1] == (fleet.state / "prompts" / "graph-memory.txt").read_text(
         encoding="utf-8"
     )
-    assert "--approve-for-me" in command
-    assert command[0] == "--no-daemon"
+    assert command[0] == "-C"
+    assert set(command) & EMBEDDED_MODE_FLAGS == set()
     assert command[command.index("--add-dir") + 1] == str(fleet.state)
+    assert "knowledge-mesh: config model gpt-6-astra != roster gpt-6.1-sol" in (
+        result.stderr
+    )
+    assert "graph-memory:" not in result.stderr
     dirty = fleet.tree("graph-memory") / "README.md"
     dirty.write_text("worker's unfinished work\n", encoding="utf-8")
     rerun = fleet.run("up")
@@ -362,10 +383,7 @@ def test_credential_bootstrap_uses_only_child_environment(fleet: Fleet):
     for path in [fleet.fake / "calls.jsonl", *fleet.state.rglob("*.json")]:
         assert synthetic_token not in path.read_text(encoding="utf-8")
     command = fleet.calls("codex")[0]
-    assert command[:1] == ["--no-daemon"]
-    assert command[command.index("-m") + 1] == "gpt-6-astra"
-    assert command[command.index("-c") + 1] == "model_reasoning_effort=high"
-    assert "--approve-for-me" in command
+    assert set(command) & EMBEDDED_MODE_FLAGS == set()
     assert str(token_file) not in command
 
 
@@ -399,10 +417,8 @@ def test_missing_window_resumes_saved_thread_and_preserves_notes(fleet: Fleet):
     result = fleet.run("up", "graph-memory")
     assert result.returncode == 0, result.stderr
     command = fleet.calls("codex")[-1]
-    assert command[:3] == ["--no-daemon", "resume", THREAD]
-    assert "--approve-for-me" in command
-    assert command[command.index("-m") + 1] == "gpt-6-astra"
-    assert command[command.index("-c") + 1] == "model_reasoning_effort=high"
+    assert command[:2] == ["resume", THREAD]
+    assert set(command) & EMBEDDED_MODE_FLAGS == set()
     assert json.loads(registration_file.read_text(encoding="utf-8")) == registration
     assert notes.read_text(encoding="utf-8") == "Keep this unfinished hypothesis.\n"
     worker = json.loads(
