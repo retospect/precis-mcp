@@ -104,11 +104,12 @@ def test_broad_next_page_trailer_echoes_broad_params(store: Store) -> None:
     headline = body.splitlines()[0]
     assert " of " not in headline
     # The page=2 continuation must repeat queries=/answers=/per_paper=,
-    # otherwise the caller lands on the single-leg ordering.
+    # otherwise the caller lands on the single-leg ordering. They are not
+    # core search params, so the hint carries them inside args={...}.
     assert "page=2" in body
-    assert "queries=['copper selectivity']" in body
-    assert "answers=[" in body
-    assert "per_paper=2" in body
+    assert "args={'queries': ['copper selectivity']" in body
+    assert "'answers': [" in body
+    assert "'per_paper': 2}" in body
 
 
 def test_plain_search_trailer_has_no_broad_echo(store: Store) -> None:
@@ -120,8 +121,8 @@ def test_plain_search_trailer_has_no_broad_echo(store: Store) -> None:
     # (NB "per_paper=2" not bare "per_paper=" — the broad-retrieval
     # discoverability hint legitimately names the knobs.)
     assert "page=2" in resp.body
-    assert "queries=[" not in resp.body
-    assert "per_paper=2" not in resp.body
+    assert "'queries': [" not in resp.body
+    assert "'per_paper': 2" not in resp.body
 
 
 def _follow_args(body: str, *, restart: bool) -> dict[str, Any]:
@@ -138,6 +139,9 @@ def _follow_args(body: str, *, restart: bool) -> dict[str, Any]:
             kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in node.keywords}
             assert kwargs.pop("kind") == "paper"
             assert None not in kwargs
+            # The hint nests non-core knobs in args={...} (slim MCP form);
+            # the handler takes them flat, as the dispatcher passes them.
+            kwargs.update(kwargs.pop("args", {}))
             return {str(key): value for key, value in kwargs.items()}
     raise AssertionError(f"No expected same-search hint in {body}")
 

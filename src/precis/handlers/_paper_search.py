@@ -384,16 +384,17 @@ def _broad_args_suffix(
     ``per_paper=`` would run the *single-leg* path — a different
     ordering, so page 2 would carry duplicates of page 1 and gaps.
     The lists are ≤8 short strings each (leg cap), so rendering them
-    verbatim stays compact.
+    verbatim stays compact. They are not core ``search`` params, so the
+    hint carries them inside ``args={...}`` (the slim MCP schema's form).
     """
-    parts: list[str] = []
+    extra: dict[str, Any] = {}
     if queries:
-        parts.append(f"queries={queries!r}")
+        extra["queries"] = queries
     if answers:
-        parts.append(f"answers={answers!r}")
+        extra["answers"] = answers
     if per_paper is not None:
-        parts.append(f"per_paper={per_paper}")
-    return (", " + ", ".join(parts)) if parts else ""
+        extra["per_paper"] = per_paper
+    return f", args={extra!r}" if extra else ""
 
 
 @dataclass

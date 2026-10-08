@@ -108,9 +108,12 @@ def test_unknown_args_key_lists_typed_accepted_keys(mcp_runtime: None) -> None:
     out = _call("put", {"kind": "gripe", "text": "x", "args": {"zzz_bogus": 1}})
     assert "[error:BadInput]" in out, out
     assert "zzz_bogus" in out
-    # typed accepted list: ``name: annotation = default``
-    assert "text: " in out and " = None" in out, out
-    assert "get(kind='skill', id='precis-gripe-help')" in out
+    # typed accepted list of args= keys only: ``name: annotation = default``;
+    # core params (text=) are top-level, so they are not listed.
+    assert "prio: " in out and " = None" in out, out
+    assert "text: " not in out, out
+    # the accepted list is printed once (options:), not again under next:
+    assert out.count("prio: ") == 1, out
 
 
 def test_legacy_top_level_json_string_list_is_parsed(
@@ -150,3 +153,34 @@ def test_coerce_extras_uses_handler_annotation() -> None:
     assert out == {"items": ["x"], "name": '["x"]'}
     assert coerce_json_container("not json", "list[str]") == "not json"
     assert coerce_json_container('{"a": 1}', "list[str]") == '{"a": 1}'
+
+
+def test_coerce_parses_stringified_scalars_by_annotation() -> None:
+    """A client has no schema type for an undeclared top-level key, so
+    ``prio=9`` arrives as ``'9'`` (dogfood 2026-10-08)."""
+    from precis.runtime.dispatch import coerce_json_container
+
+    assert coerce_json_container("9", "int | None") == 9
+    assert coerce_json_container("2", "float") == 2
+    assert coerce_json_container("true", "bool | None") is True
+    assert coerce_json_container("9", "str | None") == "9"
+    assert coerce_json_container("9", "int | str") == "9"
+    assert coerce_json_container("x", "int") == "x"
+
+
+def test_stringified_top_level_scalar_reaches_the_verb_as_int(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import precis.tools.core as tools_core
+
+    seen: dict[str, Any] = {}
+
+    def fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", fake_dispatch)
+    out = _call("search", {"kind": "paper", "q": "x", "per_paper": "2"})
+    assert seen["per_paper"] == 2
+    assert "per_paper must be" not in out, out
+    assert "note: pass per_paper inside args=" in out

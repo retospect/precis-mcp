@@ -310,8 +310,58 @@ def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
     return frozenset(accepted)
 
 
+#: Top-level parameters each slim verb advertises (30-day prod ledger).
+CORE_PARAMS: dict[str, tuple[str, ...]] = {
+    "put": (
+        "kind",
+        "id",
+        "text",
+        "title",
+        "body",
+        "mode",
+        "tags",
+        "untags",
+        "link",
+        "unlink",
+        "rel",
+        "meta",
+        "args",
+    ),
+    "edit": (
+        "kind",
+        "id",
+        "mode",
+        "text",
+        "body",
+        "find",
+        "where",
+        "before",
+        "after",
+        "match",
+        "nth",
+        "dry_run",
+        "reason",
+        "args",
+    ),
+    "search": (
+        "kind",
+        "q",
+        "page",
+        "page_size",
+        "mode",
+        "view",
+        "tags",
+        "scope",
+        "status",
+        "args",
+    ),
+}
+
+
 _LIST_ANN_RE = re.compile(r"\b(list|List|Sequence)\b")
 _DICT_ANN_RE = re.compile(r"\b(dict|Dict|Mapping)\b")
+_SCALAR_ANN_RE = re.compile(r"\b(int|float|bool)\b")
+_STR_ANN_RE = re.compile(r"\bstr\b")
 
 
 def coerce_json_container(value: Any, annotation: Any) -> Any:
@@ -321,14 +371,17 @@ def coerce_json_container(value: Any, annotation: Any) -> Any:
     run for keys the schema doesn't declare (the slim verbs' ``args=`` keys
     and legacy top-level extras). Returns ``value`` unchanged unless it is a
     ``str`` that ``json.loads`` to a list (annotation mentions list) or dict
-    (annotation mentions dict).
+    (annotation mentions dict), or to an int/float/bool when the annotation
+    names that scalar and not ``str``: a client has no schema type for an
+    undeclared top-level key, so ``prio=9`` arrives as ``'9'``.
     """
     if not isinstance(value, str) or annotation is inspect.Parameter.empty:
         return value
     ann = annotation if isinstance(annotation, str) else repr(annotation)
     wants_list = bool(_LIST_ANN_RE.search(ann)) or "list[" in ann
     wants_dict = bool(_DICT_ANN_RE.search(ann)) or "dict[" in ann
-    if not (wants_list or wants_dict):
+    wants_scalar = bool(_SCALAR_ANN_RE.search(ann)) and not _STR_ANN_RE.search(ann)
+    if not (wants_list or wants_dict or wants_scalar):
         return value
     try:
         parsed = json.loads(value)
@@ -338,6 +391,10 @@ def coerce_json_container(value: Any, annotation: Any) -> Any:
         isinstance(parsed, dict) and wants_dict
     ):
         return parsed
+    if wants_scalar and isinstance(parsed, (int, float)):
+        scalar = type(parsed).__name__
+        if re.search(rf"\b{scalar}\b", ann) or (scalar == "int" and "float" in ann):
+            return parsed
     return value
 
 
@@ -1520,16 +1577,16 @@ class DispatchMixin(RuntimeShape):
             else:
                 unknown = self._unknown_extras(method, extras)
                 if unknown:
+                    # Core params are top-level on the slim schema; list
+                    # only what belongs inside args=.
+                    core = set(CORE_PARAMS.get(verb, ())) | {"args"}
                     accepted_kwargs = _typed_kwargs(
-                        type(handler), verb, {k for k in accepted if k != "args"}
+                        type(handler), verb, {k for k in accepted if k not in core}
                     )
                     raise BadInput(
-                        f"args= keys {unknown!r} not accepted by {kind}.{verb}",
+                        f"keys {unknown!r} not accepted by {kind}.{verb}; "
+                        f"its args= keys are listed below",
                         options=accepted_kwargs,
-                        next=(
-                            f"get(kind='skill', id='precis-{kind}-help') — "
-                            f"{kind}.{verb} accepts: {accepted_kwargs or '(none)'}"
-                        ),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))
 

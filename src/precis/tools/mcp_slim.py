@@ -31,53 +31,7 @@ from typing import Any, cast
 from mcp.types import CallToolResult, TextContent
 from pydantic import ConfigDict
 
-from precis.runtime.dispatch import coerce_json_container
-
-#: Top-level parameters each slim verb advertises (30-day prod ledger).
-CORE_PARAMS: dict[str, tuple[str, ...]] = {
-    "put": (
-        "kind",
-        "id",
-        "text",
-        "title",
-        "body",
-        "mode",
-        "tags",
-        "untags",
-        "link",
-        "unlink",
-        "rel",
-        "meta",
-        "args",
-    ),
-    "edit": (
-        "kind",
-        "id",
-        "mode",
-        "text",
-        "find",
-        "where",
-        "before",
-        "after",
-        "match",
-        "nth",
-        "dry_run",
-        "reason",
-        "args",
-    ),
-    "search": (
-        "kind",
-        "q",
-        "page",
-        "page_size",
-        "mode",
-        "view",
-        "tags",
-        "scope",
-        "status",
-        "args",
-    ),
-}
+from precis.runtime.dispatch import CORE_PARAMS, coerce_json_container
 
 #: FastMCP-injected, not part of the wire schema; kept in the signature so
 #: FastMCP still detects it.
@@ -114,13 +68,19 @@ def _slim_doc(verb: str, full: Callable[..., Any]) -> str:
 
 
 def _append_note(result: Any, note: str) -> Any:
-    """Append ``note`` as a trailing line to a str or error-envelope result."""
+    """Append ``note`` to a str result; lead an error envelope with it.
+
+    On an error the misplaced key is the likeliest cause, so the fix goes
+    first rather than under the handler's own complaint.
+    """
     if isinstance(result, str):
         return f"{result}\n{note}"
     if isinstance(result, CallToolResult):
         for part in result.content:
             if isinstance(part, TextContent):
-                part.text = f"{part.text}\n{note}"
+                part.text = (
+                    f"{note}\n{part.text}" if result.isError else f"{part.text}\n{note}"
+                )
                 break
         return result
     return result
