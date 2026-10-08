@@ -344,10 +344,14 @@ td173019.
    dc2445908); figures sourced by Reto; export read on the
    placeholder-figure export (jo461157, queued 2026-10-02 — see Horizon 2).
    td461162, the Phase 5 adversarial review, ran 2026-10-07: 38 per-chunk
-   review todos under td173019 (td472189–td472226), 32 done, 5 stalled on
-   the tree-cost cap (td472210, td472211, td472214, td472221, td472225;
-   Reto lifts the cap or they are re-swept). Left: triage the filed
-   change requests into draft edits versus noise.
+   review todos under td173019 (td472189–td472226), all done (the five
+   that first failed on a quota halt finished on a later tick; closed
+   2026-10-08). Their change requests are 169 parentless open todos,
+   td472261–td472811 (about 17 duplicate pairs). Triage 2026-10-08:
+   98 factual or citation defects, 21 structural, 50 style; the ruling
+   list went to Reto in-session. Once ruled: apply the yes items as draft
+   edits, close all 169, and watch td472567/td472337 (dc2445877 seam
+   pentagon count), which would reverse the August fix td204510.
 3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
