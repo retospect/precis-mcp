@@ -3,8 +3,8 @@
 ## Resume
 
 - **Pillar:** 3d-design
-- **Next:** Review [local escape repair](../pcb-escape-local-repair.md), td472840, at Do-next0. All three approved routing-levers probes completed; rotation evidence landed49e07cd2f (docsCI37664680171GREEN): distance warm start landed3419720b6 (fullCI37656421661GREEN), explicit radial retained; replay51/55 vs42/55 inner,31vs22 B.Cu (mx456/mx457). Rotation0°/180° collide with fixed vias; retain exact270° bottom pose (mx458–mx463). Four connected In2 plaza-row exits passed pre/post copper DRC but regressed51→50/55, recovering two and displacing three (mx464); removal controls51/49/49 also show no gain (mx465–mx467); no lane default. Preserve legal baseline failures ARR1_R1C5/R6C5/R7C2/R7C6. Proposed local repair is draft for review, not a further build authorization. Nano two-doc fold landed6657e92be separately; EasyEDA parked and gr467885 migrations excluded. No real-board/runtime/deployment claim. Historical handoffs below remain historical.
-- **Blocked by:** Scientific/production0.22/service/NAS/node-role constraints stand. No provider/model/compute/manufacture/service work; coordinator owns deployment. Historical handoffs below remain historical and do not renew programme holds.
+- **Next:** Reto defines "fixed" for the dogfood board, then: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod, which carries the landed distance warm start (replay 51/55 inner vs 42/55 radial; 31 vs 22 on B.Cu alone, mx456/mx457) against prod's current 45/55 (job 472111); (2) if 51 is not enough, authorize the build in [local escape repair](../pcb-escape-local-repair.md), td472840, for the four remaining nets ARR1_R1C5/R6C5/R7C2/R7C6. All three approved routing-levers probes are done: driver rotations 0°/180° collide with the fixed vias, so the exact 270° bottom pose stays (mx458–mx463); four connected In2 plaza-row exits passed copper DRC but regressed 51 → 50/55 (mx464); removal controls 51/49/49 show no gain (mx465–mx467); no lane default ships. The repair item is a draft for review, not a build authorization. EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked; gr467885's migrations are excluded. Historical handoffs below remain historical.
+- **Blocked by:** Reto's definition of "fixed" and the repair-build authorization; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
 - **Worktree:** work/pcb/plaza-row-exits in codex-pcb/.scratch/plaza-row-exits, fresh origin/main; completed-levers evidence docs only. Owner pcb/window6; original bootstrap/branches/scratch preserved. Native startup/src source is distinct; no real-board or provider work.
@@ -115,8 +115,9 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    + 1.0 = 1.375 mm) leaves less than the ~1.75 mm a below-box refdes needs.
    Fixed 2026-10-03: `silk.refdes_label_slot_mm` (text height + 2 ×
    clearance + inset) sets the furniture margin's floor.
-1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02
-   (all undeployed): the route job DRCs its own router copper and strips a
+1. **backlog/pcb-always-valid-board-invariant.md** — built 2026-10-02,
+   deployed in R16 (the "undeployed" and "do not re-route until it deploys"
+   notes below are history as of round 6): the route job DRCs its own router copper and strips a
    violating net (`drc:<rule>`); `op='move'` on a generator member moves
    the whole group with its fixed copper and rips the router nets it
    strands; `ewod_pad_array` v4 emits its copper at the array anchor. The

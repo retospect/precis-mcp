@@ -103,9 +103,9 @@ State 2026-10-02 14:00Z (hold lifted 13:00Z). Review items answered:
 5–13 (13: `report` + `definition` artifact types approved, web sources
 cited by URL + content sha; claims-and-evidence builds them, then this
 thread signs the Canatu hubs fi191169/fi191260, grounded on Canatu's own
-DOI'd SID papers pa689/pa1771). Open: 14 (source audit: remove 20 weak
-edges + pin every hub cite; claims-and-evidence also offered a fallback
-fix in `taproot/cite.py::hub_cite_keys`). Edit-verb year=/journal= fix landed
+DOI'd SID papers pa689/pa1771). Item 14 (source audit) is applied, see
+item 2 below; items 28 and 29 are applied (item 0). The only open review
+item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
 4cf8b684e (round 1). In this order:
 
 0. **Round-2 deploy (63301c5c, 13:49Z 10-03), dogfood:**
@@ -343,8 +343,11 @@ td173019.
 2. **Reto's read-through** — td461161 findings check (first case:
    dc2445908); figures sourced by Reto; export read on the
    placeholder-figure export (jo461157, queued 2026-10-02 — see Horizon 2).
-   Then td461162: the Phase 5 adversarial review from the precis-web
-   review block.
+   td461162, the Phase 5 adversarial review, ran 2026-10-07: 38 per-chunk
+   review todos under td173019 (td472189–td472226), 32 done, 5 stalled on
+   the tree-cost cap (td472210, td472211, td472214, td472221, td472225;
+   Reto lifts the cap or they are re-swept). Left: triage the filed
+   change requests into draft edits versus noise.
 3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
@@ -368,9 +371,12 @@ td173019.
    still needs every figure imaged and cleared. docx/pdf via the local prod
    export path against the RSC template. 43020 stays frozen.
 3. **preprint slot blockers** — the repo-side blockers for the monthly
-   preprint (the ten image-less figures) are
-   this thread's; the posting step itself (arXiv/Zenodo submission) is
-   Reto's: td459586, qu459585's October todo.
+   preprint (four placeholder figures as of 2026-10-04: dc3015722,
+   dc3015723, dc3015729, dc3015730; two of them are superseded and
+   wait on Reto's delete, Do-next 1) are this thread's; the posting step
+   itself (arXiv/Zenodo submission) is Reto's: td459586, qu459585's
+   October todo. td459586's own text still names td450081 (venue) as a
+   hold; that todo is done (Nanoscale, 2026-10-01).
 4. **backlog/nanobud-campaign.md**
 5. **backlog/nanobud-nomenclature-paper.md** — blocked-by
    se-nanobud-graph (Do-next 5).

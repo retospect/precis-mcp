@@ -90,8 +90,8 @@ _Grouped 2026-09-26; was `pathway-frame-capture`, status draft._
 > `reaction-pathway-explorer.md` (which is precis_web-only and ships without
 > this). Extends the `structure` kind's frame model (ADR 0043 §6.9 / §16.C) and
 > the catpath pipeline (`docs/backlog/autocatpath-integration.md`). The
-> pathway glue now lives in-tree at `src/precis_pathway/` (bundling shipped —
-> ADR 0069); `gpu-priority.md` (re-chunks the job this hooks — see
+> pathway glue now lives in-tree at `src/precis_pathway/` (bundling shipped;
+> the former ADR 0069 is the `__init__.py` docstring); `gpu-priority.md` (re-chunks the job this hooks — see
 > open questions). Motivating candidate: 175949 (Pd(111) NO→NH₃).
 
 ### Motivation / why
@@ -207,7 +207,7 @@ pathway `meta`. This is the concrete "how" for the risk
   stored and serveable."
 - **New DFT/physics** — capture retains what the existing solver already computes.
 - **Containerizing compute, or moving the science engine** — orthogonal
-  (code-home decided: in-tree `src/precis_pathway/`, ADR 0069).
+  (code-home decided: in-tree `src/precis_pathway/`, see its docstring).
 - **Backfilling historical pathways** — capture applies to new/re-run pathways;
   re-running 175949 first is an ops call.
 
@@ -251,7 +251,7 @@ pathway `meta`. This is the concrete "how" for the risk
   regenerable, so set a retention/GC policy (mirror `llm_blob` / `worker_logs`
   GC) + a "regenerate on miss" path rather than unbounded growth. Cap or TTL —
   open.
-- **Cutover interaction (settled)**: bundling shipped (ADR 0069); the glue
+- **Cutover interaction (settled)**: bundling shipped (former ADR 0069); the glue
   edits target `src/precis_pathway/`. Science edits (`neb.py`/`relax.py`)
   stay in the catpath repo.
 - **Per-seed capture — DECIDED** (resolves the `/ready` blocker that treated

@@ -13,18 +13,18 @@ completed distance → rotation → lane-template ruling.
 
 ## Shipped and measured
 
-Distance warm start landed3419720b6 (fullCI37656421661GREEN):
-Hungarian actual-via/channel Manhattan assignment defaults before route,
-with explicit radial control. Replay inner51/55 versus42/55; B.Cu31
-versus22. mx456/mx457 record the source experiment.
+Distance warm start landed on main (full CI green): Hungarian
+actual-via/channel Manhattan assignment defaults before route, with
+explicit radial control. Replay inner 51/55 versus 42/55; B.Cu 31
+versus 22. mx456/mx457 record the source experiment.
 
-Rotation mx458–mx463:270° B31/55 and inner51/55 have zero placement
-and routed copper errors.0° has30errors and180°22; both are refused
-against the immutable fixed vias. Keep exact driver origin
-(-0.003060111454470882,0.7518640351003611),270°, bottom=true.
+Rotation mx458–mx463: 270° gives B.Cu 31/55 and inner 51/55 with zero
+placement and routed-copper errors. 0° has 30 errors and 180° has 22;
+both are refused against the immutable fixed vias. Keep the exact driver
+origin (-0.00306, 0.75186 mm), 270°, bottom=true.
 
 The four-net connected In2 lane pilot **mx464** is legal but regresses to
-50/55 from51/55. It recovers R1C5/R7C2 and loses R2C5/R5C7/R7C0;
+50/55 from 51/55. It recovers R1C5/R7C2 and loses R2C5/R5C7/R7C0;
 R6C5/R7C6 still fail. No lane-template default or pose change ships.
 All names below carry ARR1_ prefixes.
 
@@ -35,9 +35,9 @@ All names below carry ARR1_ prefixes.
 |R7C2|-4.887455231378078,7.875|-3.375,7.875|
 |R7C6|7.137455231378078,7.875|4.5,7.875|
 
-Each is one horizontal0.15mm track on In2.Cu connected to the exact
-existing through-via. Four tracks total7.441865694134233mm; router
-tracks446.0864557248264mm, combined453.5283214189606mm,24new vias.
+Each is one horizontal 0.15 mm track on In2.Cu connected to the exact
+existing through-via. Four tracks total 7.44 mm; router tracks 446.09 mm,
+combined 453.53 mm, 24 new vias.
 Placement and post-route copper DRC report0errors. Original fabric,
 class/rules/grid/default12passes/negotiation0 and all poses preserved.
 A preliminary outer-corridor L-plan failed clearance precheck for R1C5

@@ -7,7 +7,8 @@ pillar: 3d-design
 
 Design-of-record for reaction pathways as first-class structures. Most of
 it SHIPPED — present-state lives in the `src/precis_pathway/` module
-docstrings and ADR 0069; the full original design (the four tensions, the
+docstrings (ADR 0069, the bundled-in-tree decision, was folded into
+`src/precis_pathway/__init__.py` when `docs/decisions/` was retired); the full original design (the four tensions, the
 code-grounded architecture, slice-0/1 build findings) is git history of
 `docs/backlog/autocatpath-integration.md`. Shipped: the bundled in-tree
 plugin (`pathway` kind, `pathway_body` chunk, plugin-namespace migration),

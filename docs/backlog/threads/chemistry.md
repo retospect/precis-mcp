@@ -173,7 +173,8 @@ it at five; engine-over-UI still holds.
    2026-10-05); its slice A needs no credentials either.
 6. **backlog/autocatpath-integration.md** — the remaining slices of the
    native integration (most shipped; present state is in the
-   `src/precis_pathway/` docstrings and ADR 0069); read with 4.
+   `src/precis_pathway/` docstrings; ADR 0069 was folded into the
+   `__init__.py` docstring when `docs/decisions/` was retired); read with 4.
 7. **backlog/catalyst-physical-realism.md** + **backlog/slab-modelling-knobs.md**
    — defect ensembles, poisoning, slab knobs; make the engine's answer
    physically honest. After the engine reliability block. Slab knobs:

@@ -99,7 +99,16 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    option 1 in local-compute-3 but has not done it yet. Re-asked in
    `local-compute-16`. The public key is in that item, and the private key
    stays out of the DB store. Reto plans the setup on 2026-10-04; blocked
-   until then. The uses:
+   until then. **Batch path, 2026-10-05/07:** the Codex-owned branch
+   `work/meluxina/bootstrap` (paused handoff td471801, never landed) holds
+   `precis.remote` (SSH + Slurm stage/submit/recover/collect with a durable
+   intent journal) and authenticated with a vault-held key, so (b) and (c)
+   are not blocked on the tunnel key; they are blocked on the unbuilt
+   Apptainer image (SIF-1..5 in td471801) and on storage: the project space
+   read 97% full by bytes and inodes (about 26k inodes free), so a loose
+   Python environment cannot be installed there. Minimal footprint is one
+   image per workload, per-job writes on node-local scratch only, stage
+   deleted after collect. The uses:
    - (a) LLM operations: the slullama rung, `backlog/slullama-hpc-placement.md`
      leg 2.
    - (b) DFT relax for chemistry. This is batch Slurm (stage, sbatch, poll,

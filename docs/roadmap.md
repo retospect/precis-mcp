@@ -224,11 +224,20 @@ current bottleneck (`backlog/embedder-capacity-ownership.md`). Reto
 there"). An external Slurm HPC allocation. Two uses, coordinated by
 `local-compute.md`: LLM operations through `slullama`, as
 a placement-chain rung (`backlog/slullama-hpc-placement.md`: the card is
-shipped dark, the rung waits on cluster access, td345845); and catpath
+shipped dark, the rung waits on the tunnel key being registered with the
+provider; td345845 as written is about melchior reaching castor/pollux,
+not the Meluxina login); and catpath
 runs and ML-potential/DFT batches, with chemistry and hexfold as consumers.
-Batch stage/submit/poll/fetch is a separate runner from LLM tunnel serving;
-the next integration slice needs its own spec once access and a local GPAW
-relax are verified (see the [programme review](backlog/parallel-programme-cycle.md)).
+Batch stage/submit/poll/fetch is a separate runner from LLM tunnel serving.
+The batch path is further along than the LLM path: a Codex-owned branch
+(`work/meluxina/bootstrap`, paused handoff td471801) holds a generic
+SSH/Slurm stage/submit/recover/collect runner that authenticated and read
+quota on 2026-10-05. That read sets the design constraint: the project
+space is about 97% full by bytes and by inodes, so the only footprint that
+fits is one Apptainer image per workload on project space, every per-job
+write on the node-local scratch, results pulled back and the stage
+deleted. The next integration slice needs its own spec once a local GPAW
+relax is verified (see the [programme review](backlog/parallel-programme-cycle.md)).
 How it shows in the local-versus-cloud share
 (its own row, or folded into local) is undecided. No hostname, address or
 account id for it goes in this repo; coordinates live in the gitignored
@@ -362,7 +371,8 @@ Newest first; one line per pass (`/pillar-review` writes it).
   calls. Open on Reto: whether a conference submission may ever count as
   the month's output; which call fits which paper. Meluxina added to
   Pillar 3 as a compute reserve for LLM and catpath work (Reto, same
-  route); open on Reto: the SSH key in td345845.
+  route); open on Reto: registering the tunnel key with the provider
+  (td345845 is the castor/pollux RPC key, a different item).
 - 2026-10-02 — platform pass closed the 2026-10-01 pillar review: three
   dormant threads created (`ship-gate-ci`, `deploy-fleet-ops`,
   `security-hardening`) and the factory, session-mcp, chemistry, ingest,
