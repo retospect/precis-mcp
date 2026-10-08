@@ -90,3 +90,15 @@ def test_pattern_ranks_name_over_docstring_and_tests(handler: PythonHandler) -> 
     assert handles.index("r::pkg.provenance") < handles.index(
         "r::test_provenance.test_provenance"
     )
+
+
+def test_multi_term_headline_splits_all_vs_some_terms(handler: PythonHandler) -> None:
+    # safe_get matches all three terms; corpus_fingerprint matches only "corpus".
+    body = handler.search(q="SSRF pinned corpus").body
+    assert "0 match all 3 terms" in body
+    body = handler.search(q="SSRF redirect pinning").body
+    assert re.search(r"^1 match all 3 terms; \d+ match only some\.$", body, flags=re.M)
+
+
+def test_single_term_headline_has_no_split(handler: PythonHandler) -> None:
+    assert "match all" not in handler.search(q="provenance").body

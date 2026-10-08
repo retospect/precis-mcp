@@ -515,6 +515,13 @@ class PythonHandler(Handler):
 
         hits.sort(key=lambda h: (-h[0], h[1], h[2].file, h[2].start_line))
         total = len(hits)
+        # Any-term matching inflates the total ("5 of 1099"); split it so
+        # the caller sees how many hits match the whole query.
+        n_all = (
+            sum(1 for _, _, s in hits if _matches_all_terms(s, terms))
+            if len(terms) > 1
+            else None
+        )
         hits = hits[:page_size]
 
         lines = [
@@ -525,6 +532,11 @@ class PythonHandler(Handler):
                 query=q,
             )
         ]
+        if n_all is not None:
+            lines.append(
+                f"{n_all} match all {len(terms)} terms; "
+                f"{total - n_all} match only some."
+            )
         for score, alias, sym in hits:
             indexed = indexed_file(alias, sym.file)
             if indexed is not None:
@@ -1646,6 +1658,12 @@ def _query_terms(q: str) -> list[str]:
         if st not in out:
             out.append(st)
     return out
+
+
+def _matches_all_terms(sym: Symbol, terms: list[str]) -> bool:
+    """True when every term appears in the symbol's name/qualname/sig/doc."""
+    hay = " ".join((sym.qualname, sym.signature or "", sym.docstring or "")).lower()
+    return all(t in hay for t in terms)
 
 
 def _score_terms(sym: Symbol, terms: list[str]) -> float:
