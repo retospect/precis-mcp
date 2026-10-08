@@ -8,6 +8,41 @@ model: opus
 
 # memory recall / walk / keep — what an agent does with graph memory
 
+## Current activation contract
+
+The initial production import is accepted under existing td471883 GO. Root
+`me474312`, namespace `repo-dev-harness-20261007`: 150 new memories, zero
+retirement attempts or updates, 323 exact edges and 71 unresolved pairs.
+A separate read-only check verified every mapping/body/header/hook/digest and
+the complete unchanged 146-node legacy snapshot with 356 links. Provenance,
+classifications and deployed loader are resolved; historical reconstruction
+remains a separate unknown, not a cutover gate. Retire supersedes refresh and
+is title-only: preserve unmatched legacy nodes and deferred duplicates.
+
+Native CLI export is deferred: it would stamp retained legacy records. The
+accepted immutable input, complete production readback and locked legacy
+backup satisfy initial recovery; no production rerun or export is required.
+
+The host-local bootstrap is active after one guarded replacement and full
+readback on 2026-10-08. Claude's `memory/MEMORY.md` beneath the escaped
+main-checkout project directory is the verified target; Git's common directory
+supplies the main checkout. The bootstrap names the accepted graph root,
+namespace and an immutable shared policy that was published before activation.
+The repository policy below carries the same recall/keep/outage contract.
+The former pointer's bytes are protected separately. A project-root MEMORY.md,
+its pre-cutover backup, transferred input and approved cohorts remain untouched.
+Do not overwrite other clients, legacy bodies or historical snapshots.
+
+AGENTS carries recall/grounded keep/outage policy and a shared bootstrap
+locator; CLAUDE only links to that policy. Recalled memories are dated
+facts, never current permissions or service/ship directives. The bootstrap
+names the verified root, namespace, immutable fallback and operator-owned
+recovery. On failure, report stale fallback explicitly; no file-mode flip,
+automatic import/export or replay. Existing session hooks are unchanged and
+are not recovery commands to invoke automatically. The one import and separate
+readback allowances are consumed; activation did not authorize any further
+DB operation, service action, export or legacy retirement.
+
 ## Motivation / why
 
 Reto's R17 ruling (`memory-file-mirror.md` §Boundary): files and graph

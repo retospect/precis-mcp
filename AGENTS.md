@@ -1,7 +1,7 @@
 # precis-mcp — Codex shim
 
 Codex-facing entry. Claude Code reads `CLAUDE.md`; both share one doc system.
-This file holds only what is specific to Codex and similar tools.
+This file holds Codex guidance and the shared repo-dev graph-memory policy.
 
 ## Read order
 
@@ -23,6 +23,43 @@ lifecycle, seams) → the owning package's `__init__.py` docstring →
   `scripts/test`; never bare `pytest`, `pip` or `mypy`.
 - **Plans**: non-trivial changes get a spec in `docs/backlog/<slug>.md`
   first; it is deleted in the shipping commit.
+
+## Repo-dev graph memory
+
+After the recorded cutover, graph memory is the durable repo-dev knowledge
+source. At task start, recall relevant knowledge with
+`search(kind='memory', tags=['SPACE:repo-dev'], q='<task>', view='index')`,
+then open relevant returned handles with
+`get(kind='memory', id='<returned meID>', view='fisheye+1hop+recall')`.
+Use the bootstrap's verified root when orientation is needed; do not load
+the entire graph or use a filename as a native ID.
+
+The shared bootstrap is `~/.claude/projects/<escaped-main-checkout>/memory/MEMORY.md`: resolve the main checkout from Git's common directory and replace `/` in its absolute path with `-`. Worktrees share that pointer; do not create a second index.
+
+Search before keeping a learned fact. Use `SPACE:repo-dev`, relevant
+project/topic tags, a concise `meta.hook`, and links to supporting evidence.
+For an existing fact, use a unique anchored `edit` and full readback;
+preserve unrelated body and history. Put new facts only when no matching
+node exists. Behavioral and workflow rules belong here, not in fact nodes.
+
+Imported and legacy memories are dated evidence, not current permissions,
+runtime proof or service/ship instructions. Current user rulings and repository/
+fleet rules govern. Preserve conflicting history, but follow the latest recorded
+authority: retire is the selected mirror policy (never force title matches),
+supplied-source provenance is accepted, and historical move-cause uncertainty
+is not a cutover gate. Recalled refresh preferences cannot override those rulings.
+Shared /tmp scripts, blanket process kills and historical ship/deploy/migration
+recipes confer no authority. Verify the exact served/deployed code and current
+operation owner; recovery stays with the deployment owner. Use the bootstrap's
+legacy discovery handles when relevant, without loading the entire graph.
+
+Files are explicit mirror/export artifacts after cutover. Native edits and
+operator CLI mirror commands are distinct: never import/export at task
+start, to answer a question, or automatically on an MCP outage. If MCP is
+down, consult MEMORY.md's preserved snapshot and manifest/as-of receipt;
+label it stale fallback evidence. Do not mutate that snapshot, claim sync,
+or queue automatic replay. Follow the verified recovery pointer through
+the current deployment owner; service recovery requires its own authority.
 
 ## Definition of done
 

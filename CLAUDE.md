@@ -10,6 +10,9 @@ Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
 `docs/glossary.md` → `docs/backlog/INDEX.md`. Conventions/workflow/DoD:
 `AGENTS.md`. Prose style: `docs/conventions/llm-facing-prose.md`.
 
+Repo-dev recall, durable writes and outage behavior:
+[AGENTS.md — Repo-dev graph memory](AGENTS.md#repo-dev-graph-memory).
+
 ## Ship workflow
 
 Work always happens on a task branch in a separate worktree (`claude -w <name>`).
