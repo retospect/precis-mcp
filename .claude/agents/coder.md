@@ -1,7 +1,7 @@
 ---
 name: coder
 description: "Sonnet implementer for a well-scoped change — edits/tests to green; not architecture calls, asks if ambiguous."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 
@@ -22,10 +22,10 @@ guess. Those decisions belong on Opus.
 
 ## How to work
 1. **Orient before editing.** For where-is/how-does questions, prefer
-   `search_code` against the **MAIN repo path** (`git rev-parse
-   --path-format=absolute --git-common-dir` → its parent — the index is shared
-   and keyed to MAIN, not your worktree; a worktree path silently returns zero
-   hits) or a quick Grep — don't spelunk with Read. For who-calls /
+   the precis python kind — `search(kind='python', mode='pattern',
+   q='<qualname regex>')`, `get(kind='python', id='main::<dotted.qualname>')`
+   (signature + callers + callees; reads MAIN, not your worktree) — or a
+   quick Grep (truth for code you changed) — don't spelunk with Read. For who-calls /
    what-depends-on over Python, `scripts/coderef callers|deps <file.py::Sym>`
    is exact — use it over grepping the bare name. Never `cd`; the shell is
    already in the worktree, and other trees are reached via `git -C`.

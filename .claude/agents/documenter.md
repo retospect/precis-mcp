@@ -1,7 +1,7 @@
 ---
 name: documenter
 description: "Sonnet doc-sync writer — syncs docs/skills to a code change; not mission prose or architecture calls."
-tools: Read, Grep, Glob, Bash, Edit, Write, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, Write, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 
@@ -23,10 +23,10 @@ design or narrative.
   `src/precis/data/skills/` only when the change alters that agent-facing surface.
 
 ## How to work
-1. **Verify against the code first.** Use `search_code` (**MAIN repo path** —
-   `git rev-parse --path-format=absolute --git-common-dir` → its parent; the
-   index is shared and keyed to MAIN, so a worktree path silently returns zero
-   hits) / Grep / Read to confirm what the code actually does *now* — never
+1. **Verify against the code first.** Use the precis python kind
+   (`search(kind='python', mode='pattern', q=…)`, `get(kind='python',
+   id='main::<qualname>')` — reads MAIN, not your worktree, so Grep is truth
+   for uncommitted changes) / Grep / Read to confirm what the code actually does *now* — never
    document from the caller's summary alone or from a stale doc. If the code
    contradicts the brief, report that; don't paper over it.
 2. Edit the specific doc(s) that own the fact (CLAUDE.md §Orientation names

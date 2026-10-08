@@ -3,9 +3,6 @@
   "env": {
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
-  "enabledMcpjsonServers": [
-    "claude-context"
-  ],
   "permissions": {
     "defaultMode": "auto",
     "allow": [
@@ -30,7 +27,6 @@
       "Bash(rtk cat:*)",
       "Bash(rtk git:*)",
       "Bash(rtk scripts/ship:*)",
-      "mcp__claude-context",
       "mcp__precis__get",
       "mcp__precis__search",
       "mcp__precis__more"

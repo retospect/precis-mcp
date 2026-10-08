@@ -137,9 +137,12 @@ Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
   log, or `set -o pipefail`.
 - Read/Grep tools over cat/sed/bash-grep; no `echo "==="` narration; don't
   re-Read files already in context.
-- Structure-aware first: `search_code` (MAIN repo path; index is lazy — Grep
-  is truth for new code) and `scripts/coderef callers|deps <file.py::Sym>`
-  before grepping bare symbols.
+- Structure-aware first: the session MCP's python kind
+  (`search(kind='python', mode='pattern', q=...)`, `get(kind='python',
+  id='main::<qualname>')` for signature + callers + callees) and
+  `scripts/coderef callers|deps <file.py::Sym>` before grepping bare symbols.
+  It reads MAIN (`main::` is the live main checkout), not this worktree — Grep
+  is truth for code you changed here. Skill `precis-python-help`.
 - Cite durable anchors, not line numbers, in docs/memory. →
   `docs/conventions/code-anchors.md`
 - Bug intake → the `bug` skill before fixing; masked root cause → dispatch

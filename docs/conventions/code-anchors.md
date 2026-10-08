@@ -53,9 +53,10 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
   addressable. Paths are **repo-relative** (`src/precis/…`), not `src/precis`-
   relative shorthand — that's what `check` validates.
 - **`ast`, not the semantic index.** `scripts/coderef` is deterministic exact
-  resolution. The claude-context/Milvus index is for *discovery* — finding the
-  symbol the first time you write an anchor — not resolution; don't couple a
-  citation check to a running vector DB.
+  resolution. The precis `python` kind
+  (`search(kind='python', mode='pattern', q=…)`) is for *discovery* — finding
+  the symbol the first time you write an anchor — not resolution; don't couple
+  a citation check to a running MCP.
 - Line numbers are fine in throwaway chat and terminal output (they're clickable
   there and die with the message). This convention governs what gets *written
   down* to be read later.

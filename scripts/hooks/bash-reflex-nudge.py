@@ -120,7 +120,8 @@ def _rule_a(command: str) -> str | None:
         f"who-calls / what-depends-on over Python, `scripts/coderef callers "
         f"<file.py::{tok}>` (or `deps`) is exact: no same-named false "
         "positives, and it returns the connected code, not every text hit. "
-        "`search_code` is the fuzzy complement for where-is/how-does. Grep "
+        "`search(kind='python', mode='pattern', q='<qualname regex>')` is the "
+        "fuzzy complement for where-is/how-does. Grep "
         "stays right for text/strings/non-Python or a symbol you can't yet name."
     )
 

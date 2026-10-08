@@ -1,7 +1,7 @@
 ---
 name: ready
 description: "Sonnet backlog-readiness judge — vets a spec against prose/code; never writes code or flips status."
-tools: Read, Grep, Glob, Bash, Edit, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, Edit, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 
@@ -69,9 +69,9 @@ A spec can read as perfectly clear and still be wrong about the codebase it's
 describing. Before passing anything, check:
 
 - Named files/symbols/subsystems actually exist and do what the spec claims —
-  `search_code` (**MAIN repo path**: `git rev-parse --path-format=absolute
-  --git-common-dir` → its parent; the index is shared and keyed to MAIN, a
-  worktree path silently returns zero hits), Grep, or `scripts/coderef
+  `search(kind='python', mode='pattern', q='<qualname regex>')` /
+  `get(kind='python', id='main::<dotted.qualname>')` (reads the MAIN
+  checkout, not your worktree — Grep is truth for worktree changes), Grep, or `scripts/coderef
   callers|deps <file.py::Sym>` for exact call/dependency claims.
 - A referenced convention (the four invariants in `docs/conventions/invariants.md`, etc.) is stated accurately, not misremembered.
 - The "Target + blast radius" section actually matches what "In scope"

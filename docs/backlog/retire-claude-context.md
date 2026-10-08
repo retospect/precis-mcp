@@ -5,16 +5,28 @@ pillar: platform
 
 # Retire claude-context (Milvus + embed shim + node stack)
 
-With kind `python` (507975cd's predecessor) and kind `md` (507975cd)
-both live, the precis session MCP covers repo code (lexical +
-structural) and repo prose (hybrid semantic, DB-free) — the
-claude-context stack's remaining value is near zero. Decommission:
-drop the `claude-context` entry from `.mcp.json`, the Milvus/shim boot
-from the SessionStart hook, `scripts/code-index`/`code-search` + the
-docker compose stack; update CLAUDE.md's orientation pointers to
-`search(kind='python')` / `search(kind='md')` + Grep + coderef. Gate:
-run a week with `PRECIS_MD_ROOTS=repo:.` enabled in the session MCP
-env first; parity-check a few fuzzy queries against `search_code`
-before deleting. Owner anchor: `precis.md_index` package docstring.
-test: sessions boot without the Milvus stack; no hook errors; the two
-kinds answer the queries `search_code` used to.
+Agent-facing half shipped 2026-10-08: Reto disabled the `claude-context` MCP,
+`.mcp.json` no longer registers it, the SessionStart hook no longer boots
+Milvus or the embed shim, and CLAUDE.md, the agent definitions, the `bug`
+skill and `bash-reflex-nudge` point at the precis python kind
+(`get(kind='python', id='main::<qualname>')`, `search(kind='python',
+mode='pattern', ...)`) plus Grep and `scripts/coderef`.
+
+Left:
+
+- **Fleet health check.** `scripts/fleet mcp-check` and
+  `scripts/lib/fleet_mcp_state.py` check `--servers precis,claude-context`;
+  every window now reports `claude-context` as dead or unknown. Drop it to
+  `precis` alone; update `tests/test_fleet_watch.py` and
+  `tests/test_fleet_mcp_state.py`.
+- **Infra deletion.** `scripts/code-index`, `scripts/code-search/`,
+  `docker/code-search/compose.yaml`. Stop the Milvus containers on the Mac.
+- **Stale prose.** `scripts/coderef` docstring, `docs/how-to-setup-like-this.md`.
+- **Fuzzy search gap.** Plain `search(kind='python', q='<phrase>')` returned
+  nothing for a natural-language query on 2026-10-08; only `mode='pattern'`
+  hits. Find out whether the python index lacks embeddings in the session MCP
+  container, and whether `search(kind='md')` covers "where is the code that
+  does X" well enough.
+
+test: sessions boot without the Milvus stack; `scripts/fleet mcp-check`
+reports only precis; a natural-language python search returns hits.

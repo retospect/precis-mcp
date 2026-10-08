@@ -1,7 +1,7 @@
 ---
 name: root-cause
 description: "Sonnet read-only root-cause investigator — reproduces a bug, traces symptom to defect, flags masking risk."
-tools: Read, Grep, Glob, Bash, mcp__claude-context__search_code, mcp__precis__get, mcp__precis__search, mcp__precis__more
+tools: Read, Grep, Glob, Bash, mcp__precis__get, mcp__precis__search, mcp__precis__more
 model: sonnet
 ---
 
@@ -34,7 +34,8 @@ up to that point and what decision is needed; that decision belongs on Opus.
 2. **Trace symptom → true defect.** Walk the call graph backward from where
    the symptom surfaces to where it originates. Use `scripts/coderef
    callers|deps <file.py::Sym>` for exact who-calls/what-depends-on (over
-   grep), `search_code` (MAIN repo path, not your worktree's) for
+   grep), the precis python kind (`search(kind='python', mode='pattern', q=…)`,
+   `get(kind='python', id='main::<qualname>')`; reads MAIN, not your worktree) for
    where-is/how-does, and `git log -p`/`git bisect`/`git blame` to find when
    and why the defect was introduced.
 3. **Ask the load-bearing question.** For the obvious/tempting fix: would

@@ -40,7 +40,7 @@ is far lower than the cost of shipping a masking patch.
 2. **Root-cause investigation (bucket 3 only), before any patch.** Spawn the
    `root-cause` agent (read-only, sonnet) with the bug/gripe. It reproduces
    the failure, traces symptom→true defect through the call graph
-   (`scripts/coderef`, `search_code`, git log/bisect), and explicitly answers
+   (`scripts/coderef`, python kind, git log/bisect), and explicitly answers
    whether the tempting fix would mask something deeper. It returns a
    dossier — root cause + evidence, blast radius, masking risk, fix strategy,
    the regression test to write — and does not itself patch anything.
