@@ -51,7 +51,7 @@ if name == "codex":
 windows = json.loads((state / "windows.json").read_text(encoding="utf-8"))
 if args[0] == "list-windows":
     for index, window in windows.items():
-        print("\t".join([index, window["name"], window["window_id"], window["pane_id"], "0"]))
+        print("\t".join([index, window["name"], window["window_id"], window["pane_id"], "1" if window.get("dead") else "0"]))
 elif args[0] == "new-window":
     index = args[args.index("-t") + 1].rsplit(":", 1)[1]
     if index in windows:
@@ -319,7 +319,9 @@ def test_register_requires_correct_pane_worktree_and_unique_uuid(fleet: Fleet):
         "register", "graph-memory", "--thread", THREAD, TMUX_PANE="%2"
     )
     assert wrong_tree.returncode == 2 and "its worktree" in wrong_tree.stderr
-    wrong_pane = fleet.run(
+    # A daemon-run tool command carries the daemon's pane, not the worker's;
+    # the owned window and worktree identify the worker instead.
+    daemon_pane = fleet.run(
         "register",
         "graph-memory",
         "--thread",
@@ -327,7 +329,17 @@ def test_register_requires_correct_pane_worktree_and_unique_uuid(fleet: Fleet):
         cwd=fleet.tree("graph-memory"),
         TMUX_PANE="%0",
     )
-    assert wrong_pane.returncode == 2 and "its live pane" in wrong_pane.stderr
+    assert daemon_pane.returncode == 0, daemon_pane.stderr
+    assert json.loads(daemon_pane.stdout)["pane_id"] == "%2"
+    windows = fleet.windows()
+    windows["2"]["dead"] = True
+    fleet.set_windows(windows)
+    dead = fleet.run(
+        "register", "graph-memory", "--thread", THREAD, cwd=fleet.tree("graph-memory")
+    )
+    assert dead.returncode == 2
+    windows["2"]["dead"] = False
+    fleet.set_windows(windows)
     fleet.registration()
     duplicate = fleet.run(
         "register",

@@ -355,6 +355,12 @@ class Fleet:
             worker = {"worktree": str(Path.cwd().resolve()), **row}
         else:
             worker, window = self.identity(row, windows)
+            # Flagless Codex runs tool commands in the shared daemon, whose
+            # TMUX_PANE is whichever pane started it, not the worker's. A
+            # roster worker is proven by its owned window (persisted pane ID)
+            # plus the worktree check below; record that window's pane.
+            if window.get("pane_id") and not window.get("dead"):
+                pane_id = window["pane_id"]
         if not pane_id or window.get("pane_id") != pane_id or window.get("dead"):
             raise Refusal(f"{name}: registration must come from its live pane")
         if not worker or Path(worker["worktree"]).resolve() != Path.cwd().resolve():

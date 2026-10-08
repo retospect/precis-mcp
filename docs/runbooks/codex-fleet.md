@@ -60,7 +60,9 @@ token file into the pane environment immediately before exec and refuses
 `--no-daemon`. The launcher checks the token file's readability and nonempty
 content before creating windows. Token values never enter arguments, config,
 logs or state.
-Each worker registers from its actual worktree and pane;
+Each worker registers from its actual worktree. Tool commands run in the
+daemon, so their `TMUX_PANE` is the daemon's; a roster worker's pane comes from
+its launcher-owned window instead. Window 0 still registers from its own pane;
 the coordinator may seed its own registration when tool workdir differs from
 the TUI directory. Native queue delivery checks the pane again on every send.
 Missing, stale or duplicate registrations require explicit recovery; the
