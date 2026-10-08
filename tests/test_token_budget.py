@@ -200,11 +200,17 @@ def test_tools_list_under_byte_budget() -> None:
     (``docs/backlog/term-taxonomy.md``): ``under=``/``axis=``/``depth=``
     on ``search`` and ``meta=`` on ``link`` (~550 B of schema). Verb
     descriptions unchanged (detail rides in ``precis-taxon-help``).
+
+    2026-10-08: cap LOWERED from 29 KB → 13.25 KB (13568 B) by the MCP verb
+    schema diet (``docs/backlog/mcp-verb-schema-diet.md``): put/edit/search
+    advertise a slim core set and kind-specific kwargs ride ``args={...}``
+    (``precis.tools.mcp_slim``). Measured 12921 B; cap is ~5% above. New
+    kwargs belong in ``args``, not in the advertised schema.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 29 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 29 KB). "
+    assert size < 13568, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 13.25 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

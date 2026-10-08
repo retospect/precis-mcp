@@ -27,6 +27,7 @@ import ast
 import contextlib
 import functools
 import inspect
+import json
 import logging
 import os
 import re
@@ -307,6 +308,87 @@ def _handler_accepted_kwargs(cls: type[Any], verb: str) -> frozenset[str]:
         if catchall is None or not _forwards_catchall(func, catchall):
             break
     return frozenset(accepted)
+
+
+_LIST_ANN_RE = re.compile(r"\b(list|List|Sequence)\b")
+_DICT_ANN_RE = re.compile(r"\b(dict|Dict|Mapping)\b")
+
+
+def coerce_json_container(value: Any, annotation: Any) -> Any:
+    """Parse a JSON-string ``value`` when ``annotation`` wants a list/dict.
+
+    Mirrors FastMCP's ``pre_parse_json`` for declared fields, which does not
+    run for keys the schema doesn't declare (the slim verbs' ``args=`` keys
+    and legacy top-level extras). Returns ``value`` unchanged unless it is a
+    ``str`` that ``json.loads`` to a list (annotation mentions list) or dict
+    (annotation mentions dict).
+    """
+    if not isinstance(value, str) or annotation is inspect.Parameter.empty:
+        return value
+    ann = annotation if isinstance(annotation, str) else repr(annotation)
+    wants_list = bool(_LIST_ANN_RE.search(ann)) or "list[" in ann
+    wants_dict = bool(_DICT_ANN_RE.search(ann)) or "dict[" in ann
+    if not (wants_list or wants_dict):
+        return value
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return value
+    if (isinstance(parsed, list) and wants_list) or (
+        isinstance(parsed, dict) and wants_dict
+    ):
+        return parsed
+    return value
+
+
+def _coerce_extras(cls: type[Any], verb: str, extras: dict[str, Any]) -> dict[str, Any]:
+    """``extras`` with JSON-string values parsed where the handler's own
+    parameter is annotated list/dict (first declaring class on the MRO)."""
+    out = dict(extras)
+    for klass in cls.__mro__:
+        raw = klass.__dict__.get(verb)
+        if raw is None:
+            continue
+        try:
+            params = inspect.signature(inspect.unwrap(raw)).parameters
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+        for name, value in extras.items():
+            if name in params and out[name] is value:
+                out[name] = coerce_json_container(value, params[name].annotation)
+    return out
+
+
+def _typed_kwargs(cls: type[Any], verb: str, names: Any) -> list[str]:
+    """``name: type = default`` for each of ``names``, from ``cls``'s MRO.
+
+    The accepted-keys list in an unknown-key ``BadInput`` carries types and
+    defaults so a caller can fix the call in one round trip (the schema
+    diet moved kind-specific kwargs under ``args=``, so this list is the
+    in-band reference). The first class on the MRO declaring a name wins.
+    """
+    found: dict[str, str] = {}
+    for klass in cls.__mro__:
+        raw = klass.__dict__.get(verb)
+        if raw is None:
+            continue
+        try:
+            params = inspect.signature(inspect.unwrap(raw)).parameters
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            continue
+        for name, p in params.items():
+            if name not in names or name in found:
+                continue
+            ann = (
+                ""
+                if p.annotation is inspect.Parameter.empty
+                else f": {inspect.formatannotation(p.annotation)}"
+            )
+            default = (
+                "" if p.default is inspect.Parameter.empty else f" = {p.default!r}"
+            )
+            found[name] = f"{name}{ann}{default}"
+    return [found.get(n, n) for n in sorted(names)]
 
 
 def _tick_disabled_hint(kind: str) -> str | None:
@@ -1438,16 +1520,18 @@ class DispatchMixin(RuntimeShape):
             else:
                 unknown = self._unknown_extras(method, extras)
                 if unknown:
-                    accepted_kwargs = sorted(k for k in accepted if k not in ("args",))
+                    accepted_kwargs = _typed_kwargs(
+                        type(handler), verb, {k for k in accepted if k != "args"}
+                    )
                     raise BadInput(
                         f"args= keys {unknown!r} not accepted by {kind}.{verb}",
                         options=accepted_kwargs,
                         next=(
-                            f"drop the unknown keys; {kind}.{verb} accepts "
-                            f"top-level kwargs: {accepted_kwargs or '(none)'}"
+                            f"get(kind='skill', id='precis-{kind}-help') — "
+                            f"{kind}.{verb} accepts: {accepted_kwargs or '(none)'}"
                         ),
                     )
-                args.update(extras)
+                args.update(_coerce_extras(type(handler), verb, extras))
 
         self._apply_default_tags_policy(handler, verb, args)
 
@@ -1475,15 +1559,15 @@ class DispatchMixin(RuntimeShape):
                 if k not in accepted_top and k not in _ALWAYS_TOLERATED_TOP_LEVEL_KWARGS
             )
             if unknown_top:
-                accepted_list = sorted(accepted_top)
+                accepted_list = _typed_kwargs(type(handler), verb, accepted_top)
                 raise BadInput(
                     f"{verb}(kind={kind!r}) does not accept {unknown_top!r} — "
                     "these kwargs have no effect on this handler and would "
                     "be silently dropped",
                     options=accepted_list,
                     next=(
-                        f"drop the unrecognized keys; {kind}.{verb} accepted "
-                        f"kwargs: {accepted_list or '(none)'}"
+                        f"get(kind='skill', id='precis-{kind}-help') — "
+                        f"{kind}.{verb} accepted kwargs: {accepted_list or '(none)'}"
                     ),
                 )
 

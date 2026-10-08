@@ -22,6 +22,12 @@
 # edited after MEMORY.md.pre-cutover was written to a file the graph never
 # reads (a session that started before the cutover) and needs porting by hand.
 #
+# Retire candidates (check 7, both modes): lists — never retires — notes the
+# memory should drop: a thread-type note whose every resolvable cited sha is in
+# main and whose NEXT line is empty/done, and any note untouched >30d. Cited
+# shas are resolved ONCE (one `git cat-file --batch-check`, one `git rev-list
+# main`) into $SHAMAP, which check 2 reads too.
+#
 # Checks (all advisory — always exits 0; for `/whatneedsdoing`, not a gate):
 #   1. broken index links + unindexed topic files (file mode only).
 #   2. landed-thread scan: a bullet whose every cited commit is in main + no
@@ -152,6 +158,37 @@ for tf in "$MEMDIR"/*.md; do
 done
 fi  # ! GRAPH (checks 1a, 1b)
 
+# Batched sha oracle. One git process resolves every distinct cited sha and one
+# lists main, instead of one `merge-base --is-ancestor` per sha (18 s on a
+# ~150-note memory). SHAMAP lines: "<lowercase sha>\t<1 in main | 0 not in main |
+# x unresolvable>".
+epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
+SHAMAP=$(mktemp "${TMPDIR:-/tmp}/memory-lint-shas.XXXXXX")
+trap 'rm -f "$SHAMAP" "$SHAMAP.main" "$SHAMAP.out"' EXIT
+if [[ -n "$SCAN_DIR" ]]; then
+    topic_files=()
+    for _f in "$SCAN_DIR"/*.md; do
+        [[ -f "$_f" ]] && is_topic "$(basename "$_f")" && topic_files+=("$_f")
+    done
+    if (( ${#topic_files[@]} )); then
+        grep -ohiE '\b[0-9a-f]{7,40}\b' "${topic_files[@]}" 2>/dev/null | grep -iE '[a-f]' \
+            | tr 'A-F' 'a-f' | sort -u > "$SHAMAP.out" || true
+        if [[ -s "$SHAMAP.out" ]]; then
+            git rev-list main > "$SHAMAP.main" 2>/dev/null || : > "$SHAMAP.main"
+            sed 's/$/^{commit}/' "$SHAMAP.out" | git cat-file --batch-check 2>/dev/null \
+                | paste -d' ' "$SHAMAP.out" - \
+                | awk -v mainf="$SHAMAP.main" 'BEGIN { while ((getline l < mainf) > 0) m[l] = 1 }
+                    { if ($3 == "commit") print $1 "\t" (($2 in m) ? 1 : 0); else print $1 "\tx" }' > "$SHAMAP" || true
+        fi
+    fi
+fi
+# sha_state <sha> → 1 (in main) | 0 (not in main) | x (unresolvable/unknown)
+sha_state() {
+    local r
+    r=$(awk -F'\t' -v s="$(printf '%s' "$1" | tr 'A-F' 'a-f')" '$1 == s { print $2; exit }' "$SHAMAP")
+    printf '%s' "${r:-x}"
+}
+
 # 2. landed-thread scan. The `## Threads` section is where the oracle below
 # is meant to look, but the live index is a flat bullet list (no `##`
 # headings) — a silently-empty slice used to make this whole check a no-op
@@ -179,7 +216,8 @@ if (( GRAPH )); then
     fi
 else
     threads_slice=$(awk '/^## Threads/{f=1;next} /^## /{f=0} f' "$INDEX" 2>/dev/null || true)
-    if [[ -z "${threads_slice//[[:space:]]/}" ]]; then
+    # (not "${threads_slice//[[:space:]]/}": bash 3.2 is quadratic on that — 17 s here)
+    if ! printf '%s' "$threads_slice" | grep -q '[^[:space:]]'; then
         echo "  MEMORY.md has no \`## Threads\` heading — landed-thread scan is disabled"
         problems=$((problems+1))
     fi
@@ -194,7 +232,7 @@ while IFS= read -r b; do
     landed=1
     while IFS= read -r s; do
         [[ -z "$s" ]] && continue
-        git merge-base --is-ancestor "$s" main 2>/dev/null || { landed=0; break; }
+        [[ "$(sha_state "$s")" == 1 ]] || { landed=0; break; }
     done <<< "$shas"
     if (( landed )); then
         if (( GRAPH )); then
@@ -258,6 +296,56 @@ if (( pre_tok > PRE_BUDGET_TOK )); then
 else
     echo "preamble: CLAUDE.md+${IDX_LABEL} ≈ ${pre_tok} tok (budget ${PRE_BUDGET_TOK})"
 fi
+
+# 7. retire candidates — LIST ONLY: never modifies anything, never touches
+# $problems or the exit code. Heuristics (deliberately simple):
+#   thread-type = frontmatter `type:` absent or `project`, AND (the file name or
+#                 first-line title contains "thread"/"campaign", OR a body line
+#                 starts with NEXT).
+#   landed      = thread-type, >=1 resolvable cited sha, every resolvable sha in
+#                 main (unresolvable hex tokens are words/cross-repo: ignored),
+#                 and its NEXT line (if any) empty or done/shipped/none/nothing.
+#   stale >30d  = frontmatter `modified:` date, else file mtime.
+# Graph-mode node bodies carry no frontmatter, so there the title/NEXT rules and
+# the export's mtime apply.
+retire=0
+if [[ -n "$SCAN_DIR" ]]; then
+    now_e=$(date +%s)
+    for tf in "$SCAN_DIR"/*.md; do
+        b=$(basename "$tf")
+        [[ -f "$tf" ]] && is_topic "$b" || continue
+        reasons=()
+        fm=$(awk 'NR==1 && $0!="---" { exit } NR>1 && $0=="---" { exit } NR>1' "$tf")
+        ftype=$(printf '%s\n' "$fm" | sed -nE 's/^[[:space:]]*type:[[:space:]]*"?([A-Za-z_-]+).*/\1/p' | head -n 1)
+        if [[ -z "$ftype" || "$ftype" == project ]]; then
+            title=$(grep -m1 -E '^# ' "$tf" 2>/dev/null || true)
+            nextline=$(grep -m1 -E '^[-*[:space:]]*NEXT\b' "$tf" || true)
+            if printf '%s %s' "$b" "$title" | grep -qiE 'thread|campaign' || [[ -n "$nextline" ]]; then
+                nexttext=$(printf '%s' "$nextline" | sed -E 's/^[-*[:space:]]*NEXT\b[^A-Za-z0-9]*//')
+                if [[ -z "${nexttext//[[:space:]]/}" ]] || printf '%s' "$nexttext" | grep -qiE '^(done|shipped|none|nothing)\b'; then
+                    n_res=0; n_out=0
+                    while IFS= read -r s; do
+                        [[ -z "$s" ]] && continue
+                        case "$(sha_state "$s")" in 1) n_res=$((n_res+1));; 0) n_out=$((n_out+1));; esac
+                    done < <(grep -ohiE '\b[0-9a-f]{7,40}\b' "$tf" | grep -iE '[a-f]' | sort -u || true)
+                    (( n_res > 0 && n_out == 0 )) && reasons+=("thread landed ($n_res cited commit(s), all in main; NEXT empty/done)")
+                fi
+            fi
+        fi
+        mod=$(printf '%s\n' "$fm" | sed -nE 's/^[[:space:]]*modified:[[:space:]]*"?([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' | head -n 1)
+        mod_e=""
+        [[ -n "$mod" ]] && mod_e=$(epoch_of "$mod" || true)
+        [[ -z "$mod_e" ]] && mod_e=$(stat -c %Y "$tf" 2>/dev/null || stat -f %m "$tf" 2>/dev/null || echo "$now_e")
+        age_d=$(( (now_e - mod_e) / 86400 ))
+        (( age_d > 30 )) && reasons+=("stale >30d (${age_d}d)")
+        if (( ${#reasons[@]} )); then
+            rs=$(printf '%s; ' "${reasons[@]}"); rs="${rs%; }"
+            echo "  retire candidate → $(label_of "$b" "$tf"): $rs"
+            retire=$((retire+1))
+        fi
+    done
+fi
+echo "retire candidates: $retire (listed only; verify, then retire by hand)"
 
 # 5. per-claim currency ledger (--currency) — the cheap, deterministic half of
 #    the reconsolidation pass. git + filesystem oracles only (offline, exact);
@@ -401,7 +489,6 @@ fi
 #    docs/runbooks/memory-sibling-repos.md.
 SIB_LOG="docs/runbooks/memory-sibling-repos.md"
 SIB_WINDOW_DAYS=7
-epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
 # Log is appended oldest-first, so pick the chronologically LATEST stamp
 # (`sort | tail -1`, ISO dates sort lexically). A bare `head -1` read the OLDEST
 # entry, so the weekly gate stayed permanently DUE and re-stamped on every run

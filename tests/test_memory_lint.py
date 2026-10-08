@@ -543,3 +543,78 @@ def test_file_mode_ignores_the_node_cache_and_the_stray_check(
     assert "stray write" not in res.stdout, res.stdout
     assert "me1" not in res.stdout, res.stdout
     assert "graph mode" not in res.stdout, res.stdout
+
+
+# ---------------------------------------------------------------------------
+# check 7 — retire candidates (listed only, both modes)
+# ---------------------------------------------------------------------------
+
+
+def _snapshot(d: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(d.glob("*.md"))
+    }
+
+
+def _age(p: Path, days: int) -> None:
+    t = datetime.datetime.now(datetime.UTC).timestamp() - days * 86400
+    os.utime(p, (t, t))
+
+
+def test_retire_candidates_file_mode_lists_landed_and_stale_only(
+    lint_repo: Path, home_and_mem: tuple[Path, Path]
+) -> None:
+    home, mem = home_and_mem
+    sha = _landed_sha(lint_repo)
+    # a REAL commit that is not an ancestor of main
+    _git(lint_repo, "checkout", "-q", "-b", "side")
+    (lint_repo / "x.txt").write_text("x\n", encoding="utf-8")
+    _git(lint_repo, "add", "-A")
+    _git(lint_repo, "commit", "-q", "-m", "side commit")
+    side = _git(lint_repo, "rev-parse", "--short=12", "HEAD").stdout.strip()
+    _git(lint_repo, "checkout", "-q", "main")
+    (mem / "MEMORY.md").write_text(
+        "## Threads\n- [a](done-thread.md)\n- [b](live-thread.md)\n", encoding="utf-8"
+    )
+    (mem / "done-thread.md").write_text(
+        f"---\ntype: project\n---\nlanded in {sha}.\nNEXT: done\n", encoding="utf-8"
+    )
+    (mem / "live-thread.md").write_text(
+        f"---\ntype: project\n---\nlanded {sha}; unlanded {side}.\nNEXT: done\n",
+        encoding="utf-8",
+    )
+    (mem / "old-fact.md").write_text("durable fact\n", encoding="utf-8")
+    _age(mem / "old-fact.md", 40)
+    before = _snapshot(mem)
+
+    res = _run(lint_repo, home)
+
+    assert res.returncode == 0
+    assert "retire candidate → done-thread.md: thread landed" in res.stdout, res.stdout
+    assert "retire candidate → live-thread.md" not in res.stdout, res.stdout
+    assert "retire candidate → old-fact.md: stale >30d (40d)" in res.stdout, res.stdout
+    assert "retire candidates: 2 " in res.stdout, res.stdout
+    assert _snapshot(mem) == before  # lists only; nothing modified
+
+
+def test_retire_candidates_graph_mode_reads_the_node_cache(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    sha = _landed_sha(lint_repo)
+    (nodes / "me1.md").write_text(
+        f"# Old campaign\n\nshipped at {sha}.\nNEXT = nothing\n", encoding="utf-8"
+    )
+    (nodes / "me2.md").write_text("# Gotcha\n\nold trap\n", encoding="utf-8")
+    _age(nodes / "me2.md", 40)
+    (nodes / "me3.md").write_text("# Fresh gotcha\n\nnew trap\n", encoding="utf-8")
+    before = _snapshot(nodes)
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert res.returncode == 0
+    assert "retire candidate → me1 (Old campaign): thread landed" in res.stdout
+    assert "retire candidate → me2 (Gotcha): stale >30d (40d)" in res.stdout
+    assert "me3" not in res.stdout, res.stdout
+    assert "retire candidates: 2 " in res.stdout, res.stdout
+    assert _snapshot(nodes) == before

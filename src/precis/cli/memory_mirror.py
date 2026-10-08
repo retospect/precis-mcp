@@ -63,7 +63,7 @@ _UniqueLoader.add_constructor(
 
 @dataclass
 class MirrorReport:
-    """Counts and explicit unresolved/missing names; no implied retirement."""
+    """Counts and explicit unresolved/missing names; retirement only if asked."""
 
     created: int = 0
     updated: int = 0
@@ -75,6 +75,8 @@ class MirrorReport:
     unexported: list[str] = field(default_factory=list)
     #: Import: legacy one-shot nodes soft-deleted by ``legacy='retire'``.
     retired: list[str] = field(default_factory=list)
+    #: Import: nodes of deleted files soft-deleted by ``missing='retire'``.
+    retired_missing: list[str] = field(default_factory=list)
     #: Export: native nodes (no ``file_mirror``) rendered to new files and stamped.
     exported_native: list[str] = field(default_factory=list)
     #: Import: legacy nodes adopted in place by ``legacy='refresh'`` (not in created).
@@ -352,7 +354,12 @@ def _guard_chunk_links(conn: Connection, rid: int) -> None:
 
 
 def import_mirror(
-    store: Store, source: Path, *, namespace: str, legacy: str = "refuse"
+    store: Store,
+    source: Path,
+    *,
+    namespace: str,
+    legacy: str = "refuse",
+    missing: str = "keep",
 ) -> MirrorReport:
     """Atomically import a file snapshot; refuse conflicting graph changes.
 
@@ -362,8 +369,14 @@ def import_mirror(
     transaction, ``keep`` imports beside them, ``refresh`` adopts each in place
     (same ref_id and inbound links, ``file_mirror`` stamped, body and links
     rewritten as for a new node; several nodes with one title refuse).
+    ``missing`` decides the nodes of files deleted since the last import:
+    ``keep`` (default) leaves them live and only lists them; ``retire``
+    soft-deletes them once validation passes (``MEMORY.md``'s node, the index
+    root, is never retired: its absence refuses).
     """
     _namespace(namespace)
+    if missing not in ("keep", "retire"):
+        raise ImportRefused("missing must be keep or retire")
     if legacy not in ("refuse", "retire", "keep", "refresh"):
         raise ImportRefused("legacy must be refuse, retire, keep or refresh")
     report = MirrorReport()
@@ -414,13 +427,22 @@ def import_mirror(
             if name.casefold() in folded and folded[name.casefold()] != name:
                 raise ImportRefused(f"filename collides with graph identity: {name}")
         report.missing = sorted(set(nodes) - set(files))
-        # Validate all existing inputs before the first write. Missing files stay live.
+        # Validate all existing inputs before the first write. Missing files stay live unless ``missing='retire'``.
         for name in files.keys() & nodes.keys():
             rid, title, meta = nodes[name]
             if _state(conn, rid, title, meta, namespace) != meta[_KEY]["graph_digest"]:
                 raise ImportRefused(
                     f"{name}: graph changed since import; export/reconcile first"
                 )
+        if missing == "retire":
+            if "MEMORY.md" in report.missing:
+                raise ImportRefused(
+                    "MEMORY.md is absent but its node is the index root; "
+                    "restore the file or use --missing keep"
+                )
+            for name in report.missing:
+                store.retire_ref(nodes[name][0], conn=conn)
+                report.retired_missing.append(f"me{nodes[name][0]}")
         changed: set[str] = set()
         for name, f in files.items():
             if name in nodes:

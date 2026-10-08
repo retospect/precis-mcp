@@ -1,5 +1,20 @@
-"""Generic guard: every ``put``/``edit`` handler kwarg must be exposed by
-``tools/core.py``'s corresponding verb signature.
+"""Generic guard: every ``put``/``edit`` handler kwarg must be reachable over MCP.
+
+**Schema diet (docs/backlog/mcp-verb-schema-diet.md).** The advertised MCP
+tool is now a slim twin (``precis.tools.mcp_slim``) of ``tools/core.py``'s
+verb: only a core set is top-level, everything else rides ``args={...}``,
+which the slim wrapper promotes to the full verb's parameter when it has one
+and otherwise forwards on the ``__extras__`` channel through the dispatcher's
+accepted-kwargs gate. So a handler kwarg missing from the full verb
+signature is no longer silently dropped -- it is reachable through ``args``.
+``test_args_only_kwargs_are_reachable_through_args`` proves that over the slim
+path for every ledger entry. The ledger (now ``_ARGS_ONLY``, formerly
+``_KNOWN_GAPS``) keeps its ratchet semantics unchanged: it lists the handler
+kwargs that are reachable *only* through ``args`` (no explicit full-verb
+parameter), and still fails in both directions.
+
+Original rationale: ``tools/core.py::put`` and ``::edit`` each double as the
+FastMCP schema and a hand-maintained dispatch payload.
 
 ``tools/core.py::put`` and ``::edit`` each double as (a) the FastMCP-derived
 JSON Schema advertised over MCP and (b) a hand-maintained dispatch payload
@@ -32,12 +47,12 @@ broke.
 instances across 25 kinds — real product debt the diagnoses didn't scope
 this fix to fix. Rather than block on all 71 (a separate, judgment-heavy
 job — see docs/backlog/mcp-verb-kwarg-parity.md for the triage) or silently
-allowlist them into meaninglessness, ``_KNOWN_GAPS`` freezes exactly that
+allowlist them into meaninglessness, ``_ARGS_ONLY`` freezes exactly that
 set. The test fails if the live gap set drifts either direction: grows (a
 NEW gap — someone must fix it or make a deliberate ``_EXEMPT`` call) or
 shrinks without the ledger being updated (a gap got fixed but the entry
 was left behind, which would otherwise let the *next* regression on that
-same kwarg sneak back in unnoticed). Entries leave ``_KNOWN_GAPS`` only by
+same kwarg sneak back in unnoticed). Entries leave ``_ARGS_ONLY`` only by
 being wired through (fixed) — never just deleted to silence a failure.
 """
 
@@ -69,7 +84,7 @@ _GUARDED_VERBS = ("put", "edit")
 #: ``structure.put``/``.edit``) turned out to be real gaps, not a
 #: different-but-legitimate door (see docs/backlog/mcp-verb-kwarg-parity.md
 #: §"args= is not actually exempt"). Kept as a real (if empty) set so a
-#: future deliberate exemption has a home that isn't _KNOWN_GAPS.
+#: future deliberate exemption has a home that isn't _ARGS_ONLY.
 _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
     {
         # turn= is the design-chat transcript handle stamped on a revision
@@ -97,7 +112,7 @@ _EXEMPT: frozenset[tuple[str, str, str]] = frozenset(
 #: (new regression) OR a listed gap that's no longer reproducible (fixed
 #: but the ledger wasn't updated, which would let a *future* regression on
 #: that exact kwarg slip back in unnoticed).
-_KNOWN_GAPS: frozenset[tuple[str, str, str]] = frozenset(
+_ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
     {
         # -- put: cache-decay refresh knob, six numeric-ref-ish kinds ----
         ("anki", "put", "auto_refresh_days"),
@@ -225,10 +240,51 @@ def full_hub(store: Store) -> Iterator[Hub]:
     yield boot(store=store)
 
 
+def test_args_only_kwargs_are_reachable_through_args(
+    full_hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every ``_ARGS_ONLY`` kwarg, passed as ``args={param: v}`` to the slim
+    (advertised) verb, reaches the dispatch payload -- top-level or in
+    ``__extras__`` -- and the real handler's accepted-kwargs gate admits it.
+    """
+    from precis.runtime.dispatch import _handler_accepted_kwargs
+    from precis.tools.mcp_slim import make_slim_verb
+
+    sentinel = object()
+    seen: dict[str, Any] = {}
+
+    def fake_dispatch(verb: str, payload: dict[str, Any]) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", fake_dispatch)
+    slim = {v: make_slim_verb(v, getattr(tools_core, v)) for v in _GUARDED_VERBS}
+
+    unreachable: list[str] = []
+    for kind, verb, param in sorted(_ARGS_ONLY):
+        handler = full_hub.handlers.get(kind)
+        if handler is None:  # optional-dependency kind not installed here
+            continue
+        kwargs: dict[str, Any] = {"kind": kind, "args": {param: sentinel}}
+        if verb == "edit":
+            kwargs["id"] = "x"
+        slim[verb](**kwargs)
+        reached = seen.get(param) is sentinel or (
+            (seen.get("__extras__") or {}).get(param) is sentinel
+        )
+        admitted = param in _handler_accepted_kwargs(handler.__class__, verb)
+        if not (reached and admitted):
+            unreachable.append(
+                f"{kind}.{verb}({param}=) reached={reached} gate={admitted}"
+            )
+    assert not unreachable, unreachable
+
+
 def test_put_and_edit_handler_kwarg_gap_set_matches_the_ratchet(
     full_hub: Hub,
 ) -> None:
-    """The live (kind, verb, param) gap set must equal ``_KNOWN_GAPS``
+    """The live (kind, verb, param) gap set must equal ``_ARGS_ONLY``
     exactly — no new silent-drop instance, and no stale ledger entry for a
     gap that's already been fixed."""
     core_params = {
@@ -251,8 +307,8 @@ def test_put_and_edit_handler_kwarg_gap_set_matches_the_ratchet(
                 if name not in core_params[verb]:
                     live_gaps.add(key)
 
-    new_gaps = sorted(live_gaps - _KNOWN_GAPS)
-    stale_ledger = sorted(_KNOWN_GAPS - live_gaps)
+    new_gaps = sorted(live_gaps - _ARGS_ONLY)
+    stale_ledger = sorted(_ARGS_ONLY - live_gaps)
 
     problems: list[str] = []
     if new_gaps:
@@ -265,7 +321,7 @@ def test_put_and_edit_handler_kwarg_gap_set_matches_the_ratchet(
     if stale_ledger:
         fmt = ", ".join(f"{k}.{v}({p}=)" for k, v, p in stale_ledger)
         problems.append(
-            "STALE _KNOWN_GAPS entries — already fixed but not removed "
+            "STALE _ARGS_ONLY entries — already fixed but not removed "
             "from the ledger (remove the line, and update "
             "docs/backlog/mcp-verb-kwarg-parity.md): " + fmt
         )

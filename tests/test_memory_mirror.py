@@ -779,3 +779,54 @@ def test_export_native_hookless_uses_body_line(
     again = import_mirror(store, dest, namespace="fixture")
     assert again.created == 0 and again.updated == 0
     _unplant(store, rid)
+
+
+def _live(store: Store, rid: int) -> bool:
+    with psycopg.connect(_dsn(store)) as conn:
+        row = conn.execute(
+            "SELECT retired_at FROM refs WHERE ref_id=%s", (rid,)
+        ).fetchone()
+    assert row is not None
+    return row[0] is None
+
+
+def test_missing_keep_leaves_node_live(store: Store, source: Path) -> None:
+    first = import_mirror(store, source, namespace="fixture")
+    (source / "beta.md").unlink()
+    report = import_mirror(store, source, namespace="fixture", missing="keep")
+    assert report.missing == ["beta.md"] and report.retired_missing == []
+    assert _live(store, first.refs["beta.md"])
+
+
+def test_missing_retire_retires_and_lists(store: Store, source: Path) -> None:
+    first = import_mirror(store, source, namespace="fixture")
+    (source / "beta.md").unlink()
+    report = import_mirror(store, source, namespace="fixture", missing="retire")
+    beta = first.refs["beta.md"]
+    assert report.missing == ["beta.md"]
+    assert report.retired_missing == [f"me{beta}"]
+    assert not _live(store, beta)
+    assert _live(store, first.refs["alpha.md"])
+    with pytest.raises(ImportRefused, match="missing must be"):
+        import_mirror(store, source, namespace="fixture", missing="bogus")
+
+
+def test_missing_retire_not_partial_on_refusal(store: Store, source: Path) -> None:
+    first = import_mirror(store, source, namespace="fixture")
+    store.chunks.set_ref_title(first.refs["alpha.md"], "Edited in graph", source="test")
+    (source / "beta.md").unlink()
+    before = _snapshot(store)
+    with pytest.raises(ImportRefused, match="graph changed"):
+        import_mirror(store, source, namespace="fixture", missing="retire")
+    assert _snapshot(store) == before
+    assert _live(store, first.refs["beta.md"])
+
+
+def test_missing_retire_refuses_absent_index_root(store: Store, source: Path) -> None:
+    first = import_mirror(store, source, namespace="fixture")
+    (source / "MEMORY.md").unlink()
+    with pytest.raises(ImportRefused, match="index root"):
+        import_mirror(store, source, namespace="fixture", missing="retire")
+    assert _live(store, first.refs["MEMORY.md"])
+    keep = import_mirror(store, source, namespace="fixture")
+    assert keep.missing == ["MEMORY.md"]

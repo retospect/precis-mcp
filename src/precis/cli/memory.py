@@ -826,6 +826,13 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
                     "refresh (adopt the node in place, keeping its id and links)."
                 ),
             )
+        if mode == "import":
+            parser.add_argument(
+                "--missing",
+                choices=("keep", "retire"),
+                default="keep",
+                help="Nodes of files deleted since last import: keep live (default) or retire.",
+            )
         parser.add_argument(
             "--database-url", default=None, help="Postgres DSN override."
         )
@@ -853,6 +860,7 @@ def run(args: argparse.Namespace) -> None:
                         Path(args.dir),
                         namespace=args.namespace,
                         legacy=args.legacy,
+                        missing=args.missing,
                     )
                     print(json.dumps(asdict(report_mirror), sort_keys=True))
                 else:

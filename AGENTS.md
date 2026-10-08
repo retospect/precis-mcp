@@ -42,6 +42,18 @@ For an existing fact, use a unique anchored `edit` and full readback;
 preserve unrelated body and history. Put new facts only when no matching
 node exists. Behavioral and workflow rules belong here, not in fact nodes.
 
+Retire (soft delete, recoverable at the SQL layer) so recall stays current:
+- A thread node whose work is on `main` with nothing next: retire it; git
+  and the thread file are the record.
+- A fact that changed but is the same subject: anchored `edit` in place, no
+  second node. A wrong fact: `edit` with a `reason=`.
+- A node replaced by a different node: link the new one `supersedes` the
+  old, then retire the old.
+- A mirrored node whose file was deleted: retire it (the importer's
+  `--missing retire`, or by hand).
+Any session may retire a node it has shown landed or superseded.
+`scripts/memory-lint` lists candidates; it never retires.
+
 Imported and legacy memories are dated evidence, not current permissions,
 runtime proof or service/ship instructions. Current user rulings and repository/
 fleet rules govern. Preserve conflicting history, but follow the latest recorded

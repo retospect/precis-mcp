@@ -1663,7 +1663,6 @@ def edit(
         "viewbox": viewbox,
         "apply": apply,
         "ops": ops,
-        "args": args,
         "op": op,
         "item": item,
         "target": target,
@@ -1681,14 +1680,20 @@ def edit(
         "about": about,
         "reason": reason,
     }
+    # ``args=`` and ``meta=`` ride the ``__extras__`` channel (the same
+    # accepted-kwargs gate ``_invoke_handler`` already runs for get()/put()'s
+    # args=) rather than flat payload keys — a flat key would just vanish into
+    # a non-accepting handler's ``**_kw`` catch-all, the exact silent swallow
+    # gr301897 closed for ``meta``. Handlers that declare an explicit
+    # ``args`` parameter (structure/pcb op payloads) still receive the dict
+    # unflattened; every other handler gets the keys flattened and
+    # whitelist-checked, which is what makes ``args={...}`` the one door for
+    # kind-specific edit fields (mcp-verb-schema-diet).
+    extras: dict[str, Any] = dict(args) if args else {}
     if meta is not None:
-        # Ride the ``__extras__`` channel (the same accepted-kwargs gate
-        # ``_invoke_handler`` already runs for get()/put()'s args=) rather
-        # than a flat payload key — a flat key would just vanish into a
-        # non-accepting handler's ``**_kw`` catch-all, the exact silent
-        # swallow this fix closes (gr301897). ``args=`` above is edit's
-        # own separate op-payload tunnel and is left untouched.
-        payload["__extras__"] = {"meta": meta}
+        extras["meta"] = meta
+    if extras:
+        payload["__extras__"] = extras
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)
 

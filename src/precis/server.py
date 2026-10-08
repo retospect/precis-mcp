@@ -864,15 +864,24 @@ def _register_tools_from_registry() -> None:
         _install_command_profile()
         return
 
+    from precis.tools.mcp_slim import allow_extra_arguments, slim_verbs
+
+    slim = slim_verbs(TOOL_REGISTRY)
     for tool_name, tool_info in TOOL_REGISTRY.items():
+        # put/edit/search advertise a slim core schema (kind-specific
+        # kwargs ride ``args=``); the CLI and the command profile keep
+        # calling the full TOOL_REGISTRY function.
+        func = slim.get(tool_name, tool_info["func"])
         # Register the tool function with FastMCP — wrapped by
         # ``_offload_sync`` (gr330541) so it dispatches off the event-loop
         # thread; ``TOOL_REGISTRY[...]["func"]`` itself is left untouched,
         # so the CLI adapter and the command profile's ``precis()`` (which
         # both call it directly, synchronously) are unaffected.
-        mcp.tool(description=_verb_description(tool_info["func"]), **_TOOL_KW)(
-            _offload_sync(tool_info["func"])
-        )
+        mcp.tool(description=_verb_description(func), **_TOOL_KW)(_offload_sync(func))
+        if tool_name in slim:
+            registered = mcp._tool_manager.get_tool(tool_name)
+            if registered is not None:
+                allow_extra_arguments(registered)
 
         # Apply special schema constraints for edit tool
         if tool_name == "edit":
