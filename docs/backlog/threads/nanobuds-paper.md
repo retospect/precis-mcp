@@ -359,8 +359,16 @@ td173019.
    now reports the source's six-pentagon-plus-six-heptagon accounting and
    leaves the extra-pentagon question open (sources pc56033/pc54243
    contradict the earlier denial; Gauss–Bonnet needs only the heptagons);
-   dc2445944 calls the Nicholls imaging "in situ" in one sentence and
-   "ex situ" in another.
+   dc2445944 Nicholls imaging reworded to "in-microscope" (Reto 10-08).
+   **Same day:** glossary pass done (7 term chunks dc4383892–dc4383901,
+   OH/CAM/M06 silenced as fragments; hygiene shows 0 undefined
+   abbreviations; M06-2X and POAV2 expansions are standard usage, not
+   source-checked); `enrich-rearm --apply` run over the 118 cited papers
+   (115 re-armed, 3 skipped: no DOI or not yet visited), so the next
+   worker cycle fills volume/issue/pages, then re-export. Export r5
+   (`/tmp/nanobud-apply/export-r5`, before the glossary pass): 118 bib
+   entries, 0 with volume, 25 pin warnings, 2 originator notes, 4
+   placeholders.
 3. **backlog/se-nanobud-graph.md** — `status: draft/high`; re-scoped
    2026-10-02: geo rung, embed, registration and assembler mode shipped;
    generator, sublattice parity, chirality and nomenclature overtaken by
