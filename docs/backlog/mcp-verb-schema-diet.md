@@ -40,8 +40,12 @@ per paper, todo with priority and parent, todos sorted by priority).
   `src/precis/data/skills/` and the job prompts under `src/precis/workers/`
   still show non-core options at top level. They work (with the note), but
   every example teaches the deprecated form.
-- **Retire the top-level path** once the ledger shows no deprecation notes
-  for 14 days: a moved option at top level becomes `BadInput`.
+- **Count deprecated top-level use.** `tool_calls.input_keys` is recorded
+  after the slim wrapper flattens `args=`, so the two forms look the same.
+  Record the deprecated keys (a column, or a marker key) in
+  `precis.tools.mcp_slim` so the token review can count them by key.
+- **Retire the top-level path** once that count is zero for 14 days: a moved
+  option at top level becomes `BadInput`.
 
 ## Test
 

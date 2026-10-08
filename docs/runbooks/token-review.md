@@ -58,6 +58,15 @@ What "waste" means here, in rough priority:
 5. **Prompt/skill friction** — a skill or CLAUDE.md instruction that's routinely
    misread and forces a correction round-trip (overlaps the LLM-confusion mine
    in `/whatneedsdoing` step 4 — cross-reference, don't duplicate).
+6. **MCP verb surface** — `/context` "MCP tools" should stay near 6k tokens;
+   above ~7k, find which verb grew (`tests/test_mcp_slim_schema.py` caps the
+   total). Then check the core set against use: per verb, how often each
+   non-core key is passed (`scripts/prod-psql`, read-only, last 14 days on
+   `tool_calls.input_keys`, keys not in `CORE_PARAMS` from
+   `precis.runtime.dispatch`). A non-core key in most calls of a verb belongs
+   in core; a core key almost nobody passes can move to `args=`. The ledger
+   records keys after `args=` is flattened, so it cannot count deprecated
+   top-level use (spec `mcp-verb-schema-diet`).
 
 ## Output
 
