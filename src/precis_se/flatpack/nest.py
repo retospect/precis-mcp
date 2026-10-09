@@ -17,7 +17,10 @@ from dataclasses import dataclass
 
 from precis_se.flatpack.panels import FlatpackError, _fmt
 
-_EPS = 1e-9
+#: Dimensionless. The skyline's length epsilon is this fraction of the
+#: governing length, the part-to-part spacing ``s`` (>= 1 mm), so no bare
+#: absolute length tolerance exists here (units-policy cutover item 4).
+_REL_EPS = 1e-9
 
 
 def spacing_for(kerf: float, cutter_d: float) -> float:
@@ -110,13 +113,14 @@ def _pack(
     items: list[Item], width: float, height: float | None, s: float
 ) -> tuple[list[Placement], list[Item]]:
     skyline: list[list[float]] = [[0.0, 0.0, width]]
+    eps = s * _REL_EPS
     placed: list[Placement] = []
     unplaced: list[Item] = []
     for pid, w, h in items:
         best: tuple[float, float, int, bool] | None = None
         for rotated, (rw, rh) in ((False, (w, h)), (True, (h, w))):
             for idx in range(len(skyline)):
-                y = _fits(skyline, idx, rw + s, rh + s, height)
+                y = _fits(skyline, idx, rw + s, rh + s, height, eps)
                 if y is None:
                     continue
                 cand = (y + rh + s, skyline[idx][0], idx, rotated)
@@ -128,12 +132,17 @@ def _pack(
         top, x, _idx, rotated = best
         rw, rh = (h, w) if rotated else (w, h)
         placed.append(Placement(pid, x, top - rh - s, rotated, rw, rh))
-        _raise(skyline, x, top, rw + s)
+        _raise(skyline, x, top, rw + s, eps)
     return placed, unplaced
 
 
 def _fits(
-    skyline: list[list[float]], idx: int, w: float, h: float, height: float | None
+    skyline: list[list[float]],
+    idx: int,
+    w: float,
+    h: float,
+    height: float | None,
+    eps: float,
 ) -> float | None:
     """The y at which a ``w × h`` rect sits when its left edge is at segment
     ``idx``'s x, or ``None`` if it runs off the strip."""
@@ -143,29 +152,31 @@ def _fits(
     while True:
         sx, sy, sw = skyline[i]
         y = max(y, sy)
-        if height is not None and y + h > height + _EPS:
+        if height is not None and y + h > height + eps:
             return None
-        if sx + sw >= end - _EPS:
+        if sx + sw >= end - eps:
             return y
         i += 1
         if i >= len(skyline):
             return None
 
 
-def _raise(skyline: list[list[float]], x: float, top: float, w: float) -> None:
+def _raise(
+    skyline: list[list[float]], x: float, top: float, w: float, eps: float
+) -> None:
     """Lift the skyline to ``top`` over ``[x, x+w)`` and merge level runs."""
     out: list[list[float]] = []
     for sx, sy, sw in skyline:
-        if sx < x - _EPS:
+        if sx < x - eps:
             out.append([sx, sy, min(sw, x - sx)])
-        if sx + sw > x + w + _EPS:
+        if sx + sw > x + w + eps:
             start = max(sx, x + w)
             out.append([start, sy, sx + sw - start])
     out.append([x, top, w])
     out.sort(key=lambda seg: seg[0])
     merged = [out[0]]
     for seg in out[1:]:
-        if abs(seg[1] - merged[-1][1]) < _EPS:
+        if abs(seg[1] - merged[-1][1]) < eps:
             merged[-1][2] += seg[2]
         else:
             merged.append(seg)
