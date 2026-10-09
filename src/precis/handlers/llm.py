@@ -93,11 +93,13 @@ class LlmHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
         if concrete and view in ("tote", "reviews"):
             assert id is not None  # `concrete` already guarantees this

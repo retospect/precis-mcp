@@ -13,6 +13,7 @@ Subclass contract:
 
     Optional overrides
         corpus_slug: ClassVar[str]                     — default 'default'
+        batch_ids: ClassVar[bool]                      — get/tag take id=[...] (default False)
         default_tags_on_create: ClassVar[tuple[str,…]] — applied to every put-create
         sense:                                         — singular noun for messages
 
@@ -73,6 +74,12 @@ _FILLER_FIRST_LINE = re.compile(
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
 _BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw")
+
+# Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
+# ``batch_ids = True``. Sized to the measured loops it replaces (runs of
+# 38-154 singleton calls, ``docs/backlog/singleton-id-no-batch-form.md``)
+# while keeping one batch ``get`` render on the order of a search page.
+BATCH_ID_CAP = 50
 
 # Summary budget for the TOON list view's first-line cell. Memories
 # written before the SOUL's first-line discipline landed are often a
@@ -183,6 +190,11 @@ class NumericRefHandler(Handler):
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
     corpus_slug: ClassVar[str] = "default"
+    #: ``get``/``tag`` accept ``id=[...]`` (one call, many refs). Opt-in per
+    #: kind; the base ``_coerce_id`` refuses a list everywhere else with a
+    #: ``BadInput`` that names this form, so the one shape agents try after
+    #: a long singleton loop degrades instead of crashing.
+    batch_ids: ClassVar[bool] = False
 
     #: Tags applied automatically on `put`-create. e.g. for todo:
     #: ``("STATUS:open",)`` so every new todo starts open.
@@ -334,11 +346,13 @@ class NumericRefHandler(Handler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return self._get_batch(id, view=view)
         # `id='/recent'` and similar path views — subclasses may
         # implement custom list shapes (e.g. todo's open / done filters).
         if isinstance(id, str) and id.startswith("/"):
@@ -1345,7 +1359,7 @@ class NumericRefHandler(Handler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
         **_kw: Any,
@@ -1355,8 +1369,12 @@ class NumericRefHandler(Handler):
         Both ``add`` and ``remove`` apply atomically inside one
         transaction. An empty call (no ``add`` / no ``remove``) is
         rejected — the caller almost certainly meant something
-        specific and a silent no-op would mask the typo.
+        specific and a silent no-op would mask the typo. ``id=[...]``
+        (kinds with ``batch_ids``) applies the same edit to every id in
+        one transaction — see :meth:`_tag_batch`.
         """
+        if isinstance(id, list):
+            return self._tag_batch(id, add=add, remove=remove, **_kw)
         require_tag_ops(self.kind, add, remove)
         ref_id = self._coerce_id(id)
         # Existence/liveness guard — raises Gone/NotFound for a missing or
@@ -1748,7 +1766,7 @@ class NumericRefHandler(Handler):
     # ── coercion ────────────────────────────────────────────────────
 
     @classmethod
-    def _coerce_id(cls, id: str | int | None) -> int:
+    def _coerce_id(cls, id: str | int | list[str | int] | None) -> int:
         if id is None:
             raise BadInput(
                 f"{cls._sense()} operations require id=",
@@ -1757,10 +1775,19 @@ class NumericRefHandler(Handler):
         if isinstance(id, int):
             return id
         if not isinstance(id, str):
+            # A list lands here from every verb/view that has no batch
+            # form (link, delete, put, get with view=, …) and from the
+            # kinds that never opted in — a clean refusal naming what
+            # does take a list, never an AttributeError.
             raise BadInput(
                 f"{cls._sense()} id= takes one integer or handle, "
                 f"got {type(id).__name__}",
-                next="pass one call per ref (id= is not a list)",
+                next=(
+                    "pass one call per ref here; id=[...] is accepted only by "
+                    f"get and tag on {cls.kind}"
+                    if cls.batch_ids
+                    else "pass one call per ref (id= is not a list)"
+                ),
             )
         # Accept the canonical link-target form (`<kind>:<int>`) too —
         # an LLM that copy-pastes a link-target string into id= should
@@ -1788,6 +1815,145 @@ class NumericRefHandler(Handler):
                     "the numeric id first, then retry with that id."
                 ),
             ) from None
+
+    @classmethod
+    def _coerce_ids(cls, ids: list[Any]) -> list[int]:
+        """Normalise ``id=[...]`` to distinct integer ids, order kept.
+
+        Each element takes what the singleton form takes (int, decimal
+        string, ``<kind>:<int>``) plus this kind's universal handle
+        (``gr123``) — the spelling a search table shows, so ids can be
+        copied straight out of one. Refused: a kind without
+        ``batch_ids``, an empty list, more than :data:`BATCH_ID_CAP`, an
+        element of another kind.
+        """
+        if not cls.batch_ids:
+            raise BadInput(
+                f"{cls.kind} does not take id=[...]",
+                next="pass one call per ref (id= is not a list)",
+            )
+        if not ids:
+            raise BadInput(
+                "id=[] is empty",
+                next=f"get(kind={cls.kind!r}, id=[<int>, ...])",
+            )
+        if len(ids) > BATCH_ID_CAP:
+            raise BadInput(
+                f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
+                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+            )
+        out: list[int] = []
+        for pos, raw in enumerate(ids):
+            if isinstance(raw, str):
+                parsed = handle_registry.parse(raw)
+                if parsed is not None:
+                    kind, is_chunk, pk = parsed
+                    if kind != cls.kind or is_chunk:
+                        raise BadInput(
+                            f"id[{pos}]={raw!r} is a {kind} handle, not {cls.kind}",
+                            next=f"get(kind={kind!r}, id={raw!r})",
+                        )
+                    ref_id = pk
+                else:
+                    ref_id = cls._coerce_id(raw)
+            elif isinstance(raw, int) and not isinstance(raw, bool):
+                ref_id = raw
+            else:
+                raise BadInput(
+                    f"id[{pos}] must be an integer or handle, got {type(raw).__name__}",
+                    next=f"get(kind={cls.kind!r}, id=[<int>, ...])",
+                )
+            if ref_id not in out:
+                out.append(ref_id)
+        return out
+
+    # ── batch forms (``id=[...]``) ─────────────────────────────────
+
+    def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
+        """``get(id=[...])``: one summary block per id, in the order given.
+
+        Summary-shaped on purpose — a batch of full renders (a gripe's
+        comment timeline, a todo's ancestry) would be larger than the
+        loop it replaces. Each block is the handle, the lifecycle tags
+        (closed axes, ``alert-state``), ``prio``, the link count and
+        the body's first line. A missing or soft-deleted id is a
+        one-line block, not an error for the whole call: the caller
+        asked a question about N ids and gets N answers.
+        """
+        if view is not None:
+            raise BadInput(
+                f"view={view!r} does not combine with id=[...] "
+                "(the batch form is summary-shaped)",
+                next=f"get(kind={self.kind!r}, id=<one id>, view={view!r})",
+            )
+        ref_ids = self._coerce_ids(ids)
+        refs = self.store.fetch_refs_by_ids(ref_ids, include_deleted=True)
+        live = [r.id for r in refs.values() if r.kind == self.kind and not r.retired_at]
+        tag_rows = self.store.ref_tags_bulk(live)
+        link_counts = self.store.count_links_for_refs(live)
+        blocks: list[str] = []
+        for rid in ref_ids:
+            handle = handle_registry.try_format(self.kind, rid) or str(rid)
+            ref = refs.get(rid)
+            if ref is None or ref.kind != self.kind:
+                blocks.append(f"{handle}  not found")
+                continue
+            if ref.retired_at is not None:
+                blocks.append(f"{handle}  deleted")
+                continue
+            bits = [handle]
+            for ns, val in tag_rows.get(rid, []):
+                if ns != "OPEN":
+                    bits.append(f"{ns}:{val}")
+                elif val.startswith("alert-state:"):
+                    bits.append(val)
+            if ref.prio is not None:
+                bits.append(f"prio={ref.prio}")
+            bits.append(f"links={link_counts.get(rid, 0)}")
+            summary, _rest = _extract_summary(ref.title or "")
+            blocks.append("  ".join(bits) + "\n" + summary)
+        body = f"# {len(ref_ids)} {self._sense()} (batch)\n\n" + "\n\n".join(blocks)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind={self.kind!r}, id={ref_ids[0]})",
+                    f"read one {self._sense()} in full",
+                ),
+                (
+                    f"tag(kind={self.kind!r}, id=[...], add=[...])",
+                    "tag these in one transaction",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _tag_batch(self, ids: list[Any], **kw: Any) -> Response:
+        """``tag(id=[...])``: the same edit on every id, all or nothing.
+
+        Runs the kind's full per-id ``tag`` path (subclass guards, prio
+        and meta promotion, ``_after_tag_mutation``) once per id inside
+        ``store.atomic()``, so the per-id writes that open their own
+        connection join one transaction; the first per-id error aborts
+        the call and rolls every id back. The result carries one
+        outcome line per id.
+        """
+        ref_ids = self._coerce_ids(ids)
+        lines: list[str] = []
+        with self.store.atomic():
+            for rid in ref_ids:
+                handle = handle_registry.try_format(self.kind, rid) or str(rid)
+                try:
+                    resp = self.tag(id=rid, **kw)
+                except PrecisError as exc:
+                    exc.cause = (
+                        f"{handle}: {exc.cause} — batch of {len(ref_ids)} "
+                        "rolled back, nothing applied"
+                    )
+                    exc.args = (exc.cause,)
+                    raise
+                lines.append(f"{handle}: {resp.body.splitlines()[0]}")
+        head = f"tagged {len(ref_ids)} {self._sense()} in one transaction"
+        return Response(body=head + "\n" + "\n".join(lines))
 
     # ── rendering hooks (subclasses may override) ─────────────────
 

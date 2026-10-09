@@ -110,6 +110,8 @@ class AlertHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "alert"
     sense: ClassVar[str] = "alert"
+    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    batch_ids: ClassVar[bool] = True
 
     # ── list-view filters (id='/<view>') ────────────────────────────
 
@@ -299,7 +301,7 @@ class AlertHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
@@ -311,6 +313,8 @@ class AlertHandler(NumericRefHandler):
         # MemoryHandler.get's view='argument' dispatch shape — a
         # concrete-id-only extra view layered in front of the base
         # links/log/raw set.
+        if isinstance(id, list):
+            return super().get(id=id, view=view, q=q, **_kw)
         # A composite failure id (<source>/<fingerprint>) is checked
         # BEFORE _coerce_id: it can never start with '/' (sources never
         # contain one), so it cannot collide with the list-view path.

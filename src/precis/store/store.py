@@ -233,6 +233,13 @@ class Store(
         with self.core.tx() as conn:
             yield conn
 
+    @contextmanager
+    def atomic(self) -> Iterator[Connection]:
+        """One transaction for every store op in the scope, including ops
+        that open their own connection — see :meth:`StoreCore.atomic`."""
+        with self.core.atomic() as conn:
+            yield conn
+
     # -- app_state table -----------------------------------------------------
     #
     # Small key/value surface for cross-boot bookkeeping rows that don't

@@ -36,6 +36,7 @@ import re
 import weakref
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from psycopg import Connection, sql
@@ -205,15 +206,46 @@ def _close_at_exit(pool: ConnectionPool) -> None:
     atexit.register(_close_pool_ref, weakref.ref(pool))
 
 
+#: The connection a :func:`pin_connection` scope has pinned for the current
+#: thread/context, or ``None``. Read by :meth:`PrecisPool.connection`.
+_PINNED: ContextVar[Connection | None] = ContextVar("precis_pinned_conn", default=None)
+
+
+@contextmanager
+def pin_connection(conn: Connection) -> Iterator[None]:
+    """Make every :meth:`PrecisPool.connection` checkout in this context
+    hand back ``conn`` instead of a fresh pooled connection.
+
+    This is what lets ``StoreCore.atomic`` run a whole batch — including
+    store ops that open their own connection rather than taking
+    ``conn=`` — inside one transaction. Nested checkouts get a savepoint
+    (``conn.transaction()``) rather than the base pool's ``with conn:``
+    commit, so nothing inside the scope commits on its own; the outer
+    scope decides. Per-thread (``ContextVar``): a worker thread spawned
+    inside the scope is not pinned.
+    """
+    token = _PINNED.set(conn)
+    try:
+        yield
+    finally:
+        _PINNED.reset(token)
+
+
 class PrecisPool(ConnectionPool):
     """The store's pool: a :class:`ConnectionPool` that sends the active
     :func:`~precis.store.revision_context.revision_context` to each
     connection it hands out, so migration 0185's revisions triggers see
     who changed a ref or link and why. Outside a context it behaves
-    exactly like the base pool."""
+    exactly like the base pool, except inside a :func:`pin_connection`
+    scope, where every checkout is the pinned connection."""
 
     @contextmanager
     def connection(self, timeout: float | None = None) -> Iterator[Connection]:
+        pinned = _PINNED.get()
+        if pinned is not None:
+            with pinned.transaction():
+                yield pinned
+            return
         with super().connection(timeout=timeout) as conn:
             apply_revision_context(conn)
             yield conn

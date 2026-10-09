@@ -79,7 +79,7 @@ class FolderHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         **kw: Any,
     ) -> Response:

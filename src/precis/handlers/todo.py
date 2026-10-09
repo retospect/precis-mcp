@@ -249,6 +249,8 @@ class TodoHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "todo"
     sense: ClassVar[str] = "todo"
+    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    batch_ids: ClassVar[bool] = True
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
     # ── list view dispatch (id='/<view>') ─────────────────────────
@@ -293,11 +295,13 @@ class TodoHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return super().get(id=id, view=view, q=q, **_kw)
         # Tree view is special: needs a numeric id, dispatches before
         # the base class can complain about unknown views.
         if view == "tree":
@@ -917,13 +921,17 @@ class TodoHandler(NumericRefHandler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
         prio: int | None = None,
         meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return self._tag_batch(
+                id, add=add, remove=remove, prio=prio, meta=meta, **_kw
+            )
         prio = _validate_prio(prio)
         # Auto-redirect long ask-user:/halt: values into a chunk so the
         # tag stays a short structured label and the LLM's natural

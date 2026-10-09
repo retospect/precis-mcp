@@ -99,6 +99,7 @@ get(kind='alert', id=42)               # one alert + tags
 get(kind='alert', id=42, view='detail')  # triage shape (below); 'full' is an alias
 get(kind='alert', id=42, view='links')   # link graph to/from this alert
 get(kind='alert', id=42, view='raw')     # verbatim record — every meta key
+get(kind='alert', id=[42, 43, 44])       # several at once: one summary block per id (≤50)
 search(kind='alert', q='spin loop')    # lexical over titles
 search(kind='alert', tags=['alert-source:nursery:spin-loop'])
 search(kind='alert', tags=['severity:critical'])
@@ -125,6 +126,7 @@ tag(kind='alert', id=42, add=['alert-state:resolved'],
     remove=['alert-state:open'])
 ```
 
+`id=[42, 43]` resolves several alerts in one call and one transaction.
 Both paths flip the state tag *and* stamp `resolved_at` in one
 transaction (the dedup unique index keys off `resolved_at IS NULL`, so
 the two must move as one — the handler syncs the column on any

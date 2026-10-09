@@ -795,7 +795,7 @@ class FindingHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         # ``view='mint-preflight'``'s candidate payload, arriving through
@@ -855,6 +855,8 @@ class FindingHandler(NumericRefHandler):
         These views are deliberately kept off ``_BASE_VIEWS`` — finding-specific,
         not something every numeric-ref kind should expose.
         """
+        if isinstance(id, list):
+            return super().get(id=id, view=view, q=q, **_kw)  # refused: no batch form
         id = self._resolve_pub_id_slug(id)
         if view == "evidence":
             ref_id = self._coerce_id(id)

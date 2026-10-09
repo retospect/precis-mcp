@@ -71,7 +71,11 @@ value removes the previous one. No separate remove needed.
 ```python
 tag(kind="todo", id=122, add=["STATUS:done"])
 tag(kind="todo", id=122, add=["STATUS:won't-do"])  # decided not to do it
+tag(kind="todo", id=[122, 123, 124], add=["STATUS:done"])  # several, one transaction
 ```
+
+`id=[...]` (up to 50) also works on `get(kind='todo', id=[...])`, which
+returns one summary block per id instead of the full render.
 
 ## Change priority
 ## Re-prioritise a todo

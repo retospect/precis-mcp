@@ -69,6 +69,31 @@ class StoreCore:
             with conn.transaction():
                 yield conn
 
+    @contextmanager
+    def atomic(self) -> Iterator[Connection]:
+        """One connection, one transaction, for *everything* the calling
+        thread does inside the scope — including store ops that open
+        their own pooled connection instead of taking ``conn=``.
+
+        :meth:`tx` only covers ops the caller threads ``conn`` into; a
+        per-item path like ``NumericRefHandler.tag`` spans
+        ``set_prio``/``stamp_ref_meta``/``append_event`` and its own
+        ``tx()``, each on a fresh connection, so looping it N times under
+        a ``tx()`` is N+1 transactions. ``atomic`` pins the checked-out
+        connection (:func:`precis.store.pool.pin_connection`) so those
+        checkouts join this transaction as savepoints; an exception
+        anywhere rolls the whole batch back. Requires the store's
+        :class:`~precis.store.pool.PrecisPool`; a plain pool would
+        silently degrade to per-op commits, so it is refused instead.
+        """
+        from precis.store.pool import PrecisPool, pin_connection
+
+        if not isinstance(self.pool, PrecisPool):
+            raise RuntimeError("StoreCore.atomic requires a PrecisPool")
+        with self.pool.connection() as conn:
+            with conn.transaction(), pin_connection(conn):
+                yield conn
+
     def close(self) -> None:
         """Close the underlying connection pool."""
         self.pool.close()

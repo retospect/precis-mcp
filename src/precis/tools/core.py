@@ -429,7 +429,9 @@ def _ctx_session(ctx: Context | None) -> object | None:
 def get(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    id: str | int | None = None,
+    # A list is the batch form (gripe/alert/todo): one summary block per
+    # id. Declared on the wire so FastMCP's pydantic layer admits it.
+    id: str | int | list[str | int] | None = None,
     view: str | None = None,
     q: str | None = None,
     args: dict[str, Any] | None = None,
@@ -1738,7 +1740,9 @@ def delete(
 def tag(
     # See ``search`` for the Optional-required pattern (round-2 picky N-1).
     kind: str | None = None,
-    id: str | int | None = None,
+    # A list is the batch form (gripe/alert/todo): the same edit on every
+    # id in one transaction.
+    id: str | int | list[str | int] | None = None,
     add: list[str] | None = None,
     remove: list[str] | None = None,
     # todo (see precis-todo-tree-help): meta= merges keys into the todo's

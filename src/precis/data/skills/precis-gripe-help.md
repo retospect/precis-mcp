@@ -109,6 +109,10 @@ get(kind="gripe", id=42)
 `get` composes the body and newest 20 comments in creation order, with a
 withheld count when older comments exist. Read the complete conversation with
 `get(kind='gripe', id=42, view='comments')`. `view='log'` remains the audit log.
+Holding several ids, pass them at once: `get(kind='gripe', id=[42, 43, 44])`
+returns one summary block per id (tags, prio, link count, first line; up to
+50), and `tag(kind='gripe', id=[...], add=[...])` applies one edit to all of
+them in a single transaction.
 
 ## Add context to an existing gripe
 ## Comment on a gripe

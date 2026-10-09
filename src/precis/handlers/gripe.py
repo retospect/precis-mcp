@@ -77,6 +77,8 @@ class GripeHandler(NumericRefHandler):
 
     kind: ClassVar[str] = "gripe"
     sense: ClassVar[str] = "gripe"
+    #: get/tag take ``id=[...]`` (summary get, one-transaction tag).
+    batch_ids: ClassVar[bool] = True
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
     # The everyday gripe search is "what's still open?" — so default the
@@ -227,12 +229,14 @@ class GripeHandler(NumericRefHandler):
     def tag(  # type: ignore[override]
         self,
         *,
-        id: str | int,
+        id: str | int | list[str | int],
         add: list[str] | None = None,
         remove: list[str] | None = None,
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            return self._tag_batch(id, add=add, remove=remove, prio=prio, **_kw)
         # ``PRIO:`` → the canonical prio column (which the backlog groomer
         # inherits onto the minted fix_gripe todo, so a human tagging a gripe
         # PRIO:high actually hastens its fix), stripped from the tag set like
@@ -426,11 +430,15 @@ class GripeHandler(NumericRefHandler):
     def get(
         self,
         *,
-        id: str | int | None = None,
+        id: str | int | list[str | int] | None = None,
         view: str | None = None,
         q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, list):
+            # Batch form: the base class renders it (summary-shaped) or
+            # refuses the view= combination.
+            return super().get(id=id, view=view, q=q, **_kw)
         if view == "comments":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(
